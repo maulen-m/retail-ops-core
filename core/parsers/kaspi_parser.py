@@ -26,7 +26,7 @@ import pandas as pd
 
 
 # Russian column names from Kaspi ActiveOrders export
-COLUMN_MAP = {
+COLUMN_MAP_RUSSIAN = {
     "№ заказа": "order_id",
     "Дата поступления заказа": "order_date",
     "Название товара в Kaspi Магазине": "kaspi_offer",
@@ -38,13 +38,36 @@ COLUMN_MAP = {
     "Статус": "order_status",
 }
 
-# Required columns that must be present
-REQUIRED_COLUMNS = [
+# English column names (legacy/preprocessed files)
+COLUMN_MAP_ENGLISH = {
+    "OrderID": "order_id",
+    "Date": "order_date",
+    "KASPI_OFFER_NAME": "kaspi_offer",
+    "Kaspi_article": "kaspi_article",
+    "SKU_key": "sku_key",
+    "SKU_ID": "sku_id",
+    "MY_SIZE": "my_size",
+    "Sell_price_kzt": "sell_price_kzt",
+    "Quantity": "quantity",
+    "Delivery_fee_kzt": "delivery_fee_seller",
+    "Product_Type": "product_type",
+    "Статус": "order_status",
+}
+
+# Required columns (either Russian OR English set)
+REQUIRED_COLUMNS_RUSSIAN = [
     "№ заказа",
     "Дата поступления заказа",
     "Артикул",
     "Сумма",
     "Количество",
+]
+
+REQUIRED_COLUMNS_ENGLISH = [
+    "OrderID",
+    "Date",
+    "Sell_price_kzt",
+    "Quantity",
 ]
 
 # Size mapping patterns (common Russian size formats → normalized)
@@ -263,20 +286,43 @@ def parse_active_orders(
 
     # Read Excel file
     df = pd.read_excel(path)
+    columns = list(df.columns)
+
+    # Detect which column format we have (Russian or English)
+    has_russian = any(col in columns for col in COLUMN_MAP_RUSSIAN)
+    has_english = any(col in columns for col in COLUMN_MAP_ENGLISH)
 
     # Validate required columns
     if validate:
-        missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+        if has_russian:
+            missing = [c for c in REQUIRED_COLUMNS_RUSSIAN if c not in columns]
+        elif has_english:
+            missing = [c for c in REQUIRED_COLUMNS_ENGLISH if c not in columns]
+        else:
+            missing = REQUIRED_COLUMNS_RUSSIAN  # Default to Russian for error
+
         if missing:
             raise ValueError(
                 f"Missing required columns: {missing}. "
-                f"Available: {list(df.columns)}"
+                f"Available: {columns}"
             )
 
-    # Map columns to DB names
-    column_renames = {
-        old: new for old, new in COLUMN_MAP.items() if old in df.columns
-    }
+    # Map columns to DB names (apply both maps, order matters)
+    # English first (more specific), then Russian
+    # Avoid duplicate target column names
+    column_renames = {}
+    target_names_used = set()
+
+    for old, new in COLUMN_MAP_ENGLISH.items():
+        if old in columns and new not in target_names_used:
+            column_renames[old] = new
+            target_names_used.add(new)
+
+    for old, new in COLUMN_MAP_RUSSIAN.items():
+        if old in columns and old not in column_renames and new not in target_names_used:
+            column_renames[old] = new
+            target_names_used.add(new)
+
     df = df.rename(columns=column_renames)
 
     # Process each row
@@ -330,14 +376,31 @@ def _process_row(
             except (ValueError, TypeError):
                 order_date = None
 
-    # Extract SKU info from article
+    # Extract SKU info - prefer pre-existing columns from English format
     kaspi_article = row.get("kaspi_article")
     kaspi_article = str(kaspi_article).strip() if pd.notna(kaspi_article) else ""
 
     kaspi_offer = row.get("kaspi_offer")
     kaspi_offer = str(kaspi_offer).strip() if pd.notna(kaspi_offer) else ""
 
-    sku_info = extract_sku_from_article(kaspi_article, kaspi_offer)
+    # Check if we have pre-existing SKU columns (English format)
+    existing_sku_key = row.get("sku_key")
+    existing_sku_id = row.get("sku_id")
+    existing_my_size = row.get("my_size")
+    existing_product_type = row.get("product_type")
+
+    # Use pre-existing values if available, otherwise extract from article
+    if pd.notna(existing_sku_key) and str(existing_sku_key).strip():
+        sku_key = str(existing_sku_key).strip()
+        sku_id = str(existing_sku_id).strip() if pd.notna(existing_sku_id) else None
+        my_size = str(existing_my_size).strip() if pd.notna(existing_my_size) else None
+        product_type = str(existing_product_type).strip() if pd.notna(existing_product_type) else None
+    else:
+        sku_info = extract_sku_from_article(kaspi_article, kaspi_offer)
+        sku_key = sku_info["sku_key"]
+        sku_id = sku_info["sku_id"]
+        my_size = sku_info["my_size"]
+        product_type = sku_info["product_type"]
 
     # Get numeric values with defaults
     quantity = _safe_int(row.get("quantity"), default=1)
@@ -351,16 +414,16 @@ def _process_row(
         "order_date": order_date,
         "kaspi_offer": kaspi_offer if kaspi_offer else None,
         "kaspi_article": kaspi_article if kaspi_article else None,
-        "sku_key": sku_info["sku_key"],
-        "sku_id": sku_info["sku_id"],
-        "my_size": sku_info["my_size"],
+        "sku_key": sku_key,
+        "sku_id": sku_id,
+        "my_size": my_size,
         "quantity": quantity,
         "sell_price_kzt": sell_price,
         "delivery_fee_seller": delivery_seller,
         "delivery_fee_buyer": delivery_buyer,
         "order_status": str(row.get("order_status", "")).strip() or None,
         "channel": "kaspi",
-        "product_type": sku_info["product_type"],
+        "product_type": product_type,
         "source_file": source_file,
     }
 
