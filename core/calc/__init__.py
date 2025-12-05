@@ -12,11 +12,36 @@ from .economics import (
     calc_cogs,
     calc_net_rev,
     calc_profit,
+    calc_line_values,
+)
+
+from .inventory import (
+    calc_d30,
+    calc_sigma,
+    calc_ss_total,
+    calc_rop,
+    calc_roic,
+    calc_k_avg,
+    calc_suggested_order_qty,
+    calc_all_metrics,
+    DEFAULT_PARAMS,
 )
 
 __all__ = [
+    # Economics
     "calc_delivery_fee",
     "calc_cogs",
     "calc_net_rev",
     "calc_profit",
+    "calc_line_values",
+    # Inventory
+    "calc_d30",
+    "calc_sigma",
+    "calc_ss_total",
+    "calc_rop",
+    "calc_roic",
+    "calc_k_avg",
+    "calc_suggested_order_qty",
+    "calc_all_metrics",
+    "DEFAULT_PARAMS",
 ]
