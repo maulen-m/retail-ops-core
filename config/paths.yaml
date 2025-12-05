@@ -1,0 +1,10 @@
+# Canonical paths for data and outputs
+# All paths relative to repo root
+
+data_raw: data_raw/
+data_stage: data_stage/
+db: db/app.db
+exports: exports/
+logs: logs/
+backups: backups/
+excel_ui: excel_ui/Inventory_Core_V15_FINAL.xlsx

@@ -1,0 +1,33 @@
+# Kaspi store configuration
+# Maps store codes to their API tokens (env var references)
+
+stores:
+  UNIVERSAL:
+    token_env: KASPI_TOKEN_UNIVERSAL
+    channel: kaspi
+    region: KZ
+    active: true
+
+  ACMEWEAR:
+    token_env: KASPI_TOKEN_ACMEWEAR
+    channel: kaspi
+    region: KZ
+    active: true
+
+  11KZ:
+    token_env: KASPI_TOKEN_11KZ
+    channel: kaspi
+    region: KZ
+    active: true
+
+  MELVIS:
+    token_env: KASPI_TOKEN_MELVIS
+    channel: kaspi
+    region: KZ
+    active: true
+
+  STOREB:
+    token_env: KASPI_TOKEN_STOREB
+    channel: kaspi
+    region: KZ
+    active: true
