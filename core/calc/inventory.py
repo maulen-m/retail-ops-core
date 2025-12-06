@@ -408,6 +408,130 @@ def calc_all_metrics(
     }
 
 
+def calc_rop_v2(
+    d_forecast: float,
+    trend_slope: float,
+    sigma: float,
+    L: float = DEFAULT_PARAMS["L"],
+    R: float = DEFAULT_PARAMS["R"],
+    z: float = DEFAULT_PARAMS["z"],
+    B: float = DEFAULT_PARAMS["B"],
+    TV: float = DEFAULT_PARAMS["TV"],
+) -> float:
+    """
+    TASK-030: Forecast-aware ROP calculation.
+
+    Replaces static D30 with forecast-based demand.
+    Adjusts safety stock based on trend direction.
+
+    Key change:
+        OLD: ROP = D30 × (L + R) + SS
+        NEW: ROP = D_forecast × (L + R) + SS_adjusted
+
+    Where SS_adjusted considers trend:
+        - Rising trend (slope > 0.05): +10% SS buffer
+        - Falling trend (slope < -0.05): -10% SS buffer
+        - Stable: no adjustment
+
+    Args:
+        d_forecast: Forecasted daily demand
+        trend_slope: Daily change rate (positive = growing)
+        sigma: Demand volatility (D30 × 0.4)
+        L: Lead time in days
+        R: Review period in days
+        z: Z-score for service level
+        B: Buffer factor in days
+        TV: Mix variability factor
+
+    Returns:
+        Forecast-adjusted ROP value
+    """
+    # Base safety stock calculation
+    ss_demand = z * sigma * math.sqrt(L)
+    ss_floor = d_forecast * B
+    ss_mix = TV * d_forecast * L
+    ss_base = ss_demand + ss_floor + ss_mix
+
+    # Trend adjustment
+    if trend_slope > 0.05:
+        # Rising demand: add 10% buffer
+        ss_adjusted = ss_base * 1.10
+    elif trend_slope < -0.05:
+        # Falling demand: reduce buffer by 10%
+        ss_adjusted = ss_base * 0.90
+    else:
+        # Stable: no adjustment
+        ss_adjusted = ss_base
+
+    # Calculate ROP
+    rop = d_forecast * L + ss_adjusted
+
+    return max(0, rop)
+
+
+def calc_all_metrics_v2(
+    d_forecast: float,
+    trend_slope: float,
+    cogs_unit: float,
+    profit_unit: float,
+    L: float = DEFAULT_PARAMS["L"],
+    R: float = DEFAULT_PARAMS["R"],
+    B: float = DEFAULT_PARAMS["B"],
+    z: float = DEFAULT_PARAMS["z"],
+    TV: float = DEFAULT_PARAMS["TV"],
+) -> dict:
+    """
+    Calculate all inventory metrics using forecast-based demand.
+
+    Enhanced version of calc_all_metrics that uses forecasts
+    instead of static D30.
+
+    Args:
+        d_forecast: Forecasted daily demand
+        trend_slope: Trend direction
+        cogs_unit: Cost of goods sold per unit
+        profit_unit: Profit per unit
+        L: Lead time in days
+        R: Review period in days
+        B: Buffer factor in days
+        z: Z-score for service level
+        TV: Mix variability factor
+
+    Returns:
+        Dict with all calculated values
+    """
+    sigma = d_forecast * 0.4  # Volatility based on forecast
+
+    # Use V2 ROP calculation
+    rop_v2 = calc_rop_v2(d_forecast, trend_slope, sigma, L, R, z, B, TV)
+
+    # Standard SS components for reporting
+    ss_demand = z * sigma * math.sqrt(L)
+    ss_floor = d_forecast * B
+    ss_mix = TV * d_forecast * L
+    ss_total = ss_demand + ss_floor + ss_mix
+
+    # Capital calculations
+    k_avg = (d_forecast * (L + R / 2) + ss_total) * cogs_unit
+    roic = calc_roic(d_forecast, profit_unit, cogs_unit, L, R, ss_total, k_avg)
+
+    target_stock = d_forecast * (L + R) + ss_total
+
+    return {
+        "d_forecast": d_forecast,
+        "trend_slope": trend_slope,
+        "sigma": sigma,
+        "ss_demand": ss_demand,
+        "ss_floor": ss_floor,
+        "ss_mix": ss_mix,
+        "ss_total": ss_total,
+        "rop_v2": rop_v2,
+        "k_avg": k_avg,
+        "roic_monthly": roic,
+        "target_stock": target_stock,
+    }
+
+
 if __name__ == "__main__":
     # Test with LINE52 values
     print("Inventory Calculations Test")
