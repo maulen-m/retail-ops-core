@@ -51,7 +51,7 @@ def get_sku_details(db_path: str) -> list[dict]:
     cursor.execute("""
         SELECT
             m.sku_key,
-            m.roic,
+            m.roic_monthly,
             m.k_avg,
             m.d30,
             m.current_stock,

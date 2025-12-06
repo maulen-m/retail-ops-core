@@ -29,7 +29,7 @@ def calc_portfolio_roic(db_path: str) -> dict:
     cursor.execute("""
         SELECT
             m.sku_key,
-            m.roic,
+            m.roic_monthly,
             m.k_avg,
             m.d30,
             m.status,
@@ -146,15 +146,15 @@ def identify_kill_candidates(
     cursor.execute("""
         SELECT
             m.sku_key,
-            m.roic,
+            m.roic_monthly,
             m.k_avg,
             m.d30,
             m.current_stock,
             l.lifecycle_status
         FROM fact_sku_metrics m
         LEFT JOIN dim_sku_lifecycle l ON m.sku_key = l.sku_key
-        WHERE m.roic < ?
-        AND m.roic IS NOT NULL
+        WHERE m.roic_monthly < ?
+        AND m.roic_monthly IS NOT NULL
     """, (roic_threshold,))
 
     candidates = []
