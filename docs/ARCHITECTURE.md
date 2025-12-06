@@ -1,24 +1,26 @@
 # System Architecture
 
 **Project:** Autonomous Inventory/PO System
-**Version:** 2.0 (Phase 6)
+**Version:** 3.0 (Phase 8)
 **Updated:** 2025-12-06
 
 ---
 
 ## Overview
 
-This system automates inventory management for a Kaspi.kz retail operation selling clothing (CL), belts (ELS), and furs (FUR). It provides demand forecasting, safety stock calculation, automatic PO generation, and portfolio analytics.
+This system automates inventory management for a multi-channel retail operation on Kaspi.kz and Wildberries (WB), selling clothing (CL), belts (ELS), and furs (FUR). It provides demand forecasting, safety stock calculation, automatic PO generation, portfolio analytics, and cross-channel optimization.
 
 ---
 
 ## Architecture Diagram
 
 ```
-                    ┌─────────────────┐
-                    │   Kaspi.kz      │
-                    │  Excel Exports  │
-                    └────────┬────────┘
+     ┌─────────────────┐                  ┌─────────────────┐
+     │   Kaspi.kz      │                  │   Wildberries   │
+     │  Excel Exports  │                  │  Excel Exports  │
+     └────────┬────────┘                  └────────┬────────┘
+              │                                    │
+              └──────────────┬─────────────────────┘
                              │
                     ┌────────▼────────┐
                     │   Ingestion     │
@@ -31,26 +33,29 @@ This system automates inventory management for a Kaspi.kz retail operation selli
 ┌───────────┐         ┌───────────┐         ┌───────────┐
 │ Parsers   │         │  Database │         │  Alerts   │
 │ (kaspi,   │ ──────► │ (SQLite)  │ ◄────── │ (Telegram)│
-│ inventory)│         │           │         │           │
+│ wb, inv)  │         │           │         │           │
 └───────────┘         └─────┬─────┘         └───────────┘
                             │
-         ┌──────────────────┼──────────────────┐
-         │                  │                  │
-         ▼                  ▼                  ▼
-    ┌─────────┐       ┌─────────┐       ┌─────────┐
-    │Forecast │       │Inventory│       │Portfolio│
-    │ Engine  │       │  Calc   │       │Analytics│
-    └────┬────┘       └────┬────┘       └────┬────┘
-         │                 │                 │
-         └────────────┬────┴────┬────────────┘
-                      │         │
-                      ▼         ▼
-               ┌───────────────────┐
-               │    Auto-PO        │
-               │   Generator       │
-               └─────────┬─────────┘
+    ┌───────────────────────┼───────────────────────────┐
+    │             │         │         │                 │
+    ▼             ▼         ▼         ▼                 ▼
+┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌───────────┐
+│Forecast │ │Inventory│ │Portfolio│ │ Channel │ │ Expansion │
+│ Engine  │ │  Calc   │ │Analytics│ │ Metrics │ │  Scorer   │
+└────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └─────┬─────┘
+     │           │           │           │            │
+     └───────────┴───────┬───┴───────────┴────────────┘
                          │
-                         ▼
+              ┌──────────┴──────────┐
+              │                     │
+              ▼                     ▼
+     ┌───────────────────┐  ┌───────────────────┐
+     │    Auto-PO        │  │    Transfer       │
+     │   Generator       │  │   Recommender     │
+     └─────────┬─────────┘  └─────────┬─────────┘
+               │                      │
+               └──────────┬───────────┘
+                          ▼
                ┌───────────────────┐
                │  Reports/Exports  │
                └───────────────────┘
@@ -65,15 +70,21 @@ Autonomous_business/
 ├── core/                      # Core business logic
 │   ├── calc/                  # Calculation modules
 │   │   ├── __init__.py        # Module exports
-│   │   ├── economics.py       # Revenue, COGS, profit
+│   │   ├── economics.py       # Kaspi revenue, COGS, profit
+│   │   ├── wb_economics.py    # WB revenue, fees, profit (Phase 8)
 │   │   ├── inventory.py       # SS, ROP, ROIC, order qty
 │   │   ├── forecast.py        # Demand forecasting
 │   │   ├── forecast_accuracy.py # MAPE, bias, backtest
 │   │   ├── dow_patterns.py    # Day-of-week patterns
 │   │   ├── portfolio.py       # Portfolio analytics
-│   │   └── status.py          # Inventory status logic
+│   │   ├── status.py          # Inventory status logic
+│   │   ├── channel_metrics.py # Per-channel metrics (Phase 8)
+│   │   ├── channel_comparison.py # Cross-channel comparison (Phase 8)
+│   │   ├── expansion_scorer.py # WB expansion scoring (Phase 8)
+│   │   └── transfer_recommender.py # Inventory transfer (Phase 8)
 │   ├── parsers/
-│   │   └── kaspi_parser.py    # Kaspi Excel parser
+│   │   ├── kaspi_parser.py    # Kaspi Excel parser
+│   │   └── wb_parser.py       # WB Excel parser (Phase 8)
 │   ├── alerts/
 │   │   └── telegram.py        # Telegram notifications
 │   ├── automation/
@@ -86,6 +97,7 @@ Autonomous_business/
 │   ├── Ingestion
 │   │   ├── ingest_active_orders.py
 │   │   ├── ingest_inventory_snapshot.py
+│   │   ├── ingest_channel_sales.py  # Unified Kaspi/WB ingestion (Phase 8)
 │   │   └── import_historical_sales.py
 │   ├── Transformation
 │   │   ├── import_legacy_sales.py
@@ -105,6 +117,10 @@ Autonomous_business/
 │   │   ├── report_stockout_costs.py
 │   │   ├── report_data_quality.py
 │   │   └── report_po_analytics.py
+│   ├── Multi-Channel (Phase 8)
+│   │   ├── build_channel_metrics.py  # Daily channel metrics
+│   │   ├── run_expansion_analysis.py # WB expansion scoring
+│   │   └── run_transfer_analysis.py  # Cross-channel transfers
 │   ├── Orchestration
 │   │   ├── run_daily_pipeline.py
 │   │   └── send_daily_digest.py
@@ -113,9 +129,9 @@ Autonomous_business/
 │       ├── backup_db.py
 │       └── bootstrap_db.py
 ├── db/
-│   ├── schema.sql             # Database schema (34 tables)
+│   ├── schema.sql             # Database schema (38 tables)
 │   └── app.db                 # SQLite database
-├── tests/                     # Test suite (201 tests)
+├── tests/                     # Test suite (334 tests)
 │   ├── test_economics.py
 │   ├── test_inventory.py
 │   ├── test_status.py
@@ -123,6 +139,9 @@ Autonomous_business/
 │   ├── test_portfolio.py
 │   ├── test_data_quality.py
 │   ├── test_integration.py
+│   ├── test_wb_economics.py   # WB economics (Phase 8)
+│   ├── test_channel_metrics.py # Channel metrics (Phase 8)
+│   ├── test_expansion_scorer.py # Expansion scoring (Phase 8)
 │   └── ...
 ├── docs/
 │   ├── ARCHITECTURE.md        # This file
@@ -147,7 +166,8 @@ Autonomous_business/
 |-------|---------|-------------|
 | `dim_sku` | Product master | sku_key, product_type, base_cost_cny |
 | `dim_sku_size` | Size variants | sku_id, sku_key, my_size |
-| `dim_store` | Store locations | store_code, store_name |
+| `dim_store` | Store locations | store_code, channel |
+| `dim_channel` | Channel config (Phase 8) | channel_code, commission_pct, logistics_fee |
 | `dim_seasonality` | Seasonal multipliers | month, product_type, multiplier |
 | `dim_sku_lifecycle` | SKU lifecycle status | sku_key, lifecycle_status |
 
@@ -167,6 +187,9 @@ Autonomous_business/
 | `fact_po_draft_lines` | PO line items | draft_id, sku_key, quantity, size_qty |
 | `fact_po_execution` | PO execution tracking | po_id, ordered_qty, received_qty |
 | `fact_alert_log` | Alert history | sku_key, alert_type, sent_at |
+| `fact_channel_metrics` | Per-channel metrics (Phase 8) | sku_key, channel_code, units_30d, roic |
+| `fact_channel_inventory` | Channel stock levels (Phase 8) | sku_key, channel_code, on_hand, days_cover |
+| `fact_expansion_scores` | WB expansion scores (Phase 8) | sku_key, expansion_score, recommendation |
 
 ---
 
@@ -230,19 +253,62 @@ generate_po_draft(db_path, trigger, sku_filter) -> int
 calc_confidence_score(sku_key, order_qty, ...) -> float
 ```
 
+### wb_economics.py (Phase 8)
+
+WB-specific economics calculations.
+
+```python
+calc_wb_net_revenue(seller_price_rub, fx_rub_kzt, logistics_fee_rub, commission_pct, tax_pct) -> tuple
+calc_wb_profit(seller_price_rub, cogs_kzt, ...) -> float
+calc_wb_breakeven_price(cogs_kzt, target_margin_pct, ...) -> float
+compare_kaspi_vs_wb(kaspi_price_kzt, wb_price_rub, cogs_kzt, ...) -> dict
+```
+
+### channel_metrics.py (Phase 8)
+
+Per-channel metrics calculations.
+
+```python
+calc_channel_metrics_for_date(db_path, metric_date) -> list[ChannelMetrics]
+save_channel_metrics(db_path, metrics) -> int
+get_latest_channel_metrics(db_path, sku_key, channel_code) -> ChannelMetrics
+```
+
+### expansion_scorer.py (Phase 8)
+
+Score SKUs for WB expansion potential.
+
+```python
+score_sku_for_expansion(db_path, sku_key, target_channel) -> ExpansionScore
+score_all_skus_for_expansion(db_path, source_channel, target_channel) -> list
+# Returns recommendation: EXPAND, TEST, HOLD, SKIP
+```
+
+### transfer_recommender.py (Phase 8)
+
+Recommend inventory transfers between channels.
+
+```python
+recommend_transfers(db_path, min_days_cover, max_days_cover) -> list[TransferRecommendation]
+get_critical_imbalances(db_path) -> list[TransferRecommendation]
+get_transfer_summary(recommendations) -> dict
+```
+
 ---
 
 ## Data Flow
 
 ### Daily Pipeline
 
-1. **Ingest** - Parse Kaspi Excel exports
+1. **Ingest** - Parse Kaspi/WB Excel exports
 2. **Transform** - Calculate economics (COGS, NetRev, Profit)
 3. **Aggregate** - Build daily summaries
 4. **Calculate** - Compute D30, SS, ROP, ROIC
 5. **Forecast** - Generate demand predictions
-6. **Alert** - Send Telegram notifications
-7. **Export** - Generate reports and PO suggestions
+6. **Capital Snapshot** - Build capital allocation
+7. **Channel Metrics** - Build per-channel metrics (Phase 8)
+8. **Alert** - Send Telegram notifications
+9. **Export** - Generate reports and PO suggestions
 
 ### Auto-PO Flow
 
@@ -298,12 +364,24 @@ DEFAULT_PARAMS = {
 4. **24-Hour Alert Cooldown**
    - Same SKU alert only once per 24 hours
 
+5. **WB Economics (Phase 8)**
+   - Commission: 24.5% (clothing category)
+   - Logistics: 408₽ per unit (proxy)
+   - Tax: 3% (Kazakhstan)
+   - FX: 6.6 RUB/KZT
+
+6. **Expansion Scoring (Phase 8)**
+   - Demand score: 40% weight (based on units_30d)
+   - Margin score: 40% weight (WB margin vs Kaspi)
+   - Competition score: 20% weight (competitor count)
+   - Recommendations: EXPAND (75+), TEST (50-74), HOLD (30-49), SKIP (<30)
+
 ---
 
 ## Performance
 
 - Database: SQLite (single file, ~10MB)
-- Tests: 201 tests in ~0.6 seconds
+- Tests: 334 tests in ~0.8 seconds
 - Forecast: Covers 2+ SKUs with 7-day history
 - Backup: 85%+ compression with gzip
 
@@ -329,3 +407,5 @@ Python 3.11+
 - Real-time Kaspi API connection
 - Mobile app for PO approval
 - Automated supplier ordering
+- Full WB tariff integration (per-SKU, per-warehouse fees)
+- Container fill optimizer for multi-channel shipments

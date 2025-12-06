@@ -69,6 +69,99 @@ python scripts/po_approval_cli.py approve <draft_id>
 
 ---
 
+## Phase 8: Multi-Channel Operations
+
+### WB (Wildberries) Sales Ingestion
+
+**When to Run:** After receiving WB weekly sales reports
+
+```bash
+# Download WB sales report from WB seller portal
+# Save as: data_raw/WB_Sales_YYYY-MM-DD.xlsx
+
+# Ingest WB sales
+python scripts/ingest_channel_sales.py data_raw/WB_Sales_2025-12-06.xlsx --channel WB
+
+# Or with verbose output
+python scripts/ingest_channel_sales.py data_raw/WB_Sales_2025-12-06.xlsx --channel WB --verbose
+```
+
+**Expected Columns (Russian):**
+- `Артикул продавца` → sku_key
+- `Дата продажи` → order_date
+- `Цена розничная` → seller_price (RUB)
+- `Кол-во` → quantity
+- `Вайлдберриз реализовал` → net_revenue (RUB)
+
+### Channel Metrics Build
+
+```bash
+# Build channel metrics for today
+python scripts/build_channel_metrics.py
+
+# Backfill historical metrics (run once after initial WB data import)
+python scripts/build_channel_metrics.py --backfill --days 30
+```
+
+### Expansion Analysis (Weekly)
+
+```bash
+# Score Kaspi SKUs for WB expansion potential
+python scripts/run_expansion_analysis.py
+
+# Filter by minimum score
+python scripts/run_expansion_analysis.py --min-score 60
+
+# Show only EXPAND recommendations
+python scripts/run_expansion_analysis.py --recommendation EXPAND
+
+# Export to CSV
+python scripts/run_expansion_analysis.py --export
+```
+
+**Recommendation Meanings:**
+
+| Recommendation | Score Range | Action |
+|----------------|-------------|--------|
+| **EXPAND** | 75+ | Launch on WB immediately |
+| **TEST** | 50-74 | Small test batch (10-20 units) |
+| **HOLD** | 30-49 | Monitor, revisit next quarter |
+| **SKIP** | <30 | Not suitable for WB |
+
+### Transfer Analysis
+
+```bash
+# Check for inventory imbalances between channels
+python scripts/run_transfer_analysis.py
+
+# Only critical/high urgency
+python scripts/run_transfer_analysis.py --critical-only
+
+# Send Telegram alert for critical transfers
+python scripts/run_transfer_analysis.py --alert
+
+# Export recommendations to CSV
+python scripts/run_transfer_analysis.py --export
+```
+
+### WB Economics Reference
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Commission | 24.5% | Clothing category |
+| Logistics | 408₽ | Per-unit proxy (actual varies by warehouse) |
+| Tax | 3% | Kazakhstan tax on net revenue |
+| FX Rate | 6.6 | RUB/KZT (update in wb_economics.py if needed) |
+
+**Breakeven Calculation:**
+```
+WB Net Revenue = Price × (1 - 24.5%) - 408₽
+KZT Revenue = WB Net Revenue × 6.6 × (1 - 3%)
+Profit = KZT Revenue - COGS
+```
+
+---
+
 ## Phase 6 Features
 
 ### Forecast Engine
@@ -345,5 +438,5 @@ python scripts/health_check.py
 
 ---
 
-*Document version: 2.0 (Phase 6)*
+*Document version: 3.0 (Phase 8)*
 *Last updated: 2025-12-06*
