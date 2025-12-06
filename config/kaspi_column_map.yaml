@@ -1,0 +1,235 @@
+# Kaspi Column Mapping Configuration
+# TASK-111 Output
+# 
+# Maps Russian Kaspi export columns to Project 3 schema
+# Used by: core/parsers/kaspi_export_parser.py
+
+---
+
+# ActiveOrders Excel Export → fact_orders_kaspi
+kaspi_export_columns:
+  # Required columns (script fails without these)
+  order_id: "№ заказа"
+  status: "Статус"
+  planned_date: "Плановая дата передачи курьеру"
+  product_name: "Название товара"
+  article: "Артикул"
+  price: "Цена"
+  store: "Склад"
+  
+  # Optional columns (script handles missing gracefully)
+  created_date: "Дата создания"
+  signature_required: "Требуется подписание"
+  quantity: "Количество"
+  delivery_method: "Способ доставки"
+  delivery_address: "Адрес доставки"
+  recipient_name: "ФИО получателя"
+  recipient_phone: "Телефон получателя"
+  comment: "Комментарий"
+
+# Alternative column names (Kaspi sometimes varies)
+column_aliases:
+  order_id:
+    - "№ заказа"
+    - "Номер заказа"
+    - "Order ID"
+  status:
+    - "Статус"
+    - "Status"
+  price:
+    - "Цена"
+    - "Стоимость"
+    - "Price"
+  store:
+    - "Склад"
+    - "Warehouse"
+    - "Точка выдачи"
+
+# Status filter values
+status_filters:
+  # Orders ready for shipment
+  awaiting_courier:
+    russian: "Ожидает передачи курьеру"
+    english: "Awaiting courier"
+    internal: "READY"
+  
+  # Orders not ready yet
+  accepted:
+    russian: "Принят"
+    english: "Accepted"
+    internal: "NEW"
+  
+  # Orders in transit
+  handed_to_courier:
+    russian: "Передан курьеру"
+    english: "Handed to courier"
+    internal: "SHIPPED"
+  
+  # Completed orders
+  completed:
+    russian: "Завершен"
+    english: "Completed"
+    internal: "COMPLETED"
+  
+  # Cancelled orders
+  cancelled:
+    russian: "Отменен"
+    english: "Cancelled"
+    internal: "CANCELLED"
+  
+  # Returned orders
+  returned:
+    russian: "Возврат"
+    english: "Returned"
+    internal: "RETURNED"
+
+# Signature requirement filter
+signature_filters:
+  not_required:
+    russian: "Не требуется"
+    english: "Not required"
+    include: true
+  required:
+    russian: "Требуется"
+    english: "Required"
+    include: false  # Exclude from auto-processing
+
+# Store code normalization
+store_code_map:
+  # Kaspi store names → internal store_code
+  "AcmeWear PP1": "PP1"
+  "ПП1": "PP1"
+  "PP1": "PP1"
+  
+  "AcmeWear PP2": "PP2"
+  "ПП2": "PP2"
+  "PP2": "PP2"
+  
+  "Universal": "UNIVERSAL"
+  "Универсал": "UNIVERSAL"
+  
+  "11KZ": "11KZ"
+  "11КЗ": "11KZ"
+  
+  "Store-C": "MELVIS"
+  "Мелвис": "MELVIS"
+  
+  # Default for unknown
+  "_default": "UNKNOWN"
+
+# Date parsing configuration
+date_parsing:
+  # Primary format (most Kaspi exports)
+  primary_format: "%d.%m.%Y"
+  dayfirst: true
+  
+  # Fallback formats to try
+  fallback_formats:
+    - "%Y-%m-%d"
+    - "%d/%m/%Y"
+    - "%Y-%m-%d %H:%M:%S"
+    - "%d.%m.%Y %H:%M:%S"
+  
+  # Handle Excel serial dates
+  handle_excel_serial: true
+
+# Output mapping: fact_orders_kaspi columns
+output_schema:
+  order_id:
+    source: "order_id"
+    type: "string"
+    required: true
+    
+  store_code:
+    source: "store"
+    type: "string"
+    required: true
+    transform: "store_code_map"
+    
+  kaspi_offer_name:
+    source: "product_name"
+    type: "string"
+    required: true
+    
+  sku_key:
+    source: "article"
+    type: "string"
+    transform: "extract_sku_key"
+    
+  sku_id:
+    source: "article"
+    type: "string"
+    transform: "extract_sku_id"
+    
+  my_size:
+    source: "article"
+    type: "string"
+    transform: "extract_size"
+    
+  quantity:
+    source: "quantity"
+    type: "integer"
+    default: 1
+    
+  unit_price_kzt:
+    source: "price"
+    type: "float"
+    required: true
+    
+  created_at:
+    source: "created_date"
+    type: "datetime"
+    format: "ISO8601"
+    
+  planned_shipment_date:
+    source: "planned_date"
+    type: "datetime"
+    format: "ISO8601"
+    required: true
+    
+  kaspi_status:
+    source: "status"
+    type: "string"
+    required: true
+    
+  internal_status:
+    source: "status"
+    type: "string"
+    transform: "status_to_internal"
+
+# Validation rules
+validation:
+  # Required columns (fail if missing)
+  required_columns:
+    - "№ заказа"
+    - "Статус"
+    - "Плановая дата передачи курьеру"
+    - "Название товара"
+    - "Артикул"
+    - "Цена"
+    - "Склад"
+  
+  # Value constraints
+  constraints:
+    price:
+      min: 0
+      max: 10000000  # 10M KZT max
+    quantity:
+      min: 1
+      max: 1000
+    order_id:
+      pattern: "^\\d{9,12}$"  # 9-12 digit number
+
+# Waybill PDF naming patterns
+waybill_patterns:
+  # Standard Kaspi waybill filename
+  standard: "KASPI_SHOP-{order_id}.pdf"
+  
+  # Regex to extract order_id from filename
+  extract_regex: "KASPI_SHOP-(\\d+)\\.pdf"
+  
+  # Output filename patterns
+  output:
+    normal: "{store}___{size}___{item_name}.pdf"
+    multi_qty: "{item_name}___qnt{quantity}.pdf"
+    multi_line: "{store}___ORDER{order_id}_{n_items}items.pdf"
