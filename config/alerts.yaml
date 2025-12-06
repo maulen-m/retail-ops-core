@@ -1,0 +1,24 @@
+# Alerts Configuration
+# Environment variables are used for secrets (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+
+telegram:
+  enabled: true
+  token_env: TELEGRAM_BOT_TOKEN
+  chat_id_env: TELEGRAM_CHAT_ID
+
+alerts:
+  reorder:
+    cooldown_hours: 24
+    include_suggested_qty: true
+    include_roic: true
+    include_d30: true
+    include_ss: true
+
+  # Future alert types (not yet implemented)
+  low_stock:
+    enabled: false
+    threshold_days: 7  # Alert if stock < 7 days of demand
+
+  high_roic:
+    enabled: false
+    threshold_pct: 50  # Alert if ROIC > 50%

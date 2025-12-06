@@ -112,18 +112,53 @@ def get_avg_economics_by_sku(conn, days: int = 30) -> dict:
     return result
 
 
-def get_inventory_by_sku(conn) -> dict:
+def get_inventory_by_sku(conn, snapshot_date: str = None) -> dict:
     """
-    Get current inventory levels for each SKU.
+    Get current inventory levels for each SKU from fact_inventory_snapshot_size.
+
+    Args:
+        conn: Database connection
+        snapshot_date: Optional date to use (default: latest available)
 
     Returns dict: {(sku_key, store_code): {current_stock, inbound_stock, total_stock}}
-
-    Note: Currently returns zeros since we don't have inventory snapshot data yet.
-    In production, this would query fact_inventory_snapshot.
     """
-    # For now, return empty dict - will need inventory snapshot table populated
-    # In future: SELECT from fact_inventory_snapshot WHERE snapshot_date = MAX(snapshot_date)
-    return {}
+    # Get latest snapshot date if not specified
+    if snapshot_date is None:
+        result = conn.execute(
+            "SELECT MAX(snapshot_date) FROM fact_inventory_snapshot_size"
+        ).fetchone()
+        snapshot_date = result[0] if result and result[0] else None
+
+    if not snapshot_date:
+        return {}
+
+    # Aggregate size-level inventory to style-level
+    # Note: inventory file doesn't have store_code, so we use 'ALL'
+    query = """
+        SELECT
+            sku_key,
+            SUM(current_stock) as current_stock,
+            SUM(inbound_stock) as inbound_stock
+        FROM fact_inventory_snapshot_size
+        WHERE snapshot_date = :snapshot_date
+        GROUP BY sku_key
+    """
+
+    cursor = conn.execute(query, {"snapshot_date": snapshot_date})
+    result = {}
+
+    for row in cursor.fetchall():
+        sku_key = row[0]
+        current_stock = row[1] or 0
+        inbound_stock = row[2] or 0
+        # Use 'ALL' as store_code since inventory is aggregated
+        result[(sku_key, "ALL")] = {
+            "current_stock": current_stock,
+            "inbound_stock": inbound_stock,
+            "total_stock": current_stock + inbound_stock,
+        }
+
+    return result
 
 
 def compute_sku_metrics(
@@ -162,7 +197,10 @@ def compute_sku_metrics(
         metrics = calc_all_metrics(d30, avg_cogs, avg_profit)
 
         # Get inventory levels (default to 0 if not available)
+        # Inventory may be keyed by (sku_key, 'ALL') if aggregated across stores
         inv = inventory_data.get(key, {})
+        if not inv:
+            inv = inventory_data.get((sku_key, "ALL"), {})
         current_stock = inv.get("current_stock", 0)
         inbound_stock = inv.get("inbound_stock", 0)
         total_stock = current_stock + inbound_stock
