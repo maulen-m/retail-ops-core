@@ -39,11 +39,72 @@ python scripts/run_daily_pipeline.py --no-alerts
 3. Export PO suggestions → `exports/YYYY-MM-DD/po_suggestions.csv`
 4. Send REORDER alerts (Telegram)
 
-### 4. Review PO Suggestions
+### 4. Run Forecast Engine (Phase 6)
+```bash
+# Generate demand forecasts for all SKUs
+python scripts/run_forecast_engine.py
+
+# Run with specific horizons
+python scripts/run_forecast_engine.py --horizon 7,14,30
+```
+
+### 5. Review Auto-PO Suggestions (Phase 6)
+```bash
+# Generate automatic PO drafts
+python scripts/run_auto_po.py --dry-run
+
+# Create actual draft (requires approval)
+python scripts/run_auto_po.py --trigger ROP
+
+# Approve pending PO drafts
+python scripts/po_approval_cli.py list
+python scripts/po_approval_cli.py approve <draft_id>
+```
+
+### 6. Review PO Suggestions
 1. Open `exports/YYYY-MM-DD/po_suggestions.csv`
 2. Filter for `status = REORDER`
 3. Review suggested quantities and size splits
 4. Place orders as needed
+
+---
+
+## Phase 6 Features
+
+### Forecast Engine
+```bash
+# View forecast for a specific SKU
+python scripts/run_forecast_engine.py --sku-filter LINE52
+
+# Backtest forecast accuracy
+python scripts/run_forecast_backtest.py --days 30
+```
+
+### Data Quality Checks
+```bash
+# Run data quality report
+python scripts/report_data_quality.py
+
+# With Telegram alert
+python scripts/report_data_quality.py --send-alert
+```
+
+### Portfolio Analytics
+```bash
+# Run portfolio review
+python scripts/run_portfolio_review.py
+
+# Check for kill candidates
+python scripts/run_portfolio_review.py --show-kills
+```
+
+### Day-of-Week Patterns
+```bash
+# Analyze DOW patterns
+python scripts/report_dow_analysis.py
+
+# Shows weekend lift, pattern strength per SKU
+```
 
 ---
 
@@ -174,11 +235,22 @@ python scripts/run_daily_pipeline.py
 - [ ] Check for new SKUs to add to dim_sku
 - [ ] Verify Kaspi store credentials working
 - [ ] Review any alert failures in fact_alert_log
+- [ ] Run forecast backtest: `python scripts/run_forecast_backtest.py`
+- [ ] Review kill candidates in portfolio
+
+### Wednesday (Phase 6)
+- [ ] Run data quality report: `python scripts/report_data_quality.py`
+- [ ] Check DOW patterns for anomalies
+- [ ] Expire stale PO drafts: `python scripts/expire_po_drafts.py`
 
 ### Friday
 - [ ] Export weekly summary
 ```bash
 python scripts/run_sku_metrics.py --csv exports/weekly_summary.csv
+```
+- [ ] Generate executive summary
+```bash
+python scripts/export_executive_summary.py
 ```
 - [ ] Archive old exports
 ```bash
@@ -186,9 +258,14 @@ mv exports/2025-11-* archives/
 ```
 - [ ] Backup database
 ```bash
-cp db/app.db backups/app_$(date +%Y%m%d).db
+python scripts/backup_db.py
+```
+- [ ] Run health check
+```bash
+python scripts/health_check.py
 ```
 - [ ] Review slow-movers (D30 < 0.5) for potential discontinuation
+- [ ] Review portfolio ROIC: `python scripts/run_portfolio_review.py`
 
 ---
 
@@ -206,6 +283,7 @@ cp db/app.db backups/app_$(date +%Y%m%d).db
 
 ## Key Scripts
 
+### Core Pipeline
 | Script | Purpose |
 |--------|---------|
 | `run_daily_pipeline.py` | Full daily automation |
@@ -214,6 +292,37 @@ cp db/app.db backups/app_$(date +%Y%m%d).db
 | `run_sku_metrics.py` | Calculate all SKU metrics |
 | `export_po_suggestions.py` | Generate PO recommendations |
 | `run_reorder_alerts.py` | Send Telegram alerts |
+
+### Forecast (Phase 6)
+| Script | Purpose |
+|--------|---------|
+| `run_forecast_engine.py` | Generate demand forecasts |
+| `run_forecast_backtest.py` | Test forecast accuracy |
+| `export_accuracy_trends.py` | Export MAPE trends |
+
+### Auto-PO (Phase 6)
+| Script | Purpose |
+|--------|---------|
+| `run_auto_po.py` | Generate PO drafts |
+| `po_approval_cli.py` | Approve/reject drafts |
+| `expire_po_drafts.py` | Expire stale drafts |
+| `report_po_analytics.py` | PO approval analytics |
+
+### Analytics (Phase 6)
+| Script | Purpose |
+|--------|---------|
+| `run_portfolio_review.py` | Portfolio ROIC analysis |
+| `report_dow_analysis.py` | Day-of-week patterns |
+| `report_stockout_costs.py` | Lost sales estimation |
+| `report_data_quality.py` | Anomaly detection |
+| `export_executive_summary.py` | Management summary |
+
+### Infrastructure (Phase 6)
+| Script | Purpose |
+|--------|---------|
+| `health_check.py` | System health verification |
+| `backup_db.py` | Database backup with gzip |
+| `send_daily_digest.py` | Telegram daily summary |
 
 ---
 
@@ -236,5 +345,5 @@ cp db/app.db backups/app_$(date +%Y%m%d).db
 
 ---
 
-*Document version: 1.0*
+*Document version: 2.0 (Phase 6)*
 *Last updated: 2025-12-06*
