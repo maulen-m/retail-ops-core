@@ -100,6 +100,60 @@ def step_ingest_orders(
     return result
 
 
+def step_ingest_kaspi_exports(
+    scan_dir: Optional[str],
+    dry_run: bool,
+    verbose: bool,
+) -> dict:
+    """Step 2b: Ingest Kaspi exports to fact_orders_kaspi (Phase 9.5)."""
+    from core.parsers.kaspi_export_parser import parse_active_orders, filter_for_shipment
+    from scripts.ingest_kaspi_export import ingest_orders, find_active_orders_files
+
+    # Determine scan directory
+    if scan_dir is None:
+        scan_dir = "data_raw"
+
+    scan_path = Path(scan_dir)
+    if not scan_path.exists():
+        return {"skipped": True, "reason": f"Scan directory not found: {scan_dir}"}
+
+    # Find ActiveOrders files
+    files = find_active_orders_files(scan_path)
+    if not files:
+        return {"skipped": True, "reason": "No ActiveOrders*.xlsx files found"}
+
+    # Process only the most recent file to avoid duplicates
+    latest_file = files[0]
+
+    try:
+        result = parse_active_orders(latest_file)
+
+        if verbose:
+            print(f"      Parsed {result.parsed_rows}/{result.total_rows} rows from {latest_file.name}")
+
+        if dry_run:
+            return {
+                "file": latest_file.name,
+                "parsed": result.parsed_rows,
+                "dry_run": True,
+            }
+
+        # Ingest into database
+        with get_db() as conn:
+            stats = ingest_orders(result.orders, conn)
+
+        return {
+            "file": latest_file.name,
+            "parsed": result.parsed_rows,
+            "inserted": stats.get("inserted", 0),
+            "updated": stats.get("updated", 0),
+            "errors": stats.get("errors", 0),
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def step_transform_sales(dry_run: bool, verbose: bool) -> dict:
     """Step 3: Transform fact_sales_raw to fact_sales."""
     try:
@@ -287,6 +341,7 @@ def run_pipeline(
     steps = [
         ("ingest_inventory", lambda: step_ingest_inventory(inventory_file, date, dry_run, verbose)),
         ("ingest_orders", lambda: step_ingest_orders(orders_file, dry_run, verbose)),
+        ("ingest_kaspi_exports", lambda: step_ingest_kaspi_exports(None, dry_run, verbose)),
         ("transform_sales", lambda: step_transform_sales(dry_run, verbose)),
         ("build_aggregates", lambda: step_build_aggregates(date, dry_run, verbose)),
         ("compute_metrics", lambda: step_compute_metrics(dry_run, verbose)),
@@ -298,7 +353,7 @@ def run_pipeline(
 
     # Skip ingestion steps if requested
     if skip_ingest:
-        steps = steps[4:]  # Start from compute_metrics
+        steps = steps[5:]  # Start from compute_metrics (skip ingest_inventory, ingest_orders, ingest_kaspi_exports, transform_sales, build_aggregates)
 
     # Skip alerts if requested
     if no_alerts:
@@ -322,6 +377,11 @@ def run_pipeline(
                     print(f"      Inventory snapshot: {result.get('inventory_snapshot', 0)}")
                 elif name == "build_channel_metrics":
                     print(f"      Channel metrics saved: {result.get('metrics_saved', 0)}")
+                elif name == "ingest_kaspi_exports":
+                    if result.get("dry_run"):
+                        print(f"      [DRY RUN] Would ingest {result.get('parsed', 0)} orders")
+                    else:
+                        print(f"      Inserted: {result.get('inserted', 0)}, Updated: {result.get('updated', 0)}")
                 elif "sku_count" in result:
                     print(f"      SKUs processed: {result.get('sku_count', 0)}")
 
