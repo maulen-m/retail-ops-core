@@ -221,6 +221,35 @@ def step_build_capital_snapshot(
         return {"error": str(e)}
 
 
+def step_build_channel_metrics(
+    date: str,
+    dry_run: bool,
+    verbose: bool,
+) -> dict:
+    """Step 5c: Build channel metrics (TASK-103)."""
+    from core.calc.channel_metrics import calc_channel_metrics_for_date, save_channel_metrics
+    from datetime import date as date_type
+
+    if dry_run:
+        return {"skipped": True, "reason": "Dry run mode"}
+
+    try:
+        from pathlib import Path
+        db_path = Path(__file__).parent.parent / "db" / "app.db"
+        metric_date = date_type.fromisoformat(date)
+
+        metrics = calc_channel_metrics_for_date(db_path, metric_date)
+
+        if metrics:
+            saved = save_channel_metrics(db_path, metrics)
+            return {"success": True, "metrics_saved": saved, "sku_count": len(metrics)}
+        else:
+            return {"success": True, "metrics_saved": 0, "sku_count": 0}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def run_pipeline(
     date: Optional[str] = None,
     inventory_file: Optional[str] = None,
@@ -262,6 +291,7 @@ def run_pipeline(
         ("build_aggregates", lambda: step_build_aggregates(date, dry_run, verbose)),
         ("compute_metrics", lambda: step_compute_metrics(dry_run, verbose)),
         ("build_capital_snapshot", lambda: step_build_capital_snapshot(date, dry_run, verbose)),
+        ("build_channel_metrics", lambda: step_build_channel_metrics(date, dry_run, verbose)),
         ("export_reports", lambda: step_export_reports(date, dry_run, verbose)),
         ("send_alerts", lambda: step_send_alerts(dry_run, verbose)),
     ]
@@ -290,6 +320,8 @@ def run_pipeline(
                 elif name == "export_reports":
                     print(f"      PO suggestions: {result.get('po_suggestions', 0)}")
                     print(f"      Inventory snapshot: {result.get('inventory_snapshot', 0)}")
+                elif name == "build_channel_metrics":
+                    print(f"      Channel metrics saved: {result.get('metrics_saved', 0)}")
                 elif "sku_count" in result:
                     print(f"      SKUs processed: {result.get('sku_count', 0)}")
 
