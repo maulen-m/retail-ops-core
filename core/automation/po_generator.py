@@ -375,3 +375,104 @@ def get_draft_summary(db_path: str, draft_id: int) -> dict:
         'confidence': header[9],
         'lines': lines
     }
+
+
+def generate_po_draft_with_validation(
+    db_path: str,
+    trigger: str = 'ROP',
+    max_concentration: float = 0.20
+) -> dict:
+    """
+    Generate PO draft with 20% concentration rule validation.
+
+    TASK-080: Ensures no single SKU exceeds max_concentration of total capital.
+
+    Args:
+        db_path: Path to database
+        trigger: Trigger type ('ROP', 'FORECAST', 'MANUAL')
+        max_concentration: Maximum capital share per SKU (default 0.20 = 20%)
+
+    Returns:
+        Dict with draft info and any violation adjustments
+    """
+    from core.calc.capital_optimizer import check_concentration_rule
+
+    # Generate initial draft
+    draft_id = generate_po_draft(db_path, trigger)
+
+    if not draft_id:
+        return {'draft_id': 0, 'valid': True, 'violations': [], 'notes': 'No items to order'}
+
+    # Get draft summary
+    draft = get_draft_summary(db_path, draft_id)
+
+    if not draft or not draft['lines']:
+        return {'draft_id': draft_id, 'valid': True, 'violations': [], 'notes': 'Empty draft'}
+
+    # Get current inventory and costs
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT sku_key, SUM(current_stock) as units
+        FROM fact_inventory_snapshot_size
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM fact_inventory_snapshot_size)
+        GROUP BY sku_key
+    """)
+    current_inventory = dict(cursor.fetchall())
+
+    cursor.execute("SELECT sku_key, cogs_kzt FROM dim_sku WHERE cogs_kzt > 0")
+    unit_costs = dict(cursor.fetchall())
+
+    conn.close()
+
+    # Build proposed PO dict
+    proposed_po = {line['sku_key']: line['quantity'] for line in draft['lines']}
+
+    # Check concentration rule
+    validation = check_concentration_rule(
+        proposed_po=proposed_po,
+        current_inventory=current_inventory,
+        unit_costs=unit_costs,
+        max_concentration=max_concentration
+    )
+
+    result = {
+        'draft_id': draft_id,
+        'valid': validation['valid'],
+        'violations': validation['violations'],
+        'adjusted_po': validation['adjusted_po'] if not validation['valid'] else None,
+        'total_capital_after': validation['total_capital_after'],
+        'notes': ''
+    }
+
+    if not validation['valid']:
+        # Update draft lines with adjusted quantities
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        for sku_key, adjusted_qty in validation['adjusted_po'].items():
+            original_qty = proposed_po.get(sku_key, 0)
+            if adjusted_qty < original_qty:
+                # Update the draft line
+                cursor.execute("""
+                    UPDATE fact_po_draft_lines
+                    SET quantity = ?
+                    WHERE draft_id = ? AND sku_key = ?
+                """, (adjusted_qty, draft_id, sku_key))
+
+        # Recalculate totals
+        cursor.execute("""
+            UPDATE fact_po_draft
+            SET total_units = (SELECT SUM(quantity) FROM fact_po_draft_lines WHERE draft_id = ?),
+                total_cost_cny = (SELECT SUM(quantity * unit_cost_cny) FROM fact_po_draft_lines WHERE draft_id = ?),
+                notes = COALESCE(notes, '') || ' | Adjusted for 20% concentration rule'
+            WHERE draft_id = ?
+        """, (draft_id, draft_id, draft_id))
+
+        conn.commit()
+        conn.close()
+
+        result['notes'] = f"Adjusted {len(validation['violations'])} SKUs for 20% concentration rule"
+
+    return result

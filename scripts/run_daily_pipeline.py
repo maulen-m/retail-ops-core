@@ -201,6 +201,26 @@ def step_send_alerts(dry_run: bool, verbose: bool) -> dict:
     return result
 
 
+def step_build_capital_snapshot(
+    date: str,
+    dry_run: bool,
+    verbose: bool,
+) -> dict:
+    """Step 5b: Build capital allocation snapshot (TASK-083)."""
+    from scripts.build_capital_snapshot import build_snapshot
+    from datetime import date as date_type
+
+    if dry_run:
+        return {"skipped": True, "reason": "Dry run mode"}
+
+    try:
+        snapshot_date = date_type.fromisoformat(date)
+        build_snapshot(snapshot_date)
+        return {"success": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def run_pipeline(
     date: Optional[str] = None,
     inventory_file: Optional[str] = None,
@@ -241,6 +261,7 @@ def run_pipeline(
         ("transform_sales", lambda: step_transform_sales(dry_run, verbose)),
         ("build_aggregates", lambda: step_build_aggregates(date, dry_run, verbose)),
         ("compute_metrics", lambda: step_compute_metrics(dry_run, verbose)),
+        ("build_capital_snapshot", lambda: step_build_capital_snapshot(date, dry_run, verbose)),
         ("export_reports", lambda: step_export_reports(date, dry_run, verbose)),
         ("send_alerts", lambda: step_send_alerts(dry_run, verbose)),
     ]
