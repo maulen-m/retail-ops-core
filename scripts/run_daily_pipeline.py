@@ -304,6 +304,128 @@ def step_build_channel_metrics(
         return {"error": str(e)}
 
 
+def step_sync_kaspi_orders(
+    store_code: str,
+    dry_run: bool,
+    verbose: bool,
+) -> dict:
+    """Step: Sync Kaspi orders via API (Phase 9.5 - TASK-142)."""
+    try:
+        from core.sync.order_sync_engine import OrderSyncEngine
+
+        engine = OrderSyncEngine()
+
+        if store_code:
+            # Single store sync
+            result = engine.sync_store(
+                store_code=store_code,
+                dry_run=dry_run,
+            )
+            return {
+                "success": result.success,
+                "orders_fetched": result.orders_fetched,
+                "orders_inserted": result.orders_inserted,
+                "orders_updated": result.orders_updated,
+                "status_changes": len(result.status_changes),
+                "errors": result.errors,
+            }
+        else:
+            # All stores (disabled by default, only UNIVERSAL for testing)
+            result = engine.sync_store(
+                store_code='UNIVERSAL',
+                dry_run=dry_run,
+            )
+            return {
+                "success": result.success,
+                "orders_fetched": result.orders_fetched,
+                "orders_inserted": result.orders_inserted,
+                "orders_updated": result.orders_updated,
+                "status_changes": len(result.status_changes),
+            }
+
+    except Exception as e:
+        return {"error": str(e), "skipped": True}
+
+
+def step_assign_sizes(
+    store_code: str,
+    dry_run: bool,
+    verbose: bool,
+) -> dict:
+    """Step: Auto-assign sizes to pending orders (Phase 9.5 - TASK-142)."""
+    try:
+        from core.db import get_db
+        from core.calc.size_probability import determine_size
+        from pathlib import Path
+
+        db_path = Path(__file__).parent.parent / "db" / "app.db"
+
+        with get_db(db_path) as conn:
+            # Get orders needing size assignment
+            query = """
+                SELECT
+                    id, order_id, kaspi_offer_name, sku_key,
+                    customer_height_cm, customer_weight_kg
+                FROM fact_orders_kaspi
+                WHERE assigned_size IS NULL
+            """
+            params = []
+            if store_code:
+                query += " AND store_code = ?"
+                params.append(store_code)
+
+            rows = conn.execute(query, params).fetchall()
+
+            if not rows:
+                return {"success": True, "orders_processed": 0, "note": "No orders need sizing"}
+
+            stats = {"total": len(rows), "assigned": 0, "by_source": {}, "by_confidence": {}}
+
+            for row in rows:
+                # Get product type
+                product_type = 'CL'
+                if row['sku_key']:
+                    parts = row['sku_key'].split('_')
+                    if parts:
+                        product_type = parts[0]
+
+                result = determine_size(
+                    order={
+                        'kaspi_offer_name': row['kaspi_offer_name'],
+                        'sku_key': row['sku_key'],
+                        'product_type': product_type,
+                    },
+                    customer_height=row['customer_height_cm'],
+                    customer_weight=row['customer_weight_kg'],
+                    db_path=db_path,
+                )
+
+                stats['by_source'][result.source] = stats['by_source'].get(result.source, 0) + 1
+                stats['by_confidence'][result.confidence] = stats['by_confidence'].get(result.confidence, 0) + 1
+
+                if not dry_run:
+                    conn.execute(
+                        """
+                        UPDATE fact_orders_kaspi
+                        SET assigned_size = ?, size_source = ?, size_confidence = ?
+                        WHERE id = ?
+                        """,
+                        (result.size, result.source, result.confidence, row['id'])
+                    )
+                    stats['assigned'] += 1
+
+            return {
+                "success": True,
+                "orders_processed": stats['total'],
+                "assigned": stats['assigned'],
+                "by_source": stats['by_source'],
+                "by_confidence": stats['by_confidence'],
+            }
+
+    except Exception as e:
+        return {"error": str(e), "skipped": True}
+
+
 def run_pipeline(
     date: Optional[str] = None,
     inventory_file: Optional[str] = None,
@@ -342,6 +464,8 @@ def run_pipeline(
         ("ingest_inventory", lambda: step_ingest_inventory(inventory_file, date, dry_run, verbose)),
         ("ingest_orders", lambda: step_ingest_orders(orders_file, dry_run, verbose)),
         ("ingest_kaspi_exports", lambda: step_ingest_kaspi_exports(None, dry_run, verbose)),
+        ("sync_kaspi_orders", lambda: step_sync_kaspi_orders('UNIVERSAL', dry_run, verbose)),
+        ("assign_sizes", lambda: step_assign_sizes('UNIVERSAL', dry_run, verbose)),
         ("transform_sales", lambda: step_transform_sales(dry_run, verbose)),
         ("build_aggregates", lambda: step_build_aggregates(date, dry_run, verbose)),
         ("compute_metrics", lambda: step_compute_metrics(dry_run, verbose)),
@@ -353,7 +477,7 @@ def run_pipeline(
 
     # Skip ingestion steps if requested
     if skip_ingest:
-        steps = steps[5:]  # Start from compute_metrics (skip ingest_inventory, ingest_orders, ingest_kaspi_exports, transform_sales, build_aggregates)
+        steps = steps[7:]  # Start from compute_metrics (skip ingest, sync, sizes, transform, aggregates)
 
     # Skip alerts if requested
     if no_alerts:
@@ -382,6 +506,13 @@ def run_pipeline(
                         print(f"      [DRY RUN] Would ingest {result.get('parsed', 0)} orders")
                     else:
                         print(f"      Inserted: {result.get('inserted', 0)}, Updated: {result.get('updated', 0)}")
+                elif name == "sync_kaspi_orders":
+                    print(f"      Fetched: {result.get('orders_fetched', 0)}, Inserted: {result.get('orders_inserted', 0)}, Updated: {result.get('orders_updated', 0)}")
+                elif name == "assign_sizes":
+                    print(f"      Processed: {result.get('orders_processed', 0)}, Assigned: {result.get('assigned', 0)}")
+                    if result.get('by_confidence'):
+                        conf = result['by_confidence']
+                        print(f"      Confidence: HIGH={conf.get('HIGH', 0)}, MEDIUM={conf.get('MEDIUM', 0)}, LOW={conf.get('LOW', 0)}")
                 elif "sku_count" in result:
                     print(f"      SKUs processed: {result.get('sku_count', 0)}")
 

@@ -10,6 +10,11 @@ from .pdf_grouper import (
     merge_pdfs,
     sanitize_filename,
 )
+from .waybill_downloader import (
+    WaybillDownloader,
+    DownloadResult,
+    BatchDownloadResult,
+)
 
 __all__ = [
     "WaybillGroup",
@@ -17,4 +22,7 @@ __all__ = [
     "group_orders_for_shipment",
     "merge_pdfs",
     "sanitize_filename",
+    "WaybillDownloader",
+    "DownloadResult",
+    "BatchDownloadResult",
 ]

@@ -1,0 +1,141 @@
+# Kaspi Store Configuration (Phase 9.5)
+# Used by KaspiAPIClient and OrderSyncEngine
+#
+# Each store has:
+# - token_env: Environment variable name for API token
+# - is_test_store: If true, this store is used for testing
+# - sync_enabled: If false, skip this store in sync operations
+# - priority: Lower number = higher priority for multi-store ops
+
+stores:
+  UNIVERSAL:
+    display_name: "Universal (Test Store)"
+    token_env: "KASPI_TOKEN_UNIVERSAL"
+    is_test_store: true
+    sync_enabled: true
+    priority: 1
+    default_product_types:
+      - CL
+      - FUR
+    notes: "Primary test store for Phase 9.5 validation"
+
+  ACMEWEAR:
+    display_name: "AcmeWear"
+    token_env: "KASPI_TOKEN_ACMEWEAR"
+    is_test_store: false
+    sync_enabled: true
+    priority: 2
+    default_product_types:
+      - ELS
+    notes: "Fitness/activewear store"
+
+  11KZ:
+    display_name: "11KZ"
+    token_env: "KASPI_TOKEN_11KZ"
+    is_test_store: false
+    sync_enabled: true
+    priority: 3
+    default_product_types:
+      - CL
+    notes: "General clothing store"
+
+  MELVIS:
+    display_name: "Store-C"
+    token_env: "KASPI_TOKEN_MELVIS"
+    is_test_store: false
+    sync_enabled: true
+    priority: 4
+    default_product_types:
+      - CL
+    notes: "General clothing store"
+
+  STOREB:
+    display_name: "MGroup"
+    token_env: "KASPI_TOKEN_STOREB"
+    is_test_store: false
+    sync_enabled: true
+    priority: 5
+    default_product_types:
+      - CL
+    notes: "General clothing store"
+
+# Global settings
+settings:
+  # Rate limiting
+  rate_limit_rps: 50
+  min_request_interval_sec: 0.02
+
+  # Retry configuration
+  max_retries: 3
+  backoff_factor: 0.5
+
+  # Timeouts (seconds)
+  default_timeout: 30
+  download_timeout: 60
+
+  # Safety settings
+  enable_write_env: "ENABLE_KASPI_WRITE"
+  require_confirmation_for_bulk_ops: true
+  max_bulk_operation_size: 50
+
+  # Sync settings
+  default_lookback_days: 7
+  max_orders_per_sync: 1000
+
+# Order state mappings (Kaspi API -> Internal)
+order_states:
+  NEW:
+    kaspi_state: "NEW"
+    internal_status: "NEW"
+    description: "Order just placed, awaiting acceptance"
+    can_accept: true
+
+  ACCEPTED_BY_MERCHANT:
+    kaspi_state: "ACCEPTED_BY_MERCHANT"
+    internal_status: "ACCEPTED"
+    description: "Merchant accepted, awaiting assembly"
+    can_assemble: true
+
+  ASSEMBLY:
+    kaspi_state: "ASSEMBLY"
+    internal_status: "READY"
+    description: "Order assembled, ready for pickup"
+    can_ship: true
+
+  KASPI_DELIVERY:
+    kaspi_state: "KASPI_DELIVERY"
+    internal_status: "SHIPPED"
+    description: "Handed to Kaspi delivery"
+
+  DELIVERY:
+    kaspi_state: "DELIVERY"
+    internal_status: "SHIPPED"
+    description: "In delivery (3rd party)"
+
+  COMPLETED:
+    kaspi_state: "COMPLETED"
+    internal_status: "COMPLETED"
+    description: "Order delivered and completed"
+
+  CANCELLED:
+    kaspi_state: "CANCELLED"
+    internal_status: "CANCELLED"
+    description: "Order cancelled"
+
+  RETURNING:
+    kaspi_state: "RETURNING"
+    internal_status: "RETURNING"
+    description: "Order being returned"
+
+  RETURNED:
+    kaspi_state: "RETURNED"
+    internal_status: "RETURNED"
+    description: "Order returned"
+
+# Cancellation reasons
+cancellation_reasons:
+  OUT_OF_STOCK: "Product out of stock"
+  CUSTOMER_REQUEST: "Customer requested cancellation"
+  DUPLICATE_ORDER: "Duplicate order"
+  PRICE_ERROR: "Pricing error"
+  OTHER: "Other reason"
