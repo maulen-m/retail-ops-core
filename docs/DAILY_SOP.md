@@ -431,12 +431,175 @@ python scripts/health_check.py
 
 ---
 
+## Phase 9.5: Kaspi Order Automation
+
+### Order Sync (Daily)
+
+**When to Run:** Every morning and before processing shipments
+
+```bash
+# Check current order status
+python scripts/manage_kaspi_orders.py status --store UNIVERSAL
+
+# Sync orders from Kaspi API (dry run first)
+python scripts/sync_kaspi_orders.py --store UNIVERSAL --dry-run
+
+# Actual sync
+python scripts/sync_kaspi_orders.py --store UNIVERSAL
+
+# View synced orders
+python scripts/manage_kaspi_orders.py list --store UNIVERSAL --status NEW
+```
+
+### Order Processing Workflow
+
+**Morning workflow:**
+
+```bash
+# 1. Show suggested workflow
+python scripts/manage_kaspi_orders.py workflow --store UNIVERSAL
+
+# 2. Accept NEW orders (dry run first)
+python scripts/manage_kaspi_orders.py accept-all --store UNIVERSAL --dry-run
+python scripts/manage_kaspi_orders.py accept-all --store UNIVERSAL --confirm
+
+# 3. Assemble ACCEPTED orders
+python scripts/manage_kaspi_orders.py assemble-all --store UNIVERSAL --dry-run
+python scripts/manage_kaspi_orders.py assemble-all --store UNIVERSAL --confirm
+
+# 4. Download waybills
+python scripts/download_waybills.py --store UNIVERSAL
+
+# 5. Ship READY orders
+python scripts/manage_kaspi_orders.py ship-all --store UNIVERSAL --dry-run
+python scripts/manage_kaspi_orders.py ship-all --store UNIVERSAL --confirm
+```
+
+**Single order operations:**
+
+```bash
+# Accept single order
+python scripts/manage_kaspi_orders.py accept 123456 --store UNIVERSAL
+
+# Assemble single order
+python scripts/manage_kaspi_orders.py assemble 123456 --store UNIVERSAL
+
+# Ship single order
+python scripts/manage_kaspi_orders.py ship 123456 --store UNIVERSAL
+
+# Cancel order
+python scripts/manage_kaspi_orders.py cancel 123456 --store UNIVERSAL --reason OUT_OF_STOCK
+```
+
+### Size Assignment
+
+**Auto-assign sizes to orders:**
+
+```bash
+# Check size assignment status
+python scripts/assign_sizes.py --status --store UNIVERSAL
+
+# Auto-assign using probability cascade (dry run)
+python scripts/assign_sizes.py --auto --store UNIVERSAL --dry-run
+
+# Actual assignment
+python scripts/assign_sizes.py --auto --store UNIVERSAL
+
+# Export orders needing manual size entry
+python scripts/assign_sizes.py --export-pending --store UNIVERSAL
+```
+
+**Size determination cascade:**
+
+| Priority | Source | Confidence | When Used |
+|----------|--------|------------|-----------|
+| 1 | CUSTOMER | HIGH | Customer provided height/weight |
+| 2 | OFFER_MODE | HIGH/MEDIUM | ≥5 sales for offer, ≥60% mode share |
+| 3 | STYLE_MODE | HIGH/MEDIUM | ≥10 sales for style, ≥40% mode share |
+| 4 | DEFAULT | LOW | Product type default (L for clothing) |
+
+**Import customer parameters:**
+
+```bash
+# Generate template CSV
+python scripts/import_customer_params.py --template
+
+# Import customer height/weight
+python scripts/import_customer_params.py data_raw/customer_params.csv
+
+# Recalculate sizes after import
+python scripts/import_customer_params.py data_raw/customer_params.csv --recalc
+```
+
+### Waybill Management
+
+```bash
+# Check waybill download stats
+python scripts/download_waybills.py --stats
+
+# Download pending waybills
+python scripts/download_waybills.py --store UNIVERSAL
+
+# Force redownload
+python scripts/download_waybills.py --store UNIVERSAL --force
+
+# Clean old waybills (30+ days)
+python scripts/download_waybills.py --clean --days 30
+```
+
+### Order Alerts
+
+Order alerts are sent automatically via Telegram:
+
+| Alert Type | Trigger | Cooldown |
+|------------|---------|----------|
+| NEW_ORDERS | New orders synced | 1 hour |
+| SHIPMENT_READY | Orders ready with waybills | 4 hours |
+| DEADLINE_WARNING | Orders approaching deadline | 12 hours |
+
+### Size Probability Rebuild
+
+**Run weekly or after major data changes:**
+
+```bash
+# Rebuild size probability tables
+python scripts/build_size_probability.py --rebuild
+
+# Check coverage stats
+python scripts/build_size_probability.py --stats
+
+# Export size distributions
+python scripts/build_size_probability.py --export
+```
+
+### Important Notes
+
+1. **ENABLE_KASPI_WRITE=0** by default — write operations disabled
+2. **Universal store only** for initial testing
+3. Bulk operations require `--confirm` flag
+4. Telegram confirmation required for bulk ops (≥5 orders)
+5. All status changes logged to `fact_orders_kaspi`
+
+### Order Status Reference
+
+| Internal Status | Kaspi Status | Next Action |
+|-----------------|--------------|-------------|
+| NEW | NEW | Accept |
+| ACCEPTED | ACCEPTED_BY_MERCHANT | Assemble |
+| READY | ASSEMBLY | Ship (when waybill ready) |
+| SHIPPED | KASPI_DELIVERY | Monitor delivery |
+| COMPLETED | COMPLETED | Done |
+| CANCELLED | CANCELLED | Review reason |
+
+---
+
 ## Contact / Escalation
 - System issues: Review `.claude/ISSUES.md`
 - Architectural questions: Review `.claude/DECISIONS.md`
 - Task history: Review `.claude/TASKS.md`
+- Kaspi API issues: See `docs/KASPI_API_INTEGRATION.md`
 
 ---
 
-*Document version: 3.0 (Phase 8)*
-*Last updated: 2025-12-06*
+*Document version: 4.0 (Phase 9.5)*
+*Last updated: 2025-12-07*

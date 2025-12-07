@@ -1,0 +1,523 @@
+"""
+Tests for Kaspi API Client (Phase 9.5 - TASK-130).
+
+Tests cover:
+- Token loading from environment
+- Request building and headers
+- Rate limiting
+- Response parsing
+- Order state enum
+- Error handling
+- Write operation guards
+"""
+
+import os
+import time
+import pytest
+from datetime import datetime
+from unittest.mock import patch, MagicMock
+
+# Add project root to path
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from core.integrations.kaspi_api_client import (
+    KaspiAPIClient,
+    APIResponse,
+    Order,
+    OrderEntry,
+    OrderState,
+    KaspiAPIError,
+    KaspiAuthError,
+    KaspiRateLimitError,
+    KaspiWriteDisabledError,
+    KaspiNotFoundError,
+    get_client,
+    get_all_clients,
+    validate_all_tokens,
+    STORE_TOKEN_MAP,
+    BASE_URL,
+    RATE_LIMIT_RPS,
+)
+
+
+# =============================================================================
+# FIXTURES
+# =============================================================================
+
+@pytest.fixture
+def mock_env():
+    """Set up mock environment variables."""
+    env_vars = {
+        'KASPI_TOKEN_UNIVERSAL': 'test-token-universal',
+        'KASPI_TOKEN_ACMEWEAR': 'test-token-acmewear',
+        'KASPI_TOKEN_11KZ': 'test-token-store-d',
+        'ENABLE_KASPI_WRITE': '0',
+    }
+    with patch.dict(os.environ, env_vars, clear=False):
+        yield env_vars
+
+
+@pytest.fixture
+def mock_env_with_write():
+    """Set up mock environment with writes enabled."""
+    env_vars = {
+        'KASPI_TOKEN_UNIVERSAL': 'test-token-universal',
+        'ENABLE_KASPI_WRITE': '1',
+    }
+    with patch.dict(os.environ, env_vars, clear=False):
+        yield env_vars
+
+
+@pytest.fixture
+def client(mock_env):
+    """Create test client."""
+    return KaspiAPIClient(store_code='UNIVERSAL')
+
+
+@pytest.fixture
+def client_with_write(mock_env_with_write):
+    """Create test client with writes enabled."""
+    return KaspiAPIClient(store_code='UNIVERSAL')
+
+
+@pytest.fixture
+def sample_api_order():
+    """Sample order from API response."""
+    return {
+        'id': 'order-123',
+        'attributes': {
+            'code': '123456789',
+            'state': 'NEW',
+            'totalPrice': 15000,
+            'deliveryCost': 500,
+            'creationDate': int(datetime(2025, 12, 7, 10, 30).timestamp() * 1000),
+            'customer': {
+                'cellPhone': '+77001234567',
+            },
+            'kaspiDelivery': {
+                'waybill': 'https://kaspi.kz/waybill/123.pdf',
+                'plannedDeliveryDate': int(datetime(2025, 12, 10).timestamp() * 1000),
+            }
+        }
+    }
+
+
+# =============================================================================
+# TOKEN LOADING TESTS
+# =============================================================================
+
+class TestTokenLoading:
+    """Tests for token loading from environment."""
+
+    def test_load_token_from_env(self, mock_env):
+        """Test loading token from environment variable."""
+        client = KaspiAPIClient(store_code='UNIVERSAL')
+        assert client._token == 'test-token-universal'
+
+    def test_load_token_from_env_different_stores(self, mock_env):
+        """Test loading tokens for different stores."""
+        client_uni = KaspiAPIClient(store_code='UNIVERSAL')
+        client_acmewear = KaspiAPIClient(store_code='ACMEWEAR')
+
+        assert client_uni._token == 'test-token-universal'
+        assert client_acmewear._token == 'test-token-acmewear'
+
+    def test_explicit_token_overrides_env(self, mock_env):
+        """Test that explicit token parameter overrides env var."""
+        client = KaspiAPIClient(store_code='UNIVERSAL', token='explicit-token')
+        assert client._token == 'explicit-token'
+
+    def test_missing_token_raises_error(self):
+        """Test that missing token raises KaspiAuthError."""
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(KaspiAuthError, match="Token not found"):
+                KaspiAPIClient(store_code='UNIVERSAL')
+
+    def test_unknown_store_code_raises_error(self, mock_env):
+        """Test that unknown store code raises ValueError."""
+        with pytest.raises(ValueError, match="Unknown store code"):
+            KaspiAPIClient(store_code='INVALID_STORE')
+
+    def test_store_code_case_insensitive(self, mock_env):
+        """Test that store code is case insensitive."""
+        client = KaspiAPIClient(store_code='universal')
+        assert client.store_code == 'UNIVERSAL'
+
+
+# =============================================================================
+# WRITE OPERATION TESTS
+# =============================================================================
+
+class TestWriteOperations:
+    """Tests for write operation guards."""
+
+    def test_writes_disabled_by_default(self, mock_env):
+        """Test that writes are disabled when ENABLE_KASPI_WRITE=0."""
+        client = KaspiAPIClient(store_code='UNIVERSAL')
+        assert client.writes_enabled is False
+
+    def test_writes_enabled_with_env_var(self, mock_env_with_write):
+        """Test that writes are enabled when ENABLE_KASPI_WRITE=1."""
+        client = KaspiAPIClient(store_code='UNIVERSAL')
+        assert client.writes_enabled is True
+
+    def test_writes_override_parameter(self, mock_env):
+        """Test that enable_writes parameter overrides env var."""
+        client = KaspiAPIClient(store_code='UNIVERSAL', enable_writes=True)
+        assert client.writes_enabled is True
+
+    def test_accept_order_disabled_raises_error(self, client):
+        """Test that accept_order raises error when writes disabled."""
+        with pytest.raises(KaspiWriteDisabledError, match="Write operations disabled"):
+            client.accept_order('123')
+
+    def test_ship_order_disabled_raises_error(self, client):
+        """Test that ship_order raises error when writes disabled."""
+        with pytest.raises(KaspiWriteDisabledError, match="Write operations disabled"):
+            client.ship_order('123')
+
+    def test_cancel_order_disabled_raises_error(self, client):
+        """Test that cancel_order raises error when writes disabled."""
+        with pytest.raises(KaspiWriteDisabledError, match="Write operations disabled"):
+            client.cancel_order('123')
+
+    def test_assemble_order_disabled_raises_error(self, client):
+        """Test that assemble_order raises error when writes disabled."""
+        with pytest.raises(KaspiWriteDisabledError, match="Write operations disabled"):
+            client.assemble_order('123')
+
+
+# =============================================================================
+# ORDER STATE TESTS
+# =============================================================================
+
+class TestOrderState:
+    """Tests for OrderState enum."""
+
+    def test_order_states_exist(self):
+        """Test that all expected order states exist."""
+        expected_states = [
+            'NEW', 'ACCEPTED_BY_MERCHANT', 'ASSEMBLY', 'KASPI_DELIVERY',
+            'DELIVERY', 'COMPLETED', 'CANCELLED', 'RETURNING', 'RETURNED'
+        ]
+        for state in expected_states:
+            assert hasattr(OrderState, state)
+
+    def test_order_state_values(self):
+        """Test that order state values match."""
+        assert OrderState.NEW.value == 'NEW'
+        assert OrderState.COMPLETED.value == 'COMPLETED'
+        assert OrderState.CANCELLED.value == 'CANCELLED'
+
+
+# =============================================================================
+# REQUEST BUILDING TESTS
+# =============================================================================
+
+class TestRequestBuilding:
+    """Tests for request building."""
+
+    def test_headers_include_authorization(self, client):
+        """Test that headers include authorization token."""
+        headers = client._get_headers()
+        assert 'Authorization' in headers
+        assert headers['Authorization'] == 'test-token-universal'
+
+    def test_headers_include_content_type(self, client):
+        """Test that headers include content type."""
+        headers = client._get_headers()
+        assert headers['Content-Type'] == 'application/vnd.api+json'
+        assert headers['Accept'] == 'application/vnd.api+json'
+
+
+# =============================================================================
+# DATE CONVERSION TESTS
+# =============================================================================
+
+class TestDateConversion:
+    """Tests for date string to timestamp conversion."""
+
+    def test_date_only_conversion(self, client):
+        """Test YYYY-MM-DD conversion."""
+        ts = client._to_timestamp_ms('2025-12-07')
+        # Should be start of day in local timezone
+        assert isinstance(ts, int)
+        assert ts > 0
+
+    def test_iso8601_conversion(self, client):
+        """Test ISO8601 datetime conversion."""
+        ts = client._to_timestamp_ms('2025-12-07T10:30:00')
+        assert isinstance(ts, int)
+        assert ts > 0
+
+    def test_integer_passthrough(self, client):
+        """Test that integer timestamps pass through."""
+        ts = client._to_timestamp_ms(1733558400000)
+        assert ts == 1733558400000
+
+    def test_invalid_date_raises_error(self, client):
+        """Test that invalid date format raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid date format"):
+            client._to_timestamp_ms('not-a-date')
+
+
+# =============================================================================
+# ORDER PARSING TESTS
+# =============================================================================
+
+class TestOrderParsing:
+    """Tests for parsing API orders."""
+
+    def test_parse_order_basic(self, client, sample_api_order):
+        """Test basic order parsing."""
+        order = client.parse_order(sample_api_order)
+
+        assert isinstance(order, Order)
+        assert order.order_id == 'order-123'
+        assert order.code == '123456789'
+        assert order.state == 'NEW'
+        assert order.total_price == 15000
+        assert order.delivery_cost == 500
+
+    def test_parse_order_dates(self, client, sample_api_order):
+        """Test date parsing in orders."""
+        order = client.parse_order(sample_api_order)
+
+        assert order.created_at is not None
+        assert isinstance(order.created_at, datetime)
+        assert order.planned_delivery_date is not None
+
+    def test_parse_order_customer(self, client, sample_api_order):
+        """Test customer info parsing."""
+        order = client.parse_order(sample_api_order)
+        assert order.customer_phone == '+77001234567'
+
+    def test_parse_order_waybill(self, client, sample_api_order):
+        """Test waybill URL extraction."""
+        order = client.parse_order(sample_api_order)
+        assert order.waybill_url == 'https://kaspi.kz/waybill/123.pdf'
+
+    def test_get_waybill_url(self, client, sample_api_order):
+        """Test get_waybill_url helper."""
+        url = client.get_waybill_url(sample_api_order)
+        assert url == 'https://kaspi.kz/waybill/123.pdf'
+
+    def test_get_waybill_url_missing(self, client):
+        """Test get_waybill_url with missing waybill."""
+        order = {'attributes': {}}
+        url = client.get_waybill_url(order)
+        assert url is None
+
+
+# =============================================================================
+# API RESPONSE TESTS
+# =============================================================================
+
+class TestAPIResponse:
+    """Tests for APIResponse dataclass."""
+
+    def test_api_response_success(self):
+        """Test successful API response."""
+        response = APIResponse(
+            success=True,
+            data={'orders': []},
+            status_code=200,
+        )
+        assert response.success is True
+        assert response.error is None
+
+    def test_api_response_error(self):
+        """Test error API response."""
+        response = APIResponse(
+            success=False,
+            error='Rate limit exceeded',
+            status_code=429,
+        )
+        assert response.success is False
+        assert response.error == 'Rate limit exceeded'
+
+
+# =============================================================================
+# RATE LIMITING TESTS
+# =============================================================================
+
+class TestRateLimiting:
+    """Tests for rate limiting."""
+
+    def test_rate_limit_interval(self, client):
+        """Test that rate limiting delays requests."""
+        # First request sets last_request_time
+        client._last_request_time = time.time()
+
+        # Second request should wait
+        start = time.time()
+        client._rate_limit()
+        elapsed = time.time() - start
+
+        # Should have waited approximately MIN_REQUEST_INTERVAL
+        # (allowing some tolerance)
+        assert elapsed >= 0.01  # At least some delay
+
+
+# =============================================================================
+# FACTORY FUNCTION TESTS
+# =============================================================================
+
+class TestFactoryFunctions:
+    """Tests for factory functions."""
+
+    def test_get_client(self, mock_env):
+        """Test get_client factory function."""
+        client = get_client('UNIVERSAL')
+        assert isinstance(client, KaspiAPIClient)
+        assert client.store_code == 'UNIVERSAL'
+
+    def test_store_token_map_has_all_stores(self):
+        """Test that STORE_TOKEN_MAP has expected stores."""
+        expected_stores = ['UNIVERSAL', 'ACMEWEAR', '11KZ', 'MELVIS', 'STOREB']
+        for store in expected_stores:
+            assert store in STORE_TOKEN_MAP
+
+
+# =============================================================================
+# MOCKED API CALL TESTS
+# =============================================================================
+
+class TestMockedAPICalls:
+    """Tests with mocked HTTP responses."""
+
+    @patch('requests.Session.request')
+    def test_list_orders_success(self, mock_request, client):
+        """Test successful list_orders call."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'data': [
+                {'id': '1', 'attributes': {'code': '001', 'state': 'NEW'}},
+                {'id': '2', 'attributes': {'code': '002', 'state': 'NEW'}},
+            ]
+        }
+        mock_request.return_value = mock_response
+
+        result = client.list_orders(state='NEW', page_size=10)
+
+        assert result.success is True
+        assert len(result.data['data']) == 2
+
+    @patch('requests.Session.request')
+    def test_list_orders_with_date_filter(self, mock_request, client):
+        """Test list_orders with date filter."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'data': []}
+        mock_request.return_value = mock_response
+
+        result = client.list_orders(since='2025-12-01', until='2025-12-07')
+
+        assert result.success is True
+        # Verify params were passed
+        call_kwargs = mock_request.call_args[1]
+        params = call_kwargs.get('params', {})
+        assert 'filter[orders][creationDateGe]' in params
+        assert 'filter[orders][creationDateLe]' in params
+
+    @patch('requests.Session.request')
+    def test_get_order_success(self, mock_request, client, sample_api_order):
+        """Test successful get_order call."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'data': sample_api_order}
+        mock_request.return_value = mock_response
+
+        result = client.get_order('123456789')
+
+        assert result.success is True
+        assert result.data['data']['id'] == 'order-123'
+
+    @patch('requests.Session.request')
+    def test_401_raises_auth_error(self, mock_request, client):
+        """Test that 401 response raises KaspiAuthError."""
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_request.return_value = mock_response
+
+        with pytest.raises(KaspiAuthError, match="Invalid or expired token"):
+            client.list_orders()
+
+    @patch('requests.Session.request')
+    def test_404_raises_not_found_error(self, mock_request, client):
+        """Test that 404 response raises KaspiNotFoundError."""
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_request.return_value = mock_response
+
+        with pytest.raises(KaspiNotFoundError, match="Resource not found"):
+            client.get_order('nonexistent')
+
+    @patch('requests.Session.request')
+    def test_429_raises_rate_limit_error(self, mock_request, client):
+        """Test that 429 response raises KaspiRateLimitError."""
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_request.return_value = mock_response
+
+        with pytest.raises(KaspiRateLimitError, match="Rate limit exceeded"):
+            client.list_orders()
+
+    @patch('requests.Session.request')
+    def test_accept_order_success(self, mock_request, client_with_write):
+        """Test successful accept_order call."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'data': {'id': '123', 'attributes': {'state': 'ACCEPTED_BY_MERCHANT'}}
+        }
+        mock_request.return_value = mock_response
+
+        result = client_with_write.accept_order('123')
+
+        assert result.success is True
+        # Verify POST was called
+        assert mock_request.call_args[1]['method'] == 'POST'
+
+    @patch('requests.Session.request')
+    def test_cancel_order_success(self, mock_request, client_with_write):
+        """Test successful cancel_order call."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'data': {'id': '123', 'attributes': {'state': 'CANCELLED'}}
+        }
+        mock_request.return_value = mock_response
+
+        result = client_with_write.cancel_order('123', reason='OUT_OF_STOCK')
+
+        assert result.success is True
+
+
+# =============================================================================
+# STORE INFO TESTS
+# =============================================================================
+
+class TestStoreInfo:
+    """Tests for store info methods."""
+
+    def test_get_store_info(self, client):
+        """Test get_store_info returns expected structure."""
+        with patch.object(client, 'validate_token', return_value=True):
+            info = client.get_store_info()
+
+            assert info['store_code'] == 'UNIVERSAL'
+            assert info['writes_enabled'] is False
+            assert info['token_valid'] is True
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

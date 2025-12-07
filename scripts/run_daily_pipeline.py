@@ -426,6 +426,76 @@ def step_assign_sizes(
         return {"error": str(e), "skipped": True}
 
 
+def step_download_waybills(
+    store_code: str,
+    dry_run: bool,
+    verbose: bool,
+) -> dict:
+    """Step: Download waybills for orders with waybill URLs (Phase 9.5 - TASK-129)."""
+    try:
+        from core.waybill.waybill_downloader import WaybillDownloader
+        from pathlib import Path
+
+        db_path = Path(__file__).parent.parent / "db" / "app.db"
+        output_dir = Path(__file__).parent.parent / "exports" / "waybills"
+
+        downloader = WaybillDownloader(
+            store_code=store_code or 'UNIVERSAL',
+            db_path=db_path,
+            output_dir=output_dir,
+        )
+
+        if dry_run:
+            # Just count pending
+            stats = downloader.get_download_stats()
+            return {
+                "dry_run": True,
+                "pending": stats.get('pending', 0),
+                "downloaded": stats.get('downloaded', 0),
+            }
+
+        result = downloader.download_pending(limit=50)
+
+        return {
+            "success": True,
+            "downloaded": result.successful,
+            "failed": result.failed,
+            "total": result.total,
+        }
+
+    except Exception as e:
+        return {"error": str(e), "skipped": True}
+
+
+def step_send_order_alerts(
+    store_code: str,
+    dry_run: bool,
+    verbose: bool,
+) -> dict:
+    """Step: Send order alerts for new orders and ready shipments (Phase 9.5 - TASK-129)."""
+    try:
+        from core.alerts.order_alerts import send_all_order_alerts
+        from pathlib import Path
+
+        db_path = Path(__file__).parent.parent / "db" / "app.db"
+
+        with get_db(db_path) as conn:
+            result = send_all_order_alerts(
+                conn,
+                store_code=store_code or 'UNIVERSAL',
+                dry_run=dry_run,
+            )
+
+        return {
+            "sent": result.get('sent_count', 0),
+            "suppressed": result.get('suppressed_count', 0),
+            "results": result.get('results', {}),
+        }
+
+    except Exception as e:
+        return {"error": str(e), "skipped": True}
+
+
 def run_pipeline(
     date: Optional[str] = None,
     inventory_file: Optional[str] = None,
@@ -466,6 +536,7 @@ def run_pipeline(
         ("ingest_kaspi_exports", lambda: step_ingest_kaspi_exports(None, dry_run, verbose)),
         ("sync_kaspi_orders", lambda: step_sync_kaspi_orders('UNIVERSAL', dry_run, verbose)),
         ("assign_sizes", lambda: step_assign_sizes('UNIVERSAL', dry_run, verbose)),
+        ("download_waybills", lambda: step_download_waybills('UNIVERSAL', dry_run, verbose)),
         ("transform_sales", lambda: step_transform_sales(dry_run, verbose)),
         ("build_aggregates", lambda: step_build_aggregates(date, dry_run, verbose)),
         ("compute_metrics", lambda: step_compute_metrics(dry_run, verbose)),
@@ -473,15 +544,16 @@ def run_pipeline(
         ("build_channel_metrics", lambda: step_build_channel_metrics(date, dry_run, verbose)),
         ("export_reports", lambda: step_export_reports(date, dry_run, verbose)),
         ("send_alerts", lambda: step_send_alerts(dry_run, verbose)),
+        ("send_order_alerts", lambda: step_send_order_alerts('UNIVERSAL', dry_run, verbose)),
     ]
 
     # Skip ingestion steps if requested
     if skip_ingest:
-        steps = steps[7:]  # Start from compute_metrics (skip ingest, sync, sizes, transform, aggregates)
+        steps = steps[8:]  # Start from compute_metrics (skip ingest, sync, sizes, waybills, transform, aggregates)
 
     # Skip alerts if requested
     if no_alerts:
-        steps = [s for s in steps if s[0] != "send_alerts"]
+        steps = [s for s in steps if s[0] not in ("send_alerts", "send_order_alerts")]
 
     for i, (name, step_func) in enumerate(steps, 1):
         if verbose:
@@ -513,6 +585,13 @@ def run_pipeline(
                     if result.get('by_confidence'):
                         conf = result['by_confidence']
                         print(f"      Confidence: HIGH={conf.get('HIGH', 0)}, MEDIUM={conf.get('MEDIUM', 0)}, LOW={conf.get('LOW', 0)}")
+                elif name == "download_waybills":
+                    if result.get('dry_run'):
+                        print(f"      [DRY RUN] Pending: {result.get('pending', 0)}, Downloaded: {result.get('downloaded', 0)}")
+                    else:
+                        print(f"      Downloaded: {result.get('downloaded', 0)}, Failed: {result.get('failed', 0)}")
+                elif name == "send_order_alerts":
+                    print(f"      Sent: {result.get('sent', 0)}, Suppressed: {result.get('suppressed', 0)}")
                 elif "sku_count" in result:
                     print(f"      SKUs processed: {result.get('sku_count', 0)}")
 
