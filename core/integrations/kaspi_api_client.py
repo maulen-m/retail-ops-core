@@ -62,6 +62,11 @@ BACKOFF_FACTOR = 0.5  # 0.5, 1.0, 2.0 seconds
 DEFAULT_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 60
 
+# API limits
+MAX_DATE_RANGE_DAYS = 14      # Kaspi API enforces max 14-day date range
+DEFAULT_SYNC_DAYS = 7         # Default lookback for sync operations
+MAX_PAGE_SIZE = 100           # Kaspi API max items per page
+
 # Token environment variable prefix
 TOKEN_ENV_PREFIX = "KASPI_TOKEN_"
 
@@ -239,9 +244,10 @@ class KaspiAPIClient:
         """Get request headers with authorization."""
         return {
             'Authorization': self._token,
-            'Content-Type': 'application/vnd.api+json',
-            'Accept': 'application/vnd.api+json',
             'X-Auth-Token': self._token,
+            'Accept': 'application/vnd.api+json',
+            'Content-Type': 'application/vnd.api+json',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
 
     def _rate_limit(self):
@@ -358,6 +364,7 @@ class KaspiAPIClient:
     def list_orders(
         self,
         state: Optional[str] = None,
+        status: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
         page_number: int = 0,
@@ -367,7 +374,9 @@ class KaspiAPIClient:
         List orders with optional filters.
 
         Args:
-            state: Filter by order state (NEW, ACCEPTED_BY_MERCHANT, etc.)
+            state: Filter by order state (NEW, KASPI_DELIVERY, PICKUP, DELIVERY, ARCHIVE)
+            status: Filter by order status (APPROVED_BY_BANK, ACCEPTED_BY_MERCHANT,
+                    COMPLETED, CANCELLED, CANCELLING)
             since: Filter orders created after this date (ISO8601 or YYYY-MM-DD)
             until: Filter orders created before this date
             page_number: Page number (0-indexed)
@@ -378,20 +387,23 @@ class KaspiAPIClient:
         """
         params = {
             'page[number]': page_number,
-            'page[size]': min(page_size, 100),
+            'page[size]': min(page_size, MAX_PAGE_SIZE),
         }
 
         if state:
             params['filter[orders][state]'] = state
 
+        if status:
+            params['filter[orders][status]'] = status
+
         if since:
             # Convert to milliseconds timestamp if date string
             since_ts = self._to_timestamp_ms(since)
-            params['filter[orders][creationDateGe]'] = since_ts
+            params['filter[orders][creationDate][$ge]'] = since_ts
 
         if until:
             until_ts = self._to_timestamp_ms(until)
-            params['filter[orders][creationDateLe]'] = until_ts
+            params['filter[orders][creationDate][$le]'] = until_ts
 
         return self._request('GET', 'orders', params=params)
 
@@ -448,13 +460,35 @@ class KaspiAPIClient:
         """
         Get single order by code.
 
+        Note: Kaspi API requires Base64 order ID for direct endpoint,
+        but we use filter by code which accepts the numeric code.
+
         Args:
             order_code: Kaspi order code
 
         Returns:
             APIResponse with order data
         """
-        return self._request('GET', f'orders/{order_code}')
+        # Use filter approach which works with order code
+        result = self._request('GET', 'orders', params={
+            'filter[orders][code]': order_code
+        })
+
+        # Extract single order from list response
+        if result.success and isinstance(result.data, dict):
+            orders = result.data.get('data', [])
+            if orders:
+                return APIResponse(
+                    success=True,
+                    data=orders[0],
+                    status_code=result.status_code
+                )
+            return APIResponse(
+                success=False,
+                error=f"Order {order_code} not found",
+                status_code=404
+            )
+        return result
 
     def get_order_entries(self, order_code: str) -> APIResponse:
         """
@@ -682,12 +716,14 @@ class KaspiAPIClient:
     def validate_token(self) -> bool:
         """
         Validate API token by making a test request.
+        Uses 7-day window to respect API's 14-day max date range limit.
 
         Returns:
             True if token is valid
         """
         try:
-            response = self.list_orders(page_size=1)
+            seven_days_ago = (datetime.now() - timedelta(days=DEFAULT_SYNC_DAYS)).strftime('%Y-%m-%d')
+            response = self.list_orders(page_size=1, since=seven_days_ago)
             return response.success
         except KaspiAuthError:
             return False
@@ -704,6 +740,70 @@ class KaspiAPIClient:
             'writes_enabled': self.writes_enabled,
             'token_valid': self.validate_token(),
         }
+
+    def get_pending_assembly_orders(self, since: str = None) -> APIResponse:
+        """
+        Get orders awaiting assembly (Dashboard: Упаковка).
+        These have state=KASPI_DELIVERY, status=ACCEPTED_BY_MERCHANT, assembled=false.
+
+        Args:
+            since: Filter orders created after this date (defaults to 7 days ago)
+
+        Returns:
+            APIResponse with pending assembly orders
+        """
+        if since is None:
+            since = (datetime.now() - timedelta(days=DEFAULT_SYNC_DAYS)).strftime('%Y-%m-%d')
+
+        result = self.list_orders(
+            state='KASPI_DELIVERY',
+            status='ACCEPTED_BY_MERCHANT',
+            since=since,
+            page_size=MAX_PAGE_SIZE
+        )
+
+        if result.success and isinstance(result.data, dict):
+            orders = result.data.get('data', [])
+            # Filter to only unassembled orders
+            pending = [o for o in orders if not o.get('attributes', {}).get('assembled', False)]
+            return APIResponse(
+                success=True,
+                data={'data': pending, 'meta': {'totalCount': len(pending)}},
+                status_code=result.status_code
+            )
+        return result
+
+    def get_awaiting_courier_orders(self, since: str = None) -> APIResponse:
+        """
+        Get orders assembled and awaiting courier pickup.
+        These have state=KASPI_DELIVERY, status=ACCEPTED_BY_MERCHANT, assembled=true.
+
+        Args:
+            since: Filter orders created after this date (defaults to 7 days ago)
+
+        Returns:
+            APIResponse with orders awaiting courier
+        """
+        if since is None:
+            since = (datetime.now() - timedelta(days=DEFAULT_SYNC_DAYS)).strftime('%Y-%m-%d')
+
+        result = self.list_orders(
+            state='KASPI_DELIVERY',
+            status='ACCEPTED_BY_MERCHANT',
+            since=since,
+            page_size=MAX_PAGE_SIZE
+        )
+
+        if result.success and isinstance(result.data, dict):
+            orders = result.data.get('data', [])
+            # Filter to only assembled orders
+            awaiting = [o for o in orders if o.get('attributes', {}).get('assembled', False)]
+            return APIResponse(
+                success=True,
+                data={'data': awaiting, 'meta': {'totalCount': len(awaiting)}},
+                status_code=result.status_code
+            )
+        return result
 
     def parse_order(self, raw_order: dict) -> Order:
         """

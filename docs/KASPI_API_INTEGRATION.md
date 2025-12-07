@@ -360,6 +360,35 @@ CREATE TABLE fact_orders_kaspi (
 
 ---
 
+## Dashboard Status Mapping
+
+The Kaspi merchant dashboard uses internal status values that differ from API filter values.
+
+| Dashboard Tab | Dashboard URL Parameter | API Filter Combination |
+|--------------|------------------------|------------------------|
+| Новый (New) | `status=NEW` | `state=NEW` + `status=APPROVED_BY_BANK` |
+| Упаковка (Assembly) | `status=KASPI_DELIVERY_CARGO_ASSEMBLY` | `state=KASPI_DELIVERY` + `status=ACCEPTED_BY_MERCHANT` + `assembled=false` |
+| Передача курьеру | (varies) | `state=KASPI_DELIVERY` + `assembled=true` |
+| Архив (Archive) | `status=ARCHIVE` | `state=ARCHIVE` |
+
+### Helper Methods
+
+```python
+# Get orders awaiting assembly (Упаковка tab)
+orders = client.get_pending_assembly_orders(since='2025-12-01')
+
+# Get orders awaiting courier (assembled, not shipped)
+orders = client.get_awaiting_courier_orders(since='2025-12-01')
+```
+
+### API Limits
+
+- **Date Range:** Maximum 14 days between `since` and `until`
+- **Page Size:** Maximum 100 orders per request
+- **Rate Limit:** ~50 requests/second (conservative setting)
+
+---
+
 ## Daily Pipeline Integration
 
 The order sync is integrated into `scripts/run_daily_pipeline.py`:

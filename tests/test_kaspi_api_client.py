@@ -39,6 +39,9 @@ from core.integrations.kaspi_api_client import (
     STORE_TOKEN_MAP,
     BASE_URL,
     RATE_LIMIT_RPS,
+    MAX_DATE_RANGE_DAYS,
+    DEFAULT_SYNC_DAYS,
+    MAX_PAGE_SIZE,
 )
 
 
@@ -422,22 +425,24 @@ class TestMockedAPICalls:
         # Verify params were passed
         call_kwargs = mock_request.call_args[1]
         params = call_kwargs.get('params', {})
-        assert 'filter[orders][creationDateGe]' in params
-        assert 'filter[orders][creationDateLe]' in params
+        assert 'filter[orders][creationDate][$ge]' in params
+        assert 'filter[orders][creationDate][$le]' in params
 
     @patch('requests.Session.request')
     def test_get_order_success(self, mock_request, client, sample_api_order):
-        """Test successful get_order call."""
+        """Test successful get_order call (uses filter approach)."""
         mock_response = MagicMock()
         mock_response.ok = True
         mock_response.status_code = 200
-        mock_response.json.return_value = {'data': sample_api_order}
+        # get_order now uses filter approach, so response is a list
+        mock_response.json.return_value = {'data': [sample_api_order]}
         mock_request.return_value = mock_response
 
         result = client.get_order('123456789')
 
         assert result.success is True
-        assert result.data['data']['id'] == 'order-123'
+        # get_order returns single order, not wrapped in 'data'
+        assert result.data['id'] == 'order-123'
 
     @patch('requests.Session.request')
     def test_401_raises_auth_error(self, mock_request, client):
@@ -517,6 +522,161 @@ class TestStoreInfo:
             assert info['store_code'] == 'UNIVERSAL'
             assert info['writes_enabled'] is False
             assert info['token_valid'] is True
+
+
+# =============================================================================
+# NEW TESTS FOR KASPI API CLIENT FIXES
+# =============================================================================
+
+class TestValidateTokenDateRange:
+    """Tests for validate_token using valid date range."""
+
+    @patch('requests.Session.request')
+    def test_validate_token_uses_valid_date_range(self, mock_request, mock_env):
+        """Ensure validate_token uses date within 14-day API limit."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'data': []}
+        mock_request.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.validate_token()
+
+        assert result is True
+        # Verify list_orders was called with a recent since date
+        call_kwargs = mock_request.call_args[1]
+        params = call_kwargs.get('params', {})
+        assert 'filter[orders][creationDate][$ge]' in params
+        # The since date should be within 14 days (using DEFAULT_SYNC_DAYS=7)
+        # We can't easily verify the exact date, but we know the call happened
+
+
+class TestListOrdersStatusFilter:
+    """Tests for list_orders with status parameter."""
+
+    @patch('requests.Session.request')
+    def test_list_orders_with_status_filter(self, mock_request, mock_env):
+        """Test list_orders accepts status parameter."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'data': []}
+        mock_request.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+        client.list_orders(state='KASPI_DELIVERY', status='ACCEPTED_BY_MERCHANT', since='2025-12-01')
+
+        call_kwargs = mock_request.call_args[1]
+        params = call_kwargs.get('params', {})
+        assert params.get('filter[orders][status]') == 'ACCEPTED_BY_MERCHANT'
+        assert params.get('filter[orders][state]') == 'KASPI_DELIVERY'
+
+
+class TestGetOrderByCode:
+    """Tests for get_order using filter approach."""
+
+    @patch('requests.Session.request')
+    def test_get_order_by_code_success(self, mock_request, mock_env):
+        """Test get_order uses filter approach that works with order codes."""
+        mock_data = {'data': [{'id': 'ABC123', 'attributes': {'code': '12345'}}]}
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_data
+        mock_request.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.get_order('12345')
+
+        assert result.success
+        assert result.data['attributes']['code'] == '12345'
+        # Verify filter param was used
+        call_kwargs = mock_request.call_args[1]
+        params = call_kwargs.get('params', {})
+        assert params.get('filter[orders][code]') == '12345'
+
+    @patch('requests.Session.request')
+    def test_get_order_not_found(self, mock_request, mock_env):
+        """Test get_order returns error when order not found."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'data': []}  # Empty list
+        mock_request.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.get_order('nonexistent')
+
+        assert result.success is False
+        assert result.status_code == 404
+        assert 'not found' in result.error.lower()
+
+
+class TestPendingAssemblyOrders:
+    """Tests for get_pending_assembly_orders helper method."""
+
+    @patch('requests.Session.request')
+    def test_get_pending_assembly_orders(self, mock_request, mock_env):
+        """Test helper method filters to unassembled orders."""
+        mock_orders = {
+            'data': [
+                {'id': '1', 'attributes': {'assembled': False}},
+                {'id': '2', 'attributes': {'assembled': True}},
+                {'id': '3', 'attributes': {'assembled': False}},
+            ]
+        }
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_orders
+        mock_request.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.get_pending_assembly_orders(since='2025-12-01')
+
+        assert result.success
+        assert len(result.data['data']) == 2  # Only unassembled orders
+        assert result.data['meta']['totalCount'] == 2
+
+    @patch('requests.Session.request')
+    def test_get_awaiting_courier_orders(self, mock_request, mock_env):
+        """Test helper method filters to assembled orders."""
+        mock_orders = {
+            'data': [
+                {'id': '1', 'attributes': {'assembled': False}},
+                {'id': '2', 'attributes': {'assembled': True}},
+                {'id': '3', 'attributes': {'assembled': True}},
+            ]
+        }
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_orders
+        mock_request.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.get_awaiting_courier_orders(since='2025-12-01')
+
+        assert result.success
+        assert len(result.data['data']) == 2  # Only assembled orders
+        assert result.data['meta']['totalCount'] == 2
+
+
+class TestAPIConstants:
+    """Tests for API configuration constants."""
+
+    def test_max_date_range_days(self):
+        """Test MAX_DATE_RANGE_DAYS constant is set correctly."""
+        assert MAX_DATE_RANGE_DAYS == 14
+
+    def test_default_sync_days(self):
+        """Test DEFAULT_SYNC_DAYS constant is set correctly."""
+        assert DEFAULT_SYNC_DAYS == 7
+
+    def test_max_page_size(self):
+        """Test MAX_PAGE_SIZE constant is set correctly."""
+        assert MAX_PAGE_SIZE == 100
 
 
 if __name__ == "__main__":
