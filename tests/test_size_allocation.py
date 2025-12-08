@@ -114,17 +114,63 @@ class TestInventoryParams:
 
 # =============================================================================
 # TASK-151: size_allocation.py data structures (3 tests)
-# Placeholder - will be implemented after TASK-151
 # =============================================================================
 
-# class TestOrderStatus:
-#     """Tests for OrderStatus enum."""
-#     pass
-#
-# class TestROICAction:
-#     """Tests for ROICAction enum."""
-#     pass
-#
-# class TestDataclasses:
-#     """Tests for SizeData, SizeAllocation, PODraft dataclasses."""
-#     pass
+class TestOrderStatus:
+    """Tests for OrderStatus enum."""
+
+    def test_order_status_values(self):
+        """Verify OrderStatus has correct values."""
+        from core.calc.size_allocation import OrderStatus
+
+        assert OrderStatus.REORDER.value == "REORDER"
+        assert OrderStatus.WAIT.value == "WAIT"
+        assert OrderStatus.OK.value == "OK"
+
+        # Verify we have exactly 3 statuses
+        assert len(OrderStatus) == 3
+
+
+class TestROICAction:
+    """Tests for ROICAction enum."""
+
+    def test_roic_action_values(self):
+        """Verify ROICAction has correct values."""
+        from core.calc.size_allocation import ROICAction
+
+        assert ROICAction.ORDER_FULL.value == "ORDER_FULL"
+        assert ROICAction.ORDER_WITH_FLAG.value == "ORDER_WITH_FLAG"
+        assert ROICAction.REVIEW_REQUIRED.value == "REVIEW_REQUIRED"
+
+        # Verify we have exactly 3 actions
+        assert len(ROICAction) == 3
+
+
+class TestDataclasses:
+    """Tests for SizeData, SizeAllocation, PODraft dataclasses."""
+
+    def test_dataclass_creation(self):
+        """Verify dataclasses can be created with defaults."""
+        from core.calc.size_allocation import (
+            SizeData, SizeAllocation, PODraft, OrderStatus, DemandConfidence
+        )
+
+        # SizeData with defaults
+        size_data = SizeData(my_size="L")
+        assert size_data.my_size == "L"
+        assert size_data.current_stock == 0
+        assert size_data.status == OrderStatus.OK
+        assert size_data.demand_confidence == DemandConfidence.NO_DATA
+
+        # SizeAllocation with defaults
+        allocation = SizeAllocation(my_size="XL")
+        assert allocation.my_size == "XL"
+        assert allocation.order_qty == 0
+        assert allocation.status == OrderStatus.OK
+
+        # PODraft with defaults
+        draft = PODraft(sku_key="LINE52_BLACK")
+        assert draft.sku_key == "LINE52_BLACK"
+        assert draft.should_order is False
+        assert draft.trigger_sizes == []
+        assert draft.allocations == {}
