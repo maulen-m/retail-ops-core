@@ -343,3 +343,140 @@ def calc_size_mix_with_guardrails(
     final_mix = {size: mix / total_adjusted for size, mix in adjusted_mix.items()}
 
     return final_mix
+
+
+# =============================================================================
+# TASK-154: Per-size safety stock calculation
+# =============================================================================
+
+def calc_safety_stock_for_size(
+    d_size: float,
+    sigma_sku: float,
+    size_mix: float,
+    L: int = None,
+    B: int = None,
+    z: float = None,
+    TV: float = None
+) -> tuple[float, float, float, float, float]:
+    """
+    Calculate safety stock components for a single size.
+
+    TASK-154: Per-size safety stock using Master_Inventory_Rules_v5.3.md formulas.
+
+    Formulas:
+        σ_size = σ_sku × size_mix
+        SS_demand = z × σ_size × √L
+        SS_floor = D_size × B
+        SS_mix = TV × D_size × L
+        SS_total = SS_demand + SS_floor + SS_mix
+
+    Args:
+        d_size: Daily demand for this size
+        sigma_sku: SKU-level volatility (σ_sku)
+        size_mix: This size's percentage of total (0.0 to 1.0)
+        L: Lead time in days (default: from params)
+        B: Buffer factor in days (default: from params)
+        z: Service level z-score (default: from params)
+        TV: Mix variability factor (default: from params)
+
+    Returns:
+        Tuple of (sigma_size, ss_demand, ss_floor, ss_mix, ss_total)
+
+    Example:
+        >>> sigma_size, ss_demand, ss_floor, ss_mix, ss_total = calc_safety_stock_for_size(
+        ...     d_size=1.0, sigma_sku=2.0, size_mix=0.20
+        ... )
+    """
+    import math
+    from core.config.inventory_params import get_params
+
+    params = get_params()
+    L = L if L is not None else params.L
+    B = B if B is not None else params.B
+    z = z if z is not None else params.z
+    TV = TV if TV is not None else params.TV
+
+    # Calculate size-level sigma
+    sigma_size = sigma_sku * size_mix
+
+    # Safety stock components
+    ss_demand = z * sigma_size * math.sqrt(L)
+    ss_floor = d_size * B
+    ss_mix = TV * d_size * L
+    ss_total = ss_demand + ss_floor + ss_mix
+
+    return sigma_size, ss_demand, ss_floor, ss_mix, ss_total
+
+
+# =============================================================================
+# TASK-155: Per-size ROP and T_post calculation
+# =============================================================================
+
+def calc_rop_for_size(
+    d_size: float,
+    ss_total: float,
+    L: int = None
+) -> float:
+    """
+    Calculate reorder point for a single size.
+
+    TASK-155: ROP = D_size × L + SS_total
+
+    Args:
+        d_size: Daily demand for this size
+        ss_total: Total safety stock for this size
+        L: Lead time in days (default: from params)
+
+    Returns:
+        Reorder point (units)
+
+    Example:
+        >>> rop = calc_rop_for_size(d_size=1.0, ss_total=25.0)
+        >>> # ROP = 1.0 × 21 + 25.0 = 46.0
+    """
+    from core.config.inventory_params import get_params
+
+    params = get_params()
+    L = L if L is not None else params.L
+
+    return d_size * L + ss_total
+
+
+def calc_t_post_for_size(
+    d_size: float,
+    ss_total: float,
+    R: int = None
+) -> float:
+    """
+    Calculate target days of cover after arrival (T_post) for a single size.
+
+    TASK-155: T_post = R + (SS_total / D_size)
+
+    This represents how many days of stock we target to have after
+    a shipment arrives.
+
+    Args:
+        d_size: Daily demand for this size
+        ss_total: Total safety stock for this size
+        R: Review period in days (default: from params)
+
+    Returns:
+        Target days of cover (T_post)
+
+    Edge case:
+        If d_size = 0, returns R (minimum coverage)
+
+    Example:
+        >>> t_post = calc_t_post_for_size(d_size=1.0, ss_total=25.0)
+        >>> # T_post = 10 + (25.0 / 1.0) = 35.0 days
+    """
+    from core.config.inventory_params import get_params
+
+    params = get_params()
+    R = R if R is not None else params.R
+
+    # Edge case: zero demand
+    if d_size <= 0:
+        return float(R)  # Minimum is review period
+
+    return R + (ss_total / d_size)

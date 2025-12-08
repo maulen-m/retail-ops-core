@@ -398,3 +398,164 @@ class TestSizeMixGuardrails:
         # Other sizes should have some allocation
         for size in ["S", "M", "XL", "2XL"]:
             assert mix[size] > 0  # Not zero
+
+
+# =============================================================================
+# TASK-154: Per-size safety stock (6 tests)
+# =============================================================================
+
+class TestSafetyStockForSize:
+    """Tests for calc_safety_stock_for_size()"""
+
+    def test_sigma_size_scales_with_mix(self):
+        """Sigma_size should scale proportionally with size mix."""
+        from core.calc.size_allocation import calc_safety_stock_for_size
+
+        sigma_sku = 2.0
+
+        # Size with 20% mix
+        sigma_20, _, _, _, _ = calc_safety_stock_for_size(
+            d_size=1.0, sigma_sku=sigma_sku, size_mix=0.20
+        )
+
+        # Size with 40% mix
+        sigma_40, _, _, _, _ = calc_safety_stock_for_size(
+            d_size=2.0, sigma_sku=sigma_sku, size_mix=0.40
+        )
+
+        # sigma_40 should be exactly 2x sigma_20
+        assert sigma_40 == pytest.approx(sigma_20 * 2, rel=0.01)
+
+    def test_ss_demand_formula(self):
+        """SS_demand = z × σ_size × √L"""
+        from core.calc.size_allocation import calc_safety_stock_for_size
+
+        # With known params: z=1.65, L=21
+        sigma_sku = 2.0
+        size_mix = 0.20
+        sigma_size_expected = sigma_sku * size_mix  # 0.4
+
+        _, ss_demand, _, _, _ = calc_safety_stock_for_size(
+            d_size=1.0, sigma_sku=sigma_sku, size_mix=size_mix
+        )
+
+        # SS_demand = 1.65 × 0.4 × √21 = 1.65 × 0.4 × 4.58 ≈ 3.02
+        import math
+        expected = 1.65 * sigma_size_expected * math.sqrt(21)
+        assert ss_demand == pytest.approx(expected, rel=0.01)
+
+    def test_ss_floor_formula(self):
+        """SS_floor = D_size × B"""
+        from core.calc.size_allocation import calc_safety_stock_for_size
+
+        d_size = 2.0
+        _, _, ss_floor, _, _ = calc_safety_stock_for_size(
+            d_size=d_size, sigma_sku=1.0, size_mix=0.20
+        )
+
+        # SS_floor = 2.0 × 14 = 28.0
+        expected = d_size * 14
+        assert ss_floor == pytest.approx(expected, rel=0.01)
+
+    def test_ss_mix_formula(self):
+        """SS_mix = TV × D_size × L"""
+        from core.calc.size_allocation import calc_safety_stock_for_size
+
+        d_size = 2.0
+        _, _, _, ss_mix, _ = calc_safety_stock_for_size(
+            d_size=d_size, sigma_sku=1.0, size_mix=0.20
+        )
+
+        # SS_mix = 0.23 × 2.0 × 21 = 9.66
+        expected = 0.23 * d_size * 21
+        assert ss_mix == pytest.approx(expected, rel=0.01)
+
+    def test_ss_total_sum(self):
+        """SS_total should equal sum of components."""
+        from core.calc.size_allocation import calc_safety_stock_for_size
+
+        sigma_size, ss_demand, ss_floor, ss_mix, ss_total = calc_safety_stock_for_size(
+            d_size=2.0, sigma_sku=2.0, size_mix=0.30
+        )
+
+        # SS_total = SS_demand + SS_floor + SS_mix
+        expected = ss_demand + ss_floor + ss_mix
+        assert ss_total == pytest.approx(expected, rel=0.001)
+
+    def test_ss_zero_demand(self):
+        """Zero demand should result in zero SS_floor and SS_mix."""
+        from core.calc.size_allocation import calc_safety_stock_for_size
+
+        sigma_size, ss_demand, ss_floor, ss_mix, ss_total = calc_safety_stock_for_size(
+            d_size=0.0, sigma_sku=2.0, size_mix=0.20
+        )
+
+        assert ss_floor == 0.0
+        assert ss_mix == 0.0
+        # SS_demand can still be non-zero if sigma_sku > 0
+        assert ss_demand >= 0.0
+
+
+# =============================================================================
+# TASK-155: Per-size ROP and T_post (5 tests)
+# =============================================================================
+
+class TestROPAndTPost:
+    """Tests for calc_rop_for_size() and calc_t_post_for_size()"""
+
+    def test_rop_formula(self):
+        """ROP = D_size × L + SS_total"""
+        from core.calc.size_allocation import calc_rop_for_size
+
+        d_size = 2.0
+        ss_total = 30.0
+
+        rop = calc_rop_for_size(d_size=d_size, ss_total=ss_total)
+
+        # ROP = 2.0 × 21 + 30.0 = 72.0
+        expected = d_size * 21 + ss_total
+        assert rop == pytest.approx(expected, rel=0.01)
+
+    def test_t_post_formula(self):
+        """T_post = R + (SS_total / D_size)"""
+        from core.calc.size_allocation import calc_t_post_for_size
+
+        d_size = 2.0
+        ss_total = 30.0
+
+        t_post = calc_t_post_for_size(d_size=d_size, ss_total=ss_total)
+
+        # T_post = 10 + (30.0 / 2.0) = 25.0
+        expected = 10 + (ss_total / d_size)
+        assert t_post == pytest.approx(expected, rel=0.01)
+
+    def test_t_post_zero_demand_fallback(self):
+        """Zero demand should return R (review period) as fallback."""
+        from core.calc.size_allocation import calc_t_post_for_size
+
+        t_post = calc_t_post_for_size(d_size=0.0, ss_total=30.0)
+
+        # Should return R = 10 as fallback
+        assert t_post == pytest.approx(10.0, rel=0.01)
+
+    def test_rop_increases_with_demand(self):
+        """Higher demand should increase ROP."""
+        from core.calc.size_allocation import calc_rop_for_size
+
+        ss_total = 20.0
+
+        rop_low = calc_rop_for_size(d_size=1.0, ss_total=ss_total)
+        rop_high = calc_rop_for_size(d_size=3.0, ss_total=ss_total)
+
+        assert rop_high > rop_low
+
+    def test_t_post_increases_with_ss(self):
+        """Higher safety stock should increase T_post."""
+        from core.calc.size_allocation import calc_t_post_for_size
+
+        d_size = 2.0
+
+        t_post_low = calc_t_post_for_size(d_size=d_size, ss_total=10.0)
+        t_post_high = calc_t_post_for_size(d_size=d_size, ss_total=50.0)
+
+        assert t_post_high > t_post_low
