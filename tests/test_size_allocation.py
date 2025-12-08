@@ -559,3 +559,226 @@ class TestROPAndTPost:
         t_post_high = calc_t_post_for_size(d_size=d_size, ss_total=50.0)
 
         assert t_post_high > t_post_low
+
+
+# =============================================================================
+# TASK-156: Lead time consumption (5 tests)
+# =============================================================================
+
+class TestPreArrivalStock:
+    """Tests for calc_pre_arrival_stock()"""
+
+    def test_pre_arrival_basic(self):
+        """Basic pre-arrival stock calculation."""
+        from core.calc.size_allocation import calc_pre_arrival_stock
+
+        pre = calc_pre_arrival_stock(
+            current_stock=100,
+            inbound_stock=0,
+            d_size=3.0,
+            days_to_arrival=21
+        )
+
+        # Pre = 100 + 0 - (3.0 × 21) = 100 - 63 = 37.0
+        expected = 100 - (3.0 * 21)
+        assert pre == pytest.approx(expected, rel=0.01)
+
+    def test_pre_arrival_with_inbound(self):
+        """Pre-arrival stock with inbound shipment."""
+        from core.calc.size_allocation import calc_pre_arrival_stock
+
+        pre = calc_pre_arrival_stock(
+            current_stock=50,
+            inbound_stock=30,
+            d_size=2.0,
+            days_to_arrival=21
+        )
+
+        # Pre = 50 + 30 - (2.0 × 21) = 80 - 42 = 38.0
+        expected = 80 - (2.0 * 21)
+        assert pre == pytest.approx(expected, rel=0.01)
+
+    def test_pre_arrival_high_consumption(self):
+        """High consumption depletes stock."""
+        from core.calc.size_allocation import calc_pre_arrival_stock
+
+        pre = calc_pre_arrival_stock(
+            current_stock=30,
+            inbound_stock=0,
+            d_size=5.0,
+            days_to_arrival=21
+        )
+
+        # Pre = 30 + 0 - (5.0 × 21) = 30 - 105 = -75 → 0
+        assert pre == 0.0  # Clamped to zero
+
+    def test_pre_arrival_floor_zero(self):
+        """Pre-arrival stock cannot go negative."""
+        from core.calc.size_allocation import calc_pre_arrival_stock
+
+        pre = calc_pre_arrival_stock(
+            current_stock=10,
+            inbound_stock=0,
+            d_size=10.0,
+            days_to_arrival=21
+        )
+
+        # Would be negative, but clamped to 0
+        assert pre >= 0.0
+
+    def test_pre_arrival_no_consumption(self):
+        """Zero demand means no consumption."""
+        from core.calc.size_allocation import calc_pre_arrival_stock
+
+        pre = calc_pre_arrival_stock(
+            current_stock=50,
+            inbound_stock=20,
+            d_size=0.0,
+            days_to_arrival=21
+        )
+
+        # Pre = 50 + 20 - 0 = 70.0
+        assert pre == pytest.approx(70.0, rel=0.01)
+
+
+# =============================================================================
+# TASK-157: Per-size status calculation (5 tests)
+# =============================================================================
+
+class TestStatusForSize:
+    """Tests for calc_status_for_size()"""
+
+    def test_status_reorder(self):
+        """Total < ROP should return REORDER."""
+        from core.calc.size_allocation import calc_status_for_size, OrderStatus
+
+        status = calc_status_for_size(
+            current_stock=20,
+            total_stock=30,
+            rop=40
+        )
+
+        assert status == OrderStatus.REORDER
+
+    def test_status_wait(self):
+        """Current < ROP but Total >= ROP should return WAIT."""
+        from core.calc.size_allocation import calc_status_for_size, OrderStatus
+
+        status = calc_status_for_size(
+            current_stock=30,
+            total_stock=50,
+            rop=40
+        )
+
+        assert status == OrderStatus.WAIT
+
+    def test_status_ok(self):
+        """Both Total and Current >= ROP should return OK."""
+        from core.calc.size_allocation import calc_status_for_size, OrderStatus
+
+        status = calc_status_for_size(
+            current_stock=50,
+            total_stock=60,
+            rop=40
+        )
+
+        assert status == OrderStatus.OK
+
+    def test_status_boundary_total_equals_rop(self):
+        """Total == ROP (edge case): should be OK if current >= ROP."""
+        from core.calc.size_allocation import calc_status_for_size, OrderStatus
+
+        # Total == ROP == 40, Current == 40
+        status = calc_status_for_size(
+            current_stock=40,
+            total_stock=40,
+            rop=40
+        )
+
+        assert status == OrderStatus.OK
+
+    def test_status_boundary_current_equals_rop(self):
+        """Current == ROP with inbound should be OK."""
+        from core.calc.size_allocation import calc_status_for_size, OrderStatus
+
+        # Current == ROP, Total > ROP
+        status = calc_status_for_size(
+            current_stock=40,
+            total_stock=60,
+            rop=40
+        )
+
+        assert status == OrderStatus.OK
+
+
+# =============================================================================
+# TASK-158: PO trigger logic (4 tests)
+# =============================================================================
+
+class TestPOTrigger:
+    """Tests for should_generate_po()"""
+
+    def test_trigger_single_reorder(self):
+        """Single size in REORDER should trigger PO."""
+        from core.calc.size_allocation import should_generate_po, OrderStatus
+
+        statuses = {
+            "S": OrderStatus.OK,
+            "M": OrderStatus.REORDER,
+            "L": OrderStatus.OK,
+            "XL": OrderStatus.WAIT
+        }
+
+        should_order, triggers = should_generate_po(statuses)
+
+        assert should_order is True
+        assert "M" in triggers
+        assert len(triggers) == 1
+
+    def test_trigger_multiple_reorder(self):
+        """Multiple sizes in REORDER should all be listed."""
+        from core.calc.size_allocation import should_generate_po, OrderStatus
+
+        statuses = {
+            "S": OrderStatus.REORDER,
+            "M": OrderStatus.OK,
+            "L": OrderStatus.REORDER,
+            "XL": OrderStatus.WAIT
+        }
+
+        should_order, triggers = should_generate_po(statuses)
+
+        assert should_order is True
+        assert "S" in triggers
+        assert "L" in triggers
+        assert len(triggers) == 2
+
+    def test_no_trigger_all_ok(self):
+        """All OK should not trigger PO."""
+        from core.calc.size_allocation import should_generate_po, OrderStatus
+
+        statuses = {
+            "S": OrderStatus.OK,
+            "M": OrderStatus.OK,
+            "L": OrderStatus.OK
+        }
+
+        should_order, triggers = should_generate_po(statuses)
+
+        assert should_order is False
+        assert len(triggers) == 0
+
+    def test_no_trigger_all_wait(self):
+        """All WAIT (but no REORDER) should not trigger PO."""
+        from core.calc.size_allocation import should_generate_po, OrderStatus
+
+        statuses = {
+            "S": OrderStatus.WAIT,
+            "M": OrderStatus.WAIT,
+            "L": OrderStatus.OK
+        }
+
+        should_order, triggers = should_generate_po(statuses)
+
+        assert should_order is False
+        assert len(triggers) == 0

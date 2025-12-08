@@ -480,3 +480,132 @@ def calc_t_post_for_size(
         return float(R)  # Minimum is review period
 
     return R + (ss_total / d_size)
+
+
+# =============================================================================
+# TASK-156: Lead time consumption projection
+# =============================================================================
+
+def calc_pre_arrival_stock(
+    current_stock: int,
+    inbound_stock: int,
+    d_size: float,
+    days_to_arrival: int = None
+) -> float:
+    """
+    Calculate projected stock at time of next shipment arrival.
+
+    TASK-156: Pre = Current + Inbound - (D_size × days_to_arrival)
+
+    This represents how much stock we expect to have when the new
+    shipment arrives, accounting for consumption during lead time.
+
+    Args:
+        current_stock: Current on-hand inventory
+        inbound_stock: Units already in transit
+        d_size: Daily demand for this size
+        days_to_arrival: Days until next shipment (default: L from params)
+
+    Returns:
+        Projected stock at arrival (minimum 0)
+
+    Example:
+        >>> pre = calc_pre_arrival_stock(
+        ...     current_stock=50, inbound_stock=0, d_size=2.0, days_to_arrival=21
+        ... )
+        >>> # Pre = 50 + 0 - (2.0 × 21) = 50 - 42 = 8.0
+    """
+    from core.config.inventory_params import get_params
+
+    params = get_params()
+    days = days_to_arrival if days_to_arrival is not None else params.L
+
+    # Projected stock = current + inbound - consumption
+    pre = current_stock + inbound_stock - (d_size * days)
+
+    # Can't go negative
+    return max(0.0, pre)
+
+
+# =============================================================================
+# TASK-157: Per-size status calculation
+# =============================================================================
+
+def calc_status_for_size(
+    current_stock: int,
+    total_stock: int,
+    rop: float
+) -> OrderStatus:
+    """
+    Determine order status for a single size.
+
+    TASK-157: Status logic from Master_Inventory_Rules_v5.3.md.
+
+    IMPORTANT: Check Total FIRST, then Current.
+
+    Logic:
+    1. Total_stock < ROP → REORDER (nothing covers the gap)
+    2. Current_stock < ROP (but Total ≥ ROP) → WAIT (inbound covers it)
+    3. Else → OK
+
+    Args:
+        current_stock: On-hand inventory
+        total_stock: Current + inbound
+        rop: Reorder point
+
+    Returns:
+        OrderStatus enum: REORDER, WAIT, or OK
+
+    Example:
+        >>> status = calc_status_for_size(current=30, total=50, rop=40)
+        >>> # Total 50 >= ROP 40, but Current 30 < ROP 40 → WAIT
+    """
+    # Check Total FIRST
+    if total_stock < rop:
+        return OrderStatus.REORDER
+
+    # Total is sufficient, check Current
+    if current_stock < rop:
+        return OrderStatus.WAIT
+
+    # Both Total and Current are sufficient
+    return OrderStatus.OK
+
+
+# =============================================================================
+# TASK-158: PO trigger logic
+# =============================================================================
+
+def should_generate_po(
+    size_statuses: dict[str, OrderStatus]
+) -> tuple[bool, list[str]]:
+    """
+    Determine if a PO should be generated based on size statuses.
+
+    TASK-158: ANY size in REORDER status → trigger PO for whole SKU.
+
+    This is the "any-size trigger" rule: if even one size needs
+    reorder, we generate a PO for the entire SKU.
+
+    Args:
+        size_statuses: Dict mapping size -> OrderStatus
+
+    Returns:
+        Tuple of (should_order, trigger_sizes):
+        - should_order: True if any size is in REORDER
+        - trigger_sizes: List of size labels that triggered the PO
+
+    Example:
+        >>> statuses = {"S": OrderStatus.OK, "M": OrderStatus.REORDER, "L": OrderStatus.WAIT}
+        >>> should_order, triggers = should_generate_po(statuses)
+        >>> # should_order = True, triggers = ["M"]
+    """
+    trigger_sizes = []
+
+    for size, status in size_statuses.items():
+        if status == OrderStatus.REORDER:
+            trigger_sizes.append(size)
+
+    should_order = len(trigger_sizes) > 0
+
+    return should_order, trigger_sizes
