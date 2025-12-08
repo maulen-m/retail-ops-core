@@ -1308,3 +1308,176 @@ class TestGeneratePODraft:
         # XL is low stock (15) with high demand (~4/day), should trigger
         if draft.should_order:
             assert "XL" in draft.trigger_sizes or len(draft.trigger_sizes) > 0
+
+
+# =============================================================================
+# TASK-165: DB queries for size-level data (4 tests)
+# =============================================================================
+
+class TestDBQueries:
+    """Tests for core/db/queries.py size-level data functions.
+
+    These are integration tests that use a temporary in-memory database.
+    """
+
+    @pytest.fixture
+    def test_db(self, tmp_path):
+        """Create a temporary test database with sample data."""
+        import sqlite3
+        from pathlib import Path
+
+        db_path = tmp_path / "test.db"
+
+        # Create schema
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+
+        # Create tables
+        conn.executescript("""
+            -- dim_sku_size
+            CREATE TABLE dim_sku_size (
+                sku_id TEXT PRIMARY KEY,
+                sku_key TEXT NOT NULL,
+                my_size TEXT NOT NULL,
+                size_order INTEGER
+            );
+
+            -- fact_sales_daily_size
+            CREATE TABLE fact_sales_daily_size (
+                id INTEGER PRIMARY KEY,
+                sale_date TEXT NOT NULL,
+                store_code TEXT NOT NULL,
+                sku_id TEXT NOT NULL,
+                sku_key TEXT,
+                my_size TEXT,
+                units INTEGER NOT NULL DEFAULT 0
+            );
+
+            -- fact_inventory_snapshot_size
+            CREATE TABLE fact_inventory_snapshot_size (
+                id INTEGER PRIMARY KEY,
+                snapshot_date TEXT NOT NULL,
+                sku_id TEXT NOT NULL,
+                sku_key TEXT NOT NULL,
+                my_size TEXT NOT NULL,
+                current_stock INTEGER DEFAULT 0,
+                inbound_stock INTEGER DEFAULT 0
+            );
+
+            -- fact_po_lines
+            CREATE TABLE fact_po_lines (
+                id INTEGER PRIMARY KEY,
+                po_id TEXT NOT NULL,
+                store_code TEXT NOT NULL,
+                sku_key TEXT NOT NULL,
+                sku_id TEXT NOT NULL,
+                my_size TEXT NOT NULL,
+                order_quantity INTEGER NOT NULL,
+                received_qty INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'UNPAID'
+            );
+        """)
+
+        # Insert test data
+        sku_key = "TEST_SKU_BLACK"
+
+        # Sizes
+        sizes = [("S", 1), ("M", 2), ("L", 3), ("XL", 4)]
+        for size, order in sizes:
+            conn.execute("""
+                INSERT INTO dim_sku_size (sku_id, sku_key, my_size, size_order)
+                VALUES (?, ?, ?, ?)
+            """, (f"{sku_key}_{size}", sku_key, size, order))
+
+        # Sales history (last 5 days)
+        from datetime import date, timedelta
+        today = date.today()
+        for i in range(5):
+            d = (today - timedelta(days=i)).isoformat()
+            for size, order in sizes:
+                units = (order * 2) if i % 2 == 0 else order  # Varying sales
+                conn.execute("""
+                    INSERT INTO fact_sales_daily_size
+                    (sale_date, store_code, sku_id, sku_key, my_size, units)
+                    VALUES (?, 'UNIVERSAL', ?, ?, ?, ?)
+                """, (d, f"{sku_key}_{size}", sku_key, size, units))
+
+        # Inventory snapshot (today)
+        for size, order in sizes:
+            conn.execute("""
+                INSERT INTO fact_inventory_snapshot_size
+                (snapshot_date, sku_id, sku_key, my_size, current_stock, inbound_stock)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (today.isoformat(), f"{sku_key}_{size}", sku_key, size, order * 10, order * 5))
+
+        # PO lines (inbound)
+        conn.execute("""
+            INSERT INTO fact_po_lines
+            (po_id, store_code, sku_key, sku_id, my_size, order_quantity, received_qty, status)
+            VALUES ('PO001', 'UNIVERSAL', ?, ?, 'L', 50, 0, 'IN_TRANSIT')
+        """, (sku_key, f"{sku_key}_L"))
+
+        conn.commit()
+        conn.close()
+
+        return db_path, sku_key
+
+    def test_get_size_sales_history(self, test_db):
+        """Test retrieving daily sales history by size."""
+        db_path, sku_key = test_db
+        from core.db.queries import get_size_sales_history
+
+        history = get_size_sales_history(sku_key, db_path=db_path, days=5)
+
+        # Should have all 4 sizes
+        assert len(history) == 4
+        assert "S" in history
+        assert "M" in history
+        assert "L" in history
+        assert "XL" in history
+
+        # Each size should have 6 days of data (days + 1 for inclusive range)
+        for size, sales in history.items():
+            assert len(sales) >= 5
+
+    def test_get_size_stock_history(self, test_db):
+        """Test retrieving daily stock history by size."""
+        db_path, sku_key = test_db
+        from core.db.queries import get_size_stock_history
+
+        history = get_size_stock_history(sku_key, db_path=db_path, days=5)
+
+        # Should have all 4 sizes
+        assert len(history) == 4
+        assert "S" in history
+
+    def test_get_size_current_stock(self, test_db):
+        """Test retrieving current stock by size."""
+        db_path, sku_key = test_db
+        from core.db.queries import get_size_current_stock
+
+        stock = get_size_current_stock(sku_key, db_path=db_path)
+
+        # Should have all 4 sizes with expected values
+        assert len(stock) == 4
+        assert stock["S"] == 10  # order=1, stock = 1*10 = 10
+        assert stock["M"] == 20  # order=2, stock = 2*10 = 20
+        assert stock["L"] == 30  # order=3, stock = 3*10 = 30
+        assert stock["XL"] == 40  # order=4, stock = 4*10 = 40
+
+    def test_get_size_inbound(self, test_db):
+        """Test retrieving inbound stock by size."""
+        db_path, sku_key = test_db
+        from core.db.queries import get_size_inbound
+
+        inbound = get_size_inbound(sku_key, db_path=db_path)
+
+        # Should have all 4 sizes
+        assert len(inbound) == 4
+        # L has PO inbound of 50, but also snapshot inbound of 15
+        # S, M, XL should have snapshot inbound values
+        assert inbound["S"] == 5   # order=1, inbound = 1*5 = 5
+        assert inbound["M"] == 10  # order=2, inbound = 2*5 = 10
+        # L has snapshot inbound (3*5=15), PO only adds if snapshot is 0
+        assert inbound["L"] == 15  # From snapshot
+        assert inbound["XL"] == 20  # order=4, inbound = 4*5 = 20
