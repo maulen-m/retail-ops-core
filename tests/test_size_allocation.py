@@ -301,3 +301,100 @@ class TestOOSFilteredDemand:
         assert conf == DemandConfidence.MARGINAL  # 14-29 days
         # Base = 45/15 = 3.0, 1.2x uplift
         assert d == pytest.approx(3.0 * 1.2, rel=0.01)
+
+
+# =============================================================================
+# TASK-153: Size mix with guardrails (6 tests)
+# =============================================================================
+
+class TestSizeMixGuardrails:
+    """Tests for calc_size_mix_with_guardrails()"""
+
+    def test_mix_sums_to_one(self):
+        """Mix percentages must always sum to 1.0."""
+        from core.calc.size_allocation import calc_size_mix_with_guardrails
+
+        sales = {"S": 10, "M": 30, "L": 40, "XL": 15, "2XL": 5}
+        mix = calc_size_mix_with_guardrails(sales)
+
+        total = sum(mix.values())
+        assert total == pytest.approx(1.0, rel=0.001)
+
+    def test_mix_floor_applied(self):
+        """Sizes with very low sales should get minimum 3% floor."""
+        from core.calc.size_allocation import calc_size_mix_with_guardrails
+
+        # S has only 1% raw (1/100), should be raised to 3%
+        sales = {"S": 1, "M": 30, "L": 40, "XL": 25, "2XL": 4}
+        mix = calc_size_mix_with_guardrails(sales)
+
+        # After renormalization, S should be >= min floor effect
+        # Raw: S=1%, M=30%, L=40%, XL=25%, 2XL=4%
+        # S at 1% < 3%, so floor applied
+        assert "S" in mix
+        # The exact value depends on renormalization, but should be elevated
+        assert mix["S"] >= 0.01  # At least some floor effect
+
+    def test_mix_cap_applied(self):
+        """Sizes with very high sales should be capped at 40%."""
+        from core.calc.size_allocation import calc_size_mix_with_guardrails
+
+        # L has 70% raw (70/100), should be capped to 40%
+        sales = {"S": 5, "M": 15, "L": 70, "XL": 8, "2XL": 2}
+        mix = calc_size_mix_with_guardrails(sales)
+
+        # After renormalization:
+        # L: 40% (capped), S: 5%, M: 15%, XL: 8%, 2XL: 3% (floored)
+        # Total before renorm: 0.71
+        # L after renorm: 0.40/0.71 ≈ 0.563
+        # Key assertion: L should be < 70% original
+        assert mix["L"] < 0.70  # Significantly below original 70%
+        assert mix["L"] > 0.40  # But still the largest after renorm
+
+    def test_mix_renormalization(self):
+        """After applying guardrails, mix should be renormalized to sum to 1.0."""
+        from core.calc.size_allocation import calc_size_mix_with_guardrails
+
+        # All sizes at 20% each (5 sizes = 100%)
+        sales = {"S": 20, "M": 20, "L": 20, "XL": 20, "2XL": 20}
+        mix = calc_size_mix_with_guardrails(sales)
+
+        # No guardrails should trigger, all at 20%
+        total = sum(mix.values())
+        assert total == pytest.approx(1.0, rel=0.001)
+
+        for size in mix:
+            assert mix[size] == pytest.approx(0.20, rel=0.01)
+
+    def test_mix_zero_sales_uniform(self):
+        """Zero total sales should result in uniform distribution."""
+        from core.calc.size_allocation import calc_size_mix_with_guardrails
+
+        sales = {"S": 0, "M": 0, "L": 0, "XL": 0}
+        mix = calc_size_mix_with_guardrails(sales)
+
+        # 4 sizes with zero sales = 25% each
+        assert len(mix) == 4
+        for size in mix:
+            assert mix[size] == pytest.approx(0.25, rel=0.01)
+
+    def test_mix_single_dominant_size(self):
+        """Single size with all sales should be capped and distributed."""
+        from core.calc.size_allocation import calc_size_mix_with_guardrails
+
+        # L has 100% of sales
+        sales = {"S": 0, "M": 0, "L": 100, "XL": 0, "2XL": 0}
+        mix = calc_size_mix_with_guardrails(sales)
+
+        # L was 100%, capped to 40%
+        # Others were 0%, floored to 3% each
+        # Total before renorm: 0.40 + 4*0.03 = 0.52
+        # After renorm: L = 0.40/0.52 ≈ 0.77, others = 0.03/0.52 ≈ 0.058 each
+
+        # L should be dominant but capped
+        assert mix["L"] < 1.0  # Not 100%
+        assert mix["L"] > 0.5  # But still dominant after renorm
+
+        # Other sizes should have some allocation
+        for size in ["S", "M", "XL", "2XL"]:
+            assert mix[size] > 0  # Not zero

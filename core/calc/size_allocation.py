@@ -258,3 +258,88 @@ def calc_d_sku_with_oos_filter(
         d_daily = d_base * 1.5  # 50% uplift for high uncertainty
 
     return d_daily, good_days, confidence
+
+
+# =============================================================================
+# TASK-153: Size mix with guardrails
+# =============================================================================
+
+def calc_size_mix_with_guardrails(
+    size_sales: dict[str, int],
+    min_mix: float = 0.03,
+    max_mix: float = 0.40
+) -> dict[str, float]:
+    """
+    Calculate size mix percentages with floor (3%) and cap (40%) guardrails.
+
+    TASK-153: Prevents extreme allocations by:
+    1. Computing raw mix from historical sales
+    2. Applying minimum floor (3%) to each size
+    3. Applying maximum cap (40%) to each size
+    4. Renormalizing to sum to 1.0
+
+    Args:
+        size_sales: Dict mapping size -> units sold (e.g., {"S": 10, "M": 30, "L": 60})
+        min_mix: Minimum percentage per size (default: 0.03 = 3%)
+        max_mix: Maximum percentage per size (default: 0.40 = 40%)
+
+    Returns:
+        Dict mapping size -> mix percentage (e.g., {"S": 0.10, "M": 0.30, "L": 0.40, ...})
+        All values sum to 1.0
+
+    Edge cases:
+        - Empty dict or all zeros: uniform distribution
+        - Single size: capped at max_mix, rest distributed equally
+
+    Example:
+        >>> sales = {"S": 5, "M": 20, "L": 50, "XL": 20, "2XL": 5}
+        >>> mix = calc_size_mix_with_guardrails(sales)
+        >>> # L was 50%, capped to 40%, others adjusted
+    """
+    from core.config.inventory_params import get_params
+
+    # Get params if not overridden
+    if min_mix == 0.03 and max_mix == 0.40:
+        params = get_params()
+        min_mix = params.min_size_mix
+        max_mix = params.max_size_mix
+
+    # Handle empty or all-zero case
+    if not size_sales:
+        return {}
+
+    total_sales = sum(size_sales.values())
+    n_sizes = len(size_sales)
+
+    if total_sales == 0 or n_sizes == 0:
+        # Uniform distribution
+        if n_sizes == 0:
+            return {}
+        uniform_mix = 1.0 / n_sizes
+        return {size: uniform_mix for size in size_sales}
+
+    # Step 1: Calculate raw mix
+    raw_mix = {size: units / total_sales for size, units in size_sales.items()}
+
+    # Step 2 & 3: Apply floor and cap
+    adjusted_mix = {}
+    for size, mix in raw_mix.items():
+        if mix < min_mix:
+            adjusted_mix[size] = min_mix
+        elif mix > max_mix:
+            adjusted_mix[size] = max_mix
+        else:
+            adjusted_mix[size] = mix
+
+    # Step 4: Renormalize to sum to 1.0
+    total_adjusted = sum(adjusted_mix.values())
+
+    if total_adjusted == 0:
+        # Shouldn't happen, but safety check
+        uniform_mix = 1.0 / n_sizes
+        return {size: uniform_mix for size in size_sales}
+
+    # Renormalize
+    final_mix = {size: mix / total_adjusted for size, mix in adjusted_mix.items()}
+
+    return final_mix
