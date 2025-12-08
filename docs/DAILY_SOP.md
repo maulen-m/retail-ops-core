@@ -213,8 +213,8 @@ python scripts/report_dow_analysis.py
 
 ### Size Split Columns
 - `size_S` through `size_4XL`: Recommended units per size
-- Based on 90-day historical sales mix
-- Round up for fast movers (D30 > 5), down for slow movers
+- Phase 9.6: Uses size-aware allocation with guardrails (see below)
+- Legacy mode: Based on 90-day historical sales mix
 
 ### ROIC Prioritization
 ```
@@ -236,6 +236,117 @@ Sort by: roic_pct DESC
 | `status` | REORDER / WAIT / OK |
 | `suggested_order` | Recommended order quantity |
 | `roic_pct` | Monthly return on invested capital |
+
+---
+
+## Phase 9.6: Size-Aware PO Allocation
+
+### Overview
+Phase 9.6 introduces true size-level allocation that replaces the legacy 90-day historical mix approach.
+
+**Key Improvements:**
+- OOS-filtered demand calculation (excludes stockout days)
+- Size mix guardrails (3% floor, 40% cap)
+- Per-size safety stock and ROP
+- ANY-size REORDER trigger
+- 3-tier ROIC gate for approval
+- New SKU age-based adjustments
+- Low demand insurance
+
+### Using Size-Aware Allocation
+
+```bash
+# Export PO suggestions with Phase 9.6 allocation
+python scripts/export_po_suggestions.py --size-aware
+
+# Legacy mode (for comparison)
+python scripts/export_po_suggestions.py
+
+# Validate allocation calculations
+python scripts/validate_size_allocation.py --verbose
+
+# Compare old vs new allocation
+python scripts/compare_old_vs_new_allocation.py
+```
+
+### Phase 9.6 Columns in PO Export
+
+| Column | Description |
+|--------|-------------|
+| `trigger_sizes` | Sizes that triggered the reorder (e.g., "M,L") |
+| `roic_action` | ORDER_FULL / ORDER_WITH_FLAG / REVIEW_REQUIRED |
+| `demand_confidence` | ACTUAL / MARGINAL / FALLBACK / NO_DATA |
+
+### ROIC Gate Interpretation
+
+| ROIC | Action | Meaning |
+|------|--------|---------|
+| ≥20% | ORDER_FULL | Auto-approve order |
+| 10-20% | ORDER_WITH_FLAG | Approve but review margin |
+| <10% | REVIEW_REQUIRED | Needs manual approval |
+
+### Size Mix Guardrails
+
+- **Floor**: 3% minimum per size (prevents starving slow sizes)
+- **Cap**: 40% maximum per size (prevents over-concentration)
+- Values are renormalized to sum to 100%
+
+### Demand Confidence Levels
+
+| Confidence | Good Days | Uplift | Meaning |
+|------------|-----------|--------|---------|
+| ACTUAL | ≥30 | None | High confidence in demand estimate |
+| MARGINAL | 14-29 | 1.2× | Moderate confidence, slight buffer |
+| FALLBACK | <14 | 1.5× | Low confidence, larger safety buffer |
+| NO_DATA | 0 | N/A | No valid sales data |
+
+### New SKU Age Factors
+
+| Age (days) | Factor | Effect |
+|------------|--------|--------|
+| <30 | 0.75 | 25% reduction (unproven product) |
+| 30-60 | 0.85 | 15% reduction |
+| 60-90 | 0.95 | 5% reduction |
+| ≥90 | 1.0 | Full order (established product) |
+
+### Validation Script
+
+Run regularly to ensure calculations match Master Rules:
+
+```bash
+# Full validation (7 checks)
+python scripts/validate_size_allocation.py
+
+# Verbose output
+python scripts/validate_size_allocation.py --verbose
+
+# Validate specific SKU
+python scripts/validate_size_allocation.py --sku CL_OC_MEN_LINE52_BLACK --verbose
+```
+
+**Checks performed:**
+1. Parameters match Master_Inventory_Rules_v5.3.md
+2. Size mix bounds (3%-40%)
+3. Safety stock formula
+4. ROP calculation
+5. Status logic (Check Total FIRST)
+6. ROIC gate (3-tier)
+7. Total equals sum of sizes
+
+### Comparison Report
+
+Compare legacy vs Phase 9.6 allocation:
+
+```bash
+# Full comparison
+python scripts/compare_old_vs_new_allocation.py
+
+# Filter by SKU
+python scripts/compare_old_vs_new_allocation.py --sku LINE52
+
+# Export to CSV
+python scripts/compare_old_vs_new_allocation.py --output exports/allocation_comparison.csv
+```
 
 ---
 
@@ -601,5 +712,5 @@ python scripts/build_size_probability.py --export
 
 ---
 
-*Document version: 4.0 (Phase 9.5)*
-*Last updated: 2025-12-07*
+*Document version: 5.0 (Phase 9.6)*
+*Last updated: 2025-12-09*
