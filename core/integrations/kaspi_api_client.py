@@ -642,14 +642,14 @@ class KaspiAPIClient:
 
         base64_id = self._get_order_base64_id(order_code)
 
-        # Per Kaspi API docs: status='ASSEMBLE' and numberOfSpace are required
+        # Per Kaspi API docs: status='ASSEMBLE' and numberOfSpace (STRING) are required
         data = {
             'data': {
                 'type': 'orders',
                 'id': base64_id,
                 'attributes': {
                     'status': 'ASSEMBLE',
-                    'numberOfSpace': parcel_count,
+                    'numberOfSpace': str(parcel_count),
                 }
             }
         }

@@ -1030,7 +1030,7 @@ class TestWriteOperationsBase64ID:
         json_data = write_call[1]['json']
         attrs = json_data['data']['attributes']
         assert attrs.get('status') == 'ASSEMBLE'
-        assert attrs.get('numberOfSpace') == 2
+        assert attrs.get('numberOfSpace') == '2'  # Kaspi API requires STRING, not int
         assert 'state' not in attrs  # Should not use 'state' field
 
     @patch('requests.Session.request')
