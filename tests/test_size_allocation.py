@@ -976,3 +976,150 @@ class TestLowDemandInsurance:
 
         # 1% of 15 = 0.15, but minimum is 1
         assert updated["S"] >= 1
+
+
+# =============================================================================
+# TASK-162: ROIC calculation (4 tests)
+# =============================================================================
+
+class TestROICCalculation:
+    """Tests for calc_roic()"""
+
+    def test_roic_formula(self):
+        """Verify ROIC formula: Monthly_ROIC = (profit × D × 30) / K_avg."""
+        from core.calc.size_allocation import calc_roic
+
+        # Known values for verification
+        d_sku = 2.0
+        ss_total = 50.0
+        unit_cogs = 100.0
+        unit_profit = 30.0
+
+        roic = calc_roic(
+            d_sku=d_sku,
+            ss_total=ss_total,
+            unit_cogs=unit_cogs,
+            unit_profit=unit_profit
+        )
+
+        # Manual calculation:
+        # K_avg = D × (L + R/2) × COGS + SS_total × COGS
+        # K_avg = 2.0 × (21 + 10/2) × 100 + 50 × 100
+        # K_avg = 2.0 × 26 × 100 + 5000 = 5200 + 5000 = 10200
+        # Monthly_ROIC = (30 × 2.0 × 30) / 10200 = 1800 / 10200 ≈ 0.1765
+        expected_k_avg = d_sku * (21 + 10/2) * unit_cogs + ss_total * unit_cogs
+        expected_monthly_profit = unit_profit * d_sku * 30
+        expected_roic = expected_monthly_profit / expected_k_avg
+
+        assert roic == pytest.approx(expected_roic, rel=0.01)
+        assert roic == pytest.approx(0.1765, rel=0.01)
+
+    def test_roic_zero_k_avg(self):
+        """Zero capital (K_avg=0) should return 0.0 ROIC."""
+        from core.calc.size_allocation import calc_roic
+
+        # All zeros = no capital invested
+        roic = calc_roic(
+            d_sku=0.0,
+            ss_total=0.0,
+            unit_cogs=100.0,
+            unit_profit=30.0
+        )
+
+        assert roic == 0.0
+
+    def test_roic_high_profit(self):
+        """High profit margin should increase ROIC."""
+        from core.calc.size_allocation import calc_roic
+
+        # Low profit margin
+        roic_low = calc_roic(
+            d_sku=2.0,
+            ss_total=50.0,
+            unit_cogs=100.0,
+            unit_profit=10.0  # 10% margin
+        )
+
+        # High profit margin
+        roic_high = calc_roic(
+            d_sku=2.0,
+            ss_total=50.0,
+            unit_cogs=100.0,
+            unit_profit=50.0  # 50% margin
+        )
+
+        assert roic_high > roic_low
+        assert roic_high == pytest.approx(roic_low * 5, rel=0.01)  # 5x profit = 5x ROIC
+
+    def test_roic_matches_excel(self):
+        """Verify ROIC matches expected Excel calculation within ±2%."""
+        from core.calc.size_allocation import calc_roic
+
+        # Example from spec: realistic values
+        # D = 3.0/day, SS = 80 units, COGS = 150, profit = 45
+        roic = calc_roic(
+            d_sku=3.0,
+            ss_total=80.0,
+            unit_cogs=150.0,
+            unit_profit=45.0
+        )
+
+        # K_avg = 3 × 26 × 150 + 80 × 150 = 11700 + 12000 = 23700
+        # Monthly profit = 45 × 3 × 30 = 4050
+        # ROIC = 4050 / 23700 ≈ 0.171 (17.1%)
+        expected = 4050 / 23700
+        assert roic == pytest.approx(expected, rel=0.02)  # ±2% tolerance
+
+
+# =============================================================================
+# TASK-163: 3-tier ROIC gate (4 tests)
+# =============================================================================
+
+class TestROICGate:
+    """Tests for apply_roic_gate()"""
+
+    def test_roic_gate_full(self):
+        """ROIC ≥ 20% should return ORDER_FULL with full quantity."""
+        from core.calc.size_allocation import apply_roic_gate, ROICAction
+
+        action, qty = apply_roic_gate(roic=0.25, order_qty=100)
+
+        assert action == ROICAction.ORDER_FULL
+        assert qty == 100
+
+    def test_roic_gate_flag(self):
+        """ROIC 10-20% should return ORDER_WITH_FLAG with full quantity."""
+        from core.calc.size_allocation import apply_roic_gate, ROICAction
+
+        action, qty = apply_roic_gate(roic=0.15, order_qty=100)
+
+        assert action == ROICAction.ORDER_WITH_FLAG
+        assert qty == 100
+
+    def test_roic_gate_review(self):
+        """ROIC < 10% should return REVIEW_REQUIRED with qty=0."""
+        from core.calc.size_allocation import apply_roic_gate, ROICAction
+
+        action, qty = apply_roic_gate(roic=0.05, order_qty=100)
+
+        assert action == ROICAction.REVIEW_REQUIRED
+        assert qty == 0
+
+    def test_roic_gate_boundary(self):
+        """Test boundary values at 10% and 20%."""
+        from core.calc.size_allocation import apply_roic_gate, ROICAction
+
+        # Exactly 20% should be ORDER_FULL
+        action_20, qty_20 = apply_roic_gate(roic=0.20, order_qty=100)
+        assert action_20 == ROICAction.ORDER_FULL
+        assert qty_20 == 100
+
+        # Exactly 10% should be ORDER_WITH_FLAG
+        action_10, qty_10 = apply_roic_gate(roic=0.10, order_qty=100)
+        assert action_10 == ROICAction.ORDER_WITH_FLAG
+        assert qty_10 == 100
+
+        # Just under 10% should be REVIEW_REQUIRED
+        action_9, qty_9 = apply_roic_gate(roic=0.099, order_qty=100)
+        assert action_9 == ROICAction.REVIEW_REQUIRED
+        assert qty_9 == 0

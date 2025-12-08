@@ -757,3 +757,124 @@ def apply_low_demand_insurance(
             updated[size] = size_allocations[size] + insurance_qty
 
     return updated
+
+
+# =============================================================================
+# TASK-162: ROIC calculation
+# =============================================================================
+
+def calc_roic(
+    d_sku: float,
+    ss_total: float,
+    unit_cogs: float,
+    unit_profit: float,
+    L: int = None,
+    R: int = None
+) -> float:
+    """
+    Calculate monthly ROIC (Return on Invested Capital) for a SKU.
+
+    TASK-162: ROIC formula from Master_Inventory_Rules_v5.3.md.
+
+    Formulas:
+        K_avg = D × (L + R/2) × COGS + SS_total × COGS
+        Monthly_ROIC = (Unit_profit × D × 30) / K_avg
+
+    This measures the monthly return on the capital tied up in inventory,
+    including both cycle stock and safety stock.
+
+    Args:
+        d_sku: Daily demand for the SKU
+        ss_total: Total safety stock for the SKU
+        unit_cogs: Cost of goods sold per unit
+        unit_profit: Profit per unit (price - COGS)
+        L: Lead time in days (default: from params)
+        R: Review period in days (default: from params)
+
+    Returns:
+        Monthly ROIC as a decimal (e.g., 0.20 = 20%)
+
+    Edge case:
+        If K_avg = 0 (no capital invested), returns 0.0
+
+    Example:
+        >>> roic = calc_roic(d_sku=2.0, ss_total=50.0, unit_cogs=100.0, unit_profit=30.0)
+        >>> # K_avg = 2.0 × (21 + 10/2) × 100 + 50 × 100 = 2.0 × 26 × 100 + 5000 = 10200
+        >>> # Monthly_ROIC = (30 × 2.0 × 30) / 10200 = 1800 / 10200 ≈ 0.176 (17.6%)
+    """
+    from core.config.inventory_params import get_params
+
+    params = get_params()
+    L = L if L is not None else params.L
+    R = R if R is not None else params.R
+
+    # Calculate average capital tied up
+    # K_avg = D × (L + R/2) × COGS + SS_total × COGS
+    # This represents: cycle stock during lead time + safety stock, all at COGS
+    cycle_stock_value = d_sku * (L + R / 2) * unit_cogs
+    safety_stock_value = ss_total * unit_cogs
+    k_avg = cycle_stock_value + safety_stock_value
+
+    # Edge case: no capital invested
+    if k_avg <= 0:
+        return 0.0
+
+    # Monthly profit = Unit_profit × D × 30 days
+    monthly_profit = unit_profit * d_sku * 30
+
+    # Monthly ROIC
+    monthly_roic = monthly_profit / k_avg
+
+    return monthly_roic
+
+
+# =============================================================================
+# TASK-163: 3-tier ROIC gate
+# =============================================================================
+
+def apply_roic_gate(
+    roic: float,
+    order_qty: int
+) -> tuple[ROICAction, int]:
+    """
+    Apply 3-tier ROIC gate to determine PO approval status.
+
+    TASK-163: ROIC gate from Phase 9.6 spec.
+
+    Tiers:
+    - ≥20%: ORDER_FULL - Full auto-approval
+    - 10-20%: ORDER_WITH_FLAG - Approve but flag for review
+    - <10%: REVIEW_REQUIRED - Block order, needs manual approval
+
+    Args:
+        roic: Monthly ROIC as a decimal (e.g., 0.20 = 20%)
+        order_qty: Original order quantity
+
+    Returns:
+        Tuple of (action, final_qty):
+        - action: ROICAction enum value
+        - final_qty: Order quantity (0 if REVIEW_REQUIRED)
+
+    Example:
+        >>> action, qty = apply_roic_gate(roic=0.25, order_qty=100)
+        >>> # action = ORDER_FULL, qty = 100
+
+        >>> action, qty = apply_roic_gate(roic=0.15, order_qty=100)
+        >>> # action = ORDER_WITH_FLAG, qty = 100
+
+        >>> action, qty = apply_roic_gate(roic=0.05, order_qty=100)
+        >>> # action = REVIEW_REQUIRED, qty = 0
+    """
+    from core.config.inventory_params import get_params
+
+    params = get_params()
+
+    # 3-tier gate
+    if roic >= params.roic_full_approval:  # 20%
+        return ROICAction.ORDER_FULL, order_qty
+
+    elif roic >= params.roic_flag_threshold:  # 10%
+        return ROICAction.ORDER_WITH_FLAG, order_qty
+
+    else:  # < 10%
+        return ROICAction.REVIEW_REQUIRED, 0
