@@ -1524,3 +1524,89 @@ class TestPOGeneratorIntegration:
         result = generate_po_draft_size_aware.__annotations__.get('return')
         # Should return Optional[PODraft]
         assert result is not None
+
+
+# =============================================================================
+# TASK-167: export_po_suggestions (2 tests)
+# =============================================================================
+
+class TestExportPOSuggestions:
+    """Tests for scripts/export_po_suggestions.py Phase 9.6 integration."""
+
+    def test_export_has_size_aware_function(self):
+        """Test that size-aware export function exists."""
+        import sys
+        from pathlib import Path
+
+        # Add scripts to path if needed
+        scripts_path = Path(__file__).parent.parent / "scripts"
+        if str(scripts_path) not in sys.path:
+            sys.path.insert(0, str(scripts_path))
+
+        from scripts.export_po_suggestions import (
+            generate_po_suggestions,
+            generate_po_suggestions_size_aware,
+            export_to_csv,
+            PHASE_96_AVAILABLE
+        )
+
+        # Functions should exist
+        assert callable(generate_po_suggestions)
+        assert callable(generate_po_suggestions_size_aware)
+        assert callable(export_to_csv)
+
+        # Phase 9.6 should be available (we just implemented it)
+        assert PHASE_96_AVAILABLE is True
+
+    def test_export_csv_columns_include_phase96(self):
+        """Test that export_to_csv includes Phase 9.6 columns when requested."""
+        import tempfile
+        import csv
+        from pathlib import Path
+
+        from scripts.export_po_suggestions import export_to_csv, SIZE_ORDER
+
+        # Create test records with Phase 9.6 columns
+        test_records = [
+            {
+                "store_code": "TEST",
+                "sku_key": "TEST_SKU_1",
+                "status": "REORDER",
+                "total_qty": 100,
+                **{f"size_{s}": 10 for s in SIZE_ORDER},
+                "unit_cost": 1000.0,
+                "on_hand": 50,
+                "on_order": 0,
+                "rop": 75.0,
+                "roic_pct": 25.5,
+                "d30": 3.5,
+                "trigger_sizes": "M,L",
+                "roic_action": "ORDER_FULL",
+                "demand_confidence": "ACTUAL",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Export without Phase 9.6 columns
+            filepath_legacy = Path(tmpdir) / "legacy.csv"
+            export_to_csv(test_records, str(filepath_legacy), include_phase96=False)
+
+            with open(filepath_legacy, 'r') as f:
+                reader = csv.DictReader(f)
+                row = next(reader)
+                # Phase 9.6 columns should NOT be present
+                assert "trigger_sizes" not in row
+                assert "roic_action" not in row
+                assert "demand_confidence" not in row
+
+            # Export with Phase 9.6 columns
+            filepath_phase96 = Path(tmpdir) / "phase96.csv"
+            export_to_csv(test_records, str(filepath_phase96), include_phase96=True)
+
+            with open(filepath_phase96, 'r') as f:
+                reader = csv.DictReader(f)
+                row = next(reader)
+                # Phase 9.6 columns SHOULD be present
+                assert row["trigger_sizes"] == "M,L"
+                assert row["roic_action"] == "ORDER_FULL"
+                assert row["demand_confidence"] == "ACTUAL"

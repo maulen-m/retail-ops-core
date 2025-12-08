@@ -2,23 +2,29 @@
 """
 Export PO Suggestions: Generate size-split PO recommendations CSV.
 
+TASK-167: Phase 9.6 Update - Size-Aware Allocation Export
+
 This script:
 1. Reads SKU metrics from fact_sku_metrics
 2. Gets size mix from historical sales (fact_sales_daily_size)
 3. Calculates size-split allocation for suggested order quantities
-4. Exports to CSV with columns for each size
+4. Uses Phase 9.6 size-aware allocation when --size-aware flag is set
+5. Exports to CSV with columns for each size
 
 Output columns:
-- store_code, sku_key
+- store_code, sku_key, status
 - total_qty (suggested order)
-- S, M, L, XL, 2XL, 3XL, 4XL (size split)
-- unit_cost, on_hand, on_order, rop, roic_pct
+- size_S, size_M, size_L, size_XL, size_2XL, size_3XL, size_4XL (size split)
+- unit_cost, on_hand, on_order, rop, roic_pct, d30
+- Phase 9.6 only: trigger_sizes, roic_action, demand_confidence
 
 Usage:
-    python scripts/export_po_suggestions.py                      # Export all REORDER SKUs
-    python scripts/export_po_suggestions.py --all                # Export all SKUs
+    python scripts/export_po_suggestions.py                      # Export all REORDER SKUs (legacy mode)
+    python scripts/export_po_suggestions.py --all                # Export all SKUs (legacy mode)
     python scripts/export_po_suggestions.py --output exports/po.csv
     python scripts/export_po_suggestions.py --dry-run            # Preview without saving
+    python scripts/export_po_suggestions.py --size-aware         # Use Phase 9.6 size-aware allocation
+    python scripts/export_po_suggestions.py --size-aware --quiet # Size-aware with minimal output
 """
 
 import argparse
@@ -33,6 +39,14 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.db import get_db
+
+# Phase 9.6 imports
+try:
+    from core.automation.po_generator import generate_po_draft_size_aware
+    from core.calc.size_allocation import PODraft, ROICAction, DemandConfidence
+    PHASE_96_AVAILABLE = True
+except ImportError:
+    PHASE_96_AVAILABLE = False
 
 
 # Standard size order for output columns
@@ -279,17 +293,114 @@ def generate_po_suggestions(
             "rop": round(sku["rop"], 0),
             "roic_pct": round(sku["roic_monthly"], 1),
             "d30": round(sku["d30"], 2),
+            # Phase 9.6 columns (empty for legacy mode)
+            "trigger_sizes": "",
+            "roic_action": "",
+            "demand_confidence": "",
         }
         results.append(record)
 
     return results
 
 
-def export_to_csv(records: list[dict], filepath: str) -> int:
+def generate_po_suggestions_size_aware(
+    conn,
+    verbose: bool = True,
+) -> list[dict]:
+    """
+    Generate PO suggestion records using Phase 9.6 size-aware allocation.
+
+    TASK-167: New function that uses generate_po_draft_size_aware().
+
+    Returns:
+        List of dicts with PO suggestion data including Phase 9.6 columns
+    """
+    if not PHASE_96_AVAILABLE:
+        print("ERROR: Phase 9.6 modules not available")
+        return []
+
+    # Get all active SKUs with size-level data
+    cursor = conn.execute("""
+        SELECT DISTINCT sku_key
+        FROM dim_sku_size
+        WHERE active_flag = 1
+        ORDER BY sku_key
+    """)
+
+    sku_keys = [row[0] for row in cursor.fetchall()]
+
+    if verbose:
+        print(f"Found {len(sku_keys)} SKUs with size-level data")
+
+    results = []
+
+    for sku_key in sku_keys:
+        if verbose:
+            print(f"  Processing {sku_key}...", end=" ")
+
+        try:
+            draft = generate_po_draft_size_aware(sku_key, "UNIVERSAL")
+        except Exception as e:
+            if verbose:
+                print(f"ERROR: {e}")
+            continue
+
+        if draft is None:
+            if verbose:
+                print("SKIP (no data)")
+            continue
+
+        if not draft.should_order:
+            if verbose:
+                print("OK (no order needed)")
+            continue
+
+        # Build size allocation from draft
+        size_allocation = {
+            s: draft.allocations.get(s, None)
+            for s in SIZE_ORDER
+        }
+        size_qtys = {
+            f"size_{s}": (a.order_qty_adjusted if a else 0)
+            for s, a in size_allocation.items()
+        }
+
+        record = {
+            "store_code": draft.store_code,
+            "sku_key": draft.sku_key,
+            "status": "REORDER" if draft.should_order else "OK",
+            "total_qty": draft.total_qty,
+            **size_qtys,
+            "unit_cost": round(draft.cogs_unit, 2),
+            "on_hand": draft.current_stock_total,
+            "on_order": draft.inbound_stock_total,
+            "rop": round(draft.rop_sku, 0),
+            "roic_pct": round(draft.roic_monthly * 100, 1),
+            "d30": round(draft.d_sku * 30, 2),
+            # Phase 9.6 columns
+            "trigger_sizes": ",".join(draft.trigger_sizes),
+            "roic_action": draft.roic_action.value,
+            "demand_confidence": draft.demand_confidence.value,
+        }
+        results.append(record)
+
+        if verbose:
+            print(f"ORDER {draft.total_qty} ({draft.roic_action.value})")
+
+    return results
+
+
+def export_to_csv(records: list[dict], filepath: str, include_phase96: bool = False) -> int:
     """
     Export records to CSV file.
 
-    Returns number of records written.
+    Args:
+        records: List of record dicts
+        filepath: Output CSV path
+        include_phase96: Include Phase 9.6 columns
+
+    Returns:
+        Number of records written.
     """
     if not records:
         return 0
@@ -304,8 +415,12 @@ def export_to_csv(records: list[dict], filepath: str) -> int:
         "unit_cost", "on_hand", "on_order", "rop", "roic_pct", "d30"
     ]
 
+    # Add Phase 9.6 columns if requested
+    if include_phase96:
+        columns.extend(["trigger_sizes", "roic_action", "demand_confidence"])
+
     with open(filepath, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=columns)
+        writer = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(records)
 
@@ -337,6 +452,11 @@ def main():
         action="store_true",
         help="Suppress progress output",
     )
+    parser.add_argument(
+        "--size-aware",
+        action="store_true",
+        help="Use Phase 9.6 size-aware allocation (requires Phase 9.6 modules)",
+    )
 
     args = parser.parse_args()
 
@@ -347,14 +467,32 @@ def main():
 
     print("=" * 60)
     print("Export PO Suggestions")
+    if getattr(args, 'size_aware', False):
+        print("Mode: Phase 9.6 Size-Aware Allocation")
+    else:
+        print("Mode: Legacy (historical mix)")
     print("=" * 60)
 
+    # Check Phase 9.6 availability if requested
+    use_size_aware = getattr(args, 'size_aware', False)
+    if use_size_aware and not PHASE_96_AVAILABLE:
+        print("\nERROR: Phase 9.6 modules not available.")
+        print("Install with: pip install -e . or check core/calc/size_allocation.py")
+        return 1
+
+    # Generate records
     with get_db() as conn:
-        records = generate_po_suggestions(
-            conn,
-            reorder_only=not args.all,
-            verbose=not args.quiet,
-        )
+        if use_size_aware:
+            records = generate_po_suggestions_size_aware(
+                conn,
+                verbose=not args.quiet,
+            )
+        else:
+            records = generate_po_suggestions(
+                conn,
+                reorder_only=not args.all,
+                verbose=not args.quiet,
+            )
 
     if not records:
         print("\nNo records to export")
@@ -374,7 +512,7 @@ def main():
         return 0
 
     # Export
-    count = export_to_csv(records, args.output)
+    count = export_to_csv(records, args.output, include_phase96=use_size_aware)
 
     print("\n" + "=" * 60)
     print(f"Exported {count} records to {args.output}")
