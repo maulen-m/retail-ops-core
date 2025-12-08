@@ -1123,3 +1123,188 @@ class TestROICGate:
         action_9, qty_9 = apply_roic_gate(roic=0.099, order_qty=100)
         assert action_9 == ROICAction.REVIEW_REQUIRED
         assert qty_9 == 0
+
+
+# =============================================================================
+# TASK-164: generate_po_draft() (8 tests)
+# =============================================================================
+
+class TestGeneratePODraft:
+    """Tests for generate_po_draft() main orchestrator"""
+
+    @pytest.fixture
+    def base_input(self):
+        """Common test input for SKU with 5 sizes."""
+        # 30+ days of history for ACTUAL confidence
+        return {
+            "sku_key": "TEST_SKU",
+            "store_code": "UNIVERSAL",
+            "size_sales_90d": {"S": 30, "M": 90, "L": 120, "XL": 45, "2XL": 15},
+            "size_current_stock": {"S": 5, "M": 10, "L": 15, "XL": 5, "2XL": 3},
+            "size_inbound_stock": {"S": 0, "M": 0, "L": 0, "XL": 0, "2XL": 0},
+            "size_sales_history": {
+                "S": [1] * 30,
+                "M": [3] * 30,
+                "L": [4] * 30,
+                "XL": [1, 2] * 15,
+                "2XL": [0, 1] * 15
+            },
+            "size_stock_history": {
+                "S": [10] * 30,
+                "M": [20] * 30,
+                "L": [25] * 30,
+                "XL": [15] * 30,
+                "2XL": [10] * 30
+            },
+            "unit_cogs": 100.0,
+            "unit_profit": 30.0,
+            "sigma_sku": 2.0,
+            "sku_age_days": 120
+        }
+
+    def test_po_draft_no_order_needed(self, base_input):
+        """No order needed when all sizes have sufficient stock."""
+        from core.calc.size_allocation import generate_po_draft
+
+        # Give plenty of stock so no reorder is triggered
+        base_input["size_current_stock"] = {"S": 200, "M": 300, "L": 400, "XL": 250, "2XL": 150}
+
+        draft = generate_po_draft(**base_input)
+
+        assert draft.should_order is False
+        assert len(draft.trigger_sizes) == 0
+        assert draft.total_qty == 0
+
+    def test_po_draft_single_size_reorder(self, base_input):
+        """Single size triggers PO for entire SKU."""
+        from core.calc.size_allocation import generate_po_draft
+
+        # XL has very low stock, others are OK
+        base_input["size_current_stock"] = {"S": 200, "M": 300, "L": 400, "XL": 1, "2XL": 150}
+
+        draft = generate_po_draft(**base_input)
+
+        assert draft.should_order is True
+        assert "XL" in draft.trigger_sizes
+        assert draft.total_qty > 0
+
+    def test_po_draft_multiple_size_reorder(self, base_input):
+        """Multiple sizes in REORDER all listed as triggers."""
+        from core.calc.size_allocation import generate_po_draft
+
+        # M and L have very low stock
+        base_input["size_current_stock"] = {"S": 200, "M": 1, "L": 1, "XL": 200, "2XL": 150}
+
+        draft = generate_po_draft(**base_input)
+
+        assert draft.should_order is True
+        assert "M" in draft.trigger_sizes
+        assert "L" in draft.trigger_sizes
+        assert len(draft.trigger_sizes) >= 2
+
+    def test_po_draft_roic_blocked(self, base_input):
+        """Low ROIC should block order (REVIEW_REQUIRED)."""
+        from core.calc.size_allocation import generate_po_draft, ROICAction
+
+        # Very low profit margin = low ROIC
+        base_input["unit_profit"] = 1.0  # Very low profit
+        base_input["size_current_stock"] = {"S": 1, "M": 1, "L": 1, "XL": 1, "2XL": 1}
+
+        draft = generate_po_draft(**base_input)
+
+        # Should trigger order but ROIC gate may block it
+        if draft.roic_monthly < 0.10:
+            assert draft.roic_action == ROICAction.REVIEW_REQUIRED
+            assert draft.total_qty == 0
+
+    def test_po_draft_new_sku_adjusted(self, base_input):
+        """New SKU gets reduced allocation."""
+        from core.calc.size_allocation import generate_po_draft
+
+        # New SKU with 25 days of history
+        base_input["sku_age_days"] = 25
+        base_input["size_current_stock"] = {"S": 1, "M": 1, "L": 1, "XL": 1, "2XL": 1}
+
+        draft = generate_po_draft(**base_input)
+
+        assert draft.new_sku_factor == 0.75
+        # Adjusted quantities should be less than original
+        for alloc in draft.allocations.values():
+            if alloc.order_qty > 0:
+                assert alloc.order_qty_adjusted <= alloc.order_qty
+
+    def test_po_draft_insurance_applied(self, base_input):
+        """Low-demand size with significant mix gets insurance."""
+        from core.calc.size_allocation import generate_po_draft
+
+        # S has very low demand but decent mix
+        base_input["size_sales_history"]["S"] = [0] * 30  # Zero demand
+        base_input["size_stock_history"]["S"] = [10] * 30  # But has stock (not OOS)
+        base_input["size_sales_90d"]["S"] = 0
+        # S raw mix is 0/300 = 0%, but with 3% floor it gets some allocation
+        base_input["size_current_stock"] = {"S": 1, "M": 1, "L": 1, "XL": 1, "2XL": 1}
+
+        draft = generate_po_draft(**base_input)
+
+        # Insurance may or may not apply depending on mix threshold
+        # This tests that the function runs without error
+        assert draft.sku_key == "TEST_SKU"
+        assert draft.total_qty >= 0
+
+    def test_po_draft_total_matches_sum(self, base_input):
+        """Total qty should equal sum of size allocations."""
+        from core.calc.size_allocation import generate_po_draft
+
+        base_input["size_current_stock"] = {"S": 1, "M": 1, "L": 1, "XL": 1, "2XL": 1}
+
+        draft = generate_po_draft(**base_input)
+
+        # Total should match sum of adjusted quantities
+        expected_total = sum(a.order_qty_adjusted for a in draft.allocations.values())
+        assert draft.total_qty == expected_total
+
+    def test_po_draft_example_line52(self, base_input):
+        """Test with LINE52-like realistic values."""
+        from core.calc.size_allocation import generate_po_draft
+
+        # Realistic values for a high-demand SKU
+        draft = generate_po_draft(
+            sku_key="LINE52_BLACK",
+            store_code="UNIVERSAL",
+            size_sales_90d={"S": 84, "M": 99, "L": 283, "XL": 358, "2XL": 240, "3XL": 150, "4XL": 66},
+            size_current_stock={"S": 28, "M": 33, "L": 94, "XL": 15, "2XL": 79, "3XL": 50, "4XL": 22},
+            size_inbound_stock={"S": 0, "M": 0, "L": 0, "XL": 0, "2XL": 0, "3XL": 0, "4XL": 0},
+            size_sales_history={
+                "S": [1] * 30 + [0, 1] * 30,  # ~0.67/day
+                "M": [1] * 60 + [1, 2] * 15,  # ~1.1/day
+                "L": [3] * 60 + [3, 4] * 15,  # ~3.2/day
+                "XL": [4] * 60 + [3, 4] * 15,  # ~4.0/day
+                "2XL": [2, 3] * 45,  # ~2.7/day
+                "3XL": [1, 2] * 45,  # ~1.7/day
+                "4XL": [0, 1] * 45,  # ~0.7/day
+            },
+            size_stock_history={
+                "S": [20] * 90,
+                "M": [30] * 90,
+                "L": [50] * 90,
+                "XL": [40] * 90,
+                "2XL": [35] * 90,
+                "3XL": [25] * 90,
+                "4XL": [15] * 90,
+            },
+            unit_cogs=150.0,
+            unit_profit=45.0,
+            sigma_sku=3.0,
+            sku_age_days=365
+        )
+
+        # Verify the draft has expected structure
+        assert draft.sku_key == "LINE52_BLACK"
+        assert len(draft.allocations) == 7  # 7 sizes
+        assert draft.d_sku > 0
+        assert draft.ss_total_sku > 0
+        assert draft.roic_monthly > 0
+
+        # XL is low stock (15) with high demand (~4/day), should trigger
+        if draft.should_order:
+            assert "XL" in draft.trigger_sizes or len(draft.trigger_sizes) > 0

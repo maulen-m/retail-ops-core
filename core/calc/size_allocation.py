@@ -878,3 +878,290 @@ def apply_roic_gate(
 
     else:  # < 10%
         return ROICAction.REVIEW_REQUIRED, 0
+
+
+# =============================================================================
+# TASK-164: Main PO Draft Generator
+# =============================================================================
+
+def generate_po_draft(
+    sku_key: str,
+    store_code: str,
+    size_sales_90d: dict[str, int],
+    size_current_stock: dict[str, int],
+    size_inbound_stock: dict[str, int],
+    size_sales_history: dict[str, list[int]],
+    size_stock_history: dict[str, list[int]],
+    unit_cogs: float,
+    unit_profit: float,
+    sigma_sku: float,
+    sku_age_days: int = 90
+) -> PODraft:
+    """
+    Generate a complete PO draft with size-aware allocation.
+
+    TASK-164: Main orchestrator that combines all Phase 9.6 components.
+
+    Steps:
+    1. Get params
+    2. Calculate size mix with guardrails
+    3. Calculate per-size metrics (D, SS, ROP, T_post)
+    4. Calculate per-size status
+    5. Check if PO needed (trigger logic)
+    6. Calculate allocations
+    7. Apply low demand insurance
+    8. Apply new SKU adjustment
+    9. Build totals
+    10. Calculate ROIC
+    11. Apply ROIC gate
+    12. Return PODraft
+
+    Args:
+        sku_key: Style-level SKU key (e.g., "LINE52_BLACK")
+        store_code: Store code (e.g., "UNIVERSAL")
+        size_sales_90d: 90-day sales by size {size: total_units}
+        size_current_stock: Current on-hand stock {size: units}
+        size_inbound_stock: In-transit stock {size: units}
+        size_sales_history: Daily sales history by size {size: [daily_sales]}
+        size_stock_history: Daily stock history by size {size: [daily_stock]}
+        unit_cogs: Cost of goods sold per unit
+        unit_profit: Profit per unit (price - COGS)
+        sigma_sku: SKU-level demand volatility
+        sku_age_days: Days since first sale (default: 90)
+
+    Returns:
+        PODraft with complete size-level allocations and ROIC gate result
+
+    Example:
+        >>> draft = generate_po_draft(
+        ...     sku_key="LINE52_BLACK",
+        ...     store_code="UNIVERSAL",
+        ...     size_sales_90d={"S": 100, "M": 300, "L": 400, "XL": 150, "2XL": 50},
+        ...     size_current_stock={"S": 20, "M": 30, "L": 25, "XL": 10, "2XL": 15},
+        ...     size_inbound_stock={"S": 0, "M": 0, "L": 0, "XL": 0, "2XL": 0},
+        ...     size_sales_history={"S": [...], ...},
+        ...     size_stock_history={"S": [...], ...},
+        ...     unit_cogs=100.0,
+        ...     unit_profit=30.0,
+        ...     sigma_sku=2.0,
+        ...     sku_age_days=120
+        ... )
+    """
+    from datetime import datetime
+    from core.config.inventory_params import get_params
+
+    params = get_params()
+    sizes = list(size_sales_90d.keys())
+
+    # Initialize PODraft
+    draft = PODraft(
+        sku_key=sku_key,
+        store_code=store_code,
+        cogs_unit=unit_cogs,
+        profit_unit=unit_profit,
+        sigma_sku=sigma_sku,
+        sku_age_days=sku_age_days,
+        created_at=datetime.now().isoformat()
+    )
+
+    # ==========================================================================
+    # Step 2: Calculate size mix with guardrails
+    # ==========================================================================
+    size_mix = calc_size_mix_with_guardrails(size_sales_90d)
+
+    # ==========================================================================
+    # Step 3: Calculate per-size metrics (D, SS, ROP, T_post)
+    # ==========================================================================
+    size_data: dict[str, SizeData] = {}
+    size_demands: dict[str, float] = {}
+    size_ss_totals: dict[str, float] = {}
+
+    for size in sizes:
+        # Get histories for this size
+        sales_hist = size_sales_history.get(size, [])
+        stock_hist = size_stock_history.get(size, [])
+
+        # OOS-filtered demand
+        d_size, good_days, confidence = calc_d_sku_with_oos_filter(sales_hist, stock_hist)
+        size_demands[size] = d_size
+
+        # Safety stock components
+        mix = size_mix.get(size, 0.0)
+        sigma_size, ss_demand, ss_floor, ss_mix, ss_total = calc_safety_stock_for_size(
+            d_size=d_size,
+            sigma_sku=sigma_sku,
+            size_mix=mix
+        )
+        size_ss_totals[size] = ss_total
+
+        # ROP and T_post
+        rop = calc_rop_for_size(d_size=d_size, ss_total=ss_total)
+        t_post = calc_t_post_for_size(d_size=d_size, ss_total=ss_total)
+
+        # Current stock levels
+        current = size_current_stock.get(size, 0)
+        inbound = size_inbound_stock.get(size, 0)
+        total = current + inbound
+
+        # Pre-arrival stock projection
+        pre_arrival = calc_pre_arrival_stock(
+            current_stock=current,
+            inbound_stock=inbound,
+            d_size=d_size
+        )
+
+        # Build SizeData
+        size_data[size] = SizeData(
+            my_size=size,
+            size_order=sizes.index(size),
+            current_stock=current,
+            inbound_stock=inbound,
+            total_stock=total,
+            sales_90d=size_sales_90d.get(size, 0),
+            good_days=good_days,
+            d_size=d_size,
+            demand_confidence=confidence,
+            raw_mix=size_sales_90d.get(size, 0) / max(1, sum(size_sales_90d.values())),
+            mix=mix,
+            sigma_size=sigma_size,
+            ss_demand=ss_demand,
+            ss_floor=ss_floor,
+            ss_mix=ss_mix,
+            ss_total=ss_total,
+            rop=rop,
+            t_post=t_post,
+            pre_arrival_stock=pre_arrival,
+            days_to_arrival=params.L
+        )
+
+    # ==========================================================================
+    # Step 4: Calculate per-size status
+    # ==========================================================================
+    size_statuses: dict[str, OrderStatus] = {}
+    for size, data in size_data.items():
+        status = calc_status_for_size(
+            current_stock=data.current_stock,
+            total_stock=data.total_stock,
+            rop=data.rop
+        )
+        size_data[size].status = status
+        size_statuses[size] = status
+
+    # ==========================================================================
+    # Step 5: Check if PO needed (trigger logic)
+    # ==========================================================================
+    should_order, trigger_sizes = should_generate_po(size_statuses)
+    draft.should_order = should_order
+    draft.trigger_sizes = trigger_sizes
+
+    # ==========================================================================
+    # Step 6: Calculate allocations
+    # ==========================================================================
+    size_allocations: dict[str, int] = {}
+
+    if should_order:
+        for size, data in size_data.items():
+            qty = calc_order_qty_for_size(
+                d_size=data.d_size,
+                t_post=data.t_post,
+                pre_arrival_stock=data.pre_arrival_stock
+            )
+            size_allocations[size] = qty
+    else:
+        # No order needed, all allocations are 0
+        for size in sizes:
+            size_allocations[size] = 0
+
+    # ==========================================================================
+    # Step 7: Apply low demand insurance
+    # ==========================================================================
+    if should_order:
+        total_before_insurance = sum(size_allocations.values())
+        size_allocations = apply_low_demand_insurance(
+            size_allocations=size_allocations,
+            size_demands=size_demands,
+            size_mixes=size_mix,
+            total_po_qty=total_before_insurance
+        )
+        if sum(size_allocations.values()) > total_before_insurance:
+            draft.insurance_applied = True
+
+    # ==========================================================================
+    # Step 8: Apply new SKU adjustment
+    # ==========================================================================
+    size_allocations_adjusted: dict[str, int] = {}
+    for size, qty in size_allocations.items():
+        adj_qty, factor = adjust_for_new_sku(order_qty=qty, sku_age_days=sku_age_days)
+        size_allocations_adjusted[size] = adj_qty
+        if factor < 1.0:
+            draft.new_sku_factor = factor
+
+    # ==========================================================================
+    # Step 9: Build totals and SizeAllocation objects
+    # ==========================================================================
+    for size in sizes:
+        original_qty = size_allocations.get(size, 0)
+        adjusted_qty = size_allocations_adjusted.get(size, 0)
+        status = size_statuses.get(size, OrderStatus.OK)
+
+        allocation = SizeAllocation(
+            my_size=size,
+            size_order=sizes.index(size),
+            target_stock=size_data[size].t_post * size_data[size].d_size,
+            order_qty=original_qty,
+            order_qty_adjusted=adjusted_qty,
+            status=status,
+            is_trigger=(size in trigger_sizes)
+        )
+        draft.allocations[size] = allocation
+
+    # Totals
+    draft.total_qty = sum(a.order_qty_adjusted for a in draft.allocations.values())
+    draft.total_cost_cny = draft.total_qty * unit_cogs
+
+    # Stock totals
+    draft.current_stock_total = sum(size_current_stock.values())
+    draft.inbound_stock_total = sum(size_inbound_stock.values())
+    draft.total_stock = draft.current_stock_total + draft.inbound_stock_total
+
+    # SKU-level metrics
+    draft.d_sku = sum(size_demands.values())
+    draft.ss_total_sku = sum(size_ss_totals.values())
+    draft.rop_sku = sum(d.rop for d in size_data.values())
+    # Use the most common confidence level
+    confidences = [d.demand_confidence for d in size_data.values()]
+    draft.demand_confidence = max(set(confidences), key=confidences.count)
+
+    # ==========================================================================
+    # Step 10: Calculate ROIC
+    # ==========================================================================
+    draft.roic_monthly = calc_roic(
+        d_sku=draft.d_sku,
+        ss_total=draft.ss_total_sku,
+        unit_cogs=unit_cogs,
+        unit_profit=unit_profit
+    )
+
+    # ==========================================================================
+    # Step 11: Apply ROIC gate
+    # ==========================================================================
+    if should_order and draft.total_qty > 0:
+        roic_action, gated_qty = apply_roic_gate(
+            roic=draft.roic_monthly,
+            order_qty=draft.total_qty
+        )
+        draft.roic_action = roic_action
+
+        # If REVIEW_REQUIRED, set quantities to 0
+        if roic_action == ROICAction.REVIEW_REQUIRED:
+            for alloc in draft.allocations.values():
+                alloc.order_qty_adjusted = 0
+            draft.total_qty = 0
+            draft.total_cost_cny = 0
+    else:
+        draft.roic_action = ROICAction.REVIEW_REQUIRED if not should_order else ROICAction.ORDER_FULL
+
+    # ==========================================================================
+    # Step 12: Return PODraft
+    # ==========================================================================
+    return draft
