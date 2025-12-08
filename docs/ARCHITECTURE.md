@@ -1,8 +1,8 @@
 # System Architecture
 
 **Project:** Autonomous Inventory/PO System
-**Version:** 3.0 (Phase 8)
-**Updated:** 2025-12-06
+**Version:** 4.0 (Phase 9.6)
+**Updated:** 2025-12-09
 
 ---
 
@@ -68,11 +68,14 @@ This system automates inventory management for a multi-channel retail operation 
 ```
 Autonomous_business/
 ├── core/                      # Core business logic
+│   ├── config/                # Centralized configuration (Phase 9.6)
+│   │   └── inventory_params.py # Inventory parameters dataclass
 │   ├── calc/                  # Calculation modules
 │   │   ├── __init__.py        # Module exports
 │   │   ├── economics.py       # Kaspi revenue, COGS, profit
 │   │   ├── wb_economics.py    # WB revenue, fees, profit (Phase 8)
 │   │   ├── inventory.py       # SS, ROP, ROIC, order qty
+│   │   ├── size_allocation.py # Size-aware PO allocation (Phase 9.6)
 │   │   ├── forecast.py        # Demand forecasting
 │   │   ├── forecast_accuracy.py # MAPE, bias, backtest
 │   │   ├── dow_patterns.py    # Day-of-week patterns
@@ -91,7 +94,9 @@ Autonomous_business/
 │   │   └── po_generator.py    # Auto-PO generation
 │   ├── validation/
 │   │   └── data_quality.py    # Anomaly detection
-│   ├── db.py                  # Database helpers
+│   ├── db/                    # Database module (refactored)
+│   │   ├── __init__.py        # Connection helpers
+│   │   └── queries.py         # Size-level data queries (Phase 9.6)
 │   └── logging_config.py      # Logging configuration
 ├── scripts/                   # CLI tools
 │   ├── Ingestion
@@ -117,6 +122,9 @@ Autonomous_business/
 │   │   ├── report_stockout_costs.py
 │   │   ├── report_data_quality.py
 │   │   └── report_po_analytics.py
+│   ├── Validation (Phase 9.6)
+│   │   ├── validate_size_allocation.py  # 7 validation checks
+│   │   └── compare_old_vs_new_allocation.py  # Allocation comparison
 │   ├── Multi-Channel (Phase 8)
 │   │   ├── build_channel_metrics.py  # Daily channel metrics
 │   │   ├── run_expansion_analysis.py # WB expansion scoring
@@ -131,7 +139,7 @@ Autonomous_business/
 ├── db/
 │   ├── schema.sql             # Database schema (38 tables)
 │   └── app.db                 # SQLite database
-├── tests/                     # Test suite (334 tests)
+├── tests/                     # Test suite (556+ tests)
 │   ├── test_economics.py
 │   ├── test_inventory.py
 │   ├── test_status.py
@@ -142,6 +150,7 @@ Autonomous_business/
 │   ├── test_wb_economics.py   # WB economics (Phase 8)
 │   ├── test_channel_metrics.py # Channel metrics (Phase 8)
 │   ├── test_expansion_scorer.py # Expansion scoring (Phase 8)
+│   ├── test_size_allocation.py # Size allocation (Phase 9.6) - 86 tests
 │   └── ...
 ├── docs/
 │   ├── ARCHITECTURE.md        # This file
@@ -248,9 +257,71 @@ Automatic PO generation.
 
 ```python
 calc_order_quantity(sku_key, current_stock, rop, ...) -> int
-apply_size_splits(sku_key, total_qty, db_path) -> dict
+apply_size_splits(sku_key, total_qty, db_path) -> dict  # Legacy
 generate_po_draft(db_path, trigger, sku_filter) -> int
+generate_po_draft_size_aware(sku_key, store_code, db_path) -> PODraft  # Phase 9.6
 calc_confidence_score(sku_key, order_qty, ...) -> float
+```
+
+### size_allocation.py (Phase 9.6)
+
+True size-level allocation with guardrails and ROIC gate.
+
+```python
+# Enums
+OrderStatus: REORDER, WAIT, OK
+ROICAction: ORDER_FULL, ORDER_WITH_FLAG, REVIEW_REQUIRED
+DemandConfidence: ACTUAL, MARGINAL, FALLBACK, NO_DATA
+
+# Demand
+calc_d_sku_with_oos_filter(sales_history, stock_history) -> tuple[float, int, DemandConfidence]
+calc_size_mix_with_guardrails(size_sales, min_mix=0.03, max_mix=0.40) -> dict[str, float]
+
+# Safety Stock
+calc_safety_stock_for_size(d_size, sigma_sku, size_mix, ...) -> tuple[5 floats]
+calc_rop_for_size(d_size, ss_total, L) -> float
+calc_t_post_for_size(d_size, ss_total, R) -> float
+
+# Status
+calc_pre_arrival_stock(current_stock, inbound_stock, d_size, days) -> float
+calc_status_for_size(current_stock, total_stock, rop) -> OrderStatus
+should_generate_po(size_statuses) -> tuple[bool, list[str]]
+
+# Allocation
+calc_order_qty_for_size(d_size, t_post, pre_arrival_stock) -> int
+adjust_for_new_sku(order_qty, sku_age_days) -> tuple[int, float]
+apply_low_demand_insurance(allocations, demands, mixes, total_qty) -> dict
+
+# ROIC
+calc_roic(d_sku, ss_total, unit_cogs, unit_profit, L, R) -> float
+apply_roic_gate(roic, order_qty) -> tuple[ROICAction, int]
+
+# Main Generator
+generate_po_draft(...) -> PODraft
+```
+
+### inventory_params.py (Phase 9.6)
+
+Centralized inventory parameters as frozen dataclass.
+
+```python
+@dataclass(frozen=True)
+class InventoryParams:
+    L: int = 21        # Lead time (days)
+    R: int = 10        # Review period (days)
+    B: int = 14        # Buffer days
+    z: float = 1.65    # Service level (95%)
+    TV: float = 0.23   # Size mix variability
+    sigma_factor: float = 0.4
+    min_size_mix: float = 0.03   # 3% floor
+    max_size_mix: float = 0.40   # 40% cap
+    roic_full_approval: float = 0.20    # 20% threshold
+    roic_flag_threshold: float = 0.10   # 10% threshold
+    new_sku_30d_factor: float = 0.75
+    new_sku_60d_factor: float = 0.85
+    new_sku_90d_factor: float = 0.95
+
+get_params() -> InventoryParams  # Singleton pattern
 ```
 
 ### wb_economics.py (Phase 8)
@@ -376,12 +447,25 @@ DEFAULT_PARAMS = {
    - Competition score: 20% weight (competitor count)
    - Recommendations: EXPAND (75+), TEST (50-74), HOLD (30-49), SKIP (<30)
 
+7. **Size-Aware Allocation (Phase 9.6)**
+   - OOS-filtered demand: Excludes stockout days from calculation
+   - Size mix guardrails: 3% floor, 40% cap
+   - Demand confidence uplifts: MARGINAL (1.2×), FALLBACK (1.5×)
+   - ANY-size REORDER: Single size triggers whole SKU PO
+   - New SKU factors: 0.75 (<30d), 0.85 (30-60d), 0.95 (60-90d)
+   - Low demand insurance: D < 0.1 AND mix ≥ 5% → add 1% of PO
+
+8. **ROIC Gate (Phase 9.6)**
+   - ORDER_FULL: ROIC ≥ 20% (auto-approve)
+   - ORDER_WITH_FLAG: 10-20% ROIC (approve with review)
+   - REVIEW_REQUIRED: < 10% ROIC (manual approval needed)
+
 ---
 
 ## Performance
 
 - Database: SQLite (single file, ~10MB)
-- Tests: 334 tests in ~0.8 seconds
+- Tests: 556+ tests in ~1.2 seconds (86 new Phase 9.6 tests)
 - Forecast: Covers 2+ SKUs with 7-day history
 - Backup: 85%+ compression with gzip
 
