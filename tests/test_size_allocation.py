@@ -782,3 +782,197 @@ class TestPOTrigger:
 
         assert should_order is False
         assert len(triggers) == 0
+
+
+# =============================================================================
+# TASK-159: Size allocation calculation (5 tests)
+# =============================================================================
+
+class TestOrderQtyForSize:
+    """Tests for calc_order_qty_for_size()"""
+
+    def test_allocation_basic(self):
+        """Basic allocation calculation."""
+        from core.calc.size_allocation import calc_order_qty_for_size
+
+        qty = calc_order_qty_for_size(
+            d_size=2.0,
+            t_post=35.0,
+            pre_arrival_stock=20.0
+        )
+
+        # target = 35 × 2 = 70, order = 70 - 20 = 50
+        assert qty == 50
+
+    def test_allocation_overstocked_zero(self):
+        """Overstocked size should get zero allocation."""
+        from core.calc.size_allocation import calc_order_qty_for_size
+
+        qty = calc_order_qty_for_size(
+            d_size=2.0,
+            t_post=35.0,
+            pre_arrival_stock=100.0  # More than target
+        )
+
+        # target = 70, pre = 100, order = max(0, 70-100) = 0
+        assert qty == 0
+
+    def test_allocation_rounds_correctly(self):
+        """Allocation should round to nearest integer."""
+        from core.calc.size_allocation import calc_order_qty_for_size
+
+        qty = calc_order_qty_for_size(
+            d_size=2.3,
+            t_post=10.0,
+            pre_arrival_stock=5.0
+        )
+
+        # target = 10 × 2.3 = 23, order = 23 - 5 = 18
+        assert qty == 18
+
+    def test_allocation_floor_zero(self):
+        """Allocation cannot be negative."""
+        from core.calc.size_allocation import calc_order_qty_for_size
+
+        qty = calc_order_qty_for_size(
+            d_size=1.0,
+            t_post=10.0,
+            pre_arrival_stock=50.0
+        )
+
+        # target = 10, pre = 50, would be -40 but clamped to 0
+        assert qty == 0
+
+    def test_allocation_high_demand(self):
+        """High demand size should get larger allocation."""
+        from core.calc.size_allocation import calc_order_qty_for_size
+
+        qty_low = calc_order_qty_for_size(d_size=1.0, t_post=30.0, pre_arrival_stock=10.0)
+        qty_high = calc_order_qty_for_size(d_size=3.0, t_post=30.0, pre_arrival_stock=10.0)
+
+        assert qty_high > qty_low
+
+
+# =============================================================================
+# TASK-160: New SKU adjustments (5 tests)
+# =============================================================================
+
+class TestNewSKUAdjustment:
+    """Tests for adjust_for_new_sku()"""
+
+    def test_new_sku_under_30(self):
+        """SKUs under 30 days should get 0.75× factor."""
+        from core.calc.size_allocation import adjust_for_new_sku
+
+        adj_qty, factor = adjust_for_new_sku(order_qty=100, sku_age_days=25)
+
+        assert factor == 0.75
+        assert adj_qty == 75
+
+    def test_new_sku_30_to_60(self):
+        """SKUs 30-60 days should get 0.85× factor."""
+        from core.calc.size_allocation import adjust_for_new_sku
+
+        adj_qty, factor = adjust_for_new_sku(order_qty=100, sku_age_days=45)
+
+        assert factor == 0.85
+        assert adj_qty == 85
+
+    def test_new_sku_60_to_90(self):
+        """SKUs 60-90 days should get 0.95× factor."""
+        from core.calc.size_allocation import adjust_for_new_sku
+
+        adj_qty, factor = adjust_for_new_sku(order_qty=100, sku_age_days=75)
+
+        assert factor == 0.95
+        assert adj_qty == 95
+
+    def test_new_sku_full_history(self):
+        """SKUs 90+ days should get full quantity (1.0× factor)."""
+        from core.calc.size_allocation import adjust_for_new_sku
+
+        adj_qty, factor = adjust_for_new_sku(order_qty=100, sku_age_days=120)
+
+        assert factor == 1.0
+        assert adj_qty == 100
+
+    def test_new_sku_minimum_one(self):
+        """Adjusted qty should be at least 1 if original was > 0."""
+        from core.calc.size_allocation import adjust_for_new_sku
+
+        # Very small order with large reduction
+        adj_qty, factor = adjust_for_new_sku(order_qty=1, sku_age_days=10)
+
+        # Would be 0.75 × 1 = 0.75 → rounds to 1 (minimum)
+        assert adj_qty >= 1
+
+
+# =============================================================================
+# TASK-161: Low demand insurance (4 tests)
+# =============================================================================
+
+class TestLowDemandInsurance:
+    """Tests for apply_low_demand_insurance()"""
+
+    def test_insurance_applied(self):
+        """Insurance should be applied when D < 0.1 AND mix >= 5%."""
+        from core.calc.size_allocation import apply_low_demand_insurance
+
+        allocations = {"S": 0, "M": 50, "L": 100}
+        demands = {"S": 0.05, "M": 2.0, "L": 4.0}
+        mixes = {"S": 0.10, "M": 0.30, "L": 0.60}
+
+        updated = apply_low_demand_insurance(
+            allocations, demands, mixes, total_po_qty=150
+        )
+
+        # S has low demand (0.05 < 0.1) and significant mix (10% >= 5%)
+        # Should get 1% of 150 = 2 units (minimum 1)
+        assert updated["S"] > allocations["S"]
+        assert updated["S"] >= 1
+
+    def test_insurance_not_needed_high_demand(self):
+        """Insurance not applied if demand is sufficient."""
+        from core.calc.size_allocation import apply_low_demand_insurance
+
+        allocations = {"S": 10, "M": 50, "L": 100}
+        demands = {"S": 0.5, "M": 2.0, "L": 4.0}  # S has demand 0.5 > 0.1
+        mixes = {"S": 0.10, "M": 0.30, "L": 0.60}
+
+        updated = apply_low_demand_insurance(
+            allocations, demands, mixes, total_po_qty=160
+        )
+
+        # S has sufficient demand, no insurance needed
+        assert updated["S"] == allocations["S"]
+
+    def test_insurance_not_needed_low_mix(self):
+        """Insurance not applied if mix is too low."""
+        from core.calc.size_allocation import apply_low_demand_insurance
+
+        allocations = {"S": 0, "M": 50, "L": 100}
+        demands = {"S": 0.05, "M": 2.0, "L": 4.0}  # S has low demand
+        mixes = {"S": 0.02, "M": 0.38, "L": 0.60}  # But mix is only 2% < 5%
+
+        updated = apply_low_demand_insurance(
+            allocations, demands, mixes, total_po_qty=150
+        )
+
+        # S has low mix, no insurance
+        assert updated["S"] == allocations["S"]
+
+    def test_insurance_minimum_one(self):
+        """Insurance quantity should be at least 1 unit."""
+        from core.calc.size_allocation import apply_low_demand_insurance
+
+        allocations = {"S": 0, "M": 5, "L": 10}
+        demands = {"S": 0.05, "M": 1.0, "L": 2.0}
+        mixes = {"S": 0.10, "M": 0.30, "L": 0.60}
+
+        # Very small PO
+        updated = apply_low_demand_insurance(
+            allocations, demands, mixes, total_po_qty=15
+        )
+
+        # 1% of 15 = 0.15, but minimum is 1
+        assert updated["S"] >= 1

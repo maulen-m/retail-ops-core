@@ -609,3 +609,151 @@ def should_generate_po(
     should_order = len(trigger_sizes) > 0
 
     return should_order, trigger_sizes
+
+
+# =============================================================================
+# TASK-159: Size allocation calculation
+# =============================================================================
+
+def calc_order_qty_for_size(
+    d_size: float,
+    t_post: float,
+    pre_arrival_stock: float
+) -> int:
+    """
+    Calculate order quantity for a single size.
+
+    TASK-159: target = T_post × D_size, order = max(0, round(target - pre_arrival))
+
+    Args:
+        d_size: Daily demand for this size
+        t_post: Target days of cover after arrival
+        pre_arrival_stock: Projected stock when shipment arrives
+
+    Returns:
+        Order quantity (non-negative integer)
+
+    Example:
+        >>> qty = calc_order_qty_for_size(d_size=2.0, t_post=35.0, pre_arrival_stock=20.0)
+        >>> # target = 35 × 2 = 70, order = max(0, round(70 - 20)) = 50
+    """
+    # Target stock level
+    target = t_post * d_size
+
+    # Order quantity
+    order = target - pre_arrival_stock
+
+    # Ensure non-negative integer
+    return max(0, round(order))
+
+
+# =============================================================================
+# TASK-160: New SKU adjustments
+# =============================================================================
+
+def adjust_for_new_sku(
+    order_qty: int,
+    sku_age_days: int
+) -> tuple[int, float]:
+    """
+    Apply age-based adjustment factor for new SKUs.
+
+    TASK-160: Reduce order quantities for SKUs with limited sales history
+    to manage risk of overstocking unproven products.
+
+    Factors:
+    - <30 days: 0.75× (25% reduction)
+    - 30-60 days: 0.85× (15% reduction)
+    - 60-90 days: 0.95× (5% reduction)
+    - ≥90 days: 1.0× (no adjustment)
+
+    Args:
+        order_qty: Original order quantity
+        sku_age_days: Days since first sale of this SKU
+
+    Returns:
+        Tuple of (adjusted_qty, factor_applied):
+        - adjusted_qty: Quantity after age adjustment (minimum 1 if order_qty > 0)
+        - factor_applied: The factor that was applied
+
+    Example:
+        >>> adj_qty, factor = adjust_for_new_sku(order_qty=100, sku_age_days=25)
+        >>> # adj_qty = round(100 × 0.75) = 75, factor = 0.75
+    """
+    from core.config.inventory_params import get_params
+
+    params = get_params()
+
+    # Determine adjustment factor based on age
+    if sku_age_days < 30:
+        factor = params.new_sku_30d_factor  # 0.75
+    elif sku_age_days < 60:
+        factor = params.new_sku_60d_factor  # 0.85
+    elif sku_age_days < 90:
+        factor = params.new_sku_90d_factor  # 0.95
+    else:
+        factor = 1.0  # Full order
+
+    # Apply factor
+    adjusted_qty = round(order_qty * factor)
+
+    # Ensure minimum of 1 if we were going to order something
+    if order_qty > 0 and adjusted_qty < 1:
+        adjusted_qty = 1
+
+    return adjusted_qty, factor
+
+
+# =============================================================================
+# TASK-161: Low demand insurance
+# =============================================================================
+
+def apply_low_demand_insurance(
+    size_allocations: dict[str, int],
+    size_demands: dict[str, float],
+    size_mixes: dict[str, float],
+    total_po_qty: int,
+    demand_threshold: float = 0.1,
+    mix_threshold: float = 0.05
+) -> dict[str, int]:
+    """
+    Apply low-demand insurance to protect sizes with sporadic demand.
+
+    TASK-161: If D_size < 0.1 AND mix ≥ 5% → add 1% of total PO to that size.
+
+    This ensures we don't completely starve sizes that have historical
+    importance (≥5% mix) but currently show very low demand (< 0.1/day).
+
+    Args:
+        size_allocations: Current allocation {size: qty}
+        size_demands: Daily demand {size: d_size}
+        size_mixes: Size mix percentages {size: mix}
+        total_po_qty: Total PO quantity before insurance
+        demand_threshold: Low demand threshold (default: 0.1)
+        mix_threshold: Significant mix threshold (default: 0.05 = 5%)
+
+    Returns:
+        Updated allocations with insurance applied
+
+    Example:
+        >>> allocs = {"S": 0, "M": 50, "L": 100}
+        >>> demands = {"S": 0.05, "M": 2.0, "L": 4.0}
+        >>> mixes = {"S": 0.10, "M": 0.30, "L": 0.60}
+        >>> new_allocs = apply_low_demand_insurance(allocs, demands, mixes, 150)
+        >>> # S has low demand (0.05 < 0.1) but significant mix (10% >= 5%)
+        >>> # S gets 1% of 150 = 2 units added
+    """
+    # Work with a copy
+    updated = dict(size_allocations)
+
+    for size in size_allocations:
+        d_size = size_demands.get(size, 0.0)
+        mix = size_mixes.get(size, 0.0)
+
+        # Check insurance conditions
+        if d_size < demand_threshold and mix >= mix_threshold:
+            # Add 1% of total PO
+            insurance_qty = max(1, round(total_po_qty * 0.01))
+            updated[size] = size_allocations[size] + insurance_qty
+
+    return updated
