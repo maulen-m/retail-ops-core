@@ -174,3 +174,130 @@ class TestDataclasses:
         assert draft.should_order is False
         assert draft.trigger_sizes == []
         assert draft.allocations == {}
+
+
+# =============================================================================
+# TASK-152: OOS-filtered demand calculation (8 tests)
+# =============================================================================
+
+class TestOOSFilteredDemand:
+    """Tests for calc_d_sku_with_oos_filter()"""
+
+    def test_oos_filter_excludes_stockout_days(self):
+        """OOS days (sales=0 AND stock=0) should be excluded."""
+        from core.calc.size_allocation import calc_d_sku_with_oos_filter
+
+        # 5 days: 3 good days, 2 OOS days
+        sales = [5, 0, 3, 0, 2]   # Total good sales: 5+3+2 = 10
+        stock = [10, 0, 7, 0, 5]  # Days 2 and 4 are OOS (sales=0, stock=0)
+
+        d, good_days, conf = calc_d_sku_with_oos_filter(sales, stock)
+
+        assert good_days == 3  # Only 3 good days
+        # Base demand = 10/3 = 3.33, but < 14 days so FALLBACK with 1.5x uplift
+        assert d == pytest.approx(10 / 3 * 1.5, rel=0.01)
+
+    def test_oos_filter_keeps_zero_sales_with_stock(self):
+        """Days with zero sales but positive stock should be counted."""
+        from core.calc.size_allocation import calc_d_sku_with_oos_filter
+
+        # 5 days: all good (including zero-sales days with stock)
+        sales = [5, 0, 3, 0, 2]   # Total: 10
+        stock = [10, 5, 7, 3, 5]  # All have stock, so all are good days
+
+        d, good_days, conf = calc_d_sku_with_oos_filter(sales, stock)
+
+        assert good_days == 5  # All 5 days are good
+        # Base demand = 10/5 = 2.0, but < 14 days so FALLBACK
+        assert d == pytest.approx(2.0 * 1.5, rel=0.01)
+
+    def test_oos_filter_actual_confidence(self):
+        """≥30 good days should return ACTUAL confidence with no uplift."""
+        from core.calc.size_allocation import calc_d_sku_with_oos_filter, DemandConfidence
+
+        # 30 good days, 3 sales each day
+        sales = [3] * 30
+        stock = [10] * 30
+
+        d, good_days, conf = calc_d_sku_with_oos_filter(sales, stock)
+
+        assert good_days == 30
+        assert conf == DemandConfidence.ACTUAL
+        assert d == pytest.approx(3.0, rel=0.01)  # No uplift
+
+    def test_oos_filter_marginal_confidence(self):
+        """14-29 good days should return MARGINAL confidence with 1.2x uplift."""
+        from core.calc.size_allocation import calc_d_sku_with_oos_filter, DemandConfidence
+
+        # 20 good days
+        sales = [2] * 20
+        stock = [10] * 20
+
+        d, good_days, conf = calc_d_sku_with_oos_filter(sales, stock)
+
+        assert good_days == 20
+        assert conf == DemandConfidence.MARGINAL
+        # Base = 2.0, uplift 1.2x = 2.4
+        assert d == pytest.approx(2.0 * 1.2, rel=0.01)
+
+    def test_oos_filter_fallback_confidence(self):
+        """<14 good days should return FALLBACK confidence with 1.5x uplift."""
+        from core.calc.size_allocation import calc_d_sku_with_oos_filter, DemandConfidence
+
+        # 10 good days
+        sales = [4] * 10
+        stock = [10] * 10
+
+        d, good_days, conf = calc_d_sku_with_oos_filter(sales, stock)
+
+        assert good_days == 10
+        assert conf == DemandConfidence.FALLBACK
+        # Base = 4.0, uplift 1.5x = 6.0
+        assert d == pytest.approx(4.0 * 1.5, rel=0.01)
+
+    def test_oos_filter_no_data(self):
+        """0 good days or empty lists should return NO_DATA."""
+        from core.calc.size_allocation import calc_d_sku_with_oos_filter, DemandConfidence
+
+        # Empty lists
+        d, good_days, conf = calc_d_sku_with_oos_filter([], [])
+        assert d == 0.0
+        assert good_days == 0
+        assert conf == DemandConfidence.NO_DATA
+
+        # All OOS days
+        sales = [0, 0, 0]
+        stock = [0, 0, 0]
+        d, good_days, conf = calc_d_sku_with_oos_filter(sales, stock)
+        assert d == 0.0
+        assert good_days == 0
+        assert conf == DemandConfidence.NO_DATA
+
+    def test_oos_filter_all_good_days(self):
+        """All days with stock should be counted regardless of sales."""
+        from core.calc.size_allocation import calc_d_sku_with_oos_filter
+
+        # 35 days, varying sales but always has stock
+        sales = [1, 0, 2, 0, 3] * 7  # 35 days, total = 42
+        stock = [10] * 35  # Always has stock
+
+        d, good_days, conf = calc_d_sku_with_oos_filter(sales, stock)
+
+        assert good_days == 35
+        # Base = 42/35 = 1.2, ≥30 days so ACTUAL (no uplift)
+        assert d == pytest.approx(42 / 35, rel=0.01)
+
+    def test_oos_filter_mixed_oos_periods(self):
+        """Mixed periods with some OOS stretches."""
+        from core.calc.size_allocation import calc_d_sku_with_oos_filter, DemandConfidence
+
+        # Simulate: 10 good days, then 5 OOS, then 5 good days = 15 good days
+        sales = [3] * 10 + [0] * 5 + [3] * 5  # Total good sales: 45
+        stock = [10] * 10 + [0] * 5 + [10] * 5  # Middle 5 are OOS
+
+        d, good_days, conf = calc_d_sku_with_oos_filter(sales, stock)
+
+        assert good_days == 15  # 10 + 5 good days
+        assert conf == DemandConfidence.MARGINAL  # 14-29 days
+        # Base = 45/15 = 3.0, 1.2x uplift
+        assert d == pytest.approx(3.0 * 1.2, rel=0.01)

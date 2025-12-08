@@ -176,3 +176,85 @@ class PODraft:
 
     # Timestamps
     created_at: Optional[str] = None      # ISO timestamp
+
+
+# =============================================================================
+# TASK-152: OOS-filtered demand calculation
+# =============================================================================
+
+def calc_d_sku_with_oos_filter(
+    sales_history: list[int],
+    stock_history: list[int]
+) -> tuple[float, int, DemandConfidence]:
+    """
+    Calculate daily demand with OOS (out-of-stock) filtering.
+
+    TASK-152: True demand calculation that excludes stockout days.
+
+    A "good day" is one where we had valid data:
+    - If sales > 0: good day (we sold something)
+    - If sales = 0 AND stock > 0: good day (we had stock but didn't sell)
+    - If sales = 0 AND stock = 0: OOS day (skip - no data)
+
+    Args:
+        sales_history: List of daily sales units (most recent first or chronological)
+        stock_history: List of daily stock levels (parallel to sales_history)
+
+    Returns:
+        Tuple of (d_daily, good_days, confidence):
+        - d_daily: Average daily demand (with uplift if low confidence)
+        - good_days: Number of valid data days
+        - confidence: DemandConfidence enum value
+
+    Confidence levels and uplifts:
+        - ≥30 good days → ACTUAL (no uplift)
+        - 14-29 good days → MARGINAL (1.2× uplift)
+        - <14 good days → FALLBACK (1.5× uplift)
+        - 0 good days → NO_DATA (returns 0)
+
+    Example:
+        >>> sales = [5, 3, 0, 2, 0, 4]  # 6 days of sales
+        >>> stock = [10, 7, 4, 4, 0, 8]  # day 5 was OOS (sales=0, stock=0)
+        >>> d, days, conf = calc_d_sku_with_oos_filter(sales, stock)
+        >>> # days = 5 (excluding OOS day)
+        >>> # d = (5+3+0+2+4) / 5 = 2.8
+    """
+    if not sales_history or not stock_history:
+        return 0.0, 0, DemandConfidence.NO_DATA
+
+    # Ensure same length
+    min_len = min(len(sales_history), len(stock_history))
+
+    # Count good days and sum sales
+    good_days = 0
+    total_sales = 0
+
+    for i in range(min_len):
+        sales = sales_history[i]
+        stock = stock_history[i]
+
+        # Check if this is a good day (not OOS)
+        if sales > 0 or stock > 0:
+            # Good day: either we sold something, or we had stock
+            good_days += 1
+            total_sales += sales
+
+    # Handle no data case
+    if good_days == 0:
+        return 0.0, 0, DemandConfidence.NO_DATA
+
+    # Calculate base demand
+    d_base = total_sales / good_days
+
+    # Determine confidence and apply uplift
+    if good_days >= 30:
+        confidence = DemandConfidence.ACTUAL
+        d_daily = d_base  # No uplift
+    elif good_days >= 14:
+        confidence = DemandConfidence.MARGINAL
+        d_daily = d_base * 1.2  # 20% uplift for uncertainty
+    else:
+        confidence = DemandConfidence.FALLBACK
+        d_daily = d_base * 1.5  # 50% uplift for high uncertainty
+
+    return d_daily, good_days, confidence
