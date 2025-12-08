@@ -696,6 +696,62 @@ class KaspiAPIClient:
     # HELPER METHODS
     # =========================================================================
 
+    def _fetch_orders_with_pagination(
+        self,
+        state: str,
+        since: str,
+        status: Optional[str] = None,
+        max_pages: int = 20
+    ) -> APIResponse:
+        """
+        Fetch all orders matching filters with pagination.
+
+        Args:
+            state: Order state to filter by (NEW, KASPI_DELIVERY, etc.)
+            since: Start date (YYYY-MM-DD)
+            status: Optional order status filter (ACCEPTED_BY_MERCHANT, etc.)
+            max_pages: Maximum pages to fetch (safety limit)
+
+        Returns:
+            APIResponse with all matching orders in data['data']
+        """
+        all_orders = []
+        page = 0
+
+        while page < max_pages:
+            params = {
+                'page[number]': page,
+                'page[size]': 100,
+                'filter[orders][creationDate][$ge]': self._to_timestamp_ms(since),
+                'filter[orders][state]': state
+            }
+            if status:
+                params['filter[orders][status]'] = status
+
+            result = self._request('GET', 'orders', params=params)
+
+            if not result.success:
+                return result
+
+            page_orders = result.data.get('data', [])
+            if not page_orders:
+                break
+
+            all_orders.extend(page_orders)
+            page += 1
+
+            # Check if more pages exist
+            meta = result.data.get('meta', {})
+            total_pages = meta.get('pageCount', 1)
+            if page >= total_pages:
+                break
+
+        return APIResponse(
+            success=True,
+            data={'data': all_orders, 'meta': {'totalCount': len(all_orders)}},
+            status_code=200
+        )
+
     def _to_timestamp_ms(self, date_str: str) -> int:
         """Convert date string to milliseconds timestamp."""
         if isinstance(date_str, int):
@@ -743,67 +799,124 @@ class KaspiAPIClient:
 
     def get_pending_assembly_orders(self, since: str = None) -> APIResponse:
         """
-        Get orders awaiting assembly (Dashboard: Упаковка).
-        These have state=KASPI_DELIVERY, status=ACCEPTED_BY_MERCHANT, assembled=false.
+        Get orders awaiting assembly (Dashboard: Упаковка tab).
+
+        These orders have:
+        - state: KASPI_DELIVERY
+        - status: ACCEPTED_BY_MERCHANT
+        - assembled: false
 
         Args:
-            since: Filter orders created after this date (defaults to 7 days ago)
+            since: Start date (YYYY-MM-DD). Default: 7 days ago.
 
         Returns:
-            APIResponse with pending assembly orders
+            APIResponse with filtered orders in data['data']
         """
         if since is None:
             since = (datetime.now() - timedelta(days=DEFAULT_SYNC_DAYS)).strftime('%Y-%m-%d')
 
-        result = self.list_orders(
+        # Fetch all KASPI_DELIVERY + ACCEPTED_BY_MERCHANT orders with pagination
+        result = self._fetch_orders_with_pagination(
             state='KASPI_DELIVERY',
-            status='ACCEPTED_BY_MERCHANT',
             since=since,
-            page_size=MAX_PAGE_SIZE
+            status='ACCEPTED_BY_MERCHANT'
         )
 
-        if result.success and isinstance(result.data, dict):
-            orders = result.data.get('data', [])
-            # Filter to only unassembled orders
-            pending = [o for o in orders if not o.get('attributes', {}).get('assembled', False)]
-            return APIResponse(
-                success=True,
-                data={'data': pending, 'meta': {'totalCount': len(pending)}},
-                status_code=result.status_code
-            )
-        return result
+        if not result.success:
+            return result
+
+        # Filter to only unassembled orders
+        orders = result.data.get('data', [])
+        pending = [
+            o for o in orders
+            if not o.get('attributes', {}).get('assembled', False)
+        ]
+
+        return APIResponse(
+            success=True,
+            data={'data': pending, 'meta': {'totalCount': len(pending)}},
+            status_code=200
+        )
 
     def get_awaiting_courier_orders(self, since: str = None) -> APIResponse:
         """
         Get orders assembled and awaiting courier pickup.
-        These have state=KASPI_DELIVERY, status=ACCEPTED_BY_MERCHANT, assembled=true.
+
+        These orders have:
+        - state: KASPI_DELIVERY
+        - status: ACCEPTED_BY_MERCHANT
+        - assembled: true
 
         Args:
-            since: Filter orders created after this date (defaults to 7 days ago)
+            since: Start date (YYYY-MM-DD). Default: 7 days ago.
 
         Returns:
-            APIResponse with orders awaiting courier
+            APIResponse with filtered orders in data['data']
         """
         if since is None:
             since = (datetime.now() - timedelta(days=DEFAULT_SYNC_DAYS)).strftime('%Y-%m-%d')
 
-        result = self.list_orders(
+        # Fetch all KASPI_DELIVERY + ACCEPTED_BY_MERCHANT orders with pagination
+        result = self._fetch_orders_with_pagination(
             state='KASPI_DELIVERY',
-            status='ACCEPTED_BY_MERCHANT',
             since=since,
-            page_size=MAX_PAGE_SIZE
+            status='ACCEPTED_BY_MERCHANT'
         )
 
-        if result.success and isinstance(result.data, dict):
-            orders = result.data.get('data', [])
-            # Filter to only assembled orders
-            awaiting = [o for o in orders if o.get('attributes', {}).get('assembled', False)]
-            return APIResponse(
-                success=True,
-                data={'data': awaiting, 'meta': {'totalCount': len(awaiting)}},
-                status_code=result.status_code
-            )
-        return result
+        if not result.success:
+            return result
+
+        # Filter to only assembled orders
+        orders = result.data.get('data', [])
+        awaiting = [
+            o for o in orders
+            if o.get('attributes', {}).get('assembled', False) is True
+        ]
+
+        return APIResponse(
+            success=True,
+            data={'data': awaiting, 'meta': {'totalCount': len(awaiting)}},
+            status_code=200
+        )
+
+    def get_new_orders(self, since: str = None) -> APIResponse:
+        """
+        Get new orders needing acceptance (Dashboard: Новый tab).
+
+        These orders have:
+        - state: NEW
+        - status: APPROVED_BY_BANK
+
+        Args:
+            since: Start date (YYYY-MM-DD). Default: 7 days ago.
+
+        Returns:
+            APIResponse with new orders in data['data']
+        """
+        if since is None:
+            since = (datetime.now() - timedelta(days=DEFAULT_SYNC_DAYS)).strftime('%Y-%m-%d')
+
+        # Fetch all NEW orders with pagination
+        result = self._fetch_orders_with_pagination(
+            state='NEW',
+            since=since
+        )
+
+        if not result.success:
+            return result
+
+        # Filter to only APPROVED_BY_BANK (ready for acceptance)
+        orders = result.data.get('data', [])
+        new_orders = [
+            o for o in orders
+            if o.get('attributes', {}).get('status') == 'APPROVED_BY_BANK'
+        ]
+
+        return APIResponse(
+            success=True,
+            data={'data': new_orders, 'meta': {'totalCount': len(new_orders)}},
+            status_code=200
+        )
 
     def parse_order(self, raw_order: dict) -> Order:
         """

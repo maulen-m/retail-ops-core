@@ -679,5 +679,210 @@ class TestAPIConstants:
         assert MAX_PAGE_SIZE == 100
 
 
+# =============================================================================
+# PAGINATION AND HELPER METHOD TESTS
+# =============================================================================
+
+class TestPaginationHelper:
+    """Tests for _fetch_orders_with_pagination helper."""
+
+    @patch('requests.Session.request')
+    def test_fetch_orders_handles_pagination(self, mock_request, mock_env):
+        """Verify all pages are fetched."""
+        page1 = {
+            'data': [{'id': '1', 'attributes': {'code': '001'}}],
+            'meta': {'pageCount': 2, 'totalCount': 2}
+        }
+        page2 = {
+            'data': [{'id': '2', 'attributes': {'code': '002'}}],
+            'meta': {'pageCount': 2, 'totalCount': 2}
+        }
+
+        call_count = [0]
+        def mock_response_factory(*args, **kwargs):
+            mock_resp = MagicMock()
+            mock_resp.ok = True
+            mock_resp.status_code = 200
+            call_count[0] += 1
+            if call_count[0] == 1:
+                mock_resp.json.return_value = page1
+            else:
+                mock_resp.json.return_value = page2
+            return mock_resp
+
+        mock_request.side_effect = mock_response_factory
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client._fetch_orders_with_pagination('KASPI_DELIVERY', '2025-12-01')
+
+        assert result.success
+        assert len(result.data['data']) == 2
+        assert call_count[0] == 2  # Both pages fetched
+
+    @patch('requests.Session.request')
+    def test_fetch_orders_respects_max_pages(self, mock_request, mock_env):
+        """Verify max_pages limit is respected."""
+        # Always return more pages exist
+        page_data = {
+            'data': [{'id': '1', 'attributes': {'code': '001'}}],
+            'meta': {'pageCount': 100, 'totalCount': 10000}
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = page_data
+        mock_request.return_value = mock_resp
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client._fetch_orders_with_pagination('KASPI_DELIVERY', '2025-12-01', max_pages=3)
+
+        assert result.success
+        assert mock_request.call_count == 3  # Stopped at max_pages
+
+    @patch('requests.Session.request')
+    def test_fetch_orders_propagates_errors(self, mock_request, mock_env):
+        """Verify API errors are propagated."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_request.return_value = mock_resp
+
+        client = KaspiAPIClient('UNIVERSAL')
+
+        with pytest.raises(KaspiAuthError):
+            client._fetch_orders_with_pagination('KASPI_DELIVERY', '2025-12-01')
+
+
+class TestHelperMethodFiltering:
+    """Tests for correct filtering in helper methods."""
+
+    @patch('requests.Session.request')
+    def test_pending_assembly_filters_status_and_assembled(self, mock_request, mock_env):
+        """Verify get_pending_assembly_orders filters correctly."""
+        # Note: API filters by status=ACCEPTED_BY_MERCHANT, so mock only includes those
+        mock_orders = {
+            'data': [
+                {'id': '1', 'attributes': {'status': 'ACCEPTED_BY_MERCHANT', 'assembled': False}},
+                {'id': '2', 'attributes': {'status': 'ACCEPTED_BY_MERCHANT', 'assembled': True}},
+                {'id': '3', 'attributes': {'status': 'ACCEPTED_BY_MERCHANT', 'assembled': False}},
+            ],
+            'meta': {'pageCount': 1, 'totalCount': 3}
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = mock_orders
+        mock_request.return_value = mock_resp
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.get_pending_assembly_orders(since='2025-12-01')
+
+        assert result.success
+        orders = result.data.get('data', [])
+        # Should only return orders 1 and 3 (assembled=False)
+        assert len(orders) == 2  # Orders 1 and 3
+        for o in orders:
+            assert o['attributes']['assembled'] is False
+
+    @patch('requests.Session.request')
+    def test_awaiting_courier_filters_assembled_true(self, mock_request, mock_env):
+        """Verify get_awaiting_courier_orders filters assembled=true."""
+        mock_orders = {
+            'data': [
+                {'id': '1', 'attributes': {'status': 'ACCEPTED_BY_MERCHANT', 'assembled': True}},
+                {'id': '2', 'attributes': {'status': 'ACCEPTED_BY_MERCHANT', 'assembled': False}},
+                {'id': '3', 'attributes': {'status': 'ACCEPTED_BY_MERCHANT', 'assembled': True}},
+            ],
+            'meta': {'pageCount': 1, 'totalCount': 3}
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = mock_orders
+        mock_request.return_value = mock_resp
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.get_awaiting_courier_orders(since='2025-12-01')
+
+        assert result.success
+        orders = result.data.get('data', [])
+        assert len(orders) == 2  # Orders 1 and 3
+        for o in orders:
+            assert o['attributes']['assembled'] is True
+
+    @patch('requests.Session.request')
+    def test_new_orders_filters_approved_by_bank(self, mock_request, mock_env):
+        """Verify get_new_orders filters status=APPROVED_BY_BANK."""
+        mock_orders = {
+            'data': [
+                {'id': '1', 'attributes': {'status': 'APPROVED_BY_BANK'}},
+                {'id': '2', 'attributes': {'status': 'ACCEPTED_BY_MERCHANT'}},
+                {'id': '3', 'attributes': {'status': 'APPROVED_BY_BANK'}},
+            ],
+            'meta': {'pageCount': 1, 'totalCount': 3}
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = mock_orders
+        mock_request.return_value = mock_resp
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.get_new_orders(since='2025-12-01')
+
+        assert result.success
+        orders = result.data.get('data', [])
+        assert len(orders) == 2  # Orders 1 and 3
+        for o in orders:
+            assert o['attributes']['status'] == 'APPROVED_BY_BANK'
+
+    @patch('requests.Session.request')
+    def test_helper_methods_use_default_7_day_since(self, mock_request, mock_env):
+        """Verify helpers use 7-day default when since not provided."""
+        mock_orders = {
+            'data': [],
+            'meta': {'pageCount': 1, 'totalCount': 0}
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = mock_orders
+        mock_request.return_value = mock_resp
+
+        client = KaspiAPIClient('UNIVERSAL')
+        client.get_pending_assembly_orders()  # No since param
+
+        # Verify date filter was applied
+        call_kwargs = mock_request.call_args[1]
+        params = call_kwargs.get('params', {})
+        timestamp = params.get('filter[orders][creationDate][$ge]')
+        assert timestamp is not None
+
+        # Verify timestamp is ~7 days ago
+        from datetime import datetime
+        since_dt = datetime.fromtimestamp(timestamp / 1000)
+        days_ago = (datetime.now() - since_dt).days
+        assert 6 <= days_ago <= 8
+
+    @patch('requests.Session.request')
+    def test_helper_returns_error_on_api_failure(self, mock_request, mock_env):
+        """Verify error propagation from helpers."""
+        mock_resp = MagicMock()
+        mock_resp.ok = False
+        mock_resp.status_code = 500
+        mock_resp.json.return_value = {'errors': [{'detail': 'Server error'}]}
+        mock_request.return_value = mock_resp
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.get_pending_assembly_orders(since='2025-12-01')
+
+        assert not result.success
+        assert result.status_code == 500
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
