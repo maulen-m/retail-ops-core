@@ -1,12 +1,34 @@
 """
 TASK-059: Auto PO Generator
+TASK-166: Phase 9.6 Size-Aware Allocation Integration
 
 Automatically generates PO drafts when conditions are met.
+
+Phase 9.6 Changes:
+- Added generate_po_draft_size_aware() using true size-level allocation
+- Kept apply_size_splits() for backward compatibility
+- New function uses OOS-filtered demand, per-size SS/ROP, and ROIC gate
 """
 
 import sqlite3
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Optional
+
+# Phase 9.6 imports
+from core.calc.size_allocation import (
+    generate_po_draft as calc_generate_po_draft,
+    PODraft,
+    ROICAction
+)
+from core.db.queries import (
+    get_size_sales_history,
+    get_size_stock_history,
+    get_size_current_stock,
+    get_size_inbound,
+    get_size_sales_90d,
+    get_sku_age_days
+)
 
 
 def calc_order_quantity(
@@ -476,3 +498,263 @@ def generate_po_draft_with_validation(
         result['notes'] = f"Adjusted {len(validation['violations'])} SKUs for 20% concentration rule"
 
     return result
+
+
+# =============================================================================
+# TASK-166: Phase 9.6 Size-Aware PO Generation
+# =============================================================================
+
+def generate_po_draft_size_aware(
+    sku_key: str,
+    store_code: str = "UNIVERSAL",
+    db_path: Optional[Path] = None
+) -> Optional[PODraft]:
+    """
+    Generate a size-aware PO draft for a single SKU using Phase 9.6 allocation.
+
+    TASK-166: Uses true size-level allocation from size_allocation.py:
+    - OOS-filtered demand calculation
+    - Size mix with 3%/40% guardrails
+    - Per-size safety stock, ROP, T_post
+    - ANY-size REORDER trigger
+    - New SKU age adjustment
+    - Low demand insurance
+    - 3-tier ROIC gate
+
+    Args:
+        sku_key: Style-level SKU key (e.g., "CL_OC_MEN_LINE52_BLACK")
+        store_code: Store code (default: "UNIVERSAL")
+        db_path: Optional database path
+
+    Returns:
+        PODraft with complete size-level allocations, or None if no data
+
+    Example:
+        >>> draft = generate_po_draft_size_aware("LINE52_BLACK")
+        >>> if draft.should_order:
+        ...     print(f"Order {draft.total_qty} units, ROIC: {draft.roic_monthly:.1%}")
+    """
+    # Get size-level data from DB
+    size_sales_90d = get_size_sales_90d(sku_key, store_code, db_path)
+    if not size_sales_90d:
+        return None
+
+    size_current_stock = get_size_current_stock(sku_key, store_code, db_path)
+    size_inbound_stock = get_size_inbound(sku_key, store_code, db_path)
+    size_sales_history = get_size_sales_history(sku_key, store_code, days=90, db_path=db_path)
+    size_stock_history = get_size_stock_history(sku_key, store_code, days=90, db_path=db_path)
+    sku_age_days = get_sku_age_days(sku_key, store_code, db_path)
+
+    # Get SKU-level cost and profit from dim_sku
+    conn = sqlite3.connect(str(db_path) if db_path else str(Path(__file__).parent.parent.parent / "db" / "app.db"))
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT base_cost_cny, weight_kg
+        FROM dim_sku
+        WHERE sku_key = ?
+    """, (sku_key,))
+    sku_row = cursor.fetchone()
+    conn.close()
+
+    if not sku_row:
+        return None
+
+    # Calculate COGS and profit (simplified)
+    base_cost_cny = sku_row["base_cost_cny"] or 50
+    weight_kg = sku_row["weight_kg"] or 0.5
+
+    # Cost calculation (CNY to KZT with shipping)
+    cny_to_kzt = 78
+    shipping_per_kg = 150  # KZT per kg
+    unit_cogs = base_cost_cny * cny_to_kzt + weight_kg * shipping_per_kg
+
+    # Get average sell price for profit calculation
+    cursor = sqlite3.connect(str(db_path) if db_path else str(Path(__file__).parent.parent.parent / "db" / "app.db"))
+    cursor.row_factory = sqlite3.Row
+    cursor = cursor.cursor()
+    cursor.execute("""
+        SELECT AVG(sell_price_kzt) as avg_price
+        FROM fact_sales
+        WHERE sku_key = ?
+        AND order_date >= date('now', '-90 days')
+    """, (sku_key,))
+    price_row = cursor.fetchone()
+    cursor.close()
+
+    avg_sell_price = (price_row["avg_price"] or 15000) if price_row else 15000
+    unit_profit = avg_sell_price - unit_cogs
+
+    # Calculate sigma_sku from demand history
+    total_daily_sales = []
+    for size, sales_list in size_sales_history.items():
+        for i, sales in enumerate(sales_list):
+            if i >= len(total_daily_sales):
+                total_daily_sales.append(0)
+            total_daily_sales[i] += sales
+
+    if total_daily_sales:
+        import statistics
+        sigma_sku = statistics.stdev(total_daily_sales) if len(total_daily_sales) > 1 else 0.4 * sum(total_daily_sales) / len(total_daily_sales)
+    else:
+        sigma_sku = 0.0
+
+    # Generate PO draft using Phase 9.6 allocation
+    draft = calc_generate_po_draft(
+        sku_key=sku_key,
+        store_code=store_code,
+        size_sales_90d=size_sales_90d,
+        size_current_stock=size_current_stock,
+        size_inbound_stock=size_inbound_stock,
+        size_sales_history=size_sales_history,
+        size_stock_history=size_stock_history,
+        unit_cogs=unit_cogs,
+        unit_profit=unit_profit,
+        sigma_sku=sigma_sku,
+        sku_age_days=sku_age_days
+    )
+
+    return draft
+
+
+def generate_batch_po_drafts_size_aware(
+    db_path: Optional[Path] = None,
+    store_code: str = "UNIVERSAL",
+    sku_filter: Optional[list[str]] = None,
+    trigger: str = "ROP"
+) -> int:
+    """
+    Generate PO drafts for all SKUs needing reorder using Phase 9.6 allocation.
+
+    TASK-166: Batch version of generate_po_draft_size_aware().
+
+    Args:
+        db_path: Optional database path
+        store_code: Store code (default: "UNIVERSAL")
+        sku_filter: Optional list of SKUs to include
+        trigger: Trigger type for logging
+
+    Returns:
+        draft_id of created draft, or 0 if no items
+
+    Note:
+        This replaces the old generate_po_draft() for new deployments.
+    """
+    db = db_path or Path(__file__).parent.parent.parent / "db" / "app.db"
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    # Get SKUs that might need reorder (have size-level data)
+    if sku_filter:
+        placeholders = ','.join('?' * len(sku_filter))
+        query = f"""
+            SELECT DISTINCT sku_key
+            FROM dim_sku_size
+            WHERE sku_key IN ({placeholders})
+              AND active_flag = 1
+        """
+        cursor.execute(query, sku_filter)
+    else:
+        cursor.execute("""
+            SELECT DISTINCT sku_key
+            FROM dim_sku_size
+            WHERE active_flag = 1
+        """)
+
+    sku_keys = [row["sku_key"] for row in cursor.fetchall()]
+
+    if not sku_keys:
+        conn.close()
+        return 0
+
+    # Generate drafts for each SKU
+    all_lines = []
+    total_units = 0
+    total_cost_cny = 0.0
+
+    for sku_key in sku_keys:
+        draft = generate_po_draft_size_aware(sku_key, store_code, db_path)
+
+        if not draft or not draft.should_order or draft.total_qty == 0:
+            continue
+
+        # Skip if ROIC gate blocked
+        if draft.roic_action == ROICAction.REVIEW_REQUIRED:
+            continue
+
+        # Add lines from this draft
+        for size, alloc in draft.allocations.items():
+            if alloc.order_qty_adjusted <= 0:
+                continue
+
+            sku_id = f"{sku_key}_{size}"
+            all_lines.append({
+                'sku_key': sku_key,
+                'sku_id': sku_id,
+                'my_size': size,
+                'quantity': alloc.order_qty_adjusted,
+                'unit_cost_cny': draft.cogs_unit / 78,  # Convert KZT back to CNY
+                'current_stock': draft.allocations[size].target_stock,
+                'rop': draft.rop_sku,
+                'd_forecast': draft.d_sku,
+                'roic_pct': draft.roic_monthly * 100,
+                'trigger_sizes': ','.join(draft.trigger_sizes),
+                'roic_action': draft.roic_action.value,
+                'demand_confidence': draft.demand_confidence.value
+            })
+
+            total_units += alloc.order_qty_adjusted
+            total_cost_cny += alloc.order_qty_adjusted * (draft.cogs_unit / 78)
+
+    if not all_lines:
+        conn.close()
+        return 0
+
+    # Create draft header
+    expires_at = (datetime.now() + timedelta(hours=48)).isoformat()
+    total_cost_kzt = total_cost_cny * 78
+
+    cursor.execute("""
+        INSERT INTO fact_po_draft (
+            status, supplier_code, total_units, total_cost_cny, total_cost_kzt,
+            expires_at, generation_reason, confidence_score, notes
+        ) VALUES (?, 'DEFAULT', ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        'PENDING',
+        total_units,
+        round(total_cost_cny, 2),
+        round(total_cost_kzt, 2),
+        expires_at,
+        f'{trigger} trigger (Phase 9.6 Size-Aware)',
+        0.8,  # Default confidence
+        'Generated with Phase 9.6 size-aware allocation'
+    ))
+
+    draft_id = cursor.lastrowid
+
+    # Create draft lines
+    for line in all_lines:
+        cursor.execute("""
+            INSERT INTO fact_po_draft_lines (
+                draft_id, sku_key, sku_id, my_size, quantity, unit_cost_cny,
+                current_stock, rop, d_forecast, roic_pct
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            draft_id,
+            line['sku_key'],
+            line['sku_id'],
+            line['my_size'],
+            line['quantity'],
+            line['unit_cost_cny'],
+            int(line['current_stock']),
+            int(line['rop']),
+            line['d_forecast'],
+            line['roic_pct']
+        ))
+
+    conn.commit()
+    conn.close()
+
+    return draft_id

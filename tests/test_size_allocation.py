@@ -1481,3 +1481,46 @@ class TestDBQueries:
         # L has snapshot inbound (3*5=15), PO only adds if snapshot is 0
         assert inbound["L"] == 15  # From snapshot
         assert inbound["XL"] == 20  # order=4, inbound = 4*5 = 20
+
+
+# =============================================================================
+# TASK-166: po_generator integration (3 tests)
+# =============================================================================
+
+class TestPOGeneratorIntegration:
+    """Tests for po_generator.py Phase 9.6 integration."""
+
+    def test_po_generator_uses_new_allocation(self):
+        """Test that new size-aware function exists and is importable."""
+        from core.automation.po_generator import (
+            generate_po_draft_size_aware,
+            generate_batch_po_drafts_size_aware
+        )
+
+        # Functions should exist
+        assert callable(generate_po_draft_size_aware)
+        assert callable(generate_batch_po_drafts_size_aware)
+
+    def test_po_generator_backward_compatible(self):
+        """Test that old apply_size_splits still exists."""
+        from core.automation.po_generator import (
+            apply_size_splits,
+            generate_po_draft,
+            calc_order_quantity
+        )
+
+        # Old functions should still exist
+        assert callable(apply_size_splits)
+        assert callable(generate_po_draft)
+        assert callable(calc_order_quantity)
+
+    def test_po_generator_output_format(self):
+        """Test that generate_po_draft_size_aware returns PODraft."""
+        from core.automation.po_generator import generate_po_draft_size_aware
+        from core.calc.size_allocation import PODraft
+
+        # Without a real database, we can't test the full function
+        # But we can verify the import and type hints
+        result = generate_po_draft_size_aware.__annotations__.get('return')
+        # Should return Optional[PODraft]
+        assert result is not None

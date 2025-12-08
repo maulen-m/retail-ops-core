@@ -11,36 +11,12 @@ Tables used:
 """
 
 import sqlite3
-from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-# Default DB path
-DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "db" / "app.db"
-
-
-def _get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Get a new database connection with proper settings."""
-    path = db_path or DEFAULT_DB_PATH
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
-
-@contextmanager
-def get_db(db_path: Optional[Path] = None):
-    """Context manager for database connections."""
-    conn = _get_connection(db_path)
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+# Import from package
+from . import get_db, DEFAULT_DB_PATH
 
 
 def get_size_sales_history(
