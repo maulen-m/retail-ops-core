@@ -490,9 +490,36 @@ class KaspiAPIClient:
             )
         return result
 
+    def _get_order_base64_id(self, order_code: str) -> str:
+        """
+        Get Base64 order ID from order code.
+
+        Kaspi API requires Base64 ID for direct endpoints and write operations,
+        but we typically have the numeric order code.
+
+        Args:
+            order_code: Numeric order code (e.g., "738784236")
+
+        Returns:
+            Base64 order ID (e.g., "NzM4Nzg0MjM2")
+
+        Raises:
+            KaspiNotFoundError: If order not found
+            KaspiAPIError: If order missing ID field
+        """
+        result = self.get_order(order_code)
+        if not result.success:
+            raise KaspiNotFoundError(f"Order {order_code} not found")
+
+        base64_id = result.data.get('id')
+        if not base64_id:
+            raise KaspiAPIError(f"Order {order_code} missing ID field")
+
+        return base64_id
+
     def get_order_entries(self, order_code: str) -> APIResponse:
         """
-        Get order line items.
+        Get order line items (entries).
 
         Args:
             order_code: Kaspi order code
@@ -500,7 +527,8 @@ class KaspiAPIClient:
         Returns:
             APIResponse with order entries
         """
-        return self._request('GET', f'orders/{order_code}/entries')
+        base64_id = self._get_order_base64_id(order_code)
+        return self._request('GET', f'orders/{base64_id}/entries')
 
     def get_waybill_url(self, order: dict) -> Optional[str]:
         """
@@ -575,7 +603,20 @@ class KaspiAPIClient:
         """
         self._require_write_enabled()
         logger.info(f"Accepting order {order_code}")
-        return self._request('POST', f'orders/{order_code}/accept')
+
+        base64_id = self._get_order_base64_id(order_code)
+
+        data = {
+            'data': {
+                'type': 'orders',
+                'id': base64_id,
+                'attributes': {
+                    'status': 'ACCEPTED_BY_MERCHANT',
+                }
+            }
+        }
+
+        return self._request('POST', 'orders', json_data=data)
 
     def assemble_order(
         self,
@@ -583,7 +624,9 @@ class KaspiAPIClient:
         parcel_count: int = 1,
     ) -> APIResponse:
         """
-        Mark order as assembled (ACCEPTED_BY_MERCHANT -> ASSEMBLY).
+        Mark order as assembled (status: ASSEMBLE).
+
+        For KASPI_DELIVERY orders, this moves them from "Упаковка" to "Передача курьеру".
 
         Requires ENABLE_KASPI_WRITE=1.
 
@@ -597,13 +640,16 @@ class KaspiAPIClient:
         self._require_write_enabled()
         logger.info(f"Assembling order {order_code} with {parcel_count} parcels")
 
+        base64_id = self._get_order_base64_id(order_code)
+
+        # Per Kaspi API docs: status='ASSEMBLE' and numberOfSpace are required
         data = {
             'data': {
                 'type': 'orders',
-                'id': order_code,
+                'id': base64_id,
                 'attributes': {
-                    'state': 'ASSEMBLY',
-                    'parcelCount': parcel_count,
+                    'status': 'ASSEMBLE',
+                    'numberOfSpace': parcel_count,
                 }
             }
         }
@@ -624,7 +670,20 @@ class KaspiAPIClient:
         """
         self._require_write_enabled()
         logger.info(f"Shipping order {order_code}")
-        return self._request('POST', f'orders/{order_code}/ship')
+
+        base64_id = self._get_order_base64_id(order_code)
+
+        data = {
+            'data': {
+                'type': 'orders',
+                'id': base64_id,
+                'attributes': {
+                    'status': 'COMPLETED',
+                }
+            }
+        }
+
+        return self._request('POST', 'orders', json_data=data)
 
     def cancel_order(
         self,
@@ -646,12 +705,14 @@ class KaspiAPIClient:
         self._require_write_enabled()
         logger.warning(f"Cancelling order {order_code} with reason: {reason}")
 
+        base64_id = self._get_order_base64_id(order_code)
+
         data = {
             'data': {
                 'type': 'orders',
-                'id': order_code,
+                'id': base64_id,
                 'attributes': {
-                    'state': 'CANCELLED',
+                    'status': 'CANCELLED',
                     'cancellationReason': reason,
                 }
             }
@@ -679,12 +740,14 @@ class KaspiAPIClient:
         self._require_write_enabled()
         logger.info(f"Completing order {order_code}")
 
+        base64_id = self._get_order_base64_id(order_code)
+
         data = {
             'data': {
                 'type': 'orders',
-                'id': order_code,
+                'id': base64_id,
                 'attributes': {
-                    'state': 'COMPLETED',
+                    'status': 'COMPLETED',
                     'signature': security_code,
                 }
             }

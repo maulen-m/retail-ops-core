@@ -234,16 +234,87 @@ def validate_dashboard_match(store_code: str, verbose: bool = False) -> bool:
         return False
 
 
+def validate_get_order_entries(store_code: str, verbose: bool = False) -> bool:
+    """Validate get_order_entries works."""
+    print(f"\n--- get_order_entries ---")
+
+    try:
+        client = KaspiAPIClient(store_code)
+
+        # Get any order
+        since = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        orders = client.list_orders(since=since, page_size=1)
+        if not orders.success or not orders.data.get('data'):
+            print("⚠️ SKIP - No orders to test")
+            return True
+
+        test_order = orders.data['data'][0]['attributes']['code']
+        result = client.get_order_entries(test_order)
+
+        if result.success:
+            entries = result.data.get('data', [])
+            print(f"✅ PASS - Order {test_order} has {len(entries)} entries")
+
+            if verbose and entries:
+                for e in entries[:2]:
+                    offer = e.get('attributes', {}).get('offer', {})
+                    print(f"   - {offer.get('name', 'Unknown')[:50]}...")
+            return True
+        else:
+            print(f"❌ FAIL - {result.error}")
+            return False
+
+    except Exception as e:
+        print(f"❌ ERROR - {e}")
+        return False
+
+
+def validate_assemble_order(store_code: str, verbose: bool = False) -> bool:
+    """Validate assemble_order works (on first pending order)."""
+    print(f"\n--- assemble_order ---")
+
+    try:
+        client = KaspiAPIClient(store_code)
+
+        if not client.writes_enabled:
+            print("⚠️ SKIP - Writes disabled (ENABLE_KASPI_WRITE=0)")
+            return True
+
+        # Get a pending order
+        pending = client.get_pending_assembly_orders()
+        if not pending.success or not pending.data.get('data'):
+            print("⚠️ SKIP - No pending orders to test")
+            return True
+
+        test_order = pending.data['data'][0]['attributes']['code']
+        print(f"Testing with order: {test_order}")
+
+        result = client.assemble_order(test_order)
+
+        if result.success:
+            print(f"✅ PASS - Order {test_order} assembled")
+            return True
+        else:
+            print(f"❌ FAIL - {result.error}")
+            return False
+
+    except Exception as e:
+        print(f"❌ ERROR - {e}")
+        return False
+
+
 def run_validation(store_code: str, verbose: bool = False) -> dict:
     """Run all validations for a store."""
     results = {
         'token': validate_token(store_code, verbose),
         'list_orders': validate_list_orders(store_code, verbose),
         'get_order': validate_get_order(store_code, verbose),
+        'get_order_entries': validate_get_order_entries(store_code, verbose),
         'pending_assembly': validate_pending_assembly(store_code, verbose),
         'awaiting_courier': validate_awaiting_courier(store_code, verbose),
         'new_orders': validate_new_orders(store_code, verbose),
         'dashboard_match': validate_dashboard_match(store_code, verbose),
+        'assemble_order': validate_assemble_order(store_code, verbose),
     }
     return results
 

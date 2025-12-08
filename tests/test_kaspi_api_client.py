@@ -477,34 +477,62 @@ class TestMockedAPICalls:
     @patch('requests.Session.request')
     def test_accept_order_success(self, mock_request, client_with_write):
         """Test successful accept_order call."""
-        mock_response = MagicMock()
-        mock_response.ok = True
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            'data': {'id': '123', 'attributes': {'state': 'ACCEPTED_BY_MERCHANT'}}
+        # First call: get_order lookup returns order with Base64 ID
+        lookup_response = MagicMock()
+        lookup_response.ok = True
+        lookup_response.status_code = 200
+        lookup_response.json.return_value = {
+            'data': [{'id': 'ABC123', 'attributes': {'code': '123'}}]
         }
-        mock_request.return_value = mock_response
+
+        # Second call: accept_order POST returns updated order
+        write_response = MagicMock()
+        write_response.ok = True
+        write_response.status_code = 200
+        write_response.json.return_value = {
+            'data': {'id': 'ABC123', 'attributes': {'status': 'ACCEPTED_BY_MERCHANT'}}
+        }
+
+        mock_request.side_effect = [lookup_response, write_response]
 
         result = client_with_write.accept_order('123')
 
         assert result.success is True
-        # Verify POST was called
-        assert mock_request.call_args[1]['method'] == 'POST'
+        # Verify POST was called with correct Base64 ID
+        assert mock_request.call_count == 2
+        write_call = mock_request.call_args_list[1]
+        assert write_call[1]['method'] == 'POST'
+        assert write_call[1]['json']['data']['id'] == 'ABC123'
 
     @patch('requests.Session.request')
     def test_cancel_order_success(self, mock_request, client_with_write):
         """Test successful cancel_order call."""
-        mock_response = MagicMock()
-        mock_response.ok = True
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            'data': {'id': '123', 'attributes': {'state': 'CANCELLED'}}
+        # First call: get_order lookup
+        lookup_response = MagicMock()
+        lookup_response.ok = True
+        lookup_response.status_code = 200
+        lookup_response.json.return_value = {
+            'data': [{'id': 'ABC123', 'attributes': {'code': '123'}}]
         }
-        mock_request.return_value = mock_response
+
+        # Second call: cancel_order POST
+        write_response = MagicMock()
+        write_response.ok = True
+        write_response.status_code = 200
+        write_response.json.return_value = {
+            'data': {'id': 'ABC123', 'attributes': {'status': 'CANCELLED'}}
+        }
+
+        mock_request.side_effect = [lookup_response, write_response]
 
         result = client_with_write.cancel_order('123', reason='OUT_OF_STOCK')
 
         assert result.success is True
+        # Verify correct payload structure
+        write_call = mock_request.call_args_list[1]
+        json_data = write_call[1]['json']
+        assert json_data['data']['id'] == 'ABC123'
+        assert json_data['data']['attributes']['cancellationReason'] == 'OUT_OF_STOCK'
 
 
 # =============================================================================
@@ -882,6 +910,179 @@ class TestHelperMethodFiltering:
 
         assert not result.success
         assert result.status_code == 500
+
+
+# =============================================================================
+# WRITE OPERATIONS BASE64 ID TESTS (Phase 9.5 Fix)
+# =============================================================================
+
+class TestWriteOperationsBase64ID:
+    """Tests for write operations using Base64 ID lookup."""
+
+    @patch('requests.Session.request')
+    def test_get_order_base64_id_success(self, mock_request, mock_env):
+        """Test _get_order_base64_id helper extracts Base64 ID."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'data': [{'id': 'NzM4Nzg0MjM2', 'attributes': {'code': '738784236'}}]
+        }
+        mock_request.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+        base64_id = client._get_order_base64_id('738784236')
+
+        assert base64_id == 'NzM4Nzg0MjM2'
+
+    @patch('requests.Session.request')
+    def test_get_order_base64_id_not_found(self, mock_request, mock_env):
+        """Test _get_order_base64_id raises error when order not found."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'data': []}  # Empty list
+        mock_request.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+
+        with pytest.raises(KaspiNotFoundError, match="not found"):
+            client._get_order_base64_id('nonexistent')
+
+    @patch('requests.Session.request')
+    def test_get_order_entries_uses_base64_id(self, mock_request, mock_env):
+        """Test get_order_entries uses Base64 ID in URL path."""
+        # First call: get_order lookup
+        lookup_response = MagicMock()
+        lookup_response.ok = True
+        lookup_response.status_code = 200
+        lookup_response.json.return_value = {
+            'data': [{'id': 'ABC123', 'attributes': {'code': '12345'}}]
+        }
+
+        # Second call: entries request
+        entries_response = MagicMock()
+        entries_response.ok = True
+        entries_response.status_code = 200
+        entries_response.json.return_value = {
+            'data': [{'id': 'entry1', 'attributes': {'quantity': 2}}]
+        }
+
+        mock_request.side_effect = [lookup_response, entries_response]
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.get_order_entries('12345')
+
+        assert result.success
+        # Verify URL contains Base64 ID, not order code
+        entries_call = mock_request.call_args_list[1]
+        url = entries_call[1]['url']
+        assert 'ABC123/entries' in url
+        assert '12345' not in url
+
+    @patch('requests.Session.request')
+    def test_assemble_order_uses_base64_id(self, mock_request, mock_env_with_write):
+        """Test assemble_order uses Base64 ID in payload."""
+        lookup_response = MagicMock()
+        lookup_response.ok = True
+        lookup_response.status_code = 200
+        lookup_response.json.return_value = {
+            'data': [{'id': 'NzM4Nzg0MjM2', 'attributes': {'code': '738784236'}}]
+        }
+
+        write_response = MagicMock()
+        write_response.ok = True
+        write_response.status_code = 200
+        write_response.json.return_value = {'data': {'id': 'NzM4Nzg0MjM2'}}
+
+        mock_request.side_effect = [lookup_response, write_response]
+
+        client = KaspiAPIClient('UNIVERSAL')
+        client.assemble_order('738784236')
+
+        # Verify Base64 ID in payload
+        write_call = mock_request.call_args_list[1]
+        json_data = write_call[1]['json']
+        assert json_data['data']['id'] == 'NzM4Nzg0MjM2'
+
+    @patch('requests.Session.request')
+    def test_assemble_order_uses_correct_format(self, mock_request, mock_env_with_write):
+        """Test assemble_order uses status='ASSEMBLE' and numberOfSpace per Kaspi API docs."""
+        lookup_response = MagicMock()
+        lookup_response.ok = True
+        lookup_response.status_code = 200
+        lookup_response.json.return_value = {
+            'data': [{'id': 'ABC123', 'attributes': {'code': '12345'}}]
+        }
+
+        write_response = MagicMock()
+        write_response.ok = True
+        write_response.status_code = 200
+        write_response.json.return_value = {'data': {}}
+
+        mock_request.side_effect = [lookup_response, write_response]
+
+        client = KaspiAPIClient('UNIVERSAL')
+        client.assemble_order('12345', parcel_count=2)
+
+        # Verify correct format per Kaspi API docs
+        write_call = mock_request.call_args_list[1]
+        json_data = write_call[1]['json']
+        attrs = json_data['data']['attributes']
+        assert attrs.get('status') == 'ASSEMBLE'
+        assert attrs.get('numberOfSpace') == 2
+        assert 'state' not in attrs  # Should not use 'state' field
+
+    @patch('requests.Session.request')
+    def test_ship_order_uses_base64_id(self, mock_request, mock_env_with_write):
+        """Test ship_order uses Base64 ID."""
+        lookup_response = MagicMock()
+        lookup_response.ok = True
+        lookup_response.status_code = 200
+        lookup_response.json.return_value = {
+            'data': [{'id': 'ABC123', 'attributes': {'code': '12345'}}]
+        }
+
+        write_response = MagicMock()
+        write_response.ok = True
+        write_response.status_code = 200
+        write_response.json.return_value = {'data': {}}
+
+        mock_request.side_effect = [lookup_response, write_response]
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.ship_order('12345')
+
+        assert result.success
+        write_call = mock_request.call_args_list[1]
+        json_data = write_call[1]['json']
+        assert json_data['data']['id'] == 'ABC123'
+
+    @patch('requests.Session.request')
+    def test_complete_order_uses_base64_id(self, mock_request, mock_env_with_write):
+        """Test complete_order uses Base64 ID."""
+        lookup_response = MagicMock()
+        lookup_response.ok = True
+        lookup_response.status_code = 200
+        lookup_response.json.return_value = {
+            'data': [{'id': 'ABC123', 'attributes': {'code': '12345'}}]
+        }
+
+        write_response = MagicMock()
+        write_response.ok = True
+        write_response.status_code = 200
+        write_response.json.return_value = {'data': {}}
+
+        mock_request.side_effect = [lookup_response, write_response]
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.complete_order('12345', security_code='1234')
+
+        assert result.success
+        write_call = mock_request.call_args_list[1]
+        json_data = write_call[1]['json']
+        assert json_data['data']['id'] == 'ABC123'
+        assert json_data['data']['attributes']['signature'] == '1234'
 
 
 if __name__ == "__main__":
