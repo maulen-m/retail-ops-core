@@ -73,6 +73,7 @@ def init_db(
 
 # Export submodules
 from . import queries
+from . import ledger
 
 
 if __name__ == "__main__":
