@@ -335,11 +335,12 @@ def rebuild_snapshot_from_ledger(
 
         inbound_by_sku = {row["sku_id"]: row["inbound_stock"] for row in inbound_query}
 
-        # Step 3: Delete existing snapshot for this date/store
+        # Step 3: Delete existing snapshot for this date
+        # Note: fact_inventory_snapshot_size doesn't have store_code column
         conn.execute("""
             DELETE FROM fact_inventory_snapshot_size
-            WHERE snapshot_date = ? AND store_code = ?
-        """, (snapshot_date.isoformat(), store_code))
+            WHERE snapshot_date = ?
+        """, (snapshot_date.isoformat(),))
 
         # Step 4: Insert new snapshot rows
         inserted = 0
@@ -350,8 +351,8 @@ def rebuild_snapshot_from_ledger(
 
             conn.execute("""
                 INSERT INTO fact_inventory_snapshot_size
-                (sku_id, sku_key, my_size, current_stock, inbound_stock, snapshot_date, store_code)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (sku_id, sku_key, my_size, current_stock, inbound_stock, snapshot_date)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 sku_id,
                 row["sku_key"],
@@ -359,7 +360,6 @@ def rebuild_snapshot_from_ledger(
                 current_stock,
                 inbound_stock,
                 snapshot_date.isoformat(),
-                store_code,
             ))
             inserted += 1
 

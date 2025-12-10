@@ -97,18 +97,18 @@ def test_db():
         )
     """)
 
-    # Create fact_inventory_snapshot_size table
+    # Create fact_inventory_snapshot_size table (matches existing schema - no store_code)
     conn.execute("""
         CREATE TABLE fact_inventory_snapshot_size (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_date TEXT NOT NULL,
             sku_id TEXT NOT NULL,
             sku_key TEXT NOT NULL,
             my_size TEXT NOT NULL,
             current_stock INTEGER DEFAULT 0,
             inbound_stock INTEGER DEFAULT 0,
-            snapshot_date TEXT NOT NULL,
-            store_code TEXT DEFAULT 'UNIVERSAL',
-            UNIQUE(sku_id, snapshot_date, store_code)
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(sku_id, snapshot_date)
         )
     """)
 
