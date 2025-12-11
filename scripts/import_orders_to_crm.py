@@ -34,6 +34,41 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
 
 
+# ---------- CRM Backup ----------
+
+def backup_crm(crm_path: Path) -> Path:
+    """
+    Create timestamped backup of CRM file before import.
+
+    Stores backups in excel_ui/backups/, keeps last 7 days.
+
+    Returns:
+        Path to backup file
+    """
+    backup_dir = crm_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"CRM_backup_{timestamp}.xlsx"
+
+    # Create backup
+    shutil.copy2(crm_path, backup_path)
+
+    # Cleanup: keep last 7 days only
+    cutoff = datetime.now() - timedelta(days=7)
+    for old_backup in backup_dir.glob("CRM_backup_*.xlsx"):
+        try:
+            # Parse timestamp from filename: CRM_backup_YYYYMMDD_HHMMSS.xlsx
+            ts_str = old_backup.stem.replace("CRM_backup_", "")
+            ts = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+            if ts < cutoff:
+                old_backup.unlink()
+        except (ValueError, OSError):
+            pass  # Skip files that don't match pattern
+
+    return backup_path
+
+
 # ---------- Configuration ----------
 
 STORE_MAP = {
@@ -633,7 +668,11 @@ def main():
         print("\n[DRY RUN] Would append but skipping.")
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return
-    
+
+    # Create backup before writing (Phase 12)
+    backup_path = backup_crm(args.crm_file)
+    print(f"  Backup created: {backup_path.name}")
+
     # Append via xlwings
     excel_append_xlwings(
         args.crm_file,
