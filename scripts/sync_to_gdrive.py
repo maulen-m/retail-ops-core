@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Phase 12 Part 3: Sync CRM data to Google Drive Excel file.
+Phase 12 Part 3: Sync NEW CRM rows to Google Drive Excel file.
 
-Copies all order rows (A-AZ) from SALES_KSP_CRM_V3.xlsx to
-Kaspi_drive_sales_v1.xlsx as values (no formulas).
+Appends only the NEWLY added rows from CRM to the Google Drive file.
+Target: Kaspi_drive_sales_v1.xlsx -> sheet 'sales_kaspi_drive' -> table 'drive'
 
-This creates a "mirror" of the CRM on Google Drive that:
-- Contains all data as values (no formulas)
-- Is accessible to other team members
-- Preserves basic formatting
+This creates an incremental sync that:
+- Only adds the new rows from the latest import
+- Appends to the existing 'drive' table
+- Writes values only (no formulas)
+- Properly resizes the table to prevent corruption
 
 Usage:
-    python scripts/sync_to_gdrive.py
-    python scripts/sync_to_gdrive.py --dry-run
+    python scripts/sync_to_gdrive.py --new-rows 5
+    python scripts/sync_to_gdrive.py --new-rows 10 --dry-run
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from datetime import datetime
+from typing import List, Any
 
 import xlwings as xw
 
@@ -31,37 +33,53 @@ GDRIVE_PATH = Path(
     "~/Library/CloudStorage/GoogleDrive-maintainer@example.com/"
     "My Drive/Business/Shared/Kaspi/Kaspi orders/Kaspi_drive_sales_v1.xlsx"
 )
-SHEET_NAME = "SALES_KSP_CRM_1"
+
+# Source sheet (in CRM)
+CRM_SHEET_NAME = "SALES_KSP_CRM_1"
+
+# Target sheet and table (in Google Drive file)
+GDRIVE_SHEET_NAME = "sales_kaspi_drive"
+GDRIVE_TABLE_NAME = "drive"
+
+# Columns to sync: A to AZ (52 columns)
+SYNC_COLS_END = "AZ"
 
 
-def sync_crm_to_gdrive(
+def sync_new_rows_to_gdrive(
     crm_path: Path = CRM_PATH,
     gdrive_path: Path = GDRIVE_PATH,
+    new_rows_count: int = 0,
     dry_run: bool = False,
 ) -> dict:
     """
-    Sync CRM data to Google Drive file.
+    Sync only NEW rows from CRM to Google Drive file.
 
-    Full sync: replaces entire content of Google Drive file with CRM data.
-    All formulas are converted to values.
+    Appends the last N rows from CRM to the 'drive' table on 'sales_kaspi_drive' sheet.
 
     Args:
         crm_path: Source CRM file path
         gdrive_path: Target Google Drive file path
+        new_rows_count: Number of new rows to sync (from last import)
         dry_run: If True, only show what would be synced
 
     Returns:
-        dict with stats: rows_synced, columns, dry_run
+        dict with stats: rows_synced, dry_run
     """
     print(f"Source: {crm_path}")
     print(f"Target: {gdrive_path}")
+    print(f"Target sheet: '{GDRIVE_SHEET_NAME}', table: '{GDRIVE_TABLE_NAME}'")
+
+    if new_rows_count <= 0:
+        print("  No new rows to sync (new_rows_count=0)")
+        return {"rows_synced": 0, "dry_run": dry_run}
 
     if not crm_path.exists():
         raise FileNotFoundError(f"CRM file not found: {crm_path}")
 
-    if not gdrive_path.parent.exists():
+    if not gdrive_path.exists():
         raise FileNotFoundError(
-            f"Google Drive folder not mounted or accessible: {gdrive_path.parent}"
+            f"Google Drive file not found: {gdrive_path}. "
+            "The file must exist with the 'drive' table already set up."
         )
 
     app = None
@@ -70,55 +88,112 @@ def sync_crm_to_gdrive(
         app.display_alerts = False
         app.screen_updating = False
 
-        # Open source CRM (read-only to prevent accidental changes)
+        # Open source CRM (read-only)
         wb_src = app.books.open(str(crm_path), read_only=True)
-        sh_src = wb_src.sheets[SHEET_NAME]
+        sh_src = wb_src.sheets[CRM_SHEET_NAME]
 
-        # Find data range: from A1 to AZ + last row with data
-        # Use column A to find last row (most reliable)
-        last_row = sh_src.range("A1").end("down").row
+        # Find last row in CRM
+        last_row_crm = sh_src.range("A1").end("down").row
 
-        # Safety check: don't sync if less than 2 rows (header only)
-        if last_row < 2:
-            print("  WARNING: CRM appears empty (no data rows)")
-            wb_src.close()
-            return {"rows_synced": 0, "columns": "A-AZ", "dry_run": dry_run}
+        # Calculate range for new rows
+        first_new_row = last_row_crm - new_rows_count + 1
+        if first_new_row < 2:  # Can't go above row 2 (row 1 is header)
+            first_new_row = 2
+            new_rows_count = last_row_crm - 1  # Adjust count
 
-        # Get all data as values (formulas evaluated)
-        data_range = sh_src.range(f"A1:AZ{last_row}")
-        values = data_range.value
+        # Get values for new rows only (columns A to AZ)
+        new_data_range = sh_src.range(f"A{first_new_row}:{SYNC_COLS_END}{last_row_crm}")
+        new_values = new_data_range.value
 
-        print(f"  Found {last_row} rows (1 header + {last_row - 1} data), columns A-AZ")
+        # Handle single row case (xlwings returns list instead of list of lists)
+        if new_rows_count == 1 and not isinstance(new_values[0], list):
+            new_values = [new_values]
+
+        print(f"  Found {len(new_values)} new rows to sync (rows {first_new_row}-{last_row_crm})")
 
         if dry_run:
             print("  [DRY-RUN] Would sync to Google Drive")
             wb_src.close()
-            return {"rows_synced": last_row, "columns": "A-AZ", "dry_run": True}
+            return {"rows_synced": len(new_values), "dry_run": True}
 
-        # Open or create target file
-        if gdrive_path.exists():
-            wb_dst = app.books.open(str(gdrive_path))
-        else:
-            wb_dst = app.books.add()
+        # Open target Google Drive file
+        wb_dst = app.books.open(str(gdrive_path))
 
-        # Get or create sheet
-        sheet_names = [s.name for s in wb_dst.sheets]
-        if SHEET_NAME in sheet_names:
-            sh_dst = wb_dst.sheets[SHEET_NAME]
-            sh_dst.clear()  # Clear existing data
-        else:
-            sh_dst = wb_dst.sheets.add(SHEET_NAME)
+        # Get target sheet
+        try:
+            sh_dst = wb_dst.sheets[GDRIVE_SHEET_NAME]
+        except Exception:
+            raise RuntimeError(
+                f"Sheet '{GDRIVE_SHEET_NAME}' not found in {gdrive_path.name}. "
+                "Please create the sheet and 'drive' table first."
+            )
 
-        # Write values (this converts all formulas to their computed values)
-        sh_dst.range("A1").value = values
+        # Get the 'drive' table
+        try:
+            tbl = sh_dst.tables[GDRIVE_TABLE_NAME]
+        except KeyError:
+            # Try to find any table
+            tables = list(sh_dst.tables)
+            if not tables:
+                raise RuntimeError(
+                    f"Table '{GDRIVE_TABLE_NAME}' not found on sheet '{GDRIVE_SHEET_NAME}'. "
+                    "Please create the table first."
+                )
+            tbl = tables[0]
+            print(f"  WARNING: Using table '{tbl.name}' instead of '{GDRIVE_TABLE_NAME}'")
 
-        # Save to Google Drive path
-        wb_dst.save(str(gdrive_path))
+        # Calculate where new rows go in destination
+        total_rows_before = tbl.range.rows.count
+        header_row = tbl.range.row
+        top_row = header_row + total_rows_before  # First row after current data
+        bottom_row = top_row + len(new_values) - 1
+        n = len(new_values)
+
+        print(f"  Appending {n} rows to '{tbl.name}' starting at row {top_row}")
+
+        # CRITICAL: Resize table FIRST to include new rows (prevents XML corruption)
+        tbl_start_col = tbl.range.column
+        tbl_end_col = tbl.range.columns.count + tbl_start_col - 1
+        new_table_range = sh_dst.range(
+            (header_row, tbl_start_col),
+            (bottom_row, tbl_end_col)
+        )
+        tbl.resize(new_table_range)
+        print(f"  Table resized to include rows up to {bottom_row}")
+
+        # Write new values using BULK column writes (fast)
+        # This is ~40x faster than cell-by-cell writes for Google Drive files
+        data_cols = len(new_values[0]) if new_values else 0
+        n_rows = len(new_values)
+
+        print(f"  Writing {n_rows} rows ({data_cols} columns)...")
+
+        # Write by column instead of cell-by-cell (reduces COM calls from ~2000 to ~50)
+        for col_idx in range(data_cols):
+            # Extract column values as [[val1], [val2], ...]
+            col_values = [[row[col_idx] if col_idx < len(row) else None] for row in new_values]
+
+            # Skip entirely empty columns for performance
+            if all(v[0] is None or v[0] == "" for v in col_values):
+                continue
+
+            # Bulk write entire column at once
+            col_range = sh_dst.range((top_row, col_idx + 1), (bottom_row, col_idx + 1))
+            col_range.value = col_values
+
+            # Progress indicator every 10 columns
+            if (col_idx + 1) % 10 == 0:
+                print(f"    Columns written: {col_idx + 1}/{data_cols}")
+
+        print(f"  ✓ All columns written")
+
+        print(f"  Saving to Google Drive...")
+        wb_dst.save()
         wb_dst.close()
         wb_src.close()
 
-        print(f"  Synced {last_row} rows to Google Drive")
-        return {"rows_synced": last_row, "columns": "A-AZ", "dry_run": False}
+        print(f"  ✅ Synced {n} rows to Google Drive")
+        return {"rows_synced": n, "dry_run": False}
 
     finally:
         if app:
@@ -127,7 +202,13 @@ def sync_crm_to_gdrive(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Sync CRM data to Google Drive (values only, no formulas)"
+        description="Sync NEW CRM rows to Google Drive (values only, append to 'drive' table)"
+    )
+    parser.add_argument(
+        "--new-rows",
+        type=int,
+        default=0,
+        help="Number of new rows to sync from CRM (from last import)"
     )
     parser.add_argument(
         "--dry-run",
@@ -156,7 +237,9 @@ def main():
     print()
 
     try:
-        stats = sync_crm_to_gdrive(args.crm, args.gdrive, args.dry_run)
+        stats = sync_new_rows_to_gdrive(
+            args.crm, args.gdrive, args.new_rows, args.dry_run
+        )
         print(f"\nSync complete: {stats['rows_synced']} rows")
         if stats["dry_run"]:
             print("  (dry-run mode - no changes made)")

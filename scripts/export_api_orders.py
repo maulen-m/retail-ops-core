@@ -44,28 +44,34 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 # Excel column headers (must match Kaspi export exactly)
+# NOTE: Some columns are MANUAL entry fields (not from API):
+#   - Принял (Accepted by): warehouse staff fills when order is received
+#   - Выдал (Issued by): warehouse staff fills when order is packed
+#   - Отменил (Cancelled by): warehouse staff fills when order is cancelled
+#   - Оформил (Processed by): warehouse staff fills who processed it
+# These columns are intentionally empty on import.
 EXCEL_COLUMNS = [
     '№ заказа',
     'Дата поступления заказа',
-    'Название товара в Kaspi Магазине',
-    'Название в системе продавца',
+    'Название товара в Kaspi Магазине',  # From masterproduct.name (Kaspi public name)
+    'Название в системе продавца',        # From offer.name (seller's internal name)
     'Артикул',
     'Сумма',
     'Категория',
     'Адрес самовывоза/доставки',
-    'Дата изменения статуса',
+    'Дата изменения статуса',             # From API statusChangeDate (may be NULL for new orders)
     'Статус',
     'Причина отмены',
     'Способ оплаты',
     'Способ доставки',
     'Курьерская служба',
-    'Принял',
-    'Выдал',
-    'Отменил',
+    'Принял',     # MANUAL: Accepted by (warehouse staff)
+    'Выдал',      # MANUAL: Issued by (warehouse staff)
+    'Отменил',    # MANUAL: Cancelled by (warehouse staff)
     'Оценка покупателя',
     'Отзыв покупателя',
     'Дата публикации отзыва',
-    'Оформил',
+    'Оформил',    # MANUAL: Processed by (warehouse staff)
     'Количество',
     'Стоимость доставки для покупателя',
     'Стоимость доставки для продавца',
@@ -174,11 +180,20 @@ def fetch_masterproduct_name(client: KaspiAPIClient, entry: dict) -> Optional[st
     masterproduct_id = product_data.get('id')
 
     if not masterproduct_id:
+        # Log first occurrence to help debug API structure issues
+        if not hasattr(fetch_masterproduct_name, '_warned_no_id'):
+            fetch_masterproduct_name._warned_no_id = True
+            logger.warning(
+                f"No masterproduct_id in entry relationships. "
+                f"Available keys: {list(relationships.keys())}"
+            )
         return None
 
-    # Check cache first
+    # Check cache first (only cache successful lookups)
     if masterproduct_id in _masterproduct_cache:
-        return _masterproduct_cache[masterproduct_id]
+        cached = _masterproduct_cache[masterproduct_id]
+        if cached:  # Only return if we have a real value
+            return cached
 
     # Fetch from API
     try:
@@ -186,13 +201,18 @@ def fetch_masterproduct_name(client: KaspiAPIClient, entry: dict) -> Optional[st
         if response.success and response.data:
             attrs = response.data.get('attributes', {})
             name = attrs.get('name', '')
-            _masterproduct_cache[masterproduct_id] = name
-            return name
+            if name:
+                _masterproduct_cache[masterproduct_id] = name
+                return name
+            else:
+                logger.warning(f"Masterproduct {masterproduct_id} has no 'name' attribute")
+        else:
+            logger.warning(f"Masterproduct API returned no data for {masterproduct_id}")
     except Exception as e:
-        logger.debug(f"Failed to fetch masterproduct {masterproduct_id}: {e}")
+        # Log at WARNING level so it's visible (was DEBUG before)
+        logger.warning(f"Failed to fetch masterproduct {masterproduct_id}: {e}")
 
-    # Cache empty result to avoid repeated failures
-    _masterproduct_cache[masterproduct_id] = ''
+    # DON'T cache failures - allow retry on next run
     return ''
 
 
@@ -646,6 +666,12 @@ def main():
         )
 
     print(f"\nTotal rows from API: {len(rows)}")
+
+    # Print masterproduct fetch statistics
+    if _masterproduct_cache:
+        mp_success = sum(1 for v in _masterproduct_cache.values() if v)
+        mp_failed = len(_masterproduct_cache) - mp_success
+        print(f"  Masterproduct names: {mp_success} found, {mp_failed} missing")
 
     # Apply planned date filter (Phase 12 Part 3 - only pending orders for today)
     if apply_date_filter and rows:
