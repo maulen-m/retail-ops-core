@@ -704,6 +704,410 @@ python scripts/build_size_probability.py --export
 
 ---
 
+## Phase 11: Daily Kaspi Order Workflow (Excel-Based)
+
+### Overview
+
+Phase 11 provides a simple Excel-based workflow for daily Kaspi order processing:
+1. **Import orders** from ActiveOrders.xlsx to CRM
+2. **Fill MY_SIZE** manually in Excel
+3. **Build waybill bundles** organized by store and type
+
+### Quick Start (Mac Double-Click)
+
+Two `.command` files are provided for non-technical users:
+
+```
+excel_ui/run_import_orders.command   -- Import new orders
+excel_ui/run_build_waybills.command  -- Build waybill bundles
+```
+
+Double-click to run. Terminal will show progress and results.
+
+### Step 1: Import New Orders
+
+**Preparation:**
+1. Download `ActiveOrders*.xlsx` files from Kaspi seller dashboard
+2. Place files in `excel_ui/ActiveOrders/` folder
+
+**Run Import:**
+```bash
+# Using .command file
+Double-click: excel_ui/run_import_orders.command
+
+# Using CLI
+python scripts/import_orders_to_crm.py --verbose
+
+# Dry run (preview without writing)
+python scripts/import_orders_to_crm.py --dry-run
+```
+
+**Import Logic:**
+- Filters for status: "Ожидает передачи курьеру" (ready for shipment)
+- Filters for: "Требуется подписание" = "Не требуется" (no signature)
+- Filters for: planned date ≤ today
+- Deduplicates against existing orders (column Y = OrderID)
+- Preserves Excel formulas in CRM
+
+**Output:**
+- Orders appended to `excel_ui/SALES_KSP_CRM_V3.xlsx`
+- Backup created: `SALES_KSP_CRM_V3.backup_YYYYMMDD_HHMMSS.xlsx`
+
+### Step 2: Fill MY_SIZE in Excel
+
+After importing orders, open CRM and fill the `MY_SIZE` column:
+
+1. Open `excel_ui/SALES_KSP_CRM_V3.xlsx`
+2. Find new orders (bottom of table, MY_SIZE = empty)
+3. Fill MY_SIZE for each order based on:
+   - Customer info (height/weight)
+   - Order history
+   - Product defaults
+
+**Size Codes:**
+- Kids: `22`, `24`, `26`, `28`, `30`, `32`, `34`
+- Men: `S`, `M`, `L`, `XL`, `2XL`, `3XL`, `4XL`
+
+**Save the file** before running waybill builder.
+
+### Step 3: Build Waybill Bundles
+
+**Preparation:**
+1. Download waybill ZIPs from Kaspi (format: `waybill*.zip`)
+2. Place ZIPs in `excel_ui/ActiveOrders/` folder
+3. Ensure MY_SIZE is filled for all orders to process
+
+**Run Builder:**
+```bash
+# Using .command file
+Double-click: excel_ui/run_build_waybills.command
+
+# Using CLI
+python scripts/build_daily_waybills.py --verbose
+
+# Dry run (preview without creating files)
+python scripts/build_daily_waybills.py --dry-run
+
+# Specific date
+python scripts/build_daily_waybills.py --date 2025-12-10
+```
+
+**Output Structure:**
+```
+excel_ui/Kaspi_orders/Today/
+├── build_log.csv           # All orders with status
+├── missing_orders.csv      # Orders without waybill PDFs
+├── package_summary.csv     # Package count by store
+│
+├── 10.12.25_AcmeWear_qnt50/
+│   ├── NORMAL_singles/
+│   │   └── Berserk_футболка_XL-1.pdf
+│   ├── SPECIAL_multi_line/
+│   │   └── Местовая-1_Prod1-M-1(1-2)_Prod2-L-1(2-2).pdf
+│   ├── SPECIAL_multi_qty/
+│   │   └── Местовая-1_Nike_L-3.pdf
+│   ├── manifest_normal_singles.csv
+│   ├── manifest_special_multi_line.csv
+│   └── manifest_special_multi_qty.csv
+│
+├── 10.12.25_Universal_qnt100/
+│   └── ...
+└── 10.12.25_11KZ_qnt25/
+    └── ...
+```
+
+### Order Types and Grouping
+
+| Type | Condition | Filename Pattern |
+|------|-----------|------------------|
+| **NORMAL** | qty=1, single product | `{kaspi_name_core}_{size}-{qty}.pdf` |
+| **MULTI_QTY** | qty>1 | `Местовая-N_{core}_{size}-{qty}.pdf` |
+| **MULTI_LINE** | Same order, multiple products | `Местовая-N_{core1}-{sz1}-{q1}(1-N)_...pdf` |
+
+### Package Counting Rules
+
+| Condition | Packages |
+|-----------|----------|
+| NORMAL (qty=1) | 1 package |
+| MULTI_QTY, qty≤3, not heavy | 1 package |
+| MULTI_QTY, qty>3 or heavy | qty packages |
+| MULTI_LINE, total qty≤3, no heavy | 1 package |
+| MULTI_LINE with heavy items | Split by heavy |
+
+**Heavy Items** (always separate packages):
+- Костюм_мужской_Хус
+- Line51
+- Принт_5в1_черный
+- Костюм_Ромбик_ДЕТСКИЙ
+- Спортивный_3в1_детский_черный
+
+### Store Mapping
+
+| Kaspi Warehouse Code | Display Name |
+|---------------------|--------------|
+| 30137883_PP1 | AcmeWear |
+| 30000001_PP1 | Universal |
+| 30290083_PP1 | 11KZ |
+| 30000002_PP1 | STORE-B |
+
+### Manifest CSV Format
+
+Each store folder contains 3 manifest files:
+- `manifest_normal_singles.csv`
+- `manifest_special_multi_qty.csv`
+- `manifest_special_multi_line.csv`
+
+**Columns:**
+| Column | Description |
+|--------|-------------|
+| type | NORMAL / MULTI_QTY / MULTI_LINE |
+| store | Store display name |
+| order_id | Kaspi order number |
+| kaspi_name_core | Core product name |
+| size | MY_SIZE value |
+| sku_key | SKU key |
+| sku_id | Full SKU ID |
+| quantity | Total quantity |
+| kaspi_offer_name | Full Kaspi product name |
+| output | Output file path |
+
+### Troubleshooting
+
+**No orders imported:**
+- Check ActiveOrders files are in `excel_ui/ActiveOrders/`
+- Check orders have status "Ожидает передачи курьеру"
+- Check orders don't require signature
+- Check planned date is today or earlier
+
+**Orders missing in waybill build:**
+- Check MY_SIZE is filled in CRM
+- Check waybill ZIP contains the order's PDF
+- Check build_log.csv for error details
+
+**Missing waybills:**
+- Check `missing_orders.csv` for list of orders without PDFs
+- Download missing waybill ZIPs from Kaspi
+
+**Formula errors in CRM:**
+- Import only writes to columns Y-AZ (raw data)
+- Formulas in A-X should auto-calculate
+- If formulas break, restore from backup and re-import
+
+**Wrong store grouping:**
+- Check "Склад передачи КД" column in CRM
+- Verify store code matches STORE_MAP
+
+### Daily Checklist
+
+**Morning:**
+- [ ] Download ActiveOrders*.xlsx from Kaspi
+- [ ] Download waybill*.zip files from Kaspi
+- [ ] Place files in `excel_ui/ActiveOrders/`
+- [ ] Run import: `run_import_orders.command`
+- [ ] Open CRM, fill MY_SIZE for new orders
+- [ ] Save CRM
+- [ ] Run builder: `run_build_waybills.command`
+- [ ] Print manifests from each store folder
+- [ ] Pack orders according to manifests
+
+**Verification:**
+- [ ] Check `package_summary.csv` for correct counts
+- [ ] Check `missing_orders.csv` is empty (or handle missing)
+- [ ] Verify PDF count matches manifest count
+
+---
+
+## Phase 12: Automated API Shipping Workflow
+
+### Overview
+
+Phase 12 automates the Kaspi shipping workflow via API:
+1. **Ship orders** - Set package count and move to "Передача" stage
+2. **Download waybills** - Download PDFs via API (no manual ZIP downloads)
+3. **Build bundles** - Group waybills by store/type
+
+### Quick Start (Recommended)
+
+**Single command does everything:**
+```bash
+# Double-click to run full workflow (V2 - optimized)
+excel_ui/run_build_waybills_v2.command
+```
+
+This runs 3 steps automatically:
+1. Ship orders (set package count via API)
+2. Download waybills V2 (API-direct, no CRM read - saves 30-60s)
+3. Build waybill bundles
+
+### Prerequisites
+
+**Environment:**
+```bash
+# Required in .env for API write operations
+ENABLE_KASPI_WRITE=1
+```
+
+**Before running:**
+1. Run import script first (`run_import_orders.command`)
+2. Fill MY_SIZE column in `SALES_KSP_CRM_V3.xlsx`
+3. Save the CRM file
+
+### Step 1: Ship Orders via API
+
+Sets "Количество мест" (package count) and moves orders from "Упаковка" to "Передача".
+
+```bash
+# Full run with output
+python scripts/ship_orders_api.py --verbose
+
+# Dry run (preview only)
+python scripts/ship_orders_api.py --dry-run
+
+# Single store
+python scripts/ship_orders_api.py --store UNIVERSAL --verbose
+```
+
+**Package Count Logic:**
+| Condition | Packages |
+|-----------|----------|
+| NORMAL (qty=1) | 1 package |
+| MULTI_QTY, qty≤3, not heavy | 1 package |
+| MULTI_QTY, qty>3 or heavy | qty packages |
+| MULTI_LINE with heavy items | Heavy items get separate packages |
+
+**Heavy Items** (always separate packages):
+- Костюм_мужской_Хус
+- Line51
+- Принт_5в1_черный
+- Костюм_Ромбик_ДЕТСКИЙ
+- Спортивный_3в1_детский_черный
+- CL_NEW-CLO2_MEN_SUIT-61_BLACK
+- CL_NEW-CLO2_MEN_SUIT-51_BLACK_GREY
+- CL_NK_MEN_LINE51_WHITE
+- CL_OC_MEN_LINE52_BLACK
+
+### Step 2: Download Waybills via API
+
+Downloads waybill PDFs for TODAY's batch only (exact date match).
+
+```bash
+# Download today's waybills
+python scripts/download_waybills_api.py --verbose
+
+# Dry run (preview only)
+python scripts/download_waybills_api.py --dry-run
+
+# Specific date
+python scripts/download_waybills_api.py --date 2025-12-10
+
+# All historical orders (not just today)
+python scripts/download_waybills_api.py --all-dates
+```
+
+**Output:**
+```
+excel_ui/ActiveOrders/waybills/
+├── 742227930.pdf
+├── 742227931.pdf
+└── ...
+```
+
+**Filtering:**
+- Only downloads for orders with MY_SIZE filled in CRM
+- Default: Only orders where `planned_date == today`
+- Use `--all-dates` for `planned_date <= today`
+
+### Step 3: Build Waybill Bundles
+
+Groups PDFs by store and type. Same as Phase 11, but uses API-downloaded waybills.
+
+```bash
+python scripts/build_daily_waybills.py --verbose
+```
+
+**Waybill Sources (priority order):**
+1. API downloads: `excel_ui/ActiveOrders/waybills/*.pdf`
+2. ZIP files: `excel_ui/ActiveOrders/waybill*.zip`
+
+### Full Workflow Example
+
+```bash
+# 1. Import new orders (if not done)
+python scripts/import_orders_to_crm.py --verbose
+
+# 2. [MANUAL] Fill MY_SIZE in Excel, save file
+
+# 3. Run automated shipping workflow
+python scripts/ship_orders_api.py --verbose
+python scripts/download_waybills_api.py --verbose
+python scripts/build_daily_waybills.py --verbose
+
+# Or just double-click:
+excel_ui/run_build_waybills_v2.command
+```
+
+### CLI Reference
+
+**ship_orders_api.py:**
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Preview only, no API calls |
+| `--verbose` | Show detailed progress |
+| `--store STORE` | Process single store only |
+| `--date YYYY-MM-DD` | Target specific date |
+
+**download_waybills_api.py:**
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Preview only, no downloads |
+| `--verbose` | Show detailed progress |
+| `--store STORE` | Process single store only |
+| `--date YYYY-MM-DD` | Target specific date |
+| `--all-dates` | Include historical orders |
+| `--days N` | API lookback days (default: 14) |
+
+### Troubleshooting Phase 12
+
+**"No orders ready for shipping":**
+- Check MY_SIZE is filled in CRM
+- Check planned_date matches today
+- Verify orders are in "Упаковка" stage
+
+**"0 waybills downloaded":**
+- Orders must be in "Передача" stage (run ship script first)
+- Check CRM has matching orders with MY_SIZE
+- Use `--all-dates` to include past orders
+
+**API errors:**
+- Verify `ENABLE_KASPI_WRITE=1` in `.env`
+- Check API tokens are valid
+- Review error messages in output
+
+**Missing waybills in build:**
+- Some orders may not have waybills yet (API delay)
+- Check `missing_orders.csv` for details
+- Fallback: Download ZIP from Kaspi dashboard
+
+### Daily Checklist (Phase 12)
+
+**Morning:**
+- [ ] Download ActiveOrders*.xlsx from Kaspi
+- [ ] Place files in `excel_ui/ActiveOrders/`
+- [ ] Run import: `run_import_orders.command`
+- [ ] Open CRM, fill MY_SIZE for new orders
+- [ ] Save CRM
+- [ ] Run: `run_build_waybills_v2.command` (does all 3 steps)
+- [ ] Print manifests from each store folder
+- [ ] Pack orders according to manifests
+
+**Verification:**
+- [ ] Check ship script output for errors
+- [ ] Check download count matches expected
+- [ ] Check `package_summary.csv` for correct counts
+- [ ] Verify PDF count matches manifest count
+
+---
+
 ## Contact / Escalation
 - System issues: Review `.claude/ISSUES.md`
 - Architectural questions: Review `.claude/DECISIONS.md`
@@ -712,5 +1116,5 @@ python scripts/build_size_probability.py --export
 
 ---
 
-*Document version: 5.0 (Phase 9.6)*
-*Last updated: 2025-12-09*
+*Document version: 7.0 (Phase 12)*
+*Last updated: 2025-12-11*

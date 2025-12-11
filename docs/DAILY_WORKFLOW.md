@@ -43,8 +43,8 @@ For each new order:
 
 Run waybill builder:
 ```bash
-# Double-click or run:
-./excel_ui/run_build_waybills.command
+# Double-click or run (V2 - optimized):
+./excel_ui/run_build_waybills_v2.command
 ```
 
 This generates:
@@ -148,7 +148,7 @@ logs/
 | Script | Purpose | Schedule |
 |--------|---------|----------|
 | `run_full_import.command` | Import orders from API | 11:00, 16:00 (launchd) |
-| `run_build_waybills.command` | Generate waybill PDFs | Manual |
+| `run_build_waybills_v2.command` | Generate waybill PDFs (V2 - optimized) | Manual |
 | `run_send_whatsapp.command` | Send PDFs to WhatsApp | Manual |
 
 ## Contacts
