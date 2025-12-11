@@ -199,13 +199,16 @@ def fetch_masterproduct_name(client: KaspiAPIClient, entry: dict) -> Optional[st
     try:
         response = client.get_masterproduct(masterproduct_id)
         if response.success and response.data:
-            attrs = response.data.get('attributes', {})
+            # JSON:API response structure: {"data": {"attributes": {"name": ...}}}
+            # response.data contains the full JSON, need to access nested 'data' first
+            data_obj = response.data.get('data', {})
+            attrs = data_obj.get('attributes', {})
             name = attrs.get('name', '')
             if name:
                 _masterproduct_cache[masterproduct_id] = name
                 return name
             else:
-                logger.warning(f"Masterproduct {masterproduct_id} has no 'name' attribute")
+                logger.warning(f"Masterproduct {masterproduct_id} has no 'name' attribute in: {list(attrs.keys())}")
         else:
             logger.warning(f"Masterproduct API returned no data for {masterproduct_id}")
     except Exception as e:

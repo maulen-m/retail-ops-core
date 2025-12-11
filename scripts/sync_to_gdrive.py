@@ -169,6 +169,7 @@ def sync_new_rows_to_gdrive(
         print(f"  Writing {n_rows} rows ({data_cols} columns)...")
 
         # Write by column instead of cell-by-cell (reduces COM calls from ~2000 to ~50)
+        # IMPORTANT: Use tbl_start_col to respect table's starting column position
         for col_idx in range(data_cols):
             # Extract column values as [[val1], [val2], ...]
             col_values = [[row[col_idx] if col_idx < len(row) else None] for row in new_values]
@@ -177,8 +178,9 @@ def sync_new_rows_to_gdrive(
             if all(v[0] is None or v[0] == "" for v in col_values):
                 continue
 
-            # Bulk write entire column at once
-            col_range = sh_dst.range((top_row, col_idx + 1), (bottom_row, col_idx + 1))
+            # Bulk write entire column at once, respecting table's starting column
+            target_col = tbl_start_col + col_idx
+            col_range = sh_dst.range((top_row, target_col), (bottom_row, target_col))
             col_range.value = col_values
 
             # Progress indicator every 10 columns
