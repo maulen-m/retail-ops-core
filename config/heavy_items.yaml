@@ -1,0 +1,18 @@
+# Heavy Items Configuration
+# Items listed here are always packaged individually (one package per item)
+#
+# Add SKU/Article codes for items that:
+# - Weigh more than 2 kg
+# - Are bulky/oversized
+# - Cannot be combined with other items
+#
+# Format: List of SKU codes (article numbers from Kaspi)
+#
+# Example:
+#   heavy_skus:
+#     - "GYM-EQUIPMENT-001"
+#     - "LARGE-BOX-SET-002"
+
+heavy_skus: []
+  # Add heavy SKUs below:
+  # - "YOUR_HEAVY_SKU_HERE"
