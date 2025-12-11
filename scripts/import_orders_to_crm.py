@@ -196,10 +196,11 @@ def filter_for_shipping(
         sig_col = df[colmap["signature"]].astype(str).str.strip().str.lower()
         ok &= ~sig_col.isin(['да', 'yes', 'true', '1', 'требуется'])
     
-    # Date filter: planned_date <= end_date (None = unknown, include to be safe)
+    # Date filter: planned_date == end_date (exact match for TODAY only)
+    # Phase 12 Part 3: Changed from <= to == for TODAY-only filtering
     if "handover" in colmap:
         handover = df[colmap["handover"]].apply(parse_kz_date)
-        ok &= handover.apply(lambda d: d is None or d <= end_date)
+        ok &= handover.apply(lambda d: d is not None and d == end_date)
     
     df_filtered = df[ok].copy()
     
@@ -393,6 +394,7 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
         stage.append(row)
 
     # Extract phone values separately (Phase 12)
+    # Format: +7XXXXXXXXXX (Kazakhstan format)
     phone_values = []
     if "phone" in S:
         for i in range(len(df_filt)):
@@ -401,6 +403,17 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
                 v = ""
             else:
                 v = str(v).strip()
+                # Add +7 prefix if phone has digits and doesn't already start with +
+                if v and v[0] != '+':
+                    # Remove any leading 8 or 7 (common Kazakhstan patterns)
+                    if v.startswith('8') and len(v) == 11:
+                        v = '+7' + v[1:]
+                    elif v.startswith('7') and len(v) == 11:
+                        v = '+7' + v[1:]
+                    elif len(v) == 10:
+                        v = '+7' + v
+                    else:
+                        v = '+7' + v  # Default: prepend +7
             phone_values.append(v)
     else:
         phone_values = [""] * len(df_filt)
@@ -467,6 +480,13 @@ def excel_append_xlwings(
         date_range = sh.range((top_row, date_col_abs), (bottom_row, date_col_abs))
         date_range.value = date_vals
         date_range.number_format = "dd.mm.yyyy"
+
+        # Write "Новый" marker to HEIGHT column (D = 4) for visual identification
+        # Phase 12 Part 3: Helps employees see which orders were added in second import
+        height_col = 4  # Column D
+        height_range = sh.range((top_row, height_col), (bottom_row, height_col))
+        height_range.value = [["Новый"] for _ in range(n)]
+        print(f"  'Новый' marker written to column D for {n} rows")
 
         # Write phone column (Phase 12)
         if phone_col_abs and phone_values:
@@ -568,9 +588,9 @@ def main():
         help="CRM table name"
     )
     parser.add_argument(
-        "--date-end", 
-        default="tomorrow",
-        help="Upper bound for planned date (today, tomorrow, or YYYY-MM-DD)"
+        "--date-end",
+        default="today",
+        help="Exact planned delivery date to filter (today, tomorrow, or YYYY-MM-DD)"
     )
     parser.add_argument(
         "--append-date", 
@@ -613,7 +633,7 @@ def main():
     print("=" * 60)
     print(f"  Orders dir: {args.orders_dir}")
     print(f"  CRM file: {args.crm_file}")
-    print(f"  Date filter: <= {end_date}")
+    print(f"  Date filter: == {end_date} (TODAY only)")
     print(f"  Append date: {append_date}")
     print()
     
@@ -690,7 +710,17 @@ def main():
     
     # Archive source files
     archive_path = archive_run(args.orders_dir, source_files, df_filt)
-    
+
+    # Sync to Google Drive (Phase 12 Part 3)
+    print("\n4. Syncing to Google Drive...")
+    try:
+        from scripts.sync_to_gdrive import sync_crm_to_gdrive
+        sync_stats = sync_crm_to_gdrive(dry_run=args.dry_run)
+        print(f"   Google Drive sync: {sync_stats['rows_synced']} rows")
+    except Exception as e:
+        print(f"   WARNING: Google Drive sync failed: {e}")
+        # Don't fail the import if sync fails - CRM update was successful
+
     print(f"\n✅ Import complete!")
     print(f"   Appended: {len(stage)} orders")
     print(f"   Archived: {archive_path}")
