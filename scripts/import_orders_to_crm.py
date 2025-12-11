@@ -85,6 +85,7 @@ DEFAULT_SIGNATURE = 'Не требуется'
 CANON = {
     "order_id": ["№заказа", "номерзаказа", "orderid", "заказа"],  # заказа is normalized from "№ заказа"
     "status": ["статус"],
+    "status_change_date": ["датаизменениястатуса"],  # Phase 12 Part 6: status change timestamp
     "signature": ["требуетсяподписание"],
     "handover": ["плановаядатапередачикурьеру", "плановаядатапередачи"],
     "offer_name": ["названиетоваравkaspiмагазине"],
@@ -92,6 +93,7 @@ CANON = {
     "sku": ["артикул"],
     "warehouse": ["складпередачикд", "складпередачикурьерскойдоставки"],
     "phone": ["телефон", "phone", "cellphone"],
+    "quantity": ["количество", "qty", "quantity"],
 }
 
 
@@ -212,6 +214,69 @@ def filter_for_shipping(
     }
     
     return df_filtered, stats
+
+
+def sort_for_crm(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Sort dataframe for CRM append order.
+
+    Sort order (Phase 12 Part 6 - Updated):
+    1. Status (cancelled/returned on top) - problematic orders first
+    2. STORE_NAME / warehouse (ascending) - group by store for visual clarity
+    3. OrderID (ascending) - group same orders together
+    4. Quantity (ascending) - single items first
+    5. KASPI_OFFER_NAME / offer_name (ascending) - alphabetical by product
+    6. Date / handover (ascending) - oldest first
+
+    This sort order groups orders by store for easier visual scanning.
+    """
+    colmap = map_headers(df)
+
+    sort_cols = []
+    sort_ascending = []
+
+    # 1. Status column - cancelled/returned first (0 = top, 1 = bottom)
+    if "status" in colmap:
+        df = df.copy()  # Avoid SettingWithCopyWarning
+        df["_status_sort"] = df[colmap["status"]].apply(
+            lambda x: 0 if str(x).lower() in ['отменен', 'возвращен', 'cancelled', 'returned', 'cancelling', 'returning'] else 1
+        )
+        sort_cols.append("_status_sort")
+        sort_ascending.append(True)
+
+    # 2. STORE_NAME / warehouse (ascending) - group by store first
+    if "warehouse" in colmap:
+        sort_cols.append(colmap["warehouse"])
+        sort_ascending.append(True)
+
+    # 3. OrderID (ascending)
+    if "order_id" in colmap:
+        sort_cols.append(colmap["order_id"])
+        sort_ascending.append(True)
+
+    # 4. Quantity (ascending)
+    if "quantity" in colmap:
+        sort_cols.append(colmap["quantity"])
+        sort_ascending.append(True)
+
+    # 5. KASPI_OFFER_NAME / offer_name (ascending)
+    if "offer_name" in colmap:
+        sort_cols.append(colmap["offer_name"])
+        sort_ascending.append(True)
+
+    # 6. Date / handover (ascending)
+    if "handover" in colmap:
+        sort_cols.append(colmap["handover"])
+        sort_ascending.append(True)
+
+    if sort_cols:
+        df_sorted = df.sort_values(by=sort_cols, ascending=sort_ascending, na_position='last')
+        # Drop helper column
+        if "_status_sort" in df_sorted.columns:
+            df_sorted = df_sorted.drop(columns=["_status_sort"])
+        return df_sorted.reset_index(drop=True)
+
+    return df
 
 
 # ---------- CRM Inspection (openpyxl read-only) ----------
@@ -375,6 +440,9 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
         if h in {"складпередачикд", "складпередачикурьерскойдоставки"} and "warehouse" in S:
             return S["warehouse"]
 
+        if h in {"датаизменениястатуса"} and "status_change_date" in S:
+            return S["status_change_date"]
+
         # Direct match
         if h in cols_norm_map:
             return cols_norm_map[h]
@@ -474,6 +542,17 @@ def excel_append_xlwings(
         bottom_row = top_row + n - 1
 
         print(f"  Appending {n} rows starting at row {top_row}")
+
+        # CRITICAL: Resize table FIRST to include new rows
+        # This prevents Excel table corruption (XML errors)
+        tbl_start_col = tbl.range.column
+        tbl_end_col = tbl.range.columns.count + tbl_start_col - 1
+        new_table_range = sh.range(
+            (header_row, tbl_start_col),
+            (bottom_row, tbl_end_col)
+        )
+        tbl.resize(new_table_range)
+        print(f"  Table resized to include rows up to {bottom_row}")
 
         # Write date column
         date_vals = [[set_date] for _ in range(n)]
@@ -640,22 +719,27 @@ def main():
     # Read and filter
     df_all, source_files = read_active_orders(args.orders_dir)
     df_filt, stats = filter_for_shipping(df_all, args.status, None, end_date)
-    
+
     print(f"\nFiltered: {stats['rows_in_files']} → {stats['rows_after_filters']} rows")
-    
+
     if df_filt.empty:
         print("No orders match filters. Nothing to import.")
         return
-    
+
+    # Sort for CRM append order (Phase 12 Part 6 - Updated)
+    # Order: Status → STORE_NAME → OrderID → Quantity → KASPI_OFFER_NAME → Date
+    df_filt = sort_for_crm(df_filt)
+    print(f"Sorted by: Status (cancelled first), STORE_NAME, OrderID, Quantity, KASPI_OFFER_NAME, Date")
+
     # Inspect CRM structure
     date_abs, phone_abs, start_abs, end_abs, slice_headers = inspect_crm_sheet(
         args.crm_file, args.sheet, args.table
     )
-    
+
     # Get existing order IDs for dedup
     existing_ids = collect_existing_order_ids(args.crm_file, args.sheet, args.table, start_abs)
     print(f"Existing orders in CRM: {len(existing_ids)}")
-    
+
     # Build staging data (returns tuple: stage_block, phone_values)
     stage, phone_values = build_staging(df_filt, slice_headers)
 
@@ -711,19 +795,55 @@ def main():
     # Archive source files
     archive_path = archive_run(args.orders_dir, source_files, df_filt)
 
-    # Sync to Google Drive (Phase 12 Part 3)
-    print("\n4. Syncing to Google Drive...")
+    # Sync NEW rows to Google Drive (Phase 12 Part 3)
+    print("\n4. Syncing NEW rows to Google Drive...")
+    new_rows_added = len(stage)
     try:
-        from scripts.sync_to_gdrive import sync_crm_to_gdrive
-        sync_stats = sync_crm_to_gdrive(dry_run=args.dry_run)
-        print(f"   Google Drive sync: {sync_stats['rows_synced']} rows")
+        # Import sync function - handle different working directories
+        import sys
+        project_root = Path(__file__).resolve().parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+        from scripts.sync_to_gdrive import sync_new_rows_to_gdrive
+
+        sync_stats = sync_new_rows_to_gdrive(
+            new_rows_count=new_rows_added,
+            dry_run=args.dry_run
+        )
+        print(f"   Google Drive sync: {sync_stats['rows_synced']} rows synced")
     except Exception as e:
         print(f"   WARNING: Google Drive sync failed: {e}")
         # Don't fail the import if sync fails - CRM update was successful
 
     print(f"\n✅ Import complete!")
-    print(f"   Appended: {len(stage)} orders")
+    print(f"   Appended: {new_rows_added} orders")
     print(f"   Archived: {archive_path}")
+
+    # Phase 12 Part 6: Detailed statistics
+    if new_rows_added > 0 and not args.dry_run:
+        print("\n" + "=" * 60)
+        print("  Import Statistics")
+        print("=" * 60)
+
+        # Get warehouse column for grouping
+        colmap = map_headers(df_filt)
+        if "warehouse" in colmap:
+            store_counts = df_filt.groupby(colmap["warehouse"]).size()
+            print("\n  Appended Orders by Store:")
+            for store, count in sorted(store_counts.items()):
+                print(f"    {store}: {count}")
+
+        # Status summary
+        if "status" in colmap:
+            status_counts = df_filt.groupby(colmap["status"]).size()
+            print("\n  Status Summary:")
+            for status, count in sorted(status_counts.items()):
+                print(f"    {status}: {count}")
+
+        print(f"\n  Total Appended: {new_rows_added}")
+        print(f"  Total in CRM (before): {len(existing_ids)}")
+        print(f"  Total in CRM (after): {len(existing_ids) + new_rows_added}")
+        print("=" * 60)
 
 
 if __name__ == "__main__":

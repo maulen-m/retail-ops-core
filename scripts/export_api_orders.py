@@ -147,6 +147,55 @@ def get_nested(d: dict, *keys, default=None) -> Any:
 # ORDER PROCESSING
 # =============================================================================
 
+# Cache for masterproduct names (reduces API calls)
+_masterproduct_cache: Dict[str, str] = {}
+
+
+def fetch_masterproduct_name(client: KaspiAPIClient, entry: dict) -> Optional[str]:
+    """
+    Fetch the Kaspi public product name from masterproduct.
+
+    The masterproduct contains the official Kaspi product name that customers see.
+    Results are cached to avoid repeated API calls.
+
+    Args:
+        client: KaspiAPIClient instance
+        entry: Order entry dict containing product relationship
+
+    Returns:
+        Kaspi public product name or None if not available
+    """
+    global _masterproduct_cache
+
+    # Get masterproduct ID from relationships
+    relationships = entry.get('relationships', {})
+    product_rel = relationships.get('product', {})
+    product_data = product_rel.get('data', {})
+    masterproduct_id = product_data.get('id')
+
+    if not masterproduct_id:
+        return None
+
+    # Check cache first
+    if masterproduct_id in _masterproduct_cache:
+        return _masterproduct_cache[masterproduct_id]
+
+    # Fetch from API
+    try:
+        response = client.get_masterproduct(masterproduct_id)
+        if response.success and response.data:
+            attrs = response.data.get('attributes', {})
+            name = attrs.get('name', '')
+            _masterproduct_cache[masterproduct_id] = name
+            return name
+    except Exception as e:
+        logger.debug(f"Failed to fetch masterproduct {masterproduct_id}: {e}")
+
+    # Cache empty result to avoid repeated failures
+    _masterproduct_cache[masterproduct_id] = ''
+    return ''
+
+
 def fetch_order_entries(client: KaspiAPIClient, order_code: str) -> List[dict]:
     """
     Fetch order entries (line items) for an order.
@@ -173,6 +222,7 @@ def order_to_rows(
     order: dict,
     entries: List[dict],
     store_code: str,
+    client: Optional[KaspiAPIClient] = None,
 ) -> List[Dict[str, Any]]:
     """
     Convert API order + entries to Excel rows.
@@ -183,6 +233,7 @@ def order_to_rows(
         order: Order dict from API
         entries: List of entry dicts
         store_code: Store code for warehouse mapping
+        client: KaspiAPIClient for fetching masterproduct names (optional)
 
     Returns:
         List of row dicts matching EXCEL_COLUMNS
@@ -277,11 +328,20 @@ def order_to_rows(
             entry_attrs = entry.get('attributes', {})
             offer = entry_attrs.get('offer', {})
 
+            # Get Kaspi public name from masterproduct (if client provided)
+            # offer.name is the merchant's internal name
+            kaspi_public_name = ''
+            if client:
+                kaspi_public_name = fetch_masterproduct_name(client, entry) or ''
+
+            # offer.name is the seller's internal product name
+            seller_internal_name = offer.get('name', '')
+
             row = {
                 '№ заказа': order_code,
                 'Дата поступления заказа': creation_date,
-                'Название товара в Kaspi Магазине': offer.get('name', ''),
-                'Название в системе продавца': offer.get('merchantName', offer.get('name', '')),
+                'Название товара в Kaspi Магазине': kaspi_public_name,  # From masterproduct (Kaspi official name)
+                'Название в системе продавца': seller_internal_name,    # From offer (merchant's internal name)
                 'Артикул': offer.get('code', ''),  # API uses 'code' for SKU
                 'Сумма': entry_attrs.get('totalPrice', entry_attrs.get('price', 0)),
                 'Категория': offer.get('category', ''),
@@ -360,8 +420,8 @@ def export_store_orders(
         # Fetch entries for this order
         entries = fetch_order_entries(client, order_code)
 
-        # Convert to Excel rows
-        rows = order_to_rows(order, entries, store_code)
+        # Convert to Excel rows (pass client for masterproduct name fetching)
+        rows = order_to_rows(order, entries, store_code, client=client)
         all_rows.extend(rows)
 
         if verbose and (i + 1) % 10 == 0:
@@ -401,6 +461,41 @@ def export_all_stores(
         all_rows.extend(rows)
 
     return all_rows
+
+
+def filter_rows_by_planned_date(
+    rows: List[Dict[str, Any]],
+    target_date: Optional[str] = None,
+    verbose: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Filter rows by planned courier transmission date.
+
+    Args:
+        rows: List of row dicts
+        target_date: Target date in DD.MM.YYYY format (default: today)
+        verbose: Print filter stats
+
+    Returns:
+        Filtered list of rows
+    """
+    if not rows:
+        return rows
+
+    # Default to today
+    if not target_date:
+        target_date = datetime.now().strftime('%d.%m.%Y')
+
+    filtered = []
+    for row in rows:
+        planned = row.get('Плановая дата передачи курьеру', '')
+        if planned == target_date:
+            filtered.append(row)
+
+    if verbose:
+        print(f"    Filtered: {len(filtered)}/{len(rows)} orders have planned date = {target_date}")
+
+    return filtered
 
 
 def write_excel(rows: List[Dict[str, Any]], output_path: Path) -> int:
@@ -480,6 +575,22 @@ def main():
         action='store_true',
         help='Verbose output'
     )
+    parser.add_argument(
+        '--today-only',
+        action='store_true',
+        default=True,
+        help='Only export orders with planned delivery date = today (default: True)'
+    )
+    parser.add_argument(
+        '--all-dates',
+        action='store_true',
+        help='Export orders regardless of planned delivery date (overrides --today-only)'
+    )
+    parser.add_argument(
+        '--planned-date',
+        type=str,
+        help='Filter by specific planned date (DD.MM.YYYY format)'
+    )
 
     args = parser.parse_args()
 
@@ -502,8 +613,18 @@ def main():
 
     state_filter = args.state if args.state.upper() != 'ALL' else None
 
+    # Determine date filter for planned delivery date
+    # Default: today only (unless --all-dates is specified)
+    apply_date_filter = not args.all_dates
+    target_date = args.planned_date  # Custom date or None (will default to today)
+
     print(f"  State filter: {state_filter or 'ALL'}")
     print(f"  Lookback: {args.days} days")
+    if apply_date_filter:
+        display_date = target_date or datetime.now().strftime('%d.%m.%Y')
+        print(f"  Planned date filter: {display_date}")
+    else:
+        print(f"  Planned date filter: ALL dates")
     print(f"  Output: {args.output}")
     print()
 
@@ -524,7 +645,12 @@ def main():
             verbose=args.verbose,
         )
 
-    print(f"\nTotal rows: {len(rows)}")
+    print(f"\nTotal rows from API: {len(rows)}")
+
+    # Apply planned date filter (Phase 12 Part 3 - only pending orders for today)
+    if apply_date_filter and rows:
+        rows = filter_rows_by_planned_date(rows, target_date, verbose=args.verbose)
+        print(f"Rows after date filter: {len(rows)}")
 
     if not rows:
         print("No orders found matching criteria.")

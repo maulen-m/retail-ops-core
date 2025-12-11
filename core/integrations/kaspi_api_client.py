@@ -54,13 +54,13 @@ BASE_URL = "https://kaspi.kz/shop/api/v2"
 RATE_LIMIT_RPS = 50
 MIN_REQUEST_INTERVAL = 1.0 / RATE_LIMIT_RPS  # 0.02 seconds
 
-# Retry settings
-MAX_RETRIES = 3
-BACKOFF_FACTOR = 0.5  # 0.5, 1.0, 2.0 seconds
+# Retry settings (Phase 12 Part 6: reduced for faster failure)
+MAX_RETRIES = 2           # 2 retries = 3 attempts total (was 3)
+BACKOFF_FACTOR = 0.3      # Faster backoff (was 0.5)
 
-# Timeout settings (seconds)
-DEFAULT_TIMEOUT = 30
-DOWNLOAD_TIMEOUT = 60
+# Timeout settings (seconds) - Phase 12 Part 6: reduced to prevent 40-min hangs
+DEFAULT_TIMEOUT = 15      # Most API calls complete in <5s (was 30)
+DOWNLOAD_TIMEOUT = 20     # Waybill PDFs are small (was 60)
 
 # API limits
 MAX_DATE_RANGE_DAYS = 14      # Kaspi API enforces max 14-day date range
@@ -529,6 +529,21 @@ class KaspiAPIClient:
         """
         base64_id = self._get_order_base64_id(order_code)
         return self._request('GET', f'orders/{base64_id}/entries')
+
+    def get_masterproduct(self, masterproduct_id: str) -> APIResponse:
+        """
+        Get masterproduct details (Kaspi's official product info).
+
+        The masterproduct contains the official Kaspi product name that
+        customers see on the marketplace.
+
+        Args:
+            masterproduct_id: Base64-encoded masterproduct ID from entry relationships
+
+        Returns:
+            APIResponse with masterproduct data including 'name' (Kaspi public name)
+        """
+        return self._request('GET', f'masterproducts/{masterproduct_id}')
 
     def get_waybill_url(self, order: dict) -> Optional[str]:
         """
