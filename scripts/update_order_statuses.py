@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Phase 12 Part 4: Update Order Statuses in CRM from Kaspi API.
+DEPRECATED: Phase 12 Part 4: Update Order Statuses in CRM from Kaspi API.
 
-Fetches current status for all orders in CRM (last 7 days) and updates
-the Status column (A) with real-time values: delivered, cancelled, returned, etc.
+===========================================================================
+⚠️  DEPRECATION NOTICE ⚠️
+===========================================================================
+This script is DEPRECATED as of Phase 12 Part 7.
 
-This script:
-1. Reads existing OrderIDs from CRM (column H)
-2. Fetches current status from Kaspi API for each order
-3. Updates Status column (A) with: Завершен, Отменен, Возвращен, etc.
-4. Does NOT add new rows - only updates existing order statuses
+Status updates are now handled during the import process by:
+    python scripts/import_orders_to_crm.py
 
-Usage:
+The import script now:
+1. Fetches 14 days of orders (including ARCHIVE state)
+2. Updates existing orders' status columns (Статус, Принял, Выдал, Отменил)
+3. Appends new orders
+
+This script will be removed in a future version.
+===========================================================================
+
+Legacy functionality (deprecated):
+- Reads existing OrderIDs from CRM (column H)
+- Fetches current status from Kaspi API for each order
+- Updates Status column (A) with: Завершен, Отменен, Возвращен, etc.
+- Does NOT add new rows - only updates existing order statuses
+
+Usage (DEPRECATED - use import_orders_to_crm.py instead):
     python scripts/update_order_statuses.py
     python scripts/update_order_statuses.py --dry-run
     python scripts/update_order_statuses.py --verbose
@@ -22,12 +35,22 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import xlwings as xw
 from dotenv import load_dotenv
+
+# Emit deprecation warning when module is imported
+warnings.warn(
+    "update_order_statuses.py is DEPRECATED. "
+    "Status updates now happen during import via import_orders_to_crm.py. "
+    "This script will be removed in a future version.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

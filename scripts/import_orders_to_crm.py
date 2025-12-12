@@ -396,6 +396,226 @@ def collect_existing_order_ids(
         wb.close()
 
 
+def collect_existing_order_rows(
+    crm_path: Path,
+    sheet_name: str,
+    table_name: str,
+    order_col_abs: int
+) -> Dict[str, int]:
+    """
+    Get dict mapping OrderID -> row number from CRM.
+
+    Used for updating existing orders.
+    """
+    wb = load_workbook(filename=str(crm_path), read_only=False, data_only=True)
+    try:
+        ws = wb[sheet_name]
+        table = _resolve_table(ws, table_name)
+        start_col, start_row, end_col, end_row = _table_bounds(table)
+
+        if not (start_col <= order_col_abs <= end_col):
+            return {}
+
+        order_rows = {}
+        for row_num in range(start_row + 1, end_row + 1):
+            cell = ws.cell(row=row_num, column=order_col_abs)
+            val = cell.value
+            if val in (None, ""):
+                continue
+            if isinstance(val, str) and val.startswith("="):
+                continue
+            # Convert float to int to match API format (741866233.0 -> "741866233")
+            if isinstance(val, float):
+                val = int(val)
+            order_id = str(val).strip()
+            if order_id:
+                order_rows[order_id] = row_num
+        return order_rows
+    finally:
+        wb.close()
+
+
+def find_update_column_positions(
+    crm_path: Path,
+    sheet_name: str,
+    start_col: int,
+    end_col: int
+) -> Dict[str, int]:
+    """
+    Find column positions for update fields within the raw Kaspi columns.
+
+    Returns dict mapping column name -> absolute column position.
+    Target columns: Статус, Дата изменения статуса, Принял, Выдал, Отменил
+    """
+    wb = load_workbook(filename=str(crm_path), read_only=True, data_only=True)
+    try:
+        ws = wb[sheet_name]
+        header_row = list(ws.iter_rows(min_row=1, max_row=1, min_col=start_col, max_col=end_col))[0]
+
+        target_columns = {
+            'Статус': None,
+            'Дата изменения статуса': None,
+            'Принял': None,
+            'Выдал': None,
+            'Отменил': None,
+        }
+
+        for i, cell in enumerate(header_row):
+            header = str(cell.value or '').strip()
+            if header in target_columns:
+                target_columns[header] = start_col + i
+
+        return target_columns
+    finally:
+        wb.close()
+
+
+def update_existing_order_columns(
+    crm_path: Path,
+    sheet_name: str,
+    order_rows: Dict[str, int],  # order_id -> row number
+    update_data: Dict[str, dict],  # order_id -> {Статус, Принял, Выдал, Отменил, ...}
+    column_positions: Dict[str, int],  # column name -> absolute column position
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> int:
+    """
+    Update specific columns for existing orders in CRM.
+
+    Only updates: Статус, Дата изменения статуса, Принял, Выдал, Отменил
+    Does NOT touch Status column (A) or formula columns.
+
+    Args:
+        crm_path: Path to CRM file
+        sheet_name: Sheet name
+        order_rows: Dict mapping order_id -> Excel row number
+        update_data: Dict mapping order_id -> column values to update
+        column_positions: Dict mapping column name -> absolute column position
+        dry_run: If True, don't write changes
+        verbose: If True, print progress
+
+    Returns:
+        Number of orders updated
+    """
+    if not order_rows or not update_data:
+        return 0
+
+    # Find orders that exist in both
+    orders_to_update = set(order_rows.keys()) & set(update_data.keys())
+
+    if not orders_to_update:
+        if verbose:
+            print("  No existing orders to update")
+        return 0
+
+    if verbose:
+        print(f"  Found {len(orders_to_update)} orders to update")
+
+    if dry_run:
+        print(f"  [DRY RUN] Would update {len(orders_to_update)} orders")
+        return 0
+
+    # Use xlwings for writing (preserves formulas)
+    app = xw.App(visible=False, add_book=False)
+    app.display_alerts = False
+    app.screen_updating = False
+
+    try:
+        wb = app.books.open(str(crm_path))
+        ws = wb.sheets[sheet_name]
+
+        updated_count = 0
+        for order_id in orders_to_update:
+            row = order_rows[order_id]
+            data = update_data[order_id]
+
+            for col_name, col_pos in column_positions.items():
+                if col_pos is None:
+                    continue
+                if col_name in data:
+                    new_value = data[col_name]
+                    # Only write if we have a value (even '' is valid)
+                    if new_value is not None:
+                        ws.range((row, col_pos)).value = new_value
+
+            updated_count += 1
+            if verbose and updated_count % 50 == 0:
+                print(f"    Updated {updated_count}/{len(orders_to_update)} orders...")
+
+        wb.save()
+        wb.close()
+
+        if verbose:
+            print(f"  Updated {updated_count} orders")
+
+        return updated_count
+
+    finally:
+        app.quit()
+
+
+def build_update_data(df: pd.DataFrame, colmap: Dict[str, str]) -> Dict[str, dict]:
+    """
+    Build update data dict from DataFrame.
+
+    Extracts: order_id -> {Статус, Дата изменения статуса, Принял, Выдал, Отменил}
+    for updating existing orders in CRM.
+    """
+    update_data = {}
+
+    # Find column names in DataFrame
+    status_col = None
+    status_change_col = None
+    prinyal_col = None
+    vydal_col = None
+    otmenil_col = None
+
+    for col in df.columns:
+        col_norm = norm(col)
+        if col_norm == 'статус':
+            status_col = col
+        elif col_norm in {'датаизменениястатуса', 'statuschangedate'}:
+            status_change_col = col
+        elif col_norm == 'принял':
+            prinyal_col = col
+        elif col_norm == 'выдал':
+            vydal_col = col
+        elif col_norm == 'отменил':
+            otmenil_col = col
+
+    order_col = colmap.get('order_id')
+    if not order_col:
+        return {}
+
+    for _, row in df.iterrows():
+        order_id = str(row.get(order_col, '')).strip()
+        if not order_id:
+            continue
+
+        # Convert float order_id to int string (741866233.0 -> "741866233")
+        try:
+            order_id = str(int(float(order_id)))
+        except (ValueError, TypeError):
+            pass
+
+        data = {}
+        if status_col and pd.notna(row.get(status_col)):
+            data['Статус'] = str(row[status_col])
+        if status_change_col and pd.notna(row.get(status_change_col)):
+            data['Дата изменения статуса'] = row[status_change_col]
+        if prinyal_col:
+            data['Принял'] = str(row.get(prinyal_col, '') or '')
+        if vydal_col:
+            data['Выдал'] = str(row.get(vydal_col, '') or '')
+        if otmenil_col:
+            data['Отменил'] = str(row.get(otmenil_col, '') or '')
+
+        if data:
+            update_data[order_id] = data
+
+    return update_data
+
+
 # ---------- Build Staging Data ----------
 
 def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[List[List], List[str]]:
@@ -687,11 +907,22 @@ def main():
         help="Preview only, don't write to Excel"
     )
     parser.add_argument(
-        "--verbose", "-v", 
+        "--verbose", "-v",
         action="store_true",
         help="Verbose output"
     )
-    
+    parser.add_argument(
+        "--update-existing",
+        action="store_true",
+        default=True,
+        help="Update status columns for existing orders (default: True)"
+    )
+    parser.add_argument(
+        "--no-update",
+        action="store_true",
+        help="Skip updating existing orders (only append new)"
+    )
+
     args = parser.parse_args()
     
     # Parse dates
@@ -740,6 +971,50 @@ def main():
     existing_ids = collect_existing_order_ids(args.crm_file, args.sheet, args.table, start_abs)
     print(f"Existing orders in CRM: {len(existing_ids)}")
 
+    # Update existing orders' status columns (Phase 12 Part 7)
+    update_existing = args.update_existing and not args.no_update
+    updated_count = 0
+
+    if update_existing and len(existing_ids) > 0:
+        print("\n3. Updating existing orders' status columns...")
+
+        # Get order rows (order_id -> row number)
+        order_rows = collect_existing_order_rows(
+            args.crm_file, args.sheet, args.table, start_abs
+        )
+
+        # Find column positions for update columns
+        column_positions = find_update_column_positions(
+            args.crm_file, args.sheet, start_abs, end_abs
+        )
+        if args.verbose:
+            print(f"  Update column positions: {column_positions}")
+
+        # Build update data from source DataFrame
+        colmap = map_headers(df_filt)
+        update_data = build_update_data(df_filt, colmap)
+
+        # How many orders can be updated?
+        orders_to_update = set(order_rows.keys()) & set(update_data.keys())
+        print(f"  Orders with status updates: {len(orders_to_update)}")
+
+        if orders_to_update:
+            updated_count = update_existing_order_columns(
+                args.crm_file,
+                args.sheet,
+                order_rows,
+                update_data,
+                column_positions,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
+            print(f"  Updated {updated_count} existing orders")
+    else:
+        if args.no_update:
+            print("\n3. Skipping existing order updates (--no-update flag)")
+        elif len(existing_ids) == 0:
+            print("\n3. No existing orders to update")
+
     # Build staging data (returns tuple: stage_block, phone_values)
     stage, phone_values = build_staging(df_filt, slice_headers)
 
@@ -762,12 +1037,18 @@ def main():
         stage = stage_filtered
         phone_values = phone_filtered
 
-    print(f"\nOrders to append: {len(stage)}")
-    
+    print(f"\n4. Appending new orders...")
+    print(f"   Orders to append: {len(stage)}")
+
     if len(stage) == 0:
-        print("All orders already in CRM. Nothing to import.")
-        return
-    
+        if updated_count > 0:
+            print(f"   No new orders to append (updated {updated_count} existing orders)")
+            print(f"\n✅ Import complete! Updated {updated_count} orders, appended 0 new.")
+            return
+        else:
+            print("   All orders already in CRM. Nothing to import or update.")
+            return
+
     if args.dry_run:
         print("\n[DRY RUN] Would append but skipping.")
         print(json.dumps(stats, indent=2, ensure_ascii=False))
@@ -816,7 +1097,8 @@ def main():
         # Don't fail the import if sync fails - CRM update was successful
 
     print(f"\n✅ Import complete!")
-    print(f"   Appended: {new_rows_added} orders")
+    print(f"   Updated: {updated_count} existing orders")
+    print(f"   Appended: {new_rows_added} new orders")
     print(f"   Archived: {archive_path}")
 
     # Phase 12 Part 6: Detailed statistics

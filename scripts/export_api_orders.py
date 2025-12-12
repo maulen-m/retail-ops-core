@@ -98,6 +98,30 @@ STATUS_MAP = {
     'RETURNED': 'Возвращен',
 }
 
+
+def get_state_indicators(api_state: str) -> dict:
+    """
+    Map API state to Принял/Выдал/Отменил indicator columns.
+
+    State progression:
+    NEW -> ACCEPTED_BY_MERCHANT -> ASSEMBLY -> KASPI_DELIVERY -> DELIVERY -> COMPLETED
+                                                                          -> CANCELLED/RETURNED
+
+    Returns:
+        dict with keys: Принял, Выдал, Отменил - values are 'Да' or ''
+    """
+    accepted_states = {'ACCEPTED_BY_MERCHANT', 'ASSEMBLY', 'KASPI_DELIVERY',
+                       'DELIVERY', 'PICKUP', 'COMPLETED', 'ARCHIVE'}
+    issued_states = {'KASPI_DELIVERY', 'DELIVERY', 'PICKUP', 'COMPLETED', 'ARCHIVE'}
+    cancelled_states = {'CANCELLED', 'CANCELLING', 'RETURNING', 'RETURNED'}
+
+    return {
+        'Принял': 'Да' if api_state in accepted_states else '',
+        'Выдал': 'Да' if api_state in issued_states else '',
+        'Отменил': 'Да' if api_state in cancelled_states else '',
+    }
+
+
 # Payment mode mapping
 PAYMENT_MAP = {
     'PAY_WITH_CREDIT': 'Kaspi Рассрочка',
@@ -280,6 +304,9 @@ def order_to_rows(
     api_state = attrs.get('state', '')
     api_status = attrs.get('status', '')
 
+    # Get state indicators for Принял/Выдал/Отменил columns
+    state_indicators = get_state_indicators(api_state)
+
     # Use state for display if it's KASPI_DELIVERY (matches Kaspi export behavior)
     if api_state == 'KASPI_DELIVERY':
         russian_status = 'Ожидает передачи курьеру'
@@ -328,9 +355,9 @@ def order_to_rows(
             'Способ оплаты': payment_mode,
             'Способ доставки': delivery_mode,
             'Курьерская служба': courier_service,
-            'Принял': '',
-            'Выдал': '',
-            'Отменил': '',
+            'Принял': state_indicators['Принял'],
+            'Выдал': state_indicators['Выдал'],
+            'Отменил': state_indicators['Отменил'],
             'Оценка покупателя': '',
             'Отзыв покупателя': '',
             'Дата публикации отзыва': '',
@@ -375,9 +402,9 @@ def order_to_rows(
                 'Способ оплаты': payment_mode,
                 'Способ доставки': delivery_mode,
                 'Курьерская служба': courier_service,
-                'Принял': '',
-                'Выдал': '',
-                'Отменил': '',
+                'Принял': state_indicators['Принял'],
+                'Выдал': state_indicators['Выдал'],
+                'Отменил': state_indicators['Отменил'],
                 'Оценка покупателя': '',
                 'Отзыв покупателя': '',
                 'Дата публикации отзыва': '',
@@ -403,8 +430,9 @@ def order_to_rows(
 def export_store_orders(
     store_code: str,
     state: Optional[str] = None,
-    days: int = 7,
+    days: int = 14,
     verbose: bool = False,
+    include_archive: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from a single store.
@@ -412,8 +440,9 @@ def export_store_orders(
     Args:
         store_code: Store identifier
         state: Filter by state (e.g., KASPI_DELIVERY)
-        days: Lookback days
+        days: Lookback days (default 14, max supported by API)
         verbose: Print progress
+        include_archive: Also fetch ARCHIVE orders (completed/cancelled/returned)
 
     Returns:
         List of row dicts for Excel
@@ -429,11 +458,30 @@ def export_store_orders(
     if verbose:
         print(f"  Fetching orders from {store_code} (since {since})...")
 
-    # Fetch orders
+    # Fetch active orders
     orders = client.list_all_orders(state=state, since=since)
 
     if verbose:
-        print(f"    Found {len(orders)} orders")
+        print(f"    Found {len(orders)} active orders")
+
+    # Also fetch ARCHIVE orders if requested (completed, cancelled, returned)
+    if include_archive and state != 'ARCHIVE':
+        if verbose:
+            print(f"    Fetching ARCHIVE orders...")
+        archive_orders = client.list_all_orders(state='ARCHIVE', since=since)
+        if verbose:
+            print(f"    Found {len(archive_orders)} archive orders")
+
+        # Deduplicate by order code (in case of overlap)
+        seen_codes = {o.get('attributes', {}).get('code') for o in orders}
+        for order in archive_orders:
+            code = order.get('attributes', {}).get('code')
+            if code and code not in seen_codes:
+                orders.append(order)
+                seen_codes.add(code)
+
+    if verbose:
+        print(f"    Total: {len(orders)} orders (after dedup)")
 
     all_rows = []
 
@@ -458,16 +506,18 @@ def export_store_orders(
 
 def export_all_stores(
     state: Optional[str] = None,
-    days: int = 7,
+    days: int = 14,
     verbose: bool = False,
+    include_archive: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from all configured stores.
 
     Args:
         state: Filter by state
-        days: Lookback days
+        days: Lookback days (default 14)
         verbose: Print progress
+        include_archive: Also fetch ARCHIVE orders
 
     Returns:
         List of all row dicts
@@ -480,6 +530,7 @@ def export_all_stores(
             state=state,
             days=days,
             verbose=verbose,
+            include_archive=include_archive,
         )
         all_rows.extend(rows)
 
@@ -579,8 +630,8 @@ def main():
     parser.add_argument(
         '--days',
         type=int,
-        default=7,
-        help='Lookback days (default: 7)'
+        default=14,
+        help='Lookback days (default: 14, max supported by Kaspi API)'
     )
     parser.add_argument(
         '--output',
@@ -614,6 +665,11 @@ def main():
         type=str,
         help='Filter by specific planned date (DD.MM.YYYY format)'
     )
+    parser.add_argument(
+        '--no-archive',
+        action='store_true',
+        help='Skip fetching ARCHIVE orders (completed/cancelled/returned)'
+    )
 
     args = parser.parse_args()
 
@@ -641,8 +697,11 @@ def main():
     apply_date_filter = not args.all_dates
     target_date = args.planned_date  # Custom date or None (will default to today)
 
+    include_archive = not args.no_archive
+
     print(f"  State filter: {state_filter or 'ALL'}")
     print(f"  Lookback: {args.days} days")
+    print(f"  Include archive: {include_archive}")
     if apply_date_filter:
         display_date = target_date or datetime.now().strftime('%d.%m.%Y')
         print(f"  Planned date filter: {display_date}")
@@ -658,6 +717,7 @@ def main():
             state=state_filter,
             days=args.days,
             verbose=args.verbose,
+            include_archive=include_archive,
         )
     else:
         print(f"Exporting from {args.store}...")
@@ -666,6 +726,7 @@ def main():
             state=state_filter,
             days=args.days,
             verbose=args.verbose,
+            include_archive=include_archive,
         )
 
     print(f"\nTotal rows from API: {len(rows)}")
