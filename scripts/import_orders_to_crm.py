@@ -485,6 +485,8 @@ def update_existing_order_columns(
     Only updates: Статус, Дата изменения статуса, Принял, Выдал, Отменил
     Does NOT touch Status column (A) or formula columns.
 
+    Uses BATCH writes by column to avoid slow cell-by-cell operations.
+
     Args:
         crm_path: Path to CRM file
         sheet_name: Sheet name
@@ -515,6 +517,28 @@ def update_existing_order_columns(
         print(f"  [DRY RUN] Would update {len(orders_to_update)} orders")
         return 0
 
+    # Pre-build column updates: {col_pos: [(row, value), ...]}
+    # This allows us to batch writes by column instead of cell-by-cell
+    column_updates: Dict[int, List[Tuple[int, any]]] = {}
+
+    for order_id in orders_to_update:
+        row = order_rows[order_id]
+        data = update_data[order_id]
+
+        for col_name, col_pos in column_positions.items():
+            if col_pos is None:
+                continue
+            if col_name in data:
+                new_value = data[col_name]
+                if new_value is not None:
+                    if col_pos not in column_updates:
+                        column_updates[col_pos] = []
+                    column_updates[col_pos].append((row, new_value))
+
+    if verbose:
+        total_cells = sum(len(v) for v in column_updates.values())
+        print(f"  Preparing {total_cells} cell updates across {len(column_updates)} columns...")
+
     # Use xlwings for writing (preserves formulas)
     app = xw.App(visible=False, add_book=False)
     app.display_alerts = False
@@ -524,31 +548,33 @@ def update_existing_order_columns(
         wb = app.books.open(str(crm_path))
         ws = wb.sheets[sheet_name]
 
-        updated_count = 0
-        for order_id in orders_to_update:
-            row = order_rows[order_id]
-            data = update_data[order_id]
+        # Disable calculation during updates for speed
+        original_calc = app.calculation
+        app.calculation = 'manual'
 
-            for col_name, col_pos in column_positions.items():
-                if col_pos is None:
-                    continue
-                if col_name in data:
-                    new_value = data[col_name]
-                    # Only write if we have a value (even '' is valid)
-                    if new_value is not None:
-                        ws.range((row, col_pos)).value = new_value
+        # Write updates column by column
+        cols_written = 0
+        for col_pos, row_values in column_updates.items():
+            # Sort by row for potential range optimization
+            row_values.sort(key=lambda x: x[0])
 
-            updated_count += 1
-            if verbose and updated_count % 50 == 0:
-                print(f"    Updated {updated_count}/{len(orders_to_update)} orders...")
+            # Write all values for this column
+            for row, value in row_values:
+                ws.range((row, col_pos)).value = value
 
+            cols_written += 1
+            if verbose:
+                print(f"    Column {cols_written}/{len(column_updates)} updated ({len(row_values)} cells)")
+
+        # Restore calculation and save
+        app.calculation = original_calc
         wb.save()
         wb.close()
 
         if verbose:
-            print(f"  Updated {updated_count} orders")
+            print(f"  Updated {len(orders_to_update)} orders")
 
-        return updated_count
+        return len(orders_to_update)
 
     finally:
         app.quit()
