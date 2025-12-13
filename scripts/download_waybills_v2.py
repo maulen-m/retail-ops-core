@@ -66,7 +66,7 @@ def get_todays_orders_from_api(
         List of orders with planned_date == target_date
     """
     client = KaspiAPIClient(store_code)
-    since = datetime.now() - timedelta(days=since_days)
+    since = (datetime.now() - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
     # Fetch all KASPI_DELIVERY orders
     orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
