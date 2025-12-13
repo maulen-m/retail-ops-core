@@ -1,42 +1,48 @@
 #!/bin/bash
-# Full Kaspi import: API → Excel → CRM
-# Downloads orders from Kaspi API and imports to CRM
+# FAST Kaspi import: API → Excel → CRM (no status updates)
+# Downloads TODAY's pending orders from Kaspi API, imports to CRM
+# For status updates, use run_status_update.command separately
 # Double-click to run
 
 cd ~/Docs/Autonomous_business
 source .venv/bin/activate 2>/dev/null || true
 
 echo "========================================"
-echo "  Full Kaspi Order Import"
+echo "  FAST Kaspi Order Import"
+echo "  (no archive fetch, no status updates)"
 echo "========================================"
 echo ""
 
-echo "Step 1: Downloading orders from Kaspi API..."
+# Step 1: Download pending orders for TODAY (no archive for speed)
+echo "Step 1: Downloading TODAY's pending orders from Kaspi API..."
 echo "----------------------------------------"
-python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --verbose
+python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --no-archive --verbose
 
 if [ $? -ne 0 ]; then
     echo ""
     echo "ERROR: API export failed!"
     echo "Press Enter to close..."
-    read
+    [[ -t 0 ]] && read
     exit 1
 fi
 
+# Step 2: Import new orders to CRM (also updates existing order status columns)
 echo ""
-echo "Step 2: Importing to CRM..."
+echo "Step 2: Importing new orders to CRM..."
 echo "----------------------------------------"
 python scripts/import_orders_to_crm.py --verbose
 
-# Step 3 is integrated into import script but add fallback sync
-# In case import succeeded but sync inside failed
+# Step 3: Google Drive sync (handled automatically within import_orders_to_crm.py)
 echo ""
-echo "Step 3: Verifying Google Drive sync..."
+echo "Step 3: Google Drive sync was performed during import (if rows were added)"
 echo "----------------------------------------"
-python scripts/sync_to_gdrive.py || echo "WARNING: Google Drive sync may have failed"
+echo "Note: New rows synced to 'sales_kaspi_drive' sheet, 'drive' table"
 
 echo ""
 echo "========================================"
 echo "  Done! Press Enter to close..."
 echo "========================================"
-read
+echo ""
+echo "For status updates (Завершен, Отменен, Возвращен):"
+echo "  Run: run_status_update.command"
+[[ -t 0 ]] && read

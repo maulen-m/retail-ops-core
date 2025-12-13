@@ -749,17 +749,21 @@ def excel_append_xlwings(
     phone_values: List[str],
     set_date: date,
     slice_headers: List[str]
-) -> None:
+) -> Tuple[int, int]:
     """
     Append rows to CRM using xlwings (preserves formulas & external links).
 
     Args:
         phone_col_abs: Column for phone data (column I), or None to skip
         phone_values: List of phone strings to write
+
+    Returns:
+        Tuple of (start_row, end_row) where new rows were appended.
+        Returns (0, 0) if no rows were appended.
     """
     n = len(stage_block)
     if n == 0:
-        return
+        return (0, 0)
 
     print(f"  Opening Excel (hidden)...")
     app = xw.App(visible=False, add_book=False)
@@ -839,8 +843,12 @@ def excel_append_xlwings(
         wb.close()
         print(f"  ✅ Saved {out_wb.name}")
 
+        return (top_row, bottom_row)
+
     finally:
         app.quit()
+
+    return (0, 0)  # If we get here somehow
 
 
 # ---------- Archive Source Files ----------
@@ -1084,8 +1092,8 @@ def main():
     backup_path = backup_crm(args.crm_file)
     print(f"  Backup created: {backup_path.name}")
 
-    # Append via xlwings
-    excel_append_xlwings(
+    # Append via xlwings - returns (start_row, end_row) for sync
+    append_start_row, append_end_row = excel_append_xlwings(
         args.crm_file,
         args.sheet,
         args.table,
@@ -1098,7 +1106,7 @@ def main():
         append_date,
         slice_headers
     )
-    
+
     # Archive source files
     archive_path = archive_run(args.orders_dir, source_files, df_filt)
 
@@ -1113,8 +1121,11 @@ def main():
             sys.path.insert(0, str(project_root))
         from scripts.sync_to_gdrive import sync_new_rows_to_gdrive
 
+        # Pass actual row range to avoid date mismatch after sorting
         sync_stats = sync_new_rows_to_gdrive(
-            new_rows_count=new_rows_added,
+            new_rows_count=new_rows_added,  # Keep for backward compat
+            start_row=append_start_row,
+            end_row=append_end_row,
             dry_run=args.dry_run
         )
         print(f"   Google Drive sync: {sync_stats['rows_synced']} rows synced")

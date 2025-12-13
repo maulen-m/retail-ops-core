@@ -49,27 +49,37 @@ def sync_new_rows_to_gdrive(
     crm_path: Path = CRM_PATH,
     gdrive_path: Path = GDRIVE_PATH,
     new_rows_count: int = 0,
+    start_row: int = None,
+    end_row: int = None,
     dry_run: bool = False,
 ) -> dict:
     """
     Sync only NEW rows from CRM to Google Drive file.
 
-    Appends the last N rows from CRM to the 'drive' table on 'sales_kaspi_drive' sheet.
+    Appends specified rows from CRM to the 'drive' table on 'sales_kaspi_drive' sheet.
 
     Args:
         crm_path: Source CRM file path
         gdrive_path: Target Google Drive file path
-        new_rows_count: Number of new rows to sync (from last import)
+        new_rows_count: DEPRECATED - Number of new rows (use start_row/end_row instead)
+        start_row: Actual start row in CRM (1-indexed, from import script)
+        end_row: Actual end row in CRM (1-indexed)
         dry_run: If True, only show what would be synced
 
     Returns:
         dict with stats: rows_synced, dry_run
+
+    Note:
+        If start_row/end_row are provided, they are used directly.
+        Otherwise falls back to new_rows_count (for backward compatibility).
     """
     print(f"Source: {crm_path}")
     print(f"Target: {gdrive_path}")
     print(f"Target sheet: '{GDRIVE_SHEET_NAME}', table: '{GDRIVE_TABLE_NAME}'")
 
-    if new_rows_count <= 0:
+    # Check if we have rows to sync
+    has_explicit_range = start_row is not None and end_row is not None
+    if not has_explicit_range and new_rows_count <= 0:
         print("  No new rows to sync (new_rows_count=0)")
         return {"rows_synced": 0, "dry_run": dry_run}
 
@@ -92,21 +102,29 @@ def sync_new_rows_to_gdrive(
         wb_src = app.books.open(str(crm_path), read_only=True)
         sh_src = wb_src.sheets[CRM_SHEET_NAME]
 
-        # Find last row in CRM
-        last_row_crm = sh_src.range("A1").end("down").row
-
-        # Calculate range for new rows
-        first_new_row = last_row_crm - new_rows_count + 1
-        if first_new_row < 2:  # Can't go above row 2 (row 1 is header)
-            first_new_row = 2
-            new_rows_count = last_row_crm - 1  # Adjust count
+        # Determine row range to sync
+        if has_explicit_range:
+            # Use explicit start_row/end_row (preferred - avoids date mismatch)
+            first_new_row = start_row
+            last_row_crm = end_row
+            actual_count = end_row - start_row + 1
+            print(f"  Using explicit row range: {first_new_row}-{last_row_crm}")
+        else:
+            # Legacy: calculate from new_rows_count (may sync wrong dates if sorted)
+            last_row_crm = sh_src.range("A1").end("down").row
+            first_new_row = last_row_crm - new_rows_count + 1
+            if first_new_row < 2:  # Can't go above row 2 (row 1 is header)
+                first_new_row = 2
+                new_rows_count = last_row_crm - 1
+            actual_count = new_rows_count
+            print(f"  Using legacy row calculation: last {actual_count} rows")
 
         # Get values for new rows only (columns A to AZ)
         new_data_range = sh_src.range(f"A{first_new_row}:{SYNC_COLS_END}{last_row_crm}")
         new_values = new_data_range.value
 
         # Handle single row case (xlwings returns list instead of list of lists)
-        if new_rows_count == 1 and not isinstance(new_values[0], list):
+        if actual_count == 1 and not isinstance(new_values[0], list):
             new_values = [new_values]
 
         print(f"  Found {len(new_values)} new rows to sync (rows {first_new_row}-{last_row_crm})")

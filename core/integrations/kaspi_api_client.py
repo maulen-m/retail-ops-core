@@ -671,6 +671,47 @@ class KaspiAPIClient:
 
         return self._request('POST', 'orders', json_data=data)
 
+    def assemble_order_by_id(
+        self,
+        base64_id: str,
+        order_code: str,
+        parcel_count: int = 1,
+    ) -> APIResponse:
+        """
+        Mark order as assembled using pre-fetched Base64 ID.
+
+        This avoids re-fetching the order by code, which can fail with 404
+        if the order has changed state since the initial listing.
+
+        For KASPI_DELIVERY orders, this moves them from "Упаковка" to "Передача курьеру".
+
+        Requires ENABLE_KASPI_WRITE=1.
+
+        Args:
+            base64_id: Pre-fetched Base64 order ID (from list_all_orders)
+            order_code: Kaspi order code (for logging)
+            parcel_count: Number of parcels (default 1)
+
+        Returns:
+            APIResponse with updated order
+        """
+        self._require_write_enabled()
+        logger.info(f"Assembling order {order_code} (ID: {base64_id}) with {parcel_count} parcels")
+
+        # Per Kaspi API docs: status='ASSEMBLE' and numberOfSpace (STRING) are required
+        data = {
+            'data': {
+                'type': 'orders',
+                'id': base64_id,
+                'attributes': {
+                    'status': 'ASSEMBLE',
+                    'numberOfSpace': str(parcel_count),
+                }
+            }
+        }
+
+        return self._request('POST', 'orders', json_data=data)
+
     def ship_order(self, order_code: str) -> APIResponse:
         """
         Ship order (hand over to Kaspi delivery).
