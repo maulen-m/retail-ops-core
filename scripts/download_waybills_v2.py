@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 WAYBILL_DIR = Path(__file__).parent.parent / "excel_ui" / "ActiveOrders" / "waybills"
 
 # Circuit breaker settings
-MAX_CONSECUTIVE_ERRORS = 3
+MAX_CONSECUTIVE_ERRORS = 5
 
 
 def timestamp_to_date(ts: Optional[int]) -> Optional[date]:

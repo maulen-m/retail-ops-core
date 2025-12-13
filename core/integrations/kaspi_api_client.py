@@ -60,7 +60,7 @@ BACKOFF_FACTOR = 0.3      # Faster backoff (was 0.5)
 
 # Timeout settings (seconds) - Phase 12 Part 6: reduced to prevent 40-min hangs
 DEFAULT_TIMEOUT = 15      # Most API calls complete in <5s (was 30)
-DOWNLOAD_TIMEOUT = 20     # Waybill PDFs are small (was 60)
+DOWNLOAD_TIMEOUT = 45     # Waybill downloads need more time
 
 # API limits
 MAX_DATE_RANGE_DAYS = 14      # Kaspi API enforces max 14-day date range
