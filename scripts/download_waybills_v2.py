@@ -136,14 +136,17 @@ def download_waybills_for_store(
 
         # Download waybill
         try:
-            pdf_data = client.download_waybill(waybill_url)
-            if pdf_data:
-                pdf_path.write_bytes(pdf_data)
+            response = client.download_waybill(waybill_url)
+            if response.success and response.data:
+                pdf_path.write_bytes(response.data)
                 stats['downloaded'] += 1
                 consecutive_errors = 0
                 if verbose:
                     print(f"      Downloaded: {order_code}")
             else:
+                error_msg = response.error if hasattr(response, 'error') else 'Unknown error'
+                if verbose:
+                    print(f"      Error {order_code}: {error_msg}")
                 stats['errors'] += 1
                 consecutive_errors += 1
         except Exception as e:
