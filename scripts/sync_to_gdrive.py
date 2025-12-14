@@ -207,6 +207,33 @@ def sync_new_rows_to_gdrive(
 
         print(f"  ✓ All columns written")
 
+        # Copy formatting from existing data row to new rows
+        # Use the row just before new data as the template
+        template_row = top_row - 1
+        if template_row > header_row:  # Make sure we have at least one data row
+            print(f"  Copying cell formatting from row {template_row}...")
+
+            # Get format source range (one row, all columns in table)
+            format_source = sh_dst.range(
+                (template_row, tbl_start_col),
+                (template_row, tbl_end_col)
+            )
+
+            # Apply format to all new rows
+            format_target = sh_dst.range(
+                (top_row, tbl_start_col),
+                (bottom_row, tbl_end_col)
+            )
+
+            # Copy format using Excel's API (includes colors, fonts, borders)
+            format_source.api.Copy()
+            format_target.api.PasteSpecial(Paste=-4122)  # xlPasteFormats = -4122
+
+            # Clear clipboard to avoid "large clipboard" prompts
+            sh_dst.range("A1").api.Application.CutCopyMode = False
+
+            print(f"  ✓ Formatting applied to {n_rows} new rows")
+
         print(f"  Saving to Google Drive...")
         wb_dst.save()
         wb_dst.close()
