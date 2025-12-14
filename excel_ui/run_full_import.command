@@ -16,7 +16,7 @@ echo ""
 # Step 1: Download pending orders for TODAY (no archive for speed)
 echo "Step 1: Downloading TODAY's pending orders from Kaspi API..."
 echo "----------------------------------------"
-python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --no-archive --verbose
+python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days 2 --no-archive --verbose
 
 if [ $? -ne 0 ]; then
     echo ""
