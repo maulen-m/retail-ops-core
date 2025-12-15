@@ -1,8 +1,8 @@
 # System Architecture
 
 **Project:** Autonomous Inventory/PO System
-**Version:** 4.0 (Phase 9.6)
-**Updated:** 2025-12-09
+**Version:** 5.0 (Phase 10)
+**Updated:** 2025-12-10
 
 ---
 
@@ -36,29 +36,29 @@ This system automates inventory management for a multi-channel retail operation 
 │ wb, inv)  │         │           │         │           │
 └───────────┘         └─────┬─────┘         └───────────┘
                             │
-    ┌───────────────────────┼───────────────────────────┐
-    │             │         │         │                 │
-    ▼             ▼         ▼         ▼                 ▼
-┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌───────────┐
-│Forecast │ │Inventory│ │Portfolio│ │ Channel │ │ Expansion │
-│ Engine  │ │  Calc   │ │Analytics│ │ Metrics │ │  Scorer   │
-└────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └─────┬─────┘
-     │           │           │           │            │
-     └───────────┴───────┬───┴───────────┴────────────┘
-                         │
-              ┌──────────┴──────────┐
-              │                     │
-              ▼                     ▼
-     ┌───────────────────┐  ┌───────────────────┐
-     │    Auto-PO        │  │    Transfer       │
-     │   Generator       │  │   Recommender     │
-     └─────────┬─────────┘  └─────────┬─────────┘
-               │                      │
-               └──────────┬───────────┘
-                          ▼
-               ┌───────────────────┐
-               │  Reports/Exports  │
-               └───────────────────┘
+    ┌───────────────────────┼───────────────────────────────┐
+    │         │             │         │           │         │
+    ▼         ▼             ▼         ▼           ▼         ▼
+┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
+│Forecast │ │Inventory│ │Portfolio│ │ Channel │ │ Stock   │ │   PO    │
+│ Engine  │ │  Calc   │ │Analytics│ │ Metrics │ │ Ledger  │ │Lifecycle│
+└────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘
+     │           │           │           │           │           │
+     └───────────┴───────────┴─────┬─────┴───────────┴───────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              │                    │                    │
+              ▼                    ▼                    ▼
+     ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────┐
+     │    Auto-PO        │  │    Transfer       │  │   Landed Cost     │
+     │   Generator       │  │   Recommender     │  │   Calculator      │
+     └─────────┬─────────┘  └─────────┬─────────┘  └─────────┬─────────┘
+               │                      │                      │
+               └──────────────────────┼──────────────────────┘
+                                      ▼
+                           ┌───────────────────┐
+                           │  Reports/Exports  │
+                           └───────────────────┘
 ```
 
 ---
@@ -84,10 +84,17 @@ Autonomous_business/
 │   │   ├── channel_metrics.py # Per-channel metrics (Phase 8)
 │   │   ├── channel_comparison.py # Cross-channel comparison (Phase 8)
 │   │   ├── expansion_scorer.py # WB expansion scoring (Phase 8)
-│   │   └── transfer_recommender.py # Inventory transfer (Phase 8)
+│   │   ├── transfer_recommender.py # Inventory transfer (Phase 8)
+│   │   ├── landed_cost.py     # Landed cost calculator (Phase 10)
+│   │   └── demand_estimator.py # Anchor blending, OOS detection (Phase 13)
 │   ├── parsers/
 │   │   ├── kaspi_parser.py    # Kaspi Excel parser
 │   │   └── wb_parser.py       # WB Excel parser (Phase 8)
+│   ├── ingest/                # Data ingestion modules (Phase 10)
+│   │   └── sales_ingest.py    # Sales ingest with dedup
+│   ├── po/                    # PO lifecycle management (Phase 10)
+│   │   ├── lifecycle.py       # PO state machine
+│   │   └── eta.py             # ETA calculation
 │   ├── alerts/
 │   │   └── telegram.py        # Telegram notifications
 │   ├── automation/
@@ -96,17 +103,20 @@ Autonomous_business/
 │   │   └── data_quality.py    # Anomaly detection
 │   ├── db/                    # Database module (refactored)
 │   │   ├── __init__.py        # Connection helpers
-│   │   └── queries.py         # Size-level data queries (Phase 9.6)
+│   │   ├── ledger.py          # Stock ledger operations (Phase 10)
+│   │   └── queries.py         # Size-level data queries (Phase 9.6/10)
 │   └── logging_config.py      # Logging configuration
 ├── scripts/                   # CLI tools
 │   ├── Ingestion
 │   │   ├── ingest_active_orders.py
 │   │   ├── ingest_inventory_snapshot.py
 │   │   ├── ingest_channel_sales.py  # Unified Kaspi/WB ingestion (Phase 8)
+│   │   ├── ingest_sales_v2.py       # Sales ingest with dedup (Phase 10)
 │   │   └── import_historical_sales.py
 │   ├── Transformation
 │   │   ├── import_legacy_sales.py
-│   │   └── build_daily_aggregates.py
+│   │   ├── build_daily_aggregates.py
+│   │   └── import_po_from_excel.py  # PO import from Inbound template (Phase 10)
 │   ├── Calculation
 │   │   ├── run_sku_metrics.py
 │   │   ├── run_forecast_engine.py
@@ -114,6 +124,7 @@ Autonomous_business/
 │   ├── Automation
 │   │   ├── run_auto_po.py
 │   │   ├── po_approval_cli.py
+│   │   ├── po_cli.py               # Full PO lifecycle CLI (Phase 10)
 │   │   └── expire_po_drafts.py
 │   ├── Reporting
 │   │   ├── export_po_suggestions.py
@@ -122,15 +133,21 @@ Autonomous_business/
 │   │   ├── report_stockout_costs.py
 │   │   ├── report_data_quality.py
 │   │   └── report_po_analytics.py
-│   ├── Validation (Phase 9.6)
+│   ├── Validation (Phase 9.6/10)
 │   │   ├── validate_size_allocation.py  # 7 validation checks
+│   │   ├── validate_ledger.py          # Stock ledger validation (Phase 10)
 │   │   └── compare_old_vs_new_allocation.py  # Allocation comparison
 │   ├── Multi-Channel (Phase 8)
 │   │   ├── build_channel_metrics.py  # Daily channel metrics
 │   │   ├── run_expansion_analysis.py # WB expansion scoring
 │   │   └── run_transfer_analysis.py  # Cross-channel transfers
+│   ├── Stock Ledger (Phase 10)
+│   │   ├── bootstrap_ledger.py      # Initialize stock from Excel
+│   │   └── rebuild_snapshot.py      # Rebuild snapshot from ledger
 │   ├── Orchestration
 │   │   ├── run_daily_pipeline.py
+│   │   ├── daily_pipeline_v2.py     # Ledger-integrated pipeline (Phase 10)
+│   │   ├── sync_crm_to_db.py        # Daily CRM → sales_fact_v2 sync (scheduled 13:00 GMT+5)
 │   │   └── send_daily_digest.py
 │   └── Infrastructure
 │       ├── health_check.py
@@ -139,7 +156,7 @@ Autonomous_business/
 ├── db/
 │   ├── schema.sql             # Database schema (38 tables)
 │   └── app.db                 # SQLite database
-├── tests/                     # Test suite (556+ tests)
+├── tests/                     # Test suite (640+ tests)
 │   ├── test_economics.py
 │   ├── test_inventory.py
 │   ├── test_status.py
@@ -151,6 +168,12 @@ Autonomous_business/
 │   ├── test_channel_metrics.py # Channel metrics (Phase 8)
 │   ├── test_expansion_scorer.py # Expansion scoring (Phase 8)
 │   ├── test_size_allocation.py # Size allocation (Phase 9.6) - 86 tests
+│   ├── test_stock_ledger.py   # Stock ledger operations (Phase 10) - 23 tests
+│   ├── test_po_lifecycle.py   # PO lifecycle (Phase 10) - 19 tests
+│   ├── test_eta_calc.py       # ETA calculation (Phase 10) - 17 tests
+│   ├── test_landed_cost.py    # Landed cost (Phase 10) - 14 tests
+│   ├── test_sales_ingest.py   # Sales ingest (Phase 10) - 18 tests
+│   ├── test_queries_v2.py     # v2 queries (Phase 10) - 14 tests
 │   └── ...
 ├── docs/
 │   ├── ARCHITECTURE.md        # This file
@@ -199,6 +222,27 @@ Autonomous_business/
 | `fact_channel_metrics` | Per-channel metrics (Phase 8) | sku_key, channel_code, units_30d, roic |
 | `fact_channel_inventory` | Channel stock levels (Phase 8) | sku_key, channel_code, on_hand, days_cover |
 | `fact_expansion_scores` | WB expansion scores (Phase 8) | sku_key, expansion_score, recommendation |
+| `fact_input_audit` | Audit trail (Phase 10) | table_name, record_id, change_type, old/new_value |
+
+### Phase 10 Tables (Event-Sourced)
+
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `stock_ledger` | Event-sourced stock changes | event_date, event_type, sku_id, qty_change, running_balance |
+| `sales_fact_v2` | Deduplicated sales records | order_id, sku_id, store_code, kaspi_offer_name, quantity |
+| `po_header` | PO header records | po_id, supplier_code, status, arrival dates, fx rates, costs |
+| `po_line` | PO line items | po_id, sku_id, order_qty, received_qty, unit_cost_cny |
+
+**stock_ledger Event Types:**
+- `INITIAL` - Bootstrap/opening balance
+- `SALE` - Stock decrease from customer order
+- `INBOUND` - Stock increase from PO arrival
+- `RETURN` - Stock increase from customer return
+- `ADJUSTMENT` - Manual stock correction (+/-)
+- `WRITE_OFF` - Stock decrease from damage/loss
+
+**po_header Status Flow:**
+`DRAFT` → `SENT` → `PREPARING` → `SHIPPED_SELLER` → `SHIPPED_CARGO` → `IN_TRANSIT` → `ARRIVED_ALM` → `ARRIVED_AST` → `RECEIVED` → `CLOSED`
 
 ---
 
@@ -365,6 +409,96 @@ get_critical_imbalances(db_path) -> list[TransferRecommendation]
 get_transfer_summary(recommendations) -> dict
 ```
 
+### ledger.py (Phase 10)
+
+Event-sourced stock tracking and audit logging.
+
+```python
+# Stock Ledger
+add_ledger_event(event_type, sku_id, qty_change, event_date, ...) -> int  # ledger_id
+get_stock_balance(sku_id, store_code, as_of_date) -> int
+get_stock_balances_all(store_code, as_of_date) -> dict[str, int]
+get_ledger_events(sku_id, event_type, start_date, end_date, limit) -> list[dict]
+rebuild_snapshot_from_ledger(snapshot_date, store_code) -> int
+count_ledger_events(event_type, sku_id, store_code) -> int
+get_event_summary(as_of_date, store_code) -> dict
+
+# Audit Logging
+log_audit(table_name, record_id, field_name, old_value, new_value, change_type, source) -> int
+get_audit_history(table_name, record_id, since, limit) -> list[dict]
+count_audit_entries(table_name, record_id, change_type) -> int
+get_audit_summary(table_name) -> dict
+```
+
+### lifecycle.py (Phase 10)
+
+PO lifecycle state machine.
+
+```python
+generate_po_id() -> str  # Format: PO-YYYYMMDD-XXXX
+create_po(supplier_code, status, notes, created_by, db_path) -> str  # po_id
+add_po_line(po_id, sku_id, order_qty, unit_cost_cny, db_path) -> int  # po_line_id
+update_po_field(po_id, field_name, value, db_path) -> bool
+update_po_status(po_id, new_status, db_path) -> bool
+confirm_po_arrival(po_id, arrival_type, arrival_date, db_path) -> dict  # Creates INBOUND events
+close_po(po_id, db_path) -> bool
+receive_po_line(po_line_id, received_qty, db_path) -> dict
+get_po(po_id, db_path) -> dict
+get_po_lines(po_id, db_path) -> list[dict]
+list_pos(status, supplier_code, limit, db_path) -> list[dict]
+```
+
+### eta.py (Phase 10)
+
+PO ETA calculation (L=21 days from ship_date_cargo).
+
+```python
+estimate_prep_days(supplier_code, db_path) -> int  # Default: 7
+calc_eta(po_id, db_path) -> dict  # {eta, confidence, from_date, lead_time}
+update_po_eta(po_id, db_path) -> bool
+recalc_all_etas(db_path) -> int  # Number of POs updated
+get_etas_by_status(status, db_path) -> list[dict]
+```
+
+### landed_cost.py (Phase 10)
+
+Landed cost calculation (cargo rate: 2.66 USD/kg).
+
+```python
+calc_supplier_costs(po_id, fx_rate_cny_kzt, db_path) -> dict
+calc_cargo_costs(po_id, weight_kg, cargo_rate_usd_kg, fx_rate_usd_kzt, db_path) -> dict
+calc_landed_costs(po_id, db_path) -> dict
+get_sku_landed_cost(sku_id, fx_rate_cny_kzt, weight_kg, cargo_rate_usd_kg, fx_rate_usd_kzt, db_path) -> dict
+recalc_po_costs(po_id, db_path) -> dict
+```
+
+### sales_ingest.py (Phase 10)
+
+Sales ingestion with deduplication.
+
+```python
+parse_sales_excel(xlsx_path) -> list[dict]
+ingest_sales(records, store_code, create_ledger_events, db_path) -> dict
+get_unmapped_offers(db_path) -> list[dict]
+update_returns_from_api(updates, db_path) -> dict  # Creates RETURN events
+normalize_store_code(raw_store) -> str
+```
+
+### queries.py v2 functions (Phase 10)
+
+Query functions using Phase 10 tables.
+
+```python
+get_size_current_stock_v2(sku_key, store_code, db_path) -> dict[str, int]
+get_size_inbound_v2(sku_key, store_code, db_path) -> dict[str, int]
+get_size_sales_90d_v2(sku_key, store_code, db_path) -> dict[str, int]
+get_size_sales_history_v2(sku_key, store_code, days, db_path) -> dict[str, list[int]]
+get_size_stock_history_v2(sku_key, store_code, days, db_path) -> dict[str, list[int]]
+get_sku_age_days_v2(sku_key, store_code, db_path) -> int
+get_po_lines_for_sku(sku_key, status, db_path) -> list[dict]
+get_stock_movement_summary(sku_key, store_code, days, db_path) -> dict
+```
+
 ---
 
 ## Data Flow
@@ -460,12 +594,36 @@ DEFAULT_PARAMS = {
    - ORDER_WITH_FLAG: 10-20% ROIC (approve with review)
    - REVIEW_REQUIRED: < 10% ROIC (manual approval needed)
 
+9. **Event-Sourced Stock Tracking (Phase 10)**
+   - All stock changes recorded as immutable events in `stock_ledger`
+   - Balance = SUM(qty_change) for all events
+   - Snapshot rebuilt from ledger on demand
+   - Audit trail for all modifications in `fact_input_audit`
+
+10. **PO Lifecycle State Machine (Phase 10)**
+    - Status flow: DRAFT → SENT → PREPARING → SHIPPED_SELLER → SHIPPED_CARGO → IN_TRANSIT → ARRIVED_ALM → ARRIVED_AST → RECEIVED → CLOSED
+    - INBOUND events created on arrival confirmation
+    - Immutable fields: archive_alm_arrival, archive_ast_arrival (once set)
+    - ETA calculation: L=21 days from ship_date_cargo
+
+11. **Sales Deduplication (Phase 10)**
+    - Dedup key: (order_id, sku_id, store_code, kaspi_offer_name)
+    - Same order with different offers → separate records
+    - SALE events created for each new sale
+    - RETURN events created for returned items
+
+12. **Landed Cost Calculation (Phase 10)**
+    - Supplier cost: qty × unit_cost_cny × fx_rate_cny_kzt
+    - Cargo cost: weight_kg × cargo_rate_usd_kg × fx_rate_usd_kzt
+    - Default cargo rate: 2.66 USD/kg
+    - Landed cost = Supplier cost + Cargo cost allocation
+
 ---
 
 ## Performance
 
 - Database: SQLite (single file, ~10MB)
-- Tests: 556+ tests in ~1.2 seconds (86 new Phase 9.6 tests)
+- Tests: 640+ tests in ~1.5 seconds (105 new Phase 10 tests)
 - Forecast: Covers 2+ SKUs with 7-day history
 - Backup: 85%+ compression with gzip
 

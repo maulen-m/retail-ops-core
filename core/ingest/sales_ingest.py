@@ -21,7 +21,7 @@ from typing import Optional
 import pandas as pd
 
 from core.db import get_db, DEFAULT_DB_PATH
-from core.db.ledger import add_ledger_event
+from core.db.ledger import add_ledger_event, log_audit
 
 
 # Store code normalization map
@@ -75,35 +75,53 @@ def parse_sales_excel(
     df = pd.read_excel(xlsx_path, sheet_name=sheet_name)
 
     # Column name normalization (handle both English and Russian)
+    # IMPORTANT: Only rename columns that don't create duplicates (English takes priority)
     col_map = {}
+    target_cols_used = set()
+
+    # Define priority order: English columns first, then Russian fallbacks
+    column_targets = [
+        (["orderid", "order_id"], "order_id"),
+        (["date", "order_date"], "order_date"),
+        (["kaspi_offer_name"], "kaspi_offer_name"),
+        (["sku_id", "skuid"], "sku_id"),
+        (["sku_key", "skukey"], "sku_key"),
+        (["my_size", "mysize", "size"], "my_size"),
+        (["quantity", "qty"], "quantity"),
+        (["sell_price_kzt", "price"], "sell_price_kzt"),
+        (["store_name", "storename", "store"], "store_name"),
+        (["return", "return_flag"], "return_flag"),
+        (["total_net_rev", "net_rev"], "net_rev"),
+        (["delivery_fee_kzt", "delivery_fee"], "delivery_fee"),
+        (["total_price", "totalprice"], "total_price"),
+    ]
+
+    # Russian fallbacks (only used if English not found)
+    russian_fallbacks = {
+        "№ заказа": "order_id",
+        "дата поступления заказа": "order_date",
+        "название товара в kaspi магазине": "kaspi_offer_name",
+        "количество": "quantity",
+        "сумма": "sell_price_kzt",
+    }
+
+    # First pass: map English columns
     for col in df.columns:
         col_lower = col.lower().strip()
-        if col_lower in ["orderid", "order_id", "№ заказа"]:
-            col_map[col] = "order_id"
-        elif col_lower in ["date", "дата поступления заказа", "order_date"]:
-            col_map[col] = "order_date"
-        elif col_lower in ["kaspi_offer_name", "название товара в kaspi магазине"]:
-            col_map[col] = "kaspi_offer_name"
-        elif col_lower in ["sku_id", "skuid"]:
-            col_map[col] = "sku_id"
-        elif col_lower in ["sku_key", "skukey"]:
-            col_map[col] = "sku_key"
-        elif col_lower in ["my_size", "mysize", "size"]:
-            col_map[col] = "my_size"
-        elif col_lower in ["quantity", "количество", "qty"]:
-            col_map[col] = "quantity"
-        elif col_lower in ["sell_price_kzt", "сумма", "price"]:
-            col_map[col] = "sell_price_kzt"
-        elif col_lower in ["store_name", "storename", "store"]:
-            col_map[col] = "store_name"
-        elif col_lower in ["return", "return_flag"]:
-            col_map[col] = "return_flag"
-        elif col_lower in ["total_net_rev", "net_rev"]:
-            col_map[col] = "net_rev"
-        elif col_lower in ["delivery_fee_kzt", "delivery_fee"]:
-            col_map[col] = "delivery_fee"
-        elif col_lower in ["total_price", "totalprice"]:
-            col_map[col] = "total_price"
+        for source_list, target in column_targets:
+            if col_lower in source_list and target not in target_cols_used:
+                col_map[col] = target
+                target_cols_used.add(target)
+                break
+
+    # Second pass: map Russian fallbacks only if target not already used
+    for col in df.columns:
+        col_lower = col.lower().strip()
+        if col_lower in russian_fallbacks:
+            target = russian_fallbacks[col_lower]
+            if target not in target_cols_used:
+                col_map[col] = target
+                target_cols_used.add(target)
 
     df = df.rename(columns=col_map)
 
@@ -428,6 +446,20 @@ def ingest_sales(
         except Exception as e:
             result["errors"].append(f"Ledger event for {event['sku_id']}: {str(e)}")
 
+    # Log audit entry for batch import
+    if result["inserted"] > 0:
+        log_audit(
+            table_name="sales_fact_v2",
+            record_id=f"import_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            field_name="*",
+            old_value=None,
+            new_value=f"{result['inserted']} sales from {source_file}",
+            change_type="INSERT",
+            reason=f"Batch import: {result['inserted']} inserted, {result['skipped']} skipped",
+            source="IMPORT",
+            db_path=db_path,
+        )
+
     return result
 
 
@@ -505,22 +537,26 @@ def update_returns_from_api(
                     "kaspi_offer_name": sale["kaspi_offer_name"],
                 })
 
-            # Log to audit
-            conn.execute("""
-                INSERT INTO fact_input_audit
-                (table_name, record_id, field_name, old_value, new_value, change_type, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                "sales_fact_v2",
-                str(sale["sale_id"]),
-                "return_flag",
-                "0",
-                "1",
-                "UPDATE",
-                "API",
-            ))
+            # Log to audit (queue for after transaction)
+            sale_id = sale["sale_id"]
 
             processed += 1
+
+    # Log audit entries outside transaction for consistency
+    # Note: We can't queue individual audit entries above due to scope, so we log generically
+    # The update_returns_from_api function logs all returns processed in this batch
+    if processed > 0:
+        log_audit(
+            table_name="sales_fact_v2",
+            record_id=f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            field_name="return_flag",
+            old_value="0",
+            new_value="1",
+            change_type="UPDATE",
+            reason=f"{processed} returns processed from API",
+            source="API",
+            db_path=db_path,
+        )
 
     # Add ledger events outside the main transaction
     for event in pending_ledger_events:

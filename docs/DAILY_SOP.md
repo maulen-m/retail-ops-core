@@ -1127,6 +1127,40 @@ excel_ui/run_build_waybills_v2.command
 
 ---
 
+## Scheduled Jobs (launchd)
+
+### CRM -> Database Sync (13:00 GMT+5)
+
+**Schedule:** Daily at 13:00 Almaty time (08:00 UTC)
+**Script:** `scripts/sync_crm_to_db.py`
+**launchd:** `com.example.crm-db-sync`
+
+**What it does:**
+- Reads sales from `excel_ui/SALES_KSP_CRM_V3.xlsx`
+- Syncs to `sales_fact_v2` table (deduplicates on order_id + sku_id + store_code)
+- DemandEstimator uses this fresh data for PO recommendations
+
+**Manual trigger:**
+```bash
+python scripts/sync_crm_to_db.py
+python scripts/sync_crm_to_db.py --dry-run  # Preview only
+```
+
+**Check status:**
+```bash
+launchctl list | grep crm-db-sync
+tail -50 logs/crm_sync_stdout.log
+tail -50 logs/crm_sync_stderr.log
+```
+
+**Reload scheduler:**
+```bash
+launchctl unload ~/Library/LaunchAgents/com.example.crm-db-sync.plist
+launchctl load ~/Library/LaunchAgents/com.example.crm-db-sync.plist
+```
+
+---
+
 ## Contact / Escalation
 - System issues: Review `.claude/ISSUES.md`
 - Architectural questions: Review `.claude/DECISIONS.md`
@@ -1135,5 +1169,5 @@ excel_ui/run_build_waybills_v2.command
 
 ---
 
-*Document version: 7.0 (Phase 12)*
-*Last updated: 2025-12-11*
+*Document version: 7.1 (Phase 12 + Auto-Sync)*
+*Last updated: 2025-12-16*
