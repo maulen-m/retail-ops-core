@@ -268,6 +268,7 @@ class ManualPODraft:
     total_qty: int
     should_order: bool
     roic_monthly: float
+    effective_L: int  # Actual lead time including prep days
     # Size allocations: size -> (stock, inbound, d_size, rop, target, order_qty)
     size_allocations: dict
 
@@ -280,6 +281,8 @@ def calc_po_draft_manual(
     sigma_sku: float,
     unit_cogs: float,
     unit_profit: float,
+    weight_per_unit: float,
+    product_type: str,
     params
 ) -> ManualPODraft:
     """
@@ -315,8 +318,21 @@ def calc_po_draft_manual(
     # Stock totals
     current_stock_total = sum(size_current.values())
     inbound_stock_total = sum(size_inbound.values())
-    # Pre-arrival = Stock + Inbound - Consumption during lead time
-    consumption_sku = d_sku * L
+
+    # === FIX #1: Estimate prep days BEFORE calculating order qty ===
+    # This avoids chicken-egg: prep depends on qty, qty depends on prep
+    rough_order = max(0, target - current_stock_total)
+    if product_type.upper() in ('ELS', 'ELEC', 'ELECTRONICS'):
+        prep_days = 1
+    else:
+        weight_estimate = rough_order * weight_per_unit
+        prep_days = max(1, ceil(1.3 * weight_estimate / 100))
+
+    # === FIX #2: Use effective lead time (L + prep) for consumption ===
+    effective_L = L + prep_days
+
+    # Pre-arrival = Stock + Inbound - Consumption during effective lead time
+    consumption_sku = d_sku * effective_L
     pre_arrival = max(0, current_stock_total + inbound_stock_total - consumption_sku)
 
     # Size mix allocation
@@ -344,9 +360,9 @@ def calc_po_draft_manual(
         rop_size = mix * rop_sku
         target_size = mix * target
 
-        # Size order quantity (account for consumption during lead time)
-        consumption_size = d_size * L
-        pre_arrival_size = max(0, stock + inbound - consumption_size)
+        # === FIX #3: Size-level consumption uses effective_L ===
+        consumption_until_arrival = d_size * effective_L
+        pre_arrival_size = max(0, stock + inbound - consumption_until_arrival)
         order_qty_size = max(0, int(target_size - pre_arrival_size))
 
         size_allocations[size] = {
@@ -374,10 +390,11 @@ def calc_po_draft_manual(
         target=target,
         current_stock_total=current_stock_total,
         inbound_stock_total=inbound_stock_total,
-        pre_arrival=pre_arrival,
+        pre_arrival=int(pre_arrival),
         total_qty=total_qty,
         should_order=should_order,
         roic_monthly=roic,
+        effective_L=effective_L,
         size_allocations=size_allocations
     )
 
@@ -497,6 +514,8 @@ def generate_po_data() -> dict:
                 sigma_sku=sigma_sku,
                 unit_cogs=unit_cogs,
                 unit_profit=unit_profit,
+                weight_per_unit=weight_kg,
+                product_type=product_type,
                 params=params
             )
             # Override d_sku with blended demand from estimator

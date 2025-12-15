@@ -441,6 +441,24 @@ python scripts/run_daily_pipeline.py
 - [ ] Review any alert failures in fact_alert_log
 - [ ] Run forecast backtest: `python scripts/run_forecast_backtest.py`
 - [ ] Review kill candidates in portfolio
+- [ ] **Refresh anchor demand data** (see below)
+
+#### Weekly: Refresh Anchor Demand Data
+
+Run every Monday to keep PO recommendations accurate:
+
+```bash
+# Preview changes
+python3 scripts/refresh_anchor_demand.py --dry-run
+
+# Apply if reasonable (changes should be <50% for most SKUs)
+python3 scripts/refresh_anchor_demand.py
+```
+
+This updates `D_size_mix_reference.xlsx` with 60-day rolling demand averages.
+Closes the gap between stale anchor data and actual recent sales.
+
+**When to skip:** If major promotions or stockouts distorted recent sales.
 
 ### Wednesday (Phase 6)
 - [ ] Run data quality report: `python scripts/report_data_quality.py`
@@ -515,6 +533,7 @@ python scripts/health_check.py
 ### Analytics (Phase 6)
 | Script | Purpose |
 |--------|---------|
+| `generate_po_dashboard_data.py` | Regenerate PO dashboard JSON/HTML |
 | `run_portfolio_review.py` | Portfolio ROIC analysis |
 | `report_dow_analysis.py` | Day-of-week patterns |
 | `report_stockout_costs.py` | Lost sales estimation |
