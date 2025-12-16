@@ -446,19 +446,22 @@ class DemandEstimator:
         anchor: Optional[AnchorData],
         start_date: date,
         end_date: date,
-        store_code: str = "UNIVERSAL"
+        store_code: str = "UNIVERSAL",
+        size_current_stock: Optional[dict[str, int]] = None
     ) -> list[str]:
         """
-        Detect size-level suppression via relative share drift.
+        Detect size-level suppression via relative share drift OR zero current stock.
 
-        A size is SUPPRESSED if its observed share dropped ≥30% relative to anchor.
+        Rule 1: A size is SUPPRESSED if its observed share dropped ≥30% relative to anchor.
+        Rule 2: A size is SUPPRESSED if current stock = 0 AND anchor share ≥ 5%.
 
-        Formula: relative_drift = (anchor_share - observed_share) / anchor_share
-        Threshold: ≥30% drop = suppressed
+        Formula (Rule 1): relative_drift = (anchor_share - observed_share) / anchor_share
+        Threshold (Rule 1): ≥30% drop = suppressed
+        Threshold (Rule 2): stock=0 with anchor_share ≥5% = suppressed
 
         This distinguishes:
         - Genuine demand decrease (all sizes ~same relative drift)
-        - Stockout suppression (specific sizes have large drift)
+        - Stockout suppression (specific sizes have large drift OR zero stock)
 
         Returns:
             List of suppressed size codes
@@ -512,6 +515,17 @@ class DemandEstimator:
             # Flag if ≥30% below anchor
             if relative_drift >= suppression_threshold:
                 suppressed_sizes.append(size)
+
+        # Rule 2: Zero current stock with significant anchor share
+        # Catches sizes CURRENTLY out of stock, regardless of historical sales
+        # (Historical sales may look "normal" due to pre-stockout period)
+        if size_current_stock and anchor and anchor.size_shares:
+            for size, stock in size_current_stock.items():
+                if size in suppressed_sizes:
+                    continue  # Already flagged by Rule 1
+                anchor_share = anchor.size_shares.get(size, 0.0)
+                if stock == 0 and anchor_share >= 0.05:  # 5% threshold
+                    suppressed_sizes.append(size)
 
         return suppressed_sizes
 
@@ -873,8 +887,19 @@ class DemandEstimator:
         result.oos_days_total = oos_total
         result.oos_extended_streak = oos_streak
 
-        # Detect partial OOS at size level (using ≥30% relative drift detection)
-        partial_oos = self._detect_partial_oos(sku_key, anchor, start_date, cutoff, store_code)
+        # Get current stock for zero-stock detection (Rule 2)
+        size_current_stock = {}
+        try:
+            from core.db.queries import get_size_current_stock
+            size_current_stock = get_size_current_stock(sku_key, store_code, self.db_path)
+        except Exception:
+            pass  # Graceful degradation if stock data unavailable
+
+        # Detect partial OOS at size level (Rule 1: sales drift, Rule 2: zero stock)
+        partial_oos = self._detect_partial_oos(
+            sku_key, anchor, start_date, cutoff, store_code,
+            size_current_stock=size_current_stock
+        )
         result.partial_oos_sizes = partial_oos
         if partial_oos:
             result.oos_type = OOSType.PARTIAL if result.oos_type == OOSType.NONE else result.oos_type
