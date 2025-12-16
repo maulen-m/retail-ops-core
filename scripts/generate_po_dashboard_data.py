@@ -77,6 +77,9 @@ class SizePOLine:
     size: str
     stock: int
     inbound: int
+    pre_arrival: int  # NEW: Projected stock at arrival date
+    target: float  # NEW: Target stock post-arrival
+    d_size: float  # NEW: Daily demand for this size
     rop_size: float
     deficit_size: int
     order_qty: int
@@ -97,6 +100,8 @@ class SkuPOLine:
     sku_name: str
     stock: int
     inbound: int
+    pre_arrival: int  # NEW: Projected stock at arrival date
+    target: float  # NEW: Target stock post-arrival
     rop_total: float
     deficit_total: int
     po_qty_total: int
@@ -283,17 +288,18 @@ def calc_po_draft_manual(
     unit_profit: float,
     weight_per_unit: float,
     product_type: str,
-    params
+    params,
+    d_sku_blended: float = None,  # Blended demand from DemandEstimator
+    size_demands: dict[str, float] = None  # Blended per-size demands
 ) -> ManualPODraft:
     """
-    Calculate PO draft manually without OOS filtering.
+    Calculate PO draft with pre-arrival stock projection.
 
-    Formulas:
-    - D = sales_90d / 90
-    - SS = z×σ×√L + D×B + TV×D×L
-    - ROP = D×L + SS
-    - Target = R×D + SS (since T_post = R + SS/D)
-    - Order_qty = max(0, Target - Pre_arrival)
+    Formulas (per PO_making_logic_v2.md):
+    - Pre_i = Current_i + Inbound_i - (D_i × L_effective)
+    - T_post = R + L + (SS_total / D_sku)  # Days of coverage post-arrival
+    - Target_i = D_i × T_post
+    - Order_qty_i = max(0, Target_i - Pre_i)
     """
     L = params.L
     R = params.R
@@ -301,9 +307,12 @@ def calc_po_draft_manual(
     TV = params.TV
     B = 14  # Buffer days
 
-    # SKU-level demand
-    total_sales = sum(size_sales_90d.values())
-    d_sku = total_sales / 90.0
+    # SKU-level demand (use blended if provided)
+    if d_sku_blended is not None and d_sku_blended > 0:
+        d_sku = d_sku_blended
+    else:
+        total_sales = sum(size_sales_90d.values())
+        d_sku = total_sales / 90.0
 
     # Safety stock
     ss_demand = z * sigma_sku * (L ** 0.5)
@@ -312,8 +321,11 @@ def calc_po_draft_manual(
     ss_total = ss_demand + ss_floor + ss_mix
 
     # ROP and Target
+    # T_post = R + L + (SS/D) = days of coverage post-arrival
+    # Target = D × T_post = (R + L) × D + SS
     rop_sku = d_sku * L + ss_total
-    target = R * d_sku + ss_total
+    T_post = R + L + (ss_total / d_sku) if d_sku > 0 else R + L
+    target = d_sku * T_post  # = (R + L) * d_sku + ss_total
 
     # Stock totals
     current_stock_total = sum(size_current.values())
@@ -337,41 +349,56 @@ def calc_po_draft_manual(
 
     # Size mix allocation
     all_sizes = set(size_sales_90d.keys()) | set(size_current.keys())
+    if size_demands:
+        all_sizes = all_sizes | set(size_demands.keys())
+
     size_allocations = {}
     total_qty = 0  # Will be sum of size allocations
 
+    # Total sales for mix calculation (only if not using blended demands)
+    total_sales = sum(size_sales_90d.values()) if not size_demands else 0
+
     for size in all_sizes:
-        sales_90d_size = size_sales_90d.get(size, 0)
         stock = size_current.get(size, 0)
         inbound = size_inbound.get(size, 0)
 
-        # Size demand
-        d_size = sales_90d_size / 90.0
-
-        # Size mix (with guardrails)
-        if total_sales > 0:
-            raw_mix = sales_90d_size / total_sales
-            # Apply 3%/40% guardrails
-            mix = max(0.03, min(0.40, raw_mix)) if raw_mix > 0 else 0.03
+        # Size demand: prefer blended size_demands if available
+        if size_demands and size in size_demands:
+            d_size = size_demands[size]
+            # Calculate mix from blended demands
+            mix = d_size / d_sku if d_sku > 0 else 0.0
         else:
-            mix = 1.0 / max(len(all_sizes), 1)
+            # Fallback to sales-based calculation
+            sales_90d_size = size_sales_90d.get(size, 0)
+            d_size = sales_90d_size / 90.0
+            if total_sales > 0:
+                raw_mix = sales_90d_size / total_sales
+                mix = max(0.03, min(0.40, raw_mix)) if raw_mix > 0 else 0.03
+            else:
+                mix = 1.0 / max(len(all_sizes), 1)
 
-        # Size-level ROP and Target (proportional to mix)
-        rop_size = mix * rop_sku
-        target_size = mix * target
+        # Size-level Target = D_size × T_post
+        target_size = d_size * T_post
 
-        # === FIX #3: Size-level consumption uses effective_L ===
+        # Size-level ROP (for reference)
+        rop_size = d_size * L + (mix * ss_total if d_sku > 0 else 0)
+
+        # Pre-arrival projection: stock at arrival date
+        # Pre_i = Current_i + Inbound_i - (D_i × L_effective)
         consumption_until_arrival = d_size * effective_L
         pre_arrival_size = max(0, stock + inbound - consumption_until_arrival)
-        order_qty_size = max(0, int(target_size - pre_arrival_size))
+
+        # Order quantity = gap between target and pre-arrival
+        order_qty_size = max(0, int(round(target_size - pre_arrival_size)))
 
         size_allocations[size] = {
             'stock': stock,
             'inbound': inbound,
-            'd_size': d_size,
-            'mix': mix,
-            'rop': rop_size,
-            'target': target_size,
+            'd_size': round(d_size, 4),
+            'mix': round(mix, 4),
+            'rop': round(rop_size, 1),
+            'target': round(target_size, 1),
+            'pre_arrival': int(pre_arrival_size),  # NEW: for visibility
             'order_qty': order_qty_size
         }
         total_qty += order_qty_size
@@ -493,18 +520,22 @@ def generate_po_data() -> dict:
         unit_profit = avg_price - unit_cogs
 
         # Use demand from DemandEstimator (blended d_final)
-        d_sku = demand_result.d_final
+        d_sku_blended = demand_result.d_final
         sigma_sku = demand_result.sigma_final
 
-        # Build size_sales_90d from demand_result for size allocation
-        size_sales_90d = {}
+        # Build size_demands from DemandEstimator (blended per-size demand)
+        size_demands = {}
+        size_sales_90d = {}  # Fallback for sizes not in demand_result
         for size, size_result in demand_result.size_results.items():
-            # Approximate 90d sales from demand rate
+            # Use blended d_size directly (includes anchor weighting)
+            size_demands[size] = size_result.d_size
+            # Also build 90d sales approximation for fallback
             size_sales_90d[size] = int(size_result.d_size * 90)
 
+        size_demands = filter_valid_sizes(size_demands)
         size_sales_90d = filter_valid_sizes(size_sales_90d)
 
-        # Generate PO draft using manual calculation with DemandEstimator demand
+        # Generate PO draft with blended demands and pre-arrival projection
         try:
             draft = calc_po_draft_manual(
                 sku_key=sku_key,
@@ -516,10 +547,10 @@ def generate_po_data() -> dict:
                 unit_profit=unit_profit,
                 weight_per_unit=weight_kg,
                 product_type=product_type,
-                params=params
+                params=params,
+                d_sku_blended=d_sku_blended,  # Pass blended SKU demand
+                size_demands=size_demands  # Pass blended size demands
             )
-            # Override d_sku with blended demand from estimator
-            draft.d_sku = d_sku
         except Exception as e:
             print(f"  Error generating draft for {sku_key}: {e}")
             continue
@@ -554,6 +585,8 @@ def generate_po_data() -> dict:
             sku_name=sku_name[:50] if sku_name else sku_key,
             stock=draft.current_stock_total,
             inbound=draft.inbound_stock_total,
+            pre_arrival=draft.pre_arrival,  # NEW: projected stock at arrival
+            target=round(draft.target, 1),  # NEW: target stock post-arrival
             rop_total=round(draft.rop_sku, 1),
             deficit_total=deficit_total,
             po_qty_total=draft.total_qty,
@@ -587,6 +620,9 @@ def generate_po_data() -> dict:
 
             size_stock = alloc['stock']
             size_inb = alloc['inbound']
+            pre_arrival_size = alloc.get('pre_arrival', 0)
+            target_size = alloc.get('target', 0)
+            d_size = alloc.get('d_size', 0)
 
             # Get ROP for this size
             rop_size = alloc['rop']
@@ -600,6 +636,9 @@ def generate_po_data() -> dict:
                 size=size,
                 stock=size_stock,
                 inbound=size_inb,
+                pre_arrival=pre_arrival_size,  # NEW
+                target=round(target_size, 1),  # NEW
+                d_size=round(d_size, 4),  # NEW
                 rop_size=round(rop_size, 1),
                 deficit_size=deficit,
                 order_qty=order_qty,
