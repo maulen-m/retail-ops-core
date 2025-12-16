@@ -86,6 +86,10 @@ class DemandEstimatorConfig:
     min_size_mix: float = 0.03
     max_size_mix: float = 0.40
 
+    # Per-size suppression threshold (relative drift)
+    # A size is SUPPRESSED if (anchor_share - obs_share) / anchor_share >= this threshold
+    suppression_relative_threshold: float = 0.30  # ≥30% drop from anchor = suppressed
+
 
 @dataclass
 class AnchorData:
@@ -156,6 +160,9 @@ class SKUDemandResult:
     oos_days_total: int = 0
     oos_extended_streak: int = 0
     partial_oos_sizes: list[str] = field(default_factory=list)
+
+    # Suppression detection (count of sizes with ≥30% relative drift from anchor)
+    suppression_count: int = 0
 
     # Size-level results
     size_results: dict[str, SizeDemandResult] = field(default_factory=dict)
@@ -442,29 +449,40 @@ class DemandEstimator:
         store_code: str = "UNIVERSAL"
     ) -> list[str]:
         """
-        Detect size-level partial OOS.
+        Detect size-level suppression via relative share drift.
 
-        A size is partial OOS if:
-        - It has anchor_share >= 15% but zero sales while siblings sell, OR
-        - Its observed share is < anchor_share/5 for >3 consecutive days
+        A size is SUPPRESSED if its observed share dropped ≥30% relative to anchor.
+
+        Formula: relative_drift = (anchor_share - observed_share) / anchor_share
+        Threshold: ≥30% drop = suppressed
+
+        This distinguishes:
+        - Genuine demand decrease (all sizes ~same relative drift)
+        - Stockout suppression (specific sizes have large drift)
+
+        Returns:
+            List of suppressed size codes
         """
         from core.db.queries import get_sku_daily_sales_v2, get_sku_sizes
 
-        if anchor is None:
+        if anchor is None or not anchor.size_shares:
             return []
 
-        # Get size info
+        # Get sizes for this SKU (dedupe in case of duplicate entries)
         sizes = get_sku_sizes(sku_key, self.db_path)
         if not sizes:
             return []
+
+        # Deduplicate size names (handles data quality issues with duplicate dim_sku_size entries)
+        size_names = list(dict.fromkeys(s['my_size'] for s in sizes))
 
         # Get daily sales by size
         sku_sales = get_sku_daily_sales_v2(
             sku_key, start_date, end_date, store_code, self.db_path
         )
 
-        # Aggregate sales by size over the period
-        size_totals: dict[str, int] = {s['my_size']: 0 for s in sizes}
+        # Aggregate sales by size
+        size_totals: dict[str, int] = {s: 0 for s in size_names}
         for date_str, size_units in sku_sales.items():
             for size, units in size_units.items():
                 if size in size_totals:
@@ -472,26 +490,30 @@ class DemandEstimator:
 
         total_sales = sum(size_totals.values())
         if total_sales == 0:
-            return []  # Can't detect partial if no sales at all
+            return []  # Can't calculate shares without sales
 
         # Calculate observed shares
         observed_shares = {s: (units / total_sales) for s, units in size_totals.items()}
 
-        # Check each size
-        partial_oos_sizes = []
-        for size, anchor_share in anchor.size_shares.items():
-            observed = observed_shares.get(size, 0)
+        # Detect suppressed sizes (≥30% relative drop from anchor)
+        suppressed_sizes = []
+        suppression_threshold = self.config.suppression_relative_threshold  # 0.30
 
-            # Rule 1: High-share size with zero observed sales
-            if anchor_share >= 0.15 and observed == 0:
-                partial_oos_sizes.append(size)
+        for size in size_names:
+            anchor_share = anchor.size_shares.get(size, 0.0)
+            observed_share = observed_shares.get(size, 0.0)
+
+            if anchor_share <= 0:
                 continue
 
-            # Rule 2: Observed share << anchor share
-            if anchor_share > 0 and observed < anchor_share / 5:
-                partial_oos_sizes.append(size)
+            # Calculate relative drift
+            relative_drift = (anchor_share - observed_share) / anchor_share
 
-        return partial_oos_sizes
+            # Flag if ≥30% below anchor
+            if relative_drift >= suppression_threshold:
+                suppressed_sizes.append(size)
+
+        return suppressed_sizes
 
     # =========================================================================
     # Demand Calculation
@@ -602,9 +624,10 @@ class DemandEstimator:
         oos_type: OOSType,
         has_anchor: bool,
         d_anchor: float = 0.0,
-        d_data: float = 0.0
+        d_data: float = 0.0,
+        suppression_count: int = 0
     ) -> float:
-        """Calculate anchor weight based on confidence and OOS."""
+        """Calculate anchor weight based on confidence, OOS, and suppression count."""
         cfg = self.config
 
         if not has_anchor:
@@ -626,16 +649,22 @@ class DemandEstimator:
         elif oos_type == OOSType.INTERMITTENT:
             w = min(0.9, w + 0.1)
 
-        # HOTFIX: Trust anchor more when data demand is much lower than anchor
-        # This prevents crushing estimates when recent sales are low/zero
-        # but historical anchor data suggests real demand exists
-        if has_anchor and d_anchor > 0:
-            if d_data <= 0:
-                # No sales data at all - trust anchor heavily (70% minimum)
+        # Suppression-based anchor weight adjustment
+        # If sizes show ≥30% relative drop from anchor share → stockout likely
+        if has_anchor and suppression_count > 0:
+            if suppression_count >= 3:
+                # Multiple sizes suppressed: strong stockout signal
+                w = max(w, 0.8)
+            elif suppression_count >= 2:
+                # Two sizes suppressed: likely stockout
                 w = max(w, 0.7)
-            elif d_data < d_anchor * 0.3:
-                # Data is < 30% of anchor - possible OOS/seasonality issue
+            else:
+                # One size suppressed: possible stockout
                 w = max(w, 0.5)
+
+        # Still handle zero-data edge case
+        if has_anchor and d_data <= 0 and d_anchor > 0:
+            w = max(w, 0.8)
 
         return w
 
@@ -844,11 +873,19 @@ class DemandEstimator:
         result.oos_days_total = oos_total
         result.oos_extended_streak = oos_streak
 
-        # Detect partial OOS at size level
+        # Detect partial OOS at size level (using ≥30% relative drift detection)
         partial_oos = self._detect_partial_oos(sku_key, anchor, start_date, cutoff, store_code)
         result.partial_oos_sizes = partial_oos
         if partial_oos:
             result.oos_type = OOSType.PARTIAL if result.oos_type == OOSType.NONE else result.oos_type
+
+        # Store suppression severity for anchor weight calculation
+        result.suppression_count = len(partial_oos)
+
+        if partial_oos:
+            result.warnings.append(
+                f"SIZE_SUPPRESSION: {len(partial_oos)} sizes >=30% below anchor share: {partial_oos}"
+            )
 
         # Calculate data-driven demand
         d_data, good_days = self._calc_d_data(coverage)
@@ -863,7 +900,8 @@ class DemandEstimator:
         result.confidence = self._calc_confidence(good_days, result.oos_type)
         result.anchor_weight = self._calc_blend_weight(
             result.confidence, result.oos_type, result.has_anchor,
-            d_anchor=result.d_anchor, d_data=result.d_data
+            d_anchor=result.d_anchor, d_data=result.d_data,
+            suppression_count=result.suppression_count
         )
 
         # Blend demand
@@ -980,6 +1018,7 @@ class DemandEstimator:
                 "oos_days_total": r.oos_days_total,
                 "oos_extended_streak": r.oos_extended_streak,
                 "partial_oos_sizes": ",".join(r.partial_oos_sizes),
+                "suppression_count": r.suppression_count,
                 "warnings": "; ".join(r.warnings),
                 "skip_reason": r.skip_reason or "",
             }
