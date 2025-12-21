@@ -32,6 +32,10 @@ from core.config.inventory_params import get_params
 from core.calc.demand_estimator import DemandEstimator, ConfidenceLevel, OOSType
 from core.calc.stock_timeline import StockTimelineBuilder
 from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
+from core.po.blackout import BlackoutManager, adjust_po_dates, CNY_2026, CNY_2027
+
+# Blackout manager for CNY and other factory closures
+BLACKOUT_MANAGER = BlackoutManager([CNY_2026, CNY_2027])
 
 # Constants
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
@@ -162,6 +166,41 @@ def calc_po_dates(needed_by: date, prep_days: int, L: int = 21) -> tuple[date, d
     po_send_date = needed_by - timedelta(days=L)
     po_message_date = po_send_date - timedelta(days=prep_days)
     return po_send_date, po_message_date
+
+
+def calc_po_dates_with_blackout(
+    po_date: date,
+    L: int = 21,
+    prep_days: int = 3
+) -> dict:
+    """
+    Calculate PO dates with blackout period handling.
+
+    Args:
+        po_date: When PO should be placed (message date)
+        L: Lead time in days
+        prep_days: Factory preparation days before shipping
+
+    Returns:
+        Dict with original and adjusted dates plus warnings
+    """
+    # Calculate ship and arrival dates
+    ship_date = po_date + timedelta(days=prep_days)
+    est_arrival = ship_date + timedelta(days=L)
+
+    # Apply blackout adjustments
+    result = adjust_po_dates(po_date, ship_date, est_arrival, BLACKOUT_MANAGER)
+
+    return {
+        "po_date": po_date,
+        "po_date_adjusted": result["po_date"],
+        "ship_date": ship_date,
+        "ship_date_adjusted": result["ship_date"],
+        "est_arrival": est_arrival,
+        "est_arrival_adjusted": result["est_arrival"],
+        "blackout_adjusted": result["blackout_adjusted"],
+        "warnings": result["warnings"]
+    }
 
 
 def get_all_active_skus(conn) -> list[dict]:
@@ -511,6 +550,14 @@ def generate_po_data() -> dict:
         estimator.export_diagnostics(demand_results, DIAGNOSTICS_PATH)
         print(f"  Demand diagnostics exported to: {DIAGNOSTICS_PATH}")
 
+        # Persist demand estimates to database
+        persisted_count = persist_demand_estimates(
+            demand_results,
+            estimator.cutoff_date,
+            store_code="UNIVERSAL"
+        )
+        print(f"  Demand estimates persisted to DB: {persisted_count} records")
+
     # Export stock timeline diagnostics (if available)
     if estimator._stock_diagnostics:
         builder = StockTimelineBuilder(DB_PATH)
@@ -698,6 +745,13 @@ def generate_po_data() -> dict:
         po_send = po_message + timedelta(days=prep_days)
         # Estimated arrival is send date + lead time L
         est_arr = po_send + timedelta(days=params.L)
+
+        # Apply blackout adjustment (e.g., CNY factory closures)
+        blackout_result = adjust_po_dates(po_message, po_send, est_arr, BLACKOUT_MANAGER)
+        est_arr_adjusted = blackout_result["est_arrival"]
+        if blackout_result["blackout_adjusted"]:
+            notes_list.append(f"CNY_BLACKOUT: ETA adjusted to {est_arr_adjusted.isoformat()}")
+            est_arr = est_arr_adjusted  # Use adjusted arrival date
 
         # Calculate days of coverage (DOC)
         if d_sku > 0:
@@ -1019,6 +1073,13 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             po_arr_date = po_send_date + timedelta(days=L)
             effective_L = prep_days + L
 
+            # Apply blackout adjustment (e.g., CNY factory closures)
+            blackout_result = adjust_po_dates(po_message_date, po_send_date, po_arr_date, BLACKOUT_MANAGER)
+            if blackout_result["blackout_adjusted"]:
+                po_arr_date = blackout_result["est_arrival"]
+                # Recalculate effective_L based on adjusted dates
+                effective_L = (po_arr_date - po_message_date).days
+
             # === INBOUND CLASSIFICATION (stock-first approach) ===
             # Classify previous PO arrivals into three buckets:
             # 1. arrivals_before_msg: arrive ON or BEFORE msg_date → add to stock_at_msg
@@ -1243,6 +1304,116 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
         all_pos[po_name] = po_data
 
     return all_pos
+
+
+def persist_demand_estimates(
+    results: list,
+    cutoff_date: date,
+    store_code: str = "UNIVERSAL"
+) -> int:
+    """
+    Persist DemandEstimator results to fact_demand_estimates table.
+
+    Args:
+        results: List of SKUDemandResult from DemandEstimator
+        cutoff_date: The cutoff date used for estimation
+        store_code: Store code (default: UNIVERSAL)
+
+    Returns:
+        Number of records persisted
+    """
+    import json
+
+    conn = sqlite3.connect(str(DB_PATH))
+
+    # Ensure table exists (run migration if needed)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS fact_demand_estimates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku_key TEXT NOT NULL,
+            store_code TEXT NOT NULL DEFAULT 'UNIVERSAL',
+            cutoff_date TEXT NOT NULL,
+            d_anchor REAL NOT NULL DEFAULT 0.0,
+            sigma_anchor REAL NOT NULL DEFAULT 0.0,
+            has_anchor INTEGER NOT NULL DEFAULT 0,
+            d_data REAL NOT NULL DEFAULT 0.0,
+            sigma_data REAL NOT NULL DEFAULT 0.0,
+            d_final REAL NOT NULL DEFAULT 0.0,
+            sigma_final REAL NOT NULL DEFAULT 0.0,
+            calendar_days INTEGER NOT NULL DEFAULT 90,
+            sales_coverage_days INTEGER NOT NULL DEFAULT 0,
+            stock_coverage_days INTEGER NOT NULL DEFAULT 0,
+            good_days INTEGER NOT NULL DEFAULT 0,
+            eligible_days INTEGER NOT NULL DEFAULT 0,
+            coverage_pct REAL NOT NULL DEFAULT 0.0,
+            confidence TEXT NOT NULL DEFAULT 'ANCHOR_ONLY',
+            anchor_weight REAL NOT NULL DEFAULT 0.0,
+            availability_score REAL NOT NULL DEFAULT 0.0,
+            oos_type TEXT NOT NULL DEFAULT 'NONE',
+            oos_days_total INTEGER NOT NULL DEFAULT 0,
+            oos_extended_streak INTEGER NOT NULL DEFAULT 0,
+            partial_oos_days TEXT,
+            suppression_count INTEGER NOT NULL DEFAULT 0,
+            partial_oos_sizes TEXT,
+            d_model REAL NOT NULL DEFAULT 0.0,
+            warnings TEXT,
+            skip_reason TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(sku_key, store_code, cutoff_date)
+        )
+    """)
+
+    count = 0
+    cutoff_str = cutoff_date.isoformat()
+
+    for r in results:
+        # Build partial_oos_days as JSON (size -> count mapping)
+        # For now, we don't have per-size OOS day counts, so store sizes list
+        partial_oos_days_json = None
+        if r.partial_oos_sizes:
+            # Store as JSON dict with placeholder counts (actual counts TBD)
+            partial_oos_days_json = json.dumps({sz: 0 for sz in r.partial_oos_sizes})
+
+        # Store partial_oos_sizes as comma-separated string
+        partial_oos_sizes_str = ",".join(r.partial_oos_sizes) if r.partial_oos_sizes else None
+
+        # Warnings as semicolon-separated
+        warnings_str = "; ".join(r.warnings) if r.warnings else None
+
+        try:
+            conn.execute("""
+                INSERT OR REPLACE INTO fact_demand_estimates (
+                    sku_key, store_code, cutoff_date,
+                    d_anchor, sigma_anchor, has_anchor,
+                    d_data, sigma_data, d_final, sigma_final,
+                    calendar_days, sales_coverage_days, stock_coverage_days,
+                    good_days, eligible_days, coverage_pct,
+                    confidence, anchor_weight, availability_score,
+                    oos_type, oos_days_total, oos_extended_streak,
+                    partial_oos_days, suppression_count, partial_oos_sizes,
+                    d_model, warnings, skip_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                r.sku_key, store_code, cutoff_str,
+                r.d_anchor, r.sigma_anchor, 1 if r.has_anchor else 0,
+                r.d_data, r.sigma_data, r.d_final, r.sigma_final,
+                r.calendar_days, r.sales_coverage_days, r.stock_coverage_days,
+                r.good_days, r.eligible_days, r.coverage_pct,
+                r.confidence.value if hasattr(r.confidence, 'value') else str(r.confidence),
+                r.anchor_weight, r.availability_score,
+                r.oos_type.value if hasattr(r.oos_type, 'value') else str(r.oos_type),
+                r.oos_days_total, r.oos_extended_streak,
+                partial_oos_days_json, r.suppression_count, partial_oos_sizes_str,
+                r.d_model, warnings_str, r.skip_reason
+            ))
+            count += 1
+        except Exception as e:
+            print(f"  Warning: Failed to persist {r.sku_key}: {e}")
+
+    conn.commit()
+    conn.close()
+
+    return count
 
 
 if __name__ == "__main__":

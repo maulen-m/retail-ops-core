@@ -148,8 +148,13 @@ class SKUDemandResult:
     calendar_days: int = 0
     sales_coverage_days: int = 0
     stock_coverage_days: int = 0
-    good_days: int = 0
+    good_days: int = 0              # Days with valid sales coverage
+    eligible_days: int = 0          # Days actually used in estimation (good_days - oos_days)
     coverage_pct: float = 0.0
+
+    # Availability model (stock-first approach)
+    availability_score: float = 0.0  # Average availability across lookback (0-1)
+    d_model: float = 0.0             # Availability-adjusted demand
 
     # Confidence and weight
     confidence: ConfidenceLevel = ConfidenceLevel.ANCHOR_ONLY
@@ -918,6 +923,22 @@ class DemandEstimator:
         result.good_days = good_days
         result.coverage_pct = good_days / len(coverage) if coverage else 0
 
+        # Calculate eligible_days: days actually used in estimation
+        # eligible_days = good_days (valid days not OOS) which is what _calc_d_data uses
+        result.eligible_days = good_days
+
+        # Calculate availability_score: fraction of days with stock available
+        valid_days = [c for c in coverage if c.is_valid]
+        if valid_days:
+            days_with_stock = len([c for c in valid_days if not c.is_oos])
+            result.availability_score = days_with_stock / len(valid_days)
+        else:
+            result.availability_score = 0.0
+
+        # Calculate d_model: availability-adjusted demand (same as d_data for now)
+        # This represents raw data demand before anchor blending
+        result.d_model = d_data
+
         # Calculate data-driven sigma
         result.sigma_data = self._calc_sigma_data(coverage)
 
@@ -1029,9 +1050,12 @@ class DemandEstimator:
                 "sales_coverage_days": r.sales_coverage_days,
                 "stock_coverage_days": r.stock_coverage_days,
                 "good_days": r.good_days,
+                "eligible_days": r.eligible_days,
                 "coverage_pct": round(r.coverage_pct, 3),
+                "availability_score": round(r.availability_score, 3),
                 "d_anchor": round(r.d_anchor, 2),
                 "d_data": round(r.d_data, 2),
+                "d_model": round(r.d_model, 2),
                 "d_final": round(r.d_final, 2),
                 "sigma_anchor": round(r.sigma_anchor, 2),
                 "sigma_data": round(r.sigma_data, 2),
