@@ -37,6 +37,65 @@ VALID_EVENT_TYPES = frozenset([
 ])
 
 
+def log_audit(
+    table_name: str,
+    record_id: str,
+    field_name: str,
+    old_value: Optional[str],
+    new_value: Optional[str],
+    change_type: str,
+    reason: Optional[str] = None,
+    source: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> int:
+    """
+    Insert an audit entry into fact_input_audit.
+
+    This keeps audit logging centralized and tolerant of schema variations.
+    """
+    with get_db(db_path) as conn:
+        table = conn.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'fact_input_audit'
+        """).fetchone()
+        if not table:
+            raise RuntimeError(
+                "fact_input_audit table missing; run scripts/migrate_013_ledger.py"
+            )
+
+        columns = [row["name"] for row in conn.execute("PRAGMA table_info(fact_input_audit)")]
+        required = {"table_name", "record_id", "field_name", "change_type"}
+        missing = required.difference(columns)
+        if missing:
+            raise RuntimeError(
+                f"fact_input_audit missing required columns: {', '.join(sorted(missing))}"
+            )
+
+        payload = {
+            "table_name": str(table_name),
+            "record_id": str(record_id),
+            "field_name": str(field_name),
+            "old_value": None if old_value is None else str(old_value),
+            "new_value": None if new_value is None else str(new_value),
+            "change_type": str(change_type),
+        }
+
+        if "reason" in columns and reason is not None:
+            payload["reason"] = str(reason)
+        if "source" in columns:
+            payload["source"] = source or "SYSTEM"
+
+        columns_clause = ", ".join(payload.keys())
+        placeholders = ", ".join("?" for _ in payload)
+        cursor = conn.execute(
+            f"INSERT INTO fact_input_audit ({columns_clause}) VALUES ({placeholders})",
+            list(payload.values()),
+        )
+
+        return cursor.lastrowid
+
+
 def add_ledger_event(
     event_type: str,
     sku_id: str,
