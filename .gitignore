@@ -39,6 +39,9 @@ ENV/
 
 # OS
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
 Thumbs.db
 
 # Database (keep schema, exclude data)
@@ -54,6 +57,12 @@ exports/
 # Backups
 backups/
 archives/
+
+# Excel temp files
+~$*.xls
+~$*.xlsx
+~$*.xlsm
+~$*.xlsb
 
 # Temporary files
 tmp/
