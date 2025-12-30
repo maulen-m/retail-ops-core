@@ -1,0 +1,633 @@
+#!/usr/bin/env python3
+"""
+Import Kaspi ActiveOrders.xlsx files into SALES_KSP_CRM_V3.xlsx.
+
+Phase 11 TASK-191: Daily order import workflow.
+
+Reads ActiveOrders*.xlsx files from a directory, filters for shipment-ready orders,
+and appends new orders to the CRM Excel file. Preserves Excel formulas and table structure.
+
+Usage:
+    python scripts/import_orders_to_crm.py
+    python scripts/import_orders_to_crm.py --orders-dir excel_ui/ActiveOrders/archive_orders/20251206_162159
+    python scripts/import_orders_to_crm.py --dry-run --verbose
+"""
+
+import argparse
+import logging
+import re
+import shutil
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Optional
+
+import openpyxl
+import pandas as pd
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Project root
+PROJECT_ROOT = Path(__file__).parent.parent
+
+# Default paths
+DEFAULT_ORDERS_DIR = PROJECT_ROOT / "excel_ui" / "ActiveOrders"
+DEFAULT_CRM_PATH = PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
+DEFAULT_SHEET_NAME = "SALES_KSP_CRM_1"
+TABLE_NAME = "tb_SalesRaw"
+
+# Store code mapping (Kaspi warehouse codes -> display names)
+STORE_MAP = {
+    '30137883_PP1': 'AcmeWear',
+    '30000001_PP1': 'Universal',
+    '30290083_PP1': '11KZ',
+    '30000002_PP1': 'STORE-B',
+}
+
+# Column mapping: ActiveOrders.xlsx column -> CRM column letter (Y-AZ)
+# These are the 28 raw Kaspi columns that we write directly
+RAW_KASPI_COLUMNS = {
+    '№ заказа': 'Y',                           # 25
+    'Дата поступления заказа': 'Z',            # 26
+    'Название товара в Kaspi Магазине': 'AA',  # 27
+    'Название в системе продавца': 'AB',       # 28
+    'Артикул': 'AC',                           # 29
+    'Сумма': 'AD',                             # 30
+    'Категория': 'AE',                         # 31
+    'Адрес самовывоза/доставки': 'AF',         # 32
+    'Дата изменения статуса': 'AG',            # 33
+    'Статус': 'AH',                            # 34
+    'Причина отмены': 'AI',                    # 35
+    'Способ оплаты': 'AJ',                     # 36
+    'Способ доставки': 'AK',                   # 37
+    'Курьерская служба': 'AL',                 # 38
+    'Принял': 'AM',                            # 39
+    'Выдал': 'AN',                             # 40
+    'Отменил': 'AO',                           # 41
+    'Оценка покупателя': 'AP',                 # 42
+    'Отзыв покупателя': 'AQ',                  # 43
+    'Дата публикации отзыва': 'AR',            # 44
+    'Оформил': 'AS',                           # 45
+    'Количество': 'AT',                        # 46
+    'Стоимость доставки для покупателя': 'AU', # 47
+    'Стоимость доставки для продавца': 'AV',   # 48
+    'Компенсация за доставку': 'AW',           # 49
+    'Требуется подписание': 'AX',              # 50
+    'Плановая дата передачи курьеру': 'AY',    # 51
+    'Склад передачи КД': 'AZ',                 # 52
+}
+
+# Status filter: Only import orders with this status
+READY_STATUS = "Ожидает передачи курьеру"
+
+# Signature filter: Only import orders without signature requirement
+NO_SIGNATURE = "Не требуется"
+
+
+def find_active_orders_files(
+    directory: Path,
+    pattern: str = "ActiveOrders*.xlsx"
+) -> list[Path]:
+    """
+    Find all ActiveOrders Excel files in a directory.
+
+    Args:
+        directory: Directory to search
+        pattern: Glob pattern for file matching
+
+    Returns:
+        List of paths to ActiveOrders files (excludes temp files starting with ~$)
+    """
+    if not directory.exists():
+        logger.warning(f"Directory not found: {directory}")
+        return []
+
+    files = []
+    for f in directory.glob(pattern):
+        # Skip temp files
+        if f.name.startswith('~$'):
+            continue
+        files.append(f)
+
+    # Sort by modification time (newest first)
+    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+
+    logger.info(f"Found {len(files)} ActiveOrders files in {directory}")
+    return files
+
+
+def parse_date(value: Any) -> Optional[datetime]:
+    """
+    Parse date from various formats.
+
+    Handles:
+    - datetime objects
+    - DD.MM.YYYY format (Kaspi default)
+    - YYYY-MM-DD format
+    - Excel serial numbers
+    """
+    if pd.isna(value) or value is None:
+        return None
+
+    # Already a datetime
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+
+    # Try string parsing
+    value_str = str(value).strip()
+
+    # DD.MM.YYYY format (primary Kaspi format)
+    try:
+        return datetime.strptime(value_str, "%d.%m.%Y")
+    except ValueError:
+        pass
+
+    # YYYY-MM-DD format
+    try:
+        return datetime.strptime(value_str, "%Y-%m-%d")
+    except ValueError:
+        pass
+
+    # Try pandas parser
+    try:
+        return pd.to_datetime(value, dayfirst=True).to_pydatetime()
+    except (ValueError, TypeError):
+        pass
+
+    # Handle Excel serial dates
+    try:
+        serial = float(value)
+        if 40000 < serial < 50000:
+            return (pd.to_datetime('1899-12-30') + pd.to_timedelta(serial, unit='D')).to_pydatetime()
+    except (ValueError, TypeError):
+        pass
+
+    return None
+
+
+def clean_order_id(value: Any) -> Optional[str]:
+    """Clean order ID value, removing .0 suffix from floats."""
+    if pd.isna(value) or value is None:
+        return None
+
+    order_id = str(value).strip()
+
+    # Remove .0 suffix (Excel stores as float)
+    if order_id.endswith('.0'):
+        order_id = order_id[:-2]
+
+    # Validate: should be 9-12 digit number
+    if not re.match(r'^\d{9,12}$', order_id):
+        return None
+
+    return order_id
+
+
+def clean_value(value: Any) -> Any:
+    """Clean a cell value for Excel writing."""
+    if pd.isna(value):
+        return None
+
+    # Convert numpy types to Python types
+    if hasattr(value, 'item'):
+        value = value.item()
+
+    # Handle floats that are actually integers
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+
+    return value
+
+
+def load_existing_order_ids(
+    crm_path: Path,
+    sheet_name: str,
+) -> set[str]:
+    """
+    Load existing OrderIDs from CRM file (column Y = № заказа).
+
+    Args:
+        crm_path: Path to CRM Excel file
+        sheet_name: Sheet name to read from
+
+    Returns:
+        Set of existing order IDs
+    """
+    if not crm_path.exists():
+        logger.warning(f"CRM file not found: {crm_path}")
+        return set()
+
+    # Use pandas to read only column Y (25th column = index 24)
+    # Much faster than openpyxl for large files
+    try:
+        df = pd.read_excel(
+            crm_path,
+            sheet_name=sheet_name,
+            usecols=[24],  # Column Y (0-indexed = 24)
+            dtype=str,
+        )
+
+        existing = set()
+        col_name = df.columns[0] if len(df.columns) > 0 else None
+
+        if col_name:
+            for value in df[col_name].dropna():
+                order_id = clean_order_id(value)
+                if order_id:
+                    existing.add(order_id)
+
+        logger.info(f"Loaded {len(existing)} existing order IDs from CRM")
+        return existing
+
+    except Exception as e:
+        logger.error(f"Error loading existing order IDs: {e}")
+        return set()
+
+
+def parse_orders_from_excel(filepath: Path) -> list[dict]:
+    """
+    Parse orders from an ActiveOrders.xlsx file.
+
+    Args:
+        filepath: Path to ActiveOrders Excel file
+
+    Returns:
+        List of order dicts ready for CRM import
+    """
+    df = pd.read_excel(filepath)
+
+    orders = []
+    for _, row in df.iterrows():
+        # Get order_id
+        order_id = clean_order_id(row.get('№ заказа'))
+        if not order_id:
+            continue
+
+        # Build order dict with all raw Kaspi columns
+        order = {'_order_id': order_id}
+
+        for col_name in RAW_KASPI_COLUMNS:
+            value = row.get(col_name)
+            order[col_name] = clean_value(value)
+
+        orders.append(order)
+
+    logger.debug(f"Parsed {len(orders)} orders from {filepath.name}")
+    return orders
+
+
+def filter_orders_for_shipment(
+    orders: list[dict],
+    target_date: date = None,
+) -> list[dict]:
+    """
+    Filter orders ready for shipment.
+
+    Conditions:
+    - Status == "Ожидает передачи курьеру"
+    - Signature required == "Не требуется"
+    - Planned date <= target_date + 1 day (include tomorrow's orders)
+
+    Args:
+        orders: List of order dicts
+        target_date: Filter by planned date (default: today)
+
+    Returns:
+        Filtered list of orders
+    """
+    from datetime import timedelta
+
+    if target_date is None:
+        target_date = date.today()
+
+    # Include tomorrow's orders (need to prepare them today)
+    cutoff_date = target_date + timedelta(days=1)
+
+    filtered = []
+    for order in orders:
+        # Check status
+        status = str(order.get('Статус', '')).strip()
+        if status != READY_STATUS:
+            continue
+
+        # Check signature requirement
+        signature = str(order.get('Требуется подписание', '')).strip()
+        if signature != NO_SIGNATURE:
+            continue
+
+        # Check planned date (include orders up to tomorrow)
+        planned_date = parse_date(order.get('Плановая дата передачи курьеру'))
+        if planned_date and planned_date.date() > cutoff_date:
+            continue
+
+        filtered.append(order)
+
+    logger.info(f"Filtered to {len(filtered)} shipment-ready orders")
+    return filtered
+
+
+def deduplicate_orders(
+    orders: list[dict],
+    existing_ids: set[str]
+) -> tuple[list[dict], int]:
+    """
+    Remove orders that already exist in CRM.
+
+    Args:
+        orders: List of order dicts
+        existing_ids: Set of existing order IDs
+
+    Returns:
+        Tuple of (new_orders, skipped_count)
+    """
+    new_orders = []
+    skipped = 0
+
+    for order in orders:
+        order_id = order.get('_order_id')
+        if order_id in existing_ids:
+            skipped += 1
+            continue
+        new_orders.append(order)
+
+    logger.info(f"Deduplicated: {len(new_orders)} new, {skipped} skipped (already in CRM)")
+    return new_orders, skipped
+
+
+def append_orders_to_crm(
+    orders: list[dict],
+    crm_path: Path,
+    sheet_name: str,
+    backup: bool = True,
+) -> int:
+    """
+    Append orders to CRM Excel file.
+
+    Only writes to raw Kaspi columns (Y-AZ). Formula columns (A-X) will
+    auto-calculate based on table structure.
+
+    Args:
+        orders: List of order dicts to append
+        crm_path: Path to CRM Excel file
+        sheet_name: Sheet name
+        backup: If True, create backup before writing
+
+    Returns:
+        Number of orders appended
+    """
+    if not orders:
+        logger.info("No orders to append")
+        return 0
+
+    # Create backup
+    if backup:
+        backup_path = crm_path.with_suffix(f'.backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx')
+        shutil.copy2(crm_path, backup_path)
+        logger.info(f"Created backup: {backup_path}")
+
+    # Load workbook
+    wb = openpyxl.load_workbook(crm_path)
+    ws = wb[sheet_name]
+
+    # Find the table and its current range
+    table = None
+    for tbl in ws.tables.values():
+        if tbl.name == TABLE_NAME:
+            table = tbl
+            break
+
+    if not table:
+        logger.warning(f"Table {TABLE_NAME} not found, appending without table extension")
+
+    # Find last row with data (check column Y which has order IDs)
+    last_data_row = ws.max_row
+    while last_data_row > 1 and ws.cell(last_data_row, 25).value is None:
+        last_data_row -= 1
+
+    logger.info(f"Current last data row: {last_data_row}")
+
+    # Append orders starting from next row
+    new_row = last_data_row + 1
+
+    for order in orders:
+        # Write raw Kaspi data to columns Y-AZ (25-52)
+        for col_name, col_letter in RAW_KASPI_COLUMNS.items():
+            col_idx = openpyxl.utils.column_index_from_string(col_letter)
+            value = order.get(col_name)
+            ws.cell(row=new_row, column=col_idx, value=value)
+
+        new_row += 1
+
+    # Update table range to include new rows
+    if table:
+        # Parse current range
+        current_ref = table.ref
+        # Update to include new rows: A1:AZ{new_last_row}
+        new_ref = f"A1:AZ{new_row - 1}"
+        table.ref = new_ref
+        logger.info(f"Updated table range: {current_ref} -> {new_ref}")
+
+    # Save workbook
+    wb.save(crm_path)
+    wb.close()
+
+    appended = len(orders)
+    logger.info(f"Appended {appended} orders to CRM")
+    return appended
+
+
+def main(
+    orders_dir: Path = None,
+    crm_path: Path = None,
+    sheet_name: str = None,
+    target_date: date = None,
+    filter_ready: bool = True,
+    include_archive: bool = False,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> dict:
+    """
+    Main import function.
+
+    Args:
+        orders_dir: Directory containing ActiveOrders*.xlsx files
+        crm_path: Path to CRM Excel file
+        sheet_name: CRM sheet name
+        target_date: Filter orders by planned date (default: today)
+        filter_ready: If True, only import shipment-ready orders
+        dry_run: If True, don't write to CRM
+        verbose: If True, enable debug logging
+
+    Returns:
+        Dict with import statistics
+    """
+    if verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # Set defaults
+    orders_dir = Path(orders_dir) if orders_dir else DEFAULT_ORDERS_DIR
+    crm_path = Path(crm_path) if crm_path else DEFAULT_CRM_PATH
+    sheet_name = sheet_name or DEFAULT_SHEET_NAME
+    target_date = target_date or date.today()
+
+    logger.info(f"Starting import from {orders_dir}")
+    logger.info(f"Target CRM: {crm_path}")
+    logger.info(f"Target date: {target_date}")
+
+    stats = {
+        'files_processed': 0,
+        'orders_parsed': 0,
+        'orders_filtered': 0,
+        'orders_new': 0,
+        'orders_skipped': 0,
+        'orders_imported': 0,
+        'errors': [],
+    }
+
+    # Find ActiveOrders files
+    files = find_active_orders_files(orders_dir)
+
+    # Optionally check subdirectories (archive_orders structure)
+    if include_archive:
+        archive_dir = orders_dir / "archive_orders"
+        if archive_dir.exists():
+            for subdir in sorted(archive_dir.iterdir(), reverse=True):
+                if subdir.is_dir():
+                    subdir_files = find_active_orders_files(subdir)
+                    files.extend(subdir_files)
+
+    if not files:
+        logger.warning("No ActiveOrders files found")
+        return stats
+
+    # Parse all orders from all files
+    all_orders = []
+    for filepath in files:
+        try:
+            orders = parse_orders_from_excel(filepath)
+            all_orders.extend(orders)
+            stats['files_processed'] += 1
+        except Exception as e:
+            logger.error(f"Error parsing {filepath}: {e}")
+            stats['errors'].append(str(e))
+
+    stats['orders_parsed'] = len(all_orders)
+    logger.info(f"Parsed {len(all_orders)} total orders from {stats['files_processed']} files")
+
+    # Filter for shipment-ready orders
+    if filter_ready:
+        all_orders = filter_orders_for_shipment(all_orders, target_date)
+    stats['orders_filtered'] = len(all_orders)
+
+    # Load existing order IDs for deduplication
+    existing_ids = load_existing_order_ids(crm_path, sheet_name)
+
+    # Deduplicate
+    new_orders, skipped = deduplicate_orders(all_orders, existing_ids)
+    stats['orders_new'] = len(new_orders)
+    stats['orders_skipped'] = skipped
+
+    # Import to CRM
+    if dry_run:
+        logger.info(f"DRY RUN: Would import {len(new_orders)} orders")
+        stats['orders_imported'] = 0
+    else:
+        if new_orders:
+            imported = append_orders_to_crm(new_orders, crm_path, sheet_name)
+            stats['orders_imported'] = imported
+        else:
+            logger.info("No new orders to import")
+
+    # Summary
+    logger.info("=" * 50)
+    logger.info("Import Summary:")
+    logger.info(f"  Files processed: {stats['files_processed']}")
+    logger.info(f"  Orders parsed: {stats['orders_parsed']}")
+    logger.info(f"  Orders filtered (ready): {stats['orders_filtered']}")
+    logger.info(f"  Orders new: {stats['orders_new']}")
+    logger.info(f"  Orders skipped (existing): {stats['orders_skipped']}")
+    logger.info(f"  Orders imported: {stats['orders_imported']}")
+    if stats['errors']:
+        logger.warning(f"  Errors: {len(stats['errors'])}")
+    logger.info("=" * 50)
+
+    return stats
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Import Kaspi ActiveOrders to CRM Excel"
+    )
+    parser.add_argument(
+        "--orders-dir",
+        type=Path,
+        default=None,
+        help=f"Directory with ActiveOrders*.xlsx files (default: {DEFAULT_ORDERS_DIR})"
+    )
+    parser.add_argument(
+        "--crm-file",
+        type=Path,
+        default=None,
+        help=f"Path to CRM Excel file (default: {DEFAULT_CRM_PATH})"
+    )
+    parser.add_argument(
+        "--sheet",
+        type=str,
+        default=None,
+        help=f"CRM sheet name (default: {DEFAULT_SHEET_NAME})"
+    )
+    parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Target date for filtering (YYYY-MM-DD format, default: today)"
+    )
+    parser.add_argument(
+        "--no-filter",
+        action="store_true",
+        help="Don't filter orders by status/signature/date"
+    )
+    parser.add_argument(
+        "--include-archive",
+        action="store_true",
+        help="Also scan archive_orders subdirectories"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Don't write to CRM, just show what would be imported"
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+
+    args = parser.parse_args()
+
+    # Parse target date
+    target_date = None
+    if args.date:
+        target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+
+    # Run import
+    stats = main(
+        orders_dir=args.orders_dir,
+        crm_path=args.crm_file,
+        sheet_name=args.sheet,
+        target_date=target_date,
+        filter_ready=not args.no_filter,
+        include_archive=args.include_archive,
+        dry_run=args.dry_run,
+        verbose=args.verbose,
+    )
+
+    # Exit with error if there were errors
+    if stats['errors']:
+        exit(1)
