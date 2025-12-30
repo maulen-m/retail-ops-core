@@ -153,6 +153,47 @@ class PipelineStep:
         self.error: Optional[str] = None
 
 
+def load_dotenv(dotenv_path: Path) -> None:
+    """Load key=value pairs from a .env file without overriding existing env vars."""
+    if not dotenv_path.exists():
+        return
+
+    try:
+        with dotenv_path.open("r") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if not key or key in os.environ:
+                    continue
+                os.environ[key] = value
+    except Exception as exc:
+        print(f"Warning: Failed to load env file {dotenv_path}: {exc}")
+
+
+def _format_step_error(returncode: int, stdout: str, stderr: str) -> str:
+    parts = [f"Exit code: {returncode}"]
+    if stderr:
+        parts.append(f"STDERR:\n{stderr}")
+    if stdout:
+        parts.append(f"STDOUT:\n{stdout}")
+    return "\n".join(parts)
+
+
+def _print_failure_output(stdout: str, stderr: str) -> None:
+    stdout_display = stdout if stdout else "(empty)"
+    stderr_display = stderr if stderr else "(empty)"
+    print("  STDOUT:")
+    print(stdout_display)
+    print("  STDERR:")
+    print(stderr_display)
+
+
 def run_step(step: PipelineStep, dry_run: bool = False, verbose: bool = False) -> bool:
     """Run a single pipeline step. Returns True on success."""
     script_path = PROJECT_ROOT / "scripts" / step.script
@@ -178,18 +219,26 @@ def run_step(step: PipelineStep, dry_run: bool = False, verbose: bool = False) -
     try:
         result = subprocess.run(
             cmd,
-            capture_output=not verbose,
+            capture_output=True,
             text=True,
             cwd=str(PROJECT_ROOT)
         )
         step.duration_s = (datetime.now() - start).total_seconds()
 
+        stdout = (result.stdout or "").rstrip()
+        stderr = (result.stderr or "").rstrip()
+
         if result.returncode != 0:
-            step.error = result.stderr or f"Exit code: {result.returncode}"
+            _print_failure_output(stdout, stderr)
+            step.error = _format_step_error(result.returncode, stdout, stderr)
             step.success = False
-            if not verbose:
-                print(f"  STDERR: {result.stderr}")
             return False
+
+        if verbose:
+            if stdout:
+                print(stdout)
+            if stderr:
+                print(stderr, file=sys.stderr)
 
         step.success = True
         return True
@@ -222,6 +271,8 @@ def verify_outputs() -> list[str]:
 
 
 def main():
+    load_dotenv(PROJECT_ROOT / ".env")
+
     parser = argparse.ArgumentParser(
         description="End-of-Day Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -449,12 +500,13 @@ def _run_pipeline(args, start_time: datetime) -> int:
         print("\nSending Shadow Mode digest to Telegram...")
         try:
             summary = tracker.to_summary()
-            send_shadow_mode_digest(
+            digest_sent = send_shadow_mode_digest(
                 run_id=tracker.run_id,
                 duration_seconds=summary["duration_seconds"],
                 db_path=str(DB_PATH),
             )
-            print("  Telegram digest sent successfully")
+            if digest_sent:
+                print("  Telegram digest sent successfully")
         except Exception as e:
             print(f"  Warning: Failed to send Telegram: {e}")
 
@@ -466,8 +518,9 @@ def _run_pipeline(args, start_time: datetime) -> int:
         # Send Telegram failure alert
         print("\nSending Telegram failure alert...")
         try:
-            alert_from_run_tracker(tracker)
-            print("  Telegram alert sent successfully")
+            alert_sent = alert_from_run_tracker(tracker)
+            if alert_sent:
+                print("  Telegram alert sent successfully")
         except Exception as e:
             print(f"  Warning: Failed to send Telegram: {e}")
 
