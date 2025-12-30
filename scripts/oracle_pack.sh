@@ -54,8 +54,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$TASK" ]] || die "--task is required"
-
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Not a git repo"
 cd "$ROOT"
 
@@ -63,13 +61,42 @@ if [[ -z "$PROJECT" ]]; then
   PROJECT="$(basename "$ROOT")"
 fi
 
-BRANCH="$(git branch --show-current)"
+BRANCH="$(git branch --show-current || true)"
+if [[ -z "$BRANCH" ]]; then
+  BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+fi
 HEAD_SHA="$(git rev-parse --short HEAD)"
 NOW_DATE="$(date +%F)"
 NOW_TIME="$(date +%H%M%S)"
 
 OUT_DIR="${OUT_ROOT}/${PROJECT}/${NOW_DATE}"
 mkdir -p "$OUT_DIR"
+
+derive_task_from_branch() {
+  local branch="$1"
+  if [[ "$branch" =~ ^task/(TASK-[0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$branch" =~ ^task/([A-Z]+[0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$branch" =~ ^(TASK-[0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+if [[ -z "$TASK" ]]; then
+  TASK="$(derive_task_from_branch "$BRANCH" || true)"
+fi
+
+if [[ -z "$TASK" ]]; then
+  die "Pass --task or rename branch to task/<TASK> (e.g., task/TASK-268-...)"
+fi
+
 OUT_FILE="${OUT_DIR}/${NOW_TIME}_${TASK}.md"
 
 PYTHON_BIN="python3"
@@ -136,11 +163,39 @@ is_denied() {
   [[ "$f" == excel/* ]] && return 0
   [[ "$f" == ".DS_Store" ]] && return 0
   [[ "$f" == *"/.DS_Store" ]] && return 0
+  [[ "$f" == "__pycache__/"* ]] && return 0
+  [[ "$f" == *"/__pycache__/"* ]] && return 0
+  [[ "$f" == *.pyc ]] && return 0
+  [[ "$f" == ".pytest_cache/"* ]] && return 0
+  [[ "$f" == *"/.pytest_cache/"* ]] && return 0
+  [[ "$f" == ".mypy_cache/"* ]] && return 0
+  [[ "$f" == *"/.mypy_cache/"* ]] && return 0
+  [[ "$f" == ".ruff_cache/"* ]] && return 0
+  [[ "$f" == *"/.ruff_cache/"* ]] && return 0
   case "$f" in
     *.pdf|*.png|*.jpg|*.jpeg|*.zip|*.sqlite|*.xlsx) return 0;;
   esac
   return 1
 }
+
+is_tracked_artifact() {
+  local f="$1"
+  [[ "$f" == ".DS_Store" || "$f" == */.DS_Store ]] && return 0
+  [[ "$f" == *__pycache__/* || "$f" == */__pycache__/* ]] && return 0
+  [[ "$f" == *.pyc ]] && return 0
+  [[ "$f" == .pytest_cache/* || "$f" == */.pytest_cache/* ]] && return 0
+  [[ "$f" == .mypy_cache/* || "$f" == */.mypy_cache/* ]] && return 0
+  [[ "$f" == .ruff_cache/* || "$f" == */.ruff_cache/* ]] && return 0
+  return 1
+}
+
+TRACKED_ARTIFACTS=()
+while IFS= read -r path; do
+  [[ -n "$path" ]] || continue
+  if is_tracked_artifact "$path"; then
+    TRACKED_ARTIFACTS+=("$path")
+  fi
+done < <(git ls-files)
 
 # Optional policy-based adds
 POLICY_INCLUDE=()
@@ -260,6 +315,15 @@ fi
   echo
   echo "## Denylist (never include content)"
   echo "- .env, db/*.db, exports/*, excel/*, *.pdf, *.png, *.jpg, *.zip, *.sqlite, *.xlsx"
+  if [[ ${#TRACKED_ARTIFACTS[@]} -gt 0 ]]; then
+    echo
+    echo "## Tracked artifact warnings"
+    echo "The following artifacts are tracked in git; consider removing via:"
+    echo "git rm --cached -- <path>"
+    for f in "${TRACKED_ARTIFACTS[@]}"; do
+      echo "- ${f}"
+    done
+  fi
 } > "$META_FILE"
 
 # Write diff (stat + full diff)

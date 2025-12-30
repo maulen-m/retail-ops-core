@@ -48,6 +48,7 @@ Use scripts/committer to avoid staging junk:
   - scripts/oracle_pack.sh --task TASK-XXX --range HEAD~1..HEAD --cmd "pytest -q" --cmd "python3 scripts/run_end_of_day.py --verbose"
 - Link the generated `~/Docs/Oracle/...` path in the session log/handoff.
 - Prefer a clean working tree; only use `--allow-dirty` when reproducibility is not possible.
+- You can omit `--task` if the branch is named `task/<TASK>-...`.
 
 ## Blast Radius Rule (important)
 Before coding:
