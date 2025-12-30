@@ -43,6 +43,11 @@ Purpose: single always-loaded brain for Codex/agents. Keep it short, factual, an
 Use scripts/committer to avoid staging junk:
 - scripts/committer "TASK-XXX: short message" path/to/file1 path/to/file2
 
+## Oracle Pack (definition of done)
+- After each task, generate an oracle pack to disk for review:
+  - scripts/oracle_pack.sh --task TASK-XXX --range HEAD~1..HEAD --cmd "pytest -q" --cmd "python3 scripts/run_end_of_day.py --verbose"
+- Link the generated `~/Docs/Oracle/...` path in the session log/handoff.
+
 ## Blast Radius Rule (important)
 Before coding:
 - Estimate files touched (target: <=5)
