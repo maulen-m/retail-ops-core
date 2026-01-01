@@ -1,77 +1,96 @@
-# AGENTS.md - Project 3 (Autonomous Inventory/PO System)
-Purpose: single always-loaded brain for Codex/agents. Keep it short, factual, and operational.
+# AGENTS.md — Project‑3 (Autonomous_business)
 
-## Current State (update weekly)
-- End-of-day pipeline: Step 0-1 OK; Step 2 depends on core/db/ledger.log_audit + fact_input_audit table.
-- Automation mode: shadow mode + guardrails exist; execution is gated behind env flags.
-- Capital safety: guardrails enforced (ROIC gate, concentration, budget caps, rollout caps).
-- Known optional warning: dim_budget_caps may be missing/unlimited depending on setup.
+Control plane (read first):
+- ${ORCH_HOME:-$HOME/Docs/Oracle/agent-scripts-main}/AGENTS.md
+Skills:
+- ${ORCH_HOME:-$HOME/Docs/Oracle/agent-scripts-main}/skills/oracle/SKILL.md
 
-## Non-Negotiables
-- DO NOT edit `.env` or any secrets files. Only the human changes env vars.
-- No destructive git ops unless explicitly instructed (no `git reset --hard` or nuking files to "fix tests").
-- No implicit DB migrations in validation; use explicit migration scripts.
-- Keep commits atomic. Commit only files you touched.
-- Protect capital first: never weaken guardrails.
+This file is the repo‑local contract: entrypoints, gates, and safety boundaries.
 
-## Repo Entry Points (start here)
-- scripts/run_end_of_day.py       -> daily pipeline (steps 0-7)
-- scripts/validate_params.py      -> strict parameter validation gate
-- scripts/smoke_test_dashboard.py -> invariants gate
-- scripts/generate_po_dashboard_data.py -> dashboard JSON generation
+---
 
-## Docs Index (read_when rules)
-- If editing inventory formulas -> docs/inventory/Master_Inventory_Rules_v6.md
-- If editing PO logic / size allocation -> docs/protocol/PO_making_logic_v2.md
-- If editing FX rates or payments assumptions -> docs/protocol/FX_RATES_MECHANISM_V1.md
-- If editing daily ops pipeline -> docs/DAILY_SOP.md
-- If editing schema -> db/schema.sql + validate_params.py
+## What this repo is
+A daily operations engine for inventory + PO autonomy:
+- demand estimation + OOS logic
+- safety stock / reorder math
+- PO draft generation + scoring
+- capital guardrails (ROIC, concentration, budget, rollout caps)
+- daily pipeline orchestration (shadow → assisted → partial auto)
 
-## Workflow Principles (Steipete-inspired)
-- Keep blast radius small (target: <=5 files per commit).
-- Prefer CLI-first changes and close the loop with gates.
-- Ask for options/status before big changes.
-- Use tight context packs for reviews (changed files + key docs).
-- Keep prompts short and direct; queue follow-ups instead of huge plans.
+---
 
-## Default "Green Loop" Commands
-1) python3 scripts/validate_params.py --strict
-2) python3 scripts/run_end_of_day.py --verbose
-3) python3 -m pytest tests/ -q (or targeted tests)
+## Current high‑ROI goal
+Make `python3 scripts/run_end_of_day.py --verbose` reliably run through the pipeline (or fail with a clear actionable error).
+Right now, the top priority is unblocking startup/import crashes before chasing deeper logic.
 
-## Commit Helper
-Use scripts/committer to avoid staging junk:
-- scripts/committer "TASK-XXX: short message" path/to/file1 path/to/file2
+---
 
-## Oracle Pack (definition of done)
-- After each task, generate an oracle pack to disk for review:
-  - scripts/oracle_pack.sh --task TASK-XXX --range HEAD~1..HEAD --cmd "pytest -q" --cmd "python3 scripts/run_end_of_day.py --verbose"
-- Link the generated `~/Docs/Oracle/...` path in the session log/handoff.
-- Prefer a clean working tree; only use `--allow-dirty` when reproducibility is not possible.
-- You can omit `--task` if the branch is named `task/<TASK>-...`.
+## Non‑negotiables (capital protection)
+- Atomic commits, reversible diffs, proof-of-fix required.
+- Do NOT edit `.env` or secrets (human-owned).
+- Do NOT weaken execution gating or guardrails defaults.
+- Do NOT change canonical formulas/constants unless task explicitly targets them.
+- No destructive git ops.
 
-## Blast Radius Rule (important)
-Before coding:
-- Estimate files touched (target: <=5)
-- If it grows: stop, explain why, re-scope.
+---
 
-## Prompt Templates
+## Entrypoints (what to run)
+- `python3 scripts/validate_params.py --strict`  (hard gate)
+- `python3 scripts/run_end_of_day.py --verbose` (daily pipeline)
+- `python3 scripts/generate_po_dashboard_data.py` (dashboard output)
+- `python3 scripts/smoke_test_dashboard.py` (invariants)
+- `python3 -m pytest tests/ -q` (tests; prefer targeted subsets)
 
-### Template A - Implementation Task (to Codex/Opus)
-- Goal:
-- Constraints (idempotent, no .env changes, no destructive git):
-- Files allowed to touch:
-- Tests/gates to run:
-- Done means checklist:
+---
 
-### Template B - Review Request (to Code Captain)
-- Context pack: oracle render output or changed-files-only bundle.
-- Path to oracle docs: "~/Docs/steipete/oracle-main"
-- What changed + why:
-- Evidence: command outputs + commit hash
-- Risks/rollbacks:
+## One‑Take autonomy envelope (wide scope, safe)
+Codex can run long and chase the pipeline to green **within these boundaries**.
 
-### Template C - Status/Options Ping
-- Status check:
-- What is blocked or unclear:
-- Provide 2-3 options before changing code.
+Allowed without asking:
+- fix import crashes / missing exports / signature drift
+- improve error messages + fail-fast operator guidance
+- add small regression tests for touched code
+- small hygiene fixes (ignore/untrack cache artifacts) in separate commit
+
+Must HALT + ask if:
+- you need to change money execution behavior, Kaspi write paths, guardrail thresholds, or core formulas
+- you think a schema migration is required
+- scope expands beyond ~10 files or >5 commits
+- business rule ambiguity (not sure what “correct” is)
+
+---
+
+## Commit discipline
+- Use `scripts/committer` if available.
+- Keep commits atomic:
+  - `alerts: fix missing exports (unblock end-of-day)`
+  - `test: add regression for end-of-day import safety`
+  - `ops: untrack cache artifacts (reduce drift)`
+
+---
+
+## Definition of Done (required)
+A task is not done until:
+1) Gates run + evidence captured:
+   - `python3 scripts/validate_params.py --strict`
+   - `python3 scripts/run_end_of_day.py --verbose`
+2) Atomic commits exist.
+3) Oracle pack generated to disk and path recorded.
+
+Oracle pack:
+- Prefer clean tree (reproducible). Use `--allow-dirty` only if unavoidable and explain why.
+- If branch is `task/<TASK>-...`, omit `--task` (auto-detect).
+
+Example:
+`scripts/oracle_pack.sh --range HEAD~2..HEAD --cmd "python3 scripts/validate_params.py --strict" --cmd "python3 scripts/run_end_of_day.py --verbose"`
+
+Record pack path + commit hashes in `.claude/SESSION_LOG.md`.
+
+---
+
+## Repo hygiene rule (stop thrashing)
+Never commit:
+- `.DS_Store`
+- `**/__pycache__/**`, `*.pyc`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`
+- `db/*.db`, `exports/*`, `excel/*`, `excel_ui/*`, `*.xlsx`, `*.pdf`, `*.zip`
+If any are tracked: untrack in a dedicated commit (do NOT delete local files).

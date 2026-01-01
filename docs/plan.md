@@ -1,227 +1,140 @@
-# plan.md — Demand & PO System: Reality Check + Fix Plan (as of 2025-12-21)
+# Agentic Engineering Upgrade Plan (Steipete-inspired) — Project 3
 
-## 0) Ground Truth (Non‑Negotiable)
-**Context:** Today is **2025-12-21**, *day start before today’s Kaspi shipping*.
+## Goal
+Increase shipping speed while reducing capital/ops risk by making agent work:
+- deterministic (repeatable steps),
+- low-blast-radius (small commits),
+- context-efficient (agents always know “where to look”),
+- evaluation-driven (every change has a fast proof).
 
-### Stock snapshot semantics
-- **Archive_stock_date:** 2025-12-17 (morning stock **before** 12/17 shipping)
-- **Sold_since_archive_date:** sales shipped **2025-12-17 → 2025-12-20**
-- **Current_stock_date:** 2025-12-21 (morning stock **before** 12/21 shipping)
-
-**Important invariant (for sanity checks):**  
-`Stock_start(2025-12-21) ≈ Stock_start(2025-12-17) - Σsales(12/17..12/20) + Σreceipts(12/17..12/20)`  
-(Any big deltas indicate missing receipts, adjustments, or bad mappings.)
-
-### Excel: what is truth vs. not truth
-**Single-truth sheets (OK to ingest/use as inputs):**
-- `Dim_Params`
-- `Dim_Params_PT` *(if conflicts → Master_Inventory_Rules_v6.md wins)*
-- `DIM_SKU_ID`
-- `Dim_SKU`
-- `SizeMix_and_Di_Anchor`
-- `Fact_Sales`
-- `Fact_PO_Lines`
-- `Dim_PO_Header`
-
-**Explicitly NOT truth (ignore results):**
-- `PO_calendar`, `PO_Generator` (formatting examples only; values wrong)
-- Any “view” or calculated summary tabs unless explicitly listed above.
-
-### Existing PO already placed
-- `Line52_PO-9` placed 2025-12-19; supplier sends to China cargo until 2025-12-25  
-→ must be treated as **existing pipeline/inbound** in future PO scheduling.
-
-### New business constraint: Supplier shutdown
-- **Chinese New Year period:** 2026-02-01 → 2026-02-20
-- **Supplier cannot prepare or send POs:** **2026-01-27 → 2026-02-20 (inclusive)**  
-→ PO ETA / prep / ship calculations must respect this blackout window.
+Inspiration sources:
+- https://steipete.me/posts/2025/shipping-at-inference-speed
+- https://steipete.me/posts/just-talk-to-it
+- https://github.com/steipete/agent-scripts
+- https://gist.github.com/steipete/88a38157e8c9d1896443eca09e95e163 (committer)
+- https://gist.github.com/steipete/d3b9db3fa8eb1d1a692b7656217d8655 (agent git rules)
 
 ---
 
-## 1) Quick Reality Check: suspicious or risky recent changes (revert candidates)
+## Core Principles (non-negotiable)
 
-### A) `scripts/generate_po_dashboard_data.py` — persist_demand_estimates() mapping bug
-**Problem:** when persisting to `fact_demand_estimates`, the script writes:
-- `eligible_days = result.good_days` (but `good_days` = *valid days*, not days actually used in estimation)
-- It should be `eligible_days = result.eligible_days`.
+1) Close the loop with CLI gates
+- Every meaningful change must be verified with a command that proves it works.
+- Default gates for this repo:
+  - python scripts/validate_params.py --strict
+  - python scripts/run_end_of_day.py --verbose
+  - python -m pytest tests/ -q (or targeted tests)
 
-**Why it matters:** future Auto‑PO integration will incorrectly think there was enough coverage, leading to over-trust or mis-weighting.
+2) Blast radius discipline
+- Keep tasks “small bombs”: aim for <5 files touched per commit when possible.
+- If the agent starts editing many files, stop and re-scope.
 
-**Action:** Performer → patch mapping + add a tiny sanity assertion (eligible_days <= good_days).
+3) Atomic commits
+- One purpose per commit.
+- Commit only the files you edited (explicit paths).
+- Avoid committing local artifacts (.db, exports, Excel temp files).
 
-### B) `db/schema.sql` — `fact_demand_estimates.partial_oos_days` type mismatch
-**Problem:** schema defines `partial_oos_days INTEGER`, but code serializes a dict as `"S:5,M:2"` string.
+4) One always-loaded “agent brain”
+- Add a repo-root AGENTS.md that states:
+  - current state,
+  - entry points,
+  - non-negotiables,
+  - quick doc map,
+  - standard commands,
+  - prompt templates.
 
-**Why it matters:** integration will be brittle; downstream SQL may break or silently mis-handle.
-
-**Action:** Captain decides storage format:
-- **Option 1 (recommended):** `partial_oos_days_json TEXT` storing JSON
-- **Option 2:** `partial_oos_days_text TEXT` storing `"size:days"` pairs
-Then Performer updates schema + persist logic + any reads.
-
-### C) Tests claimed in agent summary are not visible in the repo pack
-Agent summary references `tests/test_demand_estimator_oos.py` etc, but current repo snapshot contains only ad-hoc test scripts under `scripts/`.
-
-**Action:** Performer → confirm whether tests exist locally; if not, create:
-- `tests/test_demand_estimator_stock_timeline.py`
-- `tests/test_demand_estimates_persistence.py`
-Minimal but critical.
-
-### D) Operating mode ambiguity (end-of-day vs morning)
-Stock timeline rebuild is safe **only if the stock anchor date is “morning before shipping” and sales for that same day are not yet in DB**.
-If you run at 20:30 *after shipping* with the same-day sales loaded, you must anchor on **tomorrow stock** (simulated or snapped).
-
-**Action:** Captain → define two explicit modes:
-- `MODE=morning_pre_ship` (cutoff=yesterday, anchor=today snapshot)
-- `MODE=end_of_day` (cutoff=today, anchor=tomorrow simulated from today snapshot + today sales)
+5) Context packs only when needed
+- For review/planning: provide a small context bundle (changed files + relevant docs).
+- Avoid dumping full-repo packs unless doing deep refactors.
 
 ---
 
-## 2) What actually works right now (vs paper)
+## Phase 0 — Quick Wins (≤1 day)
 
-### Working (can be used immediately)
-1. **DemandEstimator is integrated into the PO dashboard generator**
-   - `scripts/generate_po_dashboard_data.py` runs DemandEstimator, exports:
-     - `exports/demand_diagnostics.csv`
-     - `exports/po_dashboard_data.json`
-   - It also builds a stock timeline (stock-first partial OOS logic is active).
+### 0.1 Add AGENTS.md (Codex-optimized)
+Benefit: faster onboarding per session, fewer hallucinated paths, fewer “I couldn’t find CLAUDE.md.”
+Effort: S
+Risk: Low
 
-2. **Scheduling scaffold exists**
-   - `scripts/run_end_of_day.py` orchestrates steps
-   - LaunchAgent plist exists (`config/com.inventory.endofday.plist`)
+### 0.2 Add scripts/committer
+Benefit: prevents accidental commits of junk; makes “atomic commits” easy for non-coders.
+Effort: S
+Risk: Low
 
-### “Looks good on paper” but not yet real
-1. **Auto‑PO engine still uses legacy demand (m.d30)**
-   - `core/automation/po_generator.py` reads `fact_sku_metrics.d30`
-   - It does **not** LEFT JOIN `fact_demand_estimates.d_final` yet
+### 0.3 Add/extend .gitignore for local artifacts
+Benefit: drastically reduces git noise + accidental commits (db/app.db, exports/*.csv, Excel temp, .DS_Store).
+Effort: S
+Risk: Low
 
-2. **Excel “Inventory_Core_V18.xlsx” is not yet the default sync target**
-   - `scripts/sync_truth_workbook_to_db.py` is hardcoded to an old workbook path.
-   - `scripts/run_end_of_day.py` runs `sync_crm_to_db.py` (CRM), not Inventory_Core.
-
-3. **Chinese New Year blackout not implemented anywhere**
-   - ETA & PO scheduling will be wrong for late Jan / Feb 2026 unless patched.
+### 0.4 Fix “green loop blocker”: log_audit ImportError
+Benefit: unblocks full end-of-day pipeline; enables daily validation and “shipping factory” loops.
+Effort: S/M
+Risk: Medium (touches ingest + ledger; must add tests)
 
 ---
 
-## 3) Implementation Plan (agent-executable)
+## Phase 1 — Workflow Refactor (1–3 days)
 
-### Phase 1 — Make Inventory_Core the canonical sync source (unblocks everything)
-**Owner:** Claude Captain (design) → Claude Code Performer (implementation) → Human (approval)
+### 1.1 Standardize “task handoff format”
+- Create a single canonical prompt template for implementation agents.
+- Include: goal, constraints, files to touch, gates to run, “done means” checks.
 
-**Goal:** one command ingests the 8 “truth sheets” and updates DB deterministically.
+### 1.2 Add a lightweight Docs Index (inside AGENTS.md)
+- Add a 15-line index of “read_when” rules:
+  - when editing inventory math → read Master_Inventory_Rules_v6.md
+  - when editing PO logic → read PO_making_logic_v2.md
+  - when editing daily ops → read docs/DAILY_SOP.md
+  - when editing schema/params → read docs/protocol/FX_RATES_MECHANISM_V1.md
+This is the low-effort version of a docs-list script.
 
-**Tasks (Performer)**
-1. Update `scripts/sync_truth_workbook_to_db.py`
-   - Accept `--workbook /path/to/Inventory_Core_V18.xlsx` (default to your known path)
-   - Remove hardcoded `PO-generator_FILLED_...xlsx` references
-   - Ensure sheet mapping uses only the approved truth sheets.
-2. Stock snapshots:
-   - Ingest **Current_stock** from `DIM_SKU_ID` as `fact_inventory_snapshot_size`
-   - Snapshot date should be a single date (use the unique `Stock_date` in sheet; if missing, allow `--snapshot-date` override)
-3. Ingest PO history:
-   - `Fact_PO_Lines` + `Dim_PO_Header` → `fact_po_lines` with status + arrival dates
-4. Ingest anchors:
-   - `SizeMix_and_Di_Anchor` → `dim_anchor` (already exists; just verify)
-
-**Acceptance checks (Human runs)**
-- SQL: max sales date exists and is recent
-- SQL: snapshot_date equals expected (Current_stock_date)
-- Re-run dashboard generator; confirm `demand_diagnostics.csv` exports cleanly
+### 1.3 Add a single “Gate Script”
+- A convenience runner (bash or python) that runs:
+  - validate_params --strict
+  - a targeted test subset
+  - smoke test
+- Makes it easier for the human bridge to validate without remembering steps.
 
 ---
 
-### Phase 2 — Fix demand persistence correctness (small, high ROIC)
-**Owner:** Performer
+## Phase 2 — Deeper Automation / Eval Harness (3–14 days)
 
-**Tasks**
-1. Fix `persist_demand_estimates()` mapping:
-   - `eligible_days = result.eligible_days`
-   - `oos_days = result.oos_days_total` (confirm semantics)
-2. Fix schema mismatch:
-   - Change `partial_oos_days` column to TEXT (or add `partial_oos_days_json`)
-   - Write a migration strategy (SQLite): create new column + backfill + keep old column for 1 version.
-3. Add a “persistence round-trip” smoke test script:
-   - generate → persist → SELECT back → validate row counts and key fields
+### 2.1 Add CI (GitHub Actions) for tests + sanity gates
+Benefit: fewer regressions, easier merges, faster review.
+Effort: M
+Risk: Medium (CI may reveal hidden nondeterminism; good to fix)
 
-**Acceptance**
-- `SELECT COUNT(*) FROM fact_demand_estimates WHERE cutoff_date = ?` matches estimated SKUs
-- eligible_days <= good_days for all rows
+### 2.2 Add “shadow scorecard regression gate”
+- Compare daily scorecard metrics vs trailing 7-day average.
+- If drift exceeds thresholds, mark run as WARN (not FAIL).
+
+### 2.3 Weekly refactor day checklist
+- Duplicate detection, dead code checks, doc updates, slow-test cleanup.
+- Keep the codebase “agent-friendly” long-term.
 
 ---
 
-### Phase 3 — Demand correctness audit on real SKUs (stop 50% under-orders)
-**Owner:** Captain (audit design) + Performer (scripts)
+## Stop Doing / Start Doing / Keep Doing
 
-**Tasks**
-1. Add a report: `scripts/report_demand_regressions.py`
-   - For each SKU: compare `{d_anchor, d_data, d_model, d_final}`
-   - Flag suspicious underestimates: `d_final < 0.7 * d_anchor` when availability_score < 0.9
-2. Add “top offenders” table export (CSV) for manual review.
-3. For the top 10 offenders, print:
-   - eligible_days, stock_known_days, unknown_days, oos_days, partial_oos_sizes
-   - last 14 days of stock timeline per size (sample)
+Stop doing:
+- Huge multi-file changes in one commit.
+- Full-repo context dumps for small changes.
+- Running pipelines without capturing stdout/stderr evidence.
 
-**Acceptance**
-- You can explain (with printed evidence) why each offender is low (real decline) or fix logic if suppression.
+Start doing:
+- Commit with explicit file lists (use scripts/committer).
+- Use “blast radius” checkpoints: if it expands, stop.
+- Provide changed-files-only context packs for Code Captain review.
 
----
-
-### Phase 4 — Chinese New Year blackout support (PO-4/5/6 must be recalculated)
-**Owner:** Captain (design) → Performer (implementation)
-
-**Tasks (Captain)**
-1. Decide representation:
-   - Hardcode one blackout range in config for now (fastest), or
-   - Add `dim_blackout_calendar` table for future holiday windows.
-
-**Tasks (Performer)**
-1. Implement blackout-aware date arithmetic in `core/po/eta.py` (or a new helper module):
-   - `add_working_days(date, work_days, blackout_ranges)`
-   - If prep overlaps blackout, push ship date forward.
-2. Update PO scheduling logic in dashboard generator (where it builds PO-4/5/6 timelines):
-   - When computing prep days + ship/arrival dates, apply blackout
-3. Add a small deterministic test:
-   - A PO with message_date 2026-01-25 and prep_days 10 should ship **after 2026-02-21**.
-
-**Acceptance**
-- PO-4/PO-5/PO-6 outputs show shifted ship/arrival dates that skip 2026-01-27..2026-02-20.
-- No negative/overlapping windows.
+Keep doing:
+- Fail-fast validation (validate_params --strict).
+- Strong unit tests + invariants for PO logic.
+- Shadow-mode scoring and operational runbooks.
 
 ---
 
-### Phase 5 — Wire Demand into Auto‑PO (optional, but required to unpause automation)
-**Owner:** Performer (implementation) + Human (approval)
+## Success Criteria
 
-**Tasks**
-1. Update `core/automation/po_generator.py`:
-   - LEFT JOIN latest `fact_demand_estimates` on (sku_key, cutoff_date)
-   - Prefer `d_final` over `m.d30`
-   - If no estimate: fallback to `m.d30` and flag
-2. Keep ROIC as a flag only (no silent filtering), unless Human approves gating.
-
-**Acceptance**
-- Running Auto‑PO produces same SKU set as dashboard (no silent skips)
-- For SKUs with demand estimate, quantities match dashboard totals within rounding.
-
----
-
-## 4) Scheduling: what to run at 20:30+ (viable path)
-
-### Option A (safe, recommended): End-of-day sync only
-At 20:30:
-1. Sync sales + PO updates + anchors
-2. (Optional) forward-simulate to create **tomorrow snapshot** and store it in DB  
-Then next morning demand/PO uses cutoff=yesterday and snapshot=today cleanly.
-
-### Option B (aggressive): End-of-day sync + demand/PO generation
-Requires defining `MODE=end_of_day` and using cutoff=today, and anchor snapshot=tomorrow (simulated).
-Do this only after Phase 1–2 are stable.
-
----
-
-## 5) Deliverables (definition of done)
-- Inventory_Core is the default sync source (one command)
-- Demand diagnostics explain and prevent under-orders
-- `fact_demand_estimates` is correct and usable by Auto‑PO
-- PO schedule accounts for Chinese New Year blackout (PO‑4/5/6 recalculated)
+Within 7 days:
+- End-of-day pipeline runs to completion (or fails with actionable errors) every day.
+- Any code change lands as 1–3 atomic commits.
+- Agents can start a new session and orient in <2 minutes using AGENTS.md.
