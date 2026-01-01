@@ -31,6 +31,8 @@ import json
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.db import init_db
+
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
 # Required frozen parameters
@@ -83,8 +85,10 @@ def validate_fx_rates(conn: sqlite3.Connection, result: ValidationResult):
     """Validate dim_fx_rates has current effective data."""
     cursor = conn.cursor()
 
+    today = date.today().isoformat()
     seed_cmd = (
         "python3 scripts/upsert_fx_rates.py "
+        f"--effective-date {today} "
         "--usdt-kzt 510 --usdt-cny 6.80 "
         "--usd-kzt 514 --dlv-rate-usd-kg 2.66 "
         "--provider MANUAL "
@@ -115,7 +119,6 @@ def validate_fx_rates(conn: sqlite3.Connection, result: ValidationResult):
         return
 
     # Check for current effective date
-    today = date.today().isoformat()
     cursor.execute("""
         SELECT effective_date, cny_kzt, usd_kzt, dlv_rate_usd_kg, source
         FROM dim_fx_rates
@@ -126,7 +129,9 @@ def validate_fx_rates(conn: sqlite3.Connection, result: ValidationResult):
     row = cursor.fetchone()
 
     if not row:
-        result.add_warning(f"No FX rates effective as of {today} - will use earliest available")
+        result.add_error(
+            f"No FX rates effective as of {today}. Seed FX with:\n  {seed_cmd}"
+        )
         return
 
     eff_date, cny_kzt, usd_kzt, dlv_rate, source = row
@@ -285,6 +290,13 @@ def main():
             print(json.dumps({"status": "FAIL", "errors": [f"Database not found: {db_path}"]}))
         else:
             print(f"Error: Database not found at {db_path}")
+        sys.exit(1)
+
+    try:
+        # Apply schema to prevent drift (idempotent; CREATE IF NOT EXISTS only)
+        init_db(db_path=db_path)
+    except Exception as exc:
+        print(f"Error: Failed to apply schema.sql to {db_path}: {exc}")
         sys.exit(1)
 
     result = ValidationResult()
