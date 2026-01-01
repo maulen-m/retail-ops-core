@@ -83,13 +83,24 @@ def validate_fx_rates(conn: sqlite3.Connection, result: ValidationResult):
     """Validate dim_fx_rates has current effective data."""
     cursor = conn.cursor()
 
+    seed_cmd = (
+        "python3 scripts/upsert_fx_rates.py "
+        "--usdt-kzt 510 --usdt-cny 6.80 "
+        "--usd-kzt 514 --dlv-rate-usd-kg 2.66 "
+        "--provider MANUAL "
+        "--source \"Binance P2P + BestChange\""
+    )
+
     # Check if table exists
     cursor.execute("""
         SELECT name FROM sqlite_master
         WHERE type='table' AND name='dim_fx_rates'
     """)
     if not cursor.fetchone():
-        result.add_error("dim_fx_rates table does not exist")
+        result.add_error(
+            "dim_fx_rates table does not exist. Seed FX with:\n"
+            f"  {seed_cmd}"
+        )
         return
 
     # Check for any data
@@ -97,7 +108,10 @@ def validate_fx_rates(conn: sqlite3.Connection, result: ValidationResult):
     count = cursor.fetchone()[0]
 
     if count == 0:
-        result.add_error("dim_fx_rates is empty - system will fall back to defaults")
+        result.add_error(
+            "dim_fx_rates is empty - system will fall back to defaults. Seed FX with:\n"
+            f"  {seed_cmd}"
+        )
         return
 
     # Check for current effective date
