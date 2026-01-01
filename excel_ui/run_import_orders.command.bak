@@ -1,0 +1,24 @@
+#!/bin/bash
+# Import new orders from ActiveOrders Excel files to CRM
+# Phase 11 TASK-193
+#
+# Double-click this file to run the import script
+# Downloads ActiveOrders.xlsx files should be in excel_ui/ActiveOrders/
+
+cd ~/Docs/Autonomous_business
+source .venv/bin/activate
+
+echo "========================================"
+echo "Kaspi Order Import Script"
+echo "========================================"
+echo ""
+
+python scripts/import_orders_to_crm.py --verbose
+
+echo ""
+echo "========================================"
+echo "Import complete!"
+echo "========================================"
+echo ""
+echo "Press Enter to close..."
+read
