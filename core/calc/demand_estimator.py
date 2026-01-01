@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Optional
 import math
 import statistics
+import sqlite3
+import warnings
 
 import pandas as pd
 
@@ -191,13 +193,15 @@ class DemandEstimator:
     def __init__(
         self,
         db_path: Path,
-        anchor_file: Path,
-        config: Optional[DemandEstimatorConfig] = None
+        anchor_file: Optional[Path] = None,
+        config: Optional[DemandEstimatorConfig] = None,
+        use_db_anchors: bool = True,
     ):
         """Initialize estimator with database and anchor file paths."""
         self.db_path = Path(db_path)
-        self.anchor_file = Path(anchor_file)
+        self.anchor_file = Path(anchor_file) if anchor_file else None
         self.config = config or DemandEstimatorConfig()
+        self.use_db_anchors = use_db_anchors
 
         # Lazy-loaded data
         self._anchor_data: Optional[dict[str, AnchorData]] = None
@@ -229,6 +233,24 @@ class DemandEstimator:
     # =========================================================================
 
     def _load_anchor_data(self) -> dict[str, AnchorData]:
+        """Load anchor data with DB-first policy and Excel fallback."""
+        if self.use_db_anchors:
+            anchor_data = self._load_anchor_data_from_db()
+            if anchor_data:
+                return anchor_data
+            warnings.warn(
+                "dim_anchor missing or empty; falling back to Excel anchors",
+                RuntimeWarning,
+            )
+
+        if self.anchor_file is None:
+            raise FileNotFoundError(
+                "No anchor data available: dim_anchor missing/empty and no anchor_file provided"
+            )
+
+        return self._load_anchor_data_from_excel()
+
+    def _load_anchor_data_from_excel(self) -> dict[str, AnchorData]:
         """Load D_size_mix_reference.xlsx into memory."""
         if not self.anchor_file.exists():
             raise FileNotFoundError(f"Anchor file not found: {self.anchor_file}")
@@ -294,6 +316,70 @@ class DemandEstimator:
             )
 
         return result
+
+    def _load_anchor_data_from_db(self) -> dict[str, AnchorData]:
+        """Load anchor data from dim_anchor table."""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_anchor'"
+            ).fetchone()
+            if not table:
+                return {}
+
+            columns = [row["name"] for row in conn.execute("PRAGMA table_info(dim_anchor)")]
+            size_share_cols = [c for c in columns if c.endswith("_share")]
+            size_demand_cols = [
+                c for c in columns if c.endswith("_D") and c.lower() != "d_active"
+            ]
+
+            rows = conn.execute("SELECT * FROM dim_anchor").fetchall()
+            if not rows:
+                return {}
+
+            result: dict[str, AnchorData] = {}
+            for row in rows:
+                if "sku_key" in row.keys():
+                    sku_key = str(row["sku_key"] or "").strip()
+                elif "SKU_key" in row.keys():
+                    sku_key = str(row["SKU_key"] or "").strip()
+                else:
+                    continue
+
+                if not sku_key:
+                    continue
+
+                d_active = 0.0
+                if "d_active" in row.keys() and row["d_active"] is not None:
+                    d_active = float(row["d_active"])
+                elif "D_active" in row.keys() and row["D_active"] is not None:
+                    d_active = float(row["D_active"])
+
+                sigma = 0.0
+                if "sigma" in row.keys() and row["sigma"] is not None:
+                    sigma = float(row["sigma"])
+
+                size_shares = {
+                    c.replace("_share", ""): float(row[c] or 0)
+                    for c in size_share_cols
+                }
+                size_demands = {
+                    c.replace("_D", ""): float(row[c] or 0)
+                    for c in size_demand_cols
+                }
+
+                result[sku_key] = AnchorData(
+                    sku_key=sku_key,
+                    d_active=d_active,
+                    sigma=sigma,
+                    size_shares=size_shares,
+                    size_demands=size_demands,
+                )
+
+            return result
+        finally:
+            conn.close()
 
     # =========================================================================
     # Global Calendars
