@@ -374,7 +374,7 @@ class TestNoAnchor:
     def test_no_anchor_uses_data_only(self, temp_db):
         """
         Scenario: SKU without anchor data.
-        Expected: Uses data-only (anchor_weight = 0).
+        Expected: Fail fast when no anchors exist (DB empty, no anchor file).
         """
         conn = sqlite3.connect(str(temp_db))
         sku_key = "TEST_NO_ANCHOR"
@@ -395,11 +395,25 @@ class TestNoAnchor:
         conn.close()
 
         estimator = DemandEstimator(temp_db, use_db_anchors=True)
-        result = estimator.estimate_demand(sku_key)
+        with pytest.raises(FileNotFoundError, match="No anchor data available"):
+            estimator.estimate_demand(sku_key)
 
-        assert result.has_anchor is False
-        assert result.anchor_weight == 0.0
-        assert "No anchor data" in str(result.warnings)
+
+class TestInitSignature:
+    """Tests for DemandEstimator init signature."""
+
+    def test_init_accepts_use_db_anchors(self, temp_db):
+        conn = sqlite3.connect(str(temp_db))
+        sku_key = "TEST_INIT_ANCHOR"
+        sizes = ["M"]
+
+        insert_sku(conn, sku_key, sizes)
+        insert_anchor(conn, sku_key, 3.0, {"M": 1.0})
+        conn.commit()
+        conn.close()
+
+        estimator = DemandEstimator(temp_db, use_db_anchors=True)
+        assert estimator.anchor_data.get(sku_key) is not None
 
 
 class TestAvailabilityScore:
