@@ -195,6 +195,14 @@ def parse_date(v) -> Optional[date]:
     """Parse dates from CRM/Kaspi exports (supports Excel serials)."""
     if pd.isna(v):
         return None
+    if isinstance(v, date) and not isinstance(v, datetime):
+        return v
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, str):
+        s = v.strip()
+        if len(s) == 10 and s[4] == "-" and s[7] == "-":
+            return datetime.strptime(s, "%Y-%m-%d").date()
     if isinstance(v, (int, float)) and 40000 <= float(v) <= 60000:
         base = datetime(1899, 12, 30)
         return (base + timedelta(days=int(float(v)))).date()
@@ -293,8 +301,10 @@ def filter_orders_for_shipment(orders: List[dict], target_date: date) -> List[di
 def find_active_orders(orders_dir: Path) -> List[Path]:
     """Find all ActiveOrders*.xlsx files in directory."""
     files = sorted([
-        p for p in orders_dir.glob("*.xlsx") 
-        if p.is_file() and not p.name.startswith("~$")
+        p for p in orders_dir.glob("*.xlsx")
+        if p.is_file()
+        and "ActiveOrders" in p.name
+        and not p.name.startswith("~$")
     ])
     return files
 
@@ -1049,7 +1059,22 @@ def archive_run(orders_dir: Path, source_files: List[Path], df_filt: pd.DataFram
 
 # ---------- CLI ----------
 
-def main():
+_UNSET = object()
+
+
+def main(
+    orders_dir=_UNSET,
+    crm_path=_UNSET,
+    sheet_name=_UNSET,
+    table_name=_UNSET,
+    date_end=_UNSET,
+    append_date=_UNSET,
+    status=_UNSET,
+    dry_run=_UNSET,
+    verbose=_UNSET,
+    update_existing=_UNSET,
+    no_update=_UNSET,
+):
     parser = argparse.ArgumentParser(
         description="Import Kaspi ActiveOrders to CRM (xlwings, Excel-safe)"
     )
@@ -1112,7 +1137,40 @@ def main():
         help="Skip updating existing orders (only append new)"
     )
 
-    args = parser.parse_args()
+    if (
+        orders_dir is _UNSET
+        and crm_path is _UNSET
+        and sheet_name is _UNSET
+        and table_name is _UNSET
+        and date_end is _UNSET
+        and append_date is _UNSET
+        and status is _UNSET
+        and dry_run is _UNSET
+        and verbose is _UNSET
+        and update_existing is _UNSET
+        and no_update is _UNSET
+    ):
+        args = parser.parse_args()
+    else:
+        args = argparse.Namespace(
+            orders_dir=Path(orders_dir) if orders_dir is not _UNSET else data_path("excel_ui", "ActiveOrders"),
+            crm_file=Path(crm_path) if crm_path is not _UNSET else data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx"),
+            sheet=sheet_name if sheet_name is not _UNSET else "SALES_KSP_CRM_1",
+            table=table_name if table_name is not _UNSET else "tb_SalesRaw",
+            date_end=date_end if date_end is not _UNSET else "today",
+            append_date=append_date if append_date is not _UNSET else "today",
+            status=status if status is not _UNSET else DEFAULT_STATUS,
+            dry_run=bool(dry_run) if dry_run is not _UNSET else False,
+            verbose=bool(verbose) if verbose is not _UNSET else False,
+            update_existing=bool(update_existing) if update_existing is not _UNSET else True,
+            no_update=bool(no_update) if no_update is not _UNSET else False,
+        )
+
+    result = {
+        "orders_imported": 0,
+        "orders_updated": 0,
+        "orders_filtered": 0,
+    }
     
     # Parse dates
     if args.date_end.lower() == "today":
@@ -1143,9 +1201,10 @@ def main():
 
     print(f"\nFiltered: {stats['rows_in_files']} → {stats['rows_after_filters']} rows")
 
+    result["orders_filtered"] = int(stats.get("rows_after_filters", 0))
     if df_filt.empty:
         print("No orders match filters. Nothing to import.")
-        return
+        return result
 
     # Sort for CRM append order (Phase 12 Part 6 - Updated)
     # Order: Status → STORE_NAME → OrderID → Quantity → KASPI_OFFER_NAME → Date
@@ -1199,6 +1258,7 @@ def main():
                 verbose=args.verbose,
             )
             print(f"  Updated {updated_count} existing orders")
+            result["orders_updated"] = updated_count
     else:
         if args.no_update:
             print("\n3. Skipping existing order updates (--no-update flag)")
@@ -1234,15 +1294,15 @@ def main():
         if updated_count > 0:
             print(f"   No new orders to append (updated {updated_count} existing orders)")
             print(f"\n✅ Import complete! Updated {updated_count} orders, appended 0 new.")
-            return
+            return result
         else:
             print("   All orders already in CRM. Nothing to import or update.")
-            return
+            return result
 
     if args.dry_run:
         print("\n[DRY RUN] Would append but skipping.")
         print(json.dumps(stats, indent=2, ensure_ascii=False))
-        return
+        return result
 
     # Create backup before writing (Phase 12)
     backup_path = backup_crm(args.crm_file)
@@ -1293,12 +1353,16 @@ def main():
     print(f"   Updated: {updated_count} existing orders")
     print(f"   Appended: {new_rows_added} new orders")
     print(f"   Archived: {archive_path}")
+    result["orders_imported"] = new_rows_added
+    result["orders_updated"] = updated_count
 
     # Phase 12 Part 6: Detailed statistics
     if new_rows_added > 0 and not args.dry_run:
         print("\n" + "=" * 60)
         print("  Import Statistics")
         print("=" * 60)
+
+    return result
 
         # Get warehouse column for grouping
         colmap = map_headers(df_filt)
