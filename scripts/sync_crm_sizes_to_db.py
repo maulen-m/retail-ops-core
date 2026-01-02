@@ -108,6 +108,10 @@ def _parse_date(value) -> Optional[date]:
     if pd.isna(value):
         return None
     try:
+        if isinstance(value, str):
+            s = value.strip()
+            if len(s) == 10 and s[4] == "-" and s[7] == "-":
+                return datetime.strptime(s, "%Y-%m-%d").date()
         parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
     except Exception:
         return None
