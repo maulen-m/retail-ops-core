@@ -1362,8 +1362,6 @@ def main(
         print("  Import Statistics")
         print("=" * 60)
 
-    return result
-
         # Get warehouse column for grouping
         colmap = map_headers(df_filt)
         if "warehouse" in colmap:
@@ -1383,6 +1381,8 @@ def main(
         print(f"  Total in CRM (before): {len(existing_ids)}")
         print(f"  Total in CRM (after): {len(existing_ids) + new_rows_added}")
         print("=" * 60)
+
+    return result
 
 
 if __name__ == "__main__":
