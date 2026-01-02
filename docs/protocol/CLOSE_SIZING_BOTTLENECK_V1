@@ -1,0 +1,85 @@
+# Plan: Close the Manual Sizing Bottleneck
+
+## Objective
+Eliminate operational dependence on fragile Excel workbooks for order sizing and shipping.
+Excel may remain as an optional UI surface, but the system of record must be the database.
+
+## Current Workflow
+1. Orders imported into CRM workbook (SALES_KSP_CRM_V3.xlsx).
+2. Operator collects customer parameters (height/weight) from WhatsApp manually.
+3. Operator fills MY_SIZE in Excel (required for shipping and waybill grouping).
+4. Shipping + waybill workflow runs and assumes MY_SIZE is filled.
+   - Shipping step also requires ENABLE_KASPI_WRITE=1.
+5. End-of-day pipeline syncs workbooks/CRM into DB and generates PO artifacts.
+
+This workflow is functional but fragile:
+- Excel files can be lost due to repo hygiene actions (clean/reset/reclone).
+- MY_SIZE is a hard dependency for shipping automation.
+- Workbooks create hidden coupling and silent drift.
+
+## Why This Is Not Efficient
+- Manual extraction + entry does not scale and consumes daily operator time.
+- Errors are expensive (wrong SKU = wrong item shipped).
+- Excel file loss blocks operations immediately.
+- Current scripts frequently fail due to exact-date filters and missing sizing inputs.
+
+## Design Principles
+1. DB-first truth: orders, measurements, size decision, SKU assignment live in DB.
+2. Human-in-the-loop stays, but the UI surface must not be the truth.
+3. Idempotent operations: safe re-runs, deterministic outputs, clear logs.
+4. Fail-fast with actionable guidance (exact command to fix).
+5. Protect capital: never allow accidental shipping without explicit ENABLE_KASPI_WRITE=1.
+6. Operational data lives outside git when possible via DATA_DIR/AB_DATA_DIR.
+
+## Target Architecture
+### Tables (minimum)
+- fact_orders_kaspi: canonical orders (order_id, store, planned_ship_date, state, etc.)
+- fact_order_measurements: (order_id, customer_id/phone, height, weight, source, captured_at)
+- fact_order_size_decisions: (order_id, my_size, method, confidence, decided_at, decided_by)
+
+### Services / Scripts
+A) Intake:
+- Kaspi API sync -> DB orders (always).
+B) Sizing:
+- Sizing Queue UI (web or CSV) reads orders lacking my_size and writes size decisions into DB.
+- Optional: Excel import adapter writes into DB, but Excel is never required.
+C) Shipping:
+- ship_orders_api reads DB orders + DB size decisions (with CRM fallback only during migration).
+D) Waybills:
+- download_waybills_api and build_daily_waybills use DB as primary selector.
+
+## Migration Plan and Deadlines
+### Phase 0: Stabilize Workbooks and Stop Losing Files (Deadline: 2026-01-04)
+- Move operational data files (CRM workbook, inventory workbook, app.db, waybills) into a dedicated DATA_DIR outside the git working tree OR protect with automatic backups + preflight restore.
+- Add preflight checks for both CRM and inventory workbooks.
+- Remove hard-coded dependency on PO-generator_FILLED_2025-12-15_GPT_1.xlsx; require explicit config or skip step.
+
+Exit criteria:
+- run_end_of_day no longer fails solely because a random workbook filename is missing.
+- Preflight prints exact fix steps and can restore CRM from backups.
+
+### Phase 1: DB-First Manual Sizing Queue (Deadline: 2026-01-07)
+- Implement sizing queue export/import (CSV) OR minimal internal web UI:
+  - Export: list orders needing sizing (planned_ship_date <= today AND my_size IS NULL)
+  - Import: apply my_size decisions into DB with audit fields
+- Update shipping/waybill selectors to use DB size decisions as primary source.
+
+Exit criteria:
+- Daily shipping can run without opening Excel (Excel optional).
+- Every shipped order has a DB-recorded size decision.
+
+### Phase 2: WhatsApp Automation (Deadline: 2026-01-12)
+- After Meta verification, ingest height/weight into fact_order_measurements automatically.
+- Auto-run size_engine to propose size + confidence.
+- Human only handles low-confidence exceptions.
+
+Exit criteria:
+- Majority of orders get automatic size decision.
+- Human touches only exceptions.
+
+## Non-Negotiables
+- Never commit xlsx/db/pdf artifacts into git.
+- Never ship unless ENABLE_KASPI_WRITE=1.
+- Every step must be idempotent and logged.
+- DB is the system of record; Excel is optional UI only.
+- Use DATA_DIR/AB_DATA_DIR to keep operational files outside the repo.
