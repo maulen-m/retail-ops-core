@@ -26,8 +26,11 @@ from typing import Dict, List, Tuple, Optional
 import pandas as pd
 from dateutil import parser as dtp
 
-# xlwings for Excel-safe writing
-import xlwings as xw
+# xlwings for Excel-safe writing (optional at import time)
+try:
+    import xlwings as xw
+except ModuleNotFoundError:  # pragma: no cover - environment-specific
+    xw = None
 
 # openpyxl only for reading (inspection)
 from openpyxl import load_workbook
@@ -470,6 +473,14 @@ def find_update_column_positions(
         wb.close()
 
 
+def _require_xlwings() -> None:
+    if xw is None:
+        raise RuntimeError(
+            "xlwings is required for Excel writes. "
+            "Install with `pip install xlwings` or run with --dry-run/--no-update."
+        )
+
+
 def update_existing_order_columns(
     crm_path: Path,
     sheet_name: str,
@@ -516,6 +527,8 @@ def update_existing_order_columns(
     if dry_run:
         print(f"  [DRY RUN] Would update {len(orders_to_update)} orders")
         return 0
+
+    _require_xlwings()
 
     # Pre-build column updates: {col_pos: [(row, value), ...]}
     # This allows us to batch writes by column instead of cell-by-cell
@@ -764,6 +777,8 @@ def excel_append_xlwings(
     n = len(stage_block)
     if n == 0:
         return (0, 0)
+
+    _require_xlwings()
 
     print(f"  Opening Excel (hidden)...")
     app = xw.App(visible=False, add_book=False)
