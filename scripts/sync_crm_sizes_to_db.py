@@ -32,6 +32,7 @@ REQUIRED_COLUMNS = {
     "my_size": {"MY_SIZE"},
     "planned_ship": {"PLANNED_SHIPPING_DATE", "Плановая дата передачи курьеру"},
 }
+STORE_COLUMNS = {"STORE_NAME", "Склад передачи КД", "Склад", "Warehouse"}
 
 SIZE_SOURCE = "CRM_MANUAL"
 SIZE_CONFIDENCE = "HIGH"
@@ -44,6 +45,7 @@ class SyncStats:
     updated_orders: int
     skipped_orders: int
     missing_orders: int
+    inserted_orders: int
 
 
 def _normalize(value: str) -> str:
@@ -73,6 +75,33 @@ def _coerce_size(value) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value).strip()
+
+
+def _normalize_store_code(value) -> str:
+    if pd.isna(value):
+        return "UNKNOWN"
+    raw = str(value).strip()
+    if not raw:
+        return "UNKNOWN"
+    key = raw.strip().lower()
+    mapping = {
+        "acmewear": "ACMEWEAR",
+        "universal": "UNIVERSAL",
+        "store-d": "11KZ",
+        "store-b": "STORE-B",
+        "store-c": "MELVIS",
+        "pp1": "PP1",
+        "pp2": "PP2",
+        "acmewear pp1": "PP1",
+        "acmewear pp2": "PP2",
+        "универсал": "UNIVERSAL",
+        "мелвис": "MELVIS",
+        "пп1": "PP1",
+        "пп2": "PP2",
+    }
+    if key in mapping:
+        return mapping[key]
+    return raw.upper()
 
 
 def _parse_date(value) -> Optional[date]:
@@ -118,12 +147,14 @@ def sync_crm_sizes(
     sheet_name: str,
     as_of: date,
     dry_run: bool,
+    upsert_missing: bool,
 ) -> SyncStats:
     df = pd.read_excel(crm_path, sheet_name=sheet_name)
 
     order_col = _select_column(df, REQUIRED_COLUMNS["order_id"])
     size_col = _select_column(df, REQUIRED_COLUMNS["my_size"])
     date_col = _select_column(df, REQUIRED_COLUMNS["planned_ship"])
+    store_col = _select_column(df, STORE_COLUMNS)
 
     missing_cols = []
     if not order_col:
@@ -135,7 +166,10 @@ def sync_crm_sizes(
     if missing_cols:
         raise ValueError(f"CRM missing required columns: {', '.join(missing_cols)}")
 
-    working = df[[order_col, size_col, date_col]].copy()
+    keep_cols = [order_col, size_col, date_col]
+    if store_col:
+        keep_cols.append(store_col)
+    working = df[keep_cols].copy()
     working[order_col] = working[order_col].apply(_coerce_id)
     working[size_col] = working[size_col].apply(_coerce_size)
     working = working[working[order_col] != ""]
@@ -146,6 +180,7 @@ def sync_crm_sizes(
     updated_orders = 0
     skipped_orders = 0
     missing_orders = 0
+    inserted_orders = 0
 
     with get_db(db_path) as conn:
         if not _check_schema(conn):
@@ -176,8 +211,28 @@ def sync_crm_sizes(
             ).fetchall()
 
             if not existing:
-                missing_orders += 1
-                continue
+                if upsert_missing:
+                    store_value = row.get(store_col) if store_col else "UNKNOWN"
+                    store_code = _normalize_store_code(store_value)
+                    planned_text = planned_date.isoformat()
+                    if not dry_run:
+                        conn.execute(
+                            """
+                            INSERT INTO fact_orders_kaspi
+                            (order_id, store_code, planned_shipment_date, source, source_file)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (order_id, store_code, planned_text, SIZE_SOURCE, crm_path.name),
+                        )
+                    inserted_orders += 1
+                    existing = [{
+                        "assigned_size": None,
+                        "size_source": None,
+                        "size_confidence": None,
+                    }]
+                else:
+                    missing_orders += 1
+                    continue
 
             desired = (size, SIZE_SOURCE, SIZE_CONFIDENCE)
             if all(
@@ -210,6 +265,7 @@ def sync_crm_sizes(
         updated_orders=updated_orders,
         skipped_orders=skipped_orders,
         missing_orders=missing_orders,
+        inserted_orders=inserted_orders,
     )
 
 
@@ -218,6 +274,11 @@ def main() -> int:
     parser.add_argument("--crm-file", type=Path, default=DEFAULT_CRM)
     parser.add_argument("--sheet", type=str, default=DEFAULT_SHEET)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--upsert-missing",
+        action="store_true",
+        help="Insert missing orders into fact_orders_kaspi before syncing sizes",
+    )
     parser.add_argument(
         "--date",
         type=str,
@@ -247,6 +308,7 @@ def main() -> int:
             sheet_name=args.sheet,
             as_of=as_of,
             dry_run=args.dry_run,
+            upsert_missing=args.upsert_missing,
         )
     except Exception as exc:
         print(f"ERROR: {exc}")
@@ -257,7 +319,13 @@ def main() -> int:
     print(f"Eligible orders: {stats.eligible_orders}")
     print(f"Updated orders: {stats.updated_orders}")
     print(f"Skipped orders: {stats.skipped_orders}")
-    print(f"Missing orders (not in DB): {stats.missing_orders}")
+    if args.upsert_missing:
+        if args.dry_run:
+            print(f"Missing orders (not in DB): {stats.inserted_orders} (would insert)")
+        else:
+            print(f"Inserted missing orders: {stats.inserted_orders}")
+    else:
+        print(f"Missing orders (not in DB): {stats.missing_orders}")
     if args.dry_run:
         print("Dry run: no DB writes performed.")
 

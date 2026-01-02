@@ -44,7 +44,7 @@ echo ""
 # Sync CRM manual sizes into DB (safe to re-run)
 echo "Sync: CRM manual sizes -> DB..."
 echo "----------------------------------------"
-python scripts/sync_crm_sizes_to_db.py
+python scripts/sync_crm_sizes_to_db.py --upsert-missing
 
 if [ $? -ne 0 ]; then
     echo ""
