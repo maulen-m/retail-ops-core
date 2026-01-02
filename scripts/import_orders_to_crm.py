@@ -89,6 +89,42 @@ STORE_MAP = {
 DEFAULT_STATUS = 'Ожидает передачи курьеру'
 DEFAULT_SIGNATURE = 'Не требуется'
 
+# Public constants used by tests (legacy aliases)
+READY_STATUS = DEFAULT_STATUS
+NO_SIGNATURE = DEFAULT_SIGNATURE
+
+# Raw Kaspi column mapping (Y-AZ)
+RAW_KASPI_COLUMNS = {
+    "№ заказа": "Y",
+    "Статус": "Z",
+    "Дата изменения статуса": "AA",
+    "Требуется подписание": "AB",
+    "Плановая дата передачи курьеру": "AC",
+    "Название товара в Kaspi Магазине": "AD",
+    "Название в системе продавца": "AE",
+    "Артикул": "AF",
+    "Склад передачи КД": "AG",
+    "Телефон": "AH",
+    "Количество": "AI",
+    "Цена": "AJ",
+    "Сумма": "AK",
+    "Адрес доставки": "AL",
+    "ФИО": "AM",
+    "Комментарий": "AN",
+    "Способ доставки": "AO",
+    "Дата создания": "AP",
+    "Код товара": "AQ",
+    "Kaspi_Offer_ID": "AR",
+    "SKU_key": "AS",
+    "SKU_ID": "AT",
+    "MY_SIZE": "AU",
+    "STORE_NAME": "AV",
+    "KASPI_NAME_CORE": "AW",
+    "Warehouse": "AX",
+    "Seller_name": "AY",
+    "Internal_Status": "AZ",
+}
+
 # Canonical header mapping
 CANON = {
     "order_id": ["№заказа", "номерзаказа", "orderid", "заказа"],  # заказа is normalized from "№ заказа"
