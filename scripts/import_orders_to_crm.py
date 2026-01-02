@@ -189,6 +189,105 @@ def today_local() -> date:
     return datetime.now().date()
 
 
+# ---------- Legacy helpers (for tests/backward compatibility) ----------
+
+def parse_date(v) -> Optional[date]:
+    """Parse dates from CRM/Kaspi exports (supports Excel serials)."""
+    if pd.isna(v):
+        return None
+    if isinstance(v, (int, float)) and 40000 <= float(v) <= 60000:
+        base = datetime(1899, 12, 30)
+        return (base + timedelta(days=int(float(v)))).date()
+    try:
+        return dtp.parse(str(v).strip(), dayfirst=True).date()
+    except Exception:
+        if isinstance(v, pd.Timestamp):
+            return v.date()
+        return None
+
+
+def clean_value(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    s = str(v).strip()
+    return s if s else None
+
+
+def clean_order_id(v) -> Optional[str]:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    s = str(v).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    if not s.isdigit():
+        return None
+    if len(s) < 9 or len(s) > 12:
+        return None
+    return s
+
+
+def find_active_orders_files(orders_dir: Path) -> List[Path]:
+    return find_active_orders(orders_dir)
+
+
+def parse_orders_from_excel(orders_dir: Path) -> List[dict]:
+    df, _ = read_active_orders(orders_dir)
+    return df.to_dict(orient="records")
+
+
+def load_existing_order_ids(crm_path: Path, sheet_name: str) -> set:
+    wb = load_workbook(filename=str(crm_path), read_only=True, data_only=True)
+    try:
+        ws = wb[sheet_name]
+        header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+        order_col = None
+        for idx, val in enumerate(header, start=1):
+            if norm(val) in {"№заказа", "номерзаказа", "заказа"}:
+                order_col = idx
+                break
+        if order_col is None:
+            return set()
+        order_ids = set()
+        for row in ws.iter_rows(min_row=2, min_col=order_col, max_col=order_col):
+            val = row[0].value
+            cleaned = clean_order_id(val)
+            if cleaned:
+                order_ids.add(cleaned)
+        return order_ids
+    finally:
+        wb.close()
+
+
+def deduplicate_orders(orders: List[dict], existing_ids: set) -> Tuple[List[dict], int]:
+    new_orders = []
+    skipped = 0
+    for order in orders:
+        order_id = order.get("_order_id") or order.get("order_id")
+        if order_id in existing_ids:
+            skipped += 1
+            continue
+        new_orders.append(order)
+    return new_orders, skipped
+
+
+def filter_orders_for_shipment(orders: List[dict], target_date: date) -> List[dict]:
+    filtered = []
+    for order in orders:
+        status = str(order.get("Статус", "")).strip()
+        signature = str(order.get("Требуется подписание", "")).strip()
+        planned = parse_date(order.get("Плановая дата передачи курьеру"))
+        if status != READY_STATUS:
+            continue
+        if signature and signature != NO_SIGNATURE:
+            continue
+        if planned and planned != target_date:
+            continue
+        filtered.append(order)
+    return filtered
+
+
 # ---------- Read & Filter ActiveOrders ----------
 
 def find_active_orders(orders_dir: Path) -> List[Path]:
