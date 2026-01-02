@@ -50,8 +50,8 @@ from core.alerts.error_alerts import alert_from_run_tracker, send_shadow_mode_di
 # Lock file for preventing concurrent runs
 LOCK_FILE = PROJECT_ROOT / "logs" / ".end_of_day.lock"
 
-# Default workbook path
-DEFAULT_WORKBOOK = PROJECT_ROOT / "excel" / "Inventory_Core_V18.xlsx"
+# Default workbook path (can be overridden via TRUTH_WORKBOOK_PATH)
+DEFAULT_WORKBOOK = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
 
 # Database path
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
@@ -176,6 +176,13 @@ def load_dotenv(dotenv_path: Path) -> None:
         print(f"Warning: Failed to load env file {dotenv_path}: {exc}")
 
 
+def resolve_truth_workbook(default_path: Path) -> Path:
+    env_path = os.environ.get("TRUTH_WORKBOOK_PATH") or os.environ.get("TRUTH_WORKBOOK")
+    if env_path:
+        return Path(env_path).expanduser()
+    return default_path
+
+
 def _format_step_error(returncode: int, stdout: str, stderr: str) -> str:
     parts = [f"Exit code: {returncode}"]
     if stderr:
@@ -283,8 +290,15 @@ def main():
                         help="Skip CRM sync step")
     parser.add_argument("--skip-workbook-sync", action="store_true",
                         help="Skip truth workbook sync step")
-    parser.add_argument("--workbook", type=Path, default=DEFAULT_WORKBOOK,
-                        help=f"Path to truth workbook (default: {DEFAULT_WORKBOOK})")
+    parser.add_argument(
+        "--workbook",
+        type=Path,
+        default=None,
+        help=(
+            "Path to truth workbook (default: $TRUTH_WORKBOOK_PATH or "
+            f"{DEFAULT_WORKBOOK})"
+        ),
+    )
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Show script output")
     parser.add_argument("--continue-on-error", action="store_true",
@@ -316,8 +330,19 @@ def main():
         print("WARNING: Running without lock file (--no-lock)")
         print()
 
+    if args.workbook is None:
+        args.workbook = resolve_truth_workbook(DEFAULT_WORKBOOK)
+
     # Check if workbook is locked (unless skipping workbook sync)
     if not args.skip_workbook_sync:
+        if not args.workbook.exists():
+            print(f"ERROR: Truth workbook not found: {args.workbook}")
+            print("Fix: set TRUTH_WORKBOOK_PATH=/path/to/workbook")
+            print("Or run with --skip-workbook-sync to skip this step.")
+            if lock:
+                lock.__exit__(None, None, None)
+            sys.exit(3)
+
         print(f"Checking workbook: {args.workbook}")
         is_locked, reason = check_workbook_locked(args.workbook)
         if is_locked:

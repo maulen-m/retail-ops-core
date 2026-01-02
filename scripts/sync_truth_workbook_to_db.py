@@ -5,7 +5,8 @@ Sync truth workbook to database.
 This script reads the authoritative truth workbook and updates database tables
 needed for demand estimation and PO calculation.
 
-Source of truth: excel/PO-generator_FILLED_2025-12-15_GPT_1.xlsx
+Source of truth: configurable (default excel/Inventory_Core_V18.1_V2.xlsx
+or TRUTH_WORKBOOK_PATH)
 Target: db/app.db (sales_fact_v2, fact_inventory_snapshot_size, fact_po_lines, etc.)
 
 Usage:
@@ -20,6 +21,8 @@ Sheet → Table Mapping:
     Dim_Params_PT → dim_params (product-type parameters)
 """
 
+import argparse
+import os
 import sqlite3
 import sys
 from datetime import datetime, date
@@ -32,8 +35,15 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Paths
-TRUTH_WORKBOOK = PROJECT_ROOT / "excel" / "PO-generator_FILLED_2025-12-15_GPT_1.xlsx"
+DEFAULT_TRUTH_WORKBOOK = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
+
+
+def resolve_truth_workbook(default_path: Path) -> Path:
+    env_path = os.environ.get("TRUTH_WORKBOOK_PATH") or os.environ.get("TRUTH_WORKBOOK")
+    if env_path:
+        return Path(env_path).expanduser()
+    return default_path
 
 
 def create_anchor_table(conn: sqlite3.Connection) -> None:
@@ -541,21 +551,39 @@ def sync_dim_sku_size(conn: sqlite3.Connection, xl: pd.ExcelFile) -> dict:
 
 def main():
     """Main sync function."""
+    parser = argparse.ArgumentParser(description="Sync truth workbook to database")
+    parser.add_argument(
+        "--workbook",
+        type=Path,
+        default=None,
+        help=(
+            "Path to truth workbook (default: $TRUTH_WORKBOOK_PATH or "
+            f"{DEFAULT_TRUTH_WORKBOOK})"
+        ),
+    )
+    args = parser.parse_args()
+
+    truth_workbook = resolve_truth_workbook(DEFAULT_TRUTH_WORKBOOK)
+    if args.workbook is not None:
+        truth_workbook = args.workbook
+
     print("=" * 60)
     print("SYNC TRUTH WORKBOOK TO DATABASE")
     print("=" * 60)
-    print(f"Source: {TRUTH_WORKBOOK}")
+    print(f"Source: {truth_workbook}")
     print(f"Target: {DB_PATH}")
     print(f"Run at: {datetime.now().isoformat()}")
     print()
 
-    if not TRUTH_WORKBOOK.exists():
-        print(f"ERROR: Truth workbook not found: {TRUTH_WORKBOOK}")
+    if not truth_workbook.exists():
+        print(f"ERROR: Truth workbook not found: {truth_workbook}")
+        print("Fix: set TRUTH_WORKBOOK_PATH=/path/to/workbook")
+        print("Or pass --workbook /path/to/workbook")
         sys.exit(1)
 
     # Load workbook
     print("Loading workbook...")
-    xl = pd.ExcelFile(TRUTH_WORKBOOK)
+    xl = pd.ExcelFile(truth_workbook)
     print(f"  Sheets: {xl.sheet_names}")
     print()
 
