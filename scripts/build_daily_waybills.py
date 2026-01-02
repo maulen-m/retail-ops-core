@@ -18,6 +18,7 @@ import csv
 import logging
 import re
 import shutil
+import sys
 import tempfile
 import zipfile
 from collections import defaultdict
@@ -37,11 +38,14 @@ logger = logging.getLogger(__name__)
 
 # Project root
 PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.paths import data_path, get_data_root
 
 # Default paths
-DEFAULT_CRM_PATH = PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
-DEFAULT_WAYBILL_DIR = PROJECT_ROOT / "excel_ui" / "ActiveOrders"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "excel_ui" / "Kaspi_orders" / "Today"
+DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
+DEFAULT_WAYBILL_DIR = data_path("excel_ui", "ActiveOrders")
+DEFAULT_OUTPUT_DIR = data_path("excel_ui", "Kaspi_orders", "Today")
 DEFAULT_SHEET_NAME = "SALES_KSP_CRM_1"
 
 # Store code mapping (Kaspi warehouse codes -> display names)
@@ -838,6 +842,7 @@ def main(
     target_date = target_date or date.today()
 
     logger.info(f"Building waybills for {target_date}")
+    logger.info(f"Data root: {get_data_root()}")
     logger.info(f"CRM: {crm_path}")
     logger.info(f"Waybill dir: {waybill_dir}")
     logger.info(f"Output dir: {output_dir}")

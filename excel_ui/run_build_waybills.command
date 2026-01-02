@@ -14,9 +14,16 @@
 cd ~/Docs/Autonomous_business
 source .venv/bin/activate 2>/dev/null || true
 
+if [ -z "${AB_DATA_DIR:-}" ] && [ -z "${DATA_DIR:-}" ]; then
+    export DATA_DIR="~/Docs/Autonomous_business"
+fi
+DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-~/Docs/Autonomous_business}}"
+
 echo "========================================"
 echo "  Full Waybill Workflow"
 echo "========================================"
+echo ""
+echo "Data root: ${DATA_ROOT}"
 echo ""
 
 # Preflight checks (CRM exists, backups, columns, shipping guard)
@@ -83,6 +90,7 @@ echo "========================================"
 echo "  Workflow Complete!"
 echo "========================================"
 echo "Output folder: excel_ui/Kaspi_orders/Today/"
+echo "Output folder (resolved): ${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"
 echo ""
 echo "Press Enter to close..."
 read

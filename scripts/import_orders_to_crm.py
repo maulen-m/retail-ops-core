@@ -36,6 +36,11 @@ except ModuleNotFoundError:  # pragma: no cover - environment-specific
 from openpyxl import load_workbook
 from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.paths import data_path, get_data_root
+
 
 # ---------- CRM Backup ----------
 
@@ -914,16 +919,16 @@ def main():
         description="Import Kaspi ActiveOrders to CRM (xlwings, Excel-safe)"
     )
     parser.add_argument(
-        "--orders-dir", 
-        type=Path, 
-        default=Path("excel_ui/ActiveOrders"),
-        help="Directory containing ActiveOrders*.xlsx"
+        "--orders-dir",
+        type=Path,
+        default=data_path("excel_ui", "ActiveOrders"),
+        help="Directory containing ActiveOrders*.xlsx",
     )
     parser.add_argument(
-        "--crm-file", 
-        type=Path, 
-        default=Path("excel_ui/SALES_KSP_CRM_V3.xlsx"),
-        help="CRM Excel file"
+        "--crm-file",
+        type=Path,
+        default=data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx"),
+        help="CRM Excel file",
     )
     parser.add_argument(
         "--sheet", 
@@ -990,6 +995,7 @@ def main():
     print("=" * 60)
     print("  Kaspi Order Import (xlwings)")
     print("=" * 60)
+    print(f"  Data root: {get_data_root()}")
     print(f"  Orders dir: {args.orders_dir}")
     print(f"  CRM file: {args.crm_file}")
     print(f"  Date filter: == {end_date} (TODAY only)")

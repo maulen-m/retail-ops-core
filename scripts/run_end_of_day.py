@@ -46,12 +46,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.tracking.run_tracker import RunTracker
 from core.alerts.error_alerts import alert_from_run_tracker, send_shadow_mode_digest
+from core.paths import data_path, get_data_root
 
 # Lock file for preventing concurrent runs
 LOCK_FILE = PROJECT_ROOT / "logs" / ".end_of_day.lock"
 
 # Default workbook path (can be overridden via TRUTH_WORKBOOK_PATH)
-DEFAULT_WORKBOOK = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
+DEFAULT_WORKBOOK = data_path("excel", "Inventory_Core_V18.1_V2.xlsx")
 
 # Database path
 DB_PATH = PROJECT_ROOT / "db" / "app.db"

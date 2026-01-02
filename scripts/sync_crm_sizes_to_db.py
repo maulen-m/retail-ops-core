@@ -22,7 +22,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db import get_db, DEFAULT_DB_PATH
-DEFAULT_CRM = PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
+from core.paths import data_path
+
+DEFAULT_CRM = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
 DEFAULT_SHEET = "SALES_KSP_CRM_1"
 
 REQUIRED_COLUMNS = {

@@ -22,8 +22,13 @@ import pandas as pd
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CRM = PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
-DEFAULT_BACKUPS = PROJECT_ROOT / "excel_ui" / "backups"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.paths import data_path, get_data_root
+
+
+DEFAULT_CRM = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
+DEFAULT_BACKUPS = data_path("excel_ui", "backups")
 DEFAULT_SHEET = "SALES_KSP_CRM_1"
 
 REQUIRED_COLUMNS = {
@@ -103,6 +108,8 @@ def main() -> int:
     args = parser.parse_args()
 
     ok = True
+
+    print(f"Data root: {get_data_root()}")
 
     if not args.backups_dir.exists():
         print(f"ERROR: Backups folder missing: {args.backups_dir}")

@@ -34,8 +34,10 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.paths import data_path
+
 # Paths
-DEFAULT_TRUTH_WORKBOOK = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
+DEFAULT_TRUTH_WORKBOOK = data_path("excel", "Inventory_Core_V18.1_V2.xlsx")
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
 
