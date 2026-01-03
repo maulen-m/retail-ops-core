@@ -19,17 +19,32 @@ Exit codes:
 import json
 import sys
 import re
+import sqlite3
+from datetime import date
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 HTML_PATH = PROJECT_ROOT / "exports" / "po_dashboard.html"
 JSON_PATH = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
+DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
-# Required demand overrides
+# Required demand overrides (time-boxed)
 REQUIRED_OVERRIDES = {
-    "CL_OC_MEN_LINE52_BLACK": 50.0,
-    "CL_OC_MEN_LINE51_WHITE": 12.0,
+    "CL_OC_MEN_LINE52_BLACK": {
+        "d_override": 50.0,
+        "start_date": "2026-01-01",
+        "end_date": "2026-03-01",
+        "reason": "Jan-Feb seasonal spike",
+    },
+    "CL_OC_MEN_LINE51_WHITE": {
+        "d_override": 12.0,
+        "start_date": "2026-01-01",
+        "end_date": "2026-03-01",
+        "reason": "Marketing uplift + new Kaspi images",
+    },
 }
+
+REQUIRED_SKUS = list(REQUIRED_OVERRIDES.keys())
 
 
 def load_data_from_html(html_path: Path) -> dict | None:
@@ -59,6 +74,41 @@ def load_data_from_json(json_path: Path) -> dict | None:
         return json.load(f)
 
 
+def _normalize_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    return date.fromisoformat(value)
+
+
+def required_overrides_for_date(as_of_date: date) -> dict:
+    required = {}
+    for sku_key, meta in REQUIRED_OVERRIDES.items():
+        start = _normalize_date(meta.get("start_date"))
+        end = _normalize_date(meta.get("end_date"))
+        if start and end and start <= as_of_date < end:
+            required[sku_key] = meta
+    return required
+
+
+def load_active_overrides(
+    conn: sqlite3.Connection,
+    as_of_date: date,
+    sku_keys: list[str]
+) -> dict[str, float]:
+    if not sku_keys:
+        return {}
+    as_of = as_of_date.isoformat()
+    cursor = conn.execute("""
+        SELECT sku_key, d_override
+        FROM dim_demand_overrides
+        WHERE active_flag = 1
+          AND (start_date IS NULL OR start_date <= ?)
+          AND (end_date IS NULL OR end_date > ?)
+          AND sku_key IN ({placeholders})
+    """.format(placeholders=",".join(["?"] * len(sku_keys))), [as_of, as_of, *sku_keys])
+    return {row[0]: row[1] for row in cursor.fetchall()}
+
+
 def find_sku_in_po(po_data: dict, sku_key: str) -> tuple[dict | None, bool]:
     """
     Find SKU in PO data.
@@ -84,7 +134,7 @@ def find_sku_in_po(po_data: dict, sku_key: str) -> tuple[dict | None, bool]:
     return None, False
 
 
-def audit_po4(data: dict) -> tuple[bool, list[str]]:
+def audit_po4(data: dict, required_overrides: dict) -> tuple[bool, list[str]]:
     """
     Audit PO-4 specifically.
     Returns: (success, messages)
@@ -107,7 +157,8 @@ def audit_po4(data: dict) -> tuple[bool, list[str]]:
     messages.append(f"PO-4 found: {po4.get('summary', {}).get('total_skus', 0)} total SKUs")
 
     # Check each required SKU
-    for sku_key, expected_d in REQUIRED_OVERRIDES.items():
+    for sku_key in REQUIRED_SKUS:
+        expected_d = required_overrides.get(sku_key, {}).get("d_override")
         sku_data, in_skipped = find_sku_in_po(po4, sku_key)
 
         if sku_data is None:
@@ -126,12 +177,13 @@ def audit_po4(data: dict) -> tuple[bool, list[str]]:
         messages.append(f"  d_sku={actual_d}, po_qty_total={po_qty}")
         messages.append(f"  notes: {notes}")
 
-        # Verify demand override
-        if abs(actual_d - expected_d) > 0.01:
-            messages.append(f"FAIL: {sku_key} d_sku={actual_d}, expected={expected_d}")
-            success = False
-        else:
-            messages.append(f"OK: {sku_key} demand override applied (d_sku={actual_d})")
+        # Verify demand override (only if required for this date)
+        if expected_d is not None:
+            if abs(actual_d - expected_d) > 0.01:
+                messages.append(f"FAIL: {sku_key} d_sku={actual_d}, expected={expected_d}")
+                success = False
+            else:
+                messages.append(f"OK: {sku_key} demand override applied (d_sku={actual_d})")
 
         # Check D_OVERRIDE note
         if 'D_OVERRIDE' not in notes:
@@ -231,8 +283,56 @@ def main():
 
     print(f"Data loaded from: {JSON_PATH if JSON_PATH.exists() else HTML_PATH}")
     print(f"Generated at: {data.get('generated_at', 'unknown')}")
-    print(f"Cutoff date: {data.get('cutoff_date', 'unknown')}")
+    cutoff_raw = data.get('cutoff_date', 'unknown')
+    print(f"Cutoff date: {cutoff_raw}")
     print()
+
+    cutoff_date = _normalize_date(cutoff_raw) or date.today()
+    required_overrides = required_overrides_for_date(cutoff_date)
+
+    if required_overrides:
+        if not DB_PATH.exists():
+            print("ERROR: Database missing; cannot verify active demand overrides.")
+            print("Fix: restore db/app.db and run:")
+            print("  python3 scripts/upsert_demand_overrides.py --seed-defaults")
+            sys.exit(5)
+
+        conn = sqlite3.connect(str(DB_PATH))
+        try:
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_demand_overrides'"
+            ).fetchone()
+            if not table:
+                print("ERROR: dim_demand_overrides table missing.")
+                print("Fix: run:")
+                print("  python3 scripts/upsert_demand_overrides.py --seed-defaults")
+                sys.exit(5)
+
+            active_overrides = load_active_overrides(
+                conn, cutoff_date, list(required_overrides.keys())
+            )
+        finally:
+            conn.close()
+
+        missing = []
+        mismatched = []
+        for sku_key, meta in required_overrides.items():
+            expected = meta["d_override"]
+            actual = active_overrides.get(sku_key)
+            if actual is None:
+                missing.append(sku_key)
+            elif abs(actual - expected) > 0.01:
+                mismatched.append(f"{sku_key}={actual} (expected {expected})")
+
+        if missing or mismatched:
+            print("ERROR: Active demand overrides missing or incorrect.")
+            if missing:
+                print(f"  Missing overrides: {', '.join(missing)}")
+            if mismatched:
+                print(f"  Mismatched overrides: {', '.join(mismatched)}")
+            print("Fix: run:")
+            print("  python3 scripts/upsert_demand_overrides.py --seed-defaults")
+            sys.exit(5)
 
     # Run audits
     all_success = True
@@ -241,7 +341,7 @@ def main():
     print("-"*60)
     print("Audit 1: Required SKUs in PO-4")
     print("-"*60)
-    success, messages = audit_po4(data)
+    success, messages = audit_po4(data, required_overrides)
     for msg in messages:
         print(f"  {msg}")
     if not success:
@@ -285,14 +385,16 @@ def main():
         if line52 is None:
             print("Exit code 1: LINE52 missing everywhere")
             sys.exit(1)
-        elif abs(line52.get('d_sku', 0) - 50.0) > 0.01:
-            print(f"Exit code 2: LINE52 d_sku={line52.get('d_sku', 0)}, expected=50")
+        elif "CL_OC_MEN_LINE52_BLACK" in required_overrides and abs(line52.get('d_sku', 0) - required_overrides["CL_OC_MEN_LINE52_BLACK"]["d_override"]) > 0.01:
+            expected = required_overrides["CL_OC_MEN_LINE52_BLACK"]["d_override"]
+            print(f"Exit code 2: LINE52 d_sku={line52.get('d_sku', 0)}, expected={expected}")
             sys.exit(2)
         elif line51 is None:
             print("Exit code 4: LINE51 missing everywhere")
             sys.exit(4)
-        elif abs(line51.get('d_sku', 0) - 12.0) > 0.01:
-            print(f"Exit code 3: LINE51 d_sku={line51.get('d_sku', 0)}, expected=12")
+        elif "CL_OC_MEN_LINE51_WHITE" in required_overrides and abs(line51.get('d_sku', 0) - required_overrides["CL_OC_MEN_LINE51_WHITE"]["d_override"]) > 0.01:
+            expected = required_overrides["CL_OC_MEN_LINE51_WHITE"]["d_override"]
+            print(f"Exit code 3: LINE51 d_sku={line51.get('d_sku', 0)}, expected={expected}")
             sys.exit(3)
         else:
             print("Exit code 5: Other validation error")

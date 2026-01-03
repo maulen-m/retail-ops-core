@@ -236,14 +236,25 @@ def validate_demand_overrides(conn: sqlite3.Connection, result: ValidationResult
         result.add_info("dim_demand_overrides table does not exist - no overrides active")
         return
 
-    # Count active overrides
-    cursor.execute("""
-        SELECT COUNT(*) FROM dim_demand_overrides WHERE active_flag = 1
-    """)
+    cursor.execute("PRAGMA table_info(dim_demand_overrides)")
+    columns = {row[1] for row in cursor.fetchall()}
+    today = date.today().isoformat()
+
+    if "start_date" in columns and "end_date" in columns:
+        cursor.execute("""
+            SELECT COUNT(*) FROM dim_demand_overrides
+            WHERE active_flag = 1
+              AND (start_date IS NULL OR start_date <= ?)
+              AND (end_date IS NULL OR end_date > ?)
+        """, (today, today))
+    else:
+        cursor.execute("""
+            SELECT COUNT(*) FROM dim_demand_overrides WHERE active_flag = 1
+        """)
     count = cursor.fetchone()[0]
 
     if count > 0:
-        result.add_info(f"Active demand overrides: {count} SKUs")
+        result.add_info(f"Active demand overrides (as of {today}): {count} SKUs")
     else:
         result.add_info("No active demand overrides")
 

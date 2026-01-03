@@ -29,6 +29,7 @@ from core.db.queries import (
     get_cutoff_date_almaty
 )
 from core.config.inventory_params import get_params
+from core.config.business_params import get_demand_overrides
 from core.calc.demand_estimator import DemandEstimator, ConfidenceLevel, OOSType
 from core.calc.stock_timeline import StockTimelineBuilder
 from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
@@ -164,7 +165,11 @@ def calc_po_dates(needed_by: date, prep_days: int, L: int = 21) -> tuple[date, d
     return po_send_date, po_message_date
 
 
-def persist_demand_estimates(conn: sqlite3.Connection, demand_results: list) -> int:
+def persist_demand_estimates(
+    conn: sqlite3.Connection,
+    demand_results: list,
+    overrides: dict[str, float] | None = None
+) -> int:
     """Persist DemandEstimator outputs to fact_demand_estimates."""
     if not demand_results:
         return 0
@@ -181,9 +186,13 @@ def persist_demand_estimates(conn: sqlite3.Connection, demand_results: list) -> 
         d_final = result.d_final or 0.0
         d_model = getattr(result, "d_model", d_final)
         d_peak = max(d_anchor, d_data, d_final)
-        d_final_with_override = d_final
-        override_applied = 0
-        override_value = None
+        override_value = overrides.get(result.sku_key) if overrides else None
+        if override_value is not None:
+            d_final_with_override = float(override_value)
+            override_applied = 1
+        else:
+            d_final_with_override = d_final
+            override_applied = 0
         sigma_anchor = result.sigma_anchor or 0.0
         sigma_data = result.sigma_data or 0.0
         sigma_final = result.sigma_final or 0.0
@@ -596,11 +605,13 @@ def generate_po_data() -> dict:
     print(f"  Estimated: {len(demand_results)} SKUs")
     print(f"  Skipped: {len(skipped_skus)} SKUs")
 
+    overrides = get_demand_overrides(as_of_date=CUTOFF_DATE, db_path=DB_PATH)
+
     # Export demand diagnostics
     if demand_results:
         estimator.export_diagnostics(demand_results, DIAGNOSTICS_PATH)
         print(f"  Demand diagnostics exported to: {DIAGNOSTICS_PATH}")
-        persisted = persist_demand_estimates(conn, demand_results)
+        persisted = persist_demand_estimates(conn, demand_results, overrides=overrides)
         print(f"  Demand estimates persisted: {persisted} rows")
 
     # Export stock timeline diagnostics (if available)
@@ -706,6 +717,17 @@ def generate_po_data() -> dict:
 
         size_demands = filter_valid_sizes(size_demands)
         size_sales_90d = filter_valid_sizes(size_sales_90d)
+
+        override_value = overrides.get(sku_key)
+        if override_value is not None:
+            override_value = float(override_value)
+            d_sku_blended = override_value
+            notes_list.append(f"D_OVERRIDE={override_value}")
+            total_size_demand = sum(size_demands.values()) if size_demands else 0
+            if total_size_demand > 0:
+                scale = override_value / total_size_demand
+                size_demands = {k: v * scale for k, v in size_demands.items()}
+                size_sales_90d = {k: int(round(v * 90)) for k, v in size_demands.items()}
 
         # Generate PO draft with blended demands and pre-arrival projection
         # For SKUs without stock/demand data, create a placeholder draft
@@ -828,6 +850,10 @@ def generate_po_data() -> dict:
             confidence = "NO_DATA"
             oos_type = "NONE"
             partial_oos_sizes = ""
+
+        if override_value is not None:
+            d_final = float(override_value)
+            d_model = float(override_value)
 
         # Calculate economics for dashboard display
         ss_total = draft.ss_total if draft else 0.0

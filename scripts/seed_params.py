@@ -152,6 +152,8 @@ def ensure_tables_exist(conn: sqlite3.Connection):
         CREATE TABLE IF NOT EXISTS dim_demand_overrides (
             sku_key TEXT PRIMARY KEY,
             d_override REAL NOT NULL,
+            start_date TEXT,
+            end_date TEXT,
             reason TEXT,
             source TEXT,
             active_flag INTEGER DEFAULT 1,

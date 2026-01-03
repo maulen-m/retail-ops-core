@@ -278,16 +278,29 @@ def set_fx_rates(
 # DEMAND OVERRIDES
 # =============================================================================
 
+def _normalize_date(value: Union[str, date, None]) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value)
+    raise ValueError(f"Unsupported date value: {value}")
+
+
 def get_demand_overrides(
+    as_of_date: Union[str, date, None] = None,
     db_path: Union[str, Path, None] = None
 ) -> dict[str, float]:
     """
-    Get all active demand overrides from dim_demand_overrides table.
+    Get active demand overrides from dim_demand_overrides table.
 
     Returns a dict mapping sku_key -> d_override for active overrides.
+    Active if start_date <= as_of_date < end_date (and active_flag=1).
     Falls back to empty dict if table doesn't exist or is empty.
 
     Args:
+        as_of_date: Date to evaluate overrides. Defaults to today.
         db_path: Optional path to database. Defaults to db/app.db.
 
     Returns:
@@ -306,6 +319,9 @@ def get_demand_overrides(
     if not db_path.exists():
         return {}
 
+    as_of = _normalize_date(as_of_date) or date.today()
+    as_of_iso = as_of.isoformat()
+
     try:
         conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
@@ -319,12 +335,25 @@ def get_demand_overrides(
             conn.close()
             return {}
 
-        # Get all active overrides
-        cursor.execute("""
-            SELECT sku_key, d_override
-            FROM dim_demand_overrides
-            WHERE active_flag = 1
-        """)
+        # Detect date columns (for backwards compatibility)
+        cursor.execute("PRAGMA table_info(dim_demand_overrides)")
+        columns = {row[1] for row in cursor.fetchall()}
+        has_dates = "start_date" in columns and "end_date" in columns
+
+        if has_dates:
+            cursor.execute("""
+                SELECT sku_key, d_override
+                FROM dim_demand_overrides
+                WHERE active_flag = 1
+                  AND (start_date IS NULL OR start_date <= ?)
+                  AND (end_date IS NULL OR end_date > ?)
+            """, (as_of_iso, as_of_iso))
+        else:
+            cursor.execute("""
+                SELECT sku_key, d_override
+                FROM dim_demand_overrides
+                WHERE active_flag = 1
+            """)
 
         result = {row[0]: row[1] for row in cursor.fetchall()}
         conn.close()
@@ -337,6 +366,8 @@ def get_demand_overrides(
 def set_demand_override(
     sku_key: str,
     d_override: float,
+    start_date: Union[str, date, None] = None,
+    end_date: Union[str, date, None] = None,
     reason: str = "",
     source: str = "MANUAL",
     active_flag: int = 1,
@@ -348,6 +379,8 @@ def set_demand_override(
     Args:
         sku_key: SKU key to override (e.g., "CL_OC_MEN_LINE52_BLACK")
         d_override: Daily demand override value
+        start_date: Start date (inclusive). Defaults to today.
+        end_date: End date (exclusive). Defaults to far future.
         reason: Reason for override (e.g., "Seasonal adjustment", "Launch period")
         source: Source of override (MANUAL, IMPORT, SEASONAL)
         active_flag: 1 = active, 0 = disabled
@@ -358,6 +391,9 @@ def set_demand_override(
 
     db_path = Path(db_path)
 
+    start = _normalize_date(start_date) or date.today()
+    end = _normalize_date(end_date) or date(9999, 12, 31)
+
     conn = sqlite3.connect(str(db_path))
     try:
         cursor = conn.cursor()
@@ -367,6 +403,8 @@ def set_demand_override(
             CREATE TABLE IF NOT EXISTS dim_demand_overrides (
                 sku_key TEXT PRIMARY KEY,
                 d_override REAL NOT NULL,
+                start_date TEXT,
+                end_date TEXT,
                 reason TEXT,
                 source TEXT,
                 active_flag INTEGER DEFAULT 1,
@@ -375,12 +413,44 @@ def set_demand_override(
             )
         """)
 
-        # Insert or replace
+        # Backfill missing columns for older tables
+        cursor.execute("PRAGMA table_info(dim_demand_overrides)")
+        existing = {row[1] for row in cursor.fetchall()}
+        for col, col_type in {
+            "start_date": "TEXT",
+            "end_date": "TEXT",
+        }.items():
+            if col not in existing:
+                try:
+                    cursor.execute(
+                        f"ALTER TABLE dim_demand_overrides ADD COLUMN {col} {col_type}"
+                    )
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+
+        # Preserve created_at if record exists
+        cursor.execute(
+            "SELECT created_at FROM dim_demand_overrides WHERE sku_key = ?",
+            (sku_key,)
+        )
+        row = cursor.fetchone()
+        created_at = row[0] if row and row[0] else None
+
         cursor.execute("""
             INSERT OR REPLACE INTO dim_demand_overrides
-            (sku_key, d_override, reason, source, active_flag, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
-        """, (sku_key, d_override, reason, source, active_flag))
+            (sku_key, d_override, start_date, end_date, reason, source, active_flag, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+        """, (
+            sku_key,
+            d_override,
+            start.isoformat(),
+            end.isoformat(),
+            reason,
+            source,
+            active_flag,
+            created_at,
+        ))
 
         conn.commit()
     finally:
