@@ -38,6 +38,12 @@ def test_demand_override_active_window(tmp_path: Path) -> None:
     )
     assert "TEST_SKU" not in inactive
 
+    boundary = get_demand_overrides(
+        as_of_date=date(2026, 3, 1),
+        db_path=db_path,
+    )
+    assert "TEST_SKU" not in boundary
+
 
 def test_upsert_demand_overrides_idempotent(tmp_path: Path) -> None:
     db_path = _make_db(tmp_path)
