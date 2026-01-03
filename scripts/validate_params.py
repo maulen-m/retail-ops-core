@@ -295,6 +295,13 @@ def main():
     try:
         # Apply schema to prevent drift (idempotent; CREATE IF NOT EXISTS only)
         init_db(db_path=db_path)
+        # Apply dim_sku column migration (idempotent)
+        try:
+            from scripts.migrate_013 import migrate as migrate_dim_sku
+            migrate_dim_sku(db_path=db_path)
+        except Exception as exc:
+            print(f"Error: Failed to apply dim_sku migration: {exc}")
+            sys.exit(1)
     except Exception as exc:
         print(f"Error: Failed to apply schema.sql to {db_path}: {exc}")
         sys.exit(1)

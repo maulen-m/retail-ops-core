@@ -172,12 +172,25 @@ def sync_stock_snapshot(conn: sqlite3.Connection, xl: pd.ExcelFile) -> dict:
     print("Reading DIM_SKU_ID sheet...")
     df = pd.read_excel(xl, sheet_name='DIM_SKU_ID')
 
+    date_col_candidates = [
+        "Stock_date",
+        "Current_stock_Stock_date",
+        "Current_stock_date",
+        "Stock_Date",
+    ]
+    snapshot_source = next((c for c in date_col_candidates if c in df.columns), None)
+    if not snapshot_source:
+        raise ValueError(
+            "DIM_SKU_ID missing snapshot date column. "
+            f"Expected one of {date_col_candidates}; found: {list(df.columns)}"
+        )
+
     # Rename columns
     df = df.rename(columns={
         'SKU_ID': 'sku_id',
         'SKU_key': 'sku_key',
         'MY_SIZE': 'my_size',
-        'Stock_date': 'snapshot_date',
+        snapshot_source: 'snapshot_date',
         'Current_stock': 'current_stock',
         'Inbound_stock': 'inbound_stock'
     })
@@ -310,10 +323,11 @@ def sync_anchors(conn: sqlite3.Connection, xl: pd.ExcelFile) -> dict:
     # Rename D_active to d_active
     df = df.rename(columns={'D_active': 'd_active'})
 
-    # Fill NaN with 0
+    # Coerce numeric columns and fill NaN with 0
     for col in df.columns:
-        if col != 'sku_key':
-            df[col] = df[col].fillna(0)
+        if col == 'sku_key':
+            continue
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
     # Remove rows with missing sku_key
     df = df.dropna(subset=['sku_key'])
