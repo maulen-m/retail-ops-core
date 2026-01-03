@@ -64,6 +64,10 @@ archives/
 ~$*.xlsm
 ~$*.xlsb
 
+# Local UI workbooks (keep untracked)
+excel_ui/SALES_KSP_CRM_V3.xlsx
+excel/Inventory_Core_V18.1_V2.xlsx
+
 # Temporary files
 tmp/
 temp/
