@@ -19,7 +19,12 @@ Query params:
 
 import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import sys
+from pathlib import Path
 from urllib.parse import urlparse
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.analytics.api import handle_request, json_response
 
