@@ -11,6 +11,7 @@ Data cutoff: Yesterday in Asia/Almaty timezone.
 import sqlite3
 import json
 import statistics
+import csv
 from datetime import date, timedelta
 from pathlib import Path
 from math import ceil
@@ -40,6 +41,8 @@ ANCHOR_FILE = PROJECT_ROOT / "excel" / "D_size_mix_reference.xlsx"
 OUTPUT_PATH = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
 DIAGNOSTICS_PATH = PROJECT_ROOT / "exports" / "demand_diagnostics.csv"
 STOCK_DIAGNOSTICS_PATH = PROJECT_ROOT / "exports" / "stock_rebuild_diagnostics.csv"
+SUPPLIER_EXPORT_PATH = PROJECT_ROOT / "exports" / "po_supplier_export"
+SUPPLIER_SUMMARY_PATH = PROJECT_ROOT / "exports" / "po_supplier_summary"
 ROIC_THRESHOLD = 0.15  # 15% - for display only, not filtering
 
 # Valid size codes (filter out messy data like 'CB', '0', 'DRIVE', 'NAN')
@@ -261,6 +264,168 @@ def persist_demand_estimates(
     )
     conn.commit()
     return len(rows)
+
+
+def _load_override_windows(
+    conn: sqlite3.Connection,
+    sku_keys: list[str]
+) -> dict[str, dict]:
+    if not sku_keys:
+        return {}
+    try:
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_demand_overrides'"
+        )
+        if not cursor.fetchone():
+            return {}
+        placeholders = ",".join(["?"] * len(sku_keys))
+        rows = conn.execute(
+            f"""
+            SELECT sku_key, d_override, start_date, end_date
+            FROM dim_demand_overrides
+            WHERE sku_key IN ({placeholders})
+            """,
+            sku_keys,
+        ).fetchall()
+        return {
+            row["sku_key"]: {
+                "d_override": row["d_override"],
+                "start_date": row["start_date"],
+                "end_date": row["end_date"],
+            }
+            for row in rows
+        }
+    except Exception:
+        return {}
+
+
+def export_supplier_po(
+    conn: sqlite3.Connection,
+    size_lines: list[dict],
+    cutoff_date: str,
+) -> tuple[Path, Path] | None:
+    """Export supplier-ready PO CSV + summary from PO-4 size lines."""
+    if not size_lines:
+        return None
+
+    sku_keys = sorted({row["sku_key"] for row in size_lines})
+    placeholders = ",".join(["?"] * len(sku_keys))
+    sku_rows = conn.execute(
+        f"""
+        SELECT sku_key, base_cost_cny, weight_kg
+        FROM dim_sku
+        WHERE sku_key IN ({placeholders})
+        """,
+        sku_keys,
+    ).fetchall()
+    sku_meta = {
+        row["sku_key"]: {
+            "base_cost_cny": row["base_cost_cny"],
+            "weight_kg": row["weight_kg"],
+        }
+        for row in sku_rows
+    }
+
+    export_rows = []
+    total_units = 0
+    total_cost = 0.0
+    total_weight = 0.0
+
+    for line in size_lines:
+        qty = int(line.get("order_qty") or 0)
+        if qty <= 0:
+            continue
+        meta = sku_meta.get(line["sku_key"], {})
+        base_cost_cny = meta.get("base_cost_cny") or 0
+        weight_per_unit = meta.get("weight_kg") or 0
+        unit_cost = (
+            calc_cogs(base_cost_cny, weight_per_unit)
+            if base_cost_cny and weight_per_unit
+            else 0.0
+        )
+        total_cost_line = unit_cost * qty
+        weight_total = line.get("weight_kg") or (weight_per_unit * qty)
+
+        export_rows.append(
+            {
+                "sku_id": line["sku_id"],
+                "sku_key": line["sku_key"],
+                "my_size": line["size"],
+                "qty": qty,
+                "unit_cost_kzt": round(unit_cost, 2),
+                "total_cost_kzt": round(total_cost_line, 2),
+                "weight_kg": round(weight_total, 2),
+            }
+        )
+        total_units += qty
+        total_cost += total_cost_line
+        total_weight += weight_total
+
+    if not export_rows:
+        return None
+
+    export_path = SUPPLIER_EXPORT_PATH.with_name(
+        f"po_supplier_export_{cutoff_date}.csv"
+    )
+    summary_path = SUPPLIER_SUMMARY_PATH.with_name(
+        f"po_supplier_summary_{cutoff_date}.md"
+    )
+
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(export_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "sku_id",
+                "sku_key",
+                "my_size",
+                "qty",
+                "unit_cost_kzt",
+                "total_cost_kzt",
+                "weight_kg",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(export_rows)
+
+    spend_by_sku = {}
+    for row in export_rows:
+        spend_by_sku[row["sku_key"]] = spend_by_sku.get(row["sku_key"], 0) + row["total_cost_kzt"]
+    top_skus = sorted(spend_by_sku.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    override_info = _load_override_windows(
+        conn,
+        ["CL_OC_MEN_LINE52_BLACK", "CL_OC_MEN_LINE51_WHITE"],
+    )
+
+    override_lines = []
+    for sku_key in ["CL_OC_MEN_LINE52_BLACK", "CL_OC_MEN_LINE51_WHITE"]:
+        info = override_info.get(sku_key)
+        if info:
+            override_lines.append(
+                f"- {sku_key}: D={info['d_override']} (window {info['start_date']} → {info['end_date']})"
+            )
+        else:
+            override_lines.append(f"- {sku_key}: override not found")
+
+    summary = [
+        f"# Supplier PO Summary ({cutoff_date})",
+        "",
+        f"- Total units: {total_units}",
+        f"- Total cost (KZT): {total_cost:,.2f}",
+        f"- Total weight (kg): {total_weight:,.2f}",
+        "",
+        "## Top 10 SKUs by spend",
+        *[f"- {sku}: {cost:,.2f} KZT" for sku, cost in top_skus],
+        "",
+        "## Demand overrides (time-boxed)",
+        *override_lines,
+    ]
+
+    summary_path.write_text("\n".join(summary))
+    return export_path, summary_path
 
 
 def get_all_active_skus(conn) -> list[dict]:
@@ -969,11 +1134,15 @@ def generate_po_data() -> dict:
             )
             size_lines.append(asdict(size_line))
 
-    conn.close()
-
     # Sort by PO message date (most urgent first)
     sku_lines.sort(key=lambda x: x['po_message_date'])
     size_lines.sort(key=lambda x: (x['po_message_date'], x['sku_key'], x['size']))
+
+    export_result = export_supplier_po(conn, size_lines, DATA_CUTOFF)
+    if export_result:
+        export_path, summary_path = export_result
+        print(f"Supplier export written: {export_path}")
+        print(f"Supplier summary written: {summary_path}")
 
     # Count SKUs with and without orders
     skus_with_orders = sum(1 for s in sku_lines if s['po_qty_total'] > 0)
@@ -1031,6 +1200,8 @@ def generate_po_data() -> dict:
         1 for s in sku_lines
         if "LINE52" in (s.get("sku_key") or "") or "LINE51" in (s.get("sku_key") or "")
     )
+
+    conn.close()
 
     return {
         "generated_at": TODAY.isoformat(),
