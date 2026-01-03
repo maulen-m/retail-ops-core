@@ -164,6 +164,96 @@ def calc_po_dates(needed_by: date, prep_days: int, L: int = 21) -> tuple[date, d
     return po_send_date, po_message_date
 
 
+def persist_demand_estimates(conn: sqlite3.Connection, demand_results: list) -> int:
+    """Persist DemandEstimator outputs to fact_demand_estimates."""
+    if not demand_results:
+        return 0
+
+    rows = []
+    for result in demand_results:
+        cutoff_date = (
+            result.cutoff_date.isoformat()
+            if hasattr(result.cutoff_date, "isoformat")
+            else str(result.cutoff_date)
+        )
+        d_anchor = result.d_anchor or 0.0
+        d_data = result.d_data or 0.0
+        d_final = result.d_final or 0.0
+        d_model = getattr(result, "d_model", d_final)
+        d_peak = max(d_anchor, d_data, d_final)
+        d_final_with_override = d_final
+        override_applied = 0
+        override_value = None
+        sigma_anchor = result.sigma_anchor or 0.0
+        sigma_data = result.sigma_data or 0.0
+        sigma_final = result.sigma_final or 0.0
+        anchor_weight = result.anchor_weight or 0.0
+        w = anchor_weight
+        calendar_days = result.calendar_days or 0
+        good_days = result.good_days or 0
+        eligible_days = getattr(result, "eligible_days", good_days)
+        oos_days = getattr(result, "oos_days_total", 0)
+        unknown_days = getattr(
+            result, "unknown_days", max(0, calendar_days - good_days)
+        )
+        availability_score = getattr(result, "availability_score", result.coverage_pct or 0.0)
+        confidence = result.confidence.name if hasattr(result.confidence, "name") else str(result.confidence)
+        oos_type = result.oos_type.name if hasattr(result.oos_type, "name") else str(result.oos_type)
+        partial_oos_sizes = ",".join(result.partial_oos_sizes) if result.partial_oos_sizes else ""
+        estimator_version = "stock_first_v1"
+
+        rows.append(
+            (
+                result.sku_key,
+                cutoff_date,
+                d_anchor,
+                d_data,
+                d_model,
+                d_peak,
+                d_final,
+                d_final_with_override,
+                override_applied,
+                override_value,
+                sigma_anchor,
+                sigma_data,
+                sigma_final,
+                anchor_weight,
+                w,
+                calendar_days,
+                eligible_days,
+                good_days,
+                oos_days,
+                unknown_days,
+                availability_score,
+                confidence,
+                oos_type,
+                partial_oos_sizes,
+                estimator_version,
+            )
+        )
+
+    cutoff_date = rows[0][1]
+    conn.execute("DELETE FROM fact_demand_estimates WHERE cutoff_date = ?", (cutoff_date,))
+    conn.executemany(
+        """
+        INSERT INTO fact_demand_estimates (
+            sku_key, cutoff_date,
+            d_anchor, d_data, d_model, d_peak, d_final,
+            d_final_with_override, override_applied, override_value,
+            sigma_anchor, sigma_data, sigma_final,
+            anchor_weight, w, calendar_days, eligible_days, good_days,
+            oos_days, unknown_days, availability_score,
+            confidence, oos_type, partial_oos_sizes, estimator_version
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        """,
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
 def get_all_active_skus(conn) -> list[dict]:
     """Get all active SKUs with their attributes."""
     cursor = conn.execute("""
@@ -510,11 +600,14 @@ def generate_po_data() -> dict:
     if demand_results:
         estimator.export_diagnostics(demand_results, DIAGNOSTICS_PATH)
         print(f"  Demand diagnostics exported to: {DIAGNOSTICS_PATH}")
+        persisted = persist_demand_estimates(conn, demand_results)
+        print(f"  Demand estimates persisted: {persisted} rows")
 
     # Export stock timeline diagnostics (if available)
-    if estimator._stock_diagnostics:
+    stock_diags = getattr(estimator, "_stock_diagnostics", None)
+    if stock_diags:
         builder = StockTimelineBuilder(DB_PATH)
-        builder.export_diagnostics_csv(estimator._stock_diagnostics, STOCK_DIAGNOSTICS_PATH)
+        builder.export_diagnostics_csv(stock_diags, STOCK_DIAGNOSTICS_PATH)
         print(f"  Stock rebuild diagnostics exported to: {STOCK_DIAGNOSTICS_PATH}")
 
     # Build demand lookup: sku_key -> SKUDemandResult
@@ -715,9 +808,13 @@ def generate_po_data() -> dict:
             d_final = demand_result.d_final
             d_anchor = demand_result.d_anchor
             d_data = demand_result.d_data
-            d_model = demand_result.d_model
+            d_model = getattr(demand_result, "d_model", d_final)
             anchor_weight = demand_result.anchor_weight
-            availability_score = demand_result.availability_score
+            availability_score = getattr(
+                demand_result,
+                "availability_score",
+                getattr(demand_result, "coverage_pct", 0.0),
+            )
             confidence = demand_result.confidence.name
             oos_type = demand_result.oos_type.name
             partial_oos_sizes = ",".join(demand_result.partial_oos_sizes)
@@ -904,6 +1001,11 @@ def generate_po_data() -> dict:
             row['size_orders'][size_row['size']] = size_row['order_qty']
         size_horizontal.append(row)
 
+    priority_skus = sum(
+        1 for s in sku_lines
+        if "LINE52" in (s.get("sku_key") or "") or "LINE51" in (s.get("sku_key") or "")
+    )
+
     return {
         "generated_at": TODAY.isoformat(),
         "po_name": "PO-4",  # Base PO identifier
@@ -921,6 +1023,7 @@ def generate_po_data() -> dict:
             "total_units": sum(s['po_qty_total'] for s in sku_lines),
             "total_weight_kg": round(sum(s['po_weight_kg'] for s in sku_lines), 1),
             "low_roic_skus": low_roic_count,
+            "priority_skus": priority_skus,
             "no_demand_estimate": skipped_no_demand,
             "no_stock_snapshot": skipped_no_stock,
             "no_order_needed": skipped_no_order
@@ -1258,11 +1361,16 @@ if __name__ == "__main__":
     # Ensure output directory exists
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+    base_summary = all_pos.get("PO-4", {}).get("summary", {})
+    if "priority_skus" not in base_summary:
+        base_summary["priority_skus"] = 0
+
     # Save combined data
     combined_data = {
         "generated_at": TODAY.isoformat(),
         "base_stock_date": STOCK_DATE,
         "cutoff_date": DATA_CUTOFF,
+        "summary": base_summary,
         "pos": all_pos
     }
 
