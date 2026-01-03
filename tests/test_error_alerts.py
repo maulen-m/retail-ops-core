@@ -48,3 +48,27 @@ def test_send_shadow_mode_digest_success(monkeypatch, tmp_path):
     db_path.touch()
 
     assert error_alerts.send_shadow_mode_digest(1, 10.0, str(db_path)) is True
+
+
+def test_send_run_success_alert_guarded(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat")
+    monkeypatch.setattr(
+        error_alerts,
+        "send_message",
+        lambda *args, **kwargs: {"success": True},
+    )
+
+    assert error_alerts.send_run_success_alert("ok", "shadow") is True
+
+
+def test_send_run_failure_alert_guarded(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat")
+    monkeypatch.setattr(
+        error_alerts,
+        "send_message",
+        lambda *args, **kwargs: {"success": True},
+    )
+
+    assert error_alerts.send_run_failure_alert("boom", "shadow") is True

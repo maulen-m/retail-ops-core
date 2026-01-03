@@ -140,6 +140,41 @@ def send_success_alert(
         return False
 
 
+def send_run_success_alert(
+    message: str,
+    script_name: str,
+    stats: Optional[dict] = None,
+) -> bool:
+    """
+    Best-effort success alert for long-running runs (env-guarded).
+    """
+    ready, reason = _telegram_env_ready()
+    if not ready:
+        print(f"Telegram alert skipped: {reason}")
+        return False
+    return send_success_alert(message, script_name, stats=stats)
+
+
+def send_run_failure_alert(
+    error_message: str,
+    script_name: str,
+    context: Optional[str] = None,
+) -> bool:
+    """
+    Best-effort failure alert for long-running runs (env-guarded).
+    """
+    ready, reason = _telegram_env_ready()
+    if not ready:
+        print(f"Telegram alert skipped: {reason}")
+        return False
+    return send_error_alert(
+        error_message=error_message,
+        script_name=script_name,
+        context=context,
+        use_env_chat=True,
+    )
+
+
 def alert_import_failed(error: Exception, orders_count: int = 0) -> bool:
     """Convenience function for import failures."""
     return send_error_alert(
