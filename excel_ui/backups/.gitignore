@@ -1,0 +1,3 @@
+# Local backups (do not track)
+*
+!.gitignore

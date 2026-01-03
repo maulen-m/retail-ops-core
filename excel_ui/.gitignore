@@ -1,0 +1,6 @@
+# Local UI data (do not track by default)
+*
+!.gitignore
+!*.command
+!*.md
+!backups/
