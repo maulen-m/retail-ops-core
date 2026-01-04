@@ -51,6 +51,10 @@ def main() -> None:
     print("Merge summary:")
     print(f"- CRM rows: {stats.crm_rows}")
     print(f"- Fact rows: {stats.fact_rows}")
+    print(f"- Fact rows after cutoff: {stats.fact_rows_after_cutoff}")
+    print(f"- Fact rows dropped by date cutoff: {stats.fact_rows_dropped_by_date}")
+    if stats.cutoff_date:
+        print(f"- Cutoff date (CRM precedence): {stats.cutoff_date}")
     print(f"- Overlap rows: {stats.overlap_rows}")
     print(f"- CRM-only rows: {stats.crm_only_rows}")
     print(f"- Fact-only rows: {stats.fact_only_rows}")

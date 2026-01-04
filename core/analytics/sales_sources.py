@@ -35,10 +35,13 @@ SALES_COLUMNS = [
 class MergeStats:
     crm_rows: int
     fact_rows: int
+    fact_rows_after_cutoff: int
+    fact_rows_dropped_by_date: int
     overlap_rows: int
     combined_rows: int
     crm_only_rows: int
     fact_only_rows: int
+    cutoff_date: Optional[str]
 
 
 def _coerce_date(series: pd.Series) -> pd.Series:
@@ -124,17 +127,33 @@ def load_fact_sales(fact_path: Path, sheet: str) -> pd.DataFrame:
 def merge_sales_sources(
     crm_df: pd.DataFrame,
     fact_df: pd.DataFrame,
+    *,
+    crm_date_precedence: bool = True,
 ) -> Tuple[pd.DataFrame, MergeStats]:
     crm = crm_df.copy()
     fact = fact_df.copy()
 
     if crm.empty and fact.empty:
-        stats = MergeStats(0, 0, 0, 0, 0, 0)
+        stats = MergeStats(0, 0, 0, 0, 0, 0, 0, 0, None)
         return crm, stats
 
     key_cols = ["order_id", "sku_id", "store_code", "kaspi_offer_name"]
     crm = crm.drop_duplicates(subset=key_cols, keep="last")
     fact = fact.drop_duplicates(subset=key_cols, keep="last")
+    crm["order_date"] = _coerce_date(crm["order_date"])
+    fact["order_date"] = _coerce_date(fact["order_date"])
+
+    cutoff_date = None
+    fact_rows_after_cutoff = len(fact)
+    fact_rows_dropped = 0
+    if crm_date_precedence and not crm.empty:
+        crm_dates = pd.to_datetime(crm["order_date"], errors="coerce").dt.date.dropna()
+        if not crm_dates.empty:
+            cutoff = crm_dates.min()
+            cutoff_date = cutoff.isoformat()
+            fact_rows_after_cutoff = fact[fact["order_date"] < cutoff].shape[0]
+            fact_rows_dropped = len(fact) - fact_rows_after_cutoff
+            fact = fact[fact["order_date"] < cutoff].copy()
 
     crm_keys = set(zip(*[crm[col].fillna("") for col in key_cols]))
     fact_keys = set(zip(*[fact[col].fillna("") for col in key_cols]))
@@ -151,11 +170,14 @@ def merge_sales_sources(
 
     stats = MergeStats(
         crm_rows=len(crm),
-        fact_rows=len(fact),
+        fact_rows=len(fact_df),
+        fact_rows_after_cutoff=fact_rows_after_cutoff,
+        fact_rows_dropped_by_date=fact_rows_dropped,
         overlap_rows=len(overlap),
         combined_rows=len(combined),
         crm_only_rows=len(crm_keys - fact_keys),
         fact_only_rows=len(fact_keys - crm_keys),
+        cutoff_date=cutoff_date,
     )
 
     return combined, stats
