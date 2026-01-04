@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.db import DEFAULT_DB_PATH, get_db
 from core.integrations.kaspi_api_client import (
     KaspiAPIClient,
     KaspiAuthError,
@@ -90,6 +91,59 @@ class OrderItem:
     sku_id: str
     quantity: int
     planned_date: Optional[date]
+
+
+def _coerce_str(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def load_db_order_info(
+    db_path: Path,
+    order_ids: Optional[set[str]] = None,
+) -> dict[str, dict[str, Any]]:
+    """Load assigned sizes and planned shipment dates from DB (best-effort)."""
+    if not db_path.exists():
+        logger.warning(f"DB not found: {db_path}")
+        return {}
+
+    with get_db(db_path) as conn:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_orders_kaspi'"
+        ).fetchone()
+        if not table:
+            logger.warning("DB missing fact_orders_kaspi; skipping DB sizes")
+            return {}
+
+        params: list[str] = []
+        where_clause = ""
+        if order_ids:
+            placeholders = ",".join(["?"] * len(order_ids))
+            where_clause = f"WHERE order_id IN ({placeholders})"
+            params = list(order_ids)
+
+        rows = conn.execute(
+            f"""
+            SELECT order_id, assigned_size, my_size, planned_shipment_date
+            FROM fact_orders_kaspi
+            {where_clause}
+            """,
+            params,
+        ).fetchall()
+
+    info: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        order_id = _coerce_str(row["order_id"])
+        if order_id.endswith(".0"):
+            order_id = order_id[:-2]
+        if not order_id:
+            continue
+        size = _coerce_str(row["assigned_size"]) or _coerce_str(row["my_size"])
+        planned_date = parse_date(row["planned_shipment_date"])
+        info[order_id] = {"size": size, "planned_date": planned_date}
+
+    return info
 
 
 def parse_date(value: Any) -> Optional[date]:
@@ -214,6 +268,8 @@ def read_crm_orders(
     sheet_name: str,
     target_date: date,
     store_filter: Optional[str] = None,
+    target_order_ids: Optional[set[str]] = None,
+    db_order_info: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, list[OrderItem]]:
     """
     Read orders from CRM Excel file, grouped by order_id.
@@ -235,14 +291,11 @@ def read_crm_orders(
     skipped_no_size = 0
     skipped_date = 0
     skipped_store = 0
+    skipped_not_pending = 0
+    used_db_size = 0
+    used_crm_size = 0
 
     for _, row in df.iterrows():
-        # Check MY_SIZE is filled
-        my_size = str(row.get('MY_SIZE', '')).strip()
-        if not my_size or my_size.lower() in ('nan', 'none', ''):
-            skipped_no_size += 1
-            continue
-
         # Get order_id
         order_id = row.get('OrderID')
         if pd.isna(order_id):
@@ -254,10 +307,33 @@ def read_crm_orders(
         if order_id.endswith('.0'):
             order_id = order_id[:-2]
 
+        if target_order_ids is not None and order_id not in target_order_ids:
+            skipped_not_pending += 1
+            continue
+
+        db_info = db_order_info.get(order_id) if db_order_info else None
+        db_size = _coerce_str(db_info.get(\"size\")) if db_info else \"\"
+
+        # Check MY_SIZE (DB first, CRM fallback)
+        my_size = str(row.get('MY_SIZE', '')).strip()
+        if my_size.lower() in ('nan', 'none', ''):
+            my_size = \"\"
+
+        final_size = db_size or my_size
+        if not final_size:
+            skipped_no_size += 1
+            continue
+        if db_size:
+            used_db_size += 1
+        else:
+            used_crm_size += 1
+
         # Get planned date
         planned_date = parse_date(row.get('PLANNED_SHIPPING_DATE'))
         if not planned_date:
             planned_date = parse_date(row.get('Плановая дата передачи курьеру'))
+        if not planned_date and db_info:
+            planned_date = db_info.get(\"planned_date\")
 
         # Filter by date - skip future orders
         if planned_date and planned_date > target_date:
@@ -294,7 +370,7 @@ def read_crm_orders(
             order_id=order_id,
             store_name=store_name,
             kaspi_name_core=kaspi_name_core,
-            my_size=my_size,
+            my_size=final_size,
             sku_key=sku_key,
             sku_id=sku_id,
             quantity=quantity,
@@ -305,8 +381,12 @@ def read_crm_orders(
     logger.info(f"Read {len(orders_by_id)} unique orders with MY_SIZE filled")
     logger.info(f"Skipped {skipped_no_size} rows without MY_SIZE")
     logger.info(f"Skipped {skipped_date} rows with future planned date")
+    logger.info(f"Used DB sizes: {used_db_size}")
+    logger.info(f"Used CRM sizes: {used_crm_size}")
     if store_filter:
         logger.info(f"Skipped {skipped_store} rows from other stores")
+    if target_order_ids is not None:
+        logger.info(f"Skipped {skipped_not_pending} rows not in pending assembly list")
 
     return dict(orders_by_id)
 
@@ -530,13 +610,20 @@ def main():
 
     print(f"  Found {total_pending} orders pending assembly across all stores")
 
+    all_pending = set()
+    for order_ids in pending_orders.values():
+        all_pending.update(order_ids)
+
     # Step 2: Read orders from CRM
-    print("\nStep 2: Reading CRM for MY_SIZE data...")
+    print("\nStep 2: Reading CRM for MY_SIZE data (DB-first)...")
+    db_order_info = load_db_order_info(DEFAULT_DB_PATH, all_pending)
     orders_by_id = read_crm_orders(
         args.crm_file,
         args.sheet,
         target_date,
         store_filter=args.store,
+        target_order_ids=all_pending,
+        db_order_info=db_order_info,
     )
 
     if not orders_by_id:
