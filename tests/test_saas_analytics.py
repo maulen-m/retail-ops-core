@@ -123,3 +123,27 @@ def test_endpoints_smoke(tmp_path):
     status, payload = handle_request("/filters/options", "", db_path=str(db_path))
     assert status == 200
     assert "LINE52" in payload["sku_keys"]
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE abc_view_cache (SKU_key TEXT, Status TEXT, D_30 REAL, ROP REAL, ROIC_pct REAL)"
+    )
+    conn.execute(
+        "INSERT INTO abc_view_cache (SKU_key, Status, D_30, ROP, ROIC_pct) VALUES (?,?,?,?,?)",
+        ("LINE52", "ACTIVE", 12.0, 30.0, 0.22),
+    )
+    conn.commit()
+    conn.close()
+
+    status, payload = handle_request("/kpis/sku_share", "metric=revenue&end_date=2026-01-15", db_path=str(db_path))
+    assert status == 200
+    assert payload["items"]
+
+    status, payload = handle_request("/health/summary", "end_date=2026-01-15", db_path=str(db_path))
+    assert status == 200
+    assert "top_profit" in payload
+
+    status, payload = handle_request("/catalog", "query=PRINT&limit=10&offset=0", db_path=str(db_path))
+    assert status == 200
+    assert payload["total"] == 1
+    assert payload["items"][0]["SKU_key"] == "LINE52"

@@ -13,7 +13,10 @@ from .queries import (
     get_calendar_daily,
     get_compare_summary,
     get_filters_options,
+    get_health_summary,
     get_last30_kpis,
+    get_catalog,
+    get_sku_share,
     get_timeseries_monthly,
 )
 
@@ -76,6 +79,7 @@ def handle_request(path: str, query_string: str, db_path: Optional[str] = None) 
                     conn,
                     start_date=query.get("start_date", [None])[0],
                     end_date=query.get("end_date", [None])[0],
+                    include_inventory=_parse_bool(query.get("include_inventory", [""])[0]),
                     **common,
                 )
                 return 200, payload
@@ -89,6 +93,29 @@ def handle_request(path: str, query_string: str, db_path: Optional[str] = None) 
                 return 200, payload
             if path == "/filters/options":
                 payload = get_filters_options(conn)
+                return 200, payload
+            if path == "/kpis/sku_share":
+                payload = get_sku_share(
+                    conn,
+                    metric=query.get("metric", ["revenue"])[0],
+                    end_date=query.get("end_date", [None])[0],
+                    **common,
+                )
+                return 200, payload
+            if path == "/health/summary":
+                payload = get_health_summary(
+                    conn,
+                    end_date=query.get("end_date", [None])[0],
+                    **common,
+                )
+                return 200, payload
+            if path == "/catalog":
+                payload = get_catalog(
+                    conn,
+                    query=query.get("query", [None])[0],
+                    limit=int(query.get("limit", ["50"])[0]),
+                    offset=int(query.get("offset", ["0"])[0]),
+                )
                 return 200, payload
 
         return 404, {"error": "Unknown endpoint"}

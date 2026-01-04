@@ -11,9 +11,10 @@ Target: db/app.db (sales_fact_v2, fact_inventory_snapshot_size, fact_po_lines, e
 
 Usage:
     python scripts/sync_truth_workbook_to_db.py
+    python scripts/sync_truth_workbook_to_db.py --include-sales
 
 Sheet → Table Mapping:
-    Fact_Sales → sales_fact_v2 (Kaspi sales only)
+    Fact_Sales → sales_fact_v2 (Kaspi sales only, optional)
     DIM_SKU_ID → fact_inventory_snapshot_size (current stock by size)
     Fact_PO_Lines + Dim_PO_Header → fact_po_lines (PO receipts with arrival dates)
     SizeMix_and_Di_Anchor → dim_anchor (new table for demand anchors)
@@ -577,6 +578,11 @@ def main():
             f"{DEFAULT_TRUTH_WORKBOOK})"
         ),
     )
+    parser.add_argument(
+        "--include-sales",
+        action="store_true",
+        help="Also sync Fact_Sales into sales_fact_v2 (default: off)",
+    )
     args = parser.parse_args()
 
     truth_workbook = resolve_truth_workbook(DEFAULT_TRUTH_WORKBOOK)
@@ -619,7 +625,10 @@ def main():
         results.append(sync_dim_sku_size(conn, xl))
 
         # 2. Fact tables
-        results.append(sync_sales(conn, xl))
+        if args.include_sales:
+            results.append(sync_sales(conn, xl))
+        else:
+            print("Skipping Fact_Sales -> sales_fact_v2 (use --include-sales to enable).")
         results.append(sync_stock_snapshot(conn, xl))
         results.append(sync_po_lines(conn, xl))
         results.append(sync_anchors(conn, xl))

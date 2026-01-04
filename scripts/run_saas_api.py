@@ -4,17 +4,23 @@ Run the internal analytics API (no external deps).
 
 Endpoints:
   GET /kpis/last30
+  GET /kpis/sku_share
   GET /timeseries/monthly
   GET /calendar/daily
   GET /compare/summary
   GET /filters/options
+  GET /health/summary
+  GET /catalog
 
 Query params:
   start_date=YYYY-MM-DD
   end_date=YYYY-MM-DD
   store=CODE1,CODE2
+  store_exclude=CODE1,CODE2
   sku=SKU1,SKU2
+  sku_exclude=SKU1,SKU2
   include_returns=true|false
+  include_inventory=true|false
 """
 
 import argparse
