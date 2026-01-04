@@ -23,7 +23,9 @@ def _parse_date(value: Optional[str]) -> Optional[date]:
 
 def _build_filter_clause(
     store_codes: Optional[Iterable[str]] = None,
+    store_exclude: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
+    sku_exclude: Optional[Iterable[str]] = None,
     include_returns: bool = False,
 ) -> tuple[str, list]:
     clauses = []
@@ -33,11 +35,21 @@ def _build_filter_clause(
         if store_list:
             clauses.append("store_code IN (%s)" % ",".join(["?"] * len(store_list)))
             params.extend(store_list)
+    if store_exclude:
+        store_ex_list = [s for s in store_exclude if s]
+        if store_ex_list:
+            clauses.append("store_code NOT IN (%s)" % ",".join(["?"] * len(store_ex_list)))
+            params.extend(store_ex_list)
     if sku_keys:
         sku_list = [s for s in sku_keys if s]
         if sku_list:
             clauses.append("sku_key IN (%s)" % ",".join(["?"] * len(sku_list)))
             params.extend(sku_list)
+    if sku_exclude:
+        sku_ex_list = [s for s in sku_exclude if s]
+        if sku_ex_list:
+            clauses.append("sku_key NOT IN (%s)" % ",".join(["?"] * len(sku_ex_list)))
+            params.extend(sku_ex_list)
     if not include_returns:
         clauses.append("status NOT IN ('CANCELLED','RETURNED')")
     if clauses:
@@ -69,10 +81,18 @@ def _aggregate_range(
     start_date: date,
     end_date: date,
     store_codes: Optional[Iterable[str]] = None,
+    store_exclude: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
+    sku_exclude: Optional[Iterable[str]] = None,
     include_returns: bool = False,
 ) -> dict:
-    filter_clause, params = _build_filter_clause(store_codes, sku_keys, include_returns)
+    filter_clause, params = _build_filter_clause(
+        store_codes,
+        store_exclude,
+        sku_keys,
+        sku_exclude,
+        include_returns,
+    )
     _ensure_fx_coverage(conn, start_date, end_date, filter_clause, params)
 
     sql = (
@@ -104,10 +124,18 @@ def _daily_series(
     start_date: date,
     end_date: date,
     store_codes: Optional[Iterable[str]] = None,
+    store_exclude: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
+    sku_exclude: Optional[Iterable[str]] = None,
     include_returns: bool = False,
 ) -> list[dict]:
-    filter_clause, params = _build_filter_clause(store_codes, sku_keys, include_returns)
+    filter_clause, params = _build_filter_clause(
+        store_codes,
+        store_exclude,
+        sku_keys,
+        sku_exclude,
+        include_returns,
+    )
     _ensure_fx_coverage(conn, start_date, end_date, filter_clause, params)
 
     sql = (
@@ -153,7 +181,9 @@ def get_last30_kpis(
     conn: sqlite3.Connection,
     end_date: Optional[str] = None,
     store_codes: Optional[Iterable[str]] = None,
+    store_exclude: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
+    sku_exclude: Optional[Iterable[str]] = None,
     include_returns: bool = False,
 ) -> dict:
     ensure_sales_views(conn)
@@ -161,11 +191,29 @@ def get_last30_kpis(
     end_dt = _parse_date(end_date) or _today_almaty()
     start_dt = end_dt - timedelta(days=29)
 
-    current = _aggregate_range(conn, start_dt, end_dt, store_codes, sku_keys, include_returns)
+    current = _aggregate_range(
+        conn,
+        start_dt,
+        end_dt,
+        store_codes,
+        store_exclude,
+        sku_keys,
+        sku_exclude,
+        include_returns,
+    )
 
     prev_end = start_dt - timedelta(days=1)
     prev_start = prev_end - timedelta(days=29)
-    previous = _aggregate_range(conn, prev_start, prev_end, store_codes, sku_keys, include_returns)
+    previous = _aggregate_range(
+        conn,
+        prev_start,
+        prev_end,
+        store_codes,
+        store_exclude,
+        sku_keys,
+        sku_exclude,
+        include_returns,
+    )
 
     deltas = {
         "units": current["units"] - previous["units"],
@@ -185,7 +233,16 @@ def get_last30_kpis(
         "previous": previous,
         "delta": deltas,
         "delta_pct": deltas_pct,
-        "series": _daily_series(conn, start_dt, end_dt, store_codes, sku_keys, include_returns),
+        "series": _daily_series(
+            conn,
+            start_dt,
+            end_dt,
+            store_codes,
+            store_exclude,
+            sku_keys,
+            sku_exclude,
+            include_returns,
+        ),
     }
 
 
@@ -193,7 +250,9 @@ def get_timeseries_monthly(
     conn: sqlite3.Connection,
     end_date: Optional[str] = None,
     store_codes: Optional[Iterable[str]] = None,
+    store_exclude: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
+    sku_exclude: Optional[Iterable[str]] = None,
     include_returns: bool = False,
 ) -> dict:
     ensure_sales_views(conn)
@@ -206,17 +265,23 @@ def get_timeseries_monthly(
     for _ in range(11):
         start_month = (start_month - timedelta(days=1)).replace(day=1)
 
-    filter_clause, params = _build_filter_clause(store_codes, sku_keys, include_returns)
+    filter_clause, params = _build_filter_clause(
+        store_codes,
+        store_exclude,
+        sku_keys,
+        sku_exclude,
+        include_returns,
+    )
     _ensure_fx_coverage(conn, start_month, end_dt, filter_clause, params)
 
     sql = (
-        "SELECT month_start, "
-        "SUM(units) AS units, "
-        "SUM(revenue) AS revenue, "
-        "SUM(cogs) AS cogs, "
-        "SUM(profit) AS profit "
-        "FROM v_sales_monthly "
-        "WHERE month_start BETWEEN ? AND ?"
+        "SELECT strftime('%Y-%m-01', order_date) AS month_start, "
+        "SUM(quantity) AS units, "
+        "SUM(line_net_rev) AS revenue, "
+        "SUM(cogs_line) AS cogs, "
+        "SUM(profit_line) AS profit "
+        "FROM v_sales_enriched "
+        "WHERE order_date BETWEEN ? AND ?"
         f"{filter_clause} "
         "GROUP BY month_start "
         "ORDER BY month_start"
@@ -259,7 +324,9 @@ def get_calendar_daily(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     store_codes: Optional[Iterable[str]] = None,
+    store_exclude: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
+    sku_exclude: Optional[Iterable[str]] = None,
     include_returns: bool = False,
 ) -> dict:
     ensure_sales_views(conn)
@@ -267,7 +334,16 @@ def get_calendar_daily(
     end_dt = _parse_date(end_date) or _today_almaty()
     start_dt = _parse_date(start_date) or (end_dt - timedelta(days=59))
 
-    series = _daily_series(conn, start_dt, end_dt, store_codes, sku_keys, include_returns)
+    series = _daily_series(
+        conn,
+        start_dt,
+        end_dt,
+        store_codes,
+        store_exclude,
+        sku_keys,
+        sku_exclude,
+        include_returns,
+    )
 
     return {
         "start_date": start_dt.isoformat(),
@@ -281,7 +357,9 @@ def get_compare_summary(
     start_date: str,
     end_date: str,
     store_codes: Optional[Iterable[str]] = None,
+    store_exclude: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
+    sku_exclude: Optional[Iterable[str]] = None,
     include_returns: bool = False,
 ) -> dict:
     ensure_sales_views(conn)
@@ -298,8 +376,26 @@ def get_compare_summary(
     prev_end = start_dt - timedelta(days=1)
     prev_start = prev_end - timedelta(days=window_days - 1)
 
-    period_a = _aggregate_range(conn, start_dt, end_dt, store_codes, sku_keys, include_returns)
-    period_b = _aggregate_range(conn, prev_start, prev_end, store_codes, sku_keys, include_returns)
+    period_a = _aggregate_range(
+        conn,
+        start_dt,
+        end_dt,
+        store_codes,
+        store_exclude,
+        sku_keys,
+        sku_exclude,
+        include_returns,
+    )
+    period_b = _aggregate_range(
+        conn,
+        prev_start,
+        prev_end,
+        store_codes,
+        store_exclude,
+        sku_keys,
+        sku_exclude,
+        include_returns,
+    )
 
     deltas = {
         "units": period_a["units"] - period_b["units"],

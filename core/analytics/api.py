@@ -37,11 +37,15 @@ def _with_db(db_path: Optional[str] = None) -> sqlite3.Connection:
 
 def _extract_common_params(query: dict[str, list[str]]) -> dict[str, Any]:
     store_codes = _parse_list(query.get("store", [""])[0])
+    store_exclude = _parse_list(query.get("store_exclude", [""])[0])
     sku_keys = _parse_list(query.get("sku", [""])[0])
+    sku_exclude = _parse_list(query.get("sku_exclude", [""])[0])
     include_returns = _parse_bool(query.get("include_returns", [""])[0])
     return {
         "store_codes": store_codes or None,
+        "store_exclude": store_exclude or None,
         "sku_keys": sku_keys or None,
+        "sku_exclude": sku_exclude or None,
         "include_returns": include_returns,
     }
 
