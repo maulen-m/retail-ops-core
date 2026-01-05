@@ -10,24 +10,36 @@ from ZIP files, groups them by store/type, and creates organized output folders 
 Usage:
     python scripts/build_daily_waybills.py
     python scripts/build_daily_waybills.py --date 2025-12-10
+    python scripts/build_daily_waybills.py --lookback-days 14
     python scripts/build_daily_waybills.py --dry-run --verbose
 """
 
 import argparse
 import csv
 import logging
+import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Optional
 
+# Re-exec with venv python if available (ensures dependencies)
+PROJECT_ROOT = Path(__file__).parent.parent
+VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
+if os.environ.get("VIRTUAL_ENV") is None and VENV_PYTHON.exists():
+    if Path(sys.executable).resolve() != VENV_PYTHON.resolve():
+        os.execv(str(VENV_PYTHON), [str(VENV_PYTHON)] + sys.argv)
+
 import pandas as pd
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(
@@ -36,11 +48,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Project root
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+# Kaspi dates are in Asia/Almaty timezone
+ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
+# Project root
+sys.path.insert(0, str(PROJECT_ROOT))
+load_dotenv(PROJECT_ROOT / ".env")
+
+from core.db import DEFAULT_DB_PATH, get_db
 from core.paths import data_path, get_data_root
+from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
+from core.waybill.pdf_grouper import merge_pdfs
+from core.integrations.kaspi_api_client import KaspiAPIClient, STORE_TOKEN_MAP, KaspiAuthError
 
 # Default paths
 DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
@@ -104,11 +123,17 @@ class WaybillGroup:
     store_name: str
     items: list[OrderItem] = field(default_factory=list)
     pdf_path: Optional[Path] = None
+    pdf_paths: list[Path] = field(default_factory=list)
     output_filename: str = ""
 
     @property
     def order_id(self) -> str:
         return self.items[0].order_id if self.items else ""
+
+    @property
+    def order_ids(self) -> list[str]:
+        ids = [item.order_id for item in self.items if item.order_id]
+        return sorted(set(ids))
 
     @property
     def kaspi_name_core(self) -> str:
@@ -212,17 +237,265 @@ def normalize_store_name(value: Any) -> str:
     return store_str
 
 
+def resolve_db_path(explicit: Optional[Path]) -> Optional[Path]:
+    """Resolve DB path, preferring DATA_DIR if present."""
+    if explicit:
+        return explicit
+    data_db = data_path("db", "app.db")
+    if data_db.exists():
+        return data_db
+    if DEFAULT_DB_PATH.exists():
+        return DEFAULT_DB_PATH
+    return None
+
+
+def _timestamp_to_date(ts: Optional[int]) -> Optional[date]:
+    """Convert millisecond timestamp to date."""
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts / 1000, tz=ALMATY_TZ).date()
+    except (ValueError, OSError):
+        return None
+
+
+def _planned_date_from_order(order: dict) -> Optional[date]:
+    """Extract planned courier transmission date from API order."""
+    delivery = order.get('attributes', {}).get('kaspiDelivery', {})
+    planned_ts = delivery.get('courierTransmissionPlanningDate') or delivery.get('plannedDeliveryDate')
+    return _timestamp_to_date(planned_ts)
+
+
+def get_api_order_ids_for_date(
+    target_date: date,
+    since_days: int = 7,
+    store_filter: Optional[str] = None,
+    verbose: bool = False,
+) -> dict[str, set[str]]:
+    """Fetch KASPI_DELIVERY orders from API and return order IDs for target_date."""
+    orders_by_store: dict[str, set[str]] = {}
+
+    stores = list(STORE_TOKEN_MAP.keys())
+    if store_filter:
+        store_filter = store_filter.upper()
+        if store_filter in STORE_TOKEN_MAP:
+            stores = [store_filter]
+
+    since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
+
+    for store_code in stores:
+        try:
+            client = KaspiAPIClient(store_code=store_code)
+            orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+        except KaspiAuthError as exc:
+            logger.warning(f"{store_code}: Auth error - {exc}")
+            continue
+        except Exception as exc:
+            logger.warning(f"{store_code}: API error - {exc}")
+            continue
+
+        if verbose:
+            logger.info(f"{store_code}: API returned {len(orders)} orders")
+
+        ids: set[str] = set()
+        for order in orders:
+            planned_date = _planned_date_from_order(order)
+            if planned_date == target_date:
+                order_code = order.get('attributes', {}).get('code', '')
+                if order_code:
+                    ids.add(order_code)
+
+        if ids:
+            orders_by_store[store_code] = ids
+        if verbose:
+            logger.info(f"{store_code}: {len(ids)} orders for {target_date}")
+
+    return orders_by_store
+
+
+def normalize_store_display(value: Any) -> str:
+    """Normalize DB store_code to display store name."""
+    if pd.isna(value) or not value:
+        return "UNKNOWN"
+    raw = str(value).strip()
+    if not raw:
+        return "UNKNOWN"
+    upper = raw.upper()
+    db_map = {
+        "UNIVERSAL": "Universal",
+        "ACMEWEAR": "AcmeWear",
+        "PP1": "AcmeWear",
+        "PP2": "AcmeWear",
+        "11KZ": "11KZ",
+        "STOREB": "STORE-B",
+        "STORE-B": "STORE-B",
+        "MELVIS": "Store-C",
+    }
+    if upper in db_map:
+        return db_map[upper]
+    return normalize_store_name(raw)
+
+
+def _coerce_str(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def _pick_size(assigned_size: Any, my_size: Any) -> str:
+    """Prefer assigned_size from DB, fallback to my_size."""
+    size = _coerce_str(assigned_size)
+    if size and size.lower() not in ("nan", "none"):
+        return size
+    size = _coerce_str(my_size)
+    if size and size.lower() not in ("nan", "none"):
+        return size
+    return ""
+
+
+def read_db_orders(
+    db_path: Path,
+    target_date: date,
+    lookback_days: Optional[int] = None,
+    order_id_filter: Optional[set[str]] = None,
+) -> list[OrderItem]:
+    """
+    Read orders from fact_orders_kaspi (DB-first).
+
+    Filters for orders where:
+    - assigned_size OR my_size is present
+    - planned_shipment_date within [target_date - lookback_days, target_date]
+      OR order_id_filter is provided (API-based selection)
+    """
+    if not db_path or not db_path.exists():
+        logger.warning(f"DB not found: {db_path}")
+        return []
+
+    with get_db(db_path) as conn:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_orders_kaspi'"
+        ).fetchone()
+        if not table:
+            logger.warning("DB missing fact_orders_kaspi table; falling back to CRM")
+            return []
+
+        query = """
+            SELECT
+                order_id,
+                store_code,
+                kaspi_offer_name,
+                sku_key,
+                sku_id,
+                quantity,
+                assigned_size,
+                my_size,
+                planned_shipment_date
+            FROM fact_orders_kaspi
+            WHERE (
+                (assigned_size IS NOT NULL AND assigned_size != '')
+                OR (my_size IS NOT NULL AND my_size != '')
+            )
+        """
+        params: list[str] = []
+        if order_id_filter:
+            placeholders = ",".join(["?"] * len(order_id_filter))
+            query += f" AND order_id IN ({placeholders})"
+            params.extend(sorted(order_id_filter))
+        else:
+            query += " AND planned_shipment_date <= ?"
+            params.append(target_date.isoformat())
+            if lookback_days is not None:
+                min_date = (target_date - timedelta(days=lookback_days)).isoformat()
+                query += " AND planned_shipment_date >= ?"
+                params.append(min_date)
+
+        rows = conn.execute(query, params).fetchall()
+
+    orders: list[OrderItem] = []
+    db_orders: list[OrderItem] = []
+    db_orders: list[OrderItem] = []
+    skipped_no_size = 0
+    skipped_no_date = 0
+
+    for row in rows:
+        order_id = _coerce_str(row["order_id"])
+        if order_id.endswith(".0"):
+            order_id = order_id[:-2]
+        if not order_id or order_id == "0":
+            continue
+
+        size = _pick_size(row["assigned_size"], row["my_size"])
+        if not size:
+            skipped_no_size += 1
+            continue
+
+        planned_date = parse_date(row["planned_shipment_date"])
+        if not planned_date:
+            skipped_no_date += 1
+            continue
+
+        kaspi_offer_name = _coerce_str(row["kaspi_offer_name"])
+        sku_key = _coerce_str(row["sku_key"])
+        sku_id = _coerce_str(row["sku_id"])
+
+        kaspi_name_core = ""
+        if kaspi_offer_name:
+            kaspi_name_core = extract_name_core(kaspi_offer_name)
+        if not kaspi_name_core or kaspi_name_core.lower() == "unknown":
+            kaspi_name_core = sku_key or sku_id or "UNKNOWN"
+
+        quantity = row["quantity"] if row["quantity"] is not None else 1
+
+        item = OrderItem(
+            order_id=order_id,
+            store_name=normalize_store_display(row["store_code"]),
+            kaspi_name_core=kaspi_name_core,
+            my_size=size,
+            sku_key=sku_key,
+            sku_id=sku_id,
+            quantity=int(quantity),
+            kaspi_offer_name=kaspi_offer_name,
+            planned_date=planned_date,
+        )
+        orders.append(item)
+
+    if order_id_filter:
+        logger.info(
+            f"Read {len(orders)} orders from DB with size decisions "
+            f"(API order-id selection: {len(order_id_filter)})"
+        )
+    elif lookback_days is not None:
+        min_date = target_date - timedelta(days=lookback_days)
+        logger.info(
+            f"Read {len(orders)} orders from DB with size decisions "
+            f"(date range {min_date} to {target_date})"
+        )
+    else:
+        logger.info(
+            f"Read {len(orders)} orders from DB with size decisions (date <= {target_date})"
+        )
+    if skipped_no_size:
+        logger.info(f"Skipped {skipped_no_size} DB rows without size")
+    if skipped_no_date:
+        logger.info(f"Skipped {skipped_no_date} DB rows without planned date")
+
+    return orders
+
+
 def read_crm_orders(
     crm_path: Path,
     sheet_name: str,
     target_date: date = None,
+    order_id_filter: Optional[set[str]] = None,
+    lookback_days: Optional[int] = None,
+    apply_date_filter: bool = True,
 ) -> list[OrderItem]:
     """
     Read orders from CRM Excel file.
 
     Filters for orders where:
     - MY_SIZE is filled (not empty)
-    - PLANNED_SHIPPING_DATE <= target_date (if specified)
+    - PLANNED_SHIPPING_DATE within [target_date - lookback_days, target_date] (if specified)
 
     Returns list of OrderItem objects.
     """
@@ -235,6 +508,8 @@ def read_crm_orders(
     orders = []
     skipped_no_size = 0
     skipped_date = 0
+    skipped_no_date = 0
+    skipped_not_target = 0
 
     for _, row in df.iterrows():
         # Check MY_SIZE is filled
@@ -253,16 +528,30 @@ def read_crm_orders(
         order_id = str(order_id).strip()
         if order_id.endswith('.0'):
             order_id = order_id[:-2]
+        if order_id in ("", "0"):
+            continue
+        if order_id_filter is not None and order_id not in order_id_filter:
+            skipped_not_target += 1
+            continue
 
         # Get planned date
         planned_date = parse_date(row.get('PLANNED_SHIPPING_DATE'))
         if not planned_date:
             planned_date = parse_date(row.get('Плановая дата передачи курьеру'))
 
-        # Filter by date - Phase 12 Part 6: exact match (was > which allowed all past dates)
-        if target_date and planned_date and planned_date != target_date:
-            skipped_date += 1
-            continue
+        # Filter by date window (skip if API already filtered order IDs)
+        if apply_date_filter and target_date:
+            if not planned_date:
+                skipped_no_date += 1
+                continue
+            if planned_date > target_date:
+                skipped_date += 1
+                continue
+            if lookback_days is not None:
+                min_date = target_date - timedelta(days=lookback_days)
+                if planned_date < min_date:
+                    skipped_date += 1
+                    continue
 
         # Get store name
         store_name = row.get('STORE_NAME')
@@ -304,9 +593,141 @@ def read_crm_orders(
 
     logger.info(f"Read {len(orders)} orders with MY_SIZE filled")
     logger.info(f"Skipped {skipped_no_size} orders without MY_SIZE")
-    logger.info(f"Skipped {skipped_date} orders with future planned date")
+    if apply_date_filter:
+        if skipped_no_date:
+            logger.info(f"Skipped {skipped_no_date} orders without planned date")
+        logger.info(f"Skipped {skipped_date} orders outside planned date window")
+    if order_id_filter is not None:
+        logger.info(f"Skipped {skipped_not_target} orders not in target set")
 
     return orders
+
+
+def ensure_pdf_merger() -> None:
+    """Ensure PDF merge dependency is available (pypdf preferred)."""
+    try:
+        import pypdf  # noqa: F401
+        return
+    except Exception:
+        try:
+            import PyPDF2  # noqa: F401
+            return
+        except Exception:
+            logger.warning("Missing PDF merge dependency. Installing pypdf...")
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--quiet", "pypdf"],
+                    check=True,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "pypdf/PyPDF2 is required for PDF merging. "
+                    "Install with: python3 -m pip install pypdf"
+                ) from exc
+
+
+def enrich_orders_with_crm(
+    db_orders: list[OrderItem],
+    crm_path: Path,
+    sheet_name: str,
+    target_date: date,
+    lookback_days: Optional[int] = None,
+    apply_date_filter: bool = True,
+) -> list[OrderItem]:
+    """Use CRM rows to enrich grouping fields (Kaspi_name_core, MY_SIZE, qty)."""
+    if not db_orders:
+        return []
+
+    order_ids = {o.order_id for o in db_orders}
+    crm_orders = read_crm_orders(
+        crm_path,
+        sheet_name,
+        target_date,
+        order_id_filter=order_ids,
+        lookback_days=lookback_days,
+        apply_date_filter=apply_date_filter,
+    )
+    if not crm_orders:
+        return db_orders
+
+    crm_by_id: dict[str, list[OrderItem]] = defaultdict(list)
+    for item in crm_orders:
+        crm_by_id[item.order_id].append(item)
+
+    db_by_id: dict[str, list[OrderItem]] = defaultdict(list)
+    for item in db_orders:
+        db_by_id[item.order_id].append(item)
+
+    merged: list[OrderItem] = []
+    for order_id in order_ids:
+        if order_id in crm_by_id:
+            merged.extend(crm_by_id[order_id])
+        else:
+            merged.extend(db_by_id.get(order_id, []))
+
+    logger.info(
+        f"Enriched {len(crm_by_id)} orders from CRM for grouping fields"
+    )
+    return merged
+
+
+def get_crm_missing_info(
+    crm_path: Path,
+    sheet_name: str,
+    target_date: date,
+    order_ids: set[str],
+    lookback_days: Optional[int] = None,
+) -> tuple[set[str], set[str]]:
+    """
+    Return (missing_in_crm, missing_size) for target_date.
+
+    missing_in_crm: order_ids not present in CRM rows for target_date.
+    missing_size: order_ids present in CRM rows for target_date but MY_SIZE empty.
+    """
+    if not crm_path.exists() or not order_ids:
+        return set(order_ids), set()
+
+    df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    missing_in_crm = set(order_ids)
+    missing_size = set()
+
+    for _, row in df.iterrows():
+        # Get order_id
+        order_id = row.get('OrderID')
+        if pd.isna(order_id):
+            order_id = row.get('№ заказа')
+        if pd.isna(order_id):
+            continue
+        order_id = str(order_id).strip()
+        if order_id.endswith('.0'):
+            order_id = order_id[:-2]
+        if order_id in ("", "0"):
+            continue
+
+        if order_id not in order_ids:
+            continue
+
+        # Filter by date window
+        planned_date = parse_date(row.get('PLANNED_SHIPPING_DATE'))
+        if not planned_date:
+            planned_date = parse_date(row.get('Плановая дата передачи курьеру'))
+        if not planned_date:
+            continue
+        if planned_date > target_date:
+            continue
+        if lookback_days is not None:
+            min_date = target_date - timedelta(days=lookback_days)
+            if planned_date < min_date:
+                continue
+
+        missing_in_crm.discard(order_id)
+
+        # Check MY_SIZE
+        my_size = str(row.get('MY_SIZE', '')).strip()
+        if not my_size or my_size.lower() in ('nan', 'none', ''):
+            missing_size.add(order_id)
+
+    return missing_in_crm, missing_size
 
 
 def load_waybills_from_folder(waybill_folder: Path) -> dict[str, Path]:
@@ -432,46 +853,86 @@ def group_orders(
     for order in orders:
         by_order_id[order.order_id].append(order)
 
-    # Process each order_id
-    for order_id, items in by_order_id.items():
-        # Check if waybill exists
+    # Identify multi-line order IDs
+    multi_line_ids = {oid for oid, items in by_order_id.items() if len(items) > 1}
+
+    # MULTI_LINE: Same order_id, multiple different products (one PDF per order)
+    for order_id in multi_line_ids:
+        items = by_order_id[order_id]
         pdf_path = waybill_map.get(order_id)
         if not pdf_path:
             missing.extend(items)
             continue
-
         store_name = items[0].store_name
-
-        # MULTI_LINE: Same order_id, multiple different products
-        if len(items) > 1:
-            group = WaybillGroup(
-                group_type="MULTI_LINE",
-                store_name=store_name,
-                items=items,
-                pdf_path=pdf_path,
-            )
-            groups.append(group)
-            continue
-
-        item = items[0]
-
-        # MULTI_QTY: Single product with quantity > 1
-        if item.quantity > 1:
-            group = WaybillGroup(
-                group_type="MULTI_QTY",
-                store_name=store_name,
-                items=[item],
-                pdf_path=pdf_path,
-            )
-            groups.append(group)
-            continue
-
-        # NORMAL: Single product, quantity = 1
         group = WaybillGroup(
-            group_type="NORMAL",
+            group_type="MULTI_LINE",
+            store_name=store_name,
+            items=items,
+            pdf_path=pdf_path,
+            pdf_paths=[pdf_path],
+        )
+        groups.append(group)
+
+    # MULTI_QTY: quantity > 1, one PDF per order (exclude multi-line)
+    for order_id, items in by_order_id.items():
+        if order_id in multi_line_ids:
+            continue
+        if not items:
+            continue
+        item = items[0]
+        if item.quantity <= 1:
+            continue
+        pdf_path = waybill_map.get(order_id)
+        if not pdf_path:
+            missing.extend(items)
+            continue
+        store_name = item.store_name
+        group = WaybillGroup(
+            group_type="MULTI_QTY",
             store_name=store_name,
             items=[item],
             pdf_path=pdf_path,
+            pdf_paths=[pdf_path],
+        )
+        groups.append(group)
+
+    # NORMAL: quantity == 1, group by (store, kaspi_name_core, my_size)
+    normal_groups: dict[tuple[str, str, str], list[OrderItem]] = defaultdict(list)
+    for order_id, items in by_order_id.items():
+        if order_id in multi_line_ids:
+            continue
+        if not items:
+            continue
+        item = items[0]
+        if item.quantity != 1:
+            continue
+        key = (item.store_name, item.kaspi_name_core, item.my_size)
+        normal_groups[key].append(item)
+
+    for (store_name, _, _), items in normal_groups.items():
+        # De-duplicate by order_id to avoid double counting
+        unique_items: dict[str, OrderItem] = {}
+        for item in items:
+            if item.order_id and item.order_id not in unique_items:
+                unique_items[item.order_id] = item
+
+        pdf_paths = []
+        grouped_items: list[OrderItem] = []
+        for item in unique_items.values():
+            pdf_path = waybill_map.get(item.order_id)
+            if pdf_path:
+                pdf_paths.append(pdf_path)
+                grouped_items.append(item)
+            else:
+                missing.append(item)
+        if not pdf_paths:
+            continue
+        group = WaybillGroup(
+            group_type="NORMAL",
+            store_name=store_name,
+            items=grouped_items,
+            pdf_path=pdf_paths[0],
+            pdf_paths=pdf_paths,
         )
         groups.append(group)
 
@@ -485,8 +946,9 @@ def generate_filename(group: WaybillGroup, index: int) -> str:
     size = sanitize_filename(group.my_size)
 
     if group.group_type == "NORMAL":
-        # {kaspi_name_core}_{MY_SIZE}-{QTY}.pdf
-        return f"{name_core}_{size}-{group.total_quantity}.pdf"
+        # {kaspi_name_core}_{MY_SIZE}-{COUNT}.pdf (count = number of orders)
+        count = len(group.pdf_paths) if group.pdf_paths else group.total_quantity
+        return f"{name_core}_{size}-{count}.pdf"
 
     elif group.group_type == "MULTI_QTY":
         # Местовая-{N}_{core}_{size}-{qty}.pdf
@@ -618,34 +1080,69 @@ def build_store_output(
     multi_qty_groups.sort(key=manifest_sort_key)
     multi_line_groups.sort(key=manifest_sort_key)
 
+    used_filenames: set[str] = set()
+
+    def ensure_unique(filename: str, order_id: str) -> str:
+        """Ensure filename uniqueness within the store output."""
+        if filename not in used_filenames:
+            used_filenames.add(filename)
+            return filename
+        stem, ext = os.path.splitext(filename)
+        suffix = order_id or "dup"
+        candidate = f"{stem}_{suffix}{ext}"
+        counter = 2
+        while candidate in used_filenames:
+            candidate = f"{stem}_{suffix}_{counter}{ext}"
+            counter += 1
+        used_filenames.add(candidate)
+        return candidate
+
     # Process NORMAL
     for group in normal_groups:
         filename = generate_filename(group, 0)
+        filename = ensure_unique(filename, group.order_id)
         output_path = normal_dir / filename
         group.output_filename = f"NORMAL_singles/{filename}"
 
-        if group.pdf_path and group.pdf_path.exists():
-            shutil.copy2(group.pdf_path, output_path)
+        pdf_paths = group.pdf_paths or ([group.pdf_path] if group.pdf_path else [])
+        if pdf_paths:
+            if len(pdf_paths) > 1:
+                merge_pdfs(pdf_paths, output_path)
+            else:
+                if pdf_paths[0].exists():
+                    shutil.copy2(pdf_paths[0], output_path)
             stats['normal'] += 1
 
     # Process MULTI_QTY
     for i, group in enumerate(multi_qty_groups, 1):
         filename = generate_filename(group, i)
+        filename = ensure_unique(filename, group.order_id)
         output_path = multi_qty_dir / filename
         group.output_filename = f"SPECIAL_multi_qty/{filename}"
 
-        if group.pdf_path and group.pdf_path.exists():
-            shutil.copy2(group.pdf_path, output_path)
+        pdf_paths = group.pdf_paths or ([group.pdf_path] if group.pdf_path else [])
+        if pdf_paths:
+            if len(pdf_paths) > 1:
+                merge_pdfs(pdf_paths, output_path)
+            else:
+                if pdf_paths[0].exists():
+                    shutil.copy2(pdf_paths[0], output_path)
             stats['multi_qty'] += 1
 
     # Process MULTI_LINE
     for i, group in enumerate(multi_line_groups, 1):
         filename = generate_filename(group, i)
+        filename = ensure_unique(filename, group.order_id)
         output_path = multi_line_dir / filename
         group.output_filename = f"SPECIAL_multi_line/{filename}"
 
-        if group.pdf_path and group.pdf_path.exists():
-            shutil.copy2(group.pdf_path, output_path)
+        pdf_paths = group.pdf_paths or ([group.pdf_path] if group.pdf_path else [])
+        if pdf_paths:
+            if len(pdf_paths) > 1:
+                merge_pdfs(pdf_paths, output_path)
+            else:
+                if pdf_paths[0].exists():
+                    shutil.copy2(pdf_paths[0], output_path)
             stats['multi_line'] += 1
 
     # Generate manifests
@@ -678,7 +1175,7 @@ def write_manifest(groups: list[WaybillGroup], output_path: Path, manifest_type:
             row = {
                 'type': manifest_type,
                 'store': group.store_name,
-                'order_id': group.order_id,
+                'order_id': ';'.join(group.order_ids),
                 'kaspi_name_core': group.kaspi_name_core,
                 'size': group.my_size,
                 'sku_key': group.sku_key,
@@ -722,7 +1219,7 @@ def write_build_log(
             writer.writerow({
                 'type': group.group_type,
                 'store': group.store_name,
-                'order_id': group.order_id,
+                'order_id': ';'.join(group.order_ids),
                 'kaspi_name_core': group.kaspi_name_core,
                 'size': group.my_size,
                 'sku_key': group.sku_key,
@@ -752,9 +1249,16 @@ def write_build_log(
             })
 
 
-def write_missing_orders(missing: list[OrderItem], output_path: Path):
+def write_missing_orders(
+    missing: list[OrderItem],
+    output_path: Path,
+    extra_missing: Optional[list[dict]] = None,
+    rows: Optional[list[dict]] = None,
+):
     """Write missing_orders.csv."""
-    if not missing:
+    if rows is None:
+        rows = collect_missing_rows(missing, extra_missing)
+    if not rows:
         return
 
     fieldnames = ['store', 'order_id', 'kaspi_name_core', 'size', 'sku_key', 'sku_id', 'reason']
@@ -762,17 +1266,55 @@ def write_missing_orders(missing: list[OrderItem], output_path: Path):
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
 
-        for item in missing:
-            writer.writerow({
-                'store': item.store_name,
-                'order_id': item.order_id,
-                'kaspi_name_core': item.kaspi_name_core,
-                'size': item.my_size,
-                'sku_key': item.sku_key,
-                'sku_id': item.sku_id,
-                'reason': 'PDF_NOT_FOUND',
-            })
+    return rows
+
+
+def collect_missing_rows(
+    missing: list[OrderItem],
+    extra_missing: Optional[list[dict]] = None,
+) -> list[dict]:
+    """Collect unique missing rows for CSV/logging."""
+    rows: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_row(row: dict) -> None:
+        oid = str(row.get('order_id', '')).strip()
+        if not oid or oid == "0" or oid.lower() == "nan":
+            return
+        reason = str(row.get('reason', '')).strip()
+        key = (oid, reason)
+        if key in seen:
+            return
+        seen.add(key)
+        rows.append({
+            'store': row.get('store', ''),
+            'order_id': oid,
+            'kaspi_name_core': row.get('kaspi_name_core', ''),
+            'size': row.get('size', ''),
+            'sku_key': row.get('sku_key', ''),
+            'sku_id': row.get('sku_id', ''),
+            'reason': reason,
+        })
+
+    for item in missing:
+        add_row({
+            'store': item.store_name,
+            'order_id': item.order_id,
+            'kaspi_name_core': item.kaspi_name_core,
+            'size': item.my_size,
+            'sku_key': item.sku_key,
+            'sku_id': item.sku_id,
+            'reason': 'MISSING_PDF',
+        })
+
+    if extra_missing:
+        for row in extra_missing:
+            add_row(row)
+
+    return rows
 
 
 def write_package_summary(
@@ -819,10 +1361,13 @@ def write_package_summary(
 
 def main(
     crm_path: Path = None,
+    db_path: Path = None,
     waybill_dir: Path = None,
     output_dir: Path = None,
     sheet_name: str = None,
     target_date: date = None,
+    lookback_days: Optional[int] = 14,
+    exact_date: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> dict:
@@ -839,9 +1384,19 @@ def main(
     waybill_dir = Path(waybill_dir) if waybill_dir else DEFAULT_WAYBILL_DIR
     output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     sheet_name = sheet_name or DEFAULT_SHEET_NAME
-    target_date = target_date or date.today()
+    target_date = target_date or datetime.now(ALMATY_TZ).date()
+    if exact_date:
+        lookback_days = 0
 
-    logger.info(f"Building waybills for {target_date}")
+    ensure_pdf_merger()
+
+    if lookback_days is not None:
+        min_date = target_date - timedelta(days=lookback_days)
+        logger.info(
+            f"Building waybills for {target_date} (date range {min_date} to {target_date})"
+        )
+    else:
+        logger.info(f"Building waybills for {target_date} (date <= {target_date})")
     logger.info(f"Data root: {get_data_root()}")
     logger.info(f"CRM: {crm_path}")
     logger.info(f"Waybill dir: {waybill_dir}")
@@ -858,12 +1413,76 @@ def main(
         'multi_line': 0,
     }
 
-    # Read CRM orders
-    orders = read_crm_orders(crm_path, sheet_name, target_date)
+    # Read orders (DB-first, CRM fallback)
+    resolved_db_path = resolve_db_path(db_path)
+    orders: list[OrderItem] = []
+    api_order_ids: set[str] = set()
+
+    # Prefer Kaspi API planned date for selection (freshest)
+    api_since_days = max(lookback_days if lookback_days is not None else 7, 7)
+    api_orders_by_store = get_api_order_ids_for_date(
+        target_date=target_date,
+        since_days=api_since_days,
+        verbose=verbose,
+    )
+    if api_orders_by_store:
+        api_order_ids = set().union(*api_orders_by_store.values())
+        logger.info(
+            f"API selection: {len(api_order_ids)} orders for {target_date}"
+        )
+
+    if resolved_db_path:
+        logger.info(f"DB: {resolved_db_path}")
+        db_orders = read_db_orders(
+            resolved_db_path,
+            target_date,
+            lookback_days,
+            order_id_filter=api_order_ids if api_order_ids else None,
+        )
+        orders = db_orders
+        if orders:
+            logger.info("Using DB for order selection")
+            orders = enrich_orders_with_crm(
+                orders,
+                crm_path,
+                sheet_name,
+                target_date,
+                lookback_days,
+                apply_date_filter=not bool(api_order_ids),
+            )
+            # Add CRM-only orders missing in DB to avoid exclusions
+            crm_all = read_crm_orders(
+                crm_path,
+                sheet_name,
+                target_date,
+                order_id_filter=api_order_ids if api_order_ids else None,
+                lookback_days=lookback_days,
+                apply_date_filter=not bool(api_order_ids),
+            )
+            if crm_all:
+                existing_ids = {o.order_id for o in orders}
+                extras = [o for o in crm_all if o.order_id not in existing_ids]
+                if extras:
+                    orders.extend(extras)
+                    logger.info(
+                        f"Added {len(extras)} CRM-only orders not in DB selection"
+                    )
+        else:
+            logger.warning("No eligible orders found in DB; falling back to CRM")
+
+    if not orders:
+        orders = read_crm_orders(
+            crm_path,
+            sheet_name,
+            target_date,
+            order_id_filter=api_order_ids if api_order_ids else None,
+            lookback_days=lookback_days,
+            apply_date_filter=not bool(api_order_ids),
+        )
     stats['orders_read'] = len(orders)
 
     if not orders:
-        logger.warning("No orders found with MY_SIZE filled")
+        logger.warning("No orders found with size decisions")
         return stats
 
     # Load waybills from folder (API downloads) and ZIP files
@@ -874,7 +1493,33 @@ def main(
         # Group orders
         groups, missing = group_orders(orders, waybill_map)
         stats['orders_grouped'] = len(groups)
-        stats['orders_missing'] = len(missing)
+        stats['orders_missing'] = len(
+            {item.order_id for item in missing if item.order_id and item.order_id != "0"}
+        )
+
+        # Missing diagnostics (DB-first workflows)
+        missing_report_rows: list[dict] = []
+        missing_crm_ids: set[str] = set()
+        missing_size_ids: set[str] = set()
+        if db_orders or api_order_ids:
+            base_ids = api_order_ids or {o.order_id for o in db_orders}
+            missing_crm_ids, missing_size_ids = get_crm_missing_info(
+                crm_path, sheet_name, target_date, base_ids, lookback_days
+            )
+            db_store_map = {o.order_id: o.store_name for o in db_orders}
+            for oid in sorted(missing_crm_ids):
+                missing_report_rows.append({
+                    'store': db_store_map.get(oid, ''),
+                    'order_id': oid,
+                    'reason': 'CRM_MISSING_FOR_DATE',
+                })
+            for oid in sorted(missing_size_ids):
+                missing_report_rows.append({
+                    'store': db_store_map.get(oid, ''),
+                    'order_id': oid,
+                    'reason': 'NO_FINAL_SIZE',
+                })
+        missing_rows = collect_missing_rows(missing, missing_report_rows)
 
         # Group by store
         groups_by_store = defaultdict(list)
@@ -908,7 +1553,12 @@ def main(
         # Write top-level files
         if not dry_run:
             write_build_log(groups, missing, output_dir / "build_log.csv")
-            write_missing_orders(missing, output_dir / "missing_orders.csv")
+            write_missing_orders(
+                missing,
+                output_dir / "missing_orders.csv",
+                extra_missing=missing_report_rows,
+                rows=missing_rows,
+            )
             write_package_summary(groups_by_store, output_dir / "package_summary.csv", target_date)
 
     # Summary
@@ -922,6 +1572,12 @@ def main(
     logger.info(f"  NORMAL: {stats['normal']}")
     logger.info(f"  MULTI_QTY: {stats['multi_qty']}")
     logger.info(f"  MULTI_LINE: {stats['multi_line']}")
+    if missing_rows:
+        logger.warning("Missing orders (first 5):")
+        for row in missing_rows[:5]:
+            logger.warning(
+                f"  {row.get('order_id')} | {row.get('store', '')} | {row.get('reason', '')}"
+            )
     logger.info("=" * 50)
 
     return stats
@@ -936,6 +1592,12 @@ if __name__ == "__main__":
         type=Path,
         default=None,
         help=f"Path to CRM Excel file (default: {DEFAULT_CRM_PATH})"
+    )
+    parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Optional DB path (defaults to DATA_DIR/db/app.db if present)"
     )
     parser.add_argument(
         "--waybill-dir",
@@ -962,6 +1624,17 @@ if __name__ == "__main__":
         help="Target date for filtering (YYYY-MM-DD format, default: today)"
     )
     parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=14,
+        help="Include orders with planned date within N days before target (default: 14)"
+    )
+    parser.add_argument(
+        "--exact-date",
+        action="store_true",
+        help="Only include orders with planned date == target_date"
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Don't create output files, just show what would be built"
@@ -982,10 +1655,13 @@ if __name__ == "__main__":
     # Run builder
     stats = main(
         crm_path=args.crm_file,
+        db_path=args.db_path,
         waybill_dir=args.waybill_dir,
         output_dir=args.output_dir,
         sheet_name=args.sheet,
         target_date=target_date,
+        lookback_days=args.lookback_days,
+        exact_date=args.exact_date,
         dry_run=args.dry_run,
         verbose=args.verbose,
     )
