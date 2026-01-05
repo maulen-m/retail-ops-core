@@ -19,7 +19,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.ingest.sales_ingest import ingest_sales
+from core.ingest.sales_ingest import ingest_sales, parse_sales_excel
+from core.db import get_db
 
 
 DEFAULT_CRM_PATH = PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
@@ -35,6 +36,8 @@ def main():
                         help="Sheet name")
     parser.add_argument("--no-ledger", action="store_true",
                         help="Skip ledger events (faster)")
+    parser.add_argument("--no-reconcile", action="store_true",
+                        help="Skip removing DB rows missing from current CRM date range")
     args = parser.parse_args()
 
     print(f"=" * 60)
@@ -49,8 +52,6 @@ def main():
 
     if args.dry_run:
         print("\n[DRY RUN] Parsing only, not writing to DB")
-        # Import parse function for dry run
-        from core.ingest.sales_ingest import parse_sales_excel
         try:
             records = parse_sales_excel(str(args.file), args.sheet)
             print(f"Parsed {len(records)} records")
@@ -63,6 +64,61 @@ def main():
             print(f"ERROR parsing: {e}")
             sys.exit(1)
         return
+
+    if not args.no_reconcile:
+        records = parse_sales_excel(str(args.file), args.sheet)
+        if not records:
+            print("ERROR: No CRM records found; aborting reconcile.")
+            sys.exit(1)
+
+        crm_keys = set()
+        dates = []
+        for row in records:
+            crm_keys.add((
+                str(row.get("order_id") or ""),
+                str(row.get("sku_id") or ""),
+                str(row.get("store_code") or ""),
+                str(row.get("kaspi_offer_name") or ""),
+            ))
+            dates.append(row.get("order_date"))
+
+        min_date = min(dates)
+        max_date = max(dates)
+        print(f"\nReconciling sales_fact_v2 for {min_date} → {max_date}...")
+
+        with get_db() as conn:
+            existing = conn.execute(
+                """
+                SELECT sale_id, order_id, sku_id, store_code, kaspi_offer_name
+                FROM sales_fact_v2
+                WHERE order_date BETWEEN ? AND ?
+                """,
+                (min_date, max_date),
+            ).fetchall()
+            stale_ids = []
+            for row in existing:
+                key = (
+                    str(row["order_id"]),
+                    str(row["sku_id"]),
+                    str(row["store_code"]),
+                    str(row["kaspi_offer_name"] or ""),
+                )
+                if key not in crm_keys:
+                    stale_ids.append(row["sale_id"])
+
+            if stale_ids:
+                print(f"Removing {len(stale_ids)} stale rows from sales_fact_v2...")
+                chunk = 500
+                for i in range(0, len(stale_ids), chunk):
+                    batch = stale_ids[i:i + chunk]
+                    placeholders = ",".join("?" for _ in batch)
+                    conn.execute(
+                        f"DELETE FROM sales_fact_v2 WHERE sale_id IN ({placeholders})",
+                        batch,
+                    )
+                conn.commit()
+            else:
+                print("No stale rows detected in CRM date range.")
 
     # Run actual ingest
     try:

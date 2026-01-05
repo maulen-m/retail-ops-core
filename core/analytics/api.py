@@ -18,6 +18,7 @@ from .queries import (
     get_catalog,
     get_sku_share,
     get_timeseries_monthly,
+    upsert_ads_spend,
 )
 
 
@@ -106,18 +107,50 @@ def handle_request(path: str, query_string: str, db_path: Optional[str] = None) 
                 payload = get_health_summary(
                     conn,
                     end_date=query.get("end_date", [None])[0],
+                    inventory_date=query.get("inventory_date", [None])[0],
                     **common,
                 )
                 return 200, payload
             if path == "/catalog":
+                filters = {
+                    key.replace("filter_", ""): value[0]
+                    for key, value in query.items()
+                    if key.startswith("filter_")
+                }
                 payload = get_catalog(
                     conn,
                     query=query.get("query", [None])[0],
                     limit=int(query.get("limit", ["50"])[0]),
                     offset=int(query.get("offset", ["0"])[0]),
+                    sort_by=query.get("sort_by", [None])[0],
+                    sort_dir=query.get("sort_dir", [None])[0],
+                    filters=filters,
                 )
                 return 200, payload
 
+        return 404, {"error": "Unknown endpoint"}
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    except RuntimeError as exc:
+        return 422, {"error": str(exc)}
+    except Exception as exc:  # pragma: no cover - defensive
+        return 500, {"error": f"Unexpected error: {exc}"}
+
+
+def handle_post(path: str, body: dict, db_path: Optional[str] = None) -> tuple[int, dict]:
+    """Handle write endpoints (explicit, logged)."""
+    try:
+        with _with_db(db_path) as conn:
+            if path == "/ads_spend":
+                sku_key = body.get("sku_key")
+                spend = body.get("daily_spend_kzt")
+                updated_by = body.get("updated_by", "webapp")
+                if not sku_key:
+                    return 400, {"error": "sku_key is required"}
+                if spend is None:
+                    return 400, {"error": "daily_spend_kzt is required"}
+                result = upsert_ads_spend(conn, sku_key=str(sku_key), daily_spend_kzt=float(spend), updated_by=updated_by)
+                return 200, result
         return 404, {"error": "Unknown endpoint"}
     except ValueError as exc:
         return 400, {"error": str(exc)}

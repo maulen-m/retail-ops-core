@@ -24,6 +24,7 @@ Query params:
 """
 
 import argparse
+import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import sys
 from pathlib import Path
@@ -32,7 +33,7 @@ from urllib.parse import urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.analytics.api import handle_request, json_response
+from core.analytics.api import handle_request, handle_post, json_response
 
 
 class AnalyticsHandler(BaseHTTPRequestHandler):
@@ -56,6 +57,19 @@ class AnalyticsHandler(BaseHTTPRequestHandler):
         body = json_response(status, payload)
         self._set_headers(status, len(body))
         self.wfile.write(body)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            body = {}
+        status, payload = handle_post(parsed.path, body)
+        response = json_response(status, payload)
+        self._set_headers(status, len(response))
+        self.wfile.write(response)
 
     def log_message(self, format, *args):  # noqa: A003
         return  # quiet by default

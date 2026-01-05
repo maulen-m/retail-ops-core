@@ -76,3 +76,52 @@ def test_merge_sales_sources_prefers_crm():
     chosen = combined[combined["order_id"] == "A1"].iloc[0]
     assert chosen["quantity"] == 2
     assert chosen["source_file"] == "CRM"
+
+
+def test_merge_sales_sources_drops_sizeless_duplicates():
+    crm_df = pd.DataFrame(
+        [
+            {
+                "order_id": "X1",
+                "order_date": "2026-01-04",
+                "sku_key": "SKU_PRINT",
+                "sku_id": "SKU_PRINT_L",
+                "my_size": "L",
+                "kaspi_offer_name": "Offer",
+                "store_code": "ACMEWEAR",
+                "quantity": 1,
+                "sell_price_kzt": 12000,
+                "delivery_fee": 856,
+                "cogs": None,
+                "net_rev": 1000,
+                "profit": None,
+                "status": "DELIVERED",
+                "return_flag": 0,
+                "source_file": "CRM",
+            },
+            {
+                "order_id": "X1",
+                "order_date": "2026-01-04",
+                "sku_key": "SKU_PRINT",
+                "sku_id": "SKU_PRINT",
+                "my_size": "BLACK",
+                "kaspi_offer_name": "Offer",
+                "store_code": "ACMEWEAR",
+                "quantity": 1,
+                "sell_price_kzt": 12000,
+                "delivery_fee": 856,
+                "cogs": None,
+                "net_rev": 1000,
+                "profit": None,
+                "status": "DELIVERED",
+                "return_flag": 0,
+                "source_file": "CRM",
+            },
+        ]
+    )
+    fact_df = pd.DataFrame(columns=crm_df.columns)
+
+    combined, stats = merge_sales_sources(crm_df, fact_df)
+
+    assert stats.combined_rows == 1
+    assert combined.iloc[0]["sku_id"] == "SKU_PRINT_L"

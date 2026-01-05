@@ -46,6 +46,39 @@ def _create_db(tmp_path: Path) -> Path:
             param_value REAL NOT NULL,
             updated_at TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE fact_sku_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            computed_at TEXT NOT NULL,
+            sku_key TEXT NOT NULL,
+            store_code TEXT NOT NULL,
+            d30 REAL NOT NULL,
+            sigma REAL NOT NULL,
+            ss_demand REAL NOT NULL,
+            ss_floor REAL NOT NULL,
+            ss_mix REAL NOT NULL,
+            ss_total REAL NOT NULL,
+            rop REAL NOT NULL,
+            target_stock REAL NOT NULL,
+            avg_price REAL,
+            avg_cogs REAL,
+            avg_profit REAL,
+            k_avg REAL,
+            roic_monthly REAL,
+            current_stock INTEGER,
+            inbound_stock INTEGER,
+            total_stock INTEGER,
+            status TEXT NOT NULL,
+            suggested_order_qty INTEGER,
+            days_with_sales INTEGER,
+            total_units_30d INTEGER
+        );
+
+        CREATE TABLE dim_sku_lifecycle (
+            sku_key TEXT PRIMARY KEY,
+            lifecycle_status TEXT NOT NULL DEFAULT 'GROW',
+            status_reason TEXT
+        );
         """
     )
 
@@ -126,11 +159,38 @@ def test_endpoints_smoke(tmp_path):
 
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "CREATE TABLE abc_view_cache (SKU_key TEXT, Status TEXT, D_30 REAL, ROP REAL, ROIC_pct REAL)"
-    )
-    conn.execute(
-        "INSERT INTO abc_view_cache (SKU_key, Status, D_30, ROP, ROIC_pct) VALUES (?,?,?,?,?)",
-        ("LINE52", "ACTIVE", 12.0, 30.0, 0.22),
+        """
+        INSERT INTO fact_sku_metrics (
+            computed_at, sku_key, store_code, d30, sigma, ss_demand, ss_floor, ss_mix, ss_total, rop,
+            target_stock, avg_price, avg_cogs, avg_profit, k_avg, roic_monthly, current_stock, inbound_stock,
+            total_stock, status, suggested_order_qty, days_with_sales, total_units_30d
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "2026-01-02",
+            "LINE52",
+            "UNIVERSAL",
+            1.0,
+            0.4,
+            2.0,
+            3.0,
+            1.0,
+            6.0,
+            10.0,
+            12.0,
+            12000.0,
+            5000.0,
+            3000.0,
+            10000.0,
+            0.2,
+            5,
+            2,
+            7,
+            "OK",
+            0,
+            12,
+            60,
+        ),
     )
     conn.commit()
     conn.close()

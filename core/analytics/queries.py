@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
 from .views import ensure_sales_views
+from core.db.ledger import log_audit
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
@@ -21,6 +22,11 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 def _today_almaty() -> date:
     return datetime.now(ALMATY_TZ).date()
+
+
+def _sales_cutoff_date() -> date:
+    """Sales cutoff is always yesterday in Asia/Almaty."""
+    return _today_almaty() - timedelta(days=1)
 
 
 def _parse_date(value: Optional[str]) -> Optional[date]:
@@ -99,24 +105,45 @@ def _latest_snapshot_date(
     store_codes: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
 ) -> Optional[date]:
-    clause = []
-    params: list = [as_of_date.isoformat()]
-    if store_codes:
-        clause.append("store_code IN (%s)" % ",".join(["?"] * len(store_codes)))
-        params.extend(store_codes)
-    if sku_keys:
-        clause.append("sku_key IN (%s)" % ",".join(["?"] * len(sku_keys)))
-        params.extend(sku_keys)
-    where = ""
-    if clause:
-        where = " AND " + " AND ".join(clause)
-    row = conn.execute(
-        f"SELECT MAX(snapshot_date) FROM fact_inventory_snapshot WHERE snapshot_date <= ?{where}",
-        params,
-    ).fetchone()
-    if not row or not row[0]:
-        return None
-    return date.fromisoformat(row[0])
+    def _table_has_rows(table: str) -> bool:
+        row = conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+        return row is not None
+
+    if _table_exists(conn, "fact_inventory_snapshot") and _table_has_rows("fact_inventory_snapshot"):
+        clause = []
+        params: list = [as_of_date.isoformat()]
+        if store_codes:
+            clause.append("store_code IN (%s)" % ",".join(["?"] * len(store_codes)))
+            params.extend(store_codes)
+        if sku_keys:
+            clause.append("sku_key IN (%s)" % ",".join(["?"] * len(sku_keys)))
+            params.extend(sku_keys)
+        where = ""
+        if clause:
+            where = " AND " + " AND ".join(clause)
+        row = conn.execute(
+            f"SELECT MAX(snapshot_date) FROM fact_inventory_snapshot WHERE snapshot_date <= ?{where}",
+            params,
+        ).fetchone()
+        if row and row[0]:
+            return date.fromisoformat(row[0])
+
+    if _table_exists(conn, "fact_inventory_snapshot_size") and _table_has_rows("fact_inventory_snapshot_size"):
+        clause = []
+        params = [as_of_date.isoformat()]
+        if sku_keys:
+            clause.append("sku_key IN (%s)" % ",".join(["?"] * len(sku_keys)))
+            params.extend(sku_keys)
+        where = ""
+        if clause:
+            where = " AND " + " AND ".join(clause)
+        row = conn.execute(
+            f"SELECT MAX(snapshot_date) FROM fact_inventory_snapshot_size WHERE snapshot_date <= ?{where}",
+            params,
+        ).fetchone()
+        if row and row[0]:
+            return date.fromisoformat(row[0])
+    return None
 
 
 def _inventory_cogs_for_date(
@@ -126,34 +153,60 @@ def _inventory_cogs_for_date(
     sku_keys: Optional[Iterable[str]] = None,
 ) -> dict:
     _ensure_fx_rate_for_date(conn, snapshot_date)
-    clause = []
-    params: list = [snapshot_date.isoformat()]
-    if store_codes:
-        clause.append("s.store_code IN (%s)" % ",".join(["?"] * len(store_codes)))
-        params.extend(store_codes)
-    if sku_keys:
-        clause.append("s.sku_key IN (%s)" % ",".join(["?"] * len(sku_keys)))
-        params.extend(sku_keys)
-    where = ""
-    if clause:
-        where = " AND " + " AND ".join(clause)
-
-    sql = f"""
-        SELECT
-            SUM(s.current_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS warehouse_cogs,
-            SUM(s.inbound_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS inbound_cogs
-        FROM fact_inventory_snapshot s
-        JOIN dim_sku sku ON sku.sku_key = s.sku_key
-        JOIN (
+    def _fx_query():
+        return """
             SELECT cny_kzt, usd_kzt, dlv_rate_usd_kg
             FROM dim_fx_rates
             WHERE effective_date <= ?
             ORDER BY effective_date DESC
             LIMIT 1
-        ) fx
-        WHERE s.snapshot_date = ?{where}
-    """
-    row = conn.execute(sql, [snapshot_date.isoformat(), snapshot_date.isoformat(), *params[1:]]).fetchone()
+        """
+
+    if _table_exists(conn, "fact_inventory_snapshot") and conn.execute(
+        "SELECT 1 FROM fact_inventory_snapshot LIMIT 1"
+    ).fetchone():
+        clause = []
+        params: list = [snapshot_date.isoformat()]
+        if store_codes:
+            clause.append("s.store_code IN (%s)" % ",".join(["?"] * len(store_codes)))
+            params.extend(store_codes)
+        if sku_keys:
+            clause.append("s.sku_key IN (%s)" % ",".join(["?"] * len(sku_keys)))
+            params.extend(sku_keys)
+        where = ""
+        if clause:
+            where = " AND " + " AND ".join(clause)
+
+        sql = f"""
+            SELECT
+                SUM(s.current_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS warehouse_cogs,
+                SUM(s.inbound_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS inbound_cogs
+            FROM fact_inventory_snapshot s
+            JOIN dim_sku sku ON sku.sku_key = s.sku_key
+            JOIN ({_fx_query()}) fx
+            WHERE s.snapshot_date = ?{where}
+        """
+        row = conn.execute(sql, [snapshot_date.isoformat(), snapshot_date.isoformat(), *params[1:]]).fetchone()
+    else:
+        clause = []
+        params: list = [snapshot_date.isoformat()]
+        if sku_keys:
+            clause.append("s.sku_key IN (%s)" % ",".join(["?"] * len(sku_keys)))
+            params.extend(sku_keys)
+        where = ""
+        if clause:
+            where = " AND " + " AND ".join(clause)
+
+        sql = f"""
+            SELECT
+                SUM(s.current_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS warehouse_cogs,
+                SUM(s.inbound_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS inbound_cogs
+            FROM fact_inventory_snapshot_size s
+            JOIN dim_sku sku ON sku.sku_key = s.sku_key
+            JOIN ({_fx_query()}) fx
+            WHERE s.snapshot_date = ?{where}
+        """
+        row = conn.execute(sql, [snapshot_date.isoformat(), snapshot_date.isoformat(), *params[1:]]).fetchone()
     warehouse = float(row[0]) if row and row[0] is not None else None
     inbound = float(row[1]) if row and row[1] is not None else None
     total = None
@@ -174,16 +227,22 @@ def _inventory_series(
     store_codes: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
 ) -> dict[str, dict]:
-    if not _table_exists(conn, "fact_inventory_snapshot"):
-        return {}
     latest = _latest_snapshot_date(conn, end_date, store_codes, sku_keys)
     if not latest:
         return {}
 
-    snapshot_dates = conn.execute(
-        "SELECT DISTINCT snapshot_date FROM fact_inventory_snapshot WHERE snapshot_date <= ? ORDER BY snapshot_date",
-        (end_date.isoformat(),),
-    ).fetchall()
+    if _table_exists(conn, "fact_inventory_snapshot") and conn.execute(
+        "SELECT 1 FROM fact_inventory_snapshot LIMIT 1"
+    ).fetchone():
+        snapshot_dates = conn.execute(
+            "SELECT DISTINCT snapshot_date FROM fact_inventory_snapshot WHERE snapshot_date <= ? ORDER BY snapshot_date",
+            (end_date.isoformat(),),
+        ).fetchall()
+    else:
+        snapshot_dates = conn.execute(
+            "SELECT DISTINCT snapshot_date FROM fact_inventory_snapshot_size WHERE snapshot_date <= ? ORDER BY snapshot_date",
+            (end_date.isoformat(),),
+        ).fetchall()
     snapshots = [date.fromisoformat(r[0]) for r in snapshot_dates if r and r[0]]
     totals = {}
     for snap in snapshots:
@@ -317,7 +376,7 @@ def get_last30_kpis(
 ) -> dict:
     ensure_sales_views(conn)
 
-    end_dt = _parse_date(end_date) or _today_almaty()
+    end_dt = _parse_date(end_date) or _sales_cutoff_date()
     start_dt = end_dt - timedelta(days=29)
 
     current = _aggregate_range(
@@ -386,7 +445,7 @@ def get_timeseries_monthly(
 ) -> dict:
     ensure_sales_views(conn)
 
-    end_dt = _parse_date(end_date) or _today_almaty()
+    end_dt = _parse_date(end_date) or _sales_cutoff_date()
     current_month_start = end_dt.replace(day=1)
 
     # 12 full months before current month
@@ -461,7 +520,7 @@ def get_calendar_daily(
 ) -> dict:
     ensure_sales_views(conn)
 
-    end_dt = _parse_date(end_date) or _today_almaty()
+    end_dt = _parse_date(end_date) or _sales_cutoff_date()
     start_dt = _parse_date(start_date) or (end_dt - timedelta(days=59))
 
     series = _daily_series(
@@ -506,7 +565,7 @@ def get_compare_summary(
         raise ValueError("start_date and end_date are required")
 
     start_dt = _parse_date(start_date)
-    end_dt = _parse_date(end_date)
+    end_dt = _parse_date(end_date) or _sales_cutoff_date()
     if start_dt > end_dt:
         raise ValueError("start_date must be <= end_date")
 
@@ -568,7 +627,7 @@ def get_sku_share(
     top_n: int = 8,
 ) -> dict:
     ensure_sales_views(conn)
-    end_dt = _parse_date(end_date) or _today_almaty()
+    end_dt = _parse_date(end_date) or _sales_cutoff_date()
     start_dt = end_dt - timedelta(days=29)
 
     metric_map = {
@@ -605,19 +664,20 @@ def get_sku_share(
 def get_health_summary(
     conn: sqlite3.Connection,
     end_date: Optional[str] = None,
+    inventory_date: Optional[str] = None,
     store_codes: Optional[Iterable[str]] = None,
     store_exclude: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
     sku_exclude: Optional[Iterable[str]] = None,
     include_returns: bool = False,
 ) -> dict:
-    end_dt = _parse_date(end_date) or _today_almaty()
+    sales_end_dt = _parse_date(end_date) or _sales_cutoff_date()
+    inventory_dt = _parse_date(inventory_date) or _today_almaty()
 
     inventory = None
-    if _table_exists(conn, "fact_inventory_snapshot"):
-        latest_snap = _latest_snapshot_date(conn, end_dt, store_codes, sku_keys)
-        if latest_snap:
-            inventory = _inventory_cogs_for_date(conn, latest_snap, store_codes, sku_keys)
+    latest_snap = _latest_snapshot_date(conn, inventory_dt, store_codes, sku_keys)
+    if latest_snap:
+        inventory = _inventory_cogs_for_date(conn, latest_snap, store_codes, sku_keys)
 
     status_distribution = {}
     stock_efficiency = None
@@ -649,7 +709,7 @@ def get_health_summary(
     bottom_profit = []
     if _table_exists(conn, "v_sales_enriched"):
         filter_clause, params = _build_filter_clause(store_codes, store_exclude, sku_keys, sku_exclude, include_returns)
-        start_dt = end_dt - timedelta(days=29)
+        start_dt = sales_end_dt - timedelta(days=29)
         sql = (
             "SELECT sku_key, SUM(profit_line) AS value "
             "FROM v_sales_enriched "
@@ -658,7 +718,7 @@ def get_health_summary(
             "GROUP BY sku_key "
             "ORDER BY value DESC"
         )
-        rows = conn.execute(sql, [start_dt.isoformat(), end_dt.isoformat(), *params]).fetchall()
+        rows = conn.execute(sql, [start_dt.isoformat(), sales_end_dt.isoformat(), *params]).fetchall()
         top_profit = [{"sku_key": r[0], "value": float(r[1])} for r in rows[:5]]
         bottom_profit = [{"sku_key": r[0], "value": float(r[1])} for r in rows[-5:]]
 
@@ -674,7 +734,7 @@ def get_health_summary(
             "GROUP BY sku_key "
             "ORDER BY value DESC"
         )
-        rows = conn.execute(sql, [(end_dt - timedelta(days=29)).isoformat(), end_dt.isoformat(), *params]).fetchall()
+        rows = conn.execute(sql, [(sales_end_dt - timedelta(days=29)).isoformat(), sales_end_dt.isoformat(), *params]).fetchall()
         top_revenue = [{"sku_key": r[0], "value": float(r[1])} for r in rows[:5]]
         total = sum(float(r[1]) for r in rows if r[1] is not None) or 1
         for r in rows[:5]:
@@ -692,7 +752,7 @@ def get_health_summary(
             "GROUP BY store_code "
             "ORDER BY value DESC"
         )
-        rows = conn.execute(sql, [(end_dt - timedelta(days=29)).isoformat(), end_dt.isoformat(), *params]).fetchall()
+        rows = conn.execute(sql, [(sales_end_dt - timedelta(days=29)).isoformat(), sales_end_dt.isoformat(), *params]).fetchall()
         total = sum(float(r[1]) for r in rows if r[1] is not None) or 1
         for r in rows:
             value = float(r[1]) if r[1] is not None else 0
@@ -715,17 +775,76 @@ def get_catalog(
     query: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+    filters: Optional[dict[str, str]] = None,
 ) -> dict:
-    if not _table_exists(conn, "abc_view_cache"):
-        raise RuntimeError("abc_view_cache not found. Run sync_abc_view_to_db.py")
-    clause = ""
+    ensure_sales_views(conn)
+    if not _table_exists(conn, "fact_sku_metrics"):
+        raise RuntimeError("fact_sku_metrics not found. Run scripts/run_sku_metrics.py")
+    filters = filters or {}
+    clause_parts = []
     params: list = []
     if query:
-        clause = "WHERE SKU_key LIKE ?"
+        clause_parts.append("SKU_key LIKE ?")
         params.append(f"%{query}%")
-    total_row = conn.execute(f"SELECT COUNT(*) FROM abc_view_cache {clause}", params).fetchone()
+    allowed_cols = {
+        "SKU_key",
+        "Product_Type",
+        "Current_stock",
+        "Inbound_units",
+        "Total_stock",
+        "Base_cost_kzt",
+        "COGS_unit",
+        "Stock_COGS",
+        "Inbound_COGS",
+        "Total_stock_COGS",
+        "D_30",
+        "Sigma_MAD",
+        "R",
+        "L",
+        "B",
+        "z",
+        "TV",
+        "SS_demand",
+        "SS_floor",
+        "SS_mix",
+        "SS_total",
+        "ROP",
+        "T_post",
+        "Price",
+        "NetRev_unit",
+        "Profit_unit",
+        "Monthly_Profit",
+        "K_avg",
+        "ROIC_pct",
+        "Suggested_Order_Qty",
+        "Days_with_sales",
+        "Units_30d",
+        "Status",
+        "Lifecycle_flag",
+        "Notes",
+        "OPEX_total",
+        "Ads_cost_day",
+    }
+    for key, value in filters.items():
+        if key not in allowed_cols or value is None or value == "":
+            continue
+        clause_parts.append(f"CAST({key} AS TEXT) LIKE ?")
+        params.append(f"%{value}%")
+
+    clause = ""
+    if clause_parts:
+        clause = "WHERE " + " AND ".join(clause_parts)
+
+    sort_clause = "ORDER BY SKU_key"
+    if sort_by in allowed_cols:
+        direction = "DESC" if (sort_dir or "").lower() == "desc" else "ASC"
+        sort_clause = f"ORDER BY {sort_by} {direction}"
+
+    total_row = conn.execute(f"SELECT COUNT(*) FROM v_abc_view {clause}", params).fetchone()
     total = total_row[0] if total_row else 0
-    sql = f"SELECT * FROM abc_view_cache {clause} ORDER BY SKU_key LIMIT ? OFFSET ?"
+    sql = f"SELECT * FROM v_abc_view {clause} {sort_clause} LIMIT ? OFFSET ?"
     rows = conn.execute(sql, [*params, limit, offset]).fetchall()
     items = [dict(r) for r in rows]
     return {"items": items, "total": total}
@@ -741,6 +860,7 @@ def get_filters_options(conn: sqlite3.Connection) -> dict:
 
     min_date = conn.execute("SELECT MIN(order_date) FROM sales_fact_v2").fetchone()[0]
     max_date = conn.execute("SELECT MAX(order_date) FROM sales_fact_v2").fetchone()[0]
+    cutoff_date = _sales_cutoff_date().isoformat()
 
     return {
         "stores": stores,
@@ -749,4 +869,57 @@ def get_filters_options(conn: sqlite3.Connection) -> dict:
         "product_types": product_types,
         "min_order_date": min_date,
         "max_order_date": max_date,
+        "sales_cutoff_date": cutoff_date,
     }
+
+
+def upsert_ads_spend(
+    conn: sqlite3.Connection,
+    *,
+    sku_key: str,
+    daily_spend_kzt: float,
+    updated_by: str = "webapp",
+) -> dict:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dim_ads_spend (
+            sku_key TEXT PRIMARY KEY,
+            daily_spend_kzt REAL NOT NULL DEFAULT 0,
+            updated_at TEXT DEFAULT (datetime('now')),
+            updated_by TEXT DEFAULT 'SYSTEM'
+        )
+        """
+    )
+    row = conn.execute(
+        "SELECT daily_spend_kzt FROM dim_ads_spend WHERE sku_key = ?",
+        (sku_key,),
+    ).fetchone()
+    old_value = row[0] if row else None
+    conn.execute(
+        """
+        INSERT INTO dim_ads_spend (sku_key, daily_spend_kzt, updated_at, updated_by)
+        VALUES (?, ?, datetime('now'), ?)
+        ON CONFLICT(sku_key) DO UPDATE SET
+            daily_spend_kzt = excluded.daily_spend_kzt,
+            updated_at = datetime('now'),
+            updated_by = excluded.updated_by
+        """,
+        (sku_key, daily_spend_kzt, updated_by),
+    )
+    conn.commit()
+
+    try:
+        log_audit(
+            table_name="dim_ads_spend",
+            record_id=sku_key,
+            field_name="daily_spend_kzt",
+            old_value=old_value,
+            new_value=daily_spend_kzt,
+            change_type="UPSERT",
+            reason="webapp_ads_spend",
+            source=updated_by,
+        )
+    except RuntimeError:
+        pass
+
+    return {"sku_key": sku_key, "daily_spend_kzt": daily_spend_kzt}

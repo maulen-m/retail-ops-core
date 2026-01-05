@@ -168,6 +168,16 @@ def merge_sales_sources(
         )
         combined = pd.concat([fact_filtered, crm], ignore_index=True)
 
+    if not combined.empty:
+        sku_id = combined["sku_id"].fillna("").astype(str)
+        sku_key = combined["sku_key"].fillna("").astype(str)
+        combined["has_specific_sku"] = (sku_id != "") & (sku_id != sku_key)
+        combined["is_sizeless_sku"] = (sku_id == "") | (sku_id == sku_key)
+        group_cols = ["order_id", "order_date", "store_code", "kaspi_offer_name"]
+        group_has_specific = combined.groupby(group_cols)["has_specific_sku"].transform("max").fillna(False)
+        combined = combined[~(group_has_specific & combined["is_sizeless_sku"])].copy()
+        combined = combined.drop(columns=["has_specific_sku", "is_sizeless_sku"])
+
     stats = MergeStats(
         crm_rows=len(crm),
         fact_rows=len(fact_df),
