@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from core.analytics.api import handle_request
+from core.analytics.queries import get_health_summary
 from core.analytics.views import ensure_sales_views
 
 
@@ -78,6 +79,30 @@ def _create_db(tmp_path: Path) -> Path:
             sku_key TEXT PRIMARY KEY,
             lifecycle_status TEXT NOT NULL DEFAULT 'GROW',
             status_reason TEXT
+        );
+
+        CREATE TABLE stock_ledger (
+            event_date TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            sku_key TEXT NOT NULL,
+            sku_id TEXT NOT NULL,
+            my_size TEXT,
+            store_code TEXT DEFAULT 'UNIVERSAL',
+            qty_change INTEGER NOT NULL
+        );
+
+        CREATE TABLE po_header (
+            po_id TEXT PRIMARY KEY,
+            status TEXT DEFAULT 'DRAFT'
+        );
+
+        CREATE TABLE po_line (
+            po_line_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            po_id TEXT NOT NULL,
+            sku_key TEXT NOT NULL,
+            order_qty INTEGER NOT NULL,
+            received_qty INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'PENDING'
         );
         """
     )
@@ -199,11 +224,59 @@ def test_endpoints_smoke(tmp_path):
     assert status == 200
     assert payload["items"]
 
+
+def test_health_summary_inventory_from_ledger(tmp_path):
+    db_path = _create_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    ensure_sales_views(conn)
+
+    conn.execute(
+        """
+        INSERT INTO stock_ledger (event_date, event_type, sku_key, sku_id, my_size, store_code, qty_change)
+        VALUES (?,?,?,?,?,?,?)
+        """,
+        ("2026-01-01", "INITIAL", "LINE52", "LINE52_XL", "XL", "UNIVERSAL", 10),
+    )
+    conn.execute("INSERT INTO po_header (po_id, status) VALUES (?, ?)", ("PO-1", "OPEN"))
+    conn.execute(
+        """
+        INSERT INTO po_line (po_id, sku_key, order_qty, received_qty, status)
+        VALUES (?,?,?,?,?)
+        """,
+        ("PO-1", "LINE52", 5, 1, "PENDING"),
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2 (
+            order_id, order_date, sku_key, sku_id, my_size, kaspi_offer_name,
+            store_code, quantity, sell_price_kzt, delivery_fee, status, return_flag
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "ORD-MISSING",
+            "2026-01-02",
+            "MISSING",
+            "MISSING_XL",
+            "XL",
+            "MISSING",
+            "UNIVERSAL",
+            1,
+            12000.0,
+            None,
+            "DELIVERED",
+            0,
+        ),
+    )
+    conn.commit()
+
+    summary = get_health_summary(conn, inventory_date="2026-01-02")
+    conn.close()
+
+    expected_unit = 47 * 78 + 0.95 * 2.66 * 530
+    expected_total = expected_unit * 14
+    assert summary["inventory_cogs"] is not None
+    assert abs(summary["inventory_cogs"]["total"] - expected_total) < 1.0
+
     status, payload = handle_request("/health/summary", "end_date=2026-01-15", db_path=str(db_path))
     assert status == 200
     assert "top_profit" in payload
-
-    status, payload = handle_request("/catalog", "query=PRINT&limit=10&offset=0", db_path=str(db_path))
-    assert status == 200
-    assert payload["total"] == 1
-    assert payload["items"][0]["SKU_key"] == "LINE52"

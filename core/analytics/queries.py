@@ -220,6 +220,118 @@ def _inventory_cogs_for_date(
     }
 
 
+def _inventory_cogs_from_ledger(
+    conn: sqlite3.Connection,
+    as_of_date: date,
+    store_codes: Optional[Iterable[str]] = None,
+    sku_keys: Optional[Iterable[str]] = None,
+) -> Optional[dict]:
+    """Compute inventory COGS from stock_ledger (on-hand) + open POs (inbound)."""
+    if not _table_exists(conn, "stock_ledger"):
+        return None
+    if not conn.execute("SELECT 1 FROM stock_ledger LIMIT 1").fetchone():
+        return None
+
+    _ensure_fx_rate_for_date(conn, as_of_date)
+    fx_row = conn.execute(
+        """
+        SELECT cny_kzt, usd_kzt, dlv_rate_usd_kg
+        FROM dim_fx_rates
+        WHERE effective_date <= ?
+        ORDER BY effective_date DESC
+        LIMIT 1
+        """,
+        (as_of_date.isoformat(),),
+    ).fetchone()
+    if not fx_row:
+        return None
+    cny_kzt, usd_kzt, dlv_rate = fx_row
+
+    clauses = ["event_date <= ?"]
+    params: list = [as_of_date.isoformat()]
+    if store_codes:
+        store_list = [s for s in store_codes if s]
+        if store_list:
+            clauses.append("store_code IN (%s)" % ",".join(["?"] * len(store_list)))
+            params.extend(store_list)
+    if sku_keys:
+        sku_list = [s for s in sku_keys if s]
+        if sku_list:
+            clauses.append("sku_key IN (%s)" % ",".join(["?"] * len(sku_list)))
+            params.extend(sku_list)
+    where = " AND ".join(clauses)
+    stock_rows = conn.execute(
+        f"""
+        SELECT sku_key, SUM(qty_change) AS current_stock
+        FROM stock_ledger
+        WHERE {where}
+        GROUP BY sku_key
+        """,
+        params,
+    ).fetchall()
+    stock = {row[0]: row[1] or 0 for row in stock_rows if row and row[0]}
+
+    inbound: dict[str, float] = {}
+    if _table_exists(conn, "po_line") and _table_exists(conn, "po_header"):
+        inbound_clauses = [
+            "pl.status IN ('PENDING', 'PARTIAL')",
+            "ph.status NOT IN ('CLOSED', 'CANCELLED')",
+        ]
+        inbound_params: list = []
+        if sku_keys:
+            sku_list = [s for s in sku_keys if s]
+            if sku_list:
+                inbound_clauses.append("pl.sku_key IN (%s)" % ",".join(["?"] * len(sku_list)))
+                inbound_params.extend(sku_list)
+        inbound_where = " AND ".join(inbound_clauses)
+        inbound_rows = conn.execute(
+            f"""
+            SELECT
+                pl.sku_key,
+                SUM(
+                    CASE
+                        WHEN pl.order_qty > COALESCE(pl.received_qty, 0)
+                        THEN pl.order_qty - COALESCE(pl.received_qty, 0)
+                        ELSE 0
+                    END
+                ) AS inbound_qty
+            FROM po_line pl
+            JOIN po_header ph ON ph.po_id = pl.po_id
+            WHERE {inbound_where}
+            GROUP BY pl.sku_key
+            """,
+            inbound_params,
+        ).fetchall()
+        inbound = {row[0]: row[1] or 0 for row in inbound_rows if row and row[0]}
+
+    keys = set(stock) | set(inbound)
+    if not keys:
+        return None
+
+    placeholders = ",".join(["?"] * len(keys))
+    sku_rows = conn.execute(
+        f"SELECT sku_key, base_cost_cny, weight_kg FROM dim_sku WHERE sku_key IN ({placeholders})",
+        list(keys),
+    ).fetchall()
+    costs = {row[0]: (row[1] or 0, row[2] or 0) for row in sku_rows}
+
+    warehouse_cogs = 0.0
+    inbound_cogs = 0.0
+    for sku_key in keys:
+        base_cost_cny, weight_kg = costs.get(sku_key, (0, 0))
+        cogs_unit = (base_cost_cny * cny_kzt) + (weight_kg * usd_kzt * dlv_rate)
+        warehouse_cogs += (stock.get(sku_key, 0) or 0) * cogs_unit
+        inbound_cogs += (inbound.get(sku_key, 0) or 0) * cogs_unit
+
+    total_cogs = warehouse_cogs + inbound_cogs
+    return {
+        "snapshot_date": as_of_date.isoformat(),
+        "warehouse": float(warehouse_cogs),
+        "inbound": float(inbound_cogs),
+        "total": float(total_cogs),
+    }
+
+
 def _inventory_series(
     conn: sqlite3.Connection,
     start_date: date,
@@ -675,9 +787,11 @@ def get_health_summary(
     inventory_dt = _parse_date(inventory_date) or _today_almaty()
 
     inventory = None
-    latest_snap = _latest_snapshot_date(conn, inventory_dt, store_codes, sku_keys)
-    if latest_snap:
-        inventory = _inventory_cogs_for_date(conn, latest_snap, store_codes, sku_keys)
+    inventory = _inventory_cogs_from_ledger(conn, inventory_dt, store_codes, sku_keys)
+    if inventory is None:
+        latest_snap = _latest_snapshot_date(conn, inventory_dt, store_codes, sku_keys)
+        if latest_snap:
+            inventory = _inventory_cogs_for_date(conn, latest_snap, store_codes, sku_keys)
 
     status_distribution = {}
     stock_efficiency = None
@@ -719,8 +833,8 @@ def get_health_summary(
             "ORDER BY value DESC"
         )
         rows = conn.execute(sql, [start_dt.isoformat(), sales_end_dt.isoformat(), *params]).fetchall()
-        top_profit = [{"sku_key": r[0], "value": float(r[1])} for r in rows[:5]]
-        bottom_profit = [{"sku_key": r[0], "value": float(r[1])} for r in rows[-5:]]
+        top_profit = [{"sku_key": r[0], "value": float(r[1]) if r[1] is not None else 0.0} for r in rows[:5]]
+        bottom_profit = [{"sku_key": r[0], "value": float(r[1]) if r[1] is not None else 0.0} for r in rows[-5:]]
 
     top_revenue = []
     concentration = []
