@@ -1,7 +1,8 @@
 # Daily Standard Operating Procedure (SOP)
 
 ## Overview
-This document outlines the daily routine for operating the Autonomous Inventory/PO System.
+This document outlines the daily routine for operating the Autonomous Inventory/PO System.  
+Scope: Kaspi-only.
 
 ---
 
@@ -66,12 +67,6 @@ python scripts/po_approval_cli.py approve <draft_id>
 2. Filter for `status = REORDER`
 3. Review suggested quantities and size splits
 4. Place orders as needed
-
----
-
-## Phase 8: Multi-Channel Operations (Archived)
-
-This repo is **Kaspi-only**. Multi-channel/WB workflows are archived and out of scope.
 
 ---
 

@@ -128,14 +128,12 @@ These are the **decision columns** Python must replicate.
 
 ---
 
-## 5. Business Logic Contract
+## 5. Logic Invariants (no formulas in this doc)
 
-### 5.1 Formulas Python Must Implement Identically
+All formulas live in `inventory/Master_Inventory_Rules_v8.md`.  
+This contract defines UI columns + invariants only.
 
-**Source:** `Master_Inventory_Rules_v8.md`
-
-
-### 5.2 Status Flag Logic (Critical)
+### 5.1 Status Flag Logic (Critical)
 
 **Order matters:** Check Total FIRST, then Current.
 

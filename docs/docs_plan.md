@@ -67,7 +67,7 @@ Option A (preferred, fastest):
 
 ---
 
-### 5) Update contract docs to v8/V16 and remove non-Kaspi (eg: wb/ozon) assumptions
+### 5) Update contract docs to v8/V16 and remove non-Kaspi (legacy multi-channel) assumptions
 **Target files**
 - `inventory/Excel_UI_Contract_for_CRM_V1.md`
 - `inventory/Automation_Handoff_V16.md`
@@ -83,7 +83,7 @@ Option A (preferred, fastest):
 - Grep check in docs root (excluding `archive/`):
   - no legacy VAT references
   - no legacy delivery tier constants described as current
-  - no “WB export” rows in ingestion tables
+  - no non-Kaspi export rows in ingestion tables
 - Each contract doc contains a short “Source of truth” pointer to v8.
 
 ---
