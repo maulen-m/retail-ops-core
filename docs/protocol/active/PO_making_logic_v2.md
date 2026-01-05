@@ -2,7 +2,7 @@
 ## Python Implementation Spec for Purchase Order Generation
 **Version:** 2.0  
 **Purpose:** Deterministic PO generation logic for CRM/Python system  
-**Scope:** Kaspi/WB clothing SKUs with size variants
+**Scope:** Kaspi-only clothing SKUs with size variants
 
 ---
 
@@ -17,7 +17,7 @@ Generate accurate PO quantities at **size level** that:
 
 ## 2. Data Inputs Required
 
-### 2.1 Per SKU Ã— Size (from DB)
+### 2.1 Per SKU x Size (from DB)
 
 | Field | Type | Source |
 |-------|------|--------|
@@ -33,7 +33,7 @@ Generate accurate PO quantities at **size level** that:
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `L` | 21 | Lead time (days) |
+| `Effective_L` | 21 + prep | Lead time + prep days (see v8) |
 | `R` | 10 | Review period (days) |
 | `B` | 14 | Buffer floor (days) |
 | `z` | 1.65 | Service level factor (~95%) |
@@ -135,7 +135,7 @@ def apply_mix_guardrails(mix: dict[str, float]) -> dict[str, float]:
 
 ---
 
-## 4. Volatility (Ïƒ)
+## 4. Volatility (sigma)
 
 Simple, static approximation. No EWMA complexity.
 
@@ -165,19 +165,19 @@ def calc_safety_stock(d_size: float, sigma_size: float, params: dict) -> dict:
     Args:
         d_size: Daily demand for this size
         sigma_size: Volatility for this size (Ïƒ_sku Ã— size_mix)
-        params: {L, B, z, TV}
+        params: {Effective_L, B, z, TV}
     
     Returns:
         {ss_demand, ss_floor, ss_mix, ss_total}
     """
-    L = params['L']
+    effective_L = params['Effective_L']
     B = params['B']
     z = params['z']
     TV = params['TV']
     
-    ss_demand = z * sigma_size * math.sqrt(L)  # Demand uncertainty
+    ss_demand = z * sigma_size * math.sqrt(effective_L)  # Demand uncertainty
     ss_floor = d_size * B                       # Minimum buffer
-    ss_mix = TV * d_size * L                    # Size mix uncertainty
+    ss_mix = TV * d_size * effective_L          # Size mix uncertainty
     ss_total = ss_demand + ss_floor + ss_mix
     
     return {
