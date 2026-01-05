@@ -1,17 +1,18 @@
 # Excel UI Contract for CRM (V1)
 ## Bridge Document: Project 1 (Excel) ↔ Project 3 (Python/DB)
 **Created:** December 4, 2025  
-**Status:** Active contract
+**Status:** Active contract (Kaspi-only, v8/V16)
 
 ---
 
 ## 1. Purpose
 
 This document defines the **interface contract** between:
-- **Project 1 (Excel):** Inventory_Core_V15_FINAL.xlsx — frozen as UI
-- **Project 3 (CRM):** Python/DB system — automated brain
+- **Project 1 (Excel UI):** `Inventory_Core_V18.1_V2.xlsx` — UI only
+- **Project 3 (CRM/DB):** Python/DB system — system of record
 
-Both systems must implement identical business logic as defined in `Master_Inventory_Rules_v5.3.md`.
+Both systems must implement identical business logic as defined in
+`inventory/Master_Inventory_Rules_v8.md` (Kaspi-only).
 
 ---
 
@@ -22,7 +23,7 @@ Both systems must implement identical business logic as defined in `Master_Inven
 │                           DATA FLOW ARCHITECTURE                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   KASPI/WB                      PROJECT 3 (Python/DB)                       │
+│   KASPI                         PROJECT 3 (Python/DB)                       │
 │   ────────                      ─────────────────────                       │
 │                                                                             │
 │   Raw Export    ─────────────►  Fact_Sales_Raw (DB table)                   │
@@ -43,7 +44,7 @@ Both systems must implement identical business logic as defined in `Master_Inven
 │                    ▼                                           ▼            │
 │   PROJECT 1 (Excel UI)                              Dashboards/APIs         │
 │   ────────────────────                              ────────────────        │
-│   Inventory_Core_V15_FINAL.xlsx                     Web UI / Mobile         │
+│   Inventory_Core_V18.1_V2.xlsx                      Web UI / Mobile         │
 │   ├── ABC_View (manual review)                      WhatsApp alerts         │
 │   ├── Fact_Sales (reference)                        Kaspi API calls         │
 │   └── tb_Inbound (validation)                                               │
@@ -86,33 +87,35 @@ Excel is **passive** — it doesn't pull data automatically. Scenarios where Adi
 
 ### 4.1 ABC_View Columns
 
-These are the **decision columns** Python must replicate:
+These are the **decision columns** Python must replicate.  
+**Formula source of truth:** `inventory/Master_Inventory_Rules_v8.md`  
+**Note:** safety stock and ROP must use **Effective_L** (not raw L).
 
-| Column | Excel | Formula | Python Must Match |
+| Column | Excel | Meaning | Python Must Match |
 |--------|-------|---------|-------------------|
-| J | D_30 | `SUMIFS(sales_30d) / 30` | ✓ |
-| K | Sigma_MAD | `D_30 × 0.4` | ✓ |
-| Q | SS_demand | `z × σ × √L` | ✓ |
-| R | SS_floor | `D × B` | ✓ |
-| S | SS_mix | `TV × D × L` | ✓ |
-| T | SS_total | `Q + R + S` | ✓ |
-| U | ROP | `D × L + SS_total` | ✓ |
-| V | T_post_days | `R + SS_total / D` | ✓ |
-| AB | ROIC_pct | `(Profit × D × 30) / K_avg` | ✓ |
-| AC | Suggested_Order_Qty | `MAX(0, T_post × D - Total_stock)` | ✓ |
+| J | D_30 | Daily demand | ✓ |
+| K | Sigma_MAD | Demand volatility | ✓ |
+| Q | SS_demand | Demand safety stock | ✓ |
+| R | SS_floor | Buffer floor | ✓ |
+| S | SS_mix | Size-mix buffer (CL only) | ✓ |
+| T | SS_total | Total safety stock | ✓ |
+| U | ROP | Reorder point | ✓ |
+| V | T_post_days | Coverage post-arrival | ✓ |
+| AB | ROIC_pct | Monthly ROIC | ✓ |
+| AC | Suggested_Order_Qty | Suggested order qty | ✓ |
 | AD | Status | 3-state logic (see §5.2) | ✓ |
 
-### 4.2 Fact_Sales Column Map (V15)
+### 4.2 Fact_Sales Column Map (V16)
 
 | Col | Header | Type | Python Equivalent |
 |-----|--------|------|-------------------|
 | A | Date | Data | `order_date` |
 | B | OrderID | Data | `order_id` |
-| C | Kaspi_Offer_name | Data | `offer_name` |
+| C | Kaspi_Offer_name | Data | `kaspi_offer_name` |
 | D | SKU_key | Data | `sku_key` |
 | E | SKU_ID | Data | `sku_id` |
 | F | Quantity | Data | `quantity` |
-| G | Sell_price_kzt | Data | `sell_price` |
+| G | Sell_price_kzt | Data | `sell_price_kzt` |
 | H | Product_Type | Data | `product_type` |
 | I | Channel | Data | `channel` |
 | J | Delivery_fee | Calc | `delivery_fee` |
@@ -129,40 +132,8 @@ These are the **decision columns** Python must replicate:
 
 ### 5.1 Formulas Python Must Implement Identically
 
-**Source:** `Master_Inventory_Rules_v5.3.md`
+**Source:** `Master_Inventory_Rules_v8.md`
 
-```python
-# COGS
-COGS_unit = BaseCost_CNY * 78 + Weight_kg * 2.66 * 530
-
-# Delivery fee (Kaspi)
-if sell_price <= 4999:
-    delivery_fee = 0
-elif sell_price <= 14999:
-    delivery_fee = 856
-else:
-    delivery_fee = 1259
-
-# Net revenue
-net_rev_unit = (sell_price * (1 - 0.125) - delivery_fee) * (1 - 0.03)
-
-# Sigma (approximation)
-sigma = D_30 * 0.4
-
-# Safety stock
-SS_demand = z * sigma * math.sqrt(L)
-SS_floor = D * B
-SS_mix = TV * D * L
-SS_total = SS_demand + SS_floor + SS_mix
-
-# Reorder point
-ROP = D * L + SS_total
-
-# ROIC
-K_avg = D * (L + R/2) * COGS + SS_total * COGS
-monthly_profit = unit_profit * D * 30
-monthly_ROIC = monthly_profit / K_avg
-```
 
 ### 5.2 Status Flag Logic (Critical)
 
@@ -203,7 +174,7 @@ Project 3 must NOT generate files that violate Mac Excel compatibility:
 
 Use the safe pattern from `Mac_Excel_Agent_Protocol_V2.md`:
 
-1. Start from known-good template (V15_FINAL)
+1. Start from known-good template (Inventory_Core_V18.1_V2.xlsx)
 2. Extract to temp folder
 3. Modify XML with lxml
 4. Repack with zipfile
@@ -225,7 +196,6 @@ Use the safe pattern from `Mac_Excel_Agent_Protocol_V2.md`:
 | Source | Format | Python Responsibility |
 |--------|--------|----------------------|
 | Kaspi raw export | ActiveOrders_Example.xlsx format | Parse → Fact_Sales_Raw |
-| WB export | TBD | Parse → Fact_Sales_Raw |
 
 ### 7.3 Fact_Sales_Raw (DB only)
 
@@ -251,7 +221,7 @@ Use the safe pattern from `Mac_Excel_Agent_Protocol_V2.md`:
 
 1. Identify the SKU and metric
 2. Compare formula implementations
-3. Check `Master_Inventory_Rules_v5.3.md`
+3. Check `inventory/Master_Inventory_Rules_v8.md`
 4. **Rules doc is authoritative**
 5. Fix whichever system is wrong
 
@@ -288,20 +258,20 @@ Use these for validation:
 | Formula change | Must update `Master_Inventory_Rules` first | Doc → Excel → Python |
 | Parameter change (L, B, z) | Update `Dim_Params` or `Dim_Params_PT` | Both systems update |
 | New SKU | Add to `Dim_SKU` | Python DB is source of truth |
-| New platform (Ozon) | Add row to `Dim_Params_PT` | Coordinate both systems |
+| New Kaspi delivery type | Update `Dim_Delivery_Fees` | Coordinate both systems |
 
 ### 9.2 Version Sync
 
 | Document | Excel Version | Python Must Match |
 |----------|---------------|-------------------|
-| `Master_Inventory_Rules_v5.3.md` | V15_FINAL | Same formulas |
-| `Sales_Data_Model_V15.md` | V15_FINAL | Same column layout |
+| `inventory/Master_Inventory_Rules_v8.md` | V18.1_V2 | Same formulas |
+| `inventory/Sales_Data_Model_V16.md` | V18.1_V2 | Same column layout |
 
 ---
 
 ## 10. Summary
 
-**Excel (V15_FINAL):**
+**Excel (Inventory_Core_V18.1_V2.xlsx):**
 - Frozen as UI
 - Manual review and validation
 - Reference implementation of formulas
@@ -312,7 +282,7 @@ Use these for validation:
 - Same formulas as Excel
 
 **Contract:**
-- `Master_Inventory_Rules_v5.3.md` is the shared truth
+- `Master_Inventory_Rules_v8.md` is the shared truth
 - Both systems must produce identical outputs for same inputs
 
 ---

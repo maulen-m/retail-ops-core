@@ -15,7 +15,7 @@
 ### Excel: what is truth vs. not truth
 **Single-truth sheets (OK to ingest/use as inputs):**
 - `Dim_Params`
-- `Dim_Params_PT` *(if conflicts → Master_Inventory_Rules_v6.md wins)*
+- `Dim_Params_PT` *(if conflicts → Master_Inventory_Rules_v8.md wins)*
 - `DIM_SKU_ID`
 - `Dim_SKU`
 - `SizeMix_and_Di_Anchor`

@@ -8,9 +8,9 @@
 
 ## 1. System Purpose
 
-Replace Excel V15's calculation logic with a Python/SQLite engine that:
-- Ingests daily Kaspi/WB exports for 5 stores
-- Computes identical D₃₀, σ, SS, ROP, ROIC, Status to Excel V15
+Replace Excel UI (V18.1_V2) calculation logic with a Python/SQLite engine that:
+- Ingests daily Kaspi exports for 5 stores
+- Computes identical D₃₀, σ, SS, ROP, ROIC, Status to Excel UI
 - Produces size-split PO recommendations
 - Sends Telegram alerts on REORDER status
 
@@ -38,7 +38,7 @@ Replace Excel V15's calculation logic with a Python/SQLite engine that:
           ▼ [clean + enrich]
 ┌─────────────────────┐
 │  fact_sales         │  Cleaned transactions
-│  (Net_rev, COGS,    │  Per V15 formulas
+│  (Net_rev, COGS,    │  Per v8 formulas
 │   Profit calculated)│
 └─────────┬───────────┘
           ▼ [aggregate]
@@ -70,7 +70,7 @@ Replace Excel V15's calculation logic with a Python/SQLite engine that:
           ▼
 ┌─────────────────────┐
 │  Excel UI           │
-│  Inventory_Core_V15 │  (frozen, for validation + human review)
+│  Inventory_Core_V18.1_V2 │  (frozen, for validation + human review)
 └─────────────────────┘
 ```
 
@@ -161,7 +161,7 @@ Schema includes placeholder columns/tables for future:
 
 ## 7. Validation Contract
 
-Before Phase 5 go-live, Python must match Excel V15:
+Before Phase 5 go-live, Python must match Excel UI:
 
 | Metric           | Tolerance | Test SKUs                        |
 |------------------|-----------|----------------------------------|
