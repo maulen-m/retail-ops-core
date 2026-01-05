@@ -477,5 +477,4 @@ ROIC:
 ## 10. Deprecations
 
 After v8 adoption:
-- `Master_Inventory_Rules_v6.1.md` and `Master_Inventory_Rules_v7.md` are deprecated (do not implement from them).
 - Any doc still referencing legacy VAT or delivery tiers must be updated to v8.

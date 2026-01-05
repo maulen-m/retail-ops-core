@@ -39,15 +39,11 @@
 
 ### 3) Deprecate old rules docs to prevent accidental reuse
 **Action**
-- Add a top banner to (if exists, otherwise skip step):
-  - `inventory/Master_Inventory_Rules_v6.1.md`
-  - `inventory/Master_Inventory_Rules_v7.md`
-
-Banner example:
-> **DEPRECATED:** superseded by `inventory/Master_Inventory_Rules_v8.md`. Do not implement from this file.
+- If any legacy rules docs exist, add a top banner:
+  > **DEPRECATED:** superseded by `inventory/Master_Inventory_Rules_v8.md`. Do not implement from this file.
 
 **Acceptance**
-- No agent can open v6.1/v7 without seeing DEPRECATED.
+- No legacy rules doc can be opened without a DEPRECATED banner.
 
 ---
 
