@@ -34,7 +34,7 @@ def test_merge_sales_sources_prefers_crm():
                 "sku_key": "SKU1",
                 "sku_id": "SKU1_XL",
                 "my_size": "XL",
-                "kaspi_offer_name": "Offer1",
+                "kaspi_offer_name": "OfferX",
                 "store_code": "UNIVERSAL",
                 "quantity": 1,
                 "sell_price_kzt": 11000,
@@ -69,9 +69,9 @@ def test_merge_sales_sources_prefers_crm():
 
     combined, stats = merge_sales_sources(crm_df, fact_df)
 
-    assert stats.overlap_rows == 0
-    assert stats.fact_rows_dropped_by_date == 1
-    assert stats.cutoff_date == "2026-01-02"
+    assert stats.overlap_rows == 1
+    assert stats.fact_rows_dropped_by_date == 0
+    assert stats.cutoff_date is None
     assert stats.combined_rows == 2
     chosen = combined[combined["order_id"] == "A1"].iloc[0]
     assert chosen["quantity"] == 2

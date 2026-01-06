@@ -2,7 +2,7 @@
 """
 Sync sales_fact_v2 from combined CRM + Fact_Sales sources.
 
-Rule: CRM rows override Fact_Sales on overlap (same order_id + sku_id + store_code + kaspi_offer_name).
+Rule: CRM rows override Fact_Sales on overlap (same order_id + sku_id + store_code).
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import sqlite3
+import subprocess
 
 import pandas as pd
 
@@ -33,6 +34,7 @@ def main() -> None:
     parser.add_argument("--fact-sheet", type=str, default="Fact_Sales")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--dry-run", action="store_true", help="Read and merge only; do not write DB")
+    parser.add_argument("--skip-metrics", action="store_true", help="Skip SKU metrics refresh after sync")
     args = parser.parse_args()
 
     if not args.crm_file.exists():
@@ -55,6 +57,8 @@ def main() -> None:
     print(f"- Fact rows dropped by date cutoff: {stats.fact_rows_dropped_by_date}")
     if stats.cutoff_date:
         print(f"- Cutoff date (CRM precedence): {stats.cutoff_date}")
+    else:
+        print("- Cutoff date (CRM precedence): none (overlap-only merge)")
     print(f"- Overlap rows: {stats.overlap_rows}")
     print(f"- CRM-only rows: {stats.crm_only_rows}")
     print(f"- Fact-only rows: {stats.fact_only_rows}")
@@ -81,6 +85,14 @@ def main() -> None:
         conn.close()
 
     print(f"✅ sales_fact_v2 updated: {stats.combined_rows} rows")
+
+    if not args.skip_metrics:
+        print("↻ Refreshing SKU metrics...")
+        subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "run_sku_metrics.py"), "--quiet"],
+            check=True,
+        )
+        print("✅ SKU metrics refreshed")
 
 
 if __name__ == "__main__":

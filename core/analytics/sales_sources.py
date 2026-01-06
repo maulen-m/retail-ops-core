@@ -1,4 +1,4 @@
-"""Load and merge CRM + Fact_Sales sources with CRM precedence."""
+"""Load and merge CRM + Fact_Sales sources with CRM precedence on overlap."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -73,7 +73,9 @@ def load_crm_sales(crm_path: Path, sheet: str) -> Tuple[pd.DataFrame, int]:
 
     df["order_date"] = _coerce_date(df["order_date"])
     df["order_id"] = df["order_id"].astype(str)
-    df["sku_id"] = df["sku_id"].astype(str)
+    df["sku_id"] = df["sku_id"].where(df["sku_id"].notna(), df["sku_key"])
+    df["sku_id"] = df["sku_id"].astype(str).str.strip()
+    df.loc[df["sku_id"].str.lower().isin(["nan", "none", ""]), "sku_id"] = df["sku_key"]
     df["sku_key"] = df["sku_key"].astype(str)
     df["my_size"] = df["my_size"].fillna(df["sku_id"].str.split("_").str[-1])
     df["store_code"] = df["store_code"].fillna("UNIVERSAL")
@@ -128,7 +130,7 @@ def merge_sales_sources(
     crm_df: pd.DataFrame,
     fact_df: pd.DataFrame,
     *,
-    crm_date_precedence: bool = True,
+    crm_date_precedence: bool = False,
 ) -> Tuple[pd.DataFrame, MergeStats]:
     crm = crm_df.copy()
     fact = fact_df.copy()
@@ -137,7 +139,7 @@ def merge_sales_sources(
         stats = MergeStats(0, 0, 0, 0, 0, 0, 0, 0, None)
         return crm, stats
 
-    key_cols = ["order_id", "sku_id", "store_code", "kaspi_offer_name"]
+    key_cols = ["order_id", "sku_id", "store_code"]
     crm = crm.drop_duplicates(subset=key_cols, keep="last")
     fact = fact.drop_duplicates(subset=key_cols, keep="last")
     crm["order_date"] = _coerce_date(crm["order_date"])
@@ -173,7 +175,7 @@ def merge_sales_sources(
         sku_key = combined["sku_key"].fillna("").astype(str)
         combined["has_specific_sku"] = (sku_id != "") & (sku_id != sku_key)
         combined["is_sizeless_sku"] = (sku_id == "") | (sku_id == sku_key)
-        group_cols = ["order_id", "order_date", "store_code", "kaspi_offer_name"]
+        group_cols = ["order_id", "order_date", "store_code", "sku_key"]
         group_has_specific = combined.groupby(group_cols)["has_specific_sku"].transform("max").fillna(False)
         combined = combined[~(group_has_specific & combined["is_sizeless_sku"])].copy()
         combined = combined.drop(columns=["has_specific_sku", "is_sizeless_sku"])
