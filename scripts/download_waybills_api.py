@@ -156,12 +156,25 @@ def get_target_orders_from_api(
     exact_date: bool = True,
     all_dates: bool = False,
     verbose: bool = False,
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """Fetch KASPI_DELIVERY orders from API and filter by planned date."""
-    client = KaspiAPIClient(store_code=store_code)
+    try:
+        client = KaspiAPIClient(store_code=store_code)
+    except KaspiAuthError as exc:
+        logger.warning(f"{store_code}: Auth error - {exc}")
+        return [], True
+    except Exception as exc:
+        logger.warning(f"{store_code}: API init error - {exc}")
+        return [], True
+
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
-    orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+    try:
+        orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+    except Exception as exc:
+        logger.warning(f"{store_code}: API list error - {exc}")
+        return [], True
+
     if verbose:
         print(f"    API returned {len(orders)} orders for {store_code}")
 
@@ -183,7 +196,7 @@ def get_target_orders_from_api(
 
     if verbose:
         print(f"    Filtered to {len(filtered)} orders for {target_date}")
-    return filtered
+    return filtered, False
 
     api_code = DB_STORE_TO_API.get(upper)
     if api_code:
@@ -648,10 +661,10 @@ def download_all_waybills(
     elif verbose:
         print(f"  [DRY RUN] Would create directory: {output_dir}")
 
-    # Get target order IDs from DB first, fallback to CRM
     # Primary selection: Kaspi API planned date (freshest)
     target_orders_by_store: dict[str, set[str]] = {}
     orders_by_store: dict[str, list[dict]] = {}
+    api_errors: set[str] = set()
     source_label = None
 
     stores = list(STORE_TOKEN_MAP.keys())
@@ -661,18 +674,16 @@ def download_all_waybills(
             stores = [store_filter_api]
 
     for store_code in stores:
-        try:
-            orders = get_target_orders_from_api(
-                store_code,
-                target_date,
-                since_days=since_days,
-                exact_date=exact_date or not all_dates,
-                all_dates=all_dates,
-                verbose=verbose,
-            )
-        except Exception as exc:
-            logger.warning(f"{store_code}: API selection failed: {exc}")
-            continue
+        orders, had_error = get_target_orders_from_api(
+            store_code,
+            target_date,
+            since_days=since_days,
+            exact_date=exact_date or not all_dates,
+            all_dates=all_dates,
+            verbose=verbose,
+        )
+        if had_error:
+            api_errors.add(store_code)
 
         if orders:
             orders_by_store[store_code] = orders
@@ -685,22 +696,23 @@ def download_all_waybills(
     if target_orders_by_store:
         source_label = "Kaspi API (planned date)"
 
-    # Optional fallback to DB/CRM if API returned nothing
-    if not target_orders_by_store and fallback_crm:
+    # Optional fallback to DB/CRM per store if API failed or returned no orders
+    fallback_orders_by_store: dict[str, set[str]] = {}
+    if fallback_crm:
         resolved_db_path = resolve_db_path(db_path)
         if resolved_db_path:
-            target_orders_by_store = get_target_order_ids_from_db(
+            fallback_orders_by_store = get_target_order_ids_from_db(
                 resolved_db_path,
                 target_date,
                 store_filter,
                 exact_date=exact_date,
                 lookback_days=None if all_dates or exact_date else since_days,
             )
-            if target_orders_by_store:
-                source_label = f"DB ({resolved_db_path})"
+            if fallback_orders_by_store:
+                source_label = f"Kaspi API (planned date) + DB fallback"
 
-        if not target_orders_by_store and crm_path:
-            target_orders_by_store = get_target_order_ids_from_crm(
+        if crm_path:
+            crm_orders = get_target_order_ids_from_crm(
                 crm_path,
                 sheet_name,
                 target_date,
@@ -708,10 +720,12 @@ def download_all_waybills(
                 exact_date=exact_date,
                 lookback_days=None if all_dates or exact_date else since_days,
             )
-            if target_orders_by_store:
-                source_label = f"CRM ({crm_path})"
+            if crm_orders:
+                source_label = "Kaspi API (planned date) + CRM/DB fallback"
+                for store_code, ids in crm_orders.items():
+                    fallback_orders_by_store.setdefault(store_code, set()).update(ids)
 
-    if not target_orders_by_store:
+    if not target_orders_by_store and not fallback_orders_by_store:
         print("  No orders found for the target date.")
         return {
             'downloaded': 0,
@@ -723,6 +737,40 @@ def download_all_waybills(
         }
     if source_label:
         print(f"  Using {source_label} for order selection")
+
+    # Merge API + fallback selections per store
+    fallback_used = bool(fallback_orders_by_store)
+    fallback_stores = sorted(fallback_orders_by_store.keys())
+
+    if fallback_orders_by_store:
+        merged_orders_by_store: dict[str, set[str]] = {}
+        store_union = set(target_orders_by_store) | set(fallback_orders_by_store)
+        for store_code in store_union:
+            api_ids = target_orders_by_store.get(store_code, set())
+            fallback_ids = fallback_orders_by_store.get(store_code, set())
+
+            if api_ids:
+                merged = set(api_ids)
+                extra = fallback_ids - api_ids
+                if extra:
+                    logger.warning(
+                        f"{store_code}: {len(extra)} fallback orders not in API selection; "
+                        "including due to --fallback-crm"
+                    )
+                    merged |= extra
+                merged_orders_by_store[store_code] = merged
+            else:
+                if fallback_ids:
+                    merged_orders_by_store[store_code] = set(fallback_ids)
+                    logger.warning(
+                        f"{store_code}: API selection empty or failed; "
+                        f"using fallback ({len(fallback_ids)} orders)"
+                    )
+        target_orders_by_store = merged_orders_by_store
+    elif api_errors:
+        logger.warning(
+            "API selection failed for stores: " + ", ".join(sorted(api_errors))
+        )
 
     total_downloaded = 0
     total_skipped_not_target = 0
@@ -763,6 +811,26 @@ def download_all_waybills(
               f"No waybill: {result['missing_waybill']}, "
               f"Invalid PDF: {result['invalid_pdf']}")
 
+    selection_status = "API_ONLY"
+    if fallback_used:
+        selection_status = "API_PARTIAL_FALLBACK" if api_errors else "API_FALLBACK"
+    elif api_errors:
+        selection_status = "API_ERRORS"
+
+    if not dry_run and output_dir.exists():
+        status_path = output_dir / "_waybill_selection_status.txt"
+        lines = [
+            f"selection={selection_status}",
+            f"fallback_used={int(fallback_used)}",
+            f"fallback_stores={','.join(fallback_stores)}",
+            f"api_errors={','.join(sorted(api_errors))}",
+            f"target_date={target_date.isoformat()}",
+        ]
+        try:
+            status_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception as exc:
+            logger.warning(f"Failed to write selection status file: {exc}")
+
     return {
         'downloaded': total_downloaded,
         'skipped_not_target': total_skipped_not_target,
@@ -770,6 +838,10 @@ def download_all_waybills(
         'already_exists': total_already_exists,
         'invalid_pdf': total_invalid_pdf,
         'errors': all_errors,
+        'selection_status': selection_status,
+        'fallback_used': fallback_used,
+        'fallback_stores': fallback_stores,
+        'api_errors': sorted(api_errors),
     }
 
 
@@ -911,6 +983,16 @@ def main():
     print(f"  Missing waybill URL: {result['missing_waybill']}")
     print(f"  Invalid PDF payloads: {result['invalid_pdf']}")
     print(f"  Skipped (not in target set): {result['skipped_not_target']}")
+    if result.get("selection_status"):
+        status = result["selection_status"]
+        if result.get("fallback_used"):
+            stores = ",".join(result.get("fallback_stores", [])) or "n/a"
+            print(f"  Selection status: {status} (stores: {stores})")
+        elif result.get("api_errors"):
+            stores = ",".join(result.get("api_errors", [])) or "n/a"
+            print(f"  Selection status: {status} (stores: {stores})")
+        else:
+            print(f"  Selection status: {status}")
     if result['errors']:
         print(f"  Errors: {len(result['errors'])}")
         for err in result['errors'][:5]:

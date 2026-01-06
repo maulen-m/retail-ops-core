@@ -157,7 +157,7 @@ fi
 # Step 2: Download waybills
 echo "Step 2: Downloading waybills via API..."
 echo "----------------------------------------"
-python scripts/download_waybills_api.py --verbose --days "${LOOKBACK_DAYS}" --exact-date
+python scripts/download_waybills_api.py --verbose --days "${LOOKBACK_DAYS}" --exact-date --fallback-crm
 
 if [ $? -ne 0 ]; then
     echo ""
@@ -180,8 +180,10 @@ TS=$(date "+%Y-%m-%d_%H%M%S")
 ARCHIVE_DIR="${DATA_ROOT}/excel_ui/Archive/input_${TS}"
 EXTERNAL_BACKUP_ROOT="~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business"
 EXTERNAL_ARCHIVE_DIR="${EXTERNAL_BACKUP_ROOT}/Kaspi_waybills/input_${TS}"
+EXTERNAL_PDFS_DIR="${EXTERNAL_BACKUP_ROOT}/Kaspi_waybills/pdfs_${TS}"
 mkdir -p "${ARCHIVE_DIR}/waybills"
 mkdir -p "${EXTERNAL_ARCHIVE_DIR}/waybills"
+mkdir -p "${EXTERNAL_PDFS_DIR}"
 cp -p "${DATA_ROOT}/excel_ui/SALES_KSP_CRM_V3.xlsx" "${ARCHIVE_DIR}/" 2>/dev/null || true
 cp -p "${DATA_ROOT}/excel_ui/SALES_KSP_CRM_V3.xlsx" "${EXTERNAL_ARCHIVE_DIR}/" 2>/dev/null || true
 if [ -d "${DATA_ROOT}/excel_ui/ActiveOrders/waybills" ]; then
@@ -192,10 +194,33 @@ if [ -d "${DATA_ROOT}/excel_ui/ActiveOrders" ]; then
     cp -p "${DATA_ROOT}/excel_ui/ActiveOrders/"waybill*.zip "${ARCHIVE_DIR}/" 2>/dev/null || true
     cp -p "${DATA_ROOT}/excel_ui/ActiveOrders/"waybill*.zip "${EXTERNAL_ARCHIVE_DIR}/" 2>/dev/null || true
 fi
+if [ -d "${DATA_ROOT}/excel_ui/Kaspi_orders/Today" ]; then
+    cp -p "${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"*.pdf "${EXTERNAL_PDFS_DIR}/" 2>/dev/null || true
+    cp -p "${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"*/*.pdf "${EXTERNAL_PDFS_DIR}/" 2>/dev/null || true
+    cp -p "${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"*/*/*.pdf "${EXTERNAL_PDFS_DIR}/" 2>/dev/null || true
+fi
 echo "Archived inputs to: ${ARCHIVE_DIR}"
 echo "Archived inputs to: ${EXTERNAL_ARCHIVE_DIR}"
+echo "Archived output PDFs to: ${EXTERNAL_PDFS_DIR}"
 
 echo ""
+STATUS_FILE="${DATA_ROOT}/excel_ui/ActiveOrders/waybills/_waybill_selection_status.txt"
+if [ -f "${STATUS_FILE}" ]; then
+    SELECTION_STATUS=$(grep -E "^selection=" "${STATUS_FILE}" | head -n 1 | cut -d= -f2-)
+    FALLBACK_STORES=$(grep -E "^fallback_stores=" "${STATUS_FILE}" | head -n 1 | cut -d= -f2-)
+    API_ERRORS=$(grep -E "^api_errors=" "${STATUS_FILE}" | head -n 1 | cut -d= -f2-)
+    if [ -n "${SELECTION_STATUS}" ]; then
+        if [ -n "${FALLBACK_STORES}" ]; then
+            echo "Selection status: ${SELECTION_STATUS} (stores: ${FALLBACK_STORES})"
+        elif [ -n "${API_ERRORS}" ]; then
+            echo "Selection status: ${SELECTION_STATUS} (stores: ${API_ERRORS})"
+        else
+            echo "Selection status: ${SELECTION_STATUS}"
+        fi
+        echo ""
+    fi
+fi
+
 echo "========================================"
 echo "  Workflow Complete!"
 echo "========================================"

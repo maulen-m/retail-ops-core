@@ -271,9 +271,10 @@ def get_api_order_ids_for_date(
     since_days: int = 7,
     store_filter: Optional[str] = None,
     verbose: bool = False,
-) -> dict[str, set[str]]:
+) -> tuple[dict[str, set[str]], set[str]]:
     """Fetch KASPI_DELIVERY orders from API and return order IDs for target_date."""
     orders_by_store: dict[str, set[str]] = {}
+    error_stores: set[str] = set()
 
     stores = list(STORE_TOKEN_MAP.keys())
     if store_filter:
@@ -289,9 +290,11 @@ def get_api_order_ids_for_date(
             orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
         except KaspiAuthError as exc:
             logger.warning(f"{store_code}: Auth error - {exc}")
+            error_stores.add(store_code)
             continue
         except Exception as exc:
             logger.warning(f"{store_code}: API error - {exc}")
+            error_stores.add(store_code)
             continue
 
         if verbose:
@@ -310,7 +313,7 @@ def get_api_order_ids_for_date(
         if verbose:
             logger.info(f"{store_code}: {len(ids)} orders for {target_date}")
 
-    return orders_by_store
+    return orders_by_store, error_stores
 
 
 def normalize_store_display(value: Any) -> str:
@@ -1420,12 +1423,19 @@ def main(
 
     # Prefer Kaspi API planned date for selection (freshest)
     api_since_days = max(lookback_days if lookback_days is not None else 7, 7)
-    api_orders_by_store = get_api_order_ids_for_date(
+    api_orders_by_store, api_error_stores = get_api_order_ids_for_date(
         target_date=target_date,
         since_days=api_since_days,
         verbose=verbose,
     )
-    if api_orders_by_store:
+    if api_error_stores:
+        logger.warning(
+            "API selection failed for stores: "
+            + ", ".join(sorted(api_error_stores))
+            + " — falling back to DB/CRM selection for all stores"
+        )
+        api_order_ids = set()
+    elif api_orders_by_store:
         api_order_ids = set().union(*api_orders_by_store.values())
         logger.info(
             f"API selection: {len(api_order_ids)} orders for {target_date}"
