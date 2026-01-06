@@ -22,9 +22,11 @@ import sys
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from dateutil import parser as dtp
+from dotenv import load_dotenv
 
 # xlwings for Excel-safe writing (optional at import time)
 try:
@@ -38,6 +40,36 @@ from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.integrations.kaspi_api_client import KaspiAPIClient, KaspiAuthError, STORE_TOKEN_MAP
+
+ALMATY_TZ = ZoneInfo("Asia/Almaty")
+
+# API state → Russian status mapping (matches export_api_orders)
+STATUS_MAP = {
+    'NEW': 'Новый',
+    'APPROVED_BY_BANK': 'Одобрен банком',
+    'ACCEPTED_BY_MERCHANT': 'Принят продавцом',
+    'ASSEMBLY': 'Собирается',
+    'KASPI_DELIVERY': 'Ожидает передачи курьеру',
+    'DELIVERY': 'Доставляется',
+    'PICKUP': 'Готов к выдаче',
+    'COMPLETED': 'Завершен',
+    'CANCELLED': 'Отменен',
+    'CANCELLING': 'Отменяется',
+    'RETURNING': 'Возвращается',
+    'RETURNED': 'Возвращен',
+    'ARCHIVE': 'Завершен',
+}
+
+# Warehouse → Store code (for API lookup)
+WAREHOUSE_STORE_MAP = {
+    '30000001_PP1': 'UNIVERSAL',
+    '30137883_PP1': 'ACMEWEAR',
+    '30290083_PP1': '11KZ',
+    '30000002_PP1': 'STOREB',
+    '30000002_PP1 ': 'STOREB',
+}
 
 from core.paths import data_path, get_data_root
 
@@ -234,6 +266,211 @@ def clean_order_id(v) -> Optional[str]:
     if len(s) < 9 or len(s) > 12:
         return None
     return s
+
+
+def _timestamp_to_ddmmyyyy(ts_ms: Optional[int]) -> Optional[str]:
+    """Convert milliseconds timestamp to DD.MM.YYYY (Asia/Almaty)."""
+    if not ts_ms:
+        return None
+    try:
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=ALMATY_TZ)
+        return dt.strftime('%d.%m.%Y')
+    except Exception:
+        return None
+
+
+def _get_state_indicators(api_state: str) -> Dict[str, str]:
+    accepted_states = {
+        'ACCEPTED_BY_MERCHANT', 'ASSEMBLY', 'KASPI_DELIVERY',
+        'DELIVERY', 'PICKUP', 'COMPLETED', 'ARCHIVE'
+    }
+    issued_states = {'KASPI_DELIVERY', 'DELIVERY', 'PICKUP', 'COMPLETED', 'ARCHIVE'}
+    cancelled_states = {'CANCELLED', 'CANCELLING', 'RETURNING', 'RETURNED'}
+    return {
+        'Принял': 'Да' if api_state in accepted_states else '',
+        'Выдал': 'Да' if api_state in issued_states else '',
+        'Отменил': 'Да' if api_state in cancelled_states else '',
+    }
+
+
+def _extract_delivery_costs(order: dict) -> tuple[Optional[float], Optional[float]]:
+    attrs = order.get('attributes', {}) if isinstance(order, dict) else {}
+    delivery = attrs.get('kaspiDelivery', {}) if isinstance(attrs.get('kaspiDelivery', {}), dict) else {}
+    buyer_cost = delivery.get('customerDeliveryCost')
+    if buyer_cost is None:
+        buyer_cost = attrs.get('deliveryCost')
+    seller_cost = attrs.get('deliveryCostForSeller')
+    if seller_cost is None:
+        seller_cost = delivery.get('deliveryCostForSeller')
+    return buyer_cost, seller_cost
+
+
+def _order_to_update_fields(order: dict) -> Dict[str, object]:
+    attrs = order.get('attributes', {})
+    delivery = attrs.get('kaspiDelivery', {})
+    api_state = attrs.get('state', '')
+    api_status = attrs.get('status', '')
+
+    if api_state == 'KASPI_DELIVERY':
+        russian_status = 'Ожидает передачи курьеру'
+    else:
+        russian_status = STATUS_MAP.get(api_status, STATUS_MAP.get(api_state, api_status))
+
+    indicators = _get_state_indicators(api_state)
+    planned_date = _timestamp_to_ddmmyyyy(delivery.get('courierTransmissionPlanningDate'))
+    status_change_date = _timestamp_to_ddmmyyyy(attrs.get('statusChangeDate'))
+    buyer_cost, seller_cost = _extract_delivery_costs(order)
+    comp = delivery.get('deliveryCostCompensation', 0)
+
+    data = {
+        'Статус': russian_status,
+        'Дата изменения статуса': status_change_date,
+        'Принял': indicators['Принял'],
+        'Выдал': indicators['Выдал'],
+        'Отменил': indicators['Отменил'],
+        'Плановая дата передачи курьеру': planned_date,
+        'Стоимость доставки для покупателя': buyer_cost,
+        'Стоимость доставки для продавца': seller_cost,
+        'Компенсация за доставку': comp,
+    }
+    return {k: v for k, v in data.items() if v is not None}
+
+
+def read_crm_pending_orders(
+    crm_path: Path,
+    sheet_name: str,
+    target_date: date,
+) -> List[Dict[str, Optional[str]]]:
+    """Read CRM pending orders (planned date == target_date, status READY)."""
+    header_df = pd.read_excel(crm_path, sheet_name=sheet_name, nrows=0)
+    cols = header_df.columns.tolist()
+
+    order_col = None
+    for name in ("OrderID", "№ заказа"):
+        if name in cols:
+            order_col = name
+            break
+    status_col = "Статус" if "Статус" in cols else None
+    planned_cols = []
+    for name in ("PLANNED_SHIPPING_DATE", "Плановая дата передачи курьеру"):
+        if name in cols:
+            planned_cols.append(name)
+    warehouse_col = None
+    for name in ("Склад передачи КД", "Warehouse"):
+        if name in cols:
+            warehouse_col = name
+            break
+
+    if not order_col or not status_col or not planned_cols:
+        return []
+
+    usecols = [order_col, status_col] + planned_cols
+    if warehouse_col:
+        usecols.append(warehouse_col)
+
+    df = pd.read_excel(crm_path, sheet_name=sheet_name, usecols=usecols)
+
+    pending = []
+    for _, row in df.iterrows():
+        order_id = clean_order_id(row.get(order_col))
+        if not order_id:
+            continue
+        planned = None
+        for pcol in planned_cols:
+            planned = parse_date(row.get(pcol))
+            if planned:
+                break
+        if planned != target_date:
+            continue
+        status = str(row.get(status_col) or "").strip()
+        if status != READY_STATUS:
+            continue
+        warehouse = str(row.get(warehouse_col) or "").strip() if warehouse_col else ""
+        store_code = WAREHOUSE_STORE_MAP.get(warehouse)
+        pending.append({"order_id": order_id, "store_code": store_code})
+
+    return pending
+
+
+def fetch_missing_status_updates(
+    missing_orders: List[Dict[str, Optional[str]]],
+    verbose: bool = False,
+) -> Dict[str, Dict[str, object]]:
+    """Fetch current statuses for missing orders via API (by order code)."""
+    if not missing_orders:
+        return {}
+
+    load_dotenv()
+    clients: Dict[str, KaspiAPIClient] = {}
+    updates: Dict[str, Dict[str, object]] = {}
+
+    for item in missing_orders:
+        order_id = item.get("order_id")
+        if not order_id:
+            continue
+        preferred_store = item.get("store_code")
+        stores = [preferred_store] if preferred_store else list(STORE_TOKEN_MAP.keys())
+
+        for store_code in stores:
+            if not store_code:
+                continue
+            try:
+                client = clients.get(store_code)
+                if client is None:
+                    client = KaspiAPIClient(store_code=store_code)
+                    clients[store_code] = client
+            except KaspiAuthError as e:
+                if verbose:
+                    print(f"  Skipping {store_code}: {e}")
+                continue
+
+            resp = client.get_order(order_id)
+            if not resp.success or not resp.data:
+                continue
+
+            data = resp.data
+            if isinstance(data, dict) and data.get('type') != 'orders':
+                if 'data' in data and isinstance(data['data'], list) and data['data']:
+                    data = data['data'][0]
+            if isinstance(data, dict) and data.get('type') == 'orders':
+                updates[order_id] = _order_to_update_fields(data)
+                break
+
+        if order_id not in updates and verbose:
+            print(f"  WARN: order {order_id} not found via API")
+
+    return updates
+
+
+def summarize_order_rows(df: pd.DataFrame) -> Dict[str, int]:
+    """
+    Summarize orders vs rows for a filtered dataframe.
+
+    Returns dict with keys: rows, unique_orders, multi_line_orders, max_lines_per_order
+    """
+    colmap = map_headers(df)
+    order_col = colmap.get("order_id")
+    if not order_col:
+        return {}
+
+    order_ids = df[order_col].apply(clean_order_id).dropna()
+    if order_ids.empty:
+        return {
+            "rows": int(len(df)),
+            "unique_orders": 0,
+            "multi_line_orders": 0,
+            "max_lines_per_order": 0,
+        }
+
+    counts = order_ids.value_counts()
+    multi_line = int((counts > 1).sum())
+    max_lines = int(counts.max()) if not counts.empty else 0
+    return {
+        "rows": int(len(df)),
+        "unique_orders": int(counts.size),
+        "multi_line_orders": multi_line,
+        "max_lines_per_order": max_lines,
+    }
 
 
 def find_active_orders_files(orders_dir: Path) -> List[Path]:
@@ -549,6 +786,60 @@ def collect_existing_order_ids(
         wb.close()
 
 
+def collect_existing_order_keys(
+    crm_path: Path,
+    sheet_name: str,
+    table_name: str,
+    order_col_abs: int,
+    planned_col_abs: Optional[int],
+) -> set:
+    """
+    Get set of existing order keys from CRM.
+
+    Key format: "{order_id}|{YYYY-MM-DD}" if planned date exists,
+    otherwise "{order_id}|" (empty planned date).
+    """
+    wb = load_workbook(filename=str(crm_path), read_only=False, data_only=True)
+    try:
+        ws = wb[sheet_name]
+        table = _resolve_table(ws, table_name)
+        start_col, start_row, end_col, end_row = _table_bounds(table)
+
+        if not (start_col <= order_col_abs <= end_col):
+            return set()
+
+        planned_in_table = (
+            planned_col_abs is not None
+            and start_col <= planned_col_abs <= end_col
+        )
+
+        keys = set()
+        for row_num in range(start_row + 1, end_row + 1):
+            order_val = ws.cell(row=row_num, column=order_col_abs).value
+            if order_val in (None, ""):
+                continue
+            if isinstance(order_val, str) and order_val.startswith("="):
+                continue
+            order_id = clean_order_id(order_val)
+            if not order_id:
+                continue
+
+            planned_date = None
+            if planned_in_table:
+                planned_val = ws.cell(row=row_num, column=planned_col_abs).value
+                planned_date = parse_date(planned_val)
+
+            if planned_date:
+                key = f"{order_id}|{planned_date.isoformat()}"
+            else:
+                key = f"{order_id}|"
+            keys.add(key)
+
+        return keys
+    finally:
+        wb.close()
+
+
 def collect_existing_order_rows(
     crm_path: Path,
     sheet_name: str,
@@ -598,7 +889,9 @@ def find_update_column_positions(
     Find column positions for update fields within the raw Kaspi columns.
 
     Returns dict mapping column name -> absolute column position.
-    Target columns: Статус, Дата изменения статуса, Принял, Выдал, Отменил
+    Target columns: Статус, Дата изменения статуса, Принял, Выдал, Отменил,
+    Плановая дата передачи курьеру, Стоимость доставки для покупателя,
+    Стоимость доставки для продавца, Компенсация за доставку
     """
     wb = load_workbook(filename=str(crm_path), read_only=True, data_only=True)
     try:
@@ -611,6 +904,10 @@ def find_update_column_positions(
             'Принял': None,
             'Выдал': None,
             'Отменил': None,
+            'Плановая дата передачи курьеру': None,
+            'Стоимость доставки для покупателя': None,
+            'Стоимость доставки для продавца': None,
+            'Компенсация за доставку': None,
         }
 
         for i, cell in enumerate(header_row):
@@ -747,7 +1044,11 @@ def build_update_data(df: pd.DataFrame, colmap: Dict[str, str]) -> Dict[str, dic
     """
     Build update data dict from DataFrame.
 
-    Extracts: order_id -> {Статус, Дата изменения статуса, Принял, Выдал, Отменил}
+    Extracts: order_id -> {
+        Статус, Дата изменения статуса, Принял, Выдал, Отменил,
+        Плановая дата передачи курьеру,
+        Стоимость доставки для покупателя, Стоимость доставки для продавца, Компенсация за доставку
+    }
     for updating existing orders in CRM.
     """
     update_data = {}
@@ -758,6 +1059,10 @@ def build_update_data(df: pd.DataFrame, colmap: Dict[str, str]) -> Dict[str, dic
     prinyal_col = None
     vydal_col = None
     otmenil_col = None
+    planned_date_col = None
+    buyer_cost_col = None
+    seller_cost_col = None
+    delivery_comp_col = None
 
     for col in df.columns:
         col_norm = norm(col)
@@ -771,6 +1076,14 @@ def build_update_data(df: pd.DataFrame, colmap: Dict[str, str]) -> Dict[str, dic
             vydal_col = col
         elif col_norm == 'отменил':
             otmenil_col = col
+        elif col_norm == 'плановаядатапередачикурьеру':
+            planned_date_col = col
+        elif col_norm == 'стоимостьдоставкидляпокупателя':
+            buyer_cost_col = col
+        elif col_norm == 'стоимостьдоставкидляпродавца':
+            seller_cost_col = col
+        elif col_norm == 'компенсациязадоставку':
+            delivery_comp_col = col
 
     order_col = colmap.get('order_id')
     if not order_col:
@@ -798,6 +1111,14 @@ def build_update_data(df: pd.DataFrame, colmap: Dict[str, str]) -> Dict[str, dic
             data['Выдал'] = str(row.get(vydal_col, '') or '')
         if otmenil_col:
             data['Отменил'] = str(row.get(otmenil_col, '') or '')
+        if planned_date_col and pd.notna(row.get(planned_date_col)):
+            data['Плановая дата передачи курьеру'] = row.get(planned_date_col)
+        if buyer_cost_col and pd.notna(row.get(buyer_cost_col)):
+            data['Стоимость доставки для покупателя'] = row.get(buyer_cost_col)
+        if seller_cost_col and pd.notna(row.get(seller_cost_col)):
+            data['Стоимость доставки для продавца'] = row.get(seller_cost_col)
+        if delivery_comp_col and pd.notna(row.get(delivery_comp_col)):
+            data['Компенсация за доставку'] = row.get(delivery_comp_col)
 
         if data:
             update_data[order_id] = data
@@ -1057,6 +1378,28 @@ def archive_run(orders_dir: Path, source_files: List[Path], df_filt: pd.DataFram
     return run_dir
 
 
+def sync_pending_orders_to_gdrive_safe(
+    crm_path: Path,
+    target_date: date,
+    dry_run: bool = False,
+) -> dict:
+    print("\n4. Syncing pending orders to Google Drive...")
+    try:
+        from scripts.sync_to_gdrive import sync_pending_orders_to_gdrive
+        stats = sync_pending_orders_to_gdrive(
+            crm_path=crm_path,
+            target_date=target_date,
+            status_value=READY_STATUS,
+            dry_run=dry_run,
+            validate=not dry_run,
+        )
+        print(f"   Google Drive sync: {stats['rows_synced']} rows synced")
+        return stats
+    except Exception as e:
+        print(f"   WARNING: Google Drive sync failed: {e}")
+        return {"rows_synced": 0, "dry_run": dry_run, "error": str(e)}
+
+
 # ---------- CLI ----------
 
 _UNSET = object()
@@ -1200,6 +1543,17 @@ def main(
     df_filt, stats = filter_for_shipping(df_all, args.status, None, end_date)
 
     print(f"\nFiltered: {stats['rows_in_files']} → {stats['rows_after_filters']} rows")
+    order_summary = summarize_order_rows(df_filt)
+    if order_summary:
+        print(
+            f"Orders vs rows: {order_summary['unique_orders']} unique orders "
+            f"across {order_summary['rows']} rows"
+        )
+        if order_summary["multi_line_orders"] > 0:
+            print(
+                f"  Multi-line orders: {order_summary['multi_line_orders']} "
+                f"(max lines/order: {order_summary['max_lines_per_order']})"
+            )
 
     result["orders_filtered"] = int(stats.get("rows_after_filters", 0))
     if df_filt.empty:
@@ -1223,6 +1577,13 @@ def main(
     # Update existing orders' status columns (Phase 12 Part 7)
     update_existing = args.update_existing and not args.no_update
     updated_count = 0
+    column_positions = None
+    # Build update source: all orders for target planned date (not just READY)
+    update_df = df_all
+    update_colmap = map_headers(df_all)
+    if "handover" in update_colmap:
+        handover = df_all[update_colmap["handover"]].apply(parse_kz_date)
+        update_df = df_all[handover.apply(lambda d: d is not None and d == end_date)].copy()
 
     if update_existing and len(existing_ids) > 0:
         print("\n3. Updating existing orders' status columns...")
@@ -1239,9 +1600,35 @@ def main(
         if args.verbose:
             print(f"  Update column positions: {column_positions}")
 
-        # Build update data from source DataFrame
-        colmap = map_headers(df_filt)
-        update_data = build_update_data(df_filt, colmap)
+        # Build update data from source DataFrame (all statuses for target date)
+        colmap = map_headers(update_df)
+        update_data = build_update_data(update_df, colmap)
+
+        # Fetch status updates for CRM-pending orders missing from ActiveOrders export
+        try:
+            update_ids = set()
+            order_col = colmap.get("order_id")
+            if order_col:
+                for v in update_df[order_col].tolist():
+                    oid = clean_order_id(v)
+                    if oid:
+                        update_ids.add(oid)
+
+            crm_pending = read_crm_pending_orders(args.crm_file, args.sheet, end_date)
+            missing = [o for o in crm_pending if o.get("order_id") not in update_ids]
+
+            if missing:
+                print(f"  Missing {len(missing)} CRM pending orders in ActiveOrders; fetching API status...")
+                api_updates = fetch_missing_status_updates(missing, verbose=args.verbose)
+                for oid, data in api_updates.items():
+                    if not data:
+                        continue
+                    if oid in update_data:
+                        update_data[oid].update(data)
+                    else:
+                        update_data[oid] = data
+        except Exception as e:
+            print(f"  WARNING: could not fetch missing order statuses: {e}")
 
         # How many orders can be updated?
         orders_to_update = set(order_rows.keys()) & set(update_data.keys())
@@ -1272,8 +1659,34 @@ def main(
     colmap = map_headers(df_filt)
     if "order_id" in colmap:
         order_col = colmap["order_id"]
-        df_filt["_oid"] = df_filt[order_col].astype(str)
-        new_mask = ~df_filt["_oid"].isin(existing_ids)
+        if column_positions is None:
+            column_positions = find_update_column_positions(
+                args.crm_file, args.sheet, start_abs, end_abs
+            )
+        planned_col_abs = None
+        if column_positions:
+            planned_col_abs = column_positions.get("Плановая дата передачи курьеру")
+
+        existing_keys = collect_existing_order_keys(
+            args.crm_file,
+            args.sheet,
+            args.table,
+            start_abs,
+            planned_col_abs,
+        )
+
+        handover_col = colmap.get("handover")
+        df_filt["_oid"] = df_filt[order_col].apply(clean_order_id)
+        if handover_col and handover_col in df_filt.columns:
+            df_filt["_pdate"] = df_filt[handover_col].apply(parse_date)
+        else:
+            df_filt["_pdate"] = None
+
+        df_filt["_okey"] = [
+            f"{oid}|{p.isoformat()}" if oid and p else (f"{oid}|" if oid else "")
+            for oid, p in zip(df_filt["_oid"], df_filt["_pdate"])
+        ]
+        new_mask = ~df_filt["_okey"].isin(existing_keys)
 
         # Filter stage and phone values to match
         indices_to_keep = df_filt[new_mask].index.tolist()
@@ -1282,17 +1695,19 @@ def main(
 
         dup_count = len(stage) - len(stage_filtered)
         if dup_count > 0:
-            print(f"Skipped {dup_count} duplicates (already in CRM)")
+            print(f"Skipped {dup_count} duplicates (same order_id + planned date already in CRM)")
 
         stage = stage_filtered
         phone_values = phone_filtered
 
     print(f"\n4. Appending new orders...")
-    print(f"   Orders to append: {len(stage)}")
+    new_rows_added = len(stage)
+    print(f"   Orders to append: {new_rows_added}")
 
     if len(stage) == 0:
         if updated_count > 0:
             print(f"   No new orders to append (updated {updated_count} existing orders)")
+            sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
             print(f"\n✅ Import complete! Updated {updated_count} orders, appended 0 new.")
             return result
         else:
@@ -1326,28 +1741,8 @@ def main(
     # Archive source files
     archive_path = archive_run(args.orders_dir, source_files, df_filt)
 
-    # Sync NEW rows to Google Drive (Phase 12 Part 3)
-    print("\n4. Syncing NEW rows to Google Drive...")
-    new_rows_added = len(stage)
-    try:
-        # Import sync function - handle different working directories
-        import sys
-        project_root = Path(__file__).resolve().parent.parent
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
-        from scripts.sync_to_gdrive import sync_new_rows_to_gdrive
-
-        # Pass actual row range to avoid date mismatch after sorting
-        sync_stats = sync_new_rows_to_gdrive(
-            new_rows_count=new_rows_added,  # Keep for backward compat
-            start_row=append_start_row,
-            end_row=append_end_row,
-            dry_run=args.dry_run
-        )
-        print(f"   Google Drive sync: {sync_stats['rows_synced']} rows synced")
-    except Exception as e:
-        print(f"   WARNING: Google Drive sync failed: {e}")
-        # Don't fail the import if sync fails - CRM update was successful
+    # Sync PENDING rows for target date to Google Drive (formatted copy)
+    sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
 
     print(f"\n✅ Import complete!")
     print(f"   Updated: {updated_count} existing orders")

@@ -4,7 +4,9 @@
 # For status updates, use run_status_update.command separately
 # Double-click to run
 
-cd ~/Docs/Autonomous_business
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${PROJECT_ROOT}"
 source .venv/bin/activate 2>/dev/null || true
 if [ -f ".env" ]; then
     set -a
@@ -13,15 +15,24 @@ if [ -f ".env" ]; then
 fi
 
 if [ -z "${AB_DATA_DIR:-}" ] && [ -z "${DATA_DIR:-}" ]; then
-    export DATA_DIR="~/Docs/Autonomous_business"
+    export DATA_DIR="${PROJECT_ROOT}"
 fi
-DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-~/Docs/Autonomous_business}}"
-DEFAULT_LOOKBACK_DAYS=4
+DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-${PROJECT_ROOT}}}"
+
+if [ -z "${AB_GDRIVE_KASPI_SALES_PATH:-}" ]; then
+    export AB_GDRIVE_KASPI_SALES_PATH="${HOME}/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/Shared/Kaspi/Kaspi orders/Kaspi_drive_sales_v1.xlsx"
+fi
+
+DEFAULT_LOOKBACK_DAYS=5
+LONG_LOOKBACK_DAYS="${KASPI_LOOKBACK_DAYS_LONG:-14}"
 LOOKBACK_DAYS="${KASPI_LOOKBACK_DAYS:-}"
 if [ -z "${LOOKBACK_DAYS}" ]; then
     CURRENT_HOUR=$(TZ=Asia/Almaty date +%H)
-    if [ "${CURRENT_HOUR}" = "11" ] && [ -n "${KASPI_LOOKBACK_DAYS_LONG:-}" ]; then
-        LOOKBACK_DAYS="${KASPI_LOOKBACK_DAYS_LONG}"
+    CURRENT_MIN=$(TZ=Asia/Almaty date +%M)
+    CURRENT_HOUR=$((10#${CURRENT_HOUR}))
+    CURRENT_MIN=$((10#${CURRENT_MIN}))
+    if [ "${CURRENT_HOUR}" -gt 20 ] || { [ "${CURRENT_HOUR}" -eq 20 ] && [ "${CURRENT_MIN}" -ge 30 ]; }; then
+        LOOKBACK_DAYS="${LONG_LOOKBACK_DAYS}"
     else
         LOOKBACK_DAYS="${DEFAULT_LOOKBACK_DAYS}"
     fi
@@ -150,3 +161,4 @@ fi
 echo ""
 echo "Press Enter to close..."
 [[ -t 0 ]] && read
+exit 0

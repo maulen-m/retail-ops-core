@@ -5,7 +5,8 @@
 set -e
 
 PLIST_NAME="com.example.kaspi-import.plist"
-PROJECT_DIR="~/Docs/Autonomous_business"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 
 echo "========================================"
@@ -34,9 +35,10 @@ launchctl load "$LAUNCH_AGENTS_DIR/$PLIST_NAME"
 echo ""
 echo "Scheduler installed successfully!"
 echo ""
-echo "Schedule:"
-echo "  - 11:00 GMT+5 (06:00 UTC) - First import"
-echo "  - 16:00 GMT+5 (11:00 UTC) - Second import"
+echo "Schedule (local Asia/Almaty):"
+echo "  - 10:30 - Import (lookback 5 days)"
+echo "  - 15:02 - Import (lookback 5 days)"
+echo "  - 20:30 - Import (lookback 14 days)"
 echo ""
 echo "Logs will be written to:"
 echo "  - $PROJECT_DIR/logs/import_stdout.log"
