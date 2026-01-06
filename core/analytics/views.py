@@ -221,6 +221,42 @@ fx AS (
     FROM dim_fx_rates
     ORDER BY effective_date DESC
     LIMIT 1
+),
+sizes AS (
+    SELECT
+        sku_key,
+        SUM(CASE WHEN size_bucket = 'S' THEN current_stock ELSE 0 END) AS Size_S,
+        SUM(CASE WHEN size_bucket = 'M' THEN current_stock ELSE 0 END) AS Size_M,
+        SUM(CASE WHEN size_bucket = 'L' THEN current_stock ELSE 0 END) AS Size_L,
+        SUM(CASE WHEN size_bucket = 'XL' THEN current_stock ELSE 0 END) AS Size_XL,
+        SUM(CASE WHEN size_bucket = '2XL' THEN current_stock ELSE 0 END) AS Size_2XL,
+        SUM(CASE WHEN size_bucket = '3XL' THEN current_stock ELSE 0 END) AS Size_3XL,
+        SUM(CASE WHEN size_bucket = '4XL' THEN current_stock ELSE 0 END) AS Size_4XL,
+        SUM(CASE WHEN size_bucket = '22' THEN current_stock ELSE 0 END) AS Size_22,
+        SUM(CASE WHEN size_bucket = '24' THEN current_stock ELSE 0 END) AS Size_24,
+        SUM(CASE WHEN size_bucket = '26' THEN current_stock ELSE 0 END) AS Size_26,
+        SUM(CASE WHEN size_bucket = '28' THEN current_stock ELSE 0 END) AS Size_28,
+        SUM(CASE WHEN size_bucket = '30' THEN current_stock ELSE 0 END) AS Size_30
+    FROM (
+        SELECT
+            sku_key,
+            CASE
+                WHEN UPPER(TRIM(my_size)) IN ('S', 'M', 'L', 'XL', '22', '24', '26', '28', '30')
+                    THEN UPPER(TRIM(my_size))
+                WHEN UPPER(TRIM(my_size)) IN ('2XL', '2XLB', '2XLБ')
+                    THEN '2XL'
+                WHEN UPPER(TRIM(my_size)) LIKE '3XL%'
+                    THEN '3XL'
+                WHEN UPPER(TRIM(my_size)) LIKE '4XL%'
+                    THEN '4XL'
+                ELSE NULL
+            END AS size_bucket,
+            current_stock
+        FROM fact_inventory_snapshot_size
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM fact_inventory_snapshot_size)
+    ) size_rows
+    WHERE size_bucket IS NOT NULL
+    GROUP BY sku_key
 )
 SELECT
     m.sku_key AS SKU_key,
@@ -273,6 +309,18 @@ SELECT
     m.days_with_sales AS Days_with_sales,
     m.total_units_30d AS Units_30d,
     m.status AS Status,
+    sizes.Size_S AS Size_S,
+    sizes.Size_M AS Size_M,
+    sizes.Size_L AS Size_L,
+    sizes.Size_XL AS Size_XL,
+    sizes.Size_2XL AS Size_2XL,
+    sizes.Size_3XL AS Size_3XL,
+    sizes.Size_4XL AS Size_4XL,
+    sizes.Size_22 AS Size_22,
+    sizes.Size_24 AS Size_24,
+    sizes.Size_26 AS Size_26,
+    sizes.Size_28 AS Size_28,
+    sizes.Size_30 AS Size_30,
     life.lifecycle_status AS Lifecycle_flag,
     life.status_reason AS Notes,
     NULL AS OPEX_total,
@@ -281,6 +329,7 @@ FROM latest_metrics m
 LEFT JOIN dim_sku sku ON sku.sku_key = m.sku_key
 LEFT JOIN dim_sku_lifecycle life ON life.sku_key = m.sku_key
 LEFT JOIN dim_ads_spend ads ON ads.sku_key = m.sku_key
+LEFT JOIN sizes ON sizes.sku_key = m.sku_key
 CROSS JOIN params
 CROSS JOIN fx;
 """

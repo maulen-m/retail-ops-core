@@ -81,6 +81,16 @@ def _create_db(tmp_path: Path) -> Path:
             status_reason TEXT
         );
 
+        CREATE TABLE fact_inventory_snapshot_size (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_date TEXT NOT NULL,
+            sku_id TEXT NOT NULL,
+            sku_key TEXT NOT NULL,
+            my_size TEXT NOT NULL,
+            current_stock INTEGER NOT NULL DEFAULT 0,
+            inbound_stock INTEGER NOT NULL DEFAULT 0
+        );
+
         CREATE TABLE stock_ledger (
             event_date TEXT NOT NULL,
             event_type TEXT NOT NULL,
@@ -237,6 +247,14 @@ def test_health_summary_inventory_from_ledger(tmp_path):
         """,
         ("2026-01-01", "INITIAL", "LINE52", "LINE52_XL", "XL", "UNIVERSAL", 10),
     )
+    conn.execute(
+        """
+        INSERT INTO fact_inventory_snapshot_size (
+            snapshot_date, sku_id, sku_key, my_size, current_stock, inbound_stock
+        ) VALUES (?,?,?,?,?,?)
+        """,
+        ("2026-01-01", "LINE52_XL", "LINE52", "XL", 10, 4),
+    )
     conn.execute("INSERT INTO po_header (po_id, status) VALUES (?, ?)", ("PO-1", "OPEN"))
     conn.execute(
         """
@@ -273,7 +291,7 @@ def test_health_summary_inventory_from_ledger(tmp_path):
     conn.close()
 
     expected_unit = 47 * 78 + 0.95 * 2.66 * 530
-    expected_total = expected_unit * 14
+    expected_total = expected_unit * 12
     assert summary["inventory_cogs"] is not None
     assert abs(summary["inventory_cogs"]["total"] - expected_total) < 1.0
 

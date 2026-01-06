@@ -33,6 +33,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.db import get_db
+from core.analytics.views import ensure_sales_views
 from core.calc.inventory import calc_all_metrics, calc_suggested_order_qty
 from core.calc.status import calc_status
 
@@ -51,7 +52,7 @@ def get_d30_by_sku(conn, days: int = 30) -> dict:
             store_code,
             SUM(units) as total_units,
             COUNT(DISTINCT sale_date) as days_with_sales
-        FROM fact_sales_daily
+        FROM v_sales_daily
         WHERE sale_date >= :cutoff_date
         GROUP BY sku_key, store_code
     """
@@ -90,8 +91,9 @@ def get_avg_economics_by_sku(conn, days: int = 30) -> dict:
             SUM(quantity) as total_qty,
             SUM(line_net_rev) as total_revenue,
             SUM(profit_line) as total_profit
-        FROM fact_sales
+        FROM v_sales_enriched
         WHERE order_date >= :cutoff_date
+          AND status NOT IN ('CANCELLED','RETURNED')
         GROUP BY sku_key, store_code
     """
 
@@ -342,6 +344,7 @@ def run_metrics(
         Dict with stats
     """
     with get_db() as conn:
+        ensure_sales_views(conn)
         computed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if verbose:

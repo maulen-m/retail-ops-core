@@ -179,6 +179,8 @@ def _inventory_cogs_for_date(
 
         sql = f"""
             SELECT
+                SUM(s.current_stock) AS warehouse_units,
+                SUM(s.inbound_stock) AS inbound_units,
                 SUM(s.current_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS warehouse_cogs,
                 SUM(s.inbound_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS inbound_cogs
             FROM fact_inventory_snapshot s
@@ -199,6 +201,8 @@ def _inventory_cogs_for_date(
 
         sql = f"""
             SELECT
+                SUM(s.current_stock) AS warehouse_units,
+                SUM(s.inbound_stock) AS inbound_units,
                 SUM(s.current_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS warehouse_cogs,
                 SUM(s.inbound_stock * (sku.base_cost_cny * fx.cny_kzt + sku.weight_kg * fx.usd_kzt * fx.dlv_rate_usd_kg)) AS inbound_cogs
             FROM fact_inventory_snapshot_size s
@@ -207,29 +211,39 @@ def _inventory_cogs_for_date(
             WHERE s.snapshot_date = ?{where}
         """
         row = conn.execute(sql, [snapshot_date.isoformat(), snapshot_date.isoformat(), *params[1:]]).fetchone()
-    warehouse = float(row[0]) if row and row[0] is not None else None
-    inbound = float(row[1]) if row and row[1] is not None else None
+    warehouse_units = float(row[0]) if row and row[0] is not None else None
+    inbound_units = float(row[1]) if row and row[1] is not None else None
+    warehouse = float(row[2]) if row and row[2] is not None else None
+    inbound = float(row[3]) if row and row[3] is not None else None
     total = None
     if warehouse is not None and inbound is not None:
         total = warehouse + inbound
+    total_units = None
+    if warehouse_units is not None and inbound_units is not None:
+        total_units = warehouse_units + inbound_units
     return {
         "snapshot_date": snapshot_date.isoformat(),
         "warehouse": warehouse,
         "inbound": inbound,
         "total": total,
+        "warehouse_units": warehouse_units,
+        "inbound_units": inbound_units,
+        "total_units": total_units,
     }
 
 
-def _inventory_cogs_from_ledger(
+def _inventory_cogs_from_snapshot_ledger(
     conn: sqlite3.Connection,
     as_of_date: date,
     store_codes: Optional[Iterable[str]] = None,
     sku_keys: Optional[Iterable[str]] = None,
 ) -> Optional[dict]:
-    """Compute inventory COGS from stock_ledger (on-hand) + open POs (inbound)."""
-    if not _table_exists(conn, "stock_ledger"):
+    """Compute inventory COGS as-of date using latest snapshot + ledger deltas."""
+    latest_snap = _latest_snapshot_date(conn, as_of_date, store_codes, sku_keys)
+    if not latest_snap:
         return None
-    if not conn.execute("SELECT 1 FROM stock_ledger LIMIT 1").fetchone():
+
+    if not _table_exists(conn, "fact_inventory_snapshot_size"):
         return None
 
     _ensure_fx_rate_for_date(conn, as_of_date)
@@ -247,31 +261,68 @@ def _inventory_cogs_from_ledger(
         return None
     cny_kzt, usd_kzt, dlv_rate = fx_row
 
-    clauses = ["event_date <= ?"]
-    params: list = [as_of_date.isoformat()]
-    if store_codes:
-        store_list = [s for s in store_codes if s]
-        if store_list:
-            clauses.append("store_code IN (%s)" % ",".join(["?"] * len(store_list)))
-            params.extend(store_list)
+    snap_clause = ["snapshot_date = ?"]
+    snap_params: list = [latest_snap.isoformat()]
     if sku_keys:
         sku_list = [s for s in sku_keys if s]
         if sku_list:
-            clauses.append("sku_key IN (%s)" % ",".join(["?"] * len(sku_list)))
-            params.extend(sku_list)
-    where = " AND ".join(clauses)
-    stock_rows = conn.execute(
+            snap_clause.append("sku_key IN (%s)" % ",".join(["?"] * len(sku_list)))
+            snap_params.extend(sku_list)
+    snap_where = " AND ".join(snap_clause)
+    snap_rows = conn.execute(
         f"""
-        SELECT sku_key, SUM(qty_change) AS current_stock
-        FROM stock_ledger
-        WHERE {where}
-        GROUP BY sku_key
+        SELECT sku_id, sku_key, current_stock, inbound_stock
+        FROM fact_inventory_snapshot_size
+        WHERE {snap_where}
         """,
-        params,
+        snap_params,
     ).fetchall()
-    stock = {row[0]: row[1] or 0 for row in stock_rows if row and row[0]}
+    snapshot_units = {row[0]: row[2] or 0 for row in snap_rows}
+    snapshot_inbound = {}
+    snapshot_sku_key = {}
+    for row in snap_rows:
+        sku_id, sku_key, current_stock, inbound_stock = row
+        snapshot_sku_key[sku_id] = sku_key
+        snapshot_inbound[sku_key] = snapshot_inbound.get(sku_key, 0) + (inbound_stock or 0)
 
-    inbound: dict[str, float] = {}
+    deltas: dict[str, int] = {}
+    sales_clause = ["date(order_date) > ?", "date(order_date) <= ?", "status NOT IN ('CANCELLED','RETURNED')"]
+    sales_params: list = [latest_snap.isoformat(), as_of_date.isoformat()]
+    if store_codes:
+        store_list = [s for s in store_codes if s]
+        if store_list:
+            sales_clause.append("store_code IN (%s)" % ",".join(["?"] * len(store_list)))
+            sales_params.extend(store_list)
+    if sku_keys:
+        sku_list = [s for s in sku_keys if s]
+        if sku_list:
+            sales_clause.append("sku_key IN (%s)" % ",".join(["?"] * len(sku_list)))
+            sales_params.extend(sku_list)
+    sales_where = " AND ".join(sales_clause)
+    if _table_exists(conn, "sales_fact_v2"):
+        delta_rows = conn.execute(
+            f"""
+            SELECT sku_id, SUM(quantity) AS sold_qty
+            FROM sales_fact_v2
+            WHERE {sales_where}
+            GROUP BY sku_id
+            """,
+            sales_params,
+        ).fetchall()
+        deltas = {row[0]: row[1] or 0 for row in delta_rows if row and row[0]}
+
+    units_by_sku: dict[str, float] = {}
+    for sku_id, base_units in snapshot_units.items():
+        delta = deltas.get(sku_id, 0)
+        current = base_units - delta
+        if current < 0:
+            current = 0
+        sku_key = snapshot_sku_key.get(sku_id)
+        if not sku_key:
+            continue
+        units_by_sku[sku_key] = units_by_sku.get(sku_key, 0) + current
+
+    inbound: dict[str, float] = dict(snapshot_inbound)
     if _table_exists(conn, "po_line") and _table_exists(conn, "po_header"):
         inbound_clauses = [
             "pl.status IN ('PENDING', 'PARTIAL')",
@@ -302,9 +353,10 @@ def _inventory_cogs_from_ledger(
             """,
             inbound_params,
         ).fetchall()
-        inbound = {row[0]: row[1] or 0 for row in inbound_rows if row and row[0]}
+        if inbound_rows:
+            inbound = {row[0]: row[1] or 0 for row in inbound_rows if row and row[0]}
 
-    keys = set(stock) | set(inbound)
+    keys = set(units_by_sku) | set(inbound)
     if not keys:
         return None
 
@@ -317,18 +369,28 @@ def _inventory_cogs_from_ledger(
 
     warehouse_cogs = 0.0
     inbound_cogs = 0.0
+    warehouse_units = 0.0
+    inbound_units = 0.0
     for sku_key in keys:
         base_cost_cny, weight_kg = costs.get(sku_key, (0, 0))
         cogs_unit = (base_cost_cny * cny_kzt) + (weight_kg * usd_kzt * dlv_rate)
-        warehouse_cogs += (stock.get(sku_key, 0) or 0) * cogs_unit
-        inbound_cogs += (inbound.get(sku_key, 0) or 0) * cogs_unit
+        units = units_by_sku.get(sku_key, 0) or 0
+        inbound_qty = inbound.get(sku_key, 0) or 0
+        warehouse_units += units
+        inbound_units += inbound_qty
+        warehouse_cogs += units * cogs_unit
+        inbound_cogs += inbound_qty * cogs_unit
 
     total_cogs = warehouse_cogs + inbound_cogs
+    total_units = warehouse_units + inbound_units
     return {
-        "snapshot_date": as_of_date.isoformat(),
+        "snapshot_date": latest_snap.isoformat(),
         "warehouse": float(warehouse_cogs),
         "inbound": float(inbound_cogs),
         "total": float(total_cogs),
+        "warehouse_units": float(warehouse_units),
+        "inbound_units": float(inbound_units),
+        "total_units": float(total_units),
     }
 
 
@@ -650,6 +712,9 @@ def get_calendar_daily(
         inv_series = _inventory_series(conn, start_dt, end_dt, store_codes, sku_keys)
         for day in series:
             inv = inv_series.get(day["date"], {})
+            day["warehouse_units"] = inv.get("warehouse_units")
+            day["inbound_units"] = inv.get("inbound_units")
+            day["total_units"] = inv.get("total_units")
             day["warehouse_cogs"] = inv.get("warehouse")
             day["inbound_cogs"] = inv.get("inbound")
             day["total_inventory_cogs"] = inv.get("total")
@@ -786,8 +851,7 @@ def get_health_summary(
     sales_end_dt = _parse_date(end_date) or _sales_cutoff_date()
     inventory_dt = _parse_date(inventory_date) or _today_almaty()
 
-    inventory = None
-    inventory = _inventory_cogs_from_ledger(conn, inventory_dt, store_codes, sku_keys)
+    inventory = _inventory_cogs_from_snapshot_ledger(conn, inventory_dt, store_codes, sku_keys)
     if inventory is None:
         latest_snap = _latest_snapshot_date(conn, inventory_dt, store_codes, sku_keys)
         if latest_snap:
@@ -936,6 +1000,18 @@ def get_catalog(
         "Days_with_sales",
         "Units_30d",
         "Status",
+        "Size_S",
+        "Size_M",
+        "Size_L",
+        "Size_XL",
+        "Size_2XL",
+        "Size_3XL",
+        "Size_4XL",
+        "Size_22",
+        "Size_24",
+        "Size_26",
+        "Size_28",
+        "Size_30",
         "Lifecycle_flag",
         "Notes",
         "OPEX_total",
