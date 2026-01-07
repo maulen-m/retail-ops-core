@@ -11,6 +11,7 @@ Runs the dashboard generator and validates:
 Usage:
     python scripts/smoke_test_dashboard.py
     python scripts/smoke_test_dashboard.py --skip-generate  # Just run validations
+    python scripts/smoke_test_dashboard.py --fixture tests/fixtures/po_golden/po_contract_cases.json
 """
 
 import argparse
@@ -23,6 +24,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
+
+from core.validation.dashboard_contract import (
+    DEFAULT_FIXTURE,
+    DEFAULT_PO_CONTRACT,
+    load_cases,
+    parse_po_contract_tolerances,
+    build_drafts,
+    generate_dashboard_output,
+    validate_dashboard_output,
+    hash_output,
+)
 
 
 def run_dashboard_generation():
@@ -225,6 +237,29 @@ def validate_consistency():
     return errors, warnings
 
 
+def run_fixture_smoke_test(fixture_path: Path, contract_path: Path) -> bool:
+    """Run deterministic dashboard contract validation on fixture input."""
+    print("\n" + "=" * 60)
+    print("FIXTURE DASHBOARD CONTRACT TEST")
+    print("=" * 60)
+
+    cases = load_cases(fixture_path)
+    drafts = build_drafts(cases)
+    output = generate_dashboard_output(cases)
+    tolerances = parse_po_contract_tolerances(contract_path)
+
+    errors = validate_dashboard_output(output, drafts, tolerances)
+    if errors:
+        print(f"\nERRORS ({len(errors)}):")
+        for err in errors:
+            print(f"  ❌ {err}")
+        return False
+
+    print("\n✅ FIXTURE CONTRACT PASSED")
+    print(f"  Output hash: {hash_output(output)}")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Smoke test for PO dashboard")
     parser.add_argument(
@@ -232,11 +267,27 @@ def main():
         action="store_true",
         help="Skip generation, just run validations"
     )
+    parser.add_argument(
+        "--fixture",
+        type=str,
+        help="Run deterministic contract test using fixture JSON"
+    )
+    parser.add_argument(
+        "--po-contract",
+        type=str,
+        help="Override PO_CONTRACT.md path for tolerances"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
     print("PO Dashboard Smoke Test")
     print("=" * 60)
+
+    if args.fixture:
+        fixture_path = Path(args.fixture) if args.fixture else DEFAULT_FIXTURE
+        contract_path = Path(args.po_contract) if args.po_contract else DEFAULT_PO_CONTRACT
+        ok = run_fixture_smoke_test(fixture_path, contract_path)
+        sys.exit(0 if ok else 1)
 
     all_errors = []
     all_warnings = []
