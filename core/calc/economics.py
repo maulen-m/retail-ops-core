@@ -17,6 +17,8 @@ Constants:
 
 from typing import Optional
 
+from core.config.business_params import get_fx_rates
+
 # Constants (V15 formulas)
 CNY_KZT = 78  # CNY to KZT exchange rate
 VOLUMETRIC_FACTOR = 2.66  # volumetric weight multiplier
@@ -51,9 +53,9 @@ def calc_delivery_fee(sell_price_kzt: float) -> float:
 def calc_cogs(
     base_cost_cny: float,
     weight_kg: float,
-    cny_kzt: float = CNY_KZT,
-    volumetric_factor: float = VOLUMETRIC_FACTOR,
-    freight_rate: float = FREIGHT_RATE,
+    cny_kzt: Optional[float] = None,
+    volumetric_factor: Optional[float] = None,
+    freight_rate: Optional[float] = None,
 ) -> float:
     """
     Calculate cost of goods sold (landed cost) per unit.
@@ -64,9 +66,9 @@ def calc_cogs(
     Args:
         base_cost_cny: Base product cost in CNY
         weight_kg: Product weight in kg
-        cny_kzt: CNY to KZT exchange rate (default: 78)
-        volumetric_factor: Volumetric weight factor (default: 2.66)
-        freight_rate: Freight cost per kg in KZT (default: 530)
+        cny_kzt: CNY to KZT exchange rate (optional; uses current FX rates if None)
+        volumetric_factor: Delivery rate in USD per kg (optional; uses current FX rates if None)
+        freight_rate: USD to KZT exchange rate (optional; uses current FX rates if None)
 
     Returns:
         COGS per unit in KZT
@@ -77,6 +79,15 @@ def calc_cogs(
         >>> calc_cogs(60, 0.95)  # LINE51
         6019.07
     """
+    if cny_kzt is None or volumetric_factor is None or freight_rate is None:
+        rates = get_fx_rates()
+        if cny_kzt is None:
+            cny_kzt = rates.cny_kzt
+        if volumetric_factor is None:
+            volumetric_factor = rates.dlv_rate_usd_kg
+        if freight_rate is None:
+            freight_rate = rates.usd_kzt
+
     product_cost = base_cost_cny * cny_kzt
     freight_cost = weight_kg * volumetric_factor * freight_rate
     return product_cost + freight_cost
