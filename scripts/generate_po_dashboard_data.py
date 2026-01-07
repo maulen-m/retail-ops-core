@@ -123,6 +123,7 @@ class SkuPOLine:
     rop_total: float
     deficit_total: int
     po_qty_total: int
+    size_orders: dict[str, int]
     po_weight_kg: float
     prep_days: int
     po_send_date: str
@@ -766,7 +767,7 @@ def generate_po_data() -> dict:
 
     # Get demand estimates for all SKUs
     print("Estimating demand for all SKUs...")
-    demand_results, skipped_skus = estimator.estimate_all(store_code="UNIVERSAL")
+    demand_results, skipped_skus = estimator.estimate_all(store_codes=["UNIVERSAL"])
     print(f"  Estimated: {len(demand_results)} SKUs")
     print(f"  Skipped: {len(skipped_skus)} SKUs")
 
@@ -883,6 +884,14 @@ def generate_po_data() -> dict:
         size_demands = filter_valid_sizes(size_demands)
         size_sales_90d = filter_valid_sizes(size_sales_90d)
 
+        # Renormalize size_demands to match SKU demand if invalid sizes were dropped
+        if size_demands and d_sku_blended > 0:
+            total_size_demand = sum(size_demands.values())
+            if total_size_demand > 0 and abs(total_size_demand - d_sku_blended) > 0.001:
+                scale = d_sku_blended / total_size_demand
+                size_demands = {k: v * scale for k, v in size_demands.items()}
+            size_sales_90d = {k: int(round(v * 90)) for k, v in size_demands.items()}
+
         override_value = overrides.get(sku_key)
         if override_value is not None:
             override_value = float(override_value)
@@ -960,6 +969,8 @@ def generate_po_data() -> dict:
             size_allocs = {}
             effective_L = params.L
             consumption_until_arr = 0.0
+
+        size_orders = {size: alloc.get('order_qty', 0) for size, alloc in size_allocs.items()}
 
         # Calculate dates
         po_weight = weight_kg * total_qty
@@ -1049,6 +1060,7 @@ def generate_po_data() -> dict:
             rop_total=round(rop_sku, 1),
             deficit_total=deficit_total,
             po_qty_total=total_qty,
+            size_orders=size_orders,
             po_weight_kg=round(po_weight, 2),
             prep_days=prep_days,
             po_send_date=po_send.isoformat(),
@@ -1073,11 +1085,9 @@ def generate_po_data() -> dict:
         )
         sku_lines.append(asdict(sku_line))
 
-        # Size-level lines (only for SKUs with orders)
+        # Size-level lines (include zero-order sizes for reconciliation)
         for size, alloc in size_allocs.items():
             order_qty = alloc['order_qty']
-            if order_qty <= 0:
-                continue
 
             # Skip invalid sizes
             if size.upper() not in VALID_SIZES and size not in VALID_SIZES:
@@ -1133,6 +1143,50 @@ def generate_po_data() -> dict:
                 notes=""
             )
             size_lines.append(asdict(size_line))
+
+    # === Prep Model B: shared prep days for CL, ELS=1 ===
+    prep_model = "B"
+    total_cl_weight = sum(
+        s.get('po_weight_kg', 0.0) for s in sku_lines
+        if s.get('po_qty_total', 0) > 0 and not s.get('sku_key', '').startswith('ELS_')
+    )
+    prep_days_clothes = calc_prep_days(total_cl_weight, "CL") if total_cl_weight > 0 else 1
+
+    for sku_line in sku_lines:
+        sku_key = sku_line.get('sku_key', '')
+        if sku_key.startswith('ELS_'):
+            new_prep = 1
+        else:
+            new_prep = prep_days_clothes
+
+        if sku_line.get('prep_days') != new_prep:
+            sku_line['prep_days'] = new_prep
+            sku_line['days_until_arrival'] = new_prep + params.L
+            sku_line['consumption_until_arrival'] = round(
+                sku_line.get('d_sku', 0.0) * sku_line['days_until_arrival'], 2
+            )
+            msg_date = date.fromisoformat(sku_line['po_message_date'])
+            send_date = msg_date + timedelta(days=new_prep)
+            sku_line['po_send_date'] = send_date.isoformat()
+            sku_line['est_arr_date'] = (send_date + timedelta(days=params.L)).isoformat()
+
+    for size_line in size_lines:
+        sku_key = size_line.get('sku_key', '')
+        if sku_key.startswith('ELS_'):
+            new_prep = 1
+        else:
+            new_prep = prep_days_clothes
+
+        if size_line.get('prep_days') != new_prep:
+            size_line['prep_days'] = new_prep
+            size_line['days_until_arrival'] = new_prep + params.L
+            size_line['consumption_until_arrival'] = round(
+                size_line.get('d_size', 0.0) * size_line['days_until_arrival'], 2
+            )
+            msg_date = date.fromisoformat(size_line['po_message_date'])
+            send_date = msg_date + timedelta(days=new_prep)
+            size_line['po_send_date'] = send_date.isoformat()
+            size_line['est_arr_date'] = (send_date + timedelta(days=params.L)).isoformat()
 
     # Sort by PO message date (most urgent first)
     sku_lines.sort(key=lambda x: x['po_message_date'])
@@ -1212,6 +1266,8 @@ def generate_po_data() -> dict:
         "stock_date": STOCK_DATE,
         "lead_time_L": params.L,
         "reorder_cycle_R": params.R,
+        "prep_model": prep_model,
+        "prep_days_clothes": prep_days_clothes,
         "roic_threshold_pct": ROIC_THRESHOLD * 100,
         "summary": {
             "total_skus": len(sku_lines),
@@ -1284,6 +1340,8 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             "stock_date": base_data['stock_date'],
             "lead_time_L": L,
             "reorder_cycle_R": R,
+            "prep_model": base_data.get('prep_model', 'B'),
+            "prep_days_clothes": base_data.get('prep_days_clothes', 1),
             "roic_threshold_pct": base_data['roic_threshold_pct'],
             "summary": {
                 "total_skus": 0,
@@ -1383,6 +1441,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 post_arr_doc = 999.0 if (pre_arrival + order_qty) > 0 else 0.0
 
             # Build SKU line
+            size_orders_this_po = {}
             sku_line = {
                 'sku_key': sku_key,
                 'sku_name': base_sku['sku_name'],
@@ -1399,6 +1458,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 'rop_total': rop,
                 'deficit_total': max(0, int(rop - pre_arrival)),
                 'po_qty_total': order_qty,
+                'size_orders': size_orders_this_po,
                 'po_weight_kg': round(po_weight, 2),
                 'prep_days': prep_days,
                 'po_send_date': po_send_date.isoformat(),
@@ -1441,7 +1501,6 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 base_sizes = [s for s in base_data['size_level'] if s['sku_key'] == sku_key]
                 total_base_qty = sum(s['order_qty'] for s in base_sizes) if base_sizes else 1
 
-                size_orders_this_po = {}
                 for base_size in base_sizes:
                     size = base_size['size']
                     d_size = base_size['d_size']
@@ -1460,6 +1519,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                     # Size order (proportional to base)
                     mix = base_size['order_qty'] / total_base_qty if total_base_qty > 0 else 0
                     size_order_qty = int(round(order_qty * mix))
+                    size_orders_this_po[size] = size_order_qty
 
                     if size_order_qty > 0:
                         # DOC for size
