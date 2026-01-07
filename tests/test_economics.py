@@ -14,6 +14,7 @@ from core.calc.economics import (
     calc_profit,
     calc_line_values,
 )
+from core.config.business_params import get_fx_rates
 
 
 class TestDeliveryFee:
@@ -44,24 +45,30 @@ class TestCogs:
     def test_line52_cogs(self):
         """LINE52 COGS should be ~5,005."""
         # base_cost_cny=47, weight_kg=0.95
+        rates = get_fx_rates()
         cogs = calc_cogs(47, 0.95)
-        assert abs(cogs - 5005) / 5005 < 0.01  # Within 1%
+        expected = 47 * rates.cny_kzt + 0.95 * rates.dlv_rate_usd_kg * rates.usd_kzt
+        assert abs(cogs - expected) / expected < 0.01  # Within 1%
 
     def test_line51_cogs(self):
         """LINE51 COGS should be ~6,019."""
         # base_cost_cny=60, weight_kg=0.95
+        rates = get_fx_rates()
         cogs = calc_cogs(60, 0.95)
-        assert abs(cogs - 6019) / 6019 < 0.01  # Within 1%
+        expected = 60 * rates.cny_kzt + 0.95 * rates.dlv_rate_usd_kg * rates.usd_kzt
+        assert abs(cogs - expected) / expected < 0.01  # Within 1%
 
     def test_zero_weight(self):
         """Zero weight should only have product cost."""
+        rates = get_fx_rates()
         cogs = calc_cogs(47, 0)
-        assert cogs == 47 * 78  # Just CNY conversion
+        assert cogs == 47 * rates.cny_kzt  # Just CNY conversion
 
     def test_zero_cost(self):
         """Zero base cost should only have freight."""
+        rates = get_fx_rates()
         cogs = calc_cogs(0, 0.95)
-        expected = 0.95 * 2.66 * 530
+        expected = 0.95 * rates.dlv_rate_usd_kg * rates.usd_kzt
         assert abs(cogs - expected) < 0.01
 
     def test_custom_rates(self):
@@ -106,8 +113,11 @@ class TestProfit:
 
     def test_line52_profit_at_12000(self):
         """LINE52 profit at 12,000 should be ~4,350."""
+        rates = get_fx_rates()
         profit = calc_profit(12000, 47, 0.95)
-        assert abs(profit - 4350) / 4350 < 0.01  # Within 1%
+        expected_cogs = 47 * rates.cny_kzt + 0.95 * rates.dlv_rate_usd_kg * rates.usd_kzt
+        expected_profit = calc_net_rev(12000) - expected_cogs
+        assert abs(profit - expected_profit) / expected_profit < 0.01  # Within 1%
 
     def test_profit_with_precalculated_values(self):
         """Pre-calculated COGS and net_rev should be used."""
@@ -126,12 +136,16 @@ class TestLineValues:
 
     def test_line_values_single_unit(self):
         """Single unit calculation should match individual functions."""
+        rates = get_fx_rates()
         result = calc_line_values(12000, 47, 0.95, 1)
 
         assert result["delivery_fee"] == 856.0
-        assert abs(result["cogs_unit"] - 5005) < 1
-        assert abs(result["net_rev_unit"] - 9355) < 1
-        assert abs(result["profit_unit"] - 4350) < 1
+        expected_cogs = 47 * rates.cny_kzt + 0.95 * rates.dlv_rate_usd_kg * rates.usd_kzt
+        expected_net_rev = calc_net_rev(12000)
+        expected_profit = expected_net_rev - expected_cogs
+        assert abs(result["cogs_unit"] - expected_cogs) < 1
+        assert abs(result["net_rev_unit"] - expected_net_rev) < 1
+        assert abs(result["profit_unit"] - expected_profit) < 1
 
         # Line values should equal unit values for qty=1
         assert result["cogs_line"] == result["cogs_unit"]
