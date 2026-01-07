@@ -37,6 +37,7 @@ from core.paths import data_path, get_data_root
 from core.integrations.kaspi_api_client import (
     KaspiAPIClient,
     KaspiAuthError,
+    KaspiNotFoundError,
     KaspiWriteDisabledError,
     STORE_TOKEN_MAP,
 )
@@ -447,16 +448,16 @@ def read_crm_orders(
 def get_pending_assembly_orders(
     target_date: Optional[date] = None,
     since_days: int = 7,
-) -> tuple[dict[str, set[str]], dict[str, str]]:
+) -> tuple[dict[str, set[str]], dict[str, dict[str, str]]]:
     """
     Get orders in "Упаковка" stage from ALL stores via API.
 
     Returns:
         - pending_by_store: dict store_api_code -> set of order_ids pending assembly
-        - order_id_to_base64: dict order_code -> base64_id (for assemble_order_by_id)
+        - order_id_to_base64: dict store_code -> {order_code: base64_id}
     """
     pending_by_store: dict[str, set[str]] = {}
-    order_id_to_base64: dict[str, str] = {}
+    order_id_to_base64: dict[str, dict[str, str]] = {}
 
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
@@ -476,7 +477,7 @@ def get_pending_assembly_orders(
                     if order_code:
                         order_ids.add(order_code)
                         if base64_id:
-                            order_id_to_base64[order_code] = base64_id
+                            order_id_to_base64.setdefault(store_code, {})[order_code] = base64_id
                 pending_by_store[store_code] = order_ids
                 logger.info(f"{store_code}: {len(order_ids)} orders pending assembly")
             else:
@@ -492,7 +493,7 @@ def get_pending_assembly_orders(
 def ship_orders(
     orders_by_id: dict[str, list[OrderItem]],
     pending_orders: dict[str, set[str]],
-    order_id_to_base64: dict[str, str],
+    order_id_to_base64: dict[str, dict[str, str]],
     dry_run: bool = False,
     verbose: bool = False,
 ) -> dict:
@@ -506,7 +507,7 @@ def ship_orders(
     Args:
         orders_by_id: dict order_id -> list[OrderItem]
         pending_orders: dict store_api_code -> set of order_ids pending
-        order_id_to_base64: dict order_code -> base64_id (from get_pending_assembly_orders)
+        order_id_to_base64: dict store_code -> {order_code: base64_id}
 
     Returns summary dict with counts.
     """
@@ -565,10 +566,13 @@ def ship_orders(
                 shipped += 1
                 continue
 
-            # Get Base64 ID from pre-fetched mapping
-            base64_id = order_id_to_base64.get(order_id)
+            # Get Base64 ID from pre-fetched mapping (store-specific)
+            base64_id = order_id_to_base64.get(api_store_code, {}).get(order_id)
             if not base64_id:
-                errors.append(f"{order_id}: No Base64 ID found (order may have changed state)")
+                errors.append(
+                    f"{order_id}: No Base64 ID found for {api_store_code} "
+                    "(order may have changed state)"
+                )
                 if verbose:
                     print(f"      -> SKIPPED: No Base64 ID (state changed?)")
                 continue
@@ -584,6 +588,24 @@ def ship_orders(
                     errors.append(f"{order_id}: API error - {result.error}")
                     if verbose:
                         print(f"      -> ERROR: {result.error}")
+            except KaspiNotFoundError as e:
+                # Retry with direct lookup by order code in case base64 ID is stale or mismatched
+                if verbose:
+                    print(f"      -> WARN: {e}. Retrying with order code...")
+                try:
+                    result = client.assemble_order(order_id, parcel_count=parcel_count)
+                    if result.success:
+                        shipped += 1
+                        if verbose:
+                            print(f"      -> Shipped OK (fallback)")
+                    else:
+                        errors.append(f"{order_id}: API error - {result.error}")
+                        if verbose:
+                            print(f"      -> ERROR: {result.error}")
+                except Exception as exc:
+                    errors.append(f"{order_id}: {str(exc)}")
+                    if verbose:
+                        print(f"      -> EXCEPTION: {exc}")
             except KaspiWriteDisabledError:
                 logger.error("Write operations disabled. Set ENABLE_KASPI_WRITE=1 in .env")
                 return {
