@@ -457,6 +457,7 @@ def get_pending_assembly_orders(
         - order_id_to_base64: dict store_code -> {order_code: base64_id}
     """
     pending_by_store: dict[str, set[str]] = {}
+    # Store-scoped base64 IDs prevent cross-store collisions on assemble.
     order_id_to_base64: dict[str, dict[str, str]] = {}
 
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
@@ -589,7 +590,7 @@ def ship_orders(
                     if verbose:
                         print(f"      -> ERROR: {result.error}")
             except KaspiNotFoundError as e:
-                # Retry with direct lookup by order code in case base64 ID is stale or mismatched
+                # Retry with direct lookup if base64 ID is stale or mismatched.
                 if verbose:
                     print(f"      -> WARN: {e}. Retrying with order code...")
                 try:
