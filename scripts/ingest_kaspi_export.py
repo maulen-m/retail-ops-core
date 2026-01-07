@@ -439,6 +439,11 @@ def main():
         logger.info(f"  Updated:  {total_stats['updated']}")
         logger.info(f"  Errors:   {total_stats['errors']}")
 
+        logger.info(
+            f"INGEST_REPORT total={total_orders} inserted={total_stats['inserted']} "
+            f"updated={total_stats['updated']} errors={total_stats['errors']}"
+        )
+
         if total_stats["errors"] > 0:
             logger.warning("Some records failed to ingest. Check logs above.")
             sys.exit(1)

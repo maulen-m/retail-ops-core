@@ -490,6 +490,24 @@ class KaspiAPIClient:
             )
         return result
 
+    def get_order_by_id(self, order_id: str) -> APIResponse:
+        """
+        Get single order by Base64 order ID.
+
+        Args:
+            order_id: Base64 order ID from list responses
+
+        Returns:
+            APIResponse with order data
+        """
+        if not order_id:
+            return APIResponse(
+                success=False,
+                error="Missing order_id",
+                status_code=400,
+            )
+        return self._request('GET', f'orders/{order_id}')
+
     def _get_order_base64_id(self, order_code: str) -> str:
         """
         Get Base64 order ID from order code.
@@ -562,12 +580,13 @@ class KaspiAPIClient:
         except (KeyError, TypeError):
             return None
 
-    def download_waybill(self, waybill_url: str) -> APIResponse:
+    def download_waybill(self, waybill_url: str, timeout: Optional[int] = None) -> APIResponse:
         """
         Download waybill PDF from URL.
 
         Args:
             waybill_url: Direct waybill URL
+            timeout: Optional timeout override in seconds
 
         Returns:
             APIResponse with PDF binary in data
@@ -577,8 +596,8 @@ class KaspiAPIClient:
         try:
             response = self._session.get(
                 waybill_url,
-                headers={'Authorization': self._token},
-                timeout=DOWNLOAD_TIMEOUT,
+                headers=self._get_headers(),
+                timeout=timeout or DOWNLOAD_TIMEOUT,
             )
 
             if response.ok:

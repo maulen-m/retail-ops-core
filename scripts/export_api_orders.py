@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -42,6 +43,9 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
+
+# Kaspi API dates are in Asia/Almaty timezone
+ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
 # Excel column headers (must match Kaspi export exactly)
 # NOTE: Some columns are MANUAL entry fields (not from API):
@@ -152,11 +156,11 @@ STORE_WAREHOUSE_MAP = {
 # =============================================================================
 
 def timestamp_to_date(ts_ms: Optional[int]) -> Optional[str]:
-    """Convert milliseconds timestamp to DD.MM.YYYY string."""
+    """Convert milliseconds timestamp to DD.MM.YYYY string (Asia/Almaty)."""
     if ts_ms is None:
         return None
     try:
-        dt = datetime.fromtimestamp(ts_ms / 1000)
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=ALMATY_TZ)
         return dt.strftime('%d.%m.%Y')
     except (ValueError, OSError):
         return None
@@ -171,6 +175,63 @@ def get_nested(d: dict, *keys, default=None) -> Any:
         if d is None:
             return default
     return d
+
+
+def _extract_delivery_costs(order: dict) -> tuple[Optional[float], Optional[float]]:
+    """Extract buyer/seller delivery costs if present (None if missing)."""
+    attrs = order.get('attributes', {}) if isinstance(order, dict) else {}
+    delivery = attrs.get('kaspiDelivery', {}) if isinstance(attrs.get('kaspiDelivery', {}), dict) else {}
+
+    buyer_cost = delivery.get('customerDeliveryCost')
+    if buyer_cost is None:
+        buyer_cost = attrs.get('deliveryCost')
+
+    seller_cost = attrs.get('deliveryCostForSeller')
+    if seller_cost is None:
+        seller_cost = delivery.get('deliveryCostForSeller')
+
+    return buyer_cost, seller_cost
+
+
+def _maybe_refetch_order_details(
+    client: KaspiAPIClient,
+    order: dict,
+    verbose: bool = False,
+    force: bool = False,
+) -> dict:
+    """
+    Refetch full order details by ID when delivery cost fields may be stale.
+
+    Some list responses return deliveryCostForSeller=0 even when the detail
+    endpoint has a non-zero value, so allow forcing a refresh.
+    """
+    if not force:
+        buyer_cost, seller_cost = _extract_delivery_costs(order)
+        if buyer_cost is not None and seller_cost is not None:
+            return order
+
+    order_id = order.get('id')
+    order_code = order.get('attributes', {}).get('code', '')
+
+    resp = None
+    if order_id:
+        resp = client.get_order_by_id(order_id)
+    elif order_code:
+        resp = client.get_order(order_code)
+
+    if not resp or not resp.success or not resp.data:
+        if verbose:
+            logger.warning(f"Refetch failed for order {order_code or order_id}")
+        return order
+
+    data = resp.data
+    # JSON:API response might be {"data": {...}}
+    if isinstance(data, dict) and isinstance(data.get('data'), dict):
+        return data['data']
+    if isinstance(data, dict) and data.get('type') == 'orders':
+        return data
+
+    return order
 
 
 # =============================================================================
@@ -336,6 +397,13 @@ def order_to_rows(
     # Cancellation reason
     cancel_reason = attrs.get('cancellationReason', '')
 
+    # Delivery costs
+    buyer_delivery_cost, seller_delivery_cost = _extract_delivery_costs(order)
+    if buyer_delivery_cost is None:
+        buyer_delivery_cost = 0
+    if seller_delivery_cost is None:
+        seller_delivery_cost = 0
+
     rows = []
 
     if not entries:
@@ -363,8 +431,8 @@ def order_to_rows(
             'Дата публикации отзыва': '',
             'Оформил': '',
             'Количество': 1,
-            'Стоимость доставки для покупателя': delivery.get('customerDeliveryCost', 0),
-            'Стоимость доставки для продавца': attrs.get('deliveryCost', 0),
+            'Стоимость доставки для покупателя': buyer_delivery_cost or 0,
+            'Стоимость доставки для продавца': seller_delivery_cost or 0,
             'Компенсация за доставку': delivery.get('deliveryCostCompensation', 0),
             'Требуется подписание': signature_required,
             'Плановая дата передачи курьеру': planned_date,
@@ -410,8 +478,8 @@ def order_to_rows(
                 'Дата публикации отзыва': '',
                 'Оформил': '',
                 'Количество': entry_attrs.get('quantity', 1),
-                'Стоимость доставки для покупателя': delivery.get('customerDeliveryCost', 0),
-                'Стоимость доставки для продавца': attrs.get('deliveryCost', 0),
+                'Стоимость доставки для покупателя': buyer_delivery_cost or 0,
+                'Стоимость доставки для продавца': seller_delivery_cost or 0,
                 'Компенсация за доставку': delivery.get('deliveryCostCompensation', 0),
                 'Требуется подписание': signature_required,
                 'Плановая дата передачи курьеру': planned_date,
@@ -433,6 +501,7 @@ def export_store_orders(
     days: int = 14,
     verbose: bool = False,
     include_archive: bool = True,
+    refetch_missing_costs: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from a single store.
@@ -453,7 +522,7 @@ def export_store_orders(
         logger.warning(f"Skipping {store_code}: {e}")
         return []
 
-    since = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    since = (datetime.now(ALMATY_TZ) - timedelta(days=days)).strftime('%Y-%m-%d')
 
     if verbose:
         print(f"  Fetching orders from {store_code} (since {since})...")
@@ -486,6 +555,14 @@ def export_store_orders(
     all_rows = []
 
     for i, order in enumerate(orders):
+        if refetch_missing_costs:
+            order = _maybe_refetch_order_details(
+                client,
+                order,
+                verbose=verbose,
+                force=True,
+            )
+
         order_code = order.get('attributes', {}).get('code', '')
 
         # Fetch entries for this order
@@ -509,6 +586,7 @@ def export_all_stores(
     days: int = 14,
     verbose: bool = False,
     include_archive: bool = True,
+    refetch_missing_costs: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from all configured stores.
@@ -531,6 +609,7 @@ def export_all_stores(
             days=days,
             verbose=verbose,
             include_archive=include_archive,
+            refetch_missing_costs=refetch_missing_costs,
         )
         all_rows.extend(rows)
 
@@ -558,7 +637,7 @@ def filter_rows_by_planned_date(
 
     # Default to today
     if not target_date:
-        target_date = datetime.now().strftime('%d.%m.%Y')
+        target_date = datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
 
     filtered = []
     for row in rows:
@@ -670,6 +749,11 @@ def main():
         action='store_true',
         help='Skip fetching ARCHIVE orders (completed/cancelled/returned)'
     )
+    parser.add_argument(
+        '--refetch-missing-costs',
+        action='store_true',
+        help='Refetch full order details to get accurate delivery costs'
+    )
 
     args = parser.parse_args()
 
@@ -702,8 +786,9 @@ def main():
     print(f"  State filter: {state_filter or 'ALL'}")
     print(f"  Lookback: {args.days} days")
     print(f"  Include archive: {include_archive}")
+    print(f"  Refetch missing costs: {args.refetch_missing_costs}")
     if apply_date_filter:
-        display_date = target_date or datetime.now().strftime('%d.%m.%Y')
+        display_date = target_date or datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
         print(f"  Planned date filter: {display_date}")
     else:
         print(f"  Planned date filter: ALL dates")
@@ -718,6 +803,7 @@ def main():
             days=args.days,
             verbose=args.verbose,
             include_archive=include_archive,
+            refetch_missing_costs=args.refetch_missing_costs,
         )
     else:
         print(f"Exporting from {args.store}...")
@@ -727,6 +813,7 @@ def main():
             days=args.days,
             verbose=args.verbose,
             include_archive=include_archive,
+            refetch_missing_costs=args.refetch_missing_costs,
         )
 
     print(f"\nTotal rows from API: {len(rows)}")

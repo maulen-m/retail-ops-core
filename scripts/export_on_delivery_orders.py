@@ -318,6 +318,16 @@ def order_to_rows(
     # Cancellation reason
     cancel_reason = attrs.get('cancellationReason', '')
 
+    # Delivery costs:
+    # - Buyer cost: prefer kaspiDelivery.customerDeliveryCost (if present), else attributes.deliveryCost
+    # - Seller cost: attributes.deliveryCostForSeller (delivery commission)
+    buyer_delivery_cost = delivery.get('customerDeliveryCost')
+    if buyer_delivery_cost is None:
+        buyer_delivery_cost = attrs.get('deliveryCost', 0)
+    seller_delivery_cost = attrs.get('deliveryCostForSeller')
+    if seller_delivery_cost is None:
+        seller_delivery_cost = delivery.get('deliveryCostForSeller', 0)
+
     rows = []
 
     if not entries:
@@ -344,8 +354,8 @@ def order_to_rows(
             'Дата публикации отзыва': '',
             'Оформил': '',
             'Количество': 1,
-            'Стоимость доставки для покупателя': delivery.get('customerDeliveryCost', 0),
-            'Стоимость доставки для продавца': attrs.get('deliveryCost', 0),
+            'Стоимость доставки для покупателя': buyer_delivery_cost or 0,
+            'Стоимость доставки для продавца': seller_delivery_cost or 0,
             'Компенсация за доставку': delivery.get('deliveryCostCompensation', 0),
             'Требуется подписание': signature_required,
             'Плановая дата передачи курьеру': planned_date,
@@ -387,8 +397,8 @@ def order_to_rows(
                 'Дата публикации отзыва': '',
                 'Оформил': '',
                 'Количество': entry_attrs.get('quantity', 1),
-                'Стоимость доставки для покупателя': delivery.get('customerDeliveryCost', 0),
-                'Стоимость доставки для продавца': attrs.get('deliveryCost', 0),
+                'Стоимость доставки для покупателя': buyer_delivery_cost or 0,
+                'Стоимость доставки для продавца': seller_delivery_cost or 0,
                 'Компенсация за доставку': delivery.get('deliveryCostCompensation', 0),
                 'Требуется подписание': signature_required,
                 'Плановая дата передачи курьеру': planned_date,
