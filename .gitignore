@@ -59,6 +59,7 @@ logs/
 
 # Exports (regeneratable)
 exports/
+reports/
 
 # Backups
 backups/
