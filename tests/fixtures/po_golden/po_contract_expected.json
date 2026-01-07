@@ -1,0 +1,55 @@
+{
+  "cases": {
+    "high_roic": {
+      "expected": {
+        "allocations": {
+          "L": 33,
+          "M": 64,
+          "S": 33
+        },
+        "d_sku": 4.0,
+        "roic_action": "ORDER_FULL",
+        "roic_monthly": 0.308575,
+        "rop_sku": 174.4425,
+        "should_order": true,
+        "ss_total_sku": 90.4425,
+        "total_qty": 130
+      },
+      "hash": "f22a9c6448e62670798517714607c80b903e7927ebd73dc3973173912d7bf4d1"
+    },
+    "low_roic": {
+      "expected": {
+        "allocations": {
+          "L": 0,
+          "M": 0,
+          "S": 0
+        },
+        "d_sku": 4.0,
+        "roic_action": "REVIEW_REQUIRED",
+        "roic_monthly": 0.030857,
+        "rop_sku": 174.4425,
+        "should_order": true,
+        "ss_total_sku": 90.4425,
+        "total_qty": 0
+      },
+      "hash": "f48c22342d0163b7551010f669eacf3c60b7c1e590c793fa98b6339096579b68"
+    },
+    "mid_roic": {
+      "expected": {
+        "allocations": {
+          "L": 33,
+          "M": 64,
+          "S": 33
+        },
+        "d_sku": 4.0,
+        "roic_action": "ORDER_WITH_FLAG",
+        "roic_monthly": 0.12343,
+        "rop_sku": 174.4425,
+        "should_order": true,
+        "ss_total_sku": 90.4425,
+        "total_qty": 130
+      },
+      "hash": "6cdf2015d1858da0ceec4ebd91521d318c09e707fb33a4a7b4ebbfe772d6548e"
+    }
+  }
+}
