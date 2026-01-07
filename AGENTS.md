@@ -33,7 +33,6 @@ No evidence = not done.
 - Do NOT enable write-mode / destructive automation unless explicitly instructed.
 - Do NOT weaken capital guardrails (ROIC gates, concentration limits, budget caps).
 - Do NOT change inventory formulas by “patching code.” Formulas live only in `docs/inventory/Master_Inventory_Rules_v8.md`.
-- No destructive git ops without explicit instruction (no `git reset --hard`, no force push).
 - No implicit DB migrations during validation. Use explicit migration scripts.
 
 ## 2.1) Oracle + Skills Routing (governance)
@@ -43,6 +42,7 @@ No evidence = not done.
 - **Oracle pack (offline only):** when asked to "create an oracle pack", use `scripts/oracle_pack.sh` (no network, no browser).
 - **Oracle run (online only):** when asked to "run oracle" / "call a friend", use `scripts/oracle_run.sh --confirm` (browser + network).
 - Prompts must start with plain task instructions only (no `[SYSTEM]`/`[USER]` role headers).
+- **Git workflow rules live only in** `.claude/GIT_HYGIENE.md` (do not duplicate elsewhere).
 
 ## 3) Single-Source-of-Truth Doc Map (owning file → what it owns)
 Inventory math (formulas + constants):
@@ -88,17 +88,13 @@ Before PR/merge (always):
 ## 5) Task Workflow (every task, every time)
 1) Create/claim the task in `.claude/TASKS.md` (scope, owner, stop conditions, DoD).
 2) Update `.claude/PROGRESS.md` with the next gate you intend to make green.
-3) Implement in small, atomic commits (target ≤ 5 files per commit).
+3) Follow `.claude/GIT_HYGIENE.md` for git workflow (branching, commits, packs, shipping).
 4) Run the required gates.
    - If any gate fails: STOP, log the failure, fix it; do not expand scope.
-5) Generate an oracle pack (or equivalent evidence bundle) and link it in:
-   - `.claude/SESSION_LOG.md`
-   - `.claude/PROGRESS.md`
-6) Use `scripts/safe_ship.sh` for pushing (it runs gates, secrets scan, pack, and push).
-7) If behavior changed: add/adjust a test that would have caught the prior bug.
+5) If behavior changed: add/adjust a test that would have caught the prior bug.
 
 ## 6) Scope Guardrail
 - Repo scope is Kaspi-only. Do not add Wildberries/WB logic or docs unless explicitly instructed.
 
 ## 7) Rollback Requirement
-Every task must include a rollback plan in the handoff (usually `git revert <commit(s)>`).
+Every task must include a rollback plan in the handoff. See `.claude/GIT_HYGIENE.md` for git rollback commands.
