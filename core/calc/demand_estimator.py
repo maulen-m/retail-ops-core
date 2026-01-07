@@ -502,7 +502,9 @@ class DemandEstimator:
             from core.calc.stock_timeline import StockTimelineBuilder
             builder = StockTimelineBuilder(self.db_path, lookback_days=self.config.lookback_days)
             try:
-                timeline, diagnostics = builder.rebuild_timeline(end_date, start_date)
+                # Use cutoff+1 (today) to align with morning stock snapshots
+                timeline_end = end_date + timedelta(days=1)
+                timeline, diagnostics = builder.rebuild_timeline(timeline_end, start_date)
             finally:
                 builder.close()
 
