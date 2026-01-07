@@ -181,6 +181,11 @@ def get_confidence_score(sku_key: str, db_path: str) -> float:
         return 0.5
 
 
+def calc_confidence_score(sku_key: str, db_path: str) -> float:
+    """Backward-compatible alias for get_confidence_score."""
+    return get_confidence_score(sku_key, db_path)
+
+
 def generate_po_draft(
     db_path: str,
     trigger: str = 'ROP',
