@@ -9,9 +9,9 @@ Source of truth:
 - Initial tolerances: `docs/inventory/Automation_Handoff_V16.md` (Section 6)
 
 ## Tolerances (machine-readable)
-D_30_pct: 1
-SS_total_pct: 1
-ROIC_pct: 2
+D_30_pct: 0.25
+SS_total_pct: 0.25
+ROIC_pct: 0.50
 STATUS: exact
 ORDER_QTY: exact
 
