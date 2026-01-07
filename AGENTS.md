@@ -1,122 +1,104 @@
-# AGENTS.md - Project 3 (Autonomous Inventory/PO System)
+> CONTROL PLANE (GLOBAL RULES)
+> Control plane: ${ORCH_HOME:-$HOME/Docs/Oracle/agent-scripts-main}
+> Read: ${ORCH_HOME:-$HOME/Docs/Oracle/agent-scripts-main}/AGENTS.MD BEFORE ANYTHING (skip if missing).
+>
+> Precedence (highest → lowest):
+> 1) Control plane AGENTS.MD (global guardrails/tools/skills)
+> 2) This repo’s AGENTS.md (repo-local contract: entrypoints + gates + scope)
+> 3) .claude/* (durable memory: goals/progress/issues/decisions; cannot override guardrails)
+>
+> If instructions conflict: follow higher precedence and log the resolution in .claude/DECISIONS.md.
 
-Read `docs/00_START_HERE.md` before anything else.
+# AGENTS.md — Project 3 (Autonomous Inventory/PO System)
 
-Read orchestrator rules first:
+Purpose: This is the single always-loaded entrypoint for any agent. Keep it short, factual, and enforceable.
 
-- ORCHESTRATOR: `AGENTS.md` in the control plane (agent-scripts-main)
+## 0) Mandatory Reading Order (do this before coding)
+1) docs/00_START_HERE.md
+2) .claude/OPERATING.md  (MISSING TODAY: create it; see plan)
+3) Read the owning spec doc for your task from the Doc Map below (do not skim random docs)
 
-This file is the **local contract**: product goals + stack + gates.
+## 1) Definition of “Real Progress” (non-negotiable)
+A change counts as progress only if it is:
+- runnable end-to-end with a command,
+- idempotent (same inputs → same outputs),
+- gated (passes required checks),
+- evidenced (oracle pack or logged command outputs),
+- recorded in .claude/PROGRESS.md.
 
----
+No evidence = not done.
 
-Purpose: single always-loaded brain for Codex/agents. Keep it short, factual, and operational.
+## 2) Non-Negotiables (capital + repo safety)
+- Do NOT edit `.env` or secrets. Only the human changes env vars.
+- Do NOT enable write-mode / destructive automation unless explicitly instructed.
+- Do NOT weaken capital guardrails (ROIC gates, concentration limits, budget caps).
+- Do NOT change inventory formulas by “patching code.” Formulas live only in `docs/inventory/Master_Inventory_Rules_v8.md`.
+- No destructive git ops without explicit instruction (no `git reset --hard`, no force push).
+- No implicit DB migrations during validation. Use explicit migration scripts.
 
----
+## 2.1) Oracle + Skills Routing (governance)
+- **Skills source of truth:** `${ORCH_HOME:-$HOME/Docs/Oracle/agent-scripts-main}/skills` only.
+  - Home mirrors are caches: `~/.codex/skills` and `~/.claude/skills`.
+  - Repo-local `.claude/skills` is ignored and must never be treated as canonical.
+- **Oracle pack (offline only):** when asked to "create an oracle pack", use `scripts/oracle_pack.sh` (no network, no browser).
+- **Oracle run (online only):** when asked to "run oracle" / "call a friend", use `scripts/oracle_run.sh --confirm` (browser + network).
+- Prompts must start with plain task instructions only (no `[SYSTEM]`/`[USER]` role headers).
 
-## Current State (update weekly)
-- End-of-day pipeline: Step 0-1 OK; Step 2 depends on core/db/ledger.log_audit + fact_input_audit table.
-- Automation mode: shadow mode + guardrails exist; execution is gated behind env flags.
-- Capital safety: guardrails enforced (ROIC gate, concentration, budget caps, rollout caps).
-- Known optional warning: dim_budget_caps may be missing/unlimited depending on setup.
+## 3) Single-Source-of-Truth Doc Map (owning file → what it owns)
+Inventory math (formulas + constants):
+- docs/inventory/Master_Inventory_Rules_v8.md
 
----
+Data model (tables + columns):
+- docs/inventory/Sales_Data_Model_V16.md
 
-## Non-Negotiables
-- DO NOT edit `.env` or any secrets files. Only the human changes env vars.
-- No destructive git ops unless explicitly instructed (no `git reset --hard`, no nuking files to "fix tests").
-- No implicit DB migrations in validation; use explicit migration scripts.
-- Keep commits atomic. Commit only files you touched.
-- Protect capital first: never weaken guardrails.
+Excel UI contract (UI columns/invariants only; no formulas):
+- docs/inventory/Excel_UI_Contract_for_CRM_V1.md
 
----
+PO algorithm / size allocation protocol:
+- docs/protocol/active/PO_making_logic_v2.md
 
-## Repo Entry Points (start here)
-- scripts/run_end_of_day.py       -> daily pipeline (steps 0-7)
-- scripts/validate_params.py      -> strict parameter validation gate
-- scripts/smoke_test_dashboard.py -> invariants gate
-- scripts/generate_po_dashboard_data.py -> dashboard JSON generation
+FX mechanism:
+- docs/protocol/active/FX_RATES_MECHANISM_V1.md
 
----
+Daily human runbook (Kaspi-only scope):
+- docs/DAILY_SOP.md
 
-## Docs: ALWAYS read this first
-1) **docs/00_START_HERE.md**  
-This file contains the “source-of-truth ladder” and the minimum reading set per task.  
-Do not load the whole docs folder by default.
+Durable memory across sessions (authoritative for status/decisions):
+- .claude/GOALS.md      (MISSING TODAY: create it; goal list + acceptance gates)
+- .claude/PROGRESS.md   (MISSING TODAY: create it; verified status only)
+- .claude/OPERATING.md  (MISSING TODAY: create it; how we work + gates)
+- .claude/DECISIONS.md  (decisions + rationale + links to commits/PRs)
+- .claude/TASKS.md      (task tracker; each task has a gate + DoD)
+- .claude/SESSION_LOG.md (chronological log; must link oracle packs)
 
----
+Rule: each fact/decision lives in exactly one owning file. Everywhere else links to it.
 
-## Docs Index (read_when rules)
-- If editing inventory formulas / parameters -> docs/inventory/Master_Inventory_Rules_v8.md
-- If editing PO logic / size allocation -> docs/protocol/active/PO_making_logic_v2.md + docs/size_engine_specification.md
-- If editing FX rates or payments assumptions -> docs/protocol/active/FX_RATES_MECHANISM_V1.md
-- If editing daily ops pipeline -> docs/DAILY_SOP.md
-- If editing schema -> db/schema.sql + scripts/validate_params.py + docs/inventory/Sales_Data_Model_V16.md
+## 4) Required Validation Gates (run before claiming “done”)
+Run these unless the task explicitly narrows them:
+- python3 scripts/validate_params.py --strict
+- python3 scripts/run_end_of_day.py --verbose
+- pytest -q  (targeted is OK if justified)
 
----
-
-## Workflow Principles (Steipete-inspired)
-- Keep blast radius small (target: <=5 files per commit).
-- Prefer CLI-first changes and close the loop with gates.
-- Ask for options/status before big changes.
-- Use tight context packs for reviews (changed files + key docs).
-- Keep prompts short and direct; queue follow-ups instead of huge plans.
-
----
-
-## Default "Green Loop" Commands
-1) python3 scripts/validate_params.py --strict
-2) python3 scripts/run_end_of_day.py --verbose
-3) python3 -m pytest tests/ -q (or targeted tests)
-
----
-
-## Guardrail Checks
+If you touched docs:
 - scripts/lint_docs.sh
+
+Before PR/merge (always):
 - scripts/check_no_db_tracked.sh
 
----
+## 5) Task Workflow (every task, every time)
+1) Create/claim the task in `.claude/TASKS.md` (scope, owner, stop conditions, DoD).
+2) Update `.claude/PROGRESS.md` with the next gate you intend to make green.
+3) Implement in small, atomic commits (target ≤ 5 files per commit).
+4) Run the required gates.
+   - If any gate fails: STOP, log the failure, fix it; do not expand scope.
+5) Generate an oracle pack (or equivalent evidence bundle) and link it in:
+   - `.claude/SESSION_LOG.md`
+   - `.claude/PROGRESS.md`
+6) Use `scripts/safe_ship.sh` for pushing (it runs gates, secrets scan, pack, and push).
+7) If behavior changed: add/adjust a test that would have caught the prior bug.
 
-## Commit Helper
-Use scripts/committer to avoid staging junk:
-- scripts/committer "TASK-XXX: short message" path/to/file1 path/to/file2
+## 6) Scope Guardrail
+- Repo scope is Kaspi-only. Do not add Wildberries/WB logic or docs unless explicitly instructed.
 
----
-
-## Oracle Pack (definition of done)
-- After each task, generate an oracle pack to disk for review:
-  - scripts/oracle_pack.sh --task TASK-XXX --range HEAD~1..HEAD --cmd "pytest -q" --cmd "python3 scripts/run_end_of_day.py --verbose"
-- Link the generated `~/Docs/Oracle/...` path in the session log/handoff.
-- Prefer a clean working tree; only use `--allow-dirty` when reproducibility is not possible.
-- You can omit `--task` if the branch is named `task/<TASK>-...`.
-
----
-
-## Blast Radius Rule (important)
-Before coding:
-- Estimate files touched (target: <=5)
-- If it grows: stop, explain why, re-scope.
-
----
-
-## Prompt Templates
-
-### Template A - Implementation Task (to Codex/Opus)
-- Goal:
-- Constraints (idempotent, no .env changes, no destructive git):
-- Files allowed to touch:
-- Tests/gates to run:
-- Done means checklist:
-
-
-### Template B - Review Request (to Code Captain)
-- Context pack: oracle render output or changed-files-only bundle.
-- Path to oracle docs: "~/Docs/steipete/oracle-main"
-- What changed + why:
-- Evidence: command outputs + commit hash
-- Risks/rollbacks:
-
-### Template C - Status/Options Ping
-- Status check:
-- What is blocked or unclear:
-- Provide 2-3 options before changing code.
+## 7) Rollback Requirement
+Every task must include a rollback plan in the handoff (usually `git revert <commit(s)>`).

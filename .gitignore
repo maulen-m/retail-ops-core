@@ -37,6 +37,10 @@ ENV/
 *.swo
 *~
 
+# Local agent tooling
+.claude/skills/
+.claude\ alias
+
 # OS
 .DS_Store
 ._*
@@ -45,6 +49,7 @@ ENV/
 Thumbs.db
 
 # Database (keep schema, exclude data)
+*.db
 db/*.db
 db/app.db
 
