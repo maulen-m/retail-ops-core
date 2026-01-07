@@ -580,8 +580,8 @@ def get_size_sales_90d_v2(
             FROM sales_fact_v2
             WHERE sku_key = ?
               AND store_code = ?
-              AND sale_date >= ?
-              AND sale_date <= ?
+              AND order_date >= ?
+              AND order_date <= ?
               AND status NOT IN ('CANCELLED', 'RETURNED')
             GROUP BY my_size
         """, (sku_key, store_code, start_date.isoformat(), end_date.isoformat())).fetchall()
@@ -641,21 +641,21 @@ def get_size_sales_history_v2(
 
         # Get sales data aggregated by day from sales_fact_v2
         sales_data = conn.execute("""
-            SELECT sale_date, my_size, SUM(quantity) as units
+            SELECT order_date, my_size, SUM(quantity) as units
             FROM sales_fact_v2
             WHERE sku_key = ?
               AND store_code = ?
-              AND sale_date >= ?
-              AND sale_date <= ?
+              AND order_date >= ?
+              AND order_date <= ?
               AND status NOT IN ('CANCELLED', 'RETURNED')
-            GROUP BY sale_date, my_size
-            ORDER BY sale_date
+            GROUP BY order_date, my_size
+            ORDER BY order_date
         """, (sku_key, store_code, start_date.isoformat(), end_date.isoformat())).fetchall()
 
         # Build date -> size -> units mapping
         sales_by_date: dict[str, dict[str, int]] = {}
         for row in sales_data:
-            d = row["sale_date"]
+            d = row["order_date"]
             if d not in sales_by_date:
                 sales_by_date[d] = {}
             sales_by_date[d][row["my_size"]] = row["units"]
@@ -798,7 +798,7 @@ def get_sku_age_days_v2(
     """
     with get_db(db_path) as conn:
         first_sale = conn.execute("""
-            SELECT MIN(sale_date) as first_date
+            SELECT MIN(order_date) as first_date
             FROM sales_fact_v2
             WHERE sku_key = ?
               AND store_code = ?
