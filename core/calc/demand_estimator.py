@@ -1112,11 +1112,8 @@ class DemandEstimator:
         # Coverage metrics
         result.sales_coverage_days = len([c for c in coverage if c.sku_sales > 0])
         result.stock_coverage_days = len([c for c in coverage if c.sku_stock is not None])
-        result.eligible_days = len([c for c in coverage if c.is_valid])
-        result.unknown_days = max(0, result.calendar_days - result.eligible_days)
-        result.availability_score = (
-            result.eligible_days / result.calendar_days if result.calendar_days else 0.0
-        )
+        result.good_days = len([c for c in coverage if c.is_valid])
+        result.coverage_pct = result.good_days / len(coverage) if coverage else 0
 
         # Detect OOS
         oos_type, oos_total, oos_streak, _ = self._detect_oos(coverage)
@@ -1151,10 +1148,13 @@ class DemandEstimator:
             )
 
         # Calculate data-driven demand
-        d_data, good_days = self._calc_d_data(coverage)
+        d_data, eligible_days = self._calc_d_data(coverage)
         result.d_data = d_data
-        result.good_days = good_days
-        result.coverage_pct = good_days / len(coverage) if coverage else 0
+        result.eligible_days = eligible_days
+        result.unknown_days = max(0, result.calendar_days - result.good_days)
+        result.availability_score = (
+            result.good_days / result.calendar_days if result.calendar_days else 0.0
+        )
 
         # Calculate data-driven sigma
         result.sigma_data = self._calc_sigma_data(coverage)
