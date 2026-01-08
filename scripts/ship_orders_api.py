@@ -567,15 +567,31 @@ def ship_orders(
                 shipped += 1
                 continue
 
+            # Helper: fallback assemble by order code
+            def _fallback_assemble(reason: str) -> bool:
+                if verbose:
+                    print(f"      -> WARN: {reason}. Retrying with order code...")
+                try:
+                    result_fallback = client.assemble_order(order_id, parcel_count=parcel_count)
+                    if result_fallback.success:
+                        if verbose:
+                            print("      -> Shipped OK (fallback)")
+                        return True
+                    errors.append(f"{order_id}: API error - {result_fallback.error} (fallback)")
+                    if verbose:
+                        print(f"      -> ERROR: {result_fallback.error} (fallback)")
+                except Exception as exc:
+                    errors.append(f"{order_id}: {str(exc)} (fallback)")
+                    if verbose:
+                        print(f"      -> EXCEPTION: {exc} (fallback)")
+                return False
+
             # Get Base64 ID from pre-fetched mapping (store-specific)
             base64_id = order_id_to_base64.get(api_store_code, {}).get(order_id)
             if not base64_id:
-                errors.append(
-                    f"{order_id}: No Base64 ID found for {api_store_code} "
-                    "(order may have changed state)"
-                )
-                if verbose:
-                    print(f"      -> SKIPPED: No Base64 ID (state changed?)")
+                # If missing, fallback to direct lookup by order code.
+                if _fallback_assemble("No Base64 ID found (state changed?)"):
+                    shipped += 1
                 continue
 
             # Call API with pre-fetched Base64 ID (avoids re-fetch 404)
@@ -584,29 +600,21 @@ def ship_orders(
                 if result.success:
                     shipped += 1
                     if verbose:
-                        print(f"      -> Shipped OK")
+                        print("      -> Shipped OK")
                 else:
+                    # Some API errors return 404-equivalent errors without raising.
+                    err_text = str(result.error or "")
+                    if "not found" in err_text.lower() or "resource not found" in err_text.lower():
+                        if _fallback_assemble(err_text):
+                            shipped += 1
+                            continue
                     errors.append(f"{order_id}: API error - {result.error}")
                     if verbose:
                         print(f"      -> ERROR: {result.error}")
             except KaspiNotFoundError as e:
                 # Retry with direct lookup if base64 ID is stale or mismatched.
-                if verbose:
-                    print(f"      -> WARN: {e}. Retrying with order code...")
-                try:
-                    result = client.assemble_order(order_id, parcel_count=parcel_count)
-                    if result.success:
-                        shipped += 1
-                        if verbose:
-                            print(f"      -> Shipped OK (fallback)")
-                    else:
-                        errors.append(f"{order_id}: API error - {result.error}")
-                        if verbose:
-                            print(f"      -> ERROR: {result.error}")
-                except Exception as exc:
-                    errors.append(f"{order_id}: {str(exc)}")
-                    if verbose:
-                        print(f"      -> EXCEPTION: {exc}")
+                if _fallback_assemble(str(e)):
+                    shipped += 1
             except KaspiWriteDisabledError:
                 logger.error("Write operations disabled. Set ENABLE_KASPI_WRITE=1 in .env")
                 return {
@@ -615,9 +623,13 @@ def ship_orders(
                     'errors': ['Write operations disabled'],
                 }
             except Exception as e:
-                errors.append(f"{order_id}: {str(e)}")
-                if verbose:
-                    print(f"      -> EXCEPTION: {e}")
+                # Unknown exception: try fallback once, then record error.
+                if _fallback_assemble(str(e)):
+                    shipped += 1
+                else:
+                    errors.append(f"{order_id}: {str(e)}")
+                    if verbose:
+                        print(f"      -> EXCEPTION: {e}")
 
     return {
         'shipped': shipped,

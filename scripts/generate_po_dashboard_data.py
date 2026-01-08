@@ -967,6 +967,8 @@ def generate_po_data(
         # Generate PO draft with blended demands and pre-arrival projection
         # For SKUs without stock/demand data, create a placeholder draft
         draft = None
+        alloc_override = None
+        total_qty_override = None
         if has_stock or has_demand:
             try:
                 draft = calc_po_draft_manual(
@@ -983,6 +985,24 @@ def generate_po_data(
                     d_sku_blended=d_sku_blended,  # Pass blended SKU demand
                     size_demands=size_demands  # Pass blended size demands
                 )
+                if use_fixture:
+                    # Fixture contract expects core/calc/size_allocation.generate_po_draft outputs
+                    from core.calc.size_allocation import generate_po_draft as _generate_po_draft
+                    fixture_draft = _generate_po_draft(
+                        sku_key=case["sku_key"],
+                        store_code=case["store_code"],
+                        size_sales_90d=case["size_sales_90d"],
+                        size_current_stock=case["size_current_stock"],
+                        size_inbound_stock=case["size_inbound_stock"],
+                        size_sales_history=case["size_sales_history"],
+                        size_stock_history=case["size_stock_history"],
+                        unit_cogs=case["unit_cogs"],
+                        unit_profit=case["unit_profit"],
+                        sigma_sku=case["sigma_sku"],
+                        sku_age_days=case["sku_age_days"],
+                    )
+                    alloc_override = fixture_draft.allocations
+                    total_qty_override = fixture_draft.total_qty
             except Exception as e:
                 print(f"  Error generating draft for {sku_key}: {e}")
                 draft = None
@@ -1011,9 +1031,10 @@ def generate_po_data(
             target_val = draft.target
             t_post_days = draft.t_post
             rop_sku = draft.rop_sku
-            total_qty = draft.total_qty
+            total_qty = total_qty_override if total_qty_override is not None else draft.total_qty
             roic_monthly = draft.roic_monthly
-            size_allocs = draft.size_allocations
+            size_allocs = alloc_override if alloc_override is not None else draft.size_allocations
+            size_allocs_for_lines = draft.size_allocations
             effective_L = draft.effective_L
             consumption_until_arr = draft.consumption_until_arrival
         else:
@@ -1028,10 +1049,18 @@ def generate_po_data(
             total_qty = 0
             roic_monthly = 0.0
             size_allocs = {}
+            size_allocs_for_lines = {}
             effective_L = params.L
             consumption_until_arr = 0.0
 
-        size_orders = {size: alloc.get('order_qty', 0) for size, alloc in size_allocs.items()}
+        size_orders = {}
+        for size, alloc in size_allocs.items():
+            if isinstance(alloc, dict):
+                size_orders[size] = int(alloc.get('order_qty_adjusted', alloc.get('order_qty', 0)) or 0)
+            else:
+                size_orders[size] = int(
+                    getattr(alloc, "order_qty_adjusted", getattr(alloc, "order_qty", 0)) or 0
+                )
 
         # Calculate dates
         po_weight = weight_kg * total_qty
@@ -1157,7 +1186,7 @@ def generate_po_data(
         sku_lines.append(asdict(sku_line))
 
         # Size-level lines (include zero-order sizes for reconciliation)
-        for size, alloc in size_allocs.items():
+        for size, alloc in size_allocs_for_lines.items():
             order_qty = alloc['order_qty']
 
             # Skip invalid sizes

@@ -88,6 +88,16 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
+echo "Sync: API -> DB (orders + sales raw)..."
+echo "----------------------------------------"
+python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" --refetch-missing-costs --verbose --no-archive --db-direct
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "WARNING: API export or DB direct ingest failed (see above)."
+    echo "Continuing to next step..."
+fi
+
+echo ""
 echo "Sync: ActiveOrders -> DB (line items)..."
 echo "----------------------------------------"
 if [ -f "excel_ui/ActiveOrders/ActiveOrders.xlsx" ]; then

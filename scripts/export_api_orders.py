@@ -582,20 +582,36 @@ def export_store_orders(
 
     if db_direct:
         try:
-            stats = ingest_rows_to_db(
+            stats_orders = ingest_rows_to_db(
                 all_rows,
                 store_code=store_code,
                 dry_run=db_direct_dry_run,
             )
             if verbose:
                 logger.info(
-                    f"{store_code}: DB direct ingest "
-                    f"inserted={stats.get('inserted', 0)} "
-                    f"updated={stats.get('updated', 0)} "
-                    f"errors={stats.get('errors', 0)}"
+                    f"{store_code}: DB direct ingest (fact_orders_kaspi) "
+                    f"inserted={stats_orders.get('inserted', 0)} "
+                    f"updated={stats_orders.get('updated', 0)} "
+                    f"errors={stats_orders.get('errors', 0)}"
                 )
         except Exception as e:
-            logger.warning(f"{store_code}: DB direct ingest failed: {e}")
+            logger.warning(f"{store_code}: DB direct ingest (fact_orders_kaspi) failed: {e}")
+
+        try:
+            stats_sales = ingest_rows_to_sales_db(
+                all_rows,
+                store_code=store_code,
+                dry_run=db_direct_dry_run,
+            )
+            if verbose:
+                logger.info(
+                    f"{store_code}: DB direct ingest (fact_sales_raw) "
+                    f"inserted={stats_sales.get('inserted', 0)} "
+                    f"updated={stats_sales.get('updated', 0)} "
+                    f"errors={stats_sales.get('errors', 0)}"
+                )
+        except Exception as e:
+            logger.warning(f"{store_code}: DB direct ingest (fact_sales_raw) failed: {e}")
 
     return all_rows
 
@@ -672,6 +688,43 @@ def ingest_rows_to_db(
 
     with get_db() as conn:
         stats = ingest_orders(parsed.orders, conn)
+
+    return stats
+
+
+def ingest_rows_to_sales_db(
+    rows: List[Dict[str, Any]],
+    store_code: str,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Ingest ActiveOrders-format rows directly into fact_sales_raw.
+
+    Args:
+        rows: ActiveOrders-style rows (Russian column headers)
+        store_code: Store code (UNIVERSAL, ACMEWEAR, etc.)
+        dry_run: If True, do not write to DB
+
+    Returns:
+        Stats dict from ingest_records
+    """
+    if not rows:
+        return {"inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
+
+    # Lazy imports to avoid circular deps
+    from core.db import get_db
+    from core.parsers.kaspi_parser import parse_active_orders_df
+    from scripts.ingest_active_orders import ingest_records
+
+    df = pd.DataFrame(rows)
+    source_file = f"API_DIRECT_{store_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    records = parse_active_orders_df(df, store_code=store_code, source_file=source_file)
+
+    if dry_run:
+        return {"inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
+
+    with get_db() as conn:
+        stats = ingest_records(records, conn)
 
     return stats
 
@@ -817,7 +870,7 @@ def main():
     parser.add_argument(
         '--db-direct',
         action='store_true',
-        help='Ingest API rows directly into DB (fact_sales_raw)'
+        help='Ingest API rows directly into DB (fact_orders_kaspi + fact_sales_raw)'
     )
     parser.add_argument(
         '--db-direct-dry-run',
@@ -857,7 +910,7 @@ def main():
     print(f"  Lookback: {args.days} days")
     print(f"  Include archive: {include_archive}")
     print(f"  Refetch missing costs: {args.refetch_missing_costs}")
-    print(f"  DB direct ingest: {args.db_direct}")
+    print(f"  DB direct ingest: {args.db_direct} (orders + sales_raw)")
     if apply_date_filter:
         display_date = target_date or datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
         print(f"  Planned date filter: {display_date}")

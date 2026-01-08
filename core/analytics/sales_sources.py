@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 
 import pandas as pd
 import warnings
+import sqlite3
 
 from core.ingest.sales_ingest import parse_sales_excel
 
@@ -126,11 +127,74 @@ def load_fact_sales(fact_path: Path, sheet: str) -> pd.DataFrame:
     return df
 
 
+def load_fact_sales_db(db_path: Path) -> pd.DataFrame:
+    """
+    Load Fact_Sales directly from DB (fact_sales table).
+
+    Returns a DataFrame aligned to SALES_COLUMNS.
+    """
+    if not db_path.exists():
+        return pd.DataFrame(columns=SALES_COLUMNS)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_sales'"
+        ).fetchone()
+        if not table:
+            return pd.DataFrame(columns=SALES_COLUMNS)
+
+        query = """
+            SELECT
+                f.order_id,
+                f.order_date,
+                f.sku_key,
+                f.sku_id,
+                s.my_size,
+                '' AS kaspi_offer_name,
+                f.store_code,
+                f.quantity,
+                f.sell_price_kzt,
+                f.delivery_fee,
+                f.cogs_line AS cogs,
+                f.line_net_rev AS net_rev,
+                f.profit_line AS profit,
+                'DELIVERED' AS status,
+                0 AS return_flag,
+                'fact_sales_db' AS source_file
+            FROM fact_sales f
+            LEFT JOIN dim_sku_size s ON f.sku_id = s.sku_id
+        """
+        df = pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
+
+    if df.empty:
+        return df
+
+    df["order_date"] = _coerce_date(df["order_date"])
+    df["order_id"] = df["order_id"].astype(str)
+    df["sku_id"] = df["sku_id"].astype(str)
+    df["sku_key"] = df["sku_key"].astype(str)
+    df["quantity"] = _coerce_numeric(df["quantity"]).fillna(0).astype(int)
+    df["sell_price_kzt"] = _coerce_numeric(df["sell_price_kzt"])
+    df["delivery_fee"] = _coerce_numeric(df["delivery_fee"])
+    df["net_rev"] = _coerce_numeric(df["net_rev"])
+    df["cogs"] = _coerce_numeric(df["cogs"])
+    df["profit"] = _coerce_numeric(df["profit"])
+    df["store_code"] = df["store_code"].fillna("UNIVERSAL")
+    df["kaspi_offer_name"] = df["kaspi_offer_name"].fillna("")
+
+    df = df[SALES_COLUMNS].copy()
+    return df
+
+
 def merge_sales_sources(
     crm_df: pd.DataFrame,
     fact_df: pd.DataFrame,
     *,
     crm_date_precedence: bool = False,
+    prefer_fact: bool = False,
 ) -> Tuple[pd.DataFrame, MergeStats]:
     crm = crm_df.copy()
     fact = fact_df.copy()
@@ -162,13 +226,17 @@ def merge_sales_sources(
     overlap = crm_keys & fact_keys
 
     fact_filtered = fact[~fact.set_index(key_cols).index.isin(overlap)]
+    crm_filtered = crm[~crm.set_index(key_cols).index.isin(overlap)]
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
             category=FutureWarning,
             message="The behavior of DataFrame concatenation with empty or all-NA entries*",
         )
-        combined = pd.concat([fact_filtered, crm], ignore_index=True)
+        if prefer_fact:
+            combined = pd.concat([fact, crm_filtered], ignore_index=True)
+        else:
+            combined = pd.concat([fact_filtered, crm], ignore_index=True)
 
     if not combined.empty:
         sku_id = combined["sku_id"].fillna("").astype(str)

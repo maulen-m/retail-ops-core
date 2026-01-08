@@ -18,7 +18,13 @@ import subprocess
 
 import pandas as pd
 
-from core.analytics.sales_sources import load_crm_sales, load_fact_sales, merge_sales_sources, SALES_COLUMNS
+from core.analytics.sales_sources import (
+    load_crm_sales,
+    load_fact_sales,
+    load_fact_sales_db,
+    merge_sales_sources,
+    SALES_COLUMNS,
+)
 from core.paths import data_path
 
 DEFAULT_CRM = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
@@ -32,27 +38,42 @@ def main() -> None:
     parser.add_argument("--crm-sheet", type=str, default="SALES_KSP_CRM_1")
     parser.add_argument("--fact-file", type=Path, default=DEFAULT_FACT)
     parser.add_argument("--fact-sheet", type=str, default="Fact_Sales")
+    parser.add_argument("--fact-db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument(
+        "--prefer-crm",
+        action="store_true",
+        help="Prefer CRM on overlap (default: prefer API/Fact_Sales)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Read and merge only; do not write DB")
     parser.add_argument("--skip-metrics", action="store_true", help="Skip SKU metrics refresh after sync")
     args = parser.parse_args()
 
     if not args.crm_file.exists():
         raise SystemExit(f"CRM file not found: {args.crm_file}")
-    if not args.fact_file.exists():
-        raise SystemExit(f"Fact_Sales workbook not found: {args.fact_file}")
 
     crm_df, missing_net_rev = load_crm_sales(args.crm_file, args.crm_sheet)
-    fact_df = load_fact_sales(args.fact_file, args.fact_sheet)
+
+    fact_df = pd.DataFrame(columns=SALES_COLUMNS)
+    fact_source = None
+    if args.fact_db and args.fact_db.exists():
+        fact_df = load_fact_sales_db(args.fact_db)
+        fact_source = f"DB:{args.fact_db}"
+    if fact_df.empty:
+        if not args.fact_file.exists():
+            raise SystemExit("Fact_Sales source not found in DB or Excel.")
+        fact_df = load_fact_sales(args.fact_file, args.fact_sheet)
+        fact_source = f"Excel:{args.fact_file}"
 
     if crm_df.empty or fact_df.empty:
         raise SystemExit("CRM or Fact_Sales data is empty; cannot sync.")
 
-    combined, stats = merge_sales_sources(crm_df, fact_df)
+    prefer_fact = not args.prefer_crm
+    combined, stats = merge_sales_sources(crm_df, fact_df, prefer_fact=prefer_fact)
 
     print("Merge summary:")
     print(f"- CRM rows: {stats.crm_rows}")
-    print(f"- Fact rows: {stats.fact_rows}")
+    print(f"- Fact rows: {stats.fact_rows} ({fact_source})")
     print(f"- Fact rows after cutoff: {stats.fact_rows_after_cutoff}")
     print(f"- Fact rows dropped by date cutoff: {stats.fact_rows_dropped_by_date}")
     if stats.cutoff_date:
@@ -64,6 +85,7 @@ def main() -> None:
     print(f"- Fact-only rows: {stats.fact_only_rows}")
     print(f"- Combined rows: {stats.combined_rows}")
     print(f"- CRM missing Total_net_rev: {missing_net_rev}")
+    print(f"- Overlap precedence: {'FACT/API' if prefer_fact else 'CRM'}")
 
     if args.dry_run:
         return
