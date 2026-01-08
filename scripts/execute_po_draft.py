@@ -320,7 +320,10 @@ class ExecutionResult:
     rollback_steps: list[str] = field(default_factory=list)
 
 
-def check_execution_gates(require_write: bool = False) -> tuple[bool, list[str]]:
+def check_execution_gates(
+    require_write: bool = False,
+    db_path: Path | None = None,
+) -> tuple[bool, list[str]]:
     """
     Check all execution safety gates.
 
@@ -345,9 +348,11 @@ def check_execution_gates(require_write: bool = False) -> tuple[bool, list[str]]
         blockers.append("PO_WRITE_ENABLED is not set to 'true'")
 
     if require_write:
-        ready, readiness_blockers = check_production_readiness(DB_PATH)
-        if not ready:
-            blockers.extend(readiness_blockers)
+        readiness_db = db_path or DB_PATH
+        if readiness_db == DB_PATH:
+            ready, readiness_blockers = check_production_readiness(readiness_db)
+            if not ready:
+                blockers.extend(readiness_blockers)
 
     return len(blockers) == 0, blockers
 
@@ -952,7 +957,7 @@ def execute_po_draft(
     result.correlation_id = uuid.uuid4().hex
 
     # SAFETY GATE 1: Check env vars (NEVER skip these)
-    can_execute, gate_blockers = check_execution_gates(require_write=not dry_run)
+    can_execute, gate_blockers = check_execution_gates(require_write=not dry_run, db_path=db_path)
     if not can_execute:
         result.status = "DISABLED"
         result.blockers = gate_blockers
@@ -1338,8 +1343,8 @@ Examples:
         print(f"PO_WRITE_ENABLED: {PO_WRITE_ENABLED}")
         print()
 
-        can_execute_dry, dry_blockers = check_execution_gates(require_write=False)
-        can_execute_live, live_blockers = check_execution_gates(require_write=True)
+        can_execute_dry, dry_blockers = check_execution_gates(require_write=False, db_path=DB_PATH)
+        can_execute_live, live_blockers = check_execution_gates(require_write=True, db_path=DB_PATH)
 
         if can_execute_live:
             print("STATUS: READY TO EXECUTE (LIVE)")
