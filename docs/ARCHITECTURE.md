@@ -234,10 +234,10 @@ Autonomous_business/
 Calculates financial metrics per transaction.
 
 ```python
-calc_delivery_fee(sell_price_kzt) -> float
+calc_delivery_fee(sell_price_kzt, weight_kg=None, delivery_type="city") -> float
 calc_cogs(base_cost_cny, weight_kg, ...) -> float
-calc_net_rev(sell_price_kzt, quantity, ...) -> float
-calc_profit(sell_price_kzt, quantity, efficiency) -> float
+calc_net_rev(sell_price_kzt, delivery_fee=None, ...) -> float
+calc_profit(sell_price_kzt, base_cost_cny, weight_kg, ...) -> float
 ```
 
 ### inventory.py

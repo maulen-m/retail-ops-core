@@ -1,9 +1,7 @@
 """
 Tests for core/calc/economics.py
 
-Test values from TASK-009 requirements:
-- LINE52 @ 12,000 KZT → COGS=5,005, NetRev=9,355, Profit=4,350
-- LINE51 @ 12,000 KZT → COGS=6,019
+Aligned to Master_Inventory_Rules_v8 (2026 delivery fee matrix + VAT schedule).
 """
 
 import pytest
@@ -18,25 +16,21 @@ from core.config.business_params import get_fx_rates
 
 
 class TestDeliveryFee:
-    """Tests for delivery fee calculation."""
+    """Tests for delivery fee calculation (v8 matrix)."""
 
-    def test_free_delivery_under_5000(self):
-        """Delivery is free for prices <= 4999."""
-        assert calc_delivery_fee(4999) == 0.0
-        assert calc_delivery_fee(3000) == 0.0
-        assert calc_delivery_fee(0) == 0.0
+    def test_price_based_fees(self):
+        """Price-based fees for <= 10,000 KZT (weight ignored)."""
+        assert calc_delivery_fee(1000, weight_kg=10, delivery_type="city") == pytest.approx(49.14)
+        assert calc_delivery_fee(2000, weight_kg=10, delivery_type="city") == pytest.approx(149.14)
+        assert calc_delivery_fee(5000, weight_kg=10, delivery_type="city") == pytest.approx(199.14)
+        assert calc_delivery_fee(10000, weight_kg=10, delivery_type="city") == pytest.approx(699.14)
+        assert calc_delivery_fee(10000, weight_kg=10, delivery_type="kazakhstan") == pytest.approx(799.14)
 
-    def test_low_tier_delivery_5000_to_15000(self):
-        """Delivery is 856 for 5000 <= price <= 14999."""
-        assert calc_delivery_fee(5000) == 856.0
-        assert calc_delivery_fee(12000) == 856.0
-        assert calc_delivery_fee(14999) == 856.0
-
-    def test_high_tier_delivery_over_15000(self):
-        """Delivery is 1259 for price > 14999."""
-        assert calc_delivery_fee(15000) == 1259.0
-        assert calc_delivery_fee(20000) == 1259.0
-        assert calc_delivery_fee(50000) == 1259.0
+    def test_weight_based_fees(self):
+        """Weight-based fees for > 10,000 KZT."""
+        assert calc_delivery_fee(12000, weight_kg=0.5, delivery_type="city") == pytest.approx(1099.14)
+        assert calc_delivery_fee(12000, weight_kg=6, delivery_type="kazakhstan") == pytest.approx(1699.14)
+        assert calc_delivery_fee(12000, weight_kg=20, delivery_type="express") == pytest.approx(3149.14)
 
 
 class TestCogs:
@@ -82,29 +76,34 @@ class TestNetRev:
     """Tests for net revenue calculation."""
 
     def test_net_rev_at_12000(self):
-        """Net revenue at 12,000 KZT should be ~9,355."""
-        net_rev = calc_net_rev(12000)
-        assert abs(net_rev - 9355) / 9355 < 0.01  # Within 1%
+        """Net revenue at 12,000 KZT (2026 VAT + weight fee)."""
+        net_rev = calc_net_rev(
+            12000,
+            delivery_fee=1099.14,
+            vat_rate=0.04,
+        )
+        expected = (12000 * 0.875 - 1099.14) * 0.96
+        assert abs(net_rev - expected) < 0.01
 
     def test_net_rev_with_explicit_delivery(self):
         """Explicit delivery fee should override auto-calculation."""
-        # With delivery=856: (12000 * 0.875 - 856) * 0.97
-        net_rev = calc_net_rev(12000, delivery_fee=856)
-        expected = (12000 * 0.875 - 856) * 0.97
+        # With delivery=1299.14 and VAT=4%
+        net_rev = calc_net_rev(12000, delivery_fee=1299.14, vat_rate=0.04)
+        expected = (12000 * 0.875 - 1299.14) * 0.96
         assert abs(net_rev - expected) < 0.01
 
     def test_net_rev_low_price(self):
         """Low price (free delivery) calculation."""
-        # price=4000, delivery=0
-        net_rev = calc_net_rev(4000)
-        expected = (4000 * 0.875 - 0) * 0.97
+        # price=4000, delivery=199.14 (city), VAT=4%
+        net_rev = calc_net_rev(4000, weight_kg=1.0, delivery_type="city", vat_rate=0.04)
+        expected = (4000 * 0.875 - 199.14) * 0.96
         assert abs(net_rev - expected) < 0.01
 
     def test_net_rev_high_price(self):
         """High price (1259 delivery) calculation."""
-        # price=20000, delivery=1259
-        net_rev = calc_net_rev(20000)
-        expected = (20000 * 0.875 - 1259) * 0.97
+        # price=20000, weight=10 (city fee 1349.14), VAT=4%
+        net_rev = calc_net_rev(20000, weight_kg=10, delivery_type="city", vat_rate=0.04)
+        expected = (20000 * 0.875 - 1349.14) * 0.96
         assert abs(net_rev - expected) < 0.01
 
 
@@ -112,11 +111,11 @@ class TestProfit:
     """Tests for profit calculation."""
 
     def test_line52_profit_at_12000(self):
-        """LINE52 profit at 12,000 should be ~4,350."""
+        """LINE52 profit at 12,000 should match net_rev - cogs."""
         rates = get_fx_rates()
-        profit = calc_profit(12000, 47, 0.95)
+        profit = calc_profit(12000, 47, 0.95, delivery_fee=1099.14, vat_rate=0.04)
         expected_cogs = 47 * rates.cny_kzt + 0.95 * rates.dlv_rate_usd_kg * rates.usd_kzt
-        expected_profit = calc_net_rev(12000) - expected_cogs
+        expected_profit = calc_net_rev(12000, delivery_fee=1099.14, vat_rate=0.04) - expected_cogs
         assert abs(profit - expected_profit) / expected_profit < 0.01  # Within 1%
 
     def test_profit_with_precalculated_values(self):
@@ -137,11 +136,11 @@ class TestLineValues:
     def test_line_values_single_unit(self):
         """Single unit calculation should match individual functions."""
         rates = get_fx_rates()
-        result = calc_line_values(12000, 47, 0.95, 1)
+        result = calc_line_values(12000, 47, 0.95, 1, delivery_type="city")
 
-        assert result["delivery_fee"] == 856.0
+        assert result["delivery_fee"] == pytest.approx(1099.14)
         expected_cogs = 47 * rates.cny_kzt + 0.95 * rates.dlv_rate_usd_kg * rates.usd_kzt
-        expected_net_rev = calc_net_rev(12000)
+        expected_net_rev = calc_net_rev(12000, delivery_fee=1099.14, vat_rate=0.04)
         expected_profit = expected_net_rev - expected_cogs
         assert abs(result["cogs_unit"] - expected_cogs) < 1
         assert abs(result["net_rev_unit"] - expected_net_rev) < 1
@@ -155,7 +154,7 @@ class TestLineValues:
     def test_line_values_multiple_units(self):
         """Multiple units should multiply line values."""
         qty = 5
-        result = calc_line_values(12000, 47, 0.95, qty)
+        result = calc_line_values(12000, 47, 0.95, qty, delivery_type="city")
 
         assert abs(result["cogs_line"] - result["cogs_unit"] * qty) < 0.01
         assert abs(result["line_net_rev"] - result["net_rev_unit"] * qty) < 0.01
@@ -163,7 +162,7 @@ class TestLineValues:
 
     def test_line_values_zero_quantity(self):
         """Zero quantity should give zero line values."""
-        result = calc_line_values(12000, 47, 0.95, 0)
+        result = calc_line_values(12000, 47, 0.95, 0, delivery_type="city")
 
         assert result["cogs_line"] == 0
         assert result["line_net_rev"] == 0

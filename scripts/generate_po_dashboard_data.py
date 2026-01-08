@@ -855,10 +855,10 @@ def generate_po_data() -> dict:
 
         avg_sell_price = price_row['avg_price'] if price_row and price_row['avg_price'] else 15000
 
-        # Calculate NET revenue (after Kaspi commission 12.5%, delivery fee, VAT 3%)
-        # Formula: net_rev = (sell_price × 0.875 - delivery_fee) × 0.97
-        delivery_fee = calc_delivery_fee(avg_sell_price)
-        avg_net_price = calc_net_rev(avg_sell_price, delivery_fee)
+        # Calculate NET revenue (commission, delivery fee, VAT schedule)
+        # Formula: (price * (1 - commission) - delivery_fee) * (1 - VAT)
+        delivery_fee = calc_delivery_fee(avg_sell_price, weight_kg=weight_kg, delivery_type="city")
+        avg_net_price = calc_net_rev(avg_sell_price, delivery_fee, as_of_date=CUTOFF_DATE)
 
         # Unit profit = NET revenue - COGS (not GROSS - COGS!)
         unit_profit = avg_net_price - unit_cogs
