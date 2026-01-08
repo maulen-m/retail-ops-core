@@ -98,6 +98,15 @@ def test_db(tmp_path):
         )
     """)
 
+    # Create inventory snapshot table for capital preflight
+    cursor.execute("""
+        CREATE TABLE fact_inventory_snapshot_size (
+            snapshot_date TEXT,
+            sku_key TEXT,
+            current_stock INTEGER
+        )
+    """)
+
     # Insert test data
     # High ROIC SKU (ORDER_FULL)
     cursor.execute("""
@@ -110,6 +119,18 @@ def test_db(tmp_path):
         INSERT INTO dim_sku (sku_key, cogs_kzt, base_cost_cny)
         VALUES ('SKU_LOW_ROIC', 5000, 50)
     """)
+
+    # Inventory snapshot (latest)
+    cursor.executemany(
+        """
+        INSERT INTO fact_inventory_snapshot_size (snapshot_date, sku_key, current_stock)
+        VALUES (?, ?, ?)
+        """,
+        [
+            ("2026-01-01", "SKU_HIGH_ROIC", 10),
+            ("2026-01-01", "SKU_LOW_ROIC", 500),
+        ],
+    )
 
     conn.commit()
     conn.close()
@@ -242,6 +263,22 @@ class TestExecutionGates:
             assert can_execute
             assert len(blockers) == 0
 
+    def test_write_gate_requires_flag(self):
+        """Verify PO_WRITE_ENABLED is required for live execution."""
+        with patch.dict(os.environ, {
+            "AUTONOMOUS_PO_ENABLED": "true",
+            "PO_DRAFT_ONLY": "false",
+            "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY",
+            "PO_WRITE_ENABLED": "false",
+        }):
+            import importlib
+            import scripts.execute_po_draft as epd
+            importlib.reload(epd)
+
+            can_execute, blockers = epd.check_execution_gates(require_write=True)
+            assert not can_execute
+            assert any("PO_WRITE_ENABLED" in b for b in blockers)
+
 
 class TestBlockerBehavior:
     """Test that ANY blocker prevents execution."""
@@ -249,7 +286,8 @@ class TestBlockerBehavior:
     @patch.dict(os.environ, {
         "AUTONOMOUS_PO_ENABLED": "true",
         "PO_DRAFT_ONLY": "false",
-        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY"
+        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY",
+        "PO_WRITE_ENABLED": "true",
     })
     def test_low_roic_blocks_execution(self, test_db, draft_with_low_roic):
         """Verify low ROIC lines block execution."""
@@ -274,7 +312,8 @@ class TestOrderFullOnly:
     @patch.dict(os.environ, {
         "AUTONOMOUS_PO_ENABLED": "true",
         "PO_DRAFT_ONLY": "false",
-        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY"
+        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY",
+        "PO_WRITE_ENABLED": "true",
     })
     def test_only_high_roic_executes(self, test_db, draft_mixed_roic):
         """Verify only ORDER_FULL lines execute in mixed draft."""
@@ -320,7 +359,8 @@ class TestIdempotency:
     @patch.dict(os.environ, {
         "AUTONOMOUS_PO_ENABLED": "true",
         "PO_DRAFT_ONLY": "false",
-        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY"
+        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY",
+        "PO_WRITE_ENABLED": "true",
     })
     def test_second_execution_returns_idempotent(self, test_db, draft_with_high_roic):
         """Verify second execution returns IDEMPOTENT status."""
@@ -815,6 +855,7 @@ class TestPart7ExecutionWithCaps:
         "AUTONOMOUS_PO_ENABLED": "true",
         "PO_DRAFT_ONLY": "false",
         "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY",
+        "PO_WRITE_ENABLED": "true",
         "MAX_EXECUTE_SPEND_PER_DRAFT_KZT": "100000",  # Very low cap
     })
     def test_execution_blocked_by_draft_cap(self, test_db, draft_with_high_roic):
@@ -838,6 +879,7 @@ class TestPart7ExecutionWithCaps:
         "AUTONOMOUS_PO_ENABLED": "true",
         "PO_DRAFT_ONLY": "false",
         "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY",
+        "PO_WRITE_ENABLED": "true",
         "MAX_EXECUTE_SPEND_PER_DRAFT_KZT": "0",
         "MAX_EXECUTE_SPEND_PER_DAY_KZT": "0",
     })

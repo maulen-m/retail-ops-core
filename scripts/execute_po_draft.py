@@ -11,7 +11,7 @@ SAFETY REQUIREMENTS (Non-negotiables):
 - Only executes ORDER_FULL lines (>=20% ROIC)
 - Re-runs guardrails before execution (idempotent)
 - Records all execution attempts in fact_run_steps
-- Gate behind THREE env vars (must ALL be enabled):
+- Gate behind FOUR env vars (must ALL be enabled):
   - AUTONOMOUS_PO_ENABLED=true
   - PO_DRAFT_ONLY=false
   - AUTO_EXECUTE_MODE=ORDER_FULL_ONLY
@@ -31,14 +31,14 @@ Part 7 additions:
 - Rollback safety: caps are fail-safe (block execution if exceeded)
 
 Usage:
-    # Check what would execute (dry-run)
-    python scripts/execute_po_draft.py --draft-id 123 --dry-run
-
-    # Execute approved ORDER_FULL lines
+    # Default dry-run (no writes)
     python scripts/execute_po_draft.py --draft-id 123
 
+    # Execute approved ORDER_FULL lines (requires PO_WRITE_ENABLED=true)
+    python scripts/execute_po_draft.py --draft-id 123 --execute
+
     # Execute with explicit approval ID
-    python scripts/execute_po_draft.py --draft-id 123 --approval-id 456
+    python scripts/execute_po_draft.py --draft-id 123 --approval-id 456 --execute
 
     # Check rollout status (caps, whitelist, daily spend)
     python scripts/execute_po_draft.py --check-rollout
@@ -46,9 +46,11 @@ Usage:
 
 import argparse
 import csv
+import json
 import os
 import sqlite3
 import sys
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from pathlib import Path
@@ -82,6 +84,9 @@ PO_DRAFT_ONLY = os.environ.get("PO_DRAFT_ONLY", "true").lower() == "true"
 
 # Auto-execute mode: DISABLED, ORDER_FULL_ONLY, ASSISTED
 AUTO_EXECUTE_MODE = os.environ.get("AUTO_EXECUTE_MODE", "DISABLED").upper()
+
+# Explicit write enable (required for any live execution)
+PO_WRITE_ENABLED = os.environ.get("PO_WRITE_ENABLED", "false").lower() == "true"
 
 # =============================================================================
 # PART 7: ROLLOUT SAFETY CAPS
@@ -310,11 +315,17 @@ class ExecutionResult:
     # Part 7: Rollout caps data
     whitelist_filtered_lines: int = 0  # Lines filtered by whitelist
     cap_blocked: bool = False  # True if blocked by spend caps
+    # Part 4: Write audit metadata
+    correlation_id: Optional[str] = None
+    rollback_steps: list[str] = field(default_factory=list)
 
 
-def check_execution_gates() -> tuple[bool, list[str]]:
+def check_execution_gates(require_write: bool = False) -> tuple[bool, list[str]]:
     """
     Check all execution safety gates.
+
+    Args:
+        require_write: If True, also require PO_WRITE_ENABLED=true.
 
     Returns:
         (can_execute, reasons_if_blocked)
@@ -329,6 +340,9 @@ def check_execution_gates() -> tuple[bool, list[str]]:
 
     if AUTO_EXECUTE_MODE not in ("ORDER_FULL_ONLY", "ASSISTED"):
         blockers.append(f"AUTO_EXECUTE_MODE is '{AUTO_EXECUTE_MODE}' (must be 'ORDER_FULL_ONLY' or 'ASSISTED')")
+
+    if require_write and not PO_WRITE_ENABLED:
+        blockers.append("PO_WRITE_ENABLED is not set to 'true'")
 
     return len(blockers) == 0, blockers
 
@@ -483,6 +497,143 @@ def revalidate_line_guardrails(
                         hard_blockers.append(blocker)
 
     return order_full_lines, skipped_lines, hard_blockers
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def get_current_inventory(db_path: Path) -> dict[str, int]:
+    """Get latest current inventory snapshot by SKU."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        table = None
+        if _table_exists(conn, "fact_inventory_snapshot_size"):
+            row = conn.execute("SELECT COUNT(1) FROM fact_inventory_snapshot_size").fetchone()
+            if row and row[0] > 0:
+                table = "fact_inventory_snapshot_size"
+        if table is None and _table_exists(conn, "fact_inventory_snapshot"):
+            row = conn.execute("SELECT COUNT(1) FROM fact_inventory_snapshot").fetchone()
+            if row and row[0] > 0:
+                table = "fact_inventory_snapshot"
+        if table is None:
+            return {}
+
+        snap_row = conn.execute(f"SELECT MAX(snapshot_date) FROM {table}").fetchone()
+        if not snap_row or not snap_row[0]:
+            return {}
+
+        rows = conn.execute(
+            f"""
+            SELECT sku_key, SUM(current_stock) AS stock
+            FROM {table}
+            WHERE snapshot_date = ?
+            GROUP BY sku_key
+            """,
+            (snap_row[0],),
+        ).fetchall()
+        return {row[0]: int(row[1] or 0) for row in rows}
+    finally:
+        conn.close()
+
+
+def get_unit_costs(db_path: Path, sku_keys: set[str]) -> tuple[dict[str, float], list[str]]:
+    """Fetch unit costs for the given SKU keys."""
+    if not sku_keys:
+        return {}, []
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        if not _table_exists(conn, "dim_sku"):
+            return {}, sorted(sku_keys)
+        placeholders = ",".join(["?"] * len(sku_keys))
+        rows = conn.execute(
+            f"""
+            SELECT sku_key, cogs_kzt
+            FROM dim_sku
+            WHERE sku_key IN ({placeholders})
+              AND cogs_kzt > 0
+            """,
+            tuple(sku_keys),
+        ).fetchall()
+        unit_costs = {row[0]: float(row[1]) for row in rows}
+        missing = sorted(sku_keys - set(unit_costs.keys()))
+        return unit_costs, missing
+    finally:
+        conn.close()
+
+
+def build_proposed_po(order_full_lines: list[dict]) -> dict[str, int]:
+    """Aggregate draft lines into SKU-level proposed PO quantities."""
+    proposed_po: dict[str, int] = {}
+    for line in order_full_lines:
+        sku_key = line.get("sku_key", "")
+        if not sku_key:
+            continue
+        qty = int(line.get("quantity", 0) or 0)
+        proposed_po[sku_key] = proposed_po.get(sku_key, 0) + qty
+    return proposed_po
+
+
+def run_capital_preflight(
+    db_path: Path,
+    order_full_lines: list[dict],
+) -> tuple[bool, list[str], dict]:
+    """
+    Capital safety preflight before any write action.
+
+    Enforces concentration + budget guardrails on the executable set.
+    """
+    blockers: list[str] = []
+
+    proposed_po = build_proposed_po(order_full_lines)
+    if not proposed_po:
+        return False, ["No executable lines for capital preflight"], {}
+
+    unit_costs, missing_costs = get_unit_costs(db_path, set(proposed_po.keys()))
+    if missing_costs:
+        blockers.append(f"Missing unit costs for SKUs: {', '.join(missing_costs[:5])}")
+
+    current_inventory = get_current_inventory(db_path)
+
+    po_value_kzt = sum(
+        qty * unit_costs.get(sku, 0.0)
+        for sku, qty in proposed_po.items()
+    )
+    portfolio_value_kzt = sum(
+        current_inventory.get(sku, 0) * unit_costs.get(sku, 0.0)
+        for sku in current_inventory.keys()
+    )
+
+    guardrail_result = check_all_guardrails(
+        roic=0.0,
+        po_value_kzt=po_value_kzt,
+        proposed_po=proposed_po,
+        current_inventory=current_inventory,
+        unit_costs=unit_costs,
+        skip_roic=True,
+        skip_concentration=False,
+        skip_budget=False,
+        require_costs=True,
+    )
+
+    if guardrail_result.blockers:
+        blockers.extend(guardrail_result.blockers)
+
+    summary = {
+        "po_value_kzt": po_value_kzt,
+        "portfolio_value_kzt": portfolio_value_kzt,
+        "concentration_valid": guardrail_result.concentration_valid,
+        "budget_valid": guardrail_result.budget_valid,
+        "status": guardrail_result.status.value,
+        "roic_gate": "ORDER_FULL_ONLY",
+    }
+
+    return len(blockers) == 0, blockers, summary
 
 
 def create_execution_record(
@@ -702,12 +853,60 @@ def persist_reconciliation_artifact(
         return False
 
 
+def record_write_audit(
+    db_path: Path,
+    run_id: Optional[int],
+    step_name: str,
+    correlation_id: str,
+    rollback_steps: list[str],
+    status: str = "SUCCESS",
+    details: Optional[str] = None,
+) -> bool:
+    """Record a write audit step with correlation ID and rollback steps."""
+    if not run_id:
+        return False
+
+    notes = {
+        "correlation_id": correlation_id,
+        "rollback_steps": rollback_steps,
+    }
+    if details:
+        notes["details"] = details
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        row = cursor.execute(
+            "SELECT COALESCE(MAX(step_order), 0) FROM fact_run_steps WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        next_order = (row[0] if row else 0) + 1
+
+        cursor.execute(
+            """
+            INSERT INTO fact_run_steps (
+                run_id, step_name, step_order, status, started_at, completed_at, notes
+            ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), ?)
+            """,
+            (run_id, step_name, next_order, status, json.dumps(notes)),
+        )
+
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Failed to record write audit step: {e}")
+        return False
+
+
 def execute_po_draft(
     db_path: Path,
     draft_id: int,
     approval_id: int = None,
-    dry_run: bool = False,
+    dry_run: bool = True,
     force: bool = False,
+    run_id: Optional[int] = None,
 ) -> ExecutionResult:
     """
     Execute an approved PO draft (ORDER_FULL lines only).
@@ -725,9 +924,10 @@ def execute_po_draft(
         ExecutionResult with status and details
     """
     result = ExecutionResult(draft_id=draft_id, status="CHECKING")
+    result.correlation_id = uuid.uuid4().hex
 
     # SAFETY GATE 1: Check env vars (NEVER skip these)
-    can_execute, gate_blockers = check_execution_gates()
+    can_execute, gate_blockers = check_execution_gates(require_write=not dry_run)
     if not can_execute:
         result.status = "DISABLED"
         result.blockers = gate_blockers
@@ -746,6 +946,7 @@ def execute_po_draft(
         result.status = "ERROR"
         result.blockers.append(f"Draft {draft_id} not found")
         return result
+    draft_status_before = draft.get("status")
 
     # Part 6: Record draft value for reconciliation
     result.draft_value_kzt = draft.get('total_po_value_kzt', 0) or 0
@@ -810,9 +1011,21 @@ def execute_po_draft(
 
         # Record the blocked attempt
         if not dry_run:
-            create_execution_record(
+            execution_id = create_execution_record(
                 db_path, draft_id, approval_id, "BLOCKED",
-                0, 0, f"Guardrails blocked: {'; '.join(result.blockers[:3])}"
+                0, 0, f"Guardrails blocked: {'; '.join(result.blockers[:3])} (corr={result.correlation_id})"
+            )
+            result.execution_id = execution_id
+            rollback_steps = [
+                f"DELETE FROM fact_po_executions WHERE execution_id = {execution_id};"
+            ]
+            result.rollback_steps.extend(rollback_steps)
+            record_write_audit(
+                db_path,
+                run_id,
+                step_name="write_execution_blocked_guardrails",
+                correlation_id=result.correlation_id,
+                rollback_steps=rollback_steps,
             )
         return result
 
@@ -853,6 +1066,43 @@ def execute_po_draft(
     result.executed_lines = len(order_full_lines)
     result.total_value_kzt = sum(l['po_value_kzt'] for l in order_full_lines)
 
+    # PART 4: Capital safety preflight (concentration + budget)
+    preflight_ok, preflight_blockers, preflight_summary = run_capital_preflight(
+        db_path, order_full_lines
+    )
+    if preflight_summary:
+        result.notes.append(
+            "Capital preflight: "
+            f"po_value={preflight_summary.get('po_value_kzt', 0):,.0f} KZT, "
+            f"portfolio_value={preflight_summary.get('portfolio_value_kzt', 0):,.0f} KZT, "
+            f"concentration_ok={preflight_summary.get('concentration_valid')}, "
+            f"budget_ok={preflight_summary.get('budget_valid')}, "
+            f"roic_gate={preflight_summary.get('roic_gate')}"
+        )
+    if not preflight_ok:
+        result.status = "BLOCKED"
+        result.blockers.extend(preflight_blockers)
+        result.notes.append("Blocked by capital safety preflight (Part 4)")
+
+        if not dry_run:
+            execution_id = create_execution_record(
+                db_path, draft_id, approval_id, "BLOCKED",
+                0, 0, f"Capital preflight blocked: {'; '.join(preflight_blockers[:3])} (corr={result.correlation_id})"
+            )
+            result.execution_id = execution_id
+            rollback_steps = [
+                f"DELETE FROM fact_po_executions WHERE execution_id = {execution_id};"
+            ]
+            result.rollback_steps.extend(rollback_steps)
+            record_write_audit(
+                db_path,
+                run_id,
+                step_name="write_execution_blocked_preflight",
+                correlation_id=result.correlation_id,
+                rollback_steps=rollback_steps,
+            )
+        return result
+
     # PART 7: Check rollout spend caps AFTER calculating totals
     cap_ok, cap_blockers = check_rollout_caps(db_path, result.total_value_kzt)
     if not cap_ok:
@@ -863,9 +1113,21 @@ def execute_po_draft(
 
         # Record the cap-blocked attempt
         if not dry_run:
-            create_execution_record(
+            execution_id = create_execution_record(
                 db_path, draft_id, approval_id, "BLOCKED",
-                0, 0, f"Rollout caps exceeded: {'; '.join(cap_blockers[:2])}"
+                0, 0, f"Rollout caps exceeded: {'; '.join(cap_blockers[:2])} (corr={result.correlation_id})"
+            )
+            result.execution_id = execution_id
+            rollback_steps = [
+                f"DELETE FROM fact_po_executions WHERE execution_id = {execution_id};"
+            ]
+            result.rollback_steps.extend(rollback_steps)
+            record_write_audit(
+                db_path,
+                run_id,
+                step_name="write_execution_blocked_caps",
+                correlation_id=result.correlation_id,
+                rollback_steps=rollback_steps,
             )
         return result
 
@@ -885,16 +1147,41 @@ def execute_po_draft(
     execution_id = create_execution_record(
         db_path, draft_id, approval_id, "SUCCESS",
         result.executed_lines, result.total_value_kzt,
-        f"Executed {result.executed_lines} ORDER_FULL lines, skipped {result.skipped_lines}"
+        f"Executed {result.executed_lines} ORDER_FULL lines, skipped {result.skipped_lines} (corr={result.correlation_id})"
     )
 
     result.execution_id = execution_id
     result.status = "SUCCESS"
     result.notes.append(f"Execution recorded (execution_id={execution_id})")
 
+    rollback_steps_exec = [
+        f"DELETE FROM fact_po_executions WHERE execution_id = {execution_id};"
+    ]
+    result.rollback_steps.extend(rollback_steps_exec)
+    record_write_audit(
+        db_path,
+        run_id,
+        step_name="write_execution_record",
+        correlation_id=result.correlation_id,
+        rollback_steps=rollback_steps_exec,
+    )
+
     # Update draft status
     update_draft_status(db_path, draft_id, "EXECUTED")
     result.notes.append(f"Draft status updated to EXECUTED")
+    rollback_status = draft_status_before or "PENDING"
+    rollback_steps_status = [
+        f"UPDATE fact_po_drafts SET status = '{rollback_status}' WHERE draft_id = {draft_id};",
+        f"UPDATE fact_po_draft SET status = '{rollback_status}' WHERE draft_id = {draft_id};",
+    ]
+    result.rollback_steps.extend(rollback_steps_status)
+    record_write_audit(
+        db_path,
+        run_id,
+        step_name="write_draft_status_update",
+        correlation_id=result.correlation_id,
+        rollback_steps=rollback_steps_status,
+    )
 
     if skipped_lines:
         result.warnings.append(f"{len(skipped_lines)} lines skipped (not ORDER_FULL)")
@@ -904,6 +1191,16 @@ def execute_po_draft(
     if recon_path:
         result.reconciliation_path = str(recon_path)
         result.notes.append(f"Reconciliation artifact: {recon_path}")
+        rollback_steps_file = [f"rm '{recon_path}'"]
+        result.rollback_steps.extend(rollback_steps_file)
+        record_write_audit(
+            db_path,
+            run_id,
+            step_name="write_reconciliation_csv",
+            correlation_id=result.correlation_id,
+            rollback_steps=rollback_steps_file,
+            details=str(recon_path),
+        )
 
     return result
 
@@ -914,10 +1211,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 SAFETY REQUIREMENTS:
-  All three env vars must be set to enable execution:
+  All four env vars must be set to enable execution:
   - AUTONOMOUS_PO_ENABLED=true
   - PO_DRAFT_ONLY=false
   - AUTO_EXECUTE_MODE=ORDER_FULL_ONLY
+  - PO_WRITE_ENABLED=true
 
   Even with all gates enabled, ONLY ORDER_FULL lines (>=20% ROIC) execute.
   Any guardrail blocker will prevent ALL execution.
@@ -938,16 +1236,26 @@ Examples:
     python scripts/execute_po_draft.py --draft-id 123 --dry-run
 
     # Execute (requires all gates enabled)
-    python scripts/execute_po_draft.py --draft-id 123
+    python scripts/execute_po_draft.py --draft-id 123 --execute
 
     # Execute with rollout caps
-    MAX_EXECUTE_SPEND_PER_DAY_KZT=1000000 python scripts/execute_po_draft.py --draft-id 123
+    MAX_EXECUTE_SPEND_PER_DAY_KZT=1000000 python scripts/execute_po_draft.py --draft-id 123 --execute
         """
     )
 
     parser.add_argument("--draft-id", type=int, help="Draft ID to execute")
     parser.add_argument("--approval-id", type=int, help="Optional approval ID")
-    parser.add_argument("--dry-run", action="store_true", help="Check without executing")
+    exec_mode = parser.add_mutually_exclusive_group()
+    exec_mode.add_argument(
+        "--execute",
+        action="store_true",
+        help="Execute writes (requires PO_WRITE_ENABLED=true)",
+    )
+    exec_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Force dry-run (default)",
+    )
     parser.add_argument("--force", action="store_true", help="Skip idempotency check")
     parser.add_argument("--check-gates", action="store_true", help="Check env var gates only")
     parser.add_argument("--check-rollout", action="store_true", help="Check rollout status (caps, whitelist)")
@@ -1002,21 +1310,32 @@ Examples:
         print(f"\nAUTONOMOUS_PO_ENABLED: {AUTONOMOUS_PO_ENABLED}")
         print(f"PO_DRAFT_ONLY: {PO_DRAFT_ONLY}")
         print(f"AUTO_EXECUTE_MODE: {AUTO_EXECUTE_MODE}")
+        print(f"PO_WRITE_ENABLED: {PO_WRITE_ENABLED}")
         print()
 
-        can_execute, blockers = check_execution_gates()
-        if can_execute:
-            print("STATUS: READY TO EXECUTE")
+        can_execute_dry, dry_blockers = check_execution_gates(require_write=False)
+        can_execute_live, live_blockers = check_execution_gates(require_write=True)
+
+        if can_execute_live:
+            print("STATUS: READY TO EXECUTE (LIVE)")
             print("  All gates are enabled. ORDER_FULL lines can execute.")
+        elif can_execute_dry:
+            print("STATUS: DRY-RUN READY (WRITE FLAG DISABLED)")
+            print("\nLive blockers:")
+            for b in live_blockers:
+                print(f"  - {b}")
+            print("\nTo enable live execution, set:")
+            print("  export PO_WRITE_ENABLED=true")
         else:
             print("STATUS: EXECUTION BLOCKED")
             print("\nBlockers:")
-            for b in blockers:
+            for b in dry_blockers:
                 print(f"  - {b}")
             print("\nTo enable execution, set:")
             print("  export AUTONOMOUS_PO_ENABLED=true")
             print("  export PO_DRAFT_ONLY=false")
             print("  export AUTO_EXECUTE_MODE=ORDER_FULL_ONLY")
+            print("  export PO_WRITE_ENABLED=true")
         return 0
 
     # Require draft-id for execution
@@ -1027,7 +1346,9 @@ Examples:
     print("=" * 60)
     print(f"PO DRAFT EXECUTOR - Draft #{args.draft_id}")
     print("=" * 60)
-    print(f"Mode: {'DRY-RUN' if args.dry_run else 'LIVE'}")
+    dry_run = not args.execute
+    mode_label = "LIVE" if not dry_run else ("DRY-RUN" if args.dry_run else "DRY-RUN (default)")
+    print(f"Mode: {mode_label}")
     print(f"Database: {db_path}")
     print()
 
@@ -1040,8 +1361,9 @@ Examples:
             db_path=db_path,
             draft_id=args.draft_id,
             approval_id=args.approval_id,
-            dry_run=args.dry_run,
+            dry_run=dry_run,
             force=args.force,
+            run_id=tracker.run_id,
         )
 
         tracker.complete_step()
@@ -1097,7 +1419,7 @@ Examples:
         )
 
         # Alert on failure (non-dry-run)
-        if result.status == "BLOCKED" and not args.dry_run:
+        if result.status == "BLOCKED" and not dry_run:
             send_error_alert(
                 error_message="; ".join(result.blockers[:3]),
                 script_name="execute_po_draft",
