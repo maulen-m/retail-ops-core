@@ -52,51 +52,38 @@ def generate_dashboard_output(
     generated_at: str | None = None,
     cutoff_date: str | None = None,
 ) -> dict[str, Any]:
-    """Generate a minimal dashboard output from fixture cases."""
+    """Generate a minimal dashboard output from fixture cases via production generator."""
     generated_at = generated_at or DEFAULT_GENERATED_AT
     cutoff_date = cutoff_date or DEFAULT_CUTOFF_DATE
 
-    sku_level = []
-    total_units = 0
-    skus_with_orders = 0
+    from scripts.generate_po_dashboard_data import generate_po_data
 
-    drafts = build_drafts(cases)
-    for case in cases:
-        sku_key = case["sku_key"]
-        draft = drafts[sku_key]
-        size_orders = {k: int(v.order_qty_adjusted) for k, v in draft.allocations.items()}
-        po_qty_total = int(draft.total_qty)
-        if po_qty_total > 0:
-            skus_with_orders += 1
-        total_units += po_qty_total
-        sku_level.append(
-            {
-                "sku_key": sku_key,
-                "d_sku": round(draft.d_sku, 6),
-                "po_qty_total": po_qty_total,
-                "size_orders": size_orders,
-                "roic_pct": round(draft.roic_monthly * 100, 6),
-            }
-        )
+    po4 = generate_po_data(
+        fixture_cases=cases,
+        fixture_cutoff_date=cutoff_date,
+        fixture_stock_date=cutoff_date,
+        fixture_generated_at=generated_at,
+    )
 
-    summary = {
-        "total_skus": len(sku_level),
-        "skus_with_orders": skus_with_orders,
-        "total_units": total_units,
+    summary = po4.get("summary", {})
+    summary_min = {
+        "total_skus": summary.get("total_skus", 0),
+        "skus_with_orders": summary.get("skus_with_orders", 0),
+        "total_units": summary.get("total_units", 0),
     }
 
     return {
         "generated_at": generated_at,
         "cutoff_date": cutoff_date,
-        "summary": summary,
+        "summary": summary_min,
         "pos": {
             "PO-4": {
                 "po_name": "PO-4",
                 "summary": {
-                    "total_skus": summary["total_skus"],
-                    "total_units": summary["total_units"],
+                    "total_skus": summary_min["total_skus"],
+                    "total_units": summary_min["total_units"],
                 },
-                "sku_level": sku_level,
+                "sku_level": po4.get("sku_level", []),
             }
         },
     }

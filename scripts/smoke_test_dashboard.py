@@ -29,12 +29,12 @@ from core.validation.dashboard_contract import (
     DEFAULT_FIXTURE,
     DEFAULT_PO_CONTRACT,
     load_cases,
-    parse_po_contract_tolerances,
     build_drafts,
     generate_dashboard_output,
     validate_dashboard_output,
     hash_output,
 )
+from core.validation.tolerances import parse_po_contract_tolerances
 
 
 def run_dashboard_generation():

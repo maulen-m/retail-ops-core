@@ -16,7 +16,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from math import ceil
 from dataclasses import dataclass, asdict
-from typing import Optional
+from typing import Optional, Any
 import sys
 
 # Add project root to path
@@ -849,6 +849,7 @@ def generate_po_data(
             continue
 
         notes_list = []
+        override_value = None
 
         if use_fixture:
             case = fixture_by_sku[sku_key]
@@ -1062,7 +1063,17 @@ def generate_po_data(
         deficit_total = max(0, int(rop_sku - total_stock - inbound_stock))
 
         # Extract demand result values or use defaults
-        if has_demand:
+        if use_fixture:
+            d_final = d_sku_blended
+            d_anchor = 0.0
+            d_data = d_sku_blended
+            d_model = d_sku_blended
+            anchor_weight = 0.0
+            availability_score = 0.0
+            confidence = "FIXTURE"
+            oos_type = "NONE"
+            partial_oos_sizes = ""
+        elif has_demand:
             d_final = demand_result.d_final
             d_anchor = demand_result.d_anchor
             d_data = demand_result.d_data

@@ -6,10 +6,10 @@ from core.validation.dashboard_contract import (
     load_cases,
     build_drafts,
     generate_dashboard_output,
-    parse_po_contract_tolerances,
     validate_dashboard_output,
     hash_output,
 )
+from core.validation.tolerances import parse_po_contract_tolerances
 
 
 def test_dashboard_contract_fixture():
