@@ -12,10 +12,15 @@ Key rules (v8):
 from datetime import date, datetime
 from typing import Optional
 
-from core.config.business_params import get_fx_rates, get_vat_rate
+from core.config.business_params import get_fx_rates, get_vat_rate, DEFAULT_FX_RATES
 
 # Constants
 KASPI_COMMISSION = 0.125  # 12.5% Kaspi commission
+
+# Backwards-compatible FX constants (mirror DEFAULT_FX_RATES)
+CNY_KZT = DEFAULT_FX_RATES["cny_kzt"]
+FREIGHT_RATE = DEFAULT_FX_RATES["usd_kzt"]
+VOLUMETRIC_FACTOR = DEFAULT_FX_RATES["dlv_rate_usd_kg"]
 
 
 # Delivery fee matrix (Master_Inventory_Rules_v8)
