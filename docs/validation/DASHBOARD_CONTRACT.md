@@ -39,10 +39,10 @@ Each `sku_level` entry must include:
 
 ## Invariants vs PO engine (same fixture input)
 For each SKU in the fixture:
-1) `d_sku` matches PO engine `PODraft.d_sku` within PO_CONTRACT `D_30_pct` tolerance.
+1) `d_sku` matches PO engine `PODraft.d_sku` within PO_CONTRACT `D_30_pct_points` tolerance.
 2) `po_qty_total` == PO engine `PODraft.total_qty` (exact).
 3) `size_orders` == PO engine `PODraft.allocations` (exact, per-size quantities).
-4) `roic_pct` matches `PODraft.roic_monthly * 100` within PO_CONTRACT `ROIC_pct` tolerance.
+4) `roic_pct` matches `PODraft.roic_monthly * 100` within PO_CONTRACT `ROIC_pct_points` tolerance.
 5) `sum(size_orders) == po_qty_total`.
 
 Summary invariants:

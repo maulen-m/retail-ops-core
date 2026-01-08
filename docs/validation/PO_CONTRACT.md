@@ -9,9 +9,10 @@ Source of truth:
 - Initial tolerances: `docs/inventory/Automation_Handoff_V16.md` (Section 6)
 
 ## Tolerances (machine-readable)
-D_30_pct: 0.25
-SS_total_pct: 0.25
-ROIC_pct: 0.50
+Units: percent points (0.25 means 0.25%).
+D_30_pct_points: 0.25
+SS_total_pct_points: 0.25
+ROIC_pct_points: 0.50
 STATUS: exact
 ORDER_QTY: exact
 
@@ -20,9 +21,9 @@ ORDER_QTY: exact
 - Expected outputs + hashes: `tests/fixtures/po_golden/po_contract_expected.json`
 
 ## Metrics compared
-- **D_30 (d_sku)**: relative tolerance D_30_pct
-- **SS_total (ss_total_sku)**: relative tolerance SS_total_pct
-- **ROIC (roic_monthly)**: relative tolerance ROIC_pct
+- **D_30 (d_sku)**: relative tolerance D_30_pct_points
+- **SS_total (ss_total_sku)**: relative tolerance SS_total_pct_points
+- **ROIC (roic_monthly)**: relative tolerance ROIC_pct_points
 - **Status flags**: exact match (`roic_action`, `should_order`)
 - **Order quantities**: exact match (`total_qty`, `allocations`)
 
