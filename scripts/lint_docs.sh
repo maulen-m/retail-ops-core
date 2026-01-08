@@ -15,6 +15,8 @@ PATTERNS=(
   'VAT\s*3%'
   'VAT\s*0\.03'
   'VAT_rate\s*=\s*0\.03'
+  '\b856\b'
+  '\b1259\b'
   '0\s*/\s*856\s*/\s*1259'
   'Master_Inventory_Rules_v5\.3'
   'Master_Inventory_Rules_v6'
