@@ -256,36 +256,8 @@ def _detect_gender(text: str) -> str:
     return "MEN"  # Default
 
 
-def parse_active_orders(
-    file_path: str | Path,
-    store_code: str,
-    validate: bool = True,
-) -> list[dict]:
-    """
-    Parse Kaspi ActiveOrders Excel file into list of dicts for DB insert.
-
-    Args:
-        file_path: Path to ActiveOrders_*.xlsx file
-        store_code: Store code (e.g., 'UNIVERSAL', 'ACMEWEAR')
-        validate: If True, raise on missing required columns
-
-    Returns:
-        List of dicts with DB-ready column names, ready for fact_sales_raw insert.
-        Each dict includes: order_id, store_code, order_date, kaspi_offer,
-        kaspi_article, sku_id, sku_key, my_size, quantity, sell_price_kzt,
-        delivery_fee_seller, delivery_fee_buyer, order_status, channel,
-        product_type, source_file
-
-    Raises:
-        ValueError: If required columns missing and validate=True
-        FileNotFoundError: If file doesn't exist
-    """
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(f"File not found: {path}")
-
-    # Read Excel file
-    df = pd.read_excel(path)
+def _normalize_columns(df: pd.DataFrame, validate: bool = True) -> pd.DataFrame:
+    """Normalize ActiveOrders columns to internal names."""
     columns = list(df.columns)
 
     # Detect which column format we have (Russian or English)
@@ -323,7 +295,52 @@ def parse_active_orders(
             column_renames[old] = new
             target_names_used.add(new)
 
-    df = df.rename(columns=column_renames)
+    return df.rename(columns=column_renames)
+
+
+def parse_active_orders_df(
+    df: pd.DataFrame,
+    store_code: str,
+    source_file: str,
+    validate: bool = True,
+) -> list[dict]:
+    """
+    Parse Kaspi ActiveOrders DataFrame into list of dicts for DB insert.
+
+    Args:
+        df: DataFrame with ActiveOrders-style columns
+        store_code: Store code (e.g., 'UNIVERSAL', 'ACMEWEAR')
+        source_file: Source label for traceability
+        validate: If True, raise on missing required columns
+
+    Returns:
+        List of dicts ready for fact_sales_raw insert.
+    """
+    df = _normalize_columns(df, validate=validate)
+
+    records = []
+    for _, row in df.iterrows():
+        record = _process_row(row, store_code, source_file)
+        if record:
+            records.append(record)
+
+    return records
+
+
+def parse_active_orders(
+    file_path: str | Path,
+    store_code: str,
+    validate: bool = True,
+) -> list[dict]:
+    """
+    Parse Kaspi ActiveOrders Excel file into list of dicts for DB insert.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    df = pd.read_excel(path)
+    return parse_active_orders_df(df, store_code=store_code, source_file=path.name, validate=validate)
 
     # Process each row
     records = []

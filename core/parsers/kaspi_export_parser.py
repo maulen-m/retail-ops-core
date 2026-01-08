@@ -277,30 +277,21 @@ def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
     return result
 
 
-def parse_active_orders(filepath: Path, config: dict = None) -> ParseResult:
+def parse_active_orders_df(df: pd.DataFrame, source_file: str, config: dict = None) -> ParseResult:
     """
-    Parse Kaspi ActiveOrders*.xlsx export file.
+    Parse Kaspi ActiveOrders DataFrame (ActiveOrders.xlsx format).
 
     Args:
-        filepath: Path to ActiveOrders Excel file
+        df: DataFrame with ActiveOrders columns
+        source_file: Source label for traceability
         config: Optional pre-loaded config (loads from yaml if None)
 
     Returns:
         ParseResult with list of order dicts with normalized column names
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        ValueError: If required columns are missing
     """
-    filepath = Path(filepath)
-    if not filepath.exists():
-        raise FileNotFoundError(f"File not found: {filepath}")
-
     if config is None:
         config = load_column_config()
 
-    # Read Excel file
-    df = pd.read_excel(filepath)
     df_columns = list(df.columns)
     total_rows = len(df)
 
@@ -337,7 +328,7 @@ def parse_active_orders(filepath: Path, config: dict = None) -> ParseResult:
 
     for idx, row in df.iterrows():
         try:
-            order = _parse_order_row(row, column_map, config, filepath.name)
+            order = _parse_order_row(row, column_map, config, source_file)
             if order:
                 orders.append(order)
             else:
@@ -353,6 +344,25 @@ def parse_active_orders(filepath: Path, config: dict = None) -> ParseResult:
         skipped_rows=skipped,
         errors=errors
     )
+
+
+def parse_active_orders(filepath: Path, config: dict = None) -> ParseResult:
+    """
+    Parse Kaspi ActiveOrders*.xlsx export file.
+
+    Args:
+        filepath: Path to ActiveOrders Excel file
+        config: Optional pre-loaded config (loads from yaml if None)
+
+    Returns:
+        ParseResult with list of order dicts with normalized column names
+    """
+    filepath = Path(filepath)
+    if not filepath.exists():
+        raise FileNotFoundError(f"File not found: {filepath}")
+
+    df = pd.read_excel(filepath)
+    return parse_active_orders_df(df, source_file=filepath.name, config=config)
 
 
 def _parse_order_row(

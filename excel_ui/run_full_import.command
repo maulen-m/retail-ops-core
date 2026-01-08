@@ -51,7 +51,7 @@ echo ""
 # Step 1: Download pending orders for TODAY (no archive for speed)
 echo "Step 1: Downloading TODAY's pending orders from Kaspi API..."
 echo "----------------------------------------"
-python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" --refetch-missing-costs --verbose --no-archive
+python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" --refetch-missing-costs --verbose --no-archive --db-direct
 
 if [ $? -ne 0 ]; then
     echo ""
@@ -85,9 +85,9 @@ PY
     fi
 fi
 
-# Step 1b: Sync DB from API + ActiveOrders (order lifecycle + line items)
+# Step 1b: Sync DB from API (order lifecycle)
 echo ""
-echo "Step 1b: Syncing DB from API + ActiveOrders..."
+echo "Step 1b: Syncing DB from API..."
 echo "----------------------------------------"
 SINCE_DATE=$(date -v-"${LOOKBACK_DAYS}"d +%Y-%m-%d)
 python scripts/sync_kaspi_orders.py --all --since "$SINCE_DATE"
@@ -102,13 +102,8 @@ if [ -f "excel_ui/ActiveOrders/ActiveOrders.xlsx" ]; then
         echo "WARNING: ActiveOrders columns mismatch (see above)."
         WARNINGS+=("ActiveOrders columns mismatch. Fix: re-export ActiveOrders from Kaspi.")
     fi
-    python scripts/ingest_kaspi_export.py excel_ui/ActiveOrders/ActiveOrders.xlsx
-    if [ $? -ne 0 ]; then
-        echo "WARNING: ActiveOrders -> DB ingest failed (see above)."
-        WARNINGS+=("ActiveOrders ingest failed. Fix: check ActiveOrders columns or re-export.")
-    fi
 else
-    echo "WARNING: ActiveOrders.xlsx not found; skipping ActiveOrders -> DB ingest."
+    echo "WARNING: ActiveOrders.xlsx not found; CRM import may be incomplete."
     WARNINGS+=("ActiveOrders.xlsx missing. Fix: re-run export_api_orders step.")
 fi
 

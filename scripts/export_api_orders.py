@@ -502,6 +502,8 @@ def export_store_orders(
     verbose: bool = False,
     include_archive: bool = True,
     refetch_missing_costs: bool = False,
+    db_direct: bool = False,
+    db_direct_dry_run: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from a single store.
@@ -578,6 +580,23 @@ def export_store_orders(
     if verbose:
         print(f"    Generated {len(all_rows)} rows")
 
+    if db_direct:
+        try:
+            stats = ingest_rows_to_db(
+                all_rows,
+                store_code=store_code,
+                dry_run=db_direct_dry_run,
+            )
+            if verbose:
+                logger.info(
+                    f"{store_code}: DB direct ingest "
+                    f"inserted={stats.get('inserted', 0)} "
+                    f"updated={stats.get('updated', 0)} "
+                    f"errors={stats.get('errors', 0)}"
+                )
+        except Exception as e:
+            logger.warning(f"{store_code}: DB direct ingest failed: {e}")
+
     return all_rows
 
 
@@ -587,6 +606,8 @@ def export_all_stores(
     verbose: bool = False,
     include_archive: bool = True,
     refetch_missing_costs: bool = False,
+    db_direct: bool = False,
+    db_direct_dry_run: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from all configured stores.
@@ -610,10 +631,49 @@ def export_all_stores(
             verbose=verbose,
             include_archive=include_archive,
             refetch_missing_costs=refetch_missing_costs,
+            db_direct=db_direct,
+            db_direct_dry_run=db_direct_dry_run,
         )
         all_rows.extend(rows)
 
     return all_rows
+
+
+def ingest_rows_to_db(
+    rows: List[Dict[str, Any]],
+    store_code: str,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Ingest ActiveOrders-format rows directly into fact_orders_kaspi.
+
+    Args:
+        rows: ActiveOrders-style rows (Russian column headers)
+        store_code: Store code (UNIVERSAL, ACMEWEAR, etc.)
+        dry_run: If True, do not write to DB
+
+    Returns:
+        Stats dict from ingest_records
+    """
+    if not rows:
+        return {"inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
+
+    # Lazy imports to avoid circular deps
+    from core.db import get_db
+    from core.parsers.kaspi_export_parser import parse_active_orders_df, load_column_config
+    from scripts.ingest_kaspi_export import ingest_orders
+
+    df = pd.DataFrame(rows)
+    source_file = f"API_DIRECT_{store_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    parsed = parse_active_orders_df(df, source_file=source_file, config=load_column_config())
+
+    if dry_run:
+        return {"inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
+
+    with get_db() as conn:
+        stats = ingest_orders(parsed.orders, conn)
+
+    return stats
 
 
 def filter_rows_by_planned_date(
@@ -754,6 +814,16 @@ def main():
         action='store_true',
         help='Refetch full order details to get accurate delivery costs'
     )
+    parser.add_argument(
+        '--db-direct',
+        action='store_true',
+        help='Ingest API rows directly into DB (fact_sales_raw)'
+    )
+    parser.add_argument(
+        '--db-direct-dry-run',
+        action='store_true',
+        help='Dry run for --db-direct (no DB writes)'
+    )
 
     args = parser.parse_args()
 
@@ -787,6 +857,7 @@ def main():
     print(f"  Lookback: {args.days} days")
     print(f"  Include archive: {include_archive}")
     print(f"  Refetch missing costs: {args.refetch_missing_costs}")
+    print(f"  DB direct ingest: {args.db_direct}")
     if apply_date_filter:
         display_date = target_date or datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
         print(f"  Planned date filter: {display_date}")
@@ -804,6 +875,8 @@ def main():
             verbose=args.verbose,
             include_archive=include_archive,
             refetch_missing_costs=args.refetch_missing_costs,
+            db_direct=args.db_direct,
+            db_direct_dry_run=args.db_direct_dry_run,
         )
     else:
         print(f"Exporting from {args.store}...")
@@ -814,6 +887,8 @@ def main():
             verbose=args.verbose,
             include_archive=include_archive,
             refetch_missing_costs=args.refetch_missing_costs,
+            db_direct=args.db_direct,
+            db_direct_dry_run=args.db_direct_dry_run,
         )
 
     print(f"\nTotal rows from API: {len(rows)}")

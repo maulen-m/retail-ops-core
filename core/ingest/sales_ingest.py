@@ -92,7 +92,7 @@ def parse_sales_excel(
         (["store_name", "storename", "store"], "store_name"),
         (["return", "return_flag"], "return_flag"),
         (["total_net_rev", "net_rev"], "net_rev"),
-        (["delivery_fee_kzt", "delivery_fee"], "delivery_fee"),
+        (["delivery_fee_kzt", "delivery_fee", "delivery_fee_seller"], "delivery_fee"),
         (["total_price", "totalprice"], "total_price"),
     ]
 
@@ -103,6 +103,7 @@ def parse_sales_excel(
         "название товара в kaspi магазине": "kaspi_offer_name",
         "количество": "quantity",
         "сумма": "sell_price_kzt",
+        "стоимость доставки для продавца": "delivery_fee",
     }
 
     # First pass: map English columns

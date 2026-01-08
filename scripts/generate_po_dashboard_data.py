@@ -747,52 +747,91 @@ def calc_po_draft_manual(
     )
 
 
-def generate_po_data() -> dict:
+def generate_po_data(
+    fixture_cases: Optional[list[dict]] = None,
+    *,
+    fixture_cutoff_date: Optional[str] = None,
+    fixture_stock_date: Optional[str] = None,
+    fixture_generated_at: Optional[str] = None,
+) -> dict:
     """Main function to generate PO dashboard data using DemandEstimator."""
 
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    use_fixture = fixture_cases is not None
+    original_context = (CUTOFF_DATE, DATA_CUTOFF, STOCK_DATE, TODAY)
+
+    if use_fixture:
+        cutoff_str = fixture_cutoff_date or "2026-01-01"
+        stock_str = fixture_stock_date or cutoff_str
+        cutoff_dt = date.fromisoformat(cutoff_str)
+        today_dt = date.fromisoformat(stock_str)
+        globals()["CUTOFF_DATE"] = cutoff_dt
+        globals()["DATA_CUTOFF"] = cutoff_dt.isoformat()
+        globals()["STOCK_DATE"] = stock_str
+        globals()["TODAY"] = today_dt
+
+    conn = None
+    if not use_fixture:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
 
     params = get_params()
 
-    # Initialize DemandEstimator with DB anchors (stock-first approach)
-    print("Initializing DemandEstimator (stock-first, DB anchors)...")
-    estimator = DemandEstimator(
-        DB_PATH,
-        anchor_file=ANCHOR_FILE,  # Fallback if DB empty
-        use_db_anchors=True  # Prefer dim_anchor table
-    )
-    print(f"  Cutoff date: {estimator.cutoff_date}")
-    print(f"  Anchor SKUs loaded: {len(estimator.anchor_data)}")
+    demand_lookup: dict[str, Any] = {}
+    skipped_skus: list[dict] = []
+    overrides: dict[str, float] = {}
 
-    # Get demand estimates for all SKUs
-    print("Estimating demand for all SKUs...")
-    demand_results, skipped_skus = estimator.estimate_all(store_codes=["UNIVERSAL"])
-    print(f"  Estimated: {len(demand_results)} SKUs")
-    print(f"  Skipped: {len(skipped_skus)} SKUs")
+    if not use_fixture:
+        # Initialize DemandEstimator with DB anchors (stock-first approach)
+        print("Initializing DemandEstimator (stock-first, DB anchors)...")
+        estimator = DemandEstimator(
+            DB_PATH,
+            anchor_file=ANCHOR_FILE,  # Fallback if DB empty
+            use_db_anchors=True  # Prefer dim_anchor table
+        )
+        print(f"  Cutoff date: {estimator.cutoff_date}")
+        print(f"  Anchor SKUs loaded: {len(estimator.anchor_data)}")
 
-    overrides = get_demand_overrides(as_of_date=CUTOFF_DATE, db_path=DB_PATH)
+        # Get demand estimates for all SKUs
+        print("Estimating demand for all SKUs...")
+        demand_results, skipped_skus = estimator.estimate_all(store_codes=["UNIVERSAL"])
+        print(f"  Estimated: {len(demand_results)} SKUs")
+        print(f"  Skipped: {len(skipped_skus)} SKUs")
 
-    # Export demand diagnostics
-    if demand_results:
-        estimator.export_diagnostics(demand_results, DIAGNOSTICS_PATH)
-        print(f"  Demand diagnostics exported to: {DIAGNOSTICS_PATH}")
-        persisted = persist_demand_estimates(conn, demand_results, overrides=overrides)
-        print(f"  Demand estimates persisted: {persisted} rows")
+        overrides = get_demand_overrides(as_of_date=CUTOFF_DATE, db_path=DB_PATH)
 
-    # Export stock timeline diagnostics (if available)
-    stock_diags = getattr(estimator, "_stock_diagnostics", None)
-    if stock_diags:
-        builder = StockTimelineBuilder(DB_PATH)
-        builder.export_diagnostics_csv(stock_diags, STOCK_DIAGNOSTICS_PATH)
-        print(f"  Stock rebuild diagnostics exported to: {STOCK_DIAGNOSTICS_PATH}")
+        # Export demand diagnostics
+        if demand_results:
+            estimator.export_diagnostics(demand_results, DIAGNOSTICS_PATH)
+            print(f"  Demand diagnostics exported to: {DIAGNOSTICS_PATH}")
+            persisted = persist_demand_estimates(conn, demand_results, overrides=overrides)
+            print(f"  Demand estimates persisted: {persisted} rows")
 
-    # Build demand lookup: sku_key -> SKUDemandResult
-    demand_lookup = {r.sku_key: r for r in demand_results}
+        # Export stock timeline diagnostics (if available)
+        stock_diags = getattr(estimator, "_stock_diagnostics", None)
+        if stock_diags:
+            builder = StockTimelineBuilder(DB_PATH)
+            builder.export_diagnostics_csv(stock_diags, STOCK_DIAGNOSTICS_PATH)
+            print(f"  Stock rebuild diagnostics exported to: {STOCK_DIAGNOSTICS_PATH}")
 
-    # Get all active SKUs
-    skus = get_all_active_skus(conn)
-    print(f"Found {len(skus)} active SKUs in dim_sku")
+        # Build demand lookup: sku_key -> SKUDemandResult
+        demand_lookup = {r.sku_key: r for r in demand_results}
+
+        # Get all active SKUs
+        skus = get_all_active_skus(conn)
+        print(f"Found {len(skus)} active SKUs in dim_sku")
+    else:
+        fixture_by_sku = {case["sku_key"]: case for case in fixture_cases}
+        skus = [
+            {
+                "sku_key": sku_key,
+                "model": "",
+                "color": "",
+                "base_cost_cny": 1.0,
+                "weight_kg": 0.5,
+                "product_type": "CL",
+            }
+            for sku_key in fixture_by_sku
+        ]
 
     sku_lines = []
     size_lines = []
@@ -811,23 +850,30 @@ def generate_po_data() -> dict:
 
         notes_list = []
 
-        # Check if we have demand estimate for this SKU
-        demand_result = demand_lookup.get(sku_key)
-        has_demand = demand_result is not None
-        if not has_demand:
-            skipped_no_demand += 1
-            notes_list.append("NO_DEMAND_ESTIMATE")
+        if use_fixture:
+            case = fixture_by_sku[sku_key]
+            demand_result = None
+            has_demand = True
+            size_current = filter_valid_sizes(case["size_current_stock"])
+            size_inbound = filter_valid_sizes(case["size_inbound_stock"])
+        else:
+            # Check if we have demand estimate for this SKU
+            demand_result = demand_lookup.get(sku_key)
+            has_demand = demand_result is not None
+            if not has_demand:
+                skipped_no_demand += 1
+                notes_list.append("NO_DEMAND_ESTIMATE")
 
-        # Get current stock from latest snapshot date
-        size_current_raw = conn.execute("""
-            SELECT my_size, current_stock, inbound_stock
-            FROM fact_inventory_snapshot_size
-            WHERE sku_key = ?
-              AND snapshot_date = ?
-        """, (sku_key, STOCK_DATE)).fetchall()
+            # Get current stock from latest snapshot date
+            size_current_raw = conn.execute("""
+                SELECT my_size, current_stock, inbound_stock
+                FROM fact_inventory_snapshot_size
+                WHERE sku_key = ?
+                  AND snapshot_date = ?
+            """, (sku_key, STOCK_DATE)).fetchall()
 
-        size_current = filter_valid_sizes({row['my_size']: row['current_stock'] for row in size_current_raw})
-        size_inbound = filter_valid_sizes({row['my_size']: row['inbound_stock'] for row in size_current_raw})
+            size_current = filter_valid_sizes({row['my_size']: row['current_stock'] for row in size_current_raw})
+            size_inbound = filter_valid_sizes({row['my_size']: row['inbound_stock'] for row in size_current_raw})
 
         # Track SKUs with no stock snapshot
         has_stock = len(size_current) > 0
@@ -836,35 +882,45 @@ def generate_po_data() -> dict:
             notes_list.append("NO_STOCK_SNAPSHOT")
 
         # Get SKU cost/profit for ROIC
-        base_cost_cny = sku['base_cost_cny'] or 50
-        weight_kg = sku['weight_kg'] or 0.5
-        product_type = sku['product_type'] or 'CL'
+        if use_fixture:
+            base_cost_cny = sku['base_cost_cny'] or 50
+            weight_kg = sku['weight_kg'] or 0.5
+            product_type = sku['product_type'] or 'CL'
+            unit_cogs = case["unit_cogs"]
+            unit_profit = case["unit_profit"]
+        else:
+            base_cost_cny = sku['base_cost_cny'] or 50
+            weight_kg = sku['weight_kg'] or 0.5
+            product_type = sku['product_type'] or 'CL'
 
-        # COGS calculation (using economics.py - single source of truth)
-        # Formula: COGS = base_cost_cny × CNY_KZT + weight_kg × 2.66 × 530
-        unit_cogs = calc_cogs(base_cost_cny, weight_kg)
+            # COGS calculation (using economics.py - single source of truth)
+            # Formula: COGS = base_cost_cny × CNY_KZT + weight_kg × 2.66 × 530
+            unit_cogs = calc_cogs(base_cost_cny, weight_kg)
 
-        # Get average sell price
-        price_row = conn.execute("""
-            SELECT AVG(sell_price_kzt) as avg_price
-            FROM fact_sales
-            WHERE sku_key = ?
-            AND order_date >= date(?, '-90 days')
-            AND order_date <= ?
-        """, (sku_key, DATA_CUTOFF, DATA_CUTOFF)).fetchone()
+            # Get average sell price
+            price_row = conn.execute("""
+                SELECT AVG(sell_price_kzt) as avg_price
+                FROM fact_sales
+                WHERE sku_key = ?
+                AND order_date >= date(?, '-90 days')
+                AND order_date <= ?
+            """, (sku_key, DATA_CUTOFF, DATA_CUTOFF)).fetchone()
 
-        avg_sell_price = price_row['avg_price'] if price_row and price_row['avg_price'] else 15000
+            avg_sell_price = price_row['avg_price'] if price_row and price_row['avg_price'] else 15000
 
-        # Calculate NET revenue (commission, delivery fee, VAT schedule)
-        # Formula: (price * (1 - commission) - delivery_fee) * (1 - VAT)
-        delivery_fee = calc_delivery_fee(avg_sell_price, weight_kg=weight_kg, delivery_type="city")
-        avg_net_price = calc_net_rev(avg_sell_price, delivery_fee, as_of_date=CUTOFF_DATE)
+            # Calculate NET revenue (commission, delivery fee, VAT schedule)
+            # Formula: (price * (1 - commission) - delivery_fee) * (1 - VAT)
+            delivery_fee = calc_delivery_fee(avg_sell_price, weight_kg=weight_kg, delivery_type="city")
+            avg_net_price = calc_net_rev(avg_sell_price, delivery_fee, as_of_date=CUTOFF_DATE)
 
-        # Unit profit = NET revenue - COGS (not GROSS - COGS!)
-        unit_profit = avg_net_price - unit_cogs
+            # Unit profit = NET revenue - COGS (not GROSS - COGS!)
+            unit_profit = avg_net_price - unit_cogs
 
         # Use demand from DemandEstimator (blended d_final) or defaults
-        if has_demand:
+        if use_fixture:
+            d_sku_blended = sum(case["size_sales_90d"].values()) / 90.0
+            sigma_sku = case["sigma_sku"]
+        elif has_demand:
             d_sku_blended = demand_result.d_final
             sigma_sku = demand_result.sigma_final
         else:
@@ -874,7 +930,10 @@ def generate_po_data() -> dict:
         # Build size_demands from DemandEstimator (blended per-size demand)
         size_demands = {}
         size_sales_90d = {}  # Fallback for sizes not in demand_result
-        if has_demand:
+        if use_fixture:
+            size_sales_90d = case["size_sales_90d"].copy()
+            size_demands = {size: sales / 90.0 for size, sales in size_sales_90d.items()}
+        elif has_demand:
             for size, size_result in demand_result.size_results.items():
                 # Use blended d_size directly (includes anchor weighting)
                 size_demands[size] = size_result.d_size
@@ -892,16 +951,17 @@ def generate_po_data() -> dict:
                 size_demands = {k: v * scale for k, v in size_demands.items()}
             size_sales_90d = {k: int(round(v * 90)) for k, v in size_demands.items()}
 
-        override_value = overrides.get(sku_key)
-        if override_value is not None:
-            override_value = float(override_value)
-            d_sku_blended = override_value
-            notes_list.append(f"D_OVERRIDE={override_value}")
-            total_size_demand = sum(size_demands.values()) if size_demands else 0
-            if total_size_demand > 0:
-                scale = override_value / total_size_demand
-                size_demands = {k: v * scale for k, v in size_demands.items()}
-                size_sales_90d = {k: int(round(v * 90)) for k, v in size_demands.items()}
+        if not use_fixture:
+            override_value = overrides.get(sku_key)
+            if override_value is not None:
+                override_value = float(override_value)
+                d_sku_blended = override_value
+                notes_list.append(f"D_OVERRIDE={override_value}")
+                total_size_demand = sum(size_demands.values()) if size_demands else 0
+                if total_size_demand > 0:
+                    scale = override_value / total_size_demand
+                    size_demands = {k: v * scale for k, v in size_demands.items()}
+                    size_sales_90d = {k: int(round(v * 90)) for k, v in size_demands.items()}
 
         # Generate PO draft with blended demands and pre-arrival projection
         # For SKUs without stock/demand data, create a placeholder draft
@@ -1192,11 +1252,12 @@ def generate_po_data() -> dict:
     sku_lines.sort(key=lambda x: x['po_message_date'])
     size_lines.sort(key=lambda x: (x['po_message_date'], x['sku_key'], x['size']))
 
-    export_result = export_supplier_po(conn, size_lines, DATA_CUTOFF)
-    if export_result:
-        export_path, summary_path = export_result
-        print(f"Supplier export written: {export_path}")
-        print(f"Supplier summary written: {summary_path}")
+    if not use_fixture:
+        export_result = export_supplier_po(conn, size_lines, DATA_CUTOFF)
+        if export_result:
+            export_path, summary_path = export_result
+            print(f"Supplier export written: {export_path}")
+            print(f"Supplier summary written: {summary_path}")
 
     # Count SKUs with and without orders
     skus_with_orders = sum(1 for s in sku_lines if s['po_qty_total'] > 0)
@@ -1211,8 +1272,8 @@ def generate_po_data() -> dict:
     print(f"  Flagged (no order needed): {skipped_no_order}")
     print(f"  Low ROIC (included but flagged): {low_roic_count}")
 
-    # Use estimator's cutoff date for output
-    output_cutoff = estimator.cutoff_date.isoformat()
+    # Use configured cutoff date for output
+    output_cutoff = DATA_CUTOFF
 
     # Build size_horizontal view (1 row per SKU with sizes as columns)
     size_horizontal = []
@@ -1255,10 +1316,13 @@ def generate_po_data() -> dict:
         if "LINE52" in (s.get("sku_key") or "") or "LINE51" in (s.get("sku_key") or "")
     )
 
-    conn.close()
+    if conn is not None:
+        conn.close()
 
-    return {
-        "generated_at": TODAY.isoformat(),
+    generated_at = fixture_generated_at or TODAY.isoformat()
+
+    output = {
+        "generated_at": generated_at,
         "po_name": "PO-4",  # Base PO identifier
         "po_message_date": TODAY.isoformat(),  # Message date for this PO
         "cutoff_date": output_cutoff,
@@ -1286,6 +1350,9 @@ def generate_po_data() -> dict:
         "size_horizontal": size_horizontal,  # NEW: 1 row per SKU with sizes as columns
         "skipped_skus": skipped_skus
     }
+    if use_fixture:
+        globals()["CUTOFF_DATE"], globals()["DATA_CUTOFF"], globals()["STOCK_DATE"], globals()["TODAY"] = original_context
+    return output
 
 
 def generate_multi_po_data(num_pos: int = 7) -> dict:
