@@ -13,6 +13,12 @@ import pytest
 
 DB_PATH = Path(__file__).parent.parent / "db" / "app.db"
 
+if not DB_PATH.exists():
+    pytest.skip(
+        "db/app.db missing; data-grain integration tests require a seeded DB",
+        allow_module_level=True,
+    )
+
 
 @pytest.fixture
 def conn():
