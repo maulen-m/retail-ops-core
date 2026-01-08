@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from core.analytics.api import handle_request
 from core.analytics.queries import get_health_summary
 from core.analytics.views import ensure_sales_views
@@ -168,10 +170,10 @@ def test_sales_enriched_view_math(tmp_path):
     conn.close()
 
     delivery_fee_unit, net_rev_unit, cogs_unit, profit_unit = row
-    assert delivery_fee_unit == 856
+    assert delivery_fee_unit == pytest.approx(1099.14)
 
     # VAT schedule should apply 4% from 2026-01-01
-    expected_net_rev_unit = (12000 * (1 - 0.125) - 856) * 0.96
+    expected_net_rev_unit = (12000 * (1 - 0.125) - 1099.14) * 0.96
     expected_cogs_unit = 47 * 78 + 0.95 * 2.66 * 530
     expected_profit_unit = expected_net_rev_unit - expected_cogs_unit
 

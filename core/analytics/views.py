@@ -153,9 +153,18 @@ FROM (
             ),
             sf.delivery_fee,
             CASE
-                WHEN sf.sell_price_kzt <= 4999 THEN 0
-                WHEN sf.sell_price_kzt <= 14999 THEN 856
-                ELSE 1259
+                WHEN sf.sell_price_kzt <= 1000 THEN 49.14
+                WHEN sf.sell_price_kzt <= 3000 THEN 149.14
+                WHEN sf.sell_price_kzt <= 5000 THEN 199.14
+                WHEN sf.sell_price_kzt <= 10000 THEN 699.14
+                ELSE CASE
+                    WHEN COALESCE(sku.weight_kg, 0) <= 5 THEN 1099.14
+                    WHEN COALESCE(sku.weight_kg, 0) <= 15 THEN 1349.14
+                    WHEN COALESCE(sku.weight_kg, 0) <= 30 THEN 2299.14
+                    WHEN COALESCE(sku.weight_kg, 0) <= 60 THEN 2899.14
+                    WHEN COALESCE(sku.weight_kg, 0) <= 100 THEN 4149.14
+                    ELSE 6449.14
+                END
             END
         ) AS delivery_fee_unit
     FROM sales_fact_v2 sf
