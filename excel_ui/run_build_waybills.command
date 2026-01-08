@@ -88,38 +88,6 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "Sync: API -> DB (orders + sales raw)..."
-echo "----------------------------------------"
-python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" --refetch-missing-costs --verbose --no-archive --db-direct
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "WARNING: API export or DB direct ingest failed (see above)."
-    echo "Continuing to next step..."
-fi
-
-echo ""
-echo "Sync: ActiveOrders -> DB (line items)..."
-echo "----------------------------------------"
-if [ -f "excel_ui/ActiveOrders/ActiveOrders.xlsx" ]; then
-    echo "Preflight: checking ActiveOrders columns..."
-    python scripts/validate_activeorders_columns.py excel_ui/ActiveOrders/ActiveOrders.xlsx
-    if [ $? -ne 0 ]; then
-        echo ""
-        echo "WARNING: ActiveOrders columns mismatch (see above)."
-        echo "Continuing to ingest anyway..."
-    fi
-    echo ""
-    python scripts/ingest_kaspi_export.py excel_ui/ActiveOrders/ActiveOrders.xlsx
-    if [ $? -ne 0 ]; then
-        echo ""
-        echo "WARNING: ActiveOrders -> DB ingest failed (see above)."
-        echo "Continuing to next step..."
-    fi
-else
-    echo "WARNING: ActiveOrders.xlsx not found; skipping ActiveOrders -> DB ingest."
-fi
-
-echo ""
 
 # Sync CRM manual sizes into DB (safe to re-run)
 echo "Sync: CRM manual sizes -> DB..."
