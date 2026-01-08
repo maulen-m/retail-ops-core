@@ -344,7 +344,32 @@ def check_execution_gates(require_write: bool = False) -> tuple[bool, list[str]]
     if require_write and not PO_WRITE_ENABLED:
         blockers.append("PO_WRITE_ENABLED is not set to 'true'")
 
+    if require_write:
+        ready, readiness_blockers = check_production_readiness(DB_PATH)
+        if not ready:
+            blockers.extend(readiness_blockers)
+
     return len(blockers) == 0, blockers
+
+
+def check_production_readiness(db_path: Path) -> tuple[bool, list[str]]:
+    """Ensure dashboard readiness checks are green before live writes."""
+    from core.validation.production_readiness import (
+        DEFAULT_DASHBOARD_PATH,
+        evaluate_production_readiness,
+    )
+
+    dashboard_path = DEFAULT_DASHBOARD_PATH
+    try:
+        output = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False, [f"Dashboard output missing: {dashboard_path}"]
+    except json.JSONDecodeError as exc:
+        return False, [f"Dashboard output invalid JSON: {exc}"]
+
+    report = evaluate_production_readiness(output, db_path=db_path)
+    blockers = [f"Production readiness: {b}" for b in report.blockers]
+    return report.ok, blockers
 
 
 def get_draft_with_lines(db_path: Path, draft_id: int) -> Optional[dict]:

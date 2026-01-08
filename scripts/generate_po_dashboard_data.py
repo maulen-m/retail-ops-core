@@ -1263,16 +1263,39 @@ def generate_po_data(
     sku_lines.sort(key=lambda x: x['po_message_date'])
     size_lines.sort(key=lambda x: (x['po_message_date'], x['sku_key'], x['size']))
 
-    if not use_fixture:
-        export_result = export_supplier_po(conn, size_lines, DATA_CUTOFF)
-        if export_result:
-            export_path, summary_path = export_result
-            print(f"Supplier export written: {export_path}")
-            print(f"Supplier summary written: {summary_path}")
-
     # Count SKUs with and without orders
     skus_with_orders = sum(1 for s in sku_lines if s['po_qty_total'] > 0)
     skus_without_orders = len(sku_lines) - skus_with_orders
+    total_units = sum(s['po_qty_total'] for s in sku_lines)
+
+    readiness_report = None
+    if not use_fixture:
+        from core.validation.production_readiness import evaluate_production_readiness
+
+        readiness_payload = {
+            "summary": {
+                "total_skus": len(sku_lines),
+                "skus_with_orders": skus_with_orders,
+                "total_units": total_units,
+                "no_demand_estimate": skipped_no_demand,
+                "no_stock_snapshot": skipped_no_stock,
+            },
+            "sku_level": sku_lines,
+            "stock_date": STOCK_DATE,
+            "cutoff_date": DATA_CUTOFF,
+            "sales_data_cutoff": DATA_CUTOFF,
+        }
+        readiness_report = evaluate_production_readiness(readiness_payload, db_path=DB_PATH)
+        if readiness_report.blockers:
+            print("\nPRODUCTION READINESS BLOCKERS (export blocked):")
+            for blocker in readiness_report.blockers:
+                print(f"  - {blocker}")
+        else:
+            export_result = export_supplier_po(conn, size_lines, DATA_CUTOFF)
+            if export_result:
+                export_path, summary_path = export_result
+                print(f"Supplier export written: {export_path}")
+                print(f"Supplier summary written: {summary_path}")
 
     print(f"\nResults:")
     print(f"  Total SKUs in output: {len(sku_lines)}")
@@ -1348,7 +1371,7 @@ def generate_po_data(
             "total_skus": len(sku_lines),
             "skus_with_orders": skus_with_orders,
             "skus_without_orders": skus_without_orders,
-            "total_units": sum(s['po_qty_total'] for s in sku_lines),
+            "total_units": total_units,
             "total_weight_kg": round(sum(s['po_weight_kg'] for s in sku_lines), 1),
             "low_roic_skus": low_roic_count,
             "priority_skus": priority_skus,
