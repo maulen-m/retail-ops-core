@@ -12,30 +12,12 @@ from pathlib import Path
 import pytest
 
 from core.calc.size_allocation import generate_po_draft
+from core.validation.tolerances import parse_po_contract_tolerances
 
 PROJECT_ROOT = Path(__file__).parent.parent
 CONTRACT_PATH = PROJECT_ROOT / "docs" / "validation" / "PO_CONTRACT.md"
 CASES_PATH = PROJECT_ROOT / "tests" / "fixtures" / "po_golden" / "po_contract_cases.json"
 EXPECTED_PATH = PROJECT_ROOT / "tests" / "fixtures" / "po_golden" / "po_contract_expected.json"
-
-
-def load_tolerances() -> dict:
-    """Parse tolerances from PO_CONTRACT.md (single source of truth)."""
-    text = CONTRACT_PATH.read_text(encoding="utf-8")
-    tolerances = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("D_30_pct:"):
-            tolerances["d_30_pct"] = float(line.split(":", 1)[1].strip()) / 100.0
-        elif line.startswith("SS_total_pct:"):
-            tolerances["ss_total_pct"] = float(line.split(":", 1)[1].strip()) / 100.0
-        elif line.startswith("ROIC_pct:"):
-            tolerances["roic_pct"] = float(line.split(":", 1)[1].strip()) / 100.0
-
-    missing = [k for k in ("d_30_pct", "ss_total_pct", "roic_pct") if k not in tolerances]
-    if missing:
-        raise AssertionError(f"Missing tolerances in PO_CONTRACT.md: {missing}")
-    return tolerances
 
 
 def canonicalize(draft) -> dict:
@@ -68,7 +50,7 @@ def assert_within_pct(actual: float, expected: float, pct: float, label: str) ->
 
 @pytest.fixture(scope="module")
 def tolerances():
-    return load_tolerances()
+    return parse_po_contract_tolerances(CONTRACT_PATH)
 
 
 @pytest.fixture(scope="module")
@@ -104,9 +86,19 @@ def test_po_contract_against_golden(case, tolerances, expected_map):
 
     actual = canonicalize(draft)
 
-    assert_within_pct(actual["d_sku"], expected_entry["d_sku"], tolerances["d_30_pct"], "d_sku")
-    assert_within_pct(actual["ss_total_sku"], expected_entry["ss_total_sku"], tolerances["ss_total_pct"], "ss_total_sku")
-    assert_within_pct(actual["roic_monthly"], expected_entry["roic_monthly"], tolerances["roic_pct"], "roic_monthly")
+    assert_within_pct(actual["d_sku"], expected_entry["d_sku"], tolerances["d_30_ratio"], "d_sku")
+    assert_within_pct(
+        actual["ss_total_sku"],
+        expected_entry["ss_total_sku"],
+        tolerances["ss_total_ratio"],
+        "ss_total_sku",
+    )
+    assert_within_pct(
+        actual["roic_monthly"],
+        expected_entry["roic_monthly"],
+        tolerances["roic_ratio"],
+        "roic_monthly",
+    )
 
     assert actual["roic_action"] == expected_entry["roic_action"], "roic_action mismatch"
     assert actual["should_order"] == expected_entry["should_order"], "should_order mismatch"

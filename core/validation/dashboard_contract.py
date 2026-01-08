@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from core.calc.size_allocation import generate_po_draft, PODraft
+from core.validation.tolerances import parse_po_contract_tolerances
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "po_golden" / "po_contract_cases.json"
@@ -23,26 +24,6 @@ def load_cases(path: Path | None = None) -> list[dict[str, Any]]:
     fixture_path = path or DEFAULT_FIXTURE
     payload = json.loads(fixture_path.read_text(encoding="utf-8"))
     return payload["cases"]
-
-
-def parse_po_contract_tolerances(path: Path | None = None) -> dict[str, float]:
-    """Parse tolerances from PO_CONTRACT.md (percent to decimal)."""
-    contract_path = path or DEFAULT_PO_CONTRACT
-    text = contract_path.read_text(encoding="utf-8")
-    tolerances: dict[str, float] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("D_30_pct:"):
-            tolerances["d_30_pct"] = float(line.split(":", 1)[1].strip()) / 100.0
-        elif line.startswith("SS_total_pct:"):
-            tolerances["ss_total_pct"] = float(line.split(":", 1)[1].strip()) / 100.0
-        elif line.startswith("ROIC_pct:"):
-            tolerances["roic_pct"] = float(line.split(":", 1)[1].strip()) / 100.0
-
-    missing = [k for k in ("d_30_pct", "roic_pct") if k not in tolerances]
-    if missing:
-        raise ValueError(f"Missing tolerances in PO_CONTRACT.md: {missing}")
-    return tolerances
 
 
 def build_drafts(cases: list[dict[str, Any]]) -> dict[str, PODraft]:
@@ -182,11 +163,17 @@ def validate_dashboard_output(
         if int(sku.get("po_qty_total", 0)) > 0:
             skus_with_orders += 1
 
-        _assert_within_pct(sku.get("d_sku", 0.0), draft.d_sku, tolerances["d_30_pct"], f"d_sku[{sku_key}]", errors)
+        _assert_within_pct(
+            sku.get("d_sku", 0.0),
+            draft.d_sku,
+            tolerances["d_30_ratio"],
+            f"d_sku[{sku_key}]",
+            errors,
+        )
         _assert_within_pct(
             sku.get("roic_pct", 0.0),
             draft.roic_monthly * 100,
-            tolerances["roic_pct"],
+            tolerances["roic_ratio"],
             f"roic_pct[{sku_key}]",
             errors,
         )
