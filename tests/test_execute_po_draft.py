@@ -447,7 +447,8 @@ class TestDryRun:
     @patch.dict(os.environ, {
         "AUTONOMOUS_PO_ENABLED": "true",
         "PO_DRAFT_ONLY": "false",
-        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY"
+        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY",
+        "PO_WRITE_ENABLED": "true",
     })
     def test_dry_run_no_side_effects(self, test_db, draft_with_high_roic):
         """Verify dry-run doesn't modify database."""
@@ -608,7 +609,8 @@ class TestReconciliationArtifact:
     @patch.dict(os.environ, {
         "AUTONOMOUS_PO_ENABLED": "true",
         "PO_DRAFT_ONLY": "false",
-        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY"
+        "AUTO_EXECUTE_MODE": "ORDER_FULL_ONLY",
+        "PO_WRITE_ENABLED": "true",
     })
     def test_execution_creates_reconciliation_artifact(self, test_db, draft_with_high_roic, tmp_path):
         """Verify successful execution creates reconciliation artifact."""

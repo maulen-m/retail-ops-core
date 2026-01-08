@@ -594,11 +594,11 @@ def run_capital_preflight(
     if not proposed_po:
         return False, ["No executable lines for capital preflight"], {}
 
-    unit_costs, missing_costs = get_unit_costs(db_path, set(proposed_po.keys()))
+    current_inventory = get_current_inventory(db_path)
+    all_skus = set(proposed_po.keys()) | set(current_inventory.keys())
+    unit_costs, missing_costs = get_unit_costs(db_path, all_skus)
     if missing_costs:
         blockers.append(f"Missing unit costs for SKUs: {', '.join(missing_costs[:5])}")
-
-    current_inventory = get_current_inventory(db_path)
 
     po_value_kzt = sum(
         qty * unit_costs.get(sku, 0.0)
