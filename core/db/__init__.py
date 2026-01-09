@@ -67,6 +67,10 @@ def init_db(
     with get_db(db) as conn:
         with open(schema, 'r') as f:
             conn.executescript(f.read())
+        # Apply optional module schemas (idempotent)
+        transfer_ledger_schema = Path(__file__).parent.parent / "transfer_ledger" / "schema.sql"
+        if transfer_ledger_schema.exists():
+            conn.executescript(transfer_ledger_schema.read_text())
 
     return True
 
