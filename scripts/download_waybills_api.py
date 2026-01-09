@@ -563,8 +563,15 @@ def download_waybills_for_store(
                 print(f"      {order_code}: Already exists, skipping")
             continue
 
-        # Get waybill URL
+        # Get waybill URL (list payload may omit it; fallback to order detail)
         waybill_url = client.get_waybill_url(order)
+        if not waybill_url:
+            detail = client.get_order(order_code)
+            if detail.success:
+                waybill_url = client.get_waybill_url(detail.data)
+                if waybill_url and verbose:
+                    print(f"      {order_code}: Waybill URL found via detail fetch")
+
         if not waybill_url:
             missing_waybill += 1
             if verbose:

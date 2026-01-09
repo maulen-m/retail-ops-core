@@ -568,6 +568,19 @@ def ship_orders(
                 continue
 
             # Helper: fallback assemble by order code
+            def _already_assembled() -> bool:
+                try:
+                    detail = client.get_order(order_id)
+                    if detail.success:
+                        attrs = detail.data.get('attributes', {})
+                        if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
+                            if verbose:
+                                print("      -> Already assembled, skipping")
+                            return True
+                except Exception:
+                    pass
+                return False
+
             def _fallback_assemble(reason: str) -> bool:
                 if verbose:
                     print(f"      -> WARN: {reason}. Retrying with order code...")
@@ -577,10 +590,17 @@ def ship_orders(
                         if verbose:
                             print("      -> Shipped OK (fallback)")
                         return True
+                    err_text = str(result_fallback.error or "")
+                    if "not found" in err_text.lower() or "resource not found" in err_text.lower():
+                        if _already_assembled():
+                            return True
                     errors.append(f"{order_id}: API error - {result_fallback.error} (fallback)")
                     if verbose:
                         print(f"      -> ERROR: {result_fallback.error} (fallback)")
                 except Exception as exc:
+                    if "not found" in str(exc).lower() or "resource not found" in str(exc).lower():
+                        if _already_assembled():
+                            return True
                     errors.append(f"{order_id}: {str(exc)} (fallback)")
                     if verbose:
                         print(f"      -> EXCEPTION: {exc} (fallback)")
