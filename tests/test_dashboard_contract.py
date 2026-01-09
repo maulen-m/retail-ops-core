@@ -1,5 +1,9 @@
 """Contract tests for dashboard output (Phase 3)."""
 
+from pathlib import Path
+
+import pytest
+
 from core.validation.dashboard_contract import (
     DEFAULT_FIXTURE,
     DEFAULT_PO_CONTRACT,
@@ -12,7 +16,16 @@ from core.validation.dashboard_contract import (
 from core.validation.tolerances import parse_po_contract_tolerances
 
 
+DB_PATH = Path(__file__).resolve().parents[1] / "db" / "app.db"
+
+
+def _skip_if_db_missing() -> None:
+    if not DB_PATH.exists():
+        pytest.skip("db/app.db missing; skipping dashboard contract tests")
+
+
 def test_dashboard_contract_fixture():
+    _skip_if_db_missing()
     cases = load_cases(DEFAULT_FIXTURE)
     drafts = build_drafts(cases)
     output = generate_dashboard_output(cases)
@@ -23,6 +36,7 @@ def test_dashboard_contract_fixture():
 
 
 def test_dashboard_contract_deterministic_hash():
+    _skip_if_db_missing()
     cases = load_cases(DEFAULT_FIXTURE)
     output_a = generate_dashboard_output(cases)
     output_b = generate_dashboard_output(cases)
