@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -35,6 +36,10 @@ from core.validation.dashboard_contract import (
     hash_output,
 )
 from core.validation.tolerances import parse_po_contract_tolerances
+from core.validation.production_readiness import (
+    DEFAULT_DASHBOARD_PATH,
+    evaluate_production_readiness,
+)
 
 
 def run_dashboard_generation():
@@ -237,6 +242,40 @@ def validate_consistency():
     return errors, warnings
 
 
+def validate_production_readiness_output():
+    """Validate coverage requirements using dashboard output + DB."""
+    print("\n" + "=" * 60)
+    print("STEP 4: Validating production readiness...")
+    print("=" * 60)
+
+    errors = []
+    warnings = []
+
+    if not DEFAULT_DASHBOARD_PATH.exists():
+        errors.append(f"Dashboard output missing: {DEFAULT_DASHBOARD_PATH}")
+        return errors, warnings
+
+    try:
+        payload = json.loads(DEFAULT_DASHBOARD_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        errors.append(f"Invalid dashboard JSON: {exc}")
+        return errors, warnings
+
+    report = evaluate_production_readiness(payload, db_path=DB_PATH)
+
+    for key, value in report.details.items():
+        print(f"  {key}: {value}")
+
+    if report.blockers:
+        for blocker in report.blockers:
+            errors.append(blocker)
+    if report.warnings:
+        for warning in report.warnings:
+            warnings.append(warning)
+
+    return errors, warnings
+
+
 def run_fixture_smoke_test(fixture_path: Path, contract_path: Path) -> bool:
     """Run deterministic dashboard contract validation on fixture input."""
     print("\n" + "=" * 60)
@@ -307,6 +346,11 @@ def main():
 
     # Step 3: Validate consistency
     errors, warnings = validate_consistency()
+    all_errors.extend(errors)
+    all_warnings.extend(warnings)
+
+    # Step 4: Validate production readiness (coverage requirements)
+    errors, warnings = validate_production_readiness_output()
     all_errors.extend(errors)
     all_warnings.extend(warnings)
 

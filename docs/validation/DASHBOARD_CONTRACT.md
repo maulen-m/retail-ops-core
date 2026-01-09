@@ -50,6 +50,14 @@ Summary invariants:
 - `summary.total_units == sum(po_qty_total for sku_level)`
 - `summary.skus_with_orders == count(po_qty_total > 0)`
 
+## Coverage requirements (“100% functional”)
+The dashboard is only considered functional when coverage is complete:
+- **Active SKU coverage:** dashboard must include 100% of active SKUs (no silent drops).
+- **Stock coverage:** each active SKU must have a stock snapshot OR explicit `NO_STOCK_SNAPSHOT` note.
+- **Demand coverage:** SKUs with recent sales must have demand estimates (no `NO_DEMAND_ESTIMATE` allowed).
+- **Size mapping:** any SKU that appears in sales/orders/snapshot must have size mapping; missing MY_SIZE is a hard error.
+- **Day complete:** if day_complete is red, exports/writes are blocked (see `DAY_COMPLETE_CONTRACT.md`).
+
 ## Update protocol
 1) Update `docs/inventory/Master_Inventory_Rules_v8.md` first if formulas change.
 2) Update `docs/validation/PO_CONTRACT.md` tolerances as needed.

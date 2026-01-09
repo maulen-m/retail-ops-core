@@ -1762,11 +1762,15 @@ if __name__ == "__main__":
     if "priority_skus" not in base_summary:
         base_summary["priority_skus"] = 0
 
+    day_complete_env = os.environ.get("AB_DAY_COMPLETE", "1").strip().lower()
+    day_complete_ok = day_complete_env not in {"0", "false", "no"}
+
     # Save combined data
     combined_data = {
         "generated_at": TODAY.isoformat(),
         "base_stock_date": STOCK_DATE,
         "cutoff_date": DATA_CUTOFF,
+        "day_complete_ok": day_complete_ok,
         "summary": base_summary,
         "pos": all_pos
     }
