@@ -55,7 +55,7 @@ The dashboard is only considered functional when coverage is complete:
 - **Active SKU coverage:** dashboard must include 100% of active SKUs (no silent drops).
 - **Stock coverage:** each active SKU must have a stock snapshot OR explicit `NO_STOCK_SNAPSHOT` note.
 - **Demand coverage:** SKUs with recent sales must have demand estimates (no `NO_DEMAND_ESTIMATE` allowed).
-- **Size mapping:** any SKU that appears in sales/orders/snapshot must have size mapping; missing MY_SIZE is a hard error.
+- **Size mapping:** any SKU that appears in sales/orders OR in the latest snapshot date (<= cutoff) must have size mapping; missing MY_SIZE is a hard error.
 - **Day complete:** if day_complete is red, exports/writes are blocked (see `DAY_COMPLETE_CONTRACT.md`).
 
 ## Update protocol

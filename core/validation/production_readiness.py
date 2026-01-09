@@ -128,6 +128,47 @@ def _count_missing_size_rows(
     return int(row[0]) if row else 0
 
 
+def _latest_date_on_or_before(
+    conn: sqlite3.Connection,
+    table: str,
+    date_field: str,
+    cutoff_dt: date,
+) -> str | None:
+    if not _table_exists(conn, table):
+        return None
+    row = conn.execute(
+        f"""
+        SELECT MAX({date_field}) as latest
+        FROM {table}
+        WHERE {date_field} <= ?
+        """,
+        (cutoff_dt.isoformat(),),
+    ).fetchone()
+    if not row:
+        return None
+    return row[0] if row[0] else None
+
+
+def _count_missing_size_rows_on_date(
+    conn: sqlite3.Connection,
+    table: str,
+    date_field: str,
+    target_date: str | None,
+) -> int:
+    if not target_date or not _table_exists(conn, table):
+        return 0
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) as cnt
+        FROM {table}
+        WHERE (my_size IS NULL OR my_size = '')
+          AND {date_field} = ?
+        """,
+        (target_date,),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def evaluate_production_readiness(
     output: dict[str, Any],
     db_path: Path | None = None,
@@ -177,6 +218,7 @@ def evaluate_production_readiness(
     active_skus: set[str] | None = None
     missing_size_sales = 0
     missing_size_snapshot = 0
+    missing_size_snapshot_date: str | None = None
     if db_path and cutoff_dt:
         conn = sqlite3.connect(str(db_path))
         try:
@@ -210,8 +252,11 @@ def evaluate_production_readiness(
                     )
 
             missing_size_sales = _count_missing_size_rows(conn, "fact_sales", "order_date", cutoff_dt)
-            missing_size_snapshot = _count_missing_size_rows(
+            missing_size_snapshot_date = _latest_date_on_or_before(
                 conn, "fact_inventory_snapshot_size", "snapshot_date", cutoff_dt
+            )
+            missing_size_snapshot = _count_missing_size_rows_on_date(
+                conn, "fact_inventory_snapshot_size", "snapshot_date", missing_size_snapshot_date
             )
             if missing_size_sales or missing_size_snapshot:
                 blockers.append(
@@ -240,6 +285,7 @@ def evaluate_production_readiness(
         "recent_sales_missing_demand": len(recent_sales_missing_demand),
         "missing_size_sales_rows": missing_size_sales,
         "missing_size_snapshot_rows": missing_size_snapshot,
+        "missing_size_snapshot_date": missing_size_snapshot_date,
         "day_complete_ok": day_complete_ok,
         "stock_date": stock_date,
         "cutoff_date": cutoff_date,
