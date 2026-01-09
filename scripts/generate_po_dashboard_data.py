@@ -70,8 +70,8 @@ def get_stock_snapshot_date() -> str:
 CUTOFF_DATE = get_cutoff_date_almaty()
 DATA_CUTOFF = CUTOFF_DATE.isoformat()
 
-# Stock snapshot date (latest from database)
-STOCK_DATE = get_stock_snapshot_date()
+# Stock snapshot date (lazy; avoid DB access at import time)
+STOCK_DATE = (date.today() - timedelta(days=1)).isoformat()
 TODAY = date.fromisoformat(STOCK_DATE)  # Use stock date as "today" for calculations
 
 
@@ -768,6 +768,10 @@ def generate_po_data(
         globals()["DATA_CUTOFF"] = cutoff_dt.isoformat()
         globals()["STOCK_DATE"] = stock_str
         globals()["TODAY"] = today_dt
+    else:
+        stock_str = get_stock_snapshot_date()
+        globals()["STOCK_DATE"] = stock_str
+        globals()["TODAY"] = date.fromisoformat(stock_str)
 
     conn = None
     if not use_fixture:
