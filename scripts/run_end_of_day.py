@@ -27,6 +27,7 @@ Usage:
     python scripts/run_end_of_day.py --dry-run
     python scripts/run_end_of_day.py --skip-sync  # Skip CRM sync step
     python scripts/run_end_of_day.py --skip-workbook-sync  # Skip workbook sync
+    python scripts/run_end_of_day.py --po4-inbound /path/to/PO-4_inbound.xlsx
     python scripts/run_end_of_day.py --verbose
 """
 
@@ -185,6 +186,13 @@ def resolve_truth_workbook(default_path: Path) -> Path:
     return default_path
 
 
+def resolve_po4_inbound_path() -> Optional[Path]:
+    env_path = os.environ.get("PO4_INBOUND_PATH") or os.environ.get("PO4_INBOUND")
+    if env_path:
+        return Path(env_path).expanduser()
+    return None
+
+
 def _format_step_error(returncode: int, stdout: str, stderr: str) -> str:
     parts = [f"Exit code: {returncode}"]
     if stderr:
@@ -301,6 +309,12 @@ def main():
             f"{DEFAULT_WORKBOOK})"
         ),
     )
+    parser.add_argument(
+        "--po4-inbound",
+        type=Path,
+        default=None,
+        help="Path to PO-4 inbound workbook (default: $PO4_INBOUND_PATH)",
+    )
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Show script output")
     parser.add_argument("--continue-on-error", action="store_true",
@@ -334,6 +348,17 @@ def main():
 
     if args.workbook is None:
         args.workbook = resolve_truth_workbook(DEFAULT_WORKBOOK)
+
+    if args.po4_inbound is None:
+        args.po4_inbound = resolve_po4_inbound_path()
+    if args.po4_inbound is not None:
+        args.po4_inbound = args.po4_inbound.expanduser()
+        if not args.po4_inbound.exists():
+            print(f"ERROR: PO-4 inbound workbook not found: {args.po4_inbound}")
+            print("Fix: set PO4_INBOUND_PATH=/path/to/PO-4_inbound.xlsx")
+            if lock:
+                lock.__exit__(None, None, None)
+            sys.exit(3)
 
     # Check if workbook is locked (unless skipping workbook sync)
     if not args.skip_workbook_sync:
@@ -390,6 +415,19 @@ def _run_pipeline(args, start_time: datetime) -> int:
             script="sync_crm_to_db.py",
             required=not args.skip_sync
         ),
+    ]
+
+    if args.po4_inbound:
+        steps.append(
+            PipelineStep(
+                name="2a. Import PO-4 inbound",
+                script="import_po4_inbound.py",
+                args=[str(args.po4_inbound)],
+                required=True,
+            )
+        )
+
+    steps.extend([
         PipelineStep(
             name="2b. Validate Day Complete",
             script="validate_day_complete.py",
@@ -422,7 +460,7 @@ def _run_pipeline(args, start_time: datetime) -> int:
             script="generate_shadow_scorecard.py",
             required=True  # Part 5: Always generate scorecard
         ),
-    ]
+    ])
 
     # Filter out skipped steps
     skip_scripts = []
