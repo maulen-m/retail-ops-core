@@ -1,0 +1,36 @@
+from datetime import datetime, timezone
+
+from core.transfer_ledger.binance_import import normalize_binance_order, import_binance_orders
+from core.transfer_ledger import repository
+
+
+def test_binance_import_creates_ledger_entries(tmp_path):
+    db_path = tmp_path / "app.db"
+    db_path.touch()
+
+    raw = {
+        "orderNumber": "1234567890",
+        "advNo": "ADV123",
+        "tradeType": "BUY",
+        "asset": "USDT",
+        "fiat": "KZT",
+        "amount": "100.0",
+        "totalPrice": "50000",
+        "unitPrice": "500",
+        "orderStatus": "COMPLETED",
+        "createTime": int(datetime(2026, 1, 9, tzinfo=timezone.utc).timestamp() * 1000),
+        "counterPartNickName": "seller_one",
+        "advertisementRole": "TAKER",
+    }
+
+    order = normalize_binance_order(raw)
+    assert order["order_number"] == "1234567890"
+    assert order["fiat_amount"] == 50000.0
+    assert order["crypto_amount"] == 100.0
+
+    result = import_binance_orders([raw], db_path=db_path, write_ledger=True)
+    assert result["inserted"] == 1
+    assert result["ledger_entries"] == 2
+
+    entries = repository.list_entries(db_path=db_path)
+    assert len(entries) == 2
