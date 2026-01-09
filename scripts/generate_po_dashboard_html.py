@@ -1009,8 +1009,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
     function App() {
       // Get PO names from data
-      const poNames = Object.keys(DATA.pos).sort();
-      const [activePO, setActivePO] = useState(poNames[0] || 'PO-4');
+      const allPOs = DATA.pos || {};
+      const poNamesAll = Object.keys(allPOs).sort();
+      const poNames = (DATA.active_pos || poNamesAll).slice();
+      const archivedPos = (DATA.archived_pos || []).slice();
+      const [activePO, setActivePO] = useState(poNames[0] || poNamesAll[0] || 'PO-4');
       const [activeTab, setActiveTab] = useState('sku');
       const [search, setSearch] = useState('');
       const [filterMode, setFilterMode] = useState('all');
@@ -1076,7 +1079,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         setMultipliers(prev => ({ ...prev, [skuKey]: numVal }));
       };
 
-      const rawPoData = DATA.pos[activePO];
+      const rawPoData = allPOs[activePO];
       if (!rawPoData) return <div>No PO data found</div>;
 
       // Constants for recalculation
@@ -1100,11 +1103,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         // Backend already calculated active_inbound correctly; we only need to track CHANGES
         // When user un-approves a SKU in prior PO, we subtract that from backend's active_inbound
         const inboundAdjustment = {};
-        poNames.forEach(pName => {
+        poNamesAll.forEach(pName => {
           // Only look at POs before the active one
           if (pName >= activePO) return;
 
-          const prevPO = DATA.pos[pName];
+          const prevPO = allPOs[pName];
           if (!prevPO || !prevPO.sku_level) return;
 
           const prevApprovals = approvedSkus[pName] || {};
@@ -1346,7 +1349,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           po_send_date,
           est_arr_date
         };
-      }, [rawPoData, multipliers, fxRates, activePO, approvedSkus, poNames]);
+      }, [rawPoData, multipliers, fxRates, activePO, approvedSkus, poNamesAll]);
 
       const skuWithOrders = (poData.sku_level || []).filter(s => s.po_qty_total > 0).length;
       const skuZero = (poData.sku_level || []).filter(s => s.po_qty_total === 0).length;
@@ -1399,6 +1402,20 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                   </button>
                 ))}
               </div>
+              {archivedPos.length > 0 && (
+                <div className="po-selector" style={{marginTop:'6px'}}>
+                  <span style={{fontSize:'12px', color:'#6b7280', marginRight:'6px'}}>Archived:</span>
+                  {archivedPos.map(po => (
+                    <button
+                      key={po}
+                      className={`po-btn ${activePO === po ? 'active' : ''}`}
+                      onClick={() => setActivePO(po)}
+                    >
+                      {po}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 

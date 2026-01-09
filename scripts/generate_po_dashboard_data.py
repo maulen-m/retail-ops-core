@@ -35,6 +35,7 @@ from core.config.business_params import get_demand_overrides
 from core.calc.demand_estimator import DemandEstimator, ConfidenceLevel, OOSType
 from core.calc.stock_timeline import StockTimelineBuilder
 from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
+from core.po.blackout import adjust_po_dates, CNY_2026
 
 # Constants
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
@@ -50,6 +51,11 @@ ROIC_THRESHOLD = 0.15  # 15% - for display only, not filtering
 VALID_SIZES = {'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', 'XS',
                '26', '28', '30', '32', '34', '36', '38', '40', '42',
                'ONE_SIZE', 'ONESIZE', 'OS'}
+
+# Size-mix proxy mapping for SKUs that need demand distribution by size
+SIZE_MIX_PROXY = {
+    "CL_NEW-CLO_MEN_TAICI_BLACK": "CL_NEW-CLO_MEN_TAICI_WHITE",
+}
 
 
 def get_stock_snapshot_date() -> str:
@@ -969,6 +975,30 @@ def generate_po_data(
                     size_demands = {k: v * scale for k, v in size_demands.items()}
                     size_sales_90d = {k: int(round(v * 90)) for k, v in size_demands.items()}
 
+        if not use_fixture and d_sku_blended > 0 and not size_demands:
+            proxy_key = SIZE_MIX_PROXY.get(sku_key)
+            if proxy_key:
+                proxy_result = demand_lookup.get(proxy_key)
+                if proxy_result:
+                    proxy_sizes = {size: res.d_size for size, res in proxy_result.size_results.items()}
+                    proxy_sizes = filter_valid_sizes(proxy_sizes)
+                    total_proxy = sum(proxy_sizes.values())
+                    if total_proxy > 0:
+                        scale = d_sku_blended / total_proxy
+                        size_demands = {k: v * scale for k, v in proxy_sizes.items()}
+                        notes_list.append(f"SIZE_MIX_PROXY={proxy_key}")
+
+            if not size_demands:
+                candidate_sizes = set(size_current.keys()) | set(size_inbound.keys()) | set(size_sales_90d.keys())
+                candidate_sizes = filter_valid_sizes({k: 1 for k in candidate_sizes})
+                if candidate_sizes:
+                    per_size = d_sku_blended / len(candidate_sizes)
+                    size_demands = {k: per_size for k in candidate_sizes.keys()}
+                    notes_list.append("SIZE_MIX_FALLBACK=UNIFORM")
+
+            if size_demands:
+                size_sales_90d = {k: int(round(v * 90)) for k, v in size_demands.items()}
+
         # Generate PO draft with blended demands and pre-arrival projection
         # For SKUs without stock/demand data, create a placeholder draft
         draft = None
@@ -1428,6 +1458,236 @@ def generate_po_data(
     return output
 
 
+def load_po4_approved_orders(po_id: str = "PO-4") -> Optional[dict]:
+    """Load approved PO-4 orders from po_line/po_header."""
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT sku_key, sku_id, my_size, order_qty
+              FROM po_line
+             WHERE po_id = ?
+               AND order_qty > 0
+            """,
+            (po_id,),
+        ).fetchall()
+        if not rows:
+            return None
+
+        header = conn.execute(
+            "SELECT message_date, ship_date_seller FROM po_header WHERE po_id = ?",
+            (po_id,),
+        ).fetchone()
+
+        orders_by_sku: dict[str, dict[str, int]] = {}
+        for row in rows:
+            sku_key = str(row["sku_key"] or "").strip()
+            if not sku_key:
+                continue
+            sku_id = str(row["sku_id"] or "").strip()
+            my_size = str(row["my_size"] or "").strip()
+            if not my_size and sku_id:
+                my_size = sku_id.rsplit("_", 1)[-1]
+            qty = int(row["order_qty"] or 0)
+            if qty <= 0:
+                continue
+            if sku_key not in orders_by_sku:
+                orders_by_sku[sku_key] = {}
+            orders_by_sku[sku_key][my_size] = orders_by_sku[sku_key].get(my_size, 0) + qty
+
+        return {
+            "po_id": po_id,
+            "message_date": header["message_date"] if header else None,
+            "ship_date": header["ship_date_seller"] if header else None,
+            "orders_by_sku": orders_by_sku,
+        }
+    finally:
+        conn.close()
+
+
+def apply_po4_overrides(base_data: dict, po4_data: dict, params) -> dict:
+    """Override PO-4 quantities with approved supplier quantities."""
+    orders_by_sku = po4_data.get("orders_by_sku", {})
+    if not orders_by_sku:
+        return base_data
+
+    message_date = po4_data.get("message_date") or base_data.get("po_message_date")
+    ship_date = po4_data.get("ship_date")
+    prep_days_override = None
+    if message_date and ship_date:
+        try:
+            prep_days_override = (date.fromisoformat(ship_date) - date.fromisoformat(message_date)).days
+        except ValueError:
+            prep_days_override = None
+
+    if message_date:
+        base_data["po_message_date"] = message_date
+
+    total_units = 0
+    skus_with_orders = 0
+    for sku_line in base_data.get("sku_level", []):
+        sku_key = sku_line.get("sku_key")
+        size_map = orders_by_sku.get(sku_key, {})
+        total_qty = sum(size_map.values())
+        sku_line["po_qty_total"] = total_qty
+        sku_line["size_orders"] = size_map
+        if message_date:
+            sku_line["po_message_date"] = message_date
+        if ship_date:
+            sku_line["po_send_date"] = ship_date
+            try:
+                est_arr = date.fromisoformat(ship_date) + timedelta(days=params.L)
+                sku_line["est_arr_date"] = est_arr.isoformat()
+                sku_line["days_until_arrival"] = params.L + (prep_days_override or sku_line.get("prep_days", 0))
+            except ValueError:
+                pass
+        if prep_days_override is not None:
+            sku_line["prep_days"] = prep_days_override
+        total_units += total_qty
+        if total_qty > 0:
+            skus_with_orders += 1
+
+    size_rows = []
+    existing = {(s.get("sku_key"), s.get("size")): s for s in base_data.get("size_level", [])}
+    for (sku_key, size), size_line in existing.items():
+        size_map = orders_by_sku.get(sku_key, {})
+        prev_qty = size_line.get("order_qty") or 0
+        unit_weight = 0.0
+        if prev_qty:
+            unit_weight = (size_line.get("weight_kg") or 0.0) / prev_qty
+        size_line["order_qty"] = int(size_map.get(size, 0))
+        size_line["weight_kg"] = round(unit_weight * size_line["order_qty"], 2)
+        if message_date:
+            size_line["po_message_date"] = message_date
+        if ship_date:
+            size_line["po_send_date"] = ship_date
+            try:
+                est_arr = date.fromisoformat(ship_date) + timedelta(days=params.L)
+                size_line["est_arr_date"] = est_arr.isoformat()
+                size_line["days_until_arrival"] = params.L + (prep_days_override or size_line.get("prep_days", 0))
+            except ValueError:
+                pass
+        if prep_days_override is not None:
+            size_line["prep_days"] = prep_days_override
+        size_rows.append(size_line)
+
+    for sku_key, size_map in orders_by_sku.items():
+        for size, qty in size_map.items():
+            if (sku_key, size) in existing:
+                continue
+            size_rows.append({
+                "sku_key": sku_key,
+                "sku_id": f"{sku_key}_{size}",
+                "size": size,
+                "stock": 0,
+                "inbound": 0,
+                "active_inbound": 0,
+                "inbound_total": 0,
+                "days_until_arrival": params.L,
+                "consumption_until_arrival": 0.0,
+                "pre_arrival": 0,
+                "d_size": 0.0,
+                "t_post_days": params.R,
+                "target": 0.0,
+                "rop_size": 0.0,
+                "deficit_size": 0,
+                "order_qty": int(qty),
+                "weight_kg": 0.0,
+                "prep_days": prep_days_override or 0,
+                "po_send_date": ship_date or "",
+                "po_message_date": message_date or "",
+                "est_arr_date": "",
+                "pre_arr_doc": 0.0,
+                "post_arr_doc": 0.0,
+                "roic_pct": 0.0,
+                "notes": ""
+            })
+
+    base_data["size_level"] = size_rows
+
+    weight_by_sku: dict[str, float] = {}
+    for size_line in size_rows:
+        sku_key = size_line.get("sku_key")
+        weight_by_sku[sku_key] = weight_by_sku.get(sku_key, 0.0) + (size_line.get("weight_kg") or 0.0)
+
+    for sku_line in base_data.get("sku_level", []):
+        sku_key = sku_line.get("sku_key")
+        if sku_key in weight_by_sku:
+            sku_line["po_weight_kg"] = round(weight_by_sku[sku_key], 2)
+
+    size_horizontal = []
+    for sku_line in base_data.get("sku_level", []):
+        sku_key = sku_line.get("sku_key")
+        sku_sizes = [s for s in size_rows if s.get("sku_key") == sku_key]
+        if sku_sizes:
+            row = {
+                "sku_key": sku_key,
+                "sku_name": sku_line.get("sku_name"),
+                "stock": sku_line.get("stock"),
+                "inbound": sku_line.get("inbound"),
+                "days_until_arrival": sku_line.get("days_until_arrival"),
+                "consumption_until_arrival": sku_line.get("consumption_until_arrival"),
+                "pre_arrival": sku_line.get("pre_arrival"),
+                "d_sku": sku_line.get("d_sku"),
+                "t_post_days": sku_line.get("t_post_days"),
+                "target": sku_line.get("target"),
+                "rop_total": sku_line.get("rop_total"),
+                "po_qty_total": sku_line.get("po_qty_total"),
+                "po_weight_kg": sku_line.get("po_weight_kg"),
+                "prep_days": sku_line.get("prep_days"),
+                "po_send_date": sku_line.get("po_send_date"),
+                "po_message_date": sku_line.get("po_message_date"),
+                "est_arr_date": sku_line.get("est_arr_date"),
+                "pre_arr_doc": sku_line.get("pre_arr_doc"),
+                "post_arr_doc": sku_line.get("post_arr_doc"),
+                "roic_pct": sku_line.get("roic_pct"),
+                "size_orders": {}
+            }
+            for size_row in sku_sizes:
+                row["size_orders"][size_row["size"]] = size_row["order_qty"]
+            size_horizontal.append(row)
+    base_data["size_horizontal"] = size_horizontal
+
+    base_data["summary"]["total_units"] = total_units
+    base_data["summary"]["skus_with_orders"] = skus_with_orders
+    base_data["summary"]["skus_without_orders"] = len(base_data.get("sku_level", [])) - skus_with_orders
+    base_data["summary"]["total_weight_kg"] = round(
+        sum(s.get("po_weight_kg", 0.0) for s in base_data.get("sku_level", [])), 1
+    )
+
+    total_cl_weight = sum(
+        s.get("po_weight_kg", 0.0) for s in base_data.get("sku_level", [])
+        if s.get("po_qty_total", 0) > 0 and not s.get("sku_key", "").startswith("ELS_")
+    )
+    base_data["prep_days_clothes"] = calc_prep_days(total_cl_weight, "CL") if total_cl_weight > 0 else 1
+
+    return base_data
+
+
+def _build_po_schedule(today: date, params, prep_days_clothes: int) -> tuple[dict[str, date], int]:
+    """Build PO message dates with CNY blackout constraints."""
+    blackout_start = CNY_2026.start_date
+    blackout_end = CNY_2026.end_date
+
+    po5_default = today + timedelta(days=params.R)
+    po6_default = today + timedelta(days=2 * params.R)
+
+    po5_latest = blackout_start - timedelta(days=prep_days_clothes)
+    po5_message = min(po5_default, po5_latest)
+    if po5_message < today:
+        po5_message = today
+
+    po6_message = max(po6_default, blackout_end)
+
+    schedule = {"PO-5": po5_message, "PO-6": po6_message}
+    for po_num in range(7, 11):
+        schedule[f"PO-{po_num}"] = po6_message + timedelta(days=(po_num - 6) * params.R)
+
+    gap_days = (po6_message - po5_message).days
+    return schedule, gap_days
+
+
 def generate_multi_po_data(num_pos: int = 7) -> dict:
     """
     Generate data for multiple POs (PO-4 through PO-10).
@@ -1443,6 +1703,9 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
 
     # Generate base PO-4 data
     base_data = generate_po_data()
+    po4_actual = load_po4_approved_orders()
+    if po4_actual:
+        base_data = apply_po4_overrides(base_data, po4_actual, params)
 
     # Store all POs
     all_pos = {"PO-4": base_data}
@@ -1450,21 +1713,46 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
     # Build cumulative orders per SKU for projection
     # Format: sku_key -> list of (arrival_date, order_qty_by_size)
     cumulative_orders = {}
-    for sku_line in base_data['sku_level']:
-        sku_key = sku_line['sku_key']
-        arr_date = date.fromisoformat(sku_line['est_arr_date'])
-        # Get size orders from size_level
-        size_orders = {}
-        for size_line in base_data['size_level']:
-            if size_line['sku_key'] == sku_key:
-                size_orders[size_line['size']] = size_line['order_qty']
-        cumulative_orders[sku_key] = [(arr_date, sku_line['po_qty_total'], size_orders)]
+    if po4_actual and po4_actual.get("orders_by_sku"):
+        ship_date = po4_actual.get("ship_date")
+        po4_arr_date = None
+        if ship_date:
+            try:
+                po4_arr_date = date.fromisoformat(ship_date) + timedelta(days=params.L)
+            except ValueError:
+                po4_arr_date = None
+        for sku_key, size_orders in po4_actual["orders_by_sku"].items():
+            total_qty = sum(size_orders.values())
+            if total_qty <= 0:
+                continue
+            arr_date = po4_arr_date
+            if not arr_date:
+                base_match = next((s for s in base_data["sku_level"] if s["sku_key"] == sku_key), None)
+                arr_date = date.fromisoformat(base_match["est_arr_date"]) if base_match else TODAY + timedelta(days=params.L)
+            cumulative_orders[sku_key] = [(arr_date, total_qty, size_orders)]
+    else:
+        for sku_line in base_data['sku_level']:
+            sku_key = sku_line['sku_key']
+            arr_date = date.fromisoformat(sku_line['est_arr_date'])
+            # Get size orders from size_level
+            size_orders = {}
+            for size_line in base_data['size_level']:
+                if size_line['sku_key'] == sku_key:
+                    size_orders[size_line['size']] = size_line['order_qty']
+            cumulative_orders[sku_key] = [(arr_date, sku_line['po_qty_total'], size_orders)]
+
+    po_schedule, po5_gap_days = _build_po_schedule(
+        TODAY, params, base_data.get("prep_days_clothes", 1)
+    )
+
+    prep_days_clothes = base_data.get("prep_days_clothes", 1)
 
     # Generate PO-5 through PO-10
     for po_num in range(5, 4 + num_pos):
         po_name = f"PO-{po_num}"
-        days_offset = (po_num - 4) * R  # PO-5 is R days after PO-4, etc.
-        po_message_date = TODAY + timedelta(days=days_offset)
+        po_message_date = po_schedule.get(po_name, TODAY + timedelta(days=(po_num - 4) * R))
+        days_offset = (po_message_date - TODAY).days
+        effective_R = po5_gap_days if po_num == 5 else R
 
         # For each PO, we need to project stock at arrival time
         # Arrival time = message_date + prep_days + L
@@ -1479,7 +1767,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             "sales_data_cutoff": base_data['sales_data_cutoff'],
             "stock_date": base_data['stock_date'],
             "lead_time_L": L,
-            "reorder_cycle_R": R,
+            "reorder_cycle_R": effective_R,
             "prep_model": base_data.get('prep_model', 'B'),
             "prep_days_clothes": base_data.get('prep_days_clothes', 1),
             "roic_threshold_pct": base_data['roic_threshold_pct'],
@@ -1510,7 +1798,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             days_to_message = days_offset
 
             # Estimate prep days (use base as approximation)
-            prep_days = base_sku['prep_days']
+            prep_days = 1 if sku_key.startswith("ELS_") else prep_days_clothes
 
             # This PO's send and arrival dates
             po_send_date = po_message_date + timedelta(days=prep_days)
@@ -1565,7 +1853,12 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             pre_arrival = max(0, stock_at_msg + active_inbound - consumption_msg_to_arr)
 
             # Target and ROP (same formula)
-            target = base_sku['target']
+            if po_num == 5:
+                base_target = base_sku['target']
+                ss_total = base_target - (d_sku * R) if d_sku > 0 else 0
+                target = (d_sku * effective_R) + ss_total
+            else:
+                target = base_sku['target']
             rop = base_sku['rop_total']
 
             # Order qty
@@ -1582,6 +1875,15 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
 
             # Build SKU line
             size_orders_this_po = {}
+            t_post_days = base_sku.get('t_post_days', R)
+            if po_num == 5 and d_sku > 0:
+                ss_total = base_sku['target'] - (d_sku * R)
+                t_post_days = effective_R + (ss_total / d_sku)
+
+            adj = adjust_po_dates(po_message_date, po_send_date, po_arr_date)
+            po_send_date = adj["ship_date"]
+            po_arr_date = adj["est_arrival"]
+
             sku_line = {
                 'sku_key': sku_key,
                 'sku_name': base_sku['sku_name'],
@@ -1593,8 +1895,8 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 'consumption_until_arrival': round(consumption_msg_to_arr, 2),  # msg→arr only
                 'pre_arrival': int(pre_arrival),
                 'd_sku': d_sku,
-                't_post_days': base_sku['t_post_days'],
-                'target': target,
+                't_post_days': round(t_post_days, 1),
+                'target': round(target, 1),
                 'rop_total': rop,
                 'deficit_total': max(0, int(rop - pre_arrival)),
                 'po_qty_total': order_qty,
@@ -1662,6 +1964,14 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                     size_orders_this_po[size] = size_order_qty
 
                     if size_order_qty > 0:
+                        if po_num == 5 and d_size > 0:
+                            ss_total_size = base_size['target'] - (d_size * R)
+                            t_post_size = effective_R + (ss_total_size / d_size)
+                            target_size = d_size * t_post_size
+                        else:
+                            t_post_size = base_size['t_post_days']
+                            target_size = base_size['target']
+
                         # DOC for size
                         if d_size > 0:
                             size_pre_doc = size_pre_arrival / d_size
@@ -1682,8 +1992,8 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                             'consumption_until_arrival': round(size_consumption_msg_to_arr, 2),  # msg→arr only
                             'pre_arrival': int(size_pre_arrival),
                             'd_size': d_size,
-                            't_post_days': base_size['t_post_days'],
-                            'target': base_size['target'],
+                            't_post_days': round(t_post_size, 1),
+                            'target': round(target_size, 1),
                             'rop_size': base_size['rop_size'],
                             'deficit_size': max(0, int(base_size['rop_size'] - size_pre_arrival)),
                             'order_qty': size_order_qty,
@@ -1765,6 +2075,10 @@ if __name__ == "__main__":
     day_complete_env = os.environ.get("AB_DAY_COMPLETE", "1").strip().lower()
     day_complete_ok = day_complete_env not in {"0", "false", "no"}
 
+    archived_pos = ["PO-4"] if "PO-4" in all_pos else []
+    active_pos = [po for po in all_pos.keys() if po not in archived_pos]
+    active_pos.sort(key=lambda p: int(p.split("-")[1]) if "-" in p else 0)
+
     # Save combined data
     combined_data = {
         "generated_at": TODAY.isoformat(),
@@ -1772,7 +2086,9 @@ if __name__ == "__main__":
         "cutoff_date": DATA_CUTOFF,
         "day_complete_ok": day_complete_ok,
         "summary": base_summary,
-        "pos": all_pos
+        "pos": all_pos,
+        "active_pos": active_pos,
+        "archived_pos": archived_pos,
     }
 
     with open(OUTPUT_PATH, 'w') as f:
