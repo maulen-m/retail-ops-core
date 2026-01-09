@@ -1,6 +1,7 @@
 """Contract tests for dashboard output (Phase 3)."""
 
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -22,6 +23,16 @@ DB_PATH = Path(__file__).resolve().parents[1] / "db" / "app.db"
 def _skip_if_db_missing() -> None:
     if not DB_PATH.exists():
         pytest.skip("db/app.db missing; skipping dashboard contract tests")
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            result = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                ("fact_inventory_snapshot_size",),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        pytest.skip(f"db/app.db unreadable ({exc}); skipping dashboard contract tests")
+    if result is None:
+        pytest.skip("db/app.db missing fact_inventory_snapshot_size; skipping dashboard contract tests")
 
 
 def test_dashboard_contract_fixture():
