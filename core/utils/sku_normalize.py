@@ -107,6 +107,22 @@ def normalize_size(size, product_type: str = None) -> str:
     return None
 
 
+def infer_size_from_sku_id(sku_id: str | None) -> str | None:
+    """
+    Infer size token from a sku_id suffix.
+
+    Example: CL_LINE52_BLACK_M -> M
+    """
+    if not sku_id:
+        return None
+    raw = str(sku_id).strip()
+    if "_" not in raw:
+        return None
+    _, suffix = raw.rsplit("_", 1)
+    suffix = suffix.strip()
+    return suffix or None
+
+
 if __name__ == "__main__":
     # Quick test
     test_cases = [

@@ -22,6 +22,7 @@ import pandas as pd
 
 from core.db import get_db, DEFAULT_DB_PATH
 from core.db.ledger import add_ledger_event, log_audit
+from core.utils.sku_normalize import infer_size_from_sku_id
 
 
 # Store code normalization map
@@ -161,6 +162,10 @@ def parse_sales_excel(
 
         my_size = row.get("my_size")
         my_size = str(my_size).strip() if not pd.isna(my_size) else None
+        if my_size == "":
+            my_size = None
+        if my_size is None:
+            my_size = infer_size_from_sku_id(sku_id)
 
         # Get date
         order_date = row.get("order_date")

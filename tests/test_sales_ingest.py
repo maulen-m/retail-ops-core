@@ -308,6 +308,27 @@ class TestParseSalesExcel:
         assert record["delivery_fee_seller"] == 200
         assert record["delivery_fee_buyer"] == 300
 
+    def test_parse_infers_my_size_from_sku_id(self, tmp_path):
+        """Missing MY_SIZE should be inferred from SKU_ID suffix when available."""
+        data = {
+            "OrderID": ["ORD-MISSING"],
+            "Date": [date.today()],
+            "KASPI_OFFER_NAME": ["Принт 5в1 черный XL"],
+            "SKU_ID": ["CL_LINE52_BLACK_XL"],
+            "SKU_key": ["CL_LINE52_BLACK"],
+            "MY_SIZE": [""],
+            "Quantity": [1],
+            "Sell_price_kzt": [15000],
+            "STORE_NAME": ["Universal"],
+            "Return": [0],
+        }
+        df = pd.DataFrame(data)
+        xlsx_path = tmp_path / "missing_size.xlsx"
+        df.to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+        records = parse_sales_excel(str(xlsx_path))
+        assert records[0]["my_size"] == "XL"
+
 
 class TestIngestSales:
     """Tests for ingest_sales function."""

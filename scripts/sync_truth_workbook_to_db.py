@@ -36,6 +36,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.paths import data_path
+from core.utils.sku_normalize import infer_size_from_sku_id
 
 # Paths
 DEFAULT_TRUTH_WORKBOOK = data_path("excel", "Inventory_Core_V18.1_V2.xlsx")
@@ -195,6 +196,16 @@ def sync_stock_snapshot(conn: sqlite3.Connection, xl: pd.ExcelFile) -> dict:
         'Current_stock': 'current_stock',
         'Inbound_stock': 'inbound_stock'
     })
+
+    df["my_size"] = df["my_size"].where(df["my_size"].notna(), None)
+    df["my_size"] = df["my_size"].apply(lambda value: str(value).strip() if value is not None else None)
+    df.loc[df["my_size"] == "", "my_size"] = None
+
+    missing_size_mask = df["my_size"].isna()
+    if missing_size_mask.any():
+        df.loc[missing_size_mask, "my_size"] = df.loc[missing_size_mask, "sku_id"].apply(
+            infer_size_from_sku_id
+        )
 
     # Convert date
     df['snapshot_date'] = pd.to_datetime(df['snapshot_date']).dt.date.astype(str)
@@ -531,6 +542,16 @@ def sync_dim_sku_size(conn: sqlite3.Connection, xl: pd.ExcelFile) -> dict:
         'SKU_key': 'sku_key',
         'MY_SIZE': 'my_size'
     })
+
+    df["my_size"] = df["my_size"].where(df["my_size"].notna(), None)
+    df["my_size"] = df["my_size"].apply(lambda value: str(value).strip() if value is not None else None)
+    df.loc[df["my_size"] == "", "my_size"] = None
+
+    missing_size_mask = df["my_size"].isna()
+    if missing_size_mask.any():
+        df.loc[missing_size_mask, "my_size"] = df.loc[missing_size_mask, "sku_id"].apply(
+            infer_size_from_sku_id
+        )
 
     # Filter required columns
     cols = ['sku_id', 'sku_key', 'my_size']
