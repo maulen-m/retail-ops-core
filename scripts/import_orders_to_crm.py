@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import sys
+from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -245,6 +246,7 @@ def backfill_seller_delivery_fee(
     date_to: date,
     dry_run: bool = False,
     verbose: bool = False,
+    snapshot: Optional[CRMSnapshot] = None,
 ) -> int:
     """
     Backfill seller delivery fee from Delivery_fee_kzt for rows in date range.
@@ -252,59 +254,71 @@ def backfill_seller_delivery_fee(
     Sets 'Стоимость доставки для продавца' when it is blank/0 but Delivery_fee_kzt is present.
     Returns number of rows updated.
     """
-    wb = load_workbook(filename=str(crm_path), read_only=False, data_only=True)
-    try:
-        ws = wb[sheet_name]
-        table = _resolve_table(ws, table_name)
-        start_col, start_row, end_col, end_row = _table_bounds(table)
+    updates: list[tuple[int, float]] = []
+    seller_col = None
 
-        header_row = list(ws.iter_rows(min_row=start_row, max_row=start_row,
-                                       min_col=start_col, max_col=end_col))[0]
-        col_map: Dict[str, int] = {}
-        for i, cell in enumerate(header_row):
-            header = str(cell.value or "").strip()
-            if header:
-                col_map[header] = start_col + i
-
-        date_col = col_map.get("Date") or col_map.get("Дата поступления заказа")
-        fee_col = col_map.get("Delivery_fee_kzt") or col_map.get("Delivery_fee")
-        seller_col = col_map.get("Стоимость доставки для продавца")
-
-        if not date_col or not fee_col or not seller_col:
-            if verbose:
-                print("  Delivery fee backfill skipped: required columns not found")
-            return 0
-
-        updates: list[tuple[int, float]] = []
-        for row_num in range(start_row + 1, end_row + 1):
-            row_date = ws.cell(row=row_num, column=date_col).value
-            parsed_date = parse_date(row_date)
+    if snapshot and snapshot.delivery_fee_rows and snapshot.seller_fee_col:
+        seller_col = snapshot.seller_fee_col
+        for row_num, parsed_date, seller_num, fee_num in snapshot.delivery_fee_rows:
             if not parsed_date:
                 continue
             if parsed_date < date_from or parsed_date > date_to:
                 continue
-
-            seller_val = ws.cell(row=row_num, column=seller_col).value
-            fee_val = ws.cell(row=row_num, column=fee_col).value
-
-            try:
-                seller_num = float(seller_val) if seller_val not in (None, "") else 0.0
-            except (TypeError, ValueError):
-                seller_num = 0.0
-            try:
-                fee_num = float(fee_val) if fee_val not in (None, "") else 0.0
-            except (TypeError, ValueError):
-                fee_num = 0.0
-
             if seller_num == 0.0 and fee_num != 0.0:
                 updates.append((row_num, fee_num))
-    finally:
-        wb.close()
+    else:
+        wb = load_workbook(filename=str(crm_path), read_only=False, data_only=True)
+        try:
+            ws = wb[sheet_name]
+            table = _resolve_table(ws, table_name)
+            start_col, start_row, end_col, end_row = _table_bounds(table)
+
+            header_row = list(ws.iter_rows(min_row=start_row, max_row=start_row,
+                                           min_col=start_col, max_col=end_col))[0]
+            col_map: Dict[str, int] = {}
+            for i, cell in enumerate(header_row):
+                header = str(cell.value or "").strip()
+                if header:
+                    col_map[header] = start_col + i
+
+            date_col = col_map.get("Date") or col_map.get("Дата поступления заказа")
+            fee_col = col_map.get("Delivery_fee_kzt") or col_map.get("Delivery_fee")
+            seller_col = col_map.get("Стоимость доставки для продавца")
+
+            if not date_col or not fee_col or not seller_col:
+                if verbose:
+                    print("  Delivery fee backfill skipped: required columns not found")
+                return 0
+
+            for row_num in range(start_row + 1, end_row + 1):
+                row_date = ws.cell(row=row_num, column=date_col).value
+                parsed_date = parse_date(row_date)
+                if not parsed_date:
+                    continue
+                if parsed_date < date_from or parsed_date > date_to:
+                    continue
+
+                seller_val = ws.cell(row=row_num, column=seller_col).value
+                fee_val = ws.cell(row=row_num, column=fee_col).value
+
+                try:
+                    seller_num = float(seller_val) if seller_val not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    seller_num = 0.0
+                try:
+                    fee_num = float(fee_val) if fee_val not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    fee_num = 0.0
+
+                if seller_num == 0.0 and fee_num != 0.0:
+                    updates.append((row_num, fee_num))
+        finally:
+            wb.close()
 
     if verbose:
         print(f"  Delivery fee backfill candidates: {len(updates)} rows")
 
-    if dry_run or not updates:
+    if dry_run or not updates or seller_col is None:
         return len(updates)
 
     _require_xlwings()
@@ -854,6 +868,183 @@ def _table_bounds(table) -> Tuple[int, int, int, int]:
     start_col = column_index_from_string(start_col_letters)
     end_col = column_index_from_string(end_col_letters)
     return start_col, start_row, end_col, end_row
+
+
+@dataclass
+class CRMSnapshot:
+    date_col: int
+    phone_col: Optional[int]
+    start_col: int
+    end_col: int
+    start_row: int
+    end_row: int
+    slice_headers: list[str]
+    order_ids: set[str]
+    order_rows: Dict[str, int]
+    existing_keys: set[str]
+    column_positions: Dict[str, int]
+    planned_col_abs: Optional[int]
+    table_date_col: Optional[int]
+    delivery_fee_col: Optional[int]
+    seller_fee_col: Optional[int]
+    delivery_fee_rows: list[tuple[int, Optional[date], float, float]]
+
+
+def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSnapshot:
+    """Load CRM metadata in a single openpyxl session (read-only snapshot)."""
+    wb = load_workbook(filename=str(crm_path), read_only=False, data_only=True)
+    try:
+        if sheet_name not in wb.sheetnames:
+            raise SystemExit(f'Sheet "{sheet_name}" not found in {crm_path}')
+
+        ws = wb[sheet_name]
+        header_vals = [c.value if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1))]
+
+        idx_date = None
+        idx_phone = None
+        idx_start = None
+        idx_end = None
+
+        for i, h in enumerate(header_vals, start=1):
+            hnorm = norm(h)
+            if idx_date is None and hnorm in {"date", "дата"}:
+                idx_date = i
+            if idx_phone is None and hnorm in {"phone", "телефон", "cellphone"}:
+                idx_phone = i
+            if idx_start is None and hnorm in {"№заказа", "номерзаказа", "заказа"}:
+                idx_start = i
+            if hnorm in {"складпередачикд", "складпередачикурьерскойдоставки"}:
+                idx_end = i
+
+        if idx_date is None:
+            raise SystemExit(f"Could not find 'Date' column. Headers: {header_vals[:10]}...")
+
+        if idx_start is None or idx_end is None or idx_end < idx_start:
+            raise SystemExit(
+                "Could not locate raw Kaspi columns (Y-AZ). Need '№ заказа' and 'Склад передачи КД'."
+            )
+
+        slice_headers = [header_vals[j - 1] for j in range(idx_start, idx_end + 1)]
+
+        table = _resolve_table(ws, table_name)
+        start_col, start_row, end_col, end_row = _table_bounds(table)
+
+        target_columns = {
+            'Статус': None,
+            'Дата изменения статуса': None,
+            'Принял': None,
+            'Выдал': None,
+            'Отменил': None,
+            'Плановая дата передачи курьеру': None,
+            'Стоимость доставки для покупателя': None,
+            'Стоимость доставки для продавца': None,
+            'Компенсация за доставку': None,
+        }
+
+        header_row = list(
+            ws.iter_rows(min_row=1, max_row=1, min_col=idx_start, max_col=idx_end)
+        )[0]
+        for i, cell in enumerate(header_row):
+            header = str(cell.value or '').strip()
+            if header in target_columns:
+                target_columns[header] = idx_start + i
+
+        planned_col_abs = target_columns.get("Плановая дата передачи курьеру")
+
+        order_ids: set[str] = set()
+        order_rows: Dict[str, int] = {}
+        existing_keys: set[str] = set()
+        delivery_fee_rows: list[tuple[int, Optional[date], float, float]] = []
+
+        planned_in_table = (
+            planned_col_abs is not None
+            and start_col <= planned_col_abs <= end_col
+        )
+
+        table_header = list(
+            ws.iter_rows(min_row=start_row, max_row=start_row, min_col=start_col, max_col=end_col)
+        )[0]
+        table_map: Dict[str, int] = {}
+        for i, cell in enumerate(table_header):
+            header = str(cell.value or "").strip()
+            if header:
+                table_map[header] = start_col + i
+
+        table_date_col = table_map.get("Date") or table_map.get("Дата поступления заказа")
+        delivery_fee_col = table_map.get("Delivery_fee_kzt") or table_map.get("Delivery_fee")
+        seller_fee_col = table_map.get("Стоимость доставки для продавца")
+
+        for row_num in range(start_row + 1, end_row + 1):
+            order_val = ws.cell(row=row_num, column=idx_start).value
+            if order_val in (None, ""):
+                continue
+            if isinstance(order_val, str) and order_val.startswith("="):
+                continue
+            if isinstance(order_val, float):
+                order_val = int(order_val)
+            order_id = str(order_val).strip()
+            if not order_id:
+                continue
+            order_ids.add(order_id)
+            order_rows[order_id] = row_num
+
+            cleaned = clean_order_id(order_val)
+            if not cleaned:
+                continue
+
+            planned_date = None
+            if planned_in_table:
+                planned_val = ws.cell(row=row_num, column=planned_col_abs).value
+                planned_date = parse_date(planned_val)
+
+            if planned_date:
+                key = f"{cleaned}|{planned_date.isoformat()}"
+            else:
+                key = f"{cleaned}|"
+            existing_keys.add(key)
+
+            if table_date_col and delivery_fee_col and seller_fee_col:
+                row_date = ws.cell(row=row_num, column=table_date_col).value
+                parsed_date = parse_date(row_date)
+                seller_val = ws.cell(row=row_num, column=seller_fee_col).value
+                fee_val = ws.cell(row=row_num, column=delivery_fee_col).value
+                try:
+                    seller_num = float(seller_val) if seller_val not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    seller_num = 0.0
+                try:
+                    fee_num = float(fee_val) if fee_val not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    fee_num = 0.0
+                delivery_fee_rows.append((row_num, parsed_date, seller_num, fee_num))
+
+        print(f"  Date column: {idx_date} (B)")
+        if idx_phone:
+            print(f"  Phone column: {idx_phone} (I)")
+        else:
+            print("  Phone column: not found (will skip phone import)")
+        print(f"  Raw Kaspi columns: {idx_start}-{idx_end} (Y-AZ)")
+
+        return CRMSnapshot(
+            date_col=idx_date,
+            phone_col=idx_phone,
+            start_col=idx_start,
+            end_col=idx_end,
+            start_row=start_row,
+            end_row=end_row,
+            slice_headers=slice_headers,
+            order_ids=order_ids,
+            order_rows=order_rows,
+            existing_keys=existing_keys,
+            column_positions=target_columns,
+            planned_col_abs=planned_col_abs,
+            table_date_col=table_date_col,
+            delivery_fee_col=delivery_fee_col,
+            seller_fee_col=seller_fee_col,
+            delivery_fee_rows=delivery_fee_rows,
+        )
+    finally:
+        wb.close()
 
 
 def collect_existing_order_ids(
@@ -1501,6 +1692,18 @@ def sync_pending_orders_to_gdrive_safe(
         return {"rows_synced": 0, "dry_run": dry_run, "error": str(e)}
 
 
+def write_import_summary(result: dict, summary_path: Path) -> None:
+    """Write a small JSON summary for downstream no-op detection."""
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "orders_imported": int(result.get("orders_imported", 0) or 0),
+        "orders_updated": int(result.get("orders_updated", 0) or 0),
+        "orders_filtered": int(result.get("orders_filtered", 0) or 0),
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 # ---------- CLI ----------
 
 _UNSET = object()
@@ -1518,6 +1721,7 @@ def main(
     verbose=_UNSET,
     update_existing=_UNSET,
     no_update=_UNSET,
+    summary_file=_UNSET,
 ):
     parser = argparse.ArgumentParser(
         description="Import Kaspi ActiveOrders to CRM (xlwings, Excel-safe)"
@@ -1595,6 +1799,12 @@ def main(
         default=None,
         help="Backfill delivery fees to date (YYYY-MM-DD, today, yesterday)"
     )
+    parser.add_argument(
+        "--summary-file",
+        type=Path,
+        default=data_path("logs", "import_orders_to_crm_latest.json"),
+        help="Write JSON summary to this path (default: logs/import_orders_to_crm_latest.json)",
+    )
 
     if (
         orders_dir is _UNSET
@@ -1623,6 +1833,7 @@ def main(
             verbose=bool(verbose) if verbose is not _UNSET else False,
             update_existing=bool(update_existing) if update_existing is not _UNSET else True,
             no_update=bool(no_update) if no_update is not _UNSET else False,
+            summary_file=Path(summary_file) if summary_file is not _UNSET else data_path("logs", "import_orders_to_crm_latest.json"),
         )
 
     result = {
@@ -1630,6 +1841,12 @@ def main(
         "orders_updated": 0,
         "orders_filtered": 0,
     }
+    summary_path = Path(args.summary_file) if getattr(args, "summary_file", None) else None
+
+    def finalize(outcome: dict) -> dict:
+        if summary_path:
+            write_import_summary(outcome, summary_path)
+        return outcome
     
     # Parse dates
     if args.date_end.lower() == "today":
@@ -1674,20 +1891,23 @@ def main(
     result["orders_filtered"] = int(stats.get("rows_after_filters", 0))
     if df_filt.empty:
         print("No orders match filters. Nothing to import.")
-        return result
+        return finalize(result)
 
     # Sort for CRM append order (Phase 12 Part 6 - Updated)
     # Order: Status → STORE_NAME → OrderID → Quantity → KASPI_OFFER_NAME → Date
     df_filt = sort_for_crm(df_filt)
     print(f"Sorted by: Status (cancelled first), STORE_NAME, OrderID, Quantity, KASPI_OFFER_NAME, Date")
 
-    # Inspect CRM structure
-    date_abs, phone_abs, start_abs, end_abs, slice_headers = inspect_crm_sheet(
-        args.crm_file, args.sheet, args.table
-    )
+    # Inspect CRM structure (single openpyxl snapshot)
+    snapshot = load_crm_snapshot(args.crm_file, args.sheet, args.table)
+    date_abs = snapshot.date_col
+    phone_abs = snapshot.phone_col
+    start_abs = snapshot.start_col
+    end_abs = snapshot.end_col
+    slice_headers = snapshot.slice_headers
 
     # Get existing order IDs for dedup
-    existing_ids = collect_existing_order_ids(args.crm_file, args.sheet, args.table, start_abs)
+    existing_ids = snapshot.order_ids
     print(f"Existing orders in CRM: {len(existing_ids)}")
 
     # Update existing orders' status columns (Phase 12 Part 7)
@@ -1705,14 +1925,10 @@ def main(
         print("\n3. Updating existing orders' status columns...")
 
         # Get order rows (order_id -> row number)
-        order_rows = collect_existing_order_rows(
-            args.crm_file, args.sheet, args.table, start_abs
-        )
+        order_rows = snapshot.order_rows
 
         # Find column positions for update columns
-        column_positions = find_update_column_positions(
-            args.crm_file, args.sheet, start_abs, end_abs
-        )
+        column_positions = snapshot.column_positions
         if args.verbose:
             print(f"  Update column positions: {column_positions}")
 
@@ -1776,20 +1992,12 @@ def main(
     if "order_id" in colmap:
         order_col = colmap["order_id"]
         if column_positions is None:
-            column_positions = find_update_column_positions(
-                args.crm_file, args.sheet, start_abs, end_abs
-            )
+            column_positions = snapshot.column_positions
         planned_col_abs = None
         if column_positions:
             planned_col_abs = column_positions.get("Плановая дата передачи курьеру")
 
-        existing_keys = collect_existing_order_keys(
-            args.crm_file,
-            args.sheet,
-            args.table,
-            start_abs,
-            planned_col_abs,
-        )
+        existing_keys = snapshot.existing_keys
 
         handover_col = colmap.get("handover")
         df_filt["_oid"] = df_filt[order_col].apply(clean_order_id)
@@ -1834,19 +2042,21 @@ def main(
                     refresh_to,
                     dry_run=args.dry_run,
                     verbose=args.verbose,
+                    snapshot=snapshot,
                 )
                 print(f"   Delivery fee backfill rows updated: {backfilled}")
             sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
             print(f"\n✅ Import complete! Updated {updated_count} orders, appended 0 new.")
-            return result
+            return finalize(result)
         else:
             print("   All orders already in CRM. Nothing to import or update.")
-            return result
+            print("   NO-OP: skipping Google Drive sync.")
+            return finalize(result)
 
     if args.dry_run:
         print("\n[DRY RUN] Would append but skipping.")
         print(json.dumps(stats, indent=2, ensure_ascii=False))
-        return result
+        return finalize(result)
 
     # Create backup before writing (Phase 12)
     backup_path = backup_crm(args.crm_file)
@@ -1882,6 +2092,7 @@ def main(
             refresh_to,
             dry_run=args.dry_run,
             verbose=args.verbose,
+            snapshot=snapshot,
         )
         print(f"   Delivery fee backfill rows updated: {backfilled}")
 
@@ -1921,7 +2132,7 @@ def main(
         print(f"  Total in CRM (after): {len(existing_ids) + new_rows_added}")
         print("=" * 60)
 
-    return result
+    return finalize(result)
 
 
 if __name__ == "__main__":

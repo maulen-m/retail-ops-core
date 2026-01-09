@@ -51,7 +51,7 @@ echo ""
 # Step 1: Download pending orders for TODAY (no archive for speed)
 echo "Step 1: Downloading TODAY's pending orders from Kaspi API..."
 echo "----------------------------------------"
-python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" --refetch-missing-costs --verbose --no-archive --db-direct
+python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" --refetch-missing-costs --verbose --no-archive
 
 if [ $? -ne 0 ]; then
     echo ""
@@ -117,21 +117,48 @@ if [ $? -ne 0 ]; then
     WARNINGS+=("CRM import errors. Fix: open CRM and re-run import_orders_to_crm.py --verbose.")
 fi
 
+# Determine if import produced any changes (used to skip expensive retry steps)
+IMPORT_NOOP=0
+SUMMARY_PATH="logs/import_orders_to_crm_latest.json"
+if [ -f "${SUMMARY_PATH}" ]; then
+    IMPORT_NOOP=$(python - <<'PY'
+import json
+from pathlib import Path
+path = Path("logs/import_orders_to_crm_latest.json")
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+imported = int(payload.get("orders_imported", 0) or 0)
+updated = int(payload.get("orders_updated", 0) or 0)
+print(1 if imported == 0 and updated == 0 else 0)
+PY
+)
+fi
+
 # Step 2b: Validate pending orders alignment (CRM vs DB/ActiveOrders)
 echo ""
 echo "Step 2b: Validating pending orders..."
 echo "----------------------------------------"
-python scripts/validate_pending_orders.py
-if [ $? -ne 0 ]; then
-    echo "WARNING: Pending order validation reported mismatches (see above)"
-    WARNINGS+=("Pending order validation mismatches. Fix: check ActiveOrders export + CRM planned date column.")
+if [ "${IMPORT_NOOP}" -eq 1 ]; then
+    echo "NO-OP: skipping pending order validation (no CRM changes)."
+else
+    python scripts/validate_pending_orders.py
+    if [ $? -ne 0 ]; then
+        echo "WARNING: Pending order validation reported mismatches (see above)"
+        WARNINGS+=("Pending order validation mismatches. Fix: check ActiveOrders export + CRM planned date column.")
+    fi
 fi
 
 # Post-import health report (API vs CRM vs DB)
 echo ""
 echo "Post-import health report..."
 echo "----------------------------------------"
-python scripts/report_import_status.py --since-days "${LOOKBACK_DAYS}"
+if [ "${IMPORT_NOOP}" -eq 1 ]; then
+    echo "NO-OP: skipping health report (no CRM changes)."
+else
+    python scripts/report_import_status.py --since-days "${LOOKBACK_DAYS}"
+fi
 
 # Step 3: Google Drive sync (handled automatically within import_orders_to_crm.py)
 echo ""
