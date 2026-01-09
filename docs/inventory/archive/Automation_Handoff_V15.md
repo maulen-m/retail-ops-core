@@ -1,8 +1,8 @@
 # ARCHIVED — superseded by current owners. Do not implement from this file.
 
 Current owners (authoritative):
-- Formulas: `inventory/Master_Inventory_Rules_v8.md`
-- Schema: `Sales_Data_Model_V16.md`
+- Formulas: `docs/inventory/Master_Inventory_Rules_v8.md`
+- Schema: `docs/inventory/Sales_Data_Model_V16.md`
 - Tolerances/contracts: `docs/validation/PO_CONTRACT.md`, `docs/validation/DASHBOARD_CONTRACT.md`, `docs/validation/DAY_COMPLETE_CONTRACT.md`
 
 This document is retained for historical reference only.

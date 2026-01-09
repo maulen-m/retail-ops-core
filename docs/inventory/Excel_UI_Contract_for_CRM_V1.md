@@ -130,7 +130,7 @@ These are the **decision columns** Python must replicate.
 
 ## 5. Logic Invariants (no formulas in this doc)
 
-All formulas live in `inventory/Master_Inventory_Rules_v8.md`; do not duplicate formulas in this contract doc.
+All formulas live in `docs/inventory/Master_Inventory_Rules_v8.md`; do not duplicate formulas in this contract doc.
 
 ---
 
