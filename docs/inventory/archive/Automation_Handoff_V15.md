@@ -1,4 +1,11 @@
-# DEPRECATED — superseded by `inventory/Automation_Handoff_V16.md`. Do not implement from this file.
+# ARCHIVED — superseded by current owners. Do not implement from this file.
+
+Current owners (authoritative):
+- Formulas: `inventory/Master_Inventory_Rules_v8.md`
+- Schema: `Sales_Data_Model_V16.md`
+- Tolerances/contracts: `docs/validation/PO_CONTRACT.md`, `docs/validation/DASHBOARD_CONTRACT.md`, `docs/validation/DAY_COMPLETE_CONTRACT.md`
+
+This document is retained for historical reference only.
 
 # Automation Handoff — V15_FINAL
 ## Project 1 → Project 3 Transition Document
@@ -12,9 +19,9 @@
 
 Project 1 (Excel Business Brain) is now **FROZEN AS UI**. This document hands off to Project 3 (CRM/Python) the specifications needed to implement identical business logic in code.
 
-**Key files:**
-- `Inventory_Core_V15_FINAL.xlsx` — Reference implementation
-- `Master_Inventory_Rules_v5.3.md` — Formula contract (authoritative)
+**Key files (legacy, historical only):**
+- `Inventory_Core_V15_FINAL.xlsx` — Legacy reference implementation
+- `Master_Inventory_Rules_v5.3.md` — Legacy formula contract (superseded by v8)
 - `Excel_UI_Contract_for_CRM_V1.md` — Interface specification
 
 ---

@@ -130,28 +130,7 @@ These are the **decision columns** Python must replicate.
 
 ## 5. Logic Invariants (no formulas in this doc)
 
-All formulas live in `inventory/Master_Inventory_Rules_v8.md`.  
-This contract defines UI columns + invariants only.
-
-### 5.1 Status Flag Logic (Critical)
-
-**Order matters:** Check Total FIRST, then Current.
-
-```python
-def get_status(current_stock, total_stock, rop):
-    if total_stock < rop:
-        return "⚠️ REORDER"
-    elif current_stock < rop:
-        return "📦 WAIT (inbound)"
-    else:
-        return "✅ OK"
-```
-
-| Scenario | Current | Inbound | Total | ROP | Result |
-|----------|---------|---------|-------|-----|--------|
-| Nothing covers | 50 | 0 | 50 | 100 | REORDER |
-| Inbound covers | 50 | 60 | 110 | 100 | WAIT |
-| All good | 110 | 0 | 110 | 100 | OK |
+All formulas live in `inventory/Master_Inventory_Rules_v8.md`; do not duplicate formulas in this contract doc.
 
 ---
 
