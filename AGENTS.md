@@ -34,6 +34,7 @@ No evidence = not done.
 - Do NOT weaken capital guardrails (ROIC gates, concentration limits, budget caps).
 - Do NOT change inventory formulas by “patching code.” Formulas live only in `docs/inventory/Master_Inventory_Rules_v8.md`.
 - No implicit DB migrations during validation. Use explicit migration scripts.
+- Parallel agents must use separate git worktrees; if unrelated changes appear, stop and switch worktree.
 
 ## 2.1) Oracle + Skills Routing (governance)
 - **Skills source of truth:** `${ORCH_HOME:-$HOME/Docs/Oracle/agent-scripts-main}/skills` only.
