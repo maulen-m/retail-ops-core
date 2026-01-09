@@ -9,6 +9,7 @@ Data cutoff: Yesterday in Asia/Almaty timezone.
 """
 
 import sqlite3
+import os
 import json
 import statistics
 import csv
@@ -1302,6 +1303,8 @@ def generate_po_data(
     total_units = sum(s['po_qty_total'] for s in sku_lines)
 
     readiness_report = None
+    day_complete_env = os.environ.get("AB_DAY_COMPLETE", "1").strip().lower()
+    day_complete_ok = day_complete_env not in {"0", "false", "no"}
     if not use_fixture:
         from core.validation.production_readiness import evaluate_production_readiness
 
@@ -1319,6 +1322,9 @@ def generate_po_data(
             "sales_data_cutoff": DATA_CUTOFF,
         }
         readiness_report = evaluate_production_readiness(readiness_payload, db_path=DB_PATH)
+        if not day_complete_ok:
+            readiness_report.blockers.append("Day complete gate failed: sizes pending")
+            print("\nPROVISIONAL: sizes pending; exports blocked.")
         if readiness_report.blockers:
             print("\nPRODUCTION READINESS BLOCKERS (export blocked):")
             for blocker in readiness_report.blockers:

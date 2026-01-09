@@ -47,6 +47,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.tracking.run_tracker import RunTracker
 from core.alerts.error_alerts import alert_from_run_tracker, send_shadow_mode_digest
 from core.paths import data_path, get_data_root
+from core.db.queries import get_cutoff_date_almaty
 
 # Lock file for preventing concurrent runs
 LOCK_FILE = PROJECT_ROOT / "logs" / ".end_of_day.lock"
@@ -366,6 +367,8 @@ def main():
 def _run_pipeline(args, start_time: datetime) -> int:
     """Run the actual pipeline steps. Returns exit code."""
     from datetime import date
+    cutoff_date = get_cutoff_date_almaty()
+    os.environ.setdefault("AB_DAY_COMPLETE", "1")
 
     # Define pipeline steps
     # Part 5: validate_params FIRST (fail-fast), scorecard LAST
@@ -386,6 +389,12 @@ def _run_pipeline(args, start_time: datetime) -> int:
             name="2. Sync CRM to DB",
             script="sync_crm_to_db.py",
             required=not args.skip_sync
+        ),
+        PipelineStep(
+            name="2b. Validate Day Complete",
+            script="validate_day_complete.py",
+            args=["--cutoff-date", cutoff_date.isoformat()],
+            required=False
         ),
         PipelineStep(
             name="3. Generate PO Dashboard Data",
@@ -459,6 +468,13 @@ def _run_pipeline(args, start_time: datetime) -> int:
             print(f"  FAILED: {step.error}")
             tracker.fail_step(step.error or "Unknown error")
             all_success = False
+
+        if step.script == "validate_day_complete.py":
+            if success:
+                os.environ["AB_DAY_COMPLETE"] = "1"
+            else:
+                os.environ["AB_DAY_COMPLETE"] = "0"
+                print("PROVISIONAL: sizes pending; exports blocked.")
 
             if step.required and not args.continue_on_error:
                 print("\nPipeline aborted due to required step failure.")
