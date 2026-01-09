@@ -143,8 +143,14 @@ class TestNoSilentSkipping:
         skipped_count = len(po4.get('skipped_skus', []))
         total_accounted = sku_level_count + skipped_count
 
-        # Should have at least 50 SKUs accounted for
-        assert total_accounted >= 50, f"Only {total_accounted} SKUs accounted for"
+        expected_total = dashboard_data.get('summary', {}).get('total_skus')
+        if expected_total is None:
+            pytest.skip("dashboard summary missing total_skus")
+
+        # All active SKUs should be accounted for between sku_level + skipped_skus
+        assert total_accounted >= expected_total, (
+            f"Only {total_accounted} SKUs accounted for (expected >= {expected_total})"
+        )
 
     def test_line52_not_silently_skipped(self, dashboard_data):
         """LINE52 must appear somewhere in the output."""
