@@ -29,19 +29,19 @@ class TestBlackoutPeriod:
 
     def test_cny_2026_dates(self):
         """Verify CNY 2026 blackout dates are correct."""
-        assert CNY_2026.start_date == date(2026, 1, 27)
-        assert CNY_2026.end_date == date(2026, 2, 20)
+        assert CNY_2026.start_date == date(2026, 1, 28)
+        assert CNY_2026.end_date == date(2026, 3, 1)
 
     def test_contains_in_blackout(self):
         """Test that dates within blackout are detected."""
-        assert CNY_2026.contains(date(2026, 1, 27)) is True
+        assert CNY_2026.contains(date(2026, 1, 28)) is True
         assert CNY_2026.contains(date(2026, 2, 1)) is True
-        assert CNY_2026.contains(date(2026, 2, 20)) is True
+        assert CNY_2026.contains(date(2026, 3, 1)) is True
 
     def test_contains_outside_blackout(self):
         """Test that dates outside blackout are not flagged."""
-        assert CNY_2026.contains(date(2026, 1, 26)) is False
-        assert CNY_2026.contains(date(2026, 2, 21)) is False
+        assert CNY_2026.contains(date(2026, 1, 27)) is False
+        assert CNY_2026.contains(date(2026, 3, 2)) is False
         assert CNY_2026.contains(date(2025, 2, 1)) is False
 
 
@@ -54,7 +54,7 @@ class TestBlackoutManager:
 
         # Date in middle of blackout
         adjusted, period = manager.skip_blackout(date(2026, 2, 1))
-        assert adjusted == date(2026, 2, 21)
+        assert adjusted == date(2026, 3, 2)
         assert period == CNY_2026
 
     def test_skip_blackout_no_change_if_outside(self):
@@ -67,8 +67,8 @@ class TestBlackoutManager:
         assert period is None
 
         # Date after blackout
-        adjusted, period = manager.skip_blackout(date(2026, 2, 25))
-        assert adjusted == date(2026, 2, 25)
+        adjusted, period = manager.skip_blackout(date(2026, 3, 5))
+        assert adjusted == date(2026, 3, 5)
         assert period is None
 
 
@@ -81,7 +81,7 @@ class TestAdjustPoDates:
         message_date 2026-01-25, prep_days 10 -> ship_date_cargo >= 2026-02-21
 
         If ship_date (2026-01-25 + 10 = 2026-02-04) falls in blackout,
-        it should be pushed to 2026-02-21 (day after blackout ends).
+        it should be pushed to 2026-03-02 (day after blackout ends).
         """
         po_date = date(2026, 1, 25)
         prep_days = 10
@@ -92,8 +92,8 @@ class TestAdjustPoDates:
         result = adjust_po_dates(po_date, ship_date, est_arrival)
 
         # Ship date should be pushed past blackout
-        assert result["ship_date"] >= date(2026, 2, 21), \
-            f"Ship date {result['ship_date']} should be >= 2026-02-21"
+        assert result["ship_date"] >= date(2026, 3, 2), \
+            f"Ship date {result['ship_date']} should be >= 2026-03-02"
 
         # ETA should be recalculated with same transit time
         expected_eta = result["ship_date"] + timedelta(days=transit_days)
@@ -157,7 +157,7 @@ class TestSkipCnyBlackout:
         """Simple date skip."""
         d = date(2026, 2, 1)
         result = skip_cny_blackout(d)
-        assert result == date(2026, 2, 21)
+        assert result == date(2026, 3, 2)
 
     def test_skip_cny_no_change(self):
         """Date outside CNY returns unchanged."""

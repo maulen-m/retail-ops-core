@@ -40,8 +40,8 @@ class BlackoutPeriod:
 # Pre-defined blackout periods
 CNY_2026 = BlackoutPeriod(
     name="CNY_2026",
-    start_date=date(2026, 1, 27),
-    end_date=date(2026, 2, 20),
+    start_date=date(2026, 1, 28),
+    end_date=date(2026, 3, 1),
     reason="Chinese New Year 2026 factory/shipping blackout"
 )
 
