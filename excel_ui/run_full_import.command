@@ -111,7 +111,7 @@ fi
 echo ""
 echo "Step 2: Importing new orders to CRM..."
 echo "----------------------------------------"
-python scripts/import_orders_to_crm.py --verbose
+python scripts/import_orders_to_crm.py --verbose --refresh-delivery-fees
 if [ $? -ne 0 ]; then
     echo "WARNING: CRM import reported errors (see above)."
     WARNINGS+=("CRM import errors. Fix: open CRM and re-run import_orders_to_crm.py --verbose.")

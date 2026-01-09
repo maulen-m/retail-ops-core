@@ -221,6 +221,107 @@ def today_local() -> date:
     return datetime.now().date()
 
 
+def _resolve_refresh_date(value: Optional[str], default_date: date) -> date:
+    if not value:
+        return default_date
+    v = str(value).strip().lower()
+    if v == "today":
+        return today_local()
+    if v == "yesterday":
+        return today_local() - timedelta(days=1)
+    if v == "tomorrow":
+        return today_local() + timedelta(days=1)
+    parsed = parse_date(v)
+    if parsed is None:
+        raise ValueError(f"Invalid refresh date: {value}")
+    return parsed
+
+
+def backfill_seller_delivery_fee(
+    crm_path: Path,
+    sheet_name: str,
+    table_name: str,
+    date_from: date,
+    date_to: date,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> int:
+    """
+    Backfill seller delivery fee from Delivery_fee_kzt for rows in date range.
+
+    Sets 'Стоимость доставки для продавца' when it is blank/0 but Delivery_fee_kzt is present.
+    Returns number of rows updated.
+    """
+    wb = load_workbook(filename=str(crm_path), read_only=False, data_only=True)
+    try:
+        ws = wb[sheet_name]
+        table = _resolve_table(ws, table_name)
+        start_col, start_row, end_col, end_row = _table_bounds(table)
+
+        header_row = list(ws.iter_rows(min_row=start_row, max_row=start_row,
+                                       min_col=start_col, max_col=end_col))[0]
+        col_map: Dict[str, int] = {}
+        for i, cell in enumerate(header_row):
+            header = str(cell.value or "").strip()
+            if header:
+                col_map[header] = start_col + i
+
+        date_col = col_map.get("Date") or col_map.get("Дата поступления заказа")
+        fee_col = col_map.get("Delivery_fee_kzt") or col_map.get("Delivery_fee")
+        seller_col = col_map.get("Стоимость доставки для продавца")
+
+        if not date_col or not fee_col or not seller_col:
+            if verbose:
+                print("  Delivery fee backfill skipped: required columns not found")
+            return 0
+
+        updates: list[tuple[int, float]] = []
+        for row_num in range(start_row + 1, end_row + 1):
+            row_date = ws.cell(row=row_num, column=date_col).value
+            parsed_date = parse_date(row_date)
+            if not parsed_date:
+                continue
+            if parsed_date < date_from or parsed_date > date_to:
+                continue
+
+            seller_val = ws.cell(row=row_num, column=seller_col).value
+            fee_val = ws.cell(row=row_num, column=fee_col).value
+
+            try:
+                seller_num = float(seller_val) if seller_val not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                seller_num = 0.0
+            try:
+                fee_num = float(fee_val) if fee_val not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                fee_num = 0.0
+
+            if seller_num == 0.0 and fee_num != 0.0:
+                updates.append((row_num, fee_num))
+    finally:
+        wb.close()
+
+    if verbose:
+        print(f"  Delivery fee backfill candidates: {len(updates)} rows")
+
+    if dry_run or not updates:
+        return len(updates)
+
+    _require_xlwings()
+    app = xw.App(visible=False, add_book=False)
+    try:
+        book = app.books.open(str(crm_path))
+        sheet = book.sheets[sheet_name]
+        for row_num, value in updates:
+            sheet.cells(row_num, seller_col).value = value
+        book.save()
+        book.close()
+    finally:
+        app.quit()
+
+    return len(updates)
+
+
 # ---------- Legacy helpers (for tests/backward compatibility) ----------
 
 def parse_date(v) -> Optional[date]:
@@ -1479,6 +1580,21 @@ def main(
         action="store_true",
         help="Skip updating existing orders (only append new)"
     )
+    parser.add_argument(
+        "--refresh-delivery-fees",
+        action="store_true",
+        help="Backfill seller delivery fee from Delivery_fee_kzt for a date range"
+    )
+    parser.add_argument(
+        "--refresh-fees-from",
+        default=None,
+        help="Backfill delivery fees from date (YYYY-MM-DD, today, yesterday)"
+    )
+    parser.add_argument(
+        "--refresh-fees-to",
+        default=None,
+        help="Backfill delivery fees to date (YYYY-MM-DD, today, yesterday)"
+    )
 
     if (
         orders_dir is _UNSET
@@ -1707,6 +1823,19 @@ def main(
     if len(stage) == 0:
         if updated_count > 0:
             print(f"   No new orders to append (updated {updated_count} existing orders)")
+            if args.refresh_delivery_fees:
+                refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
+                refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
+                backfilled = backfill_seller_delivery_fee(
+                    args.crm_file,
+                    args.sheet,
+                    args.table,
+                    refresh_from,
+                    refresh_to,
+                    dry_run=args.dry_run,
+                    verbose=args.verbose,
+                )
+                print(f"   Delivery fee backfill rows updated: {backfilled}")
             sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
             print(f"\n✅ Import complete! Updated {updated_count} orders, appended 0 new.")
             return result
@@ -1740,6 +1869,21 @@ def main(
 
     # Archive source files
     archive_path = archive_run(args.orders_dir, source_files, df_filt)
+
+    # Backfill seller delivery fee from Delivery_fee_kzt (if requested)
+    if args.refresh_delivery_fees:
+        refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
+        refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
+        backfilled = backfill_seller_delivery_fee(
+            args.crm_file,
+            args.sheet,
+            args.table,
+            refresh_from,
+            refresh_to,
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+        )
+        print(f"   Delivery fee backfill rows updated: {backfilled}")
 
     # Sync PENDING rows for target date to Google Drive (formatted copy)
     sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
