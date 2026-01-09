@@ -63,7 +63,9 @@ def parse_sales_excel(
     - STORE_NAME: Store name
     - Return: Return flag (0/1)
     - Total_net_rev: Net revenue (if available)
-    - Delivery_fee_kzt: Delivery fee (if available)
+    - Delivery_fee_kzt: Delivery fee (legacy export)
+    - Стоимость доставки для продавца: Seller delivery fee
+    - Стоимость доставки для покупателя: Buyer delivery fee
 
     Args:
         xlsx_path: Path to Excel file
@@ -92,7 +94,9 @@ def parse_sales_excel(
         (["store_name", "storename", "store"], "store_name"),
         (["return", "return_flag"], "return_flag"),
         (["total_net_rev", "net_rev"], "net_rev"),
-        (["delivery_fee_kzt", "delivery_fee", "delivery_fee_seller"], "delivery_fee"),
+        (["delivery_fee_kzt", "delivery_fee"], "delivery_fee"),
+        (["delivery_fee_seller"], "delivery_fee_seller"),
+        (["delivery_fee_buyer"], "delivery_fee_buyer"),
         (["total_price", "totalprice"], "total_price"),
     ]
 
@@ -103,7 +107,8 @@ def parse_sales_excel(
         "название товара в kaspi магазине": "kaspi_offer_name",
         "количество": "quantity",
         "сумма": "sell_price_kzt",
-        "стоимость доставки для продавца": "delivery_fee",
+        "стоимость доставки для продавца": "delivery_fee_seller",
+        "стоимость доставки для покупателя": "delivery_fee_buyer",
     }
 
     # First pass: map English columns
@@ -196,8 +201,35 @@ def parse_sales_excel(
         net_rev = row.get("net_rev")
         net_rev = float(net_rev) if not pd.isna(net_rev) else None
 
-        delivery_fee = row.get("delivery_fee")
-        delivery_fee = float(delivery_fee) if not pd.isna(delivery_fee) else None
+        delivery_fee_seller = row.get("delivery_fee_seller")
+        delivery_fee_buyer = row.get("delivery_fee_buyer")
+        delivery_fee_raw = row.get("delivery_fee")
+
+        def _coerce_float(value):
+            if pd.isna(value):
+                return None
+            if isinstance(value, str):
+                cleaned = value.replace("\u00a0", "").replace(" ", "")
+                if cleaned.count(",") == 1 and cleaned.count(".") == 0:
+                    cleaned = cleaned.replace(",", ".")
+                try:
+                    return float(cleaned)
+                except ValueError:
+                    return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        delivery_fee_seller = _coerce_float(delivery_fee_seller)
+        delivery_fee_buyer = _coerce_float(delivery_fee_buyer)
+        delivery_fee = _coerce_float(delivery_fee_raw)
+
+        # Prefer seller-paid fee; fall back to legacy delivery_fee_kzt, then buyer fee.
+        if delivery_fee_seller is not None:
+            delivery_fee = delivery_fee_seller
+        elif delivery_fee is None and delivery_fee_buyer is not None:
+            delivery_fee = delivery_fee_buyer
 
         records.append({
             "order_id": order_id,
@@ -212,6 +244,8 @@ def parse_sales_excel(
             "return_flag": return_flag,
             "net_rev": net_rev,
             "delivery_fee": delivery_fee,
+            "delivery_fee_seller": delivery_fee_seller,
+            "delivery_fee_buyer": delivery_fee_buyer,
         })
 
     return records

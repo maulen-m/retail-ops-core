@@ -199,6 +199,29 @@ def russian_columns_excel(tmp_path):
 
 
 @pytest.fixture
+def delivery_fee_excel(tmp_path):
+    """Create a sample sales Excel file with delivery fee columns."""
+    data = {
+        "OrderID": ["ORD-D01"],
+        "Date": [date.today()],
+        "KASPI_OFFER_NAME": ["Принт 5в1 черный M"],
+        "SKU_ID": ["CL_LINE52_BLACK_M"],
+        "SKU_key": ["CL_LINE52_BLACK"],
+        "MY_SIZE": ["M"],
+        "Quantity": [1],
+        "Sell_price_kzt": [15000],
+        "STORE_NAME": ["Universal"],
+        "Delivery_fee_kzt": [100],
+        "Стоимость доставки для продавца": [200],
+        "Стоимость доставки для покупателя": [300],
+    }
+    df = pd.DataFrame(data)
+    xlsx_path = tmp_path / "delivery_fee_sales.xlsx"
+    df.to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+    return str(xlsx_path)
+
+
+@pytest.fixture
 def unmapped_sales_excel(tmp_path):
     """Create a sample sales Excel file with unmapped offers."""
     data = {
@@ -274,6 +297,16 @@ class TestParseSalesExcel:
         assert records[0]["kaspi_offer_name"] == "Принт 5в1 черный S"
         assert records[0]["sku_id"] == "CL_LINE52_BLACK_S"
         assert records[1]["store_code"] == "ACMEWEAR"
+
+    def test_parse_prefers_seller_delivery_fee(self, delivery_fee_excel):
+        """Seller delivery fee should override legacy column when present."""
+        records = parse_sales_excel(delivery_fee_excel)
+
+        assert len(records) == 1
+        record = records[0]
+        assert record["delivery_fee"] == 200
+        assert record["delivery_fee_seller"] == 200
+        assert record["delivery_fee_buyer"] == 300
 
 
 class TestIngestSales:
