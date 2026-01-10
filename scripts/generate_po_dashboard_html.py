@@ -160,8 +160,25 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
     const { useState, useMemo, useEffect, useCallback } = React;
 
-    // All possible sizes in order
-    const SIZE_ORDER = ['22', '24', '26', '28', '30', '32', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', 'ONE'];
+    // All possible sizes in order (canonical)
+    const SIZE_ORDER = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', '22', '24', '26', '28', '30', '32', 'ONE_SIZE', 'ONESIZE', 'OS'];
+    const SIZE_RANK = SIZE_ORDER.reduce((acc, s, idx) => {
+      acc[s] = idx;
+      return acc;
+    }, {});
+
+    const normalizeSize = (size) => {
+      if (!size) return '';
+      return String(size).toUpperCase().replace(/\s+/g, '').replace(/-/g, '');
+    };
+
+    const sizeRank = (size) => {
+      const s = normalizeSize(size);
+      if (SIZE_RANK[s] !== undefined) return SIZE_RANK[s];
+      const num = parseInt(s, 10);
+      if (!Number.isNaN(num)) return 100 + num;
+      return 999;
+    };
 
     // LocalStorage helpers
     const loadFromStorage = (key, defaultValue) => {
@@ -519,7 +536,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       return <span className={cls}>{val.toFixed(1)}</span>;
     }
 
-    function SKUTable({ poData, search, filterMode, sortConfig, onSort, multipliers, onMultiplierChange, activePO, isApproved, onApprovalChange }) {
+    function SKUTable({ poData, search, filterMode, sortConfig, onSort, multipliers, onMultiplierChange, activePO, isApproved, onApprovalChange, lockSort, lockedSkuOrder }) {
       const filtered = useMemo(() => {
         let items = poData.sku_level || [];
 
@@ -538,7 +555,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         }
 
         // Sort
-        if (sortConfig.key) {
+        if (lockSort && lockedSkuOrder && lockedSkuOrder.length > 0) {
+          const orderIndex = new Map(lockedSkuOrder.map((k, i) => [k, i]));
+          items = [...items].sort((a, b) => {
+            const aIdx = orderIndex.get(a.sku_key);
+            const bIdx = orderIndex.get(b.sku_key);
+            if (aIdx == null && bIdx == null) return 0;
+            if (aIdx == null) return 1;
+            if (bIdx == null) return -1;
+            return aIdx - bIdx;
+          });
+        } else if (sortConfig.key) {
           items = [...items].sort((a, b) => {
             let aVal = a[sortConfig.key];
             let bVal = b[sortConfig.key];
@@ -550,7 +577,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           });
         }
         return items;
-      }, [poData, search, filterMode, sortConfig]);
+      }, [poData, search, filterMode, sortConfig, lockSort, lockedSkuOrder]);
 
       const handleSort = (key) => {
         onSort({
@@ -696,7 +723,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       );
     }
 
-    function SizeTable({ poData, search, filterMode, sortConfig, onSort }) {
+    function SizeTable({ poData, search, filterMode, sortConfig, onSort, lockSort, lockedSkuOrder }) {
       const filtered = useMemo(() => {
         let items = poData.size_level || [];
 
@@ -711,17 +738,37 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           );
         }
 
-        if (sortConfig.key) {
+        if (lockSort && lockedSkuOrder && lockedSkuOrder.length > 0) {
+          const orderIndex = new Map(lockedSkuOrder.map((k, i) => [k, i]));
           items = [...items].sort((a, b) => {
+            const aIdx = orderIndex.get(a.sku_key);
+            const bIdx = orderIndex.get(b.sku_key);
+            if (aIdx == null && bIdx == null) return sizeRank(a.size) - sizeRank(b.size);
+            if (aIdx == null) return 1;
+            if (bIdx == null) return -1;
+            if (aIdx !== bIdx) return aIdx - bIdx;
+            return sizeRank(a.size) - sizeRank(b.size);
+          });
+        } else if (sortConfig.key) {
+          items = [...items].sort((a, b) => {
+            if (sortConfig.key === 'size') {
+              return sortConfig.dir === 'asc'
+                ? sizeRank(a.size) - sizeRank(b.size)
+                : sizeRank(b.size) - sizeRank(a.size);
+            }
             const aVal = a[sortConfig.key];
             const bVal = b[sortConfig.key];
             if (aVal < bVal) return sortConfig.dir === 'asc' ? -1 : 1;
             if (aVal > bVal) return sortConfig.dir === 'asc' ? 1 : -1;
+            // Keep size order within SKU when sorting by SKU
+            if (sortConfig.key === 'sku_key') {
+              return sizeRank(a.size) - sizeRank(b.size);
+            }
             return 0;
           });
         }
         return items;
-      }, [poData, search, filterMode, sortConfig]);
+      }, [poData, search, filterMode, sortConfig, lockSort, lockedSkuOrder]);
 
       const handleSort = (key) => {
         onSort({
@@ -803,7 +850,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       );
     }
 
-    function SizeHorizontalTable({ poData, search, filterMode, sortConfig, onSort }) {
+    function SizeHorizontalTable({ poData, search, filterMode, sortConfig, onSort, lockSort, lockedSkuOrder }) {
       const items = poData.size_horizontal || [];
 
       // Get all unique sizes across all SKUs
@@ -832,7 +879,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           );
         }
 
-        if (sortConfig.key) {
+        if (lockSort && lockedSkuOrder && lockedSkuOrder.length > 0) {
+          const orderIndex = new Map(lockedSkuOrder.map((k, i) => [k, i]));
+          result = [...result].sort((a, b) => {
+            const aIdx = orderIndex.get(a.sku_key);
+            const bIdx = orderIndex.get(b.sku_key);
+            if (aIdx == null && bIdx == null) return 0;
+            if (aIdx == null) return 1;
+            if (bIdx == null) return -1;
+            return aIdx - bIdx;
+          });
+        } else if (sortConfig.key) {
           result = [...result].sort((a, b) => {
             const aVal = a[sortConfig.key];
             const bVal = b[sortConfig.key];
@@ -842,7 +899,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           });
         }
         return result;
-      }, [items, search, filterMode, sortConfig]);
+      }, [items, search, filterMode, sortConfig, lockSort, lockedSkuOrder]);
 
       const handleSort = (key) => {
         onSort({
@@ -903,7 +960,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       );
     }
 
-    function MasterParamsTable({ poData, search, sortConfig, onSort }) {
+    function MasterParamsTable({ poData, search, sortConfig, onSort, lockSort, lockedSkuOrder }) {
       const filtered = useMemo(() => {
         let items = poData.sku_level || [];
 
@@ -915,7 +972,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           );
         }
 
-        if (sortConfig.key) {
+        if (lockSort && lockedSkuOrder && lockedSkuOrder.length > 0) {
+          const orderIndex = new Map(lockedSkuOrder.map((k, i) => [k, i]));
+          items = [...items].sort((a, b) => {
+            const aIdx = orderIndex.get(a.sku_key);
+            const bIdx = orderIndex.get(b.sku_key);
+            if (aIdx == null && bIdx == null) return 0;
+            if (aIdx == null) return 1;
+            if (bIdx == null) return -1;
+            return aIdx - bIdx;
+          });
+        } else if (sortConfig.key) {
           items = [...items].sort((a, b) => {
             const aVal = a[sortConfig.key];
             const bVal = b[sortConfig.key];
@@ -925,7 +992,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           });
         }
         return items;
-      }, [poData, search, sortConfig]);
+      }, [poData, search, sortConfig, lockSort, lockedSkuOrder]);
 
       const handleSort = (key) => {
         onSort({
@@ -1021,6 +1088,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       const [sizeSort, setSizeSort] = useState({ key: 'sku_key', dir: 'asc' });
       const [horizSort, setHorizSort] = useState({ key: 'po_qty_total', dir: 'desc' });
       const [masterSort, setMasterSort] = useState({ key: 'roic_pct', dir: 'desc' });
+      const [lockSort, setLockSort] = useState(false);
+      const [lockedSkuOrder, setLockedSkuOrder] = useState([]);
 
       // FX rates state (editable, persisted in localStorage)
       const defaultFxRates = DATA.fx_rates || { cny_kzt: 78.0, usd_kzt: 530.0 };
@@ -1077,6 +1146,45 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       const handleMultiplierChange = (skuKey, value) => {
         const numVal = parseFloat(value) || 1;
         setMultipliers(prev => ({ ...prev, [skuKey]: numVal }));
+      };
+
+      const computeSkuOrder = useCallback((poData) => {
+        let items = poData?.sku_level || [];
+
+        if (filterMode === 'need_po') items = items.filter(s => s.po_qty_total > 0);
+        else if (filterMode === 'zero') items = items.filter(s => s.po_qty_total === 0);
+
+        if (search) {
+          const q = search.toLowerCase();
+          items = items.filter(s =>
+            s.sku_key.toLowerCase().includes(q) ||
+            s.sku_name.toLowerCase().includes(q) ||
+            (s.notes && s.notes.toLowerCase().includes(q))
+          );
+        }
+
+        if (skuSort.key) {
+          items = [...items].sort((a, b) => {
+            let aVal = a[skuSort.key];
+            let bVal = b[skuSort.key];
+            if (aVal == null) aVal = skuSort.key.includes('date') ? '9999-99-99' : -Infinity;
+            if (bVal == null) bVal = skuSort.key.includes('date') ? '9999-99-99' : -Infinity;
+            if (aVal < bVal) return skuSort.dir === 'asc' ? -1 : 1;
+            if (aVal > bVal) return skuSort.dir === 'asc' ? 1 : -1;
+            return 0;
+          });
+        }
+        return items.map(s => s.sku_key);
+      }, [filterMode, search, skuSort]);
+
+      const handleLockSortToggle = () => {
+        if (!lockSort) {
+          const basePo = allPOs['PO-4'] || rawPoData;
+          setLockedSkuOrder(computeSkuOrder(basePo));
+        } else {
+          setLockedSkuOrder([]);
+        }
+        setLockSort(!lockSort);
       };
 
       const rawPoData = allPOs[activePO];
@@ -1488,6 +1596,13 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
               >
                 No Order ({skuZero})
               </button>
+              <button
+                className={`filter-btn ${lockSort ? 'active' : ''}`}
+                onClick={handleLockSortToggle}
+                title="Lock PO-4 SKU order and reuse it across all POs"
+              >
+                Lock Sort
+              </button>
             </div>
           </div>
 
@@ -1530,6 +1645,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
               activePO={activePO}
               isApproved={isApproved}
               onApprovalChange={handleApprovalChange}
+              lockSort={lockSort}
+              lockedSkuOrder={lockedSkuOrder}
             />
           )}
           {activeTab === 'size' && (
@@ -1539,6 +1656,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
               filterMode={filterMode}
               sortConfig={sizeSort}
               onSort={setSizeSort}
+              lockSort={lockSort}
+              lockedSkuOrder={lockedSkuOrder}
             />
           )}
           {activeTab === 'horiz' && (
@@ -1548,6 +1667,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
               filterMode={filterMode}
               sortConfig={horizSort}
               onSort={setHorizSort}
+              lockSort={lockSort}
+              lockedSkuOrder={lockedSkuOrder}
             />
           )}
           {activeTab === 'master' && (
@@ -1556,6 +1677,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
               search={search}
               sortConfig={masterSort}
               onSort={setMasterSort}
+              lockSort={lockSort}
+              lockedSkuOrder={lockedSkuOrder}
             />
           )}
 
