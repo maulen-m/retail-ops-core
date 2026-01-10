@@ -1125,6 +1125,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           });
         });
 
+        const isPO4 = rawPoData.po_name === 'PO-4';
+        const isPO5 = rawPoData.po_name === 'PO-5';
+
         // === SHARED PREP DAYS CALCULATION ===
         // Business rule: Each supplier ships only when ALL their approved items are prepared
         // CL items: shared Total_Prep_Clothes = ceil(1.3 * total_CL_weight / 100)
@@ -1135,7 +1138,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           s.sku_key.startsWith('CL_')
         );
         const totalClWeight = approvedCL.reduce((sum, s) => sum + (s.po_weight_kg || 0), 0);
-        const sharedClothesPrep = totalClWeight > 0 ? Math.ceil(1.3 * totalClWeight / 100) : 0;
+        const prepOverride = isPO5 ? (rawPoData.prep_days_clothes || rawPoData.summary?.prep_days_clothes) : null;
+        const sharedClothesPrep = (Number.isFinite(prepOverride) && prepOverride > 0)
+          ? prepOverride
+          : (totalClWeight > 0 ? Math.ceil(1.3 * totalClWeight / 100) : 0);
         const sharedElsPrep = 1; // ELS always 1
 
         // Recalculate SKU-level data
@@ -1146,15 +1152,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           // Recalculate unit_cogs with new FX rates
           const unit_cogs = (sku.base_cost_cny || 0) * cnyKzt + (sku.weight_per_unit_kg || 0) * DLV_RATE * usdKzt;
 
-          // Target = d_adjusted * t_post_days
-          const target = d_adjusted * (sku.t_post_days || R);
+          // Target = d_adjusted * t_post_days (PO-4 uses backend target)
+          const target = isPO4 ? (sku.target || 0) : d_adjusted * (sku.t_post_days || R);
 
           // Pre-arrival calculation:
           // For PO-4 (base): use backend's pre_arrival directly (adjusted for demand multiplier)
           // For PO-5+: use backend's pre_arrival + inbound adjustment from user un-approvals
           // effective_L = L + shared_prep_days (shared per supplier type)
-          const sku_prep = sku.sku_key.startsWith('CL_') ? sharedClothesPrep :
-                           sku.sku_key.startsWith('ELS_') ? sharedElsPrep : 3; // fallback
+          const sku_prep = isPO4
+            ? (sku.prep_days || (sku.sku_key.startsWith('CL_') ? sharedClothesPrep : sharedElsPrep))
+            : (sku.sku_key.startsWith('CL_') ? sharedClothesPrep :
+               sku.sku_key.startsWith('ELS_') ? sharedElsPrep : 3); // fallback
           const effective_L = L + sku_prep;
           const consumption = d_adjusted * effective_L;
 
@@ -1162,9 +1170,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           // Backend pre_arrival = stock_at_msg + active_inbound - consumption_msg_to_arr
           // If multiplier changed, we need to recalculate from scratch
           // If only approvals changed, we adjust backend's value
-          const inbound_adj = inboundAdjustment[sku.sku_key] || 0;
+          const inbound_adj = isPO4 ? 0 : (inboundAdjustment[sku.sku_key] || 0);
           let pre_arrival;
-          if (mult === 1.0) {
+          if (isPO4) {
+            pre_arrival = sku.pre_arrival || 0;
+          } else if (mult === 1.0) {
             // No demand change: use backend's pre_arrival, adjust for unapprovals
             pre_arrival = Math.max(0, (sku.pre_arrival || 0) + inbound_adj);
           } else {
@@ -1177,16 +1187,18 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           }
 
           // Order qty = max(0, target - pre_arrival)
-          const order_qty = Math.max(0, Math.round(target - pre_arrival));
+          const order_qty = isPO4 ? (sku.po_qty_total || 0) : Math.max(0, Math.round(target - pre_arrival));
 
           // Weight and prep days
           // Use SHARED prep_days per supplier type (not per-SKU weight!)
           // Business rule: Supplier ships when ALL their items are prepared
           const weight_per_unit = sku.weight_per_unit_kg || 0.5;
           const po_weight = order_qty * weight_per_unit;
-          const prep_days = sku.sku_key.startsWith('CL_') ? sharedClothesPrep :
-                            sku.sku_key.startsWith('ELS_') ? sharedElsPrep :
-                            Math.max(1, Math.ceil(1.3 * po_weight / 100)); // fallback for unknown
+          const prep_days = isPO4
+            ? (sku.prep_days || (sku.sku_key.startsWith('CL_') ? sharedClothesPrep : sharedElsPrep))
+            : (sku.sku_key.startsWith('CL_') ? sharedClothesPrep :
+               sku.sku_key.startsWith('ELS_') ? sharedElsPrep :
+               Math.max(1, Math.ceil(1.3 * po_weight / 100))); // fallback for unknown
 
           // Dates: Send = Msg + Prep, Arrival = Send + L
           const po_message_date = sku.po_message_date || getTodayDate();
@@ -1218,7 +1230,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
           // Recalculate size_orders based on multiplier
           const size_orders = {};
-          if (sku.size_orders) {
+          if (isPO4 && sku.size_orders) {
+            Object.entries(sku.size_orders).forEach(([size, origQty]) => {
+              size_orders[size] = origQty;
+            });
+          } else if (sku.size_orders) {
             const totalOriginal = Object.values(sku.size_orders).reduce((a, b) => a + b, 0);
             if (totalOriginal > 0 && order_qty > 0) {
               Object.entries(sku.size_orders).forEach(([size, origQty]) => {
@@ -1275,6 +1291,25 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           const weight_per_unit = parentSku?.weight_per_unit_kg || 0.5;
           const unit_cogs = parentSku?.unit_cogs || size.unit_cogs || 5000;
 
+          if (isPO4) {
+            const order_qty = size.order_qty || 0;
+            const po_weight = order_qty * weight_per_unit;
+            const prep_days = size.prep_days || parentSku?.prep_days || 1;
+            const po_send_date = size.po_send_date || parentSku?.po_send_date || rawPoData.po_send_date;
+            const est_arr_date = size.est_arr_date || parentSku?.est_arr_date || rawPoData.est_arr_date;
+            return {
+              ...size,
+              d_size_adjusted: d_adjusted,
+              order_qty,
+              weight_kg: Math.round(po_weight * 100) / 100,
+              prep_days,
+              po_send_date,
+              est_arr_date,
+              days_until_arrival: prep_days + L,
+              po_cogs_kzt: Math.round(order_qty * unit_cogs)
+            };
+          }
+
           const target = d_adjusted * (size.t_post_days || R);
           const effective_L = size.days_until_arrival || (L + 3);
           const consumption = d_adjusted * effective_L;
@@ -1282,7 +1317,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           const order_qty = Math.max(0, Math.round(target - pre_arrival));
 
           const po_weight = order_qty * weight_per_unit;
-          const prep_days = Math.max(1, Math.ceil(1.3 * po_weight / 100));
+          const prep_days = size.sku_key.startsWith('CL_') ? sharedClothesPrep :
+                            size.sku_key.startsWith('ELS_') ? sharedElsPrep :
+                            Math.max(1, Math.ceil(1.3 * po_weight / 100));
           const po_message_date = size.po_message_date || getTodayDate();
           const po_send_date = addDays(po_message_date, prep_days);
           const est_arr_date = addDays(po_send_date, L);

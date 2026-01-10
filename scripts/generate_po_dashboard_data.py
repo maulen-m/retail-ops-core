@@ -1677,7 +1677,8 @@ def _build_po_schedule(today: date, params, prep_days_clothes: int) -> tuple[dic
     po6_default = today + timedelta(days=2 * params.R)
 
     po5_prep_days = PO5_PREP_DAYS_OVERRIDE or prep_days_clothes
-    po5_latest = blackout_start - timedelta(days=po5_prep_days)
+    # Ensure PO-5 ship date is BEFORE blackout_start (blackout is inclusive)
+    po5_latest = blackout_start - timedelta(days=po5_prep_days + 1)
     po5_message = min(po5_default, po5_latest)
     if po5_message < today:
         po5_message = today
@@ -1774,7 +1775,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             "lead_time_L": L,
             "reorder_cycle_R": effective_R,
             "prep_model": base_data.get('prep_model', 'B'),
-            "prep_days_clothes": base_data.get('prep_days_clothes', 1),
+            "prep_days_clothes": po5_prep_days if po_num == 5 else base_data.get('prep_days_clothes', 1),
             "roic_threshold_pct": base_data['roic_threshold_pct'],
             "summary": {
                 "total_skus": 0,
