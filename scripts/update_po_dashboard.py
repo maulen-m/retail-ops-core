@@ -34,20 +34,18 @@ def main():
         return 1
 
     print("\nStep 2: Updating HTML dashboard...")
+    html_result = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "scripts" / "generate_po_dashboard_html.py")],
+        capture_output=True,
+        text=True
+    )
+    if html_result.returncode != 0:
+        print(f"Error: {html_result.stderr}")
+        return 1
+    print(html_result.stdout)
+
     with open(DATA_FILE) as f:
         data = json.load(f)
-
-    with open(HTML_FILE) as f:
-        html = f.read()
-
-    # Replace the DATA constant with new data
-    data_str = json.dumps(data, indent=2)
-    pattern = r'const DATA = \{[\s\S]*?\};'
-    replacement = f'const DATA = {data_str};'
-    new_html = re.sub(pattern, replacement, html)
-
-    with open(HTML_FILE, 'w') as f:
-        f.write(new_html)
 
     print(f"Dashboard updated: {HTML_FILE}")
     print(f"  - SKUs: {data['summary']['total_skus']}")
