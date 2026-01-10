@@ -52,6 +52,9 @@ VALID_SIZES = {'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', 'XS',
                '26', '28', '30', '32', '34', '36', '38', '40', '42',
                'ONE_SIZE', 'ONESIZE', 'OS'}
 
+# PO-5 prep-days override (supplier will finish faster pre-holiday)
+PO5_PREP_DAYS_OVERRIDE = 18
+
 # Size-mix proxy mapping for SKUs that need demand distribution by size
 SIZE_MIX_PROXY = {
     "CL_NEW-CLO_MEN_TAICI_BLACK": "CL_NEW-CLO_MEN_TAICI_WHITE",
@@ -1673,7 +1676,8 @@ def _build_po_schedule(today: date, params, prep_days_clothes: int) -> tuple[dic
     po5_default = today + timedelta(days=params.R)
     po6_default = today + timedelta(days=2 * params.R)
 
-    po5_latest = blackout_start - timedelta(days=prep_days_clothes)
+    po5_prep_days = PO5_PREP_DAYS_OVERRIDE or prep_days_clothes
+    po5_latest = blackout_start - timedelta(days=po5_prep_days)
     po5_message = min(po5_default, po5_latest)
     if po5_message < today:
         po5_message = today
@@ -1746,6 +1750,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
     )
 
     prep_days_clothes = base_data.get("prep_days_clothes", 1)
+    po5_prep_days = PO5_PREP_DAYS_OVERRIDE or prep_days_clothes
 
     # Generate PO-5 through PO-10
     for po_num in range(5, 4 + num_pos):
@@ -1798,7 +1803,10 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             days_to_message = days_offset
 
             # Estimate prep days (use base as approximation)
-            prep_days = 1 if sku_key.startswith("ELS_") else prep_days_clothes
+            if sku_key.startswith("ELS_"):
+                prep_days = 1
+            else:
+                prep_days = po5_prep_days if po_num == 5 else prep_days_clothes
 
             # This PO's send and arrival dates
             po_send_date = po_message_date + timedelta(days=prep_days)
