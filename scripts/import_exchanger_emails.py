@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 import sys
@@ -22,6 +23,33 @@ def _parse_date(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _get_env(*keys: str) -> str | None:
+    for key in keys:
+        val = os.getenv(key)
+        if val:
+            return val
+    return None
+
+
+def _normalize_query(query: str) -> str:
+    # Allow semicolon-separated lists in .env, e.g., from:(a; b; c)
+    return re.sub(r"\s*;\s*", " OR ", query)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Import exchanger order emails from Gmail")
     parser.add_argument("--db", type=Path, default=None, help="Path to SQLite DB")
@@ -33,16 +61,30 @@ def main() -> int:
     parser.add_argument("--no-label", action="store_true", help="Do not label withdrawals")
     args = parser.parse_args()
 
+    _load_env_file(PROJECT_ROOT / ".env")
+
     username = os.getenv("GMAIL_USER")
     app_password = os.getenv("GMAIL_APP_PASSWORD")
     if not username or not app_password:
         print("Missing GMAIL_USER or GMAIL_APP_PASSWORD in environment")
         return 1
+    # App passwords are displayed with spaces; IMAP expects no spaces
+    app_password = app_password.replace(" ", "")
 
-    mailbox = args.mailbox or os.getenv("GMAIL_MAILBOX") or "INBOX"
-    query = args.query or os.getenv("GMAIL_QUERY")
+    mailbox = args.mailbox or _get_env(
+        "GMAIL_MAILBOX",
+        "GMAIL_MAILBOX_Exchengers",
+        "GMAIL_MAILBOX_Exchangers",
+    ) or "INBOX"
+    query = args.query or _get_env(
+        "GMAIL_QUERY",
+        "GMAIL_QUERY_Exchengers",
+        "GMAIL_QUERY_Exchangers",
+    )
     if args.since_days and not query:
         query = f"newer_than:{args.since_days}d"
+    if query:
+        query = _normalize_query(query)
 
     messages = fetch_messages(
         username=username,

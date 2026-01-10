@@ -73,16 +73,20 @@ def fetch_messages(
     """
     imap = imaplib.IMAP4_SSL("imap.gmail.com")
     imap.login(username, app_password)
-    imap.select(mailbox)
+    status, _ = imap.select(mailbox)
+    if status != "OK":
+        imap.logout()
+        raise ValueError(f"IMAP select failed for mailbox: {mailbox}")
 
     if query:
-        status, data = imap.search(None, "X-GM-RAW", f"{query}")
+        safe = query.replace("\\", "\\\\").replace('"', '\\"')
+        status, data = imap.search(None, "X-GM-RAW", f"\"{safe}\"")
     else:
         status, data = imap.search(None, "ALL")
 
     if status != "OK":
         imap.logout()
-        return []
+        raise ValueError(f"IMAP search failed for mailbox: {mailbox}")
 
     msg_ids = data[0].split()
     msg_ids = msg_ids[-limit:]

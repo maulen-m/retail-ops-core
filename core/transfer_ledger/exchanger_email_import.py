@@ -53,6 +53,16 @@ def _extract_order_id(subject: str) -> Optional[str]:
     return None
 
 
+def _extract_order_id_from_body(body: str) -> Optional[str]:
+    m = re.search(r"Order\s*ID\s*[:#]?\s*(\d{3,})", body, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"\bID\s*(\d{3,})\b", body, re.I)
+    if m:
+        return m.group(1)
+    return None
+
+
 def _extract_direction(subject: str, body: str) -> Optional[str]:
     m = re.search(r"\[(.+?)\]", subject)
     if m:
@@ -121,7 +131,7 @@ def parse_exchanger_email(msg: dict) -> Optional[dict]:
         return None
 
     status = _detect_status(subject)
-    order_id = _extract_order_id(subject)
+    order_id = _extract_order_id(subject) or _extract_order_id_from_body(body)
     direction = _extract_direction(subject, body)
     rate = _extract_rate(body)
     amount_usdt, amount_cny = _extract_amounts(body)
@@ -131,13 +141,11 @@ def parse_exchanger_email(msg: dict) -> Optional[dict]:
     message_id = msg.get("message_id") or ""
     message_date = msg.get("date")
 
-    exchanger_order_id = None
-    if order_id:
-        exchanger_order_id = f"{exchanger.upper()}:{order_id}"
-    elif message_id:
-        exchanger_order_id = f"{exchanger.upper()}:{message_id}"
-    else:
-        exchanger_order_id = f"{exchanger.upper()}:{hash(subject)}"
+    order_key = order_id or message_id or str(hash(subject))
+    order_key = order_key.strip().strip("<>").replace(" ", "")
+    exchanger_order_id = f"{exchanger.upper()}:{order_key}"
+    if not order_id:
+        order_id = order_key
 
     return {
         "exchanger_order_id": exchanger_order_id,
