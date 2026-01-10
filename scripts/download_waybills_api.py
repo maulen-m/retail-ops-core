@@ -19,7 +19,9 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -55,6 +57,10 @@ ALMATY_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_OUTPUT_DIR = data_path("excel_ui", "ActiveOrders", "waybills")
 DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
 DEFAULT_SHEET_NAME = "SALES_KSP_CRM_1"
+
+# Waybill retry (handles async generation after assemble)
+WAYBILL_RETRY_DELAY = int(os.environ.get("KASPI_WAYBILL_RETRY_DELAY", "20"))
+WAYBILL_RETRY_PASSES = int(os.environ.get("KASPI_WAYBILL_RETRY_PASSES", "1"))
 
 # Store code mapping
 STORE_MAP = {
@@ -497,7 +503,7 @@ def download_waybills_for_store(
     """
     downloaded = 0
     skipped_not_target = 0
-    missing_waybill = 0
+    missing_orders: list[str] = []
     already_exists = 0
     invalid_pdf = 0
     errors = []
@@ -573,7 +579,7 @@ def download_waybills_for_store(
                     print(f"      {order_code}: Waybill URL found via detail fetch")
 
         if not waybill_url:
-            missing_waybill += 1
+            missing_orders.append(order_code)
             if verbose:
                 print(f"      {order_code}: No waybill URL yet")
             continue
@@ -619,6 +625,57 @@ def download_waybills_for_store(
                 print(f"      ⚠️ Stopping {store_code}: too many consecutive failures")
             break
 
+    # Retry missing waybills (async generation after assemble)
+    if not dry_run and missing_orders and WAYBILL_RETRY_PASSES > 0:
+        for attempt in range(WAYBILL_RETRY_PASSES):
+            if WAYBILL_RETRY_DELAY > 0:
+                time.sleep(WAYBILL_RETRY_DELAY)
+            if verbose:
+                print(f"    Retrying missing waybills ({attempt + 1}/{WAYBILL_RETRY_PASSES})...")
+            still_missing: list[str] = []
+            for order_code in missing_orders:
+                output_path = output_dir / f"{order_code}.pdf"
+                if output_path.exists():
+                    already_exists += 1
+                    continue
+                detail = client.get_order(order_code)
+                if detail.success:
+                    waybill_url = client.get_waybill_url(detail.data)
+                else:
+                    waybill_url = None
+                if not waybill_url:
+                    still_missing.append(order_code)
+                    if verbose:
+                        print(f"      {order_code}: No waybill URL yet (retry)")
+                    continue
+                try:
+                    result = client.download_waybill(waybill_url, timeout=download_timeout)
+                    if result.success:
+                        if not _is_pdf_bytes(result.data):
+                            invalid_pdf += 1
+                            errors.append(f"{order_code}: Invalid PDF payload")
+                            if verbose:
+                                print(f"      {order_code}: Invalid PDF payload")
+                        else:
+                            output_path.write_bytes(result.data)
+                            downloaded += 1
+                            if verbose:
+                                print(f"      {order_code}: Downloaded OK (retry)")
+                    else:
+                        errors.append(f"{order_code}: {result.error}")
+                        still_missing.append(order_code)
+                        if verbose:
+                            print(f"      {order_code}: Download failed - {result.error}")
+                except Exception as e:
+                    errors.append(f"{order_code}: {str(e)}")
+                    still_missing.append(order_code)
+                    if verbose:
+                        print(f"      {order_code}: Exception - {e}")
+            missing_orders = still_missing
+            if not missing_orders:
+                break
+
+    missing_waybill = len(missing_orders)
     return {
         'downloaded': downloaded,
         'skipped_not_target': skipped_not_target,

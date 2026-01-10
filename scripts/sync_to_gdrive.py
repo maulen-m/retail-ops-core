@@ -24,6 +24,7 @@ import argparse
 import math
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from datetime import datetime, date, timedelta
@@ -53,6 +54,22 @@ SYNC_COLS_END = "AZ"
 
 READY_STATUS = "Ожидает передачи курьеру"
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
+GDRIVE_BACKUP_ROOT = Path.home() / "Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business"
+GDRIVE_BACKUP_SUBDIR = "Kaspi_drive_sales_backups"
+GDRIVE_BACKUP_PREFIX = "Kaspi_drive_sales_v1"
+
+
+def backup_gdrive_file(gdrive_path: Path) -> Optional[Path]:
+    """Create a timestamped backup of the Google Drive sales file before edits."""
+    if not gdrive_path.exists():
+        raise FileNotFoundError(f"Google Drive file not found: {gdrive_path}")
+
+    backup_root = GDRIVE_BACKUP_ROOT / GDRIVE_BACKUP_SUBDIR
+    backup_root.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(ALMATY_TZ).strftime("%Y-%m-%d_%H%M%S")
+    backup_path = backup_root / f"{GDRIVE_BACKUP_PREFIX}_{ts}.xlsx"
+    shutil.copy2(gdrive_path, backup_path)
+    return backup_path
 
 
 def resolve_crm_path(path: Optional[Path]) -> Path:
@@ -204,6 +221,10 @@ def sync_new_rows_to_gdrive(
             f"Google Drive file not found: {gdrive_path}. "
             "The file must exist with the 'drive' table already set up."
         )
+
+    if not dry_run:
+        backup_path = backup_gdrive_file(gdrive_path)
+        print(f"  Backup saved: {backup_path}")
 
     app = None
     try:
@@ -390,6 +411,10 @@ def sync_pending_orders_to_gdrive(
             f"Google Drive file not found: {gdrive_path}. "
             "The file must exist with the 'drive' table already set up."
         )
+
+    if not dry_run:
+        backup_path = backup_gdrive_file(gdrive_path)
+        print(f"  Backup saved: {backup_path}")
 
     app = None
     try:

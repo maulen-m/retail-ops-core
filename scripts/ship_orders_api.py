@@ -17,7 +17,9 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -85,6 +87,10 @@ HEAVY_ITEMS = {
     'CL_NK_MEN_LINE51_WHITE',
     'CL_OC_MEN_LINE52_BLACK',  # Print 5v1 SKU prefix
 }
+
+# Assemble verification (handles delayed state updates / async waybill creation)
+ASSEMBLE_VERIFY_RETRIES = int(os.environ.get("KASPI_ASSEMBLE_VERIFY_RETRIES", "3"))
+ASSEMBLE_VERIFY_DELAY = float(os.environ.get("KASPI_ASSEMBLE_VERIFY_DELAY", "2"))
 
 
 @dataclass
@@ -567,18 +573,21 @@ def ship_orders(
                 shipped += 1
                 continue
 
-            # Helper: fallback assemble by order code
-            def _already_assembled() -> bool:
-                try:
-                    detail = client.get_order(order_id)
-                    if detail.success:
-                        attrs = detail.data.get('attributes', {})
-                        if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
-                            if verbose:
-                                print("      -> Already assembled, skipping")
-                            return True
-                except Exception:
-                    pass
+            # Helper: verify assemble state (handles delayed state updates)
+            def _wait_for_assembled() -> bool:
+                for attempt in range(ASSEMBLE_VERIFY_RETRIES):
+                    try:
+                        detail = client.get_order(order_id)
+                        if detail.success:
+                            attrs = detail.data.get('attributes', {})
+                            if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
+                                if verbose:
+                                    print("      -> Already assembled, skipping")
+                                return True
+                    except Exception:
+                        pass
+                    if attempt < ASSEMBLE_VERIFY_RETRIES - 1:
+                        time.sleep(ASSEMBLE_VERIFY_DELAY)
                 return False
 
             def _fallback_assemble(reason: str) -> bool:
@@ -592,14 +601,14 @@ def ship_orders(
                         return True
                     err_text = str(result_fallback.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
-                        if _already_assembled():
+                        if _wait_for_assembled():
                             return True
                     errors.append(f"{order_id}: API error - {result_fallback.error} (fallback)")
                     if verbose:
                         print(f"      -> ERROR: {result_fallback.error} (fallback)")
                 except Exception as exc:
                     if "not found" in str(exc).lower() or "resource not found" in str(exc).lower():
-                        if _already_assembled():
+                        if _wait_for_assembled():
                             return True
                     errors.append(f"{order_id}: {str(exc)} (fallback)")
                     if verbose:
