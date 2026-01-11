@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -18,6 +19,20 @@ from core.transfer_ledger.binance_withdraw_import import import_binance_withdraw
 
 def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _date_bounds(d: date, tz: ZoneInfo, end: bool) -> datetime:
@@ -54,6 +69,8 @@ def main() -> int:
     parser.add_argument("--no-auto-allocate", action="store_true", help="Disable auto PO allocation")
     parser.add_argument("--no-auto-label", action="store_true", help="Disable auto labeling from exchanger orders")
     args = parser.parse_args()
+
+    _load_env_file(PROJECT_ROOT / ".env")
 
     tz = ZoneInfo(args.tz)
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -19,6 +20,20 @@ from core.transfer_ledger.binance_import import import_binance_orders
 
 def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _date_bounds(d: date, tz: ZoneInfo, end: bool) -> datetime:
@@ -56,6 +71,8 @@ def main() -> int:
     parser.add_argument("--no-ledger", action="store_true", help="Do not create ledger entries")
     parser.add_argument("--include-non-completed", action="store_true", help="Allow non-completed orders into ledger")
     args = parser.parse_args()
+
+    _load_env_file(PROJECT_ROOT / ".env")
 
     tz = ZoneInfo(args.tz)
 
