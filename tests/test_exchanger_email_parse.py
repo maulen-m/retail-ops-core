@@ -25,7 +25,7 @@ def test_parse_btcchange24_email():
     assert order["direction"] == "Tether TRC20 -> WeChat"
     assert order["amount_usdt"] == 779.41
     assert order["amount_cny"] == 5313.0
-    assert order["rate_usdt_cny"] == 6.8615
+    assert abs(order["rate_usdt_cny"] - (5313.0 / 779.41)) < 1e-6
     assert order["deposit_address"].startswith("TDUa2o")
 
 
@@ -49,3 +49,4 @@ def test_parse_uachanger_email():
     assert order["order_id"] == "1985118"
     assert order["status"] == "NEW"
     assert order["deposit_address"].startswith("TVyWst")
+    assert abs(order["rate_usdt_cny"] - (5000.0 / 733.08387)) < 1e-6

@@ -29,3 +29,4 @@
 ## Exchanger orders (Gmail)
 - `exchanger_orders` stores parsed order events from emails
 - Matching is by deposit address first, then amount/date tolerance
+- `rate_usdt_cny` is derived as `amount_cny / amount_usdt` when both are present

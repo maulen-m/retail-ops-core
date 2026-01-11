@@ -16,6 +16,8 @@ STATUS_MAP = {
     "NEW": ["new exchange", "order for exchange"],
     "IN_PROCESS": ["in payout processing", "waiting for confirmation"],
     "COMPLETED": ["success done", "completed order"],
+    "PAID": ["paid order"],
+    "CANCELLED": ["order deleted"],
 }
 
 
@@ -138,6 +140,10 @@ def parse_exchanger_email(msg: dict) -> Optional[dict]:
     deposit_address = _extract_address(body)
     receiver_account = _extract_receiver(body)
 
+    # Ignore non-order emails (e.g., OTP, registration) that lack core fields
+    if not order_id and not amount_usdt and not amount_cny and not deposit_address and not direction:
+        return None
+
     message_id = msg.get("message_id") or ""
     message_date = msg.get("date")
 
@@ -146,6 +152,12 @@ def parse_exchanger_email(msg: dict) -> Optional[dict]:
     exchanger_order_id = f"{exchanger.upper()}:{order_key}"
     if not order_id:
         order_id = order_key
+
+    derived_rate = None
+    if amount_usdt and amount_cny and amount_usdt > 0:
+        derived_rate = amount_cny / amount_usdt
+    if derived_rate:
+        rate = derived_rate
 
     return {
         "exchanger_order_id": exchanger_order_id,

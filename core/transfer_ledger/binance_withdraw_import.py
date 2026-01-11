@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from .repository import upsert_binance_withdrawal
+from .repository import upsert_binance_withdrawal, ledger_entry_exists
 from .service import post_binance_withdrawal, auto_allocate_entry_to_active_po
 from .exchanger_matching import match_exchanger_order_for_withdrawal
 
@@ -101,24 +101,28 @@ def import_binance_withdrawals(
                 inserted += 1
 
             if write_ledger and wd["coin"] == ledger_coin:
-                entry_id = post_binance_withdrawal(
-                    withdraw_id=wd["withdraw_id"],
-                    amount_usdt=wd["amount"],
-                    network=wd.get("network") or "",
-                    address=wd.get("address") or "",
-                    apply_time=wd.get("apply_time"),
-                    fee_usdt=wd.get("transaction_fee") or 0.0,
-                    source=wd.get("source", "BINANCE_WITHDRAW"),
-                    counterparty_label=wd.get("counterparty_label") or "",
-                    exchanger_order_id=wd.get("exchanger_order_id") or "",
-                    db_path=db_path,
-                )
-                ledger_entries += 1
-                if auto_allocate:
-                    try:
-                        auto_allocate_entry_to_active_po(entry_id, db_path=db_path)
-                    except Exception as exc:
-                        errors.append(f"auto-allocate failed for {wd['withdraw_id']}: {exc}")
+                ref_id = wd["withdraw_id"]
+                if not ledger_entry_exists(
+                    "BINANCE_WITHDRAWAL", ref_id, currency=ledger_coin, db_path=db_path
+                ):
+                    entry_id = post_binance_withdrawal(
+                        withdraw_id=wd["withdraw_id"],
+                        amount_usdt=wd["amount"],
+                        network=wd.get("network") or "",
+                        address=wd.get("address") or "",
+                        apply_time=wd.get("apply_time"),
+                        fee_usdt=wd.get("transaction_fee") or 0.0,
+                        source=wd.get("source", "BINANCE_WITHDRAW"),
+                        counterparty_label=wd.get("counterparty_label") or "",
+                        exchanger_order_id=wd.get("exchanger_order_id") or "",
+                        db_path=db_path,
+                    )
+                    ledger_entries += 1
+                    if auto_allocate:
+                        try:
+                            auto_allocate_entry_to_active_po(entry_id, db_path=db_path)
+                        except Exception as exc:
+                            errors.append(f"auto-allocate failed for {wd['withdraw_id']}: {exc}")
         except Exception as exc:
             errors.append(str(exc))
 

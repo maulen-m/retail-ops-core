@@ -31,5 +31,13 @@ Optional env vars:
 - `GMAIL_MAILBOX` (label/mailbox)
 - `GMAIL_QUERY` (Gmail search query)
 
+## Auto FX derivation (USDT/KZT + USDT/CNY)
+Use `scripts/derive_fx_rates.py` to compute daily FX from:
+- Binance P2P BUY orders (USDT/KZT)
+- Exchanger emails (USDT/CNY) — derived as `amount_cny / amount_usdt`
+
+This script upserts `dim_fx_rates` with `usdt_kzt`, `usdt_cny`, and derived `cny_kzt`.
+USD/KZT and delivery rate are carried from the latest available row or fall back to defaults.
+
 ## PO funding allocations (many-to-many)
 Use `transfer_ledger_cli.py allocate-po` to map any ledger entry to an internal PO ID.
