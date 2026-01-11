@@ -6,11 +6,14 @@ Pipeline:
 2) Import Binance P2P BUY orders (USDT/KZT)
 3) Derive FX rates (USDT/KZT + USDT/CNY) and upsert dim_fx_rates
 4) Import Binance withdrawals (USDT TRC20) and post ledger entries
+5) Import Binance deposits + universal transfers
+6) Snapshot funding wallet balances + account snapshots
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 from datetime import date, datetime, time, timedelta, timezone
@@ -22,12 +25,19 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.gmail_imap_client import fetch_messages
 from core.transfer_ledger.exchanger_email_import import parse_exchanger_email
-from core.transfer_ledger.repository import upsert_exchanger_order, insert_exchanger_event
+from core.transfer_ledger.repository import (
+    upsert_exchanger_order,
+    insert_exchanger_event,
+    insert_funding_balance_snapshot,
+    upsert_binance_account_snapshot,
+)
 from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order
 from core.integrations.binance_c2c_client import BinanceC2CClient
 from core.transfer_ledger.binance_import import import_binance_orders
 from core.integrations.binance_wallet_client import BinanceWalletClient
 from core.transfer_ledger.binance_withdraw_import import import_binance_withdrawals
+from core.transfer_ledger.binance_deposit_import import import_binance_deposits
+from core.transfer_ledger.binance_transfer_import import import_binance_transfers
 from core.transfer_ledger.fx_derive import derive_daily_fx_rows
 from core.db import get_db
 
@@ -279,6 +289,159 @@ def import_withdrawals(db_path: Path, days: int) -> dict:
     }
 
 
+def import_deposits(db_path: Path, days: int, coin: str = "USDT") -> dict:
+    client = BinanceWalletClient()
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+    start_dt = _date_bounds(start_date, end=False)
+    end_dt = _date_bounds(end_date, end=True)
+
+    total_rows = 0
+    total_inserted = 0
+    errors: list[str] = []
+
+    windows = _window_ranges(start_dt, end_dt, max_days=90)
+    for win_start, win_end in windows:
+        try:
+            raw_deposits = client.iter_deposits(
+                coin=coin,
+                start_time_ms=_to_ms(win_start),
+                end_time_ms=_to_ms(win_end),
+            )
+        except Exception as exc:
+            errors.append(str(exc))
+            continue
+        total_rows += len(raw_deposits)
+        result = import_binance_deposits(raw_deposits, db_path=db_path)
+        total_inserted += result["inserted"]
+        errors.extend(result["errors"])
+
+    return {
+        "fetched": total_rows,
+        "inserted": total_inserted,
+        "errors": errors,
+    }
+
+
+def import_transfers(db_path: Path, days: int, types: list[str]) -> dict:
+    client = BinanceWalletClient()
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+    start_dt = _date_bounds(start_date, end=False)
+    end_dt = _date_bounds(end_date, end=True)
+
+    total_rows = 0
+    total_inserted = 0
+    errors: list[str] = []
+
+    windows = _window_ranges(start_dt, end_dt, max_days=180)
+    for transfer_type in types:
+        for win_start, win_end in windows:
+            try:
+                raw_rows = client.iter_universal_transfers(
+                    transfer_type=transfer_type,
+                    start_time_ms=_to_ms(win_start),
+                    end_time_ms=_to_ms(win_end),
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+                continue
+            total_rows += len(raw_rows)
+            result = import_binance_transfers(raw_rows, db_path=db_path)
+            total_inserted += result["inserted"]
+            errors.extend(result["errors"])
+
+    return {
+        "fetched": total_rows,
+        "inserted": total_inserted,
+        "errors": errors,
+    }
+
+
+def snapshot_funding_balances(db_path: Path, asset: str | None = "USDT") -> dict:
+    client = BinanceWalletClient()
+    errors: list[str] = []
+    try:
+        rows = client.get_funding_assets(asset=asset)
+    except Exception as exc:
+        return {"captured": 0, "errors": [str(exc)]}
+
+    snapshot_time = datetime.now().isoformat()
+    captured = 0
+    for row in rows:
+        asset_name = (row.get("asset") or "").upper()
+        if not asset_name:
+            continue
+        try:
+            free = float(row.get("free", 0) or 0)
+            locked = float(row.get("locked", 0) or 0)
+        except (TypeError, ValueError):
+            free = None
+            locked = None
+        total = free + locked if free is not None and locked is not None else None
+        insert_funding_balance_snapshot(
+            {
+                "snapshot_time": snapshot_time,
+                "asset": asset_name,
+                "free": free,
+                "locked": locked,
+                "total": total,
+                "raw_json": json.dumps(row, ensure_ascii=False),
+                "source": "BINANCE_FUNDING_BAL",
+            },
+            db_path=db_path,
+        )
+        captured += 1
+    return {"captured": captured, "errors": errors}
+
+
+def import_account_snapshots(db_path: Path, days: int, account_type: str = "SPOT") -> dict:
+    client = BinanceWalletClient()
+    end_date = date.today()
+    start_date = end_date - timedelta(days=min(days, 30))
+    start_dt = _date_bounds(start_date, end=False)
+    end_dt = _date_bounds(end_date, end=True)
+
+    total = 0
+    inserted = 0
+    errors: list[str] = []
+
+    windows = _window_ranges(start_dt, end_dt, max_days=30)
+    for win_start, win_end in windows:
+        try:
+            rows = client.list_account_snapshots(
+                account_type=account_type,
+                start_time_ms=_to_ms(win_start),
+                end_time_ms=_to_ms(win_end),
+                limit=30,
+            )
+        except Exception as exc:
+            errors.append(str(exc))
+            continue
+        total += len(rows)
+        for row in rows:
+            try:
+                snapshot_time = row.get("updateTime") or row.get("snapshotTime")
+                snapshot_id = f"{account_type}:{snapshot_time or datetime.now().isoformat()}"
+                data = row.get("data") or {}
+                total_btc = data.get("totalAssetOfBtc") if isinstance(data, dict) else None
+                payload = {
+                    "snapshot_id": snapshot_id,
+                    "account_type": account_type,
+                    "snapshot_time": snapshot_time,
+                    "total_asset_btc": total_btc,
+                    "data_json": json.dumps(data, ensure_ascii=False),
+                    "raw_json": json.dumps(row, ensure_ascii=False),
+                    "source": "BINANCE_SNAPSHOT",
+                }
+                if upsert_binance_account_snapshot(payload, db_path=db_path):
+                    inserted += 1
+            except Exception as exc:
+                errors.append(str(exc))
+
+    return {"fetched": total, "inserted": inserted, "errors": errors}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Autonomous transfer ledger sync")
     parser.add_argument("--db", type=Path, default=DB_PATH, help="Path to SQLite DB")
@@ -290,6 +453,11 @@ def main() -> int:
     parser.add_argument("--statuses", default="COMPLETED", help="Exchanger statuses for FX")
     parser.add_argument("--current-usdt", type=float, default=None, help="Override current USDT balance")
     parser.add_argument("--reports", action="store_true", help="Generate Markdown reports")
+    parser.add_argument("--transfer-types", default="MAIN_FUNDING,FUNDING_MAIN", help="Universal transfer types")
+    parser.add_argument("--skip-deposits", action="store_true", help="Skip deposit history")
+    parser.add_argument("--skip-transfers", action="store_true", help="Skip universal transfer history")
+    parser.add_argument("--skip-funding-balance", action="store_true", help="Skip funding balance snapshot")
+    parser.add_argument("--skip-snapshots", action="store_true", help="Skip account snapshots")
     args = parser.parse_args()
 
     _load_env_file(PROJECT_ROOT / ".env")
@@ -307,7 +475,7 @@ def main() -> int:
 
     statuses = [s.strip().upper() for s in args.statuses.split(",") if s.strip()]
 
-    print("[1/4] Importing exchanger emails...")
+    print("[1/8] Importing exchanger emails...")
     email_res = import_emails(args.db, mailbox, query, args.since_days, args.limit)
     print(
         f"  parsed={email_res['parsed']} inserted={email_res['inserted']} "
@@ -318,7 +486,7 @@ def main() -> int:
         for e in email_res["errors"][:5]:
             print(f"    - {e}")
 
-    print("[2/4] Importing Binance P2P BUY orders...")
+    print("[2/8] Importing Binance P2P BUY orders...")
     p2p_res = import_p2p(args.db, args.days)
     print(f"  fetched={p2p_res['fetched']} inserted={p2p_res['inserted']} ledger_entries={p2p_res['ledger_entries']}")
     if p2p_res["errors"]:
@@ -326,7 +494,7 @@ def main() -> int:
         for e in p2p_res["errors"][:5]:
             print(f"    - {e}")
 
-    print("[3/4] Deriving FX rates...")
+    print("[3/8] Deriving FX rates...")
     end_date = date.today()
     start_date = end_date - timedelta(days=args.days)
     fx_res = derive_fx(args.db, start_date, end_date, statuses)
@@ -336,7 +504,7 @@ def main() -> int:
         for e in fx_res["errors"]:
             print(f"    - {e}")
 
-    print("[4/4] Importing Binance withdrawals...")
+    print("[4/8] Importing Binance withdrawals...")
     wd_res = import_withdrawals(args.db, args.days)
     print(f"  fetched={wd_res['fetched']} inserted={wd_res['inserted']} ledger_entries={wd_res['ledger_entries']}")
     if wd_res["errors"]:
@@ -344,8 +512,43 @@ def main() -> int:
         for e in wd_res["errors"][:5]:
             print(f"    - {e}")
 
+    if not args.skip_deposits:
+        print("[5/8] Importing Binance deposits...")
+        dep_res = import_deposits(args.db, args.days)
+        print(f"  fetched={dep_res['fetched']} inserted={dep_res['inserted']}")
+        if dep_res["errors"]:
+            print("  deposit errors (first 5):")
+            for e in dep_res["errors"][:5]:
+                print(f"    - {e}")
+
+    if not args.skip_transfers:
+        print("[6/8] Importing Binance transfers...")
+        types = [t.strip() for t in args.transfer_types.split(",") if t.strip()]
+        trans_res = import_transfers(args.db, args.days, types=types)
+        print(f"  fetched={trans_res['fetched']} inserted={trans_res['inserted']}")
+        if trans_res["errors"]:
+            print("  transfer errors (first 5):")
+            for e in trans_res["errors"][:5]:
+                print(f"    - {e}")
+
+    if not args.skip_funding_balance:
+        print("[7/8] Snapshotting funding wallet balances...")
+        bal_res = snapshot_funding_balances(args.db)
+        print(f"  captured={bal_res['captured']}")
+        if bal_res["errors"]:
+            print("  funding balance errors (first 5):")
+            for e in bal_res["errors"][:5]:
+                print(f"    - {e}")
+
+    if not args.skip_snapshots:
+        snap_res = import_account_snapshots(args.db, args.days)
+        if snap_res["errors"]:
+            print("  snapshot errors (first 5):")
+            for e in snap_res["errors"][:5]:
+                print(f"    - {e}")
+
     if args.reports:
-        print("[5/5] Generating reports...")
+        print("[8/8] Generating reports...")
         cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "generate_transfer_ledger_reports.py"), "--days", str(args.days)]
         if args.current_usdt is not None:
             cmd += ["--current-usdt", str(args.current_usdt)]
