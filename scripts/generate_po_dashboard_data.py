@@ -13,6 +13,7 @@ import os
 import json
 import statistics
 import csv
+import pandas as pd
 from datetime import date, timedelta
 from pathlib import Path
 from math import ceil
@@ -45,6 +46,7 @@ DIAGNOSTICS_PATH = PROJECT_ROOT / "exports" / "demand_diagnostics.csv"
 STOCK_DIAGNOSTICS_PATH = PROJECT_ROOT / "exports" / "stock_rebuild_diagnostics.csv"
 SUPPLIER_EXPORT_PATH = PROJECT_ROOT / "exports" / "po_supplier_export"
 SUPPLIER_SUMMARY_PATH = PROJECT_ROOT / "exports" / "po_supplier_summary"
+DIM_SKU_EXCEL_PATH = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
 ROIC_THRESHOLD = 0.15  # 15% - for display only, not filtering
 
 # Valid size codes (filter out messy data like 'CB', '0', 'DRIVE', 'NAN')
@@ -59,6 +61,39 @@ PO5_PREP_DAYS_OVERRIDE = 18
 SIZE_MIX_PROXY = {
     "CL_NEW-CLO_MEN_TAICI_BLACK": "CL_NEW-CLO_MEN_TAICI_WHITE",
 }
+
+_DIM_SKU_AVG_CACHE: dict[str, float] | None = None
+
+
+def load_dim_sku_avg_prices(path: Path) -> dict[str, float]:
+    """Load Avg_price_90D from Inventory_Core Dim_SKU sheet (fallback for no-sales SKUs)."""
+    global _DIM_SKU_AVG_CACHE
+    if _DIM_SKU_AVG_CACHE is not None:
+        return _DIM_SKU_AVG_CACHE
+
+    if not path.exists():
+        _DIM_SKU_AVG_CACHE = {}
+        return _DIM_SKU_AVG_CACHE
+
+    try:
+        df = pd.read_excel(path, sheet_name="Dim_SKU", usecols=["SKU_key", "Avg_price_90D"])
+    except Exception:
+        _DIM_SKU_AVG_CACHE = {}
+        return _DIM_SKU_AVG_CACHE
+
+    df = df.dropna(subset=["SKU_key", "Avg_price_90D"])
+    avg_map: dict[str, float] = {}
+    for _, row in df.iterrows():
+        sku_key = str(row["SKU_key"]).strip()
+        try:
+            price = float(row["Avg_price_90D"])
+        except Exception:
+            continue
+        if sku_key and price > 0:
+            avg_map[sku_key] = price
+
+    _DIM_SKU_AVG_CACHE = avg_map
+    return _DIM_SKU_AVG_CACHE
 
 
 def get_stock_snapshot_date() -> str:
@@ -460,7 +495,8 @@ def get_all_active_skus(conn) -> list[dict]:
             color,
             base_cost_cny,
             weight_kg,
-            product_type
+            product_type,
+            avg_sell_price_kzt_used
         FROM dim_sku
         WHERE active_flag = 1
     """)
@@ -807,6 +843,8 @@ def generate_po_data(
     skipped_skus: list[dict] = []
     overrides: dict[str, float] = {}
 
+    avg_price_lookup: dict[str, float] = {}
+
     if not use_fixture:
         # Initialize DemandEstimator with DB anchors (stock-first approach)
         print("Initializing DemandEstimator (stock-first, DB anchors)...")
@@ -846,6 +884,8 @@ def generate_po_data(
         # Get all active SKUs
         skus = get_all_active_skus(conn)
         print(f"Found {len(skus)} active SKUs in dim_sku")
+
+        avg_price_lookup = load_dim_sku_avg_prices(DIM_SKU_EXCEL_PATH)
     else:
         fixture_by_sku = {case["sku_key"]: case for case in fixture_cases}
         skus = [
@@ -934,7 +974,18 @@ def generate_po_data(
                 AND order_date <= ?
             """, (sku_key, DATA_CUTOFF, DATA_CUTOFF)).fetchone()
 
-            avg_sell_price = price_row['avg_price'] if price_row and price_row['avg_price'] else 15000
+            avg_sell_price = price_row['avg_price'] if price_row and price_row['avg_price'] else None
+            if not avg_sell_price:
+                avg_sell_price = avg_price_lookup.get(sku_key)
+                if avg_sell_price:
+                    notes_list.append("AVG_PRICE_DIM_SKU")
+            if not avg_sell_price:
+                avg_sell_price = sku.get("avg_sell_price_kzt_used")
+                if avg_sell_price:
+                    notes_list.append("AVG_PRICE_DIM_SKU_DB")
+            if not avg_sell_price:
+                avg_sell_price = 15000
+                notes_list.append("AVG_PRICE_FALLBACK_DEFAULT")
 
             # Calculate NET revenue (commission, delivery fee, VAT schedule)
             # Formula: (price * (1 - commission) - delivery_fee) * (1 - VAT)

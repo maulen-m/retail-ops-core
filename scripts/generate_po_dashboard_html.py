@@ -436,25 +436,46 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       XLSX.utils.book_append_sheet(wb, ws3, 'Size Horizontal');
 
       // Sheet 4: Master Params (economics)
-      const masterData = (poData.sku_level || []).map(s => ({
-        'SKU Key': s.sku_key,
-        'D/day (Initial)': s.d_sku,
-        'Base Cost (CNY)': s.base_cost_cny,
-        'Weight/Unit (kg)': s.weight_per_unit_kg,
-        'Unit COGS (KZT)': s.unit_cogs,
-        'Avg Sell Price': s.avg_sell_price,
-        'Net Rev/Unit': s.net_revenue_unit,
-        'Profit/Unit': s.profit_unit,
-        'PO Base (CNY)': s.po_base_cost_cny,
-        'PO Base (KZT)': s.po_base_cost_kzt,
-        'PO Dlv (USD)': s.po_dlv_usd,
-        'PO Dlv (KZT)': s.po_dlv_kzt,
-        'PO COGS (KZT)': s.po_cogs_kzt,
-        'Monthly Profit': s.monthly_profit,
-        'K_avg': s.k_avg,
-        'ROIC %': s.roic_pct,
-        'Margin %': s.profit_margin_pct
-      }));
+      const sizeStockMap = {};
+      const sizeSet = new Set();
+      (poData.size_level || []).forEach(row => {
+        if (!row.size) return;
+        sizeSet.add(row.size);
+        if (!sizeStockMap[row.sku_key]) sizeStockMap[row.sku_key] = {};
+        const current = sizeStockMap[row.sku_key][row.size] || 0;
+        sizeStockMap[row.sku_key][row.size] = current + (row.stock || 0);
+      });
+      const sizeExtras = Array.from(sizeSet).filter(s => SIZE_RANK[s] === undefined).sort();
+      const masterSizes = [
+        ...SIZE_ORDER.filter(s => sizeSet.has(s)),
+        ...sizeExtras
+      ];
+
+      const masterData = (poData.sku_level || []).map(s => {
+        const row = {
+          'SKU Key': s.sku_key,
+          'D/day (Initial)': s.d_sku,
+          'Base Cost (CNY)': s.base_cost_cny,
+          'Weight/Unit (kg)': s.weight_per_unit_kg,
+          'Unit COGS (KZT)': s.unit_cogs,
+          'Avg Sell Price': s.avg_sell_price,
+          'Net Rev/Unit': s.net_revenue_unit,
+          'Profit/Unit': s.profit_unit,
+          'PO Base (CNY)': s.po_base_cost_cny,
+          'PO Base (KZT)': s.po_base_cost_kzt,
+          'PO Dlv (USD)': s.po_dlv_usd,
+          'PO Dlv (KZT)': s.po_dlv_kzt,
+          'PO COGS (KZT)': s.po_cogs_kzt,
+          'Monthly Profit': s.monthly_profit,
+          'K_avg': s.k_avg,
+          'ROIC %': s.roic_pct,
+          'Margin %': s.profit_margin_pct
+        };
+        masterSizes.forEach(size => {
+          row[`Stock ${size}`] = sizeStockMap[s.sku_key]?.[size] || 0;
+        });
+        return row;
+      });
       const ws4 = XLSX.utils.json_to_sheet(masterData);
       XLSX.utils.book_append_sheet(wb, ws4, 'Master Params');
 
@@ -965,6 +986,27 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     }
 
     function MasterParamsTable({ poData, search, sortConfig, onSort, lockSort, lockedSkuOrder }) {
+      const sizeStockMap = useMemo(() => {
+        const map = new Map();
+        (poData.size_level || []).forEach(row => {
+          if (!row.size) return;
+          if (!map.has(row.sku_key)) map.set(row.sku_key, {});
+          const skuMap = map.get(row.sku_key);
+          skuMap[row.size] = (skuMap[row.size] || 0) + (row.stock || 0);
+        });
+        return map;
+      }, [poData]);
+
+      const masterSizes = useMemo(() => {
+        const sizeSet = new Set();
+        (poData.size_level || []).forEach(row => {
+          if (row.size) sizeSet.add(row.size);
+        });
+        const ordered = SIZE_ORDER.filter(s => sizeSet.has(s));
+        const extras = Array.from(sizeSet).filter(s => SIZE_RANK[s] === undefined).sort();
+        return [...ordered, ...extras];
+      }, [poData]);
+
       const filtered = useMemo(() => {
         let items = poData.sku_level || [];
 
@@ -1034,6 +1076,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 <SortHeader field="k_avg" title="Avg invested capital">K_avg</SortHeader>
                 <SortHeader field="roic_pct" title="ROIC %">ROIC</SortHeader>
                 <SortHeader field="profit_margin_pct" title="Margin %">Margin</SortHeader>
+                {masterSizes.map(size => (
+                  <th key={size}>{size}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -1064,6 +1109,13 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                     <td>{row.k_avg?.toLocaleString(undefined, {maximumFractionDigits: 0}) || '-'}</td>
                     <td><ROICBadge roic={row.roic_pct} /></td>
                     <td>{row.profit_margin_pct?.toFixed(1) || '-'}%</td>
+                    {masterSizes.map(size => {
+                      const skuMap = sizeStockMap.get(row.sku_key) || {};
+                      const val = skuMap[size] ?? 0;
+                      return (
+                        <td key={size}>{val}</td>
+                      );
+                    })}
                   </tr>
                 );
               })}
