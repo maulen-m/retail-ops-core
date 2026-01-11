@@ -39,5 +39,12 @@ Use `scripts/derive_fx_rates.py` to compute daily FX from:
 This script upserts `dim_fx_rates` with `usdt_kzt`, `usdt_cny`, and derived `cny_kzt`.
 USD/KZT and delivery rate are carried from the latest available row or fall back to defaults.
 
+## Autopilot (zero-touch)
+Use `scripts/transfer_ledger_autopilot.py` to run the full pipeline:
+1) Gmail import (exchanger orders)
+2) Binance P2P BUY import
+3) FX derivation and upsert
+4) Binance withdrawals import + ledger entries
+
 ## PO funding allocations (many-to-many)
 Use `transfer_ledger_cli.py allocate-po` to map any ledger entry to an internal PO ID.

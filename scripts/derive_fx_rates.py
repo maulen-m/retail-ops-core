@@ -67,6 +67,7 @@ def main() -> int:
     parser.add_argument("--min-count", type=int, default=1, help="Minimum orders per day")
     parser.add_argument("--statuses", default="COMPLETED", help="Comma-separated exchanger statuses")
     parser.add_argument("--dry-run", action="store_true", help="Print derived rows without upsert")
+    parser.add_argument("--backfill-withdrawals", action="store_true", help="Backfill earliest withdrawal date")
     args = parser.parse_args()
 
     statuses = [s.strip().upper() for s in args.statuses.split(",") if s.strip()]
@@ -91,6 +92,27 @@ def main() -> int:
 
     with get_db(args.db) as conn:
         _ensure_dim_fx_rates_schema(conn)
+        if args.backfill_withdrawals:
+            try:
+                row = conn.execute(
+                    "SELECT MIN(apply_time) FROM binance_withdrawals"
+                ).fetchone()
+                if row and row[0]:
+                    from datetime import datetime as _dt
+                    min_withdraw_date = _dt.fromisoformat(str(row[0]).replace("Z", "+00:00")).date()
+                    earliest = min(rows, key=lambda r: r["effective_date"])
+                    if min_withdraw_date.isoformat() < earliest["effective_date"]:
+                        rows.insert(
+                            0,
+                            {
+                                **earliest,
+                                "effective_date": min_withdraw_date.isoformat(),
+                                "provider": "AUTO_BACKFILL",
+                                "source": "Backfill earliest withdrawal date",
+                            },
+                        )
+            except Exception:
+                pass
         for row in rows:
             conn.execute(
                 """

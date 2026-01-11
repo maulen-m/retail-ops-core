@@ -142,18 +142,26 @@ def derive_daily_usdt_cny(
 
 
 def _get_latest_usd_params(conn, effective_date: date) -> tuple[float, float]:
-    row = conn.execute(
-        """
-        SELECT usd_kzt, dlv_rate_usd_kg
-        FROM dim_fx_rates
-        WHERE effective_date <= ?
-        ORDER BY effective_date DESC
-        LIMIT 1
-        """,
-        (effective_date.isoformat(),),
-    ).fetchone()
-    if row:
-        return float(row[0] or DEFAULT_FX_RATES["usd_kzt"]), float(row[1] or DEFAULT_FX_RATES["dlv_rate_usd_kg"])
+    try:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_fx_rates'"
+        ).fetchone()
+        if not table:
+            return float(DEFAULT_FX_RATES["usd_kzt"]), float(DEFAULT_FX_RATES["dlv_rate_usd_kg"])
+        row = conn.execute(
+            """
+            SELECT usd_kzt, dlv_rate_usd_kg
+            FROM dim_fx_rates
+            WHERE effective_date <= ?
+            ORDER BY effective_date DESC
+            LIMIT 1
+            """,
+            (effective_date.isoformat(),),
+        ).fetchone()
+        if row:
+            return float(row[0] or DEFAULT_FX_RATES["usd_kzt"]), float(row[1] or DEFAULT_FX_RATES["dlv_rate_usd_kg"])
+    except Exception:
+        pass
     return float(DEFAULT_FX_RATES["usd_kzt"]), float(DEFAULT_FX_RATES["dlv_rate_usd_kg"])
 
 

@@ -122,6 +122,9 @@ def import_binance_withdrawals(
                         try:
                             auto_allocate_entry_to_active_po(entry_id, db_path=db_path)
                         except Exception as exc:
+                            if "No PO dates available" in str(exc):
+                                # Skip noisy errors when PO data is not present yet.
+                                continue
                             errors.append(f"auto-allocate failed for {wd['withdraw_id']}: {exc}")
         except Exception as exc:
             errors.append(str(exc))
