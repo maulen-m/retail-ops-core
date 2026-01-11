@@ -31,7 +31,7 @@ from core.db.queries import (
     get_cutoff_date_almaty
 )
 from core.config.inventory_params import get_params
-from core.config.business_params import get_demand_overrides
+from core.config.business_params import get_demand_overrides, get_fx_rates
 from core.calc.demand_estimator import DemandEstimator, ConfidenceLevel, OOSType
 from core.calc.stock_timeline import StockTimelineBuilder
 from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
@@ -145,6 +145,18 @@ class SkuPOLine:
     k_avg: float  # D×(L+R/2)×COGS + SS×COGS
     roic_pct: float
     profit_margin_pct: float  # (unit_profit / unit_cogs) × 100
+    base_cost_cny: float
+    base_cost_kzt: float
+    weight_per_unit_kg: float
+    unit_cogs: float
+    avg_sell_price: float
+    net_revenue_unit: float
+    profit_unit: float
+    po_base_cost_cny: float
+    po_base_cost_kzt: float
+    po_dlv_usd: float
+    po_dlv_kzt: float
+    po_cogs_kzt: float
     roic_below_threshold: bool  # True if ROIC < 15% (display warning)
     d_anchor: float  # Anchor demand
     d_data: float  # Data-driven demand
@@ -789,6 +801,7 @@ def generate_po_data(
         conn.row_factory = sqlite3.Row
 
     params = get_params()
+    fx_rates = get_fx_rates(CUTOFF_DATE, db_path=DB_PATH)
 
     demand_lookup: dict[str, Any] = {}
     skipped_skus: list[dict] = []
@@ -1180,6 +1193,13 @@ def generate_po_data(
             R=params.R
         )
 
+        base_cost_kzt = base_cost_cny * fx_rates.cny_kzt
+        po_base_cost_cny = base_cost_cny * total_qty
+        po_base_cost_kzt = base_cost_kzt * total_qty
+        po_dlv_usd = weight_kg * total_qty * fx_rates.dlv_rate_usd_kg
+        po_dlv_kzt = po_dlv_usd * fx_rates.usd_kzt
+        po_cogs_kzt = unit_cogs * total_qty
+
         # SKU-level line with DemandEstimator data (stock-first)
         # For PO-4, active_inbound=0 and inbound_total=0 (no previous POs)
         sku_line = SkuPOLine(
@@ -1210,6 +1230,18 @@ def generate_po_data(
             k_avg=round(k_avg, 2),
             roic_pct=round(roic_monthly * 100, 1),
             profit_margin_pct=round(profit_margin_pct, 1),
+            base_cost_cny=round(base_cost_cny, 2),
+            base_cost_kzt=round(base_cost_kzt, 2),
+            weight_per_unit_kg=round(weight_kg, 3),
+            unit_cogs=round(unit_cogs, 2),
+            avg_sell_price=round(avg_sell_price, 2),
+            net_revenue_unit=round(avg_net_price, 2),
+            profit_unit=round(unit_profit, 2),
+            po_base_cost_cny=round(po_base_cost_cny, 2),
+            po_base_cost_kzt=round(po_base_cost_kzt, 2),
+            po_dlv_usd=round(po_dlv_usd, 2),
+            po_dlv_kzt=round(po_dlv_kzt, 2),
+            po_cogs_kzt=round(po_cogs_kzt, 2),
             roic_below_threshold=roic_below_threshold,
             d_anchor=round(d_anchor, 3),
             d_data=round(d_data, 3),
@@ -1693,6 +1725,30 @@ def _build_po_schedule(today: date, params, prep_days_clothes: int) -> tuple[dic
     return schedule, gap_days
 
 
+def _stock_at_message_date(
+    current_stock: float,
+    inbound_stock: float,
+    d_sku: float,
+    days_offset: int,
+    arrivals: list[tuple[int, float]],
+) -> float:
+    """
+    Simulate stock at message date with timed arrivals.
+
+    arrivals: list of (days_from_today, qty) for arrivals on/before message date.
+    """
+    stock = current_stock + inbound_stock
+    last_day = 0
+    for day, qty in sorted(arrivals, key=lambda x: x[0]):
+        if day > days_offset:
+            break
+        stock = max(0.0, stock - d_sku * (day - last_day))
+        stock += qty
+        last_day = day
+    stock = max(0.0, stock - d_sku * (days_offset - last_day))
+    return stock
+
+
 def generate_multi_po_data(num_pos: int = 7) -> dict:
     """
     Generate data for multiple POs (PO-4 through PO-10).
@@ -1703,6 +1759,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
     - Uses same base demand/stock data but projects forward
     """
     params = get_params()
+    fx_rates = get_fx_rates(CUTOFF_DATE, db_path=DB_PATH)
     R = params.R  # Reorder cycle (typically 10 days)
     L = params.L  # Lead time
 
@@ -1752,6 +1809,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
 
     prep_days_clothes = base_data.get("prep_days_clothes", 1)
     po5_prep_days = PO5_PREP_DAYS_OVERRIDE or prep_days_clothes
+    po6_message_date = po_schedule.get("PO-6", TODAY + timedelta(days=2 * R))
 
     # Generate PO-5 through PO-10
     for po_num in range(5, 4 + num_pos):
@@ -1783,6 +1841,11 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 "skus_without_orders": 0,
                 "total_units": 0,
                 "total_weight_kg": 0,
+                "total_po_base_cost_cny": 0,
+                "total_po_base_cost_kzt": 0,
+                "total_po_dlv_usd": 0,
+                "total_po_dlv_kzt": 0,
+                "total_po_cogs_kzt": 0,
                 "low_roic_skus": 0,
                 "no_demand_estimate": base_data['summary']['no_demand_estimate'],
                 "no_stock_snapshot": base_data['summary']['no_stock_snapshot'],
@@ -1825,14 +1888,19 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             active_inbound_by_size = {}
             inbound_total = 0
             inbound_total_by_size = {}
+            arrival_events = []
+            arrival_events_by_size: dict[str, list[tuple[int, float]]] = {}
 
             if sku_key in cumulative_orders:
                 for prev_arr_date, qty, size_orders in cumulative_orders[sku_key]:
                     # Arrivals before or on message date → added to stock_at_msg
                     if prev_arr_date <= po_message_date:
                         arrivals_before_msg += qty
+                        days_from_today = (prev_arr_date - TODAY).days
+                        arrival_events.append((days_from_today, qty))
                         for sz, sq in size_orders.items():
                             arrivals_before_msg_by_size[sz] = arrivals_before_msg_by_size.get(sz, 0) + sq
+                            arrival_events_by_size.setdefault(sz, []).append((days_from_today, sq))
                     # Arrivals AFTER msg but BEFORE arr → active inbound
                     elif prev_arr_date < po_arr_date:
                         active_inbound += qty
@@ -1849,11 +1917,14 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             current_stock = base_sku['stock']
             inbound_stock = base_sku['inbound']
 
-            # Consumption FROM TODAY TO message date
-            consumption_to_msg = d_sku * days_offset
-
-            # Stock AT message date = current + snapshot_inbound + arrivals_before_msg - consumption_to_msg
-            stock_at_msg = max(0, current_stock + inbound_stock + arrivals_before_msg - consumption_to_msg)
+            # Stock AT message date (time-aware arrivals)
+            stock_at_msg = _stock_at_message_date(
+                current_stock=current_stock,
+                inbound_stock=inbound_stock,
+                d_sku=d_sku,
+                days_offset=days_offset,
+                arrivals=arrival_events,
+            )
 
             # Consumption FROM message date TO arrival (this is what the dashboard shows)
             consumption_msg_to_arr = d_sku * effective_L
@@ -1863,9 +1934,17 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
 
             # Target and ROP (same formula)
             if po_num == 5:
+                next_prep_days = 1 if sku_key.startswith("ELS_") else prep_days_clothes
+                po5_arrival = po_message_date + timedelta(days=prep_days + L)
+                po6_arrival = po6_message_date + timedelta(days=next_prep_days + L)
+                effective_R_sku = max(0, (po6_arrival - po5_arrival).days)
+            else:
+                effective_R_sku = R
+
+            if po_num == 5:
                 base_target = base_sku['target']
                 ss_total = base_target - (d_sku * R) if d_sku > 0 else 0
-                target = (d_sku * effective_R) + ss_total
+                target = (d_sku * effective_R_sku) + ss_total
             else:
                 target = base_sku['target']
             rop = base_sku['rop_total']
@@ -1873,6 +1952,19 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             # Order qty
             order_qty = max(0, int(round(target - pre_arrival)))
             po_weight = weight_kg * order_qty
+
+            base_cost_cny = base_sku.get('base_cost_cny') or 0
+            base_cost_kzt = base_sku.get('base_cost_kzt') or 0
+            weight_per_unit = base_sku.get('weight_per_unit_kg') or weight_kg
+            unit_cogs = base_sku.get('unit_cogs') or 0
+            avg_sell_price = base_sku.get('avg_sell_price') or 0
+            net_revenue_unit = base_sku.get('net_revenue_unit') or 0
+            profit_unit = base_sku.get('profit_unit') or 0
+            po_base_cost_cny = base_cost_cny * order_qty
+            po_base_cost_kzt = base_cost_kzt * order_qty
+            po_dlv_usd = weight_per_unit * order_qty * fx_rates.dlv_rate_usd_kg
+            po_dlv_kzt = po_dlv_usd * fx_rates.usd_kzt
+            po_cogs_kzt = unit_cogs * order_qty
 
             # Days of coverage
             if d_sku > 0:
@@ -1887,7 +1979,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             t_post_days = base_sku.get('t_post_days', R)
             if po_num == 5 and d_sku > 0:
                 ss_total = base_sku['target'] - (d_sku * R)
-                t_post_days = effective_R + (ss_total / d_sku)
+                t_post_days = effective_R_sku + (ss_total / d_sku)
 
             adj = adjust_po_dates(po_message_date, po_send_date, po_arr_date)
             po_send_date = adj["ship_date"]
@@ -1921,6 +2013,18 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 'k_avg': base_sku.get('k_avg', 0),
                 'roic_pct': base_sku['roic_pct'],
                 'profit_margin_pct': base_sku.get('profit_margin_pct', 0),
+                'base_cost_cny': base_cost_cny,
+                'base_cost_kzt': base_cost_kzt,
+                'weight_per_unit_kg': weight_per_unit,
+                'unit_cogs': unit_cogs,
+                'avg_sell_price': avg_sell_price,
+                'net_revenue_unit': net_revenue_unit,
+                'profit_unit': profit_unit,
+                'po_base_cost_cny': round(po_base_cost_cny, 2),
+                'po_base_cost_kzt': round(po_base_cost_kzt, 2),
+                'po_dlv_usd': round(po_dlv_usd, 2),
+                'po_dlv_kzt': round(po_dlv_kzt, 2),
+                'po_cogs_kzt': round(po_cogs_kzt, 2),
                 'roic_below_threshold': base_sku['roic_below_threshold'],
                 'd_anchor': base_sku['d_anchor'],
                 'd_data': base_sku['d_data'],
@@ -1943,6 +2047,11 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 po_data['summary']['no_order_needed'] += 1
             po_data['summary']['total_units'] += order_qty
             po_data['summary']['total_weight_kg'] += po_weight
+            po_data['summary']['total_po_base_cost_cny'] += po_base_cost_cny
+            po_data['summary']['total_po_base_cost_kzt'] += po_base_cost_kzt
+            po_data['summary']['total_po_dlv_usd'] += po_dlv_usd
+            po_data['summary']['total_po_dlv_kzt'] += po_dlv_kzt
+            po_data['summary']['total_po_cogs_kzt'] += po_cogs_kzt
             if base_sku['roic_below_threshold']:
                 po_data['summary']['low_roic_skus'] += 1
 
@@ -1962,8 +2071,13 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                     size_inbound_total = inbound_total_by_size.get(size, 0)
 
                     # === SIZE-LEVEL CONSUMPTION & PRE-ARRIVAL (from MESSAGE DATE) ===
-                    size_consumption_to_msg = d_size * days_offset
-                    size_stock_at_msg = max(0, base_size['stock'] + base_size['inbound'] + size_arrivals_before_msg - size_consumption_to_msg)
+                    size_stock_at_msg = _stock_at_message_date(
+                        current_stock=base_size['stock'],
+                        inbound_stock=base_size['inbound'],
+                        d_sku=d_size,
+                        days_offset=days_offset,
+                        arrivals=arrival_events_by_size.get(size, []),
+                    )
                     size_consumption_msg_to_arr = d_size * effective_L
                     size_pre_arrival = max(0, size_stock_at_msg + size_active_inbound - size_consumption_msg_to_arr)
 
@@ -1975,7 +2089,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                     if size_order_qty > 0:
                         if po_num == 5 and d_size > 0:
                             ss_total_size = base_size['target'] - (d_size * R)
-                            t_post_size = effective_R + (ss_total_size / d_size)
+                            t_post_size = effective_R_sku + (ss_total_size / d_size)
                             target_size = d_size * t_post_size
                         else:
                             t_post_size = base_size['t_post_days']
