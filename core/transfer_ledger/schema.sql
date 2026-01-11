@@ -91,6 +91,27 @@ CREATE TABLE IF NOT EXISTS exchanger_orders (
 CREATE INDEX IF NOT EXISTS idx_exchanger_orders_date
     ON exchanger_orders(message_date DESC);
 
+-- Exchanger order email events (one row per email)
+CREATE TABLE IF NOT EXISTS exchanger_order_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exchanger_order_id TEXT NOT NULL,
+    exchanger TEXT NOT NULL,
+    order_id TEXT,
+    status TEXT,
+    message_id TEXT,
+    message_date TEXT,
+    subject TEXT,
+    raw_json TEXT,
+    source TEXT DEFAULT 'GMAIL',
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exchanger_order_events_msg
+    ON exchanger_order_events(message_id);
+
+CREATE INDEX IF NOT EXISTS idx_exchanger_order_events_order
+    ON exchanger_order_events(exchanger_order_id);
+
 -- Allocation of funding entries to internal PO IDs (many-to-many)
 CREATE TABLE IF NOT EXISTS po_funding_allocations (
     allocation_id INTEGER PRIMARY KEY AUTOINCREMENT,

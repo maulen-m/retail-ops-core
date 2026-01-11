@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.gmail_imap_client import fetch_messages
 from core.transfer_ledger.exchanger_email_import import parse_exchanger_email
-from core.transfer_ledger.repository import upsert_exchanger_order
+from core.transfer_ledger.repository import upsert_exchanger_order, insert_exchanger_event
 from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order
 
 
@@ -96,6 +96,7 @@ def main() -> int:
 
     parsed = 0
     inserted = 0
+    events = 0
     labeled = 0
     errors: list[str] = []
 
@@ -110,6 +111,8 @@ def main() -> int:
             is_new = upsert_exchanger_order(order, db_path=args.db)
             if is_new:
                 inserted += 1
+            if insert_exchanger_event(order, db_path=args.db):
+                events += 1
             if not args.no_label:
                 labeled += label_withdrawals_for_order(order, db_path=args.db)
         except Exception as exc:
@@ -119,6 +122,7 @@ def main() -> int:
     print(f"Exchanger orders parsed: {parsed}")
     if not args.dry_run:
         print(f"Inserted/updated orders: {inserted}")
+        print(f"Email events stored: {events}")
         if not args.no_label:
             print(f"Withdrawals labeled: {labeled}")
     if errors:

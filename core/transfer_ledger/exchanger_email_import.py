@@ -86,6 +86,7 @@ def _extract_rate(text: str) -> Optional[float]:
 
 
 def _extract_amounts(text: str) -> tuple[Optional[float], Optional[float]]:
+    max_cny = 10_000_000
     usdt_vals = []
     for m in re.finditer(r"([0-9][0-9,\.]+)\s*(USDT|Tether(?:\s+TRC20)?)", text, re.I):
         try:
@@ -93,14 +94,15 @@ def _extract_amounts(text: str) -> tuple[Optional[float], Optional[float]]:
         except ValueError:
             continue
     cny_vals = []
-    for m in re.finditer(r"([0-9][0-9,\.]+)\s*CNY", text, re.I):
+    for m in re.finditer(r"([0-9][0-9,\.]+)\s*(CNY|WeChat)", text, re.I):
         try:
             cny_vals.append(float(m.group(1).replace(",", "")))
         except ValueError:
             continue
 
     usdt_vals = [v for v in usdt_vals if v > 1.0]
-    cny_vals = [v for v in cny_vals if v > 1.0]
+    # Filter out WeChat IDs or other large numeric strings captured as CNY.
+    cny_vals = [v for v in cny_vals if 1.0 < v <= max_cny]
 
     amount_usdt = max(usdt_vals) if usdt_vals else None
     amount_cny = max(cny_vals) if cny_vals else None

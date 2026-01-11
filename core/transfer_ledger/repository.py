@@ -329,6 +329,40 @@ def upsert_exchanger_order(order: dict, db_path: Optional[Path] = None) -> bool:
     return existing is None
 
 
+def insert_exchanger_event(event: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    message_id = event.get("message_id") or ""
+    with get_db(path) as conn:
+        existing = None
+        if message_id:
+            existing = conn.execute(
+                "SELECT 1 FROM exchanger_order_events WHERE message_id = ? LIMIT 1",
+                (message_id,),
+            ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO exchanger_order_events (
+                    exchanger_order_id, exchanger, order_id, status,
+                    message_id, message_date, subject, raw_json, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    event.get("exchanger_order_id"),
+                    event.get("exchanger"),
+                    event.get("order_id"),
+                    event.get("status"),
+                    message_id,
+                    event.get("message_date"),
+                    event.get("subject"),
+                    event.get("raw_json"),
+                    event.get("source", "GMAIL"),
+                ),
+            )
+    return existing is None
+
+
 def list_exchanger_orders(
     db_path: Optional[Path] = None,
     exchanger: Optional[str] = None,
