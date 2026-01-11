@@ -17,7 +17,7 @@ STATUS_MAP = {
     "IN_PROCESS": ["in payout processing", "waiting for confirmation"],
     "COMPLETED": ["success done", "completed order"],
     "PAID": ["paid order"],
-    "CANCELLED": ["order deleted"],
+    "CANCELLED": ["order deleted", "cancelled order", "canceled order", "order cancelled", "order canceled"],
 }
 
 

@@ -24,6 +24,8 @@ Purpose: map subject lines to internal statuses and extract normalized fields.
   - Meaning: payment sent by us; awaiting completion
 - **COMPLETED** — `Completed order <id>`
   - Meaning: payout completed
+- **CANCELLED** — `Cancelled order <id>` / `Canceled order <id>`
+  - Meaning: order cancelled
 
 ### Ignore (non‑order system emails)
 - `User registration`
