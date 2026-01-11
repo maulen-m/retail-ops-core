@@ -89,8 +89,10 @@ HEAVY_ITEMS = {
 }
 
 # Assemble verification (handles delayed state updates / async waybill creation)
-ASSEMBLE_VERIFY_RETRIES = int(os.environ.get("KASPI_ASSEMBLE_VERIFY_RETRIES", "3"))
-ASSEMBLE_VERIFY_DELAY = float(os.environ.get("KASPI_ASSEMBLE_VERIFY_DELAY", "2"))
+ASSEMBLE_VERIFY_RETRIES = int(os.environ.get("KASPI_ASSEMBLE_VERIFY_RETRIES", "5"))
+ASSEMBLE_VERIFY_DELAY = float(os.environ.get("KASPI_ASSEMBLE_VERIFY_DELAY", "3"))
+ASSEMBLE_REFRESH_RETRIES = int(os.environ.get("KASPI_ASSEMBLE_REFRESH_RETRIES", "1"))
+ASSEMBLE_REFRESH_DELAY = float(os.environ.get("KASPI_ASSEMBLE_REFRESH_DELAY", "10"))
 
 
 @dataclass
@@ -503,6 +505,7 @@ def ship_orders(
     order_id_to_base64: dict[str, dict[str, str]],
     dry_run: bool = False,
     verbose: bool = False,
+    since_days: int = 7,
 ) -> dict:
     """
     Ship orders via Kaspi API.
@@ -559,6 +562,7 @@ def ship_orders(
             continue
 
         print(f"\n  Processing {store_name} ({len(store_orders)} orders)...")
+        retry_queue: dict[str, int] = {}
 
         for order_id, items in store_orders.items():
             # Calculate package count
@@ -574,10 +578,19 @@ def ship_orders(
                 continue
 
             # Helper: verify assemble state (handles delayed state updates)
-            def _wait_for_assembled() -> bool:
+            def _wait_for_assembled(order_code: str, base64_hint: Optional[str] = None) -> bool:
                 for attempt in range(ASSEMBLE_VERIFY_RETRIES):
                     try:
-                        detail = client.get_order(order_id)
+                        detail = None
+                        if base64_hint:
+                            detail = client.get_order_by_id(base64_hint)
+                            if detail.success:
+                                attrs = detail.data.get('attributes', {})
+                                if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
+                                    if verbose:
+                                        print("      -> Already assembled, skipping")
+                                    return True
+                        detail = client.get_order(order_code)
                         if detail.success:
                             attrs = detail.data.get('attributes', {})
                             if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
@@ -590,7 +603,12 @@ def ship_orders(
                         time.sleep(ASSEMBLE_VERIFY_DELAY)
                 return False
 
-            def _fallback_assemble(reason: str) -> bool:
+            def _queue_retry(order_code: str, parcels: int) -> None:
+                retry_queue.setdefault(order_code, parcels)
+                if verbose:
+                    print("      -> Queued for retry (refresh pending list)")
+
+            def _fallback_assemble(reason: str, base64_hint: Optional[str] = None) -> bool:
                 if verbose:
                     print(f"      -> WARN: {reason}. Retrying with order code...")
                 try:
@@ -601,15 +619,19 @@ def ship_orders(
                         return True
                     err_text = str(result_fallback.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
-                        if _wait_for_assembled():
+                        if _wait_for_assembled(order_id, base64_hint):
                             return True
+                        _queue_retry(order_id, parcel_count)
+                        return False
                     errors.append(f"{order_id}: API error - {result_fallback.error} (fallback)")
                     if verbose:
                         print(f"      -> ERROR: {result_fallback.error} (fallback)")
                 except Exception as exc:
                     if "not found" in str(exc).lower() or "resource not found" in str(exc).lower():
-                        if _wait_for_assembled():
+                        if _wait_for_assembled(order_id, base64_hint):
                             return True
+                        _queue_retry(order_id, parcel_count)
+                        return False
                     errors.append(f"{order_id}: {str(exc)} (fallback)")
                     if verbose:
                         print(f"      -> EXCEPTION: {exc} (fallback)")
@@ -634,15 +656,17 @@ def ship_orders(
                     # Some API errors return 404-equivalent errors without raising.
                     err_text = str(result.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
-                        if _fallback_assemble(err_text):
+                        if _wait_for_assembled(order_id, base64_id):
                             shipped += 1
                             continue
+                        _queue_retry(order_id, parcel_count)
+                        continue
                     errors.append(f"{order_id}: API error - {result.error}")
                     if verbose:
                         print(f"      -> ERROR: {result.error}")
             except KaspiNotFoundError as e:
                 # Retry with direct lookup if base64 ID is stale or mismatched.
-                if _fallback_assemble(str(e)):
+                if _fallback_assemble(str(e), base64_id):
                     shipped += 1
             except KaspiWriteDisabledError:
                 logger.error("Write operations disabled. Set ENABLE_KASPI_WRITE=1 in .env")
@@ -653,12 +677,63 @@ def ship_orders(
                 }
             except Exception as e:
                 # Unknown exception: try fallback once, then record error.
-                if _fallback_assemble(str(e)):
+                if _fallback_assemble(str(e), base64_id):
                     shipped += 1
                 else:
                     errors.append(f"{order_id}: {str(e)}")
                     if verbose:
                         print(f"      -> EXCEPTION: {e}")
+
+        if retry_queue and ASSEMBLE_REFRESH_RETRIES > 0:
+            refresh_since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
+            if verbose:
+                print(f"  Retrying {len(retry_queue)} orders after refresh...")
+            for attempt in range(ASSEMBLE_REFRESH_RETRIES):
+                if ASSEMBLE_REFRESH_DELAY > 0:
+                    time.sleep(ASSEMBLE_REFRESH_DELAY)
+                refreshed = client.get_pending_assembly_orders(since=refresh_since)
+                if not refreshed.success:
+                    errors.append(f"{store_name}: refresh pending failed - {refreshed.error}")
+                    break
+                refreshed_map: dict[str, str] = {}
+                for order in refreshed.data.get('data', []):
+                    order_code = order.get('attributes', {}).get('code', '')
+                    if not order_code:
+                        continue
+                    base64_id = order.get('id', '')
+                    if base64_id:
+                        refreshed_map[order_code] = base64_id
+                still_retry: dict[str, int] = {}
+                for order_code, parcels in retry_queue.items():
+                    base64_id = refreshed_map.get(order_code)
+                    if not base64_id:
+                        if _wait_for_assembled(order_code):
+                            shipped += 1
+                            continue
+                        still_retry[order_code] = parcels
+                        continue
+                    result = client.assemble_order_by_id(base64_id, order_code, parcel_count=parcels)
+                    if result.success:
+                        shipped += 1
+                        if verbose:
+                            print(f"      {order_code}: Shipped OK (refresh)")
+                        continue
+                    err_text = str(result.error or "")
+                    if "not found" in err_text.lower() or "resource not found" in err_text.lower():
+                        if _wait_for_assembled(order_code, base64_id):
+                            shipped += 1
+                            continue
+                        still_retry[order_code] = parcels
+                        continue
+                    errors.append(f"{order_code}: API error - {result.error} (refresh)")
+                    if verbose:
+                        print(f"      {order_code}: ERROR - {result.error} (refresh)")
+                retry_queue = still_retry
+                if not retry_queue:
+                    break
+            if retry_queue:
+                for order_code in retry_queue:
+                    errors.append(f"{order_code}: Resource not found after refresh")
 
     return {
         'shipped': shipped,
@@ -827,6 +902,7 @@ def main():
         order_id_to_base64,
         dry_run=args.dry_run,
         verbose=args.verbose,
+        since_days=args.since_days,
     )
 
     # Summary

@@ -61,6 +61,18 @@ DEFAULT_SHEET_NAME = "SALES_KSP_CRM_1"
 # Waybill retry (handles async generation after assemble)
 WAYBILL_RETRY_DELAY = int(os.environ.get("KASPI_WAYBILL_RETRY_DELAY", "20"))
 WAYBILL_RETRY_PASSES = int(os.environ.get("KASPI_WAYBILL_RETRY_PASSES", "1"))
+WAYBILL_RETRY_DELAY_UNIVERSAL = int(os.environ.get("KASPI_WAYBILL_RETRY_DELAY_UNIVERSAL", "90"))
+WAYBILL_RETRY_PASSES_UNIVERSAL = int(os.environ.get("KASPI_WAYBILL_RETRY_PASSES_UNIVERSAL", "3"))
+
+
+def _retry_settings_for_store(store_code: str) -> tuple[int, int]:
+    """Return retry delay/passes tuned per store for waybill readiness."""
+    retry_delay = WAYBILL_RETRY_DELAY
+    retry_passes = WAYBILL_RETRY_PASSES
+    if store_code.upper() == "UNIVERSAL":
+        retry_delay = max(retry_delay, WAYBILL_RETRY_DELAY_UNIVERSAL)
+        retry_passes = max(retry_passes, WAYBILL_RETRY_PASSES_UNIVERSAL)
+    return retry_delay, retry_passes
 
 # Store code mapping
 STORE_MAP = {
@@ -625,13 +637,16 @@ def download_waybills_for_store(
                 print(f"      ⚠️ Stopping {store_code}: too many consecutive failures")
             break
 
+    retry_delay, retry_passes = _retry_settings_for_store(store_code)
     # Retry missing waybills (async generation after assemble)
-    if not dry_run and missing_orders and WAYBILL_RETRY_PASSES > 0:
-        for attempt in range(WAYBILL_RETRY_PASSES):
-            if WAYBILL_RETRY_DELAY > 0:
-                time.sleep(WAYBILL_RETRY_DELAY)
+    if not dry_run and missing_orders and retry_passes > 0:
+        for attempt in range(retry_passes):
+            if retry_delay > 0:
+                time.sleep(retry_delay)
             if verbose:
-                print(f"    Retrying missing waybills ({attempt + 1}/{WAYBILL_RETRY_PASSES})...")
+                print(
+                    f"    Retrying missing waybills ({attempt + 1}/{retry_passes}) after {retry_delay}s..."
+                )
             still_missing: list[str] = []
             for order_code in missing_orders:
                 output_path = output_dir / f"{order_code}.pdf"
