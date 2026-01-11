@@ -68,6 +68,75 @@ CREATE TABLE IF NOT EXISTS binance_withdrawals (
 CREATE INDEX IF NOT EXISTS idx_binance_withdrawals_time
     ON binance_withdrawals(apply_time DESC);
 
+-- Binance deposits (on-chain inflows)
+CREATE TABLE IF NOT EXISTS binance_deposits (
+    deposit_id TEXT PRIMARY KEY,
+    coin TEXT NOT NULL,
+    amount REAL NOT NULL,
+    address TEXT,
+    address_tag TEXT,
+    tx_id TEXT,
+    insert_time TEXT,
+    complete_time TEXT,
+    status TEXT,
+    network TEXT,
+    transfer_type TEXT,
+    wallet_type TEXT,
+    raw_json TEXT,
+    source TEXT DEFAULT 'BINANCE_DEPOSIT',
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_deposits_time
+    ON binance_deposits(insert_time DESC);
+
+-- Binance universal transfer history (funding ↔ main/etc)
+CREATE TABLE IF NOT EXISTS binance_transfers (
+    transfer_id TEXT PRIMARY KEY,
+    asset TEXT NOT NULL,
+    amount REAL NOT NULL,
+    transfer_type TEXT NOT NULL,
+    status TEXT,
+    timestamp TEXT,
+    raw_json TEXT,
+    source TEXT DEFAULT 'BINANCE_TRANSFER',
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_transfers_time
+    ON binance_transfers(timestamp DESC);
+
+-- Binance account snapshots (spot/margin/futures)
+CREATE TABLE IF NOT EXISTS binance_account_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    account_type TEXT NOT NULL,
+    snapshot_time TEXT NOT NULL,
+    total_asset_btc REAL,
+    data_json TEXT,
+    raw_json TEXT,
+    source TEXT DEFAULT 'BINANCE_SNAPSHOT',
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_snapshots_time
+    ON binance_account_snapshots(snapshot_time DESC);
+
+-- Funding wallet balance snapshots
+CREATE TABLE IF NOT EXISTS binance_funding_balances (
+    snapshot_time TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    free REAL,
+    locked REAL,
+    total REAL,
+    raw_json TEXT,
+    source TEXT DEFAULT 'BINANCE_FUNDING_BAL',
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_time, asset)
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_funding_bal_time
+    ON binance_funding_balances(snapshot_time DESC);
+
 -- Exchanger orders parsed from email (Gmail)
 CREATE TABLE IF NOT EXISTS exchanger_orders (
     exchanger_order_id TEXT PRIMARY KEY,

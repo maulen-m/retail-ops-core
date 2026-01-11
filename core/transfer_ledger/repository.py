@@ -291,6 +291,121 @@ def upsert_binance_withdrawal(withdraw: dict, db_path: Optional[Path] = None) ->
     return existing is None
 
 
+def upsert_binance_deposit(deposit: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM binance_deposits WHERE deposit_id = ? LIMIT 1",
+            (deposit["deposit_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO binance_deposits (
+                deposit_id, coin, amount, address, address_tag, tx_id,
+                insert_time, complete_time, status, network, transfer_type,
+                wallet_type, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                deposit["deposit_id"],
+                deposit.get("coin"),
+                deposit.get("amount"),
+                deposit.get("address"),
+                deposit.get("address_tag"),
+                deposit.get("tx_id"),
+                deposit.get("insert_time"),
+                deposit.get("complete_time"),
+                deposit.get("status"),
+                deposit.get("network"),
+                deposit.get("transfer_type"),
+                deposit.get("wallet_type"),
+                deposit.get("raw_json"),
+                deposit.get("source", "BINANCE_DEPOSIT"),
+            ),
+        )
+    return existing is None
+
+
+def upsert_binance_transfer(transfer: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM binance_transfers WHERE transfer_id = ? LIMIT 1",
+            (transfer["transfer_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO binance_transfers (
+                transfer_id, asset, amount, transfer_type, status, timestamp,
+                raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                transfer["transfer_id"],
+                transfer.get("asset"),
+                transfer.get("amount"),
+                transfer.get("transfer_type"),
+                transfer.get("status"),
+                transfer.get("timestamp"),
+                transfer.get("raw_json"),
+                transfer.get("source", "BINANCE_TRANSFER"),
+            ),
+        )
+    return existing is None
+
+
+def upsert_binance_account_snapshot(snapshot: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM binance_account_snapshots WHERE snapshot_id = ? LIMIT 1",
+            (snapshot["snapshot_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO binance_account_snapshots (
+                snapshot_id, account_type, snapshot_time, total_asset_btc,
+                data_json, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                snapshot["snapshot_id"],
+                snapshot.get("account_type"),
+                snapshot.get("snapshot_time"),
+                snapshot.get("total_asset_btc"),
+                snapshot.get("data_json"),
+                snapshot.get("raw_json"),
+                snapshot.get("source", "BINANCE_SNAPSHOT"),
+            ),
+        )
+    return existing is None
+
+
+def insert_funding_balance_snapshot(snapshot: dict, db_path: Optional[Path] = None) -> None:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO binance_funding_balances (
+                snapshot_time, asset, free, locked, total, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                snapshot.get("snapshot_time"),
+                snapshot.get("asset"),
+                snapshot.get("free"),
+                snapshot.get("locked"),
+                snapshot.get("total"),
+                snapshot.get("raw_json"),
+                snapshot.get("source", "BINANCE_FUNDING_BAL"),
+            ),
+        )
+
+
 def upsert_exchanger_order(order: dict, db_path: Optional[Path] = None) -> bool:
     path = db_path or DEFAULT_DB_PATH
     ensure_schema(path)
@@ -299,6 +414,33 @@ def upsert_exchanger_order(order: dict, db_path: Optional[Path] = None) -> bool:
             "SELECT 1 FROM exchanger_orders WHERE exchanger_order_id = ? LIMIT 1",
             (order["exchanger_order_id"],),
         ).fetchone()
+        if existing:
+            row = conn.execute(
+                """
+                SELECT
+                    exchanger_order_id, exchanger, order_id, status, direction,
+                    amount_usdt, amount_cny, rate_usdt_cny, deposit_address,
+                    receiver_account, message_id, message_date, subject
+                FROM exchanger_orders
+                WHERE exchanger_order_id = ?
+                """,
+                (order["exchanger_order_id"],),
+            ).fetchone()
+            if row:
+                for key in [
+                    "status",
+                    "direction",
+                    "amount_usdt",
+                    "amount_cny",
+                    "rate_usdt_cny",
+                    "deposit_address",
+                    "receiver_account",
+                    "message_id",
+                    "message_date",
+                    "subject",
+                ]:
+                    if order.get(key) in (None, "") and row[key] not in (None, ""):
+                        order[key] = row[key]
         conn.execute(
             """
             INSERT OR REPLACE INTO exchanger_orders (
@@ -439,6 +581,88 @@ def list_withdrawals(
     """
     with get_db(path) as conn:
         rows = conn.execute(sql).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_deposits(
+    db_path: Optional[Path] = None,
+    start_time: Optional[str] = None,
+    coin: Optional[str] = None,
+) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    clauses: list[str] = []
+    params: list = []
+    if start_time:
+        clauses.append("insert_time >= ?")
+        params.append(start_time)
+    if coin:
+        clauses.append("coin = ?")
+        params.append(coin.upper())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""
+        SELECT
+            deposit_id, coin, amount, address, address_tag, tx_id,
+            insert_time, complete_time, status, network, transfer_type,
+            wallet_type
+        FROM binance_deposits
+        {where}
+        ORDER BY insert_time DESC
+    """
+    with get_db(path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_transfers(
+    db_path: Optional[Path] = None,
+    start_time: Optional[str] = None,
+    asset: Optional[str] = None,
+) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    clauses: list[str] = []
+    params: list = []
+    if start_time:
+        clauses.append("timestamp >= ?")
+        params.append(start_time)
+    if asset:
+        clauses.append("asset = ?")
+        params.append(asset.upper())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""
+        SELECT
+            transfer_id, asset, amount, transfer_type, status, timestamp
+        FROM binance_transfers
+        {where}
+        ORDER BY timestamp DESC
+    """
+    with get_db(path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_funding_balance_snapshots(
+    db_path: Optional[Path] = None,
+    asset: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    params: list = []
+    where = ""
+    if asset:
+        where = "WHERE asset = ?"
+        params.append(asset.upper())
+    sql = f"""
+        SELECT snapshot_time, asset, free, locked, total
+        FROM binance_funding_balances
+        {where}
+        ORDER BY snapshot_time DESC
+        LIMIT {int(limit)}
+    """
+    with get_db(path) as conn:
+        rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
 
