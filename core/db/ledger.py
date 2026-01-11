@@ -387,12 +387,44 @@ def rebuild_snapshot_from_ledger(
                 SUM(pl.order_qty - pl.received_qty) as inbound_stock
             FROM po_line pl
             JOIN po_header ph ON pl.po_id = ph.po_id
-            WHERE pl.status IN ('PENDING', 'PARTIAL')
+            WHERE pl.status IN ('PENDING', 'PARTIAL', 'IN_TRANSIT')
               AND ph.status NOT IN ('CLOSED', 'CANCELLED')
             GROUP BY pl.sku_id, pl.sku_key, pl.my_size
         """).fetchall()
 
         inbound_by_sku = {row["sku_id"]: row["inbound_stock"] for row in inbound_query}
+
+        # Fallback: include legacy fact_po_lines rows not represented in po_line
+        # (Dim_PO_Header ETA + Fact_PO_Lines import path)
+        po_line_ids = {
+            row["po_id"] for row in conn.execute(
+                "SELECT DISTINCT po_id FROM po_line"
+            ).fetchall()
+        }
+        placeholders = ",".join("?" for _ in po_line_ids) if po_line_ids else ""
+        po_line_filter = f"AND po_id NOT IN ({placeholders})" if po_line_ids else ""
+        params = [snapshot_date.isoformat()]
+        if po_line_ids:
+            params.extend(sorted(po_line_ids))
+
+        inbound_fallback = conn.execute(f"""
+            SELECT
+                po_id,
+                sku_id,
+                sku_key,
+                my_size,
+                SUM(order_quantity - received_qty) as inbound_stock
+            FROM fact_po_lines
+            WHERE (order_quantity - received_qty) > 0
+              AND (est_arrival_date IS NULL OR est_arrival_date >= ?)
+              AND status NOT IN ('ARRIVED', 'CLOSED', 'CANCELLED', 'RECEIVED')
+              {po_line_filter}
+            GROUP BY po_id, sku_id, sku_key, my_size
+        """, params).fetchall()
+
+        for row in inbound_fallback:
+            sku_id = row["sku_id"]
+            inbound_by_sku[sku_id] = inbound_by_sku.get(sku_id, 0) + row["inbound_stock"]
 
         # Step 3: Delete existing snapshot for this date
         # Note: fact_inventory_snapshot_size doesn't have store_code column

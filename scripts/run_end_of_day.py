@@ -415,6 +415,13 @@ def _run_pipeline(args, start_time: datetime) -> int:
             script="sync_crm_to_db.py",
             required=not args.skip_sync
         ),
+        PipelineStep(
+            name="2c. Rebuild Inventory Snapshot (ledger)",
+            script="rebuild_snapshot.py",
+            args=["--date", cutoff_date.isoformat()],
+            required=True,
+            skip_on_dry_run=True
+        ),
     ]
 
     if args.po4_inbound:
