@@ -46,5 +46,8 @@ Use `scripts/transfer_ledger_autopilot.py` to run the full pipeline:
 3) FX derivation and upsert
 4) Binance withdrawals import + ledger entries
 
+Generate reports:
+- `scripts/generate_transfer_ledger_reports.py --days 120 --current-usdt 2067.37796`
+
 ## PO funding allocations (many-to-many)
 Use `transfer_ledger_cli.py allocate-po` to map any ledger entry to an internal PO ID.

@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = os.getenv("BINANCE_BASE_URL", "https://api.binance.com")
 ENDPOINT_WITHDRAW_HISTORY = "/sapi/v1/capital/withdraw/history"
+ENDPOINT_FUNDING_ASSET = "/sapi/v1/asset/get-funding-asset"
 
 DEFAULT_TIMEOUT = 20
 RECV_WINDOW = 5000
@@ -58,6 +59,21 @@ class BinanceWalletClient:
         if resp.status_code != 200:
             raise BinanceWalletError(f"HTTP {resp.status_code}: {resp.text}")
         return resp.json()
+
+    def _request_funding(self, params: dict) -> list[dict]:
+        params = dict(params)
+        params["timestamp"] = int(time.time() * 1000)
+        params["recvWindow"] = RECV_WINDOW
+        signed = self._sign_params(params)
+        url = f"{BASE_URL}{ENDPOINT_FUNDING_ASSET}?{signed}"
+        headers = {"X-MBX-APIKEY": self.api_key}
+        resp = self.session.post(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+        if resp.status_code != 200:
+            raise BinanceWalletError(f"HTTP {resp.status_code}: {resp.text}")
+        payload = resp.json()
+        if isinstance(payload, list):
+            return payload
+        return payload.get("data") or []
 
     def list_withdrawals(
         self,
@@ -116,3 +132,19 @@ class BinanceWalletClient:
             offset += limit
             time.sleep(sleep_s)
         return all_rows
+
+    def get_funding_assets(self, asset: str | None = None) -> list[dict]:
+        params: dict[str, Any] = {}
+        if asset:
+            params["asset"] = asset
+        return self._request_funding(params)
+
+    def get_funding_balance(self, asset: str = "USDT") -> Optional[float]:
+        rows = self.get_funding_assets(asset=asset)
+        for row in rows:
+            if str(row.get("asset", "")).upper() == asset.upper():
+                try:
+                    return float(row.get("free", 0))
+                except (TypeError, ValueError):
+                    return None
+        return None

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 import sys
@@ -21,7 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.gmail_imap_client import fetch_messages
 from core.transfer_ledger.exchanger_email_import import parse_exchanger_email
-from core.transfer_ledger.repository import upsert_exchanger_order
+from core.transfer_ledger.repository import upsert_exchanger_order, insert_exchanger_event
 from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order
 from core.integrations.binance_c2c_client import BinanceC2CClient
 from core.transfer_ledger.binance_import import import_binance_orders
@@ -102,7 +103,13 @@ def import_emails(db_path: Path, mailbox: str, query: str | None, since_days: in
     username = os.getenv("GMAIL_USER")
     app_password = os.getenv("GMAIL_APP_PASSWORD")
     if not username or not app_password:
-        return {"errors": ["Missing GMAIL_USER or GMAIL_APP_PASSWORD"], "parsed": 0, "inserted": 0, "labeled": 0}
+        return {
+            "errors": ["Missing GMAIL_USER or GMAIL_APP_PASSWORD"],
+            "parsed": 0,
+            "inserted": 0,
+            "events": 0,
+            "labeled": 0,
+        }
     app_password = app_password.replace(" ", "")
 
     if since_days and not query:
@@ -118,6 +125,7 @@ def import_emails(db_path: Path, mailbox: str, query: str | None, since_days: in
 
     parsed = 0
     inserted = 0
+    events = 0
     labeled = 0
     errors: list[str] = []
 
@@ -130,11 +138,13 @@ def import_emails(db_path: Path, mailbox: str, query: str | None, since_days: in
             is_new = upsert_exchanger_order(order, db_path=db_path)
             if is_new:
                 inserted += 1
+            if insert_exchanger_event(order, db_path=db_path):
+                events += 1
             labeled += label_withdrawals_for_order(order, db_path=db_path)
         except Exception as exc:
             errors.append(str(exc))
 
-    return {"parsed": parsed, "inserted": inserted, "labeled": labeled, "errors": errors}
+    return {"parsed": parsed, "inserted": inserted, "events": events, "labeled": labeled, "errors": errors}
 
 
 def import_p2p(db_path: Path, days: int) -> dict:
@@ -272,12 +282,14 @@ def import_withdrawals(db_path: Path, days: int) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Autonomous transfer ledger sync")
     parser.add_argument("--db", type=Path, default=DB_PATH, help="Path to SQLite DB")
-    parser.add_argument("--days", type=int, default=30, help="Lookback days")
+    parser.add_argument("--days", type=int, default=120, help="Lookback days")
     parser.add_argument("--mailbox", default=None, help="Gmail mailbox/label")
     parser.add_argument("--query", default=None, help="Gmail search query")
     parser.add_argument("--since-days", type=int, default=30, help="Gmail lookback days")
     parser.add_argument("--limit", type=int, default=200, help="Max Gmail messages")
     parser.add_argument("--statuses", default="COMPLETED", help="Exchanger statuses for FX")
+    parser.add_argument("--current-usdt", type=float, default=None, help="Override current USDT balance")
+    parser.add_argument("--reports", action="store_true", help="Generate Markdown reports")
     args = parser.parse_args()
 
     _load_env_file(PROJECT_ROOT / ".env")
@@ -297,7 +309,10 @@ def main() -> int:
 
     print("[1/4] Importing exchanger emails...")
     email_res = import_emails(args.db, mailbox, query, args.since_days, args.limit)
-    print(f"  parsed={email_res['parsed']} inserted={email_res['inserted']} labeled={email_res['labeled']}")
+    print(
+        f"  parsed={email_res['parsed']} inserted={email_res['inserted']} "
+        f"events={email_res['events']} labeled={email_res['labeled']}"
+    )
     if email_res["errors"]:
         print("  email errors (first 5):")
         for e in email_res["errors"][:5]:
@@ -328,6 +343,13 @@ def main() -> int:
         print("  withdrawal errors (first 5):")
         for e in wd_res["errors"][:5]:
             print(f"    - {e}")
+
+    if args.reports:
+        print("[5/5] Generating reports...")
+        cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "generate_transfer_ledger_reports.py"), "--days", str(args.days)]
+        if args.current_usdt is not None:
+            cmd += ["--current-usdt", str(args.current_usdt)]
+        subprocess.run(cmd, check=False)
 
     return 0
 
