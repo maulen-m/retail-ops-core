@@ -33,6 +33,7 @@ STORE_CODE_MAP = {
     "acmewear": "ACMEWEAR",
     "store-d": "11KZ",
     "11_kz": "11KZ",
+    "store_b": "STOREB",
     "samson": "SAMSON",
     "abyx": "ABYX",
 }
@@ -43,7 +44,7 @@ def normalize_store_code(store_name: str) -> str:
     if not store_name or pd.isna(store_name):
         return "UNIVERSAL"
 
-    clean = str(store_name).lower().strip().replace(" ", "_")
+    clean = str(store_name).lower().strip().replace(" ", "_").replace("-", "_")
     return STORE_CODE_MAP.get(clean, store_name.upper())
 
 
@@ -608,6 +609,38 @@ def ingest_sales_to_fact_sales(
     }
 
     with get_db(db_path) as conn:
+        dates = [rec.get("order_date") for rec in records if rec.get("order_date")]
+        min_date = min(dates) if dates else None
+        max_date = max(dates) if dates else None
+
+        existing_by_key: dict[tuple, int] = {}
+        existing_by_unique: dict[tuple, int] = {}
+        if min_date and max_date:
+            existing_rows = conn.execute(
+                """
+                SELECT id, order_id, store_code, kaspi_offer_name, sku_key, my_size, sku_id
+                FROM fact_sales
+                WHERE order_date BETWEEN ? AND ?
+                """,
+                (min_date, max_date),
+            ).fetchall()
+            for row in existing_rows:
+                key = (
+                    str(row["order_id"]),
+                    str(row["store_code"]),
+                    str(row["kaspi_offer_name"] or ""),
+                    str(row["sku_key"] or ""),
+                    str(row["my_size"] or ""),
+                )
+                unique_key = (
+                    str(row["order_id"]),
+                    str(row["store_code"]),
+                    str(row["kaspi_offer_name"] or ""),
+                    str(row["sku_id"] or ""),
+                )
+                existing_by_key[key] = row["id"]
+                existing_by_unique[unique_key] = row["id"]
+
         sku_meta = {
             row["sku_key"]: {
                 "base_cost_cny": row["base_cost_cny"],
@@ -622,6 +655,20 @@ def ingest_sales_to_fact_sales(
                 """
             ).fetchall()
         }
+        size_rows = conn.execute(
+            "SELECT sku_id, sku_key, my_size FROM dim_sku_size"
+        ).fetchall()
+        size_lookup = {
+            row["sku_id"]: {"sku_key": row["sku_key"], "my_size": row["my_size"]}
+            for row in size_rows
+        }
+        size_lookup_by_key = {
+            (row["sku_key"], row["my_size"]): row["sku_id"]
+            for row in size_rows
+        }
+        seen_keys: set[tuple] = set()
+        updates: list[tuple] = []
+        inserts: list[tuple] = []
 
         for rec in records:
             order_id = rec["order_id"]
@@ -646,6 +693,19 @@ def ingest_sales_to_fact_sales(
                 stats["skipped"] += 1
                 continue
 
+            size_info = size_lookup.get(sku_id)
+            if size_info:
+                sku_key = size_info["sku_key"]
+                my_size = size_info["my_size"]
+            else:
+                resolved_id = size_lookup_by_key.get((sku_key, my_size))
+                if resolved_id:
+                    sku_id = resolved_id
+                else:
+                    stats["unmapped"].append({"offer": kaspi_offer_name, "order_id": order_id})
+                    stats["skipped"] += 1
+                    continue
+
             sku_info = sku_meta.get(sku_key)
             if not sku_info:
                 stats["errors"].append(f"Missing sku_key in dim_sku: {sku_key}")
@@ -665,6 +725,23 @@ def ingest_sales_to_fact_sales(
                 cogs_unit = calc_cogs(base_cost, weight_kg)
             elif sku_info.get("cogs_kzt"):
                 cogs_unit = float(sku_info["cogs_kzt"])
+
+            if cogs_unit is None:
+                stats["errors"].append(f"Missing COGS for sku_key {sku_key}")
+                stats["skipped"] += 1
+                continue
+
+            dedupe_key = (
+                str(order_id or ""),
+                str(store_code or ""),
+                str(kaspi_offer_name or ""),
+                str(sku_key or ""),
+                str(my_size or ""),
+            )
+            if dedupe_key in seen_keys:
+                stats["skipped"] += 1
+                continue
+            seen_keys.add(dedupe_key)
 
             delivery_fee = rec.get("delivery_fee")
             if delivery_fee is None or delivery_fee <= 0:
@@ -686,14 +763,16 @@ def ingest_sales_to_fact_sales(
             cogs_line = cogs_unit * quantity if cogs_unit is not None else None
             profit_line = profit_unit * quantity if profit_unit is not None else None
 
-            existing = conn.execute(
-                """
-                SELECT id FROM fact_sales
-                WHERE order_id = ? AND store_code = ? AND kaspi_offer_name = ?
-                  AND sku_key = ? AND my_size = ?
-                """,
-                (order_id, store_code, kaspi_offer_name, sku_key, my_size),
-            ).fetchone()
+            existing_id = existing_by_key.get(dedupe_key)
+            if not existing_id:
+                existing_id = existing_by_unique.get(
+                    (
+                        str(order_id or ""),
+                        str(store_code or ""),
+                        str(kaspi_offer_name or ""),
+                        str(sku_id or ""),
+                    )
+                )
 
             payload = (
                 order_id,
@@ -717,31 +796,9 @@ def ingest_sales_to_fact_sales(
                 "KSP",
             )
 
-            if existing:
+            if existing_id:
                 if not dry_run:
-                    conn.execute(
-                        """
-                        UPDATE fact_sales
-                        SET kaspi_offer_name = ?,
-                            store_code = ?,
-                            order_date = ?,
-                            sku_key = ?,
-                            sku_id = ?,
-                            my_size = ?,
-                            quantity = ?,
-                            sell_price_kzt = ?,
-                            product_type = ?,
-                            channel = ?,
-                            delivery_fee = ?,
-                            net_rev_unit = ?,
-                            line_net_rev = ?,
-                            cogs_unit = ?,
-                            cogs_line = ?,
-                            profit_unit = ?,
-                            profit_line = ?,
-                            channel_code = ?
-                        WHERE id = ?
-                        """,
+                    updates.append(
                         (
                             kaspi_offer_name,
                             store_code,
@@ -761,24 +818,13 @@ def ingest_sales_to_fact_sales(
                             profit_unit,
                             profit_line,
                             "KSP",
-                            existing["id"],
-                        ),
+                            existing_id,
+                        )
                     )
                 stats["updated"] += 1
             else:
                 if not dry_run:
-                    conn.execute(
-                        """
-                        INSERT INTO fact_sales (
-                            order_id, kaspi_offer_name, store_code, order_date,
-                            sku_key, sku_id, my_size, quantity, sell_price_kzt,
-                            product_type, channel, delivery_fee,
-                            net_rev_unit, line_net_rev, cogs_unit, cogs_line,
-                            profit_unit, profit_line, channel_code
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        payload,
-                    )
+                    inserts.append(payload)
                 stats["inserted"] += 1
 
             if order_date:
@@ -787,6 +833,47 @@ def ingest_sales_to_fact_sales(
                     stats["min_date"] = iso_date
                 if stats["max_date"] is None or iso_date > stats["max_date"]:
                     stats["max_date"] = iso_date
+
+        if not dry_run:
+            if updates:
+                conn.executemany(
+                    """
+                    UPDATE fact_sales
+                    SET kaspi_offer_name = ?,
+                        store_code = ?,
+                        order_date = ?,
+                        sku_key = ?,
+                        sku_id = ?,
+                        my_size = ?,
+                        quantity = ?,
+                        sell_price_kzt = ?,
+                        product_type = ?,
+                        channel = ?,
+                        delivery_fee = ?,
+                        net_rev_unit = ?,
+                        line_net_rev = ?,
+                        cogs_unit = ?,
+                        cogs_line = ?,
+                        profit_unit = ?,
+                        profit_line = ?,
+                        channel_code = ?
+                    WHERE id = ?
+                    """,
+                    updates,
+                )
+            if inserts:
+                conn.executemany(
+                    """
+                    INSERT INTO fact_sales (
+                        order_id, kaspi_offer_name, store_code, order_date,
+                        sku_key, sku_id, my_size, quantity, sell_price_kzt,
+                        product_type, channel, delivery_fee,
+                        net_rev_unit, line_net_rev, cogs_unit, cogs_line,
+                        profit_unit, profit_line, channel_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    inserts,
+                )
 
     return stats
 
