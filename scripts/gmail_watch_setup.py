@@ -16,6 +16,20 @@ from core.transfer_ledger.repository import ensure_schema
 from core.db import get_db
 
 
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _get_env(*keys: str) -> str | None:
     for key in keys:
         val = os.getenv(key)
@@ -65,6 +79,8 @@ def main() -> int:
     parser.add_argument("--credentials", default=None, help="OAuth client JSON path")
     parser.add_argument("--token", default=None, help="OAuth token cache path")
     args = parser.parse_args()
+
+    _load_env_file(PROJECT_ROOT / ".env")
 
     project_id = args.project_id or _get_env("GMAIL_PUSH_PROJECT_ID")
     topic = args.topic or _get_env("GMAIL_PUSH_TOPIC")

@@ -25,6 +25,20 @@ from core.transfer_ledger.repository import (
 )
 
 
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _get_env(*keys: str) -> str | None:
     for key in keys:
         val = os.getenv(key)
@@ -123,6 +137,8 @@ def main() -> int:
     parser.add_argument("--labels", default=None, help="Comma-separated labels to watch")
     parser.add_argument("--start-history-id", default=None, help="Override start history id")
     args = parser.parse_args()
+
+    _load_env_file(PROJECT_ROOT / ".env")
 
     creds_path = args.credentials or _get_env("GMAIL_OAUTH_CLIENT_JSON")
     token_path = args.token or _get_env("GMAIL_TOKEN_PATH", "GMAIL_OAUTH_TOKEN")

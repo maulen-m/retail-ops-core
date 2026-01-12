@@ -13,6 +13,20 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _get_env(*keys: str) -> str | None:
     for key in keys:
         val = os.getenv(key)
@@ -34,6 +48,8 @@ def main() -> int:
     parser.add_argument("--max-messages", type=int, default=10, help="Max messages per pull")
     parser.add_argument("--timeout", type=int, default=60, help="Pull timeout seconds")
     args = parser.parse_args()
+
+    _load_env_file(PROJECT_ROOT / ".env")
 
     project_id = args.project_id or _get_env("GMAIL_PUSH_PROJECT_ID")
     subscription = args.subscription or _get_env("GMAIL_PUSH_SUBSCRIPTION")
