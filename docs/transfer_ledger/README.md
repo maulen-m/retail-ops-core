@@ -18,6 +18,10 @@ for both the crypto leg and the fiat leg.
 Use `scripts/import_binance_withdrawals.py` to pull withdrawal history (e.g., USDT TRC20).
 Withdrawals are stored in `binance_withdrawals` and recorded as ledger outflows.
 
+## Binance withdrawal emails (Gmail)
+Use `scripts/import_binance_withdrawal_emails.py` to parse Binance withdrawal emails and
+backfill missing address/tx_id fields in `binance_withdrawals`.
+
 ## Exchanger emails (Gmail)
 Use `scripts/import_exchanger_emails.py` to parse exchanger order emails from Gmail
 and store them in `exchanger_orders`. Matching withdrawals are auto-labeled when
@@ -30,6 +34,8 @@ Required env vars:
 Optional env vars:
 - `GMAIL_MAILBOX` (label/mailbox)
 - `GMAIL_QUERY` (Gmail search query)
+- `GMAIL_MAILBOX_Binance` (label for Binance withdrawal emails)
+- `GMAIL_QUERY_Binance` (query for Binance withdrawal emails)
 
 ## Auto FX derivation (USDT/KZT + USDT/CNY)
 Use `scripts/derive_fx_rates.py` to compute daily FX from:
@@ -41,13 +47,23 @@ USD/KZT and delivery rate are carried from the latest available row or fall back
 
 ## Autopilot (zero-touch)
 Use `scripts/transfer_ledger_autopilot.py` to run the full pipeline:
-1) Gmail import (exchanger orders)
-2) Binance P2P BUY import
-3) FX derivation and upsert
-4) Binance withdrawals import + ledger entries
+1) (Optional) PO plan import
+2) Gmail import (exchanger orders)
+3) Binance P2P BUY import
+4) FX derivation and upsert
+5) Binance withdrawals import + ledger entries
+6) Binance withdrawal emails import
+7) Binance deposits import
+8) Binance transfers import
+9) Funding balance + snapshots
 
 Generate reports:
 - `scripts/generate_transfer_ledger_reports.py --days 120 --current-usdt 2067.37796`
+
+## PO funding plan (Excel)
+Use `scripts/import_po_funding_plan.py --xlsx <path>` to import PO totals and message dates
+from the Vibecode PO spreadsheet into `po_funding_plan` and `po_header`.
+The autopilot will import this if `PO_PLAN_XLSX` or `PO_FUNDING_PLAN_XLSX` is set.
 
 ## PO funding allocations (many-to-many)
 Use `transfer_ledger_cli.py allocate-po` to map any ledger entry to an internal PO ID.

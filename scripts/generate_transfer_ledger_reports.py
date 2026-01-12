@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
@@ -13,13 +13,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.binance_wallet_client import BinanceWalletClient
-from core.transfer_ledger.exchanger_matching import AMOUNT_TOLERANCE, DATE_WINDOW_DAYS
+from core.transfer_ledger.exchanger_matching import AMOUNT_TOLERANCE, DATE_WINDOW_DAYS, address_match
 from core.transfer_ledger.repository import (
     list_deposits,
     list_transfers,
     list_funding_balance_snapshots,
     list_pos_for_allocation,
     get_po_total_cny_from_lines,
+    list_po_funding_plan,
 )
 
 
@@ -56,7 +57,10 @@ def _parse_dt(value) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except Exception:
         return None
 
@@ -118,7 +122,7 @@ def _match_withdrawal_for_order(order: dict, withdrawals: list[dict], used_ids: 
         wd_id = wd.get("withdraw_id")
         if not wd_id or wd_id in used_ids:
             continue
-        if address and (wd.get("address") or "") != address:
+        if address and not address_match(address, wd.get("address") or ""):
             continue
         wd_amount = wd.get("amount")
         if wd_amount is None or abs(float(wd_amount) - float(amount)) > AMOUNT_TOLERANCE:
@@ -293,6 +297,148 @@ def main() -> int:
                 continue
     p2p_rates.sort(key=lambda x: x[0])
 
+    ex_rates: list[tuple[datetime, float]] = []
+    for r in rows_ex:
+        dt = _parse_dt(r["message_date"])
+        amount_usdt = r["amount_usdt"]
+        amount_cny = r["amount_cny"]
+        if not dt or amount_usdt is None or amount_cny is None:
+            continue
+        try:
+            rate = float(amount_cny) / float(amount_usdt)
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if rate > 0:
+            ex_rates.append((dt, rate))
+    ex_rates.sort(key=lambda x: x[0])
+
+    # PO plan data (from po_funding_plan or po_header fallback)
+    po_plan_by_id: dict[str, dict] = {}
+    po_cny_list: list[tuple[datetime, str, float]] = []
+    po_usdt_list: list[tuple[datetime, str, float]] = []
+
+    plan_rows = list_po_funding_plan(db_path=args.db)
+    if plan_rows:
+        for row in plan_rows:
+            po_id = row.get("po_id")
+            po_date = _parse_dt(row.get("message_date"))
+            if not po_id or not po_date:
+                continue
+            total_cny = row.get("total_cny")
+            total_usdt = row.get("total_usdt")
+            try:
+                total_cny = float(total_cny) if total_cny is not None else None
+            except (TypeError, ValueError):
+                total_cny = None
+            try:
+                total_usdt = float(total_usdt) if total_usdt is not None else None
+            except (TypeError, ValueError):
+                total_usdt = None
+            po_plan_by_id[po_id] = {
+                "po_date": po_date,
+                "total_cny": total_cny,
+                "total_usdt": total_usdt,
+            }
+            if total_cny and total_cny > 0:
+                po_cny_list.append((po_date, po_id, total_cny))
+            if total_usdt is None and total_cny and ex_rates:
+                rate = _avg_recent_rate(ex_rates, po_date, window=5)
+                if rate and rate > 0:
+                    total_usdt = total_cny / rate
+            if total_usdt and total_usdt > 0:
+                po_usdt_list.append((po_date, po_id, total_usdt))
+    else:
+        pos = list_pos_for_allocation(db_path=args.db)
+        for row in pos:
+            po_id = row.get("po_id")
+            po_date = _parse_dt(row.get("message_date") or row.get("created_at"))
+            if not po_id or not po_date:
+                continue
+            total_cny = row.get("total_cost_cny")
+            if total_cny is None or float(total_cny or 0) <= 0:
+                total_cny = get_po_total_cny_from_lines(po_id, db_path=args.db)
+            try:
+                total_cny = float(total_cny) if total_cny is not None else None
+            except (TypeError, ValueError):
+                total_cny = None
+            if total_cny and total_cny > 0:
+                po_plan_by_id[po_id] = {
+                    "po_date": po_date,
+                    "total_cny": total_cny,
+                    "total_usdt": None,
+                }
+                po_cny_list.append((po_date, po_id, total_cny))
+                if ex_rates:
+                    rate = _avg_recent_rate(ex_rates, po_date, window=5)
+                    if rate and rate > 0:
+                        po_usdt_list.append((po_date, po_id, total_cny / rate))
+
+    po_cny_list.sort(key=lambda x: (x[0], x[1]))
+    po_usdt_list.sort(key=lambda x: (x[0], x[1]))
+
+    # Allocate P2P USDT buys to PO totals (USDT)
+    po_info_by_p2p: dict[str, dict] = {}
+    if po_usdt_list:
+        po_state_usdt = {
+            po_id: {"total_usdt": total_usdt, "paid_usdt": 0.0}
+            for _, po_id, total_usdt in po_usdt_list
+        }
+        orders_for_alloc = []
+        for r in rows_p2p:
+            order_dt = _parse_dt(r["create_time"])
+            amount_usdt = float(r["crypto_amount"] or 0)
+            if not order_dt or amount_usdt <= 0:
+                continue
+            orders_for_alloc.append((order_dt, r, amount_usdt))
+        orders_for_alloc.sort(key=lambda x: x[0])
+
+        po_idx = 0
+        for order_dt, row, amount_usdt in orders_for_alloc:
+            while po_idx + 1 < len(po_usdt_list) and order_dt >= po_usdt_list[po_idx + 1][0]:
+                po_idx += 1
+
+            remaining = amount_usdt
+            last_po_id = None
+            last_total = None
+            last_paid = None
+            last_left = None
+            i = po_idx
+            while remaining > 0 and i < len(po_usdt_list):
+                _, po_id, total_usdt = po_usdt_list[i]
+                state = po_state_usdt[po_id]
+                left = total_usdt - state["paid_usdt"]
+                if left <= 0:
+                    i += 1
+                    continue
+                alloc = min(left, remaining)
+                state["paid_usdt"] += alloc
+                remaining -= alloc
+                last_po_id = po_id
+                last_total = total_usdt
+                last_paid = state["paid_usdt"]
+                last_left = total_usdt - state["paid_usdt"]
+                if remaining <= 0:
+                    break
+                i += 1
+
+            if last_po_id:
+                avg_kzt = _avg_recent_rate(p2p_rates, order_dt, window=5)
+                plan = po_plan_by_id.get(last_po_id, {})
+                total_cny = plan.get("total_cny")
+                left_cny = None
+                if total_cny and last_total and last_total > 0 and last_left is not None:
+                    left_cny = total_cny * (last_left / last_total)
+                po_left_kzt = last_left * avg_kzt if last_left is not None and avg_kzt is not None else None
+                po_info_by_p2p[row["order_number"]] = {
+                    "po_id": last_po_id,
+                    "po_total_cny": total_cny,
+                    "po_total_usdt": last_total,
+                    "po_paid_usdt": last_paid,
+                    "po_left_usdt": last_left,
+                    "po_left_cny": left_cny,
+                    "po_left_kzt": po_left_kzt,
+                }
+
     # P2P double entries
     p2p_entries = []
     for r in rows_p2p:
@@ -303,6 +449,16 @@ def main() -> int:
         rate = float(r["unit_price"] or 0)
         cp = r["counterparty"] or ""
         bal = balance_after.get(f"p2p:{order}")
+
+        po_info = po_info_by_p2p.get(order, {})
+        po_id = po_info.get("po_id", "")
+        po_total_cny = _fmt(po_info.get("po_total_cny"))
+        po_total_usdt = _fmt(po_info.get("po_total_usdt"))
+        po_paid_usdt = _fmt(po_info.get("po_paid_usdt"))
+        po_left_usdt = _fmt(po_info.get("po_left_usdt"))
+        po_left_cny = _fmt(po_info.get("po_left_cny"))
+        po_left_kzt = _fmt(po_info.get("po_left_kzt"))
+
         p2p_entries.append([
             _fmt_dt(dt),
             str(order),
@@ -313,6 +469,13 @@ def main() -> int:
             f"{rate:.4f}",
             f"{bal:.2f}" if bal is not None else "",
             cp,
+            po_id,
+            po_total_cny,
+            po_total_usdt,
+            po_paid_usdt,
+            po_left_usdt,
+            po_left_cny,
+            po_left_kzt,
         ])
         p2p_entries.append([
             _fmt_dt(dt),
@@ -324,27 +487,17 @@ def main() -> int:
             "1.0000",
             f"{bal:.2f}" if bal is not None else "",
             cp,
+            po_id,
+            po_total_cny,
+            po_total_usdt,
+            po_paid_usdt,
+            po_left_usdt,
+            po_left_cny,
+            po_left_kzt,
         ])
 
     po_info_by_order: dict[str, dict] = {}
-    pos = list_pos_for_allocation(db_path=args.db)
-    po_list: list[tuple[datetime, str, float]] = []
-    for row in pos:
-        po_id = row.get("po_id")
-        po_date = _parse_dt(row.get("message_date") or row.get("created_at"))
-        if not po_id or not po_date:
-            continue
-        total_cny = row.get("total_cost_cny")
-        if total_cny is None or float(total_cny or 0) <= 0:
-            total_cny = get_po_total_cny_from_lines(po_id, db_path=args.db)
-        try:
-            total_cny = float(total_cny) if total_cny is not None else None
-        except (TypeError, ValueError):
-            total_cny = None
-        if not total_cny or total_cny <= 0:
-            continue
-        po_list.append((po_date, po_id, total_cny))
-    po_list.sort(key=lambda x: (x[0], x[1]))
+    po_list = po_cny_list
 
     if po_list:
         po_state = {po_id: {"total_cny": total_cny, "paid_cny": 0.0} for _, po_id, total_cny in po_list}
@@ -392,8 +545,14 @@ def main() -> int:
 
             if last_po_id:
                 avg_kzt = _avg_recent_rate(p2p_rates, order_dt, window=5)
-                po_total_usdt = last_po_total / rate if rate > 0 else None
-                po_left_usdt = last_left / rate if last_left is not None and rate > 0 else None
+                plan = po_plan_by_id.get(last_po_id, {})
+                plan_total_usdt = plan.get("total_usdt")
+                if plan_total_usdt and last_po_total and last_po_total > 0 and last_left is not None:
+                    po_total_usdt = plan_total_usdt
+                    po_left_usdt = plan_total_usdt * (last_left / last_po_total)
+                else:
+                    po_total_usdt = last_po_total / rate if rate > 0 else None
+                    po_left_usdt = last_left / rate if last_left is not None and rate > 0 else None
                 po_left_kzt = po_left_usdt * avg_kzt if po_left_usdt is not None and avg_kzt is not None else None
                 po_info_by_order[row["exchanger_order_id"]] = {
                     "po_id": last_po_id,
@@ -504,7 +663,10 @@ def main() -> int:
     p2p_cols = [
         ("Date", 19), ("Order", 12), ("Leg", 8), ("Curr", 5),
         ("Amount", 14), ("KZT_Value", 14), ("Rate", 10),
-        ("USDT_Bal", 12), ("Counterparty", 60)
+        ("USDT_Bal", 12), ("Counterparty", 80),
+        ("PO", 12), ("PO_Tot_CNY", 12), ("PO_Tot_USDT", 12),
+        ("PO_Paid_USDT", 12), ("PO_Left_USDT", 12), ("PO_Left_CNY", 12),
+        ("PO_Left_KZT", 12)
     ]
     ex_cols = [
         ("Date", 19), ("Order", 12), ("Exch", 12), ("Leg", 8), ("Curr", 5),

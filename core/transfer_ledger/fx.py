@@ -47,7 +47,17 @@ def get_fx_snapshot(
             (as_of,),
         ).fetchone()
         if not row:
-            return None
+            row = conn.execute(
+                """
+                SELECT effective_date, usdt_kzt, usdt_cny, cny_kzt, usd_kzt, dlv_rate_usd_kg,
+                       provider, source, updated_at
+                FROM dim_fx_rates
+                ORDER BY effective_date ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if not row:
+                return None
         return {
             "effective_date": row["effective_date"],
             "usdt_kzt": row["usdt_kzt"],

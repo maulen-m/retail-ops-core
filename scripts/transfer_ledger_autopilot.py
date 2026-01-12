@@ -446,6 +446,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Autonomous transfer ledger sync")
     parser.add_argument("--db", type=Path, default=DB_PATH, help="Path to SQLite DB")
     parser.add_argument("--days", type=int, default=120, help="Lookback days")
+    parser.add_argument("--po-plan", type=Path, default=None, help="Optional PO funding plan Excel file")
     parser.add_argument("--mailbox", default=None, help="Gmail mailbox/label")
     parser.add_argument("--query", default=None, help="Gmail search query")
     parser.add_argument("--since-days", type=int, default=30, help="Gmail lookback days")
@@ -475,7 +476,18 @@ def main() -> int:
 
     statuses = [s.strip().upper() for s in args.statuses.split(",") if s.strip()]
 
-    print("[1/8] Importing exchanger emails...")
+    po_plan = args.po_plan or _get_env("PO_PLAN_XLSX", "PO_FUNDING_PLAN_XLSX")
+    if po_plan:
+        print("[0/9] Importing PO funding plan...")
+        cmd = [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "import_po_funding_plan.py"),
+            "--xlsx",
+            str(po_plan),
+        ]
+        subprocess.run(cmd, check=False)
+
+    print("[1/9] Importing exchanger emails...")
     email_res = import_emails(args.db, mailbox, query, args.since_days, args.limit)
     print(
         f"  parsed={email_res['parsed']} inserted={email_res['inserted']} "
@@ -486,7 +498,7 @@ def main() -> int:
         for e in email_res["errors"][:5]:
             print(f"    - {e}")
 
-    print("[2/8] Importing Binance P2P BUY orders...")
+    print("[2/9] Importing Binance P2P BUY orders...")
     p2p_res = import_p2p(args.db, args.days)
     print(f"  fetched={p2p_res['fetched']} inserted={p2p_res['inserted']} ledger_entries={p2p_res['ledger_entries']}")
     if p2p_res["errors"]:
@@ -494,7 +506,7 @@ def main() -> int:
         for e in p2p_res["errors"][:5]:
             print(f"    - {e}")
 
-    print("[3/8] Deriving FX rates...")
+    print("[3/9] Deriving FX rates...")
     end_date = date.today()
     start_date = end_date - timedelta(days=args.days)
     fx_res = derive_fx(args.db, start_date, end_date, statuses)
@@ -504,7 +516,7 @@ def main() -> int:
         for e in fx_res["errors"]:
             print(f"    - {e}")
 
-    print("[4/8] Importing Binance withdrawals...")
+    print("[4/9] Importing Binance withdrawals...")
     wd_res = import_withdrawals(args.db, args.days)
     print(f"  fetched={wd_res['fetched']} inserted={wd_res['inserted']} ledger_entries={wd_res['ledger_entries']}")
     if wd_res["errors"]:
@@ -512,8 +524,17 @@ def main() -> int:
         for e in wd_res["errors"][:5]:
             print(f"    - {e}")
 
+    print("[5/9] Importing Binance withdrawal emails...")
+    cmd = [
+        sys.executable,
+        str(PROJECT_ROOT / "scripts" / "import_binance_withdrawal_emails.py"),
+        "--since-days",
+        str(args.since_days),
+    ]
+    subprocess.run(cmd, check=False)
+
     if not args.skip_deposits:
-        print("[5/8] Importing Binance deposits...")
+        print("[6/9] Importing Binance deposits...")
         dep_res = import_deposits(args.db, args.days)
         print(f"  fetched={dep_res['fetched']} inserted={dep_res['inserted']}")
         if dep_res["errors"]:
@@ -522,7 +543,7 @@ def main() -> int:
                 print(f"    - {e}")
 
     if not args.skip_transfers:
-        print("[6/8] Importing Binance transfers...")
+        print("[7/9] Importing Binance transfers...")
         types = [t.strip() for t in args.transfer_types.split(",") if t.strip()]
         trans_res = import_transfers(args.db, args.days, types=types)
         print(f"  fetched={trans_res['fetched']} inserted={trans_res['inserted']}")
@@ -532,7 +553,7 @@ def main() -> int:
                 print(f"    - {e}")
 
     if not args.skip_funding_balance:
-        print("[7/8] Snapshotting funding wallet balances...")
+        print("[8/9] Snapshotting funding wallet balances...")
         bal_res = snapshot_funding_balances(args.db)
         print(f"  captured={bal_res['captured']}")
         if bal_res["errors"]:
@@ -548,7 +569,7 @@ def main() -> int:
                 print(f"    - {e}")
 
     if args.reports:
-        print("[8/8] Generating reports...")
+        print("[9/9] Generating reports...")
         cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "generate_transfer_ledger_reports.py"), "--days", str(args.days)]
         if args.current_usdt is not None:
             cmd += ["--current-usdt", str(args.current_usdt)]
