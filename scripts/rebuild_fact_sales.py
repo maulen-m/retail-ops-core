@@ -5,10 +5,10 @@ Phase 6.5: Rebuild fact_sales from Archive_sales with correct grain.
 Problem: fact_sales had ~16,212 records due to:
 - Double imports (ActiveOrders + Archive overlap)
 - Missing aggregation (unit-level rows not collapsed)
-- Wrong composite key (order_id, sku_id) instead of (order_id, kaspi_offer_name, sku_id)
+- Wrong composite key (order_id, sku_id) instead of (order_id, kaspi_offer_name, sku_key, my_size)
 
 Solution: Clean import from single source of truth.
-Grain: (order_id, kaspi_offer_name, sku_id, store_code)
+Grain: (order_id, kaspi_offer_name, sku_key, my_size, store_code)
 
 Usage:
     python3 scripts/rebuild_fact_sales.py --dry-run  # Preview
@@ -27,11 +27,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 
 from core.calc.economics import calc_line_values
+from core.utils.sku_normalize import infer_size_from_sku_id, normalize_sku_key
 
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
-EXCEL_PATH = PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_GPT_15.9.25.xlsx"
+EXCEL_PATH = PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
 LOG_DIR = PROJECT_ROOT / "logs"
 
 # Store normalization mapping
@@ -120,7 +121,7 @@ def create_sku_size(conn: sqlite3.Connection, sku_id: str, sku_key: str, my_size
 def clean_and_aggregate(df: pd.DataFrame) -> pd.DataFrame:
     """
     Clean data and aggregate to correct grain.
-    Grain: (order_id, kaspi_offer_name, sku_id, store_code)
+    Grain: (order_id, kaspi_offer_name, sku_key, my_size, store_code)
     """
     # Parse dates
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
@@ -138,11 +139,22 @@ def clean_and_aggregate(df: pd.DataFrame) -> pd.DataFrame:
     # Ensure Sell_price_kzt is numeric
     df["Sell_price_kzt"] = pd.to_numeric(df["Sell_price_kzt"], errors="coerce").fillna(0)
 
-    # Normalize MY_SIZE to uppercase
-    df["MY_SIZE"] = df["MY_SIZE"].astype(str).str.strip().str.upper()
+    # Normalize SKU key + size fields
+    df["SKU_key"] = df["SKU_key"].astype(str).str.strip().apply(normalize_sku_key)
+    df["MY_SIZE"] = df["MY_SIZE"].astype(str).str.strip()
+    df["MY_SIZE"] = df["MY_SIZE"].replace({"nan": None, "None": None, "": None})
 
-    # Build sku_id from sku_key + my_size
-    df["sku_id"] = df["SKU_key"] + "_" + df["MY_SIZE"]
+    if "SKU_ID" in df.columns:
+        df["SKU_ID"] = df["SKU_ID"].astype(str).str.strip()
+    else:
+        df["SKU_ID"] = None
+
+    # Infer missing size from SKU_ID
+    df.loc[df["MY_SIZE"].isna(), "MY_SIZE"] = df["SKU_ID"].apply(infer_size_from_sku_id)
+
+    # If SKU_key missing, fall back to SKU_ID (best effort)
+    df.loc[df["SKU_key"].isna(), "SKU_key"] = df["SKU_ID"]
+    df.loc[df["SKU_key"] == "", "SKU_key"] = df["SKU_ID"]
 
     # Product type from column or extract from SKU_key
     if "Product_Type" in df.columns:
@@ -154,15 +166,14 @@ def clean_and_aggregate(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=["OrderID", "SKU_key", "KASPI_OFFER_NAME"])
 
     # Aggregate to correct grain
-    # Group by (order_id, kaspi_offer_name, sku_id, store_code)
+    # Group by (order_id, kaspi_offer_name, sku_key, my_size, store_code)
     # Sum Quantity, take first of everything else
     agg_df = df.groupby(
-        ["OrderID", "KASPI_OFFER_NAME", "sku_id", "store_code"],
+        ["OrderID", "KASPI_OFFER_NAME", "SKU_key", "MY_SIZE", "store_code"],
         as_index=False,
     ).agg({
         "Date": "first",
-        "SKU_key": "first",
-        "MY_SIZE": "first",
+        "SKU_ID": "first",
         "Quantity": "sum",
         "Sell_price_kzt": "first",
         "Product_Type": "first",
@@ -194,8 +205,8 @@ def process_records(df: pd.DataFrame, conn: sqlite3.Connection, verbose: bool = 
 
     for _, row in df.iterrows():
         sku_key = str(row["SKU_key"]).strip()
-        sku_id = str(row["sku_id"]).strip()
-        my_size = str(row["MY_SIZE"]).strip()
+        my_size = str(row["MY_SIZE"]).strip() if row.get("MY_SIZE") is not None else None
+        sku_id = str(row.get("SKU_ID") or "").strip() or None
         order_id = str(int(row["OrderID"])) if isinstance(row["OrderID"], float) else str(row["OrderID"])
         kaspi_offer_name = str(row["KASPI_OFFER_NAME"]).strip()
         store_code = row["store_code"]
@@ -215,6 +226,21 @@ def process_records(df: pd.DataFrame, conn: sqlite3.Connection, verbose: bool = 
         if sku_info["base_cost_cny"] == 0 or sku_info["weight_kg"] == 0:
             zero_cost_skus.add(sku_key)
             continue
+
+        if not my_size:
+            missing_skus.add(sku_key)
+            continue
+
+        if not sku_id:
+            row_size = conn.execute(
+                "SELECT sku_id FROM dim_sku_size WHERE sku_key = ? AND my_size = ?",
+                (sku_key, my_size),
+            ).fetchone()
+            if row_size:
+                sku_id = row_size[0]
+
+        if not sku_id:
+            sku_id = f"{sku_key}_{my_size}"
 
         # Auto-create dim_sku_size if needed
         if sku_id not in existing_sizes:
@@ -407,9 +433,9 @@ def validate_rebuild(conn: sqlite3.Connection):
 
     # Check for duplicates
     cursor.execute("""
-        SELECT order_id, kaspi_offer_name, sku_id, store_code, COUNT(*) as cnt
+        SELECT order_id, kaspi_offer_name, sku_key, my_size, store_code, COUNT(*) as cnt
         FROM fact_sales
-        GROUP BY order_id, kaspi_offer_name, sku_id, store_code
+        GROUP BY order_id, kaspi_offer_name, sku_key, my_size, store_code
         HAVING cnt > 1
         LIMIT 5
     """)
