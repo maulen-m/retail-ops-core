@@ -574,6 +574,7 @@ def main() -> int:
         if args.current_usdt is not None:
             cmd += ["--current-usdt", str(args.current_usdt)]
         subprocess.run(cmd, check=False)
+        subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "generate_po_payment_status.py")], check=False)
 
     return 0
 

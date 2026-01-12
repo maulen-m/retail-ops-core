@@ -79,6 +79,7 @@ Use `scripts/transfer_ledger_autopilot.py` to run the full pipeline:
 
 Generate reports:
 - `scripts/generate_transfer_ledger_reports.py --days 120 --current-usdt 2067.37796`
+- `scripts/generate_po_payment_status.py`
 
 ## PO funding plan (Excel)
 Use `scripts/import_po_funding_plan.py --xlsx <path>` to import PO totals and message dates
