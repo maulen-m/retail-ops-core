@@ -361,6 +361,18 @@ def rebuild_snapshot_from_ledger(
         snapshot_date = date.today()
 
     with get_db(db_path) as conn:
+        def _table_exists(name: str) -> bool:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+                (name,),
+            ).fetchone()
+            return row is not None
+        def _table_has_column(table: str, column: str) -> bool:
+            if not _table_exists(table):
+                return False
+            cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
+            return any(c[1] == column for c in cols)
+
         # Step 1: Calculate current stock from ledger
         ledger_balances = conn.execute("""
             SELECT
@@ -379,52 +391,56 @@ def rebuild_snapshot_from_ledger(
 
         # Step 2: Calculate inbound stock from pending PO lines
         # Join with po_header to get only non-received POs
-        inbound_query = conn.execute("""
-            SELECT
-                pl.sku_id,
-                pl.sku_key,
-                pl.my_size,
-                SUM(pl.order_qty - pl.received_qty) as inbound_stock
-            FROM po_line pl
-            JOIN po_header ph ON pl.po_id = ph.po_id
-            WHERE pl.status IN ('PENDING', 'PARTIAL', 'IN_TRANSIT')
-              AND ph.status NOT IN ('CLOSED', 'CANCELLED')
-            GROUP BY pl.sku_id, pl.sku_key, pl.my_size
-        """).fetchall()
-
-        inbound_by_sku = {row["sku_id"]: row["inbound_stock"] for row in inbound_query}
+        inbound_by_sku: dict[str, int] = {}
+        if _table_exists("po_line") and _table_exists("po_header"):
+            inbound_query = conn.execute("""
+                SELECT
+                    pl.sku_id,
+                    pl.sku_key,
+                    pl.my_size,
+                    SUM(pl.order_qty - pl.received_qty) as inbound_stock
+                FROM po_line pl
+                JOIN po_header ph ON pl.po_id = ph.po_id
+                WHERE pl.status IN ('PENDING', 'PARTIAL', 'IN_TRANSIT')
+                  AND ph.status NOT IN ('CLOSED', 'CANCELLED')
+                GROUP BY pl.sku_id, pl.sku_key, pl.my_size
+            """).fetchall()
+            inbound_by_sku = {row["sku_id"]: row["inbound_stock"] for row in inbound_query}
 
         # Fallback: include legacy fact_po_lines rows not represented in po_line
         # (Dim_PO_Header ETA + Fact_PO_Lines import path)
-        po_line_ids = {
-            row["po_id"] for row in conn.execute(
-                "SELECT DISTINCT po_id FROM po_line"
-            ).fetchall()
-        }
-        placeholders = ",".join("?" for _ in po_line_ids) if po_line_ids else ""
-        po_line_filter = f"AND po_id NOT IN ({placeholders})" if po_line_ids else ""
-        params = [snapshot_date.isoformat()]
-        if po_line_ids:
-            params.extend(sorted(po_line_ids))
+        if _table_exists("fact_po_lines"):
+            po_line_ids = set()
+            if _table_exists("po_line"):
+                po_line_ids = {
+                    row["po_id"] for row in conn.execute(
+                        "SELECT DISTINCT po_id FROM po_line"
+                    ).fetchall()
+                }
+            placeholders = ",".join("?" for _ in po_line_ids) if po_line_ids else ""
+            po_line_filter = f"AND po_id NOT IN ({placeholders})" if po_line_ids else ""
+            params = [snapshot_date.isoformat()]
+            if po_line_ids:
+                params.extend(sorted(po_line_ids))
 
-        inbound_fallback = conn.execute(f"""
-            SELECT
-                po_id,
-                sku_id,
-                sku_key,
-                my_size,
-                SUM(order_quantity - received_qty) as inbound_stock
-            FROM fact_po_lines
-            WHERE (order_quantity - received_qty) > 0
-              AND (est_arrival_date IS NULL OR est_arrival_date >= ?)
-              AND status NOT IN ('ARRIVED', 'CLOSED', 'CANCELLED', 'RECEIVED')
-              {po_line_filter}
-            GROUP BY po_id, sku_id, sku_key, my_size
-        """, params).fetchall()
+            inbound_fallback = conn.execute(f"""
+                SELECT
+                    po_id,
+                    sku_id,
+                    sku_key,
+                    my_size,
+                    SUM(order_quantity - received_qty) as inbound_stock
+                FROM fact_po_lines
+                WHERE (order_quantity - received_qty) > 0
+                  AND (est_arrival_date IS NULL OR est_arrival_date >= ?)
+                  AND status NOT IN ('ARRIVED', 'CLOSED', 'CANCELLED', 'RECEIVED')
+                  {po_line_filter}
+                GROUP BY po_id, sku_id, sku_key, my_size
+            """, params).fetchall()
 
-        for row in inbound_fallback:
-            sku_id = row["sku_id"]
-            inbound_by_sku[sku_id] = inbound_by_sku.get(sku_id, 0) + row["inbound_stock"]
+            for row in inbound_fallback:
+                sku_id = row["sku_id"]
+                inbound_by_sku[sku_id] = inbound_by_sku.get(sku_id, 0) + row["inbound_stock"]
 
         # Step 3: Delete existing snapshot for this date
         # Note: fact_inventory_snapshot_size doesn't have store_code column
@@ -435,15 +451,23 @@ def rebuild_snapshot_from_ledger(
 
         # Step 4: Insert new snapshot rows
         # Include all active sizes even if they have no ledger events yet.
-        active_sizes = conn.execute("""
-            SELECT ds.sku_id, ds.sku_key, ds.my_size
-            FROM dim_sku_size ds
-            JOIN dim_sku d ON ds.sku_key = d.sku_key
-            WHERE ds.active_flag = 1
-              AND d.active_flag = 1
-              AND ds.my_size IS NOT NULL
-              AND ds.my_size != ''
-        """).fetchall()
+        if _table_exists("dim_sku") and _table_has_column("dim_sku_size", "active_flag") and _table_has_column("dim_sku", "active_flag"):
+            active_sizes = conn.execute("""
+                SELECT ds.sku_id, ds.sku_key, ds.my_size
+                FROM dim_sku_size ds
+                JOIN dim_sku d ON ds.sku_key = d.sku_key
+                WHERE ds.active_flag = 1
+                  AND d.active_flag = 1
+                  AND ds.my_size IS NOT NULL
+                  AND ds.my_size != ''
+            """).fetchall()
+        else:
+            active_sizes = conn.execute("""
+                SELECT sku_id, sku_key, my_size
+                FROM dim_sku_size
+                WHERE my_size IS NOT NULL
+                  AND my_size != ''
+            """).fetchall()
 
         base_rows = {
             row["sku_id"]: (row["sku_key"], row["my_size"])

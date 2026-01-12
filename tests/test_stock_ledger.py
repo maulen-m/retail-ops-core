@@ -314,7 +314,7 @@ class TestRebuildSnapshot:
         # Rebuild snapshot
         rows_created = rebuild_snapshot_from_ledger(snapshot_date=today, db_path=test_db)
 
-        assert rows_created == 2  # Two SKUs with events
+        assert rows_created == 4  # All active sizes are included
 
         # Verify snapshot values match ledger
         conn = sqlite3.connect(str(test_db))
