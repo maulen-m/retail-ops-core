@@ -162,8 +162,13 @@ def _timestamp_to_date(ts: Optional[int]) -> Optional[date]:
 
 def _planned_date_from_order(order: dict) -> Optional[date]:
     """Extract planned courier transmission date from API order."""
-    delivery = order.get('attributes', {}).get('kaspiDelivery', {})
-    planned_ts = delivery.get('courierTransmissionPlanningDate') or delivery.get('plannedDeliveryDate')
+    attrs = order.get('attributes', {})
+    delivery = attrs.get('kaspiDelivery', {})
+    planned_ts = (
+        delivery.get('courierTransmissionPlanningDate')
+        or delivery.get('plannedDeliveryDate')
+        or attrs.get('plannedDeliveryDate')
+    )
     return _timestamp_to_date(planned_ts)
 
 

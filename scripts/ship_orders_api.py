@@ -38,6 +38,7 @@ from core.db import DEFAULT_DB_PATH, get_db
 from core.paths import data_path, get_data_root
 from core.integrations.kaspi_api_client import (
     KaspiAPIClient,
+    APIResponse,
     KaspiAuthError,
     KaspiNotFoundError,
     KaspiWriteDisabledError,
@@ -235,8 +236,13 @@ def _timestamp_to_date(ts: Optional[int]) -> Optional[date]:
 
 def _planned_date_from_order(order: dict) -> Optional[date]:
     """Extract planned courier transmission date from API order."""
-    delivery = order.get('attributes', {}).get('kaspiDelivery', {})
-    planned_ts = delivery.get('courierTransmissionPlanningDate') or delivery.get('plannedDeliveryDate')
+    attrs = order.get('attributes', {})
+    delivery = attrs.get('kaspiDelivery', {})
+    planned_ts = (
+        delivery.get('courierTransmissionPlanningDate')
+        or delivery.get('plannedDeliveryDate')
+        or attrs.get('plannedDeliveryDate')
+    )
     return _timestamp_to_date(planned_ts)
 
 
@@ -518,6 +524,7 @@ def ship_orders(
     dry_run: bool = False,
     verbose: bool = False,
     since_days: int = 7,
+    target_date: Optional[date] = None,
 ) -> dict:
     """
     Ship orders via Kaspi API.
@@ -534,6 +541,7 @@ def ship_orders(
     Returns summary dict with counts.
     """
     shipped = 0
+    deferred = 0
     skipped = 0
     already_shipped = 0
     errors = []
@@ -556,6 +564,9 @@ def ship_orders(
 
     if already_shipped > 0:
         logger.info(f"Skipped {already_shipped} orders already shipped/not in Упаковка")
+
+    today = datetime.now(ALMATY_TZ).date()
+    future_target = bool(target_date and target_date > today)
 
     for store_name, store_orders in orders_by_store.items():
         # Get API store code
@@ -591,25 +602,43 @@ def ship_orders(
                 continue
 
             # Helper: verify assemble state (handles delayed state updates)
+            def _extract_attrs(detail: Optional[APIResponse]) -> dict:
+                if not detail or not detail.success:
+                    return {}
+                data = detail.data
+                if isinstance(data, dict) and isinstance(data.get('data'), dict):
+                    return data['data'].get('attributes', {}) or {}
+                if isinstance(data, dict):
+                    return data.get('attributes', {}) or {}
+                return {}
+
+            def _extract_order_obj(detail: Optional[APIResponse]) -> dict:
+                if not detail or not detail.success:
+                    return {}
+                data = detail.data
+                if isinstance(data, dict) and isinstance(data.get('data'), dict):
+                    return data['data']
+                if isinstance(data, dict):
+                    return data
+                return {}
+
             def _wait_for_assembled(order_code: str, base64_hint: Optional[str] = None) -> bool:
                 for attempt in range(ASSEMBLE_VERIFY_RETRIES):
                     try:
                         detail = None
                         if base64_hint:
                             detail = client.get_order_by_id(base64_hint)
-                            if detail.success:
-                                attrs = detail.data.get('attributes', {})
-                                if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
-                                    if verbose:
-                                        print("      -> Already assembled, skipping")
-                                    return True
-                        detail = client.get_order(order_code)
-                        if detail.success:
-                            attrs = detail.data.get('attributes', {})
-                            if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
+                            attrs = _extract_attrs(detail)
+                            if attrs.get('assembled') is True or client.get_waybill_url(_extract_order_obj(detail)):
                                 if verbose:
                                     print("      -> Already assembled, skipping")
                                 return True
+                        detail = client.get_order(order_code)
+                        attrs = _extract_attrs(detail)
+                        if attrs.get('assembled') is True or client.get_waybill_url(_extract_order_obj(detail)):
+                            if verbose:
+                                print("      -> Already assembled, skipping")
+                            return True
                     except Exception:
                         pass
                     if attempt < ASSEMBLE_VERIFY_RETRIES - 1:
@@ -627,9 +656,18 @@ def ship_orders(
                 try:
                     result_fallback = client.assemble_order(order_id, parcel_count=parcel_count)
                     if result_fallback.success:
-                        if verbose:
-                            print("      -> Shipped OK (fallback)")
-                        return True
+                        if future_target:
+                            nonlocal deferred
+                            deferred += 1
+                            if verbose:
+                                print("      -> Deferred (future planned date)")
+                            return False
+                        if _wait_for_assembled(order_id, base64_hint):
+                            if verbose:
+                                print("      -> Shipped OK (fallback)")
+                            return True
+                        _queue_retry(order_id, parcel_count)
+                        return False
                     err_text = str(result_fallback.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
                         if _wait_for_assembled(order_id, base64_hint):
@@ -662,9 +700,18 @@ def ship_orders(
             try:
                 result = client.assemble_order_by_id(base64_id, order_id, parcel_count=parcel_count)
                 if result.success:
-                    shipped += 1
-                    if verbose:
-                        print("      -> Shipped OK")
+                    if future_target:
+                        deferred += 1
+                        if verbose:
+                            print("      -> Deferred (future planned date)")
+                        continue
+                    if _wait_for_assembled(order_id, base64_id):
+                        shipped += 1
+                        if verbose:
+                            print("      -> Shipped OK")
+                    else:
+                        _queue_retry(order_id, parcel_count)
+                        continue
                 else:
                     # Some API errors return 404-equivalent errors without raising.
                     err_text = str(result.error or "")
@@ -727,6 +774,10 @@ def ship_orders(
                         continue
                     result = client.assemble_order_by_id(base64_id, order_code, parcel_count=parcels)
                     if result.success:
+                        if future_target:
+                            deferred += 1
+                            still_retry[order_code] = parcels
+                            continue
                         shipped += 1
                         if verbose:
                             print(f"      {order_code}: Shipped OK (refresh)")
@@ -750,6 +801,7 @@ def ship_orders(
 
     return {
         'shipped': shipped,
+        'deferred': deferred,
         'skipped': skipped,
         'errors': errors,
     }
@@ -965,6 +1017,7 @@ def main():
         dry_run=args.dry_run,
         verbose=args.verbose,
         since_days=args.since_days,
+        target_date=target_date,
     )
 
     # Summary
@@ -972,6 +1025,8 @@ def main():
     print("  Summary")
     print("=" * 60)
     print(f"  Shipped: {result['shipped']}")
+    if result.get('deferred'):
+        print(f"  Deferred (future date): {result['deferred']}")
     print(f"  Skipped: {result['skipped']}")
     if result['errors']:
         print(f"  Errors: {len(result['errors'])}")
