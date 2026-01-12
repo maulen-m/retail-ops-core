@@ -111,22 +111,28 @@ class StockTimelineBuilder:
             }
         return result
 
-    def get_latest_snapshot_date(self, max_date: str) -> Optional[str]:
+    def get_latest_snapshot_date(
+        self,
+        max_date: str,
+        include_end_date: bool = True,
+    ) -> Optional[str]:
         """
         Find the latest snapshot_date that is <= max_date.
 
         Args:
             max_date: Maximum date to look for (typically today)
+            include_end_date: If False, require snapshot_date < max_date
 
         Returns:
             Latest snapshot_date string, or None if no snapshots exist
         """
         conn = self._get_conn()
+        comparator = "<=" if include_end_date else "<"
         cursor = conn.execute("""
             SELECT MAX(snapshot_date) as latest_date
             FROM fact_inventory_snapshot_size
-            WHERE snapshot_date <= ?
-        """, (max_date,))
+            WHERE snapshot_date {} ?
+        """.format(comparator), (max_date,))
         row = cursor.fetchone()
         return row['latest_date'] if row and row['latest_date'] else None
 
@@ -134,7 +140,8 @@ class StockTimelineBuilder:
         self,
         base_stock: dict[str, dict],
         base_date: str,
-        target_date: str
+        target_date: str,
+        include_estimated_arrivals: bool = False,
     ) -> dict[str, dict]:
         """
         Forward-simulate stock from base_date to target_date.
@@ -168,7 +175,11 @@ class StockTimelineBuilder:
         sim_end = target_date
 
         sales_by_sku = self.get_sales_by_sku_id(sim_start, sim_end)
-        arrivals_by_sku = self.get_arrivals_by_sku_id(sim_start, sim_end)
+        arrivals_by_sku = self.get_arrivals_by_sku_id(
+            sim_start,
+            sim_end,
+            include_estimated=include_estimated_arrivals,
+        )
 
         # Build simulated stock
         result = {}
@@ -231,33 +242,65 @@ class StockTimelineBuilder:
     def get_arrivals_by_sku_id(
         self,
         start_date: str,
-        end_date: str
+        end_date: str,
+        include_estimated: bool = False,
     ) -> dict[str, dict[str, int]]:
         """
-        Get PO arrivals aggregated by (sku_id, actual_arrival_date).
+        Get PO arrivals aggregated by (sku_id, arrival_date).
 
-        Only includes DELIVERED POs with actual_arrival_date.
+        Default: only DELIVERED POs with actual_arrival_date.
+        If include_estimated=True: also include IN_TRANSIT POs using est_arrival_date.
 
         Returns:
-            dict[sku_id] -> dict[date_str] -> units_received
+            dict[sku_id] -> dict[date_str] -> units_received_or_expected
         """
         conn = self._get_conn()
-        cursor = conn.execute("""
-            SELECT sku_id, actual_arrival_date, SUM(received_qty) as units
-            FROM fact_po_lines
-            WHERE actual_arrival_date IS NOT NULL
-              AND actual_arrival_date >= ?
-              AND actual_arrival_date <= ?
-              AND status = 'DELIVERED'
-            GROUP BY sku_id, actual_arrival_date
-        """, (start_date, end_date))
+        if include_estimated:
+            cursor = conn.execute("""
+                SELECT sku_id, arrival_date, SUM(units) as units
+                FROM (
+                    SELECT sku_id,
+                           actual_arrival_date as arrival_date,
+                           SUM(received_qty) as units
+                    FROM fact_po_lines
+                    WHERE actual_arrival_date IS NOT NULL
+                      AND actual_arrival_date >= ?
+                      AND actual_arrival_date <= ?
+                      AND status = 'DELIVERED'
+                    GROUP BY sku_id, actual_arrival_date
+
+                    UNION ALL
+
+                    SELECT sku_id,
+                           est_arrival_date as arrival_date,
+                           SUM(order_quantity - received_qty) as units
+                    FROM fact_po_lines
+                    WHERE actual_arrival_date IS NULL
+                      AND est_arrival_date IS NOT NULL
+                      AND est_arrival_date >= ?
+                      AND est_arrival_date <= ?
+                      AND status = 'IN_TRANSIT'
+                    GROUP BY sku_id, est_arrival_date
+                )
+                GROUP BY sku_id, arrival_date
+            """, (start_date, end_date, start_date, end_date))
+        else:
+            cursor = conn.execute("""
+                SELECT sku_id, actual_arrival_date as arrival_date, SUM(received_qty) as units
+                FROM fact_po_lines
+                WHERE actual_arrival_date IS NOT NULL
+                  AND actual_arrival_date >= ?
+                  AND actual_arrival_date <= ?
+                  AND status = 'DELIVERED'
+                GROUP BY sku_id, actual_arrival_date
+            """, (start_date, end_date))
 
         result: dict[str, dict[str, int]] = {}
         for row in cursor.fetchall():
             sku_id = row['sku_id']
             if sku_id not in result:
                 result[sku_id] = {}
-            result[sku_id][row['actual_arrival_date']] = row['units']
+            result[sku_id][row['arrival_date']] = row['units']
 
         return result
 

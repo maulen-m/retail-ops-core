@@ -428,9 +428,9 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=not args.skip_api_sync,
         ),
         PipelineStep(
-            name="2b. Rebuild Inventory Snapshot (ledger)",
+            name="2b. Rebuild Inventory Snapshot (auto)",
             script="rebuild_snapshot.py",
-            args=["--date", cutoff_date.isoformat()],
+            args=["--date", cutoff_date.isoformat(), "--mode", "auto"],
             required=True,
             skip_on_dry_run=True
         ),
