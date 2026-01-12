@@ -971,6 +971,8 @@ def generate_po_data(
             product_type = sku['product_type'] or 'CL'
             unit_cogs = case["unit_cogs"]
             unit_profit = case["unit_profit"]
+            avg_net_price = unit_profit + unit_cogs
+            avg_sell_price = case.get("avg_sell_price", avg_net_price)
         else:
             base_cost_cny = sku['base_cost_cny'] or 50
             weight_kg = sku['weight_kg'] or 0.5
