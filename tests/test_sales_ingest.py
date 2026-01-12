@@ -222,6 +222,26 @@ def delivery_fee_excel(tmp_path):
 
 
 @pytest.fixture
+def missing_sku_id_excel(tmp_path):
+    """Sales Excel missing SKU_ID but with SKU_key + MY_SIZE."""
+    data = {
+        "OrderID": ["ORD-NO-SKUID"],
+        "Date": [date.today()],
+        "KASPI_OFFER_NAME": ["Принт 5в1 черный M"],
+        "SKU_key": ["CL_LINE52_BLACK"],
+        "MY_SIZE": ["M"],
+        "Quantity": [1],
+        "Sell_price_kzt": [15000],
+        "STORE_NAME": ["Universal"],
+        "Return": [0],
+    }
+    df = pd.DataFrame(data)
+    xlsx_path = tmp_path / "missing_sku_id.xlsx"
+    df.to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+    return str(xlsx_path)
+
+
+@pytest.fixture
 def unmapped_sales_excel(tmp_path):
     """Create a sample sales Excel file with unmapped offers."""
     data = {
@@ -352,8 +372,23 @@ class TestIngestSales:
 
         assert len(sales) == 4
 
+    def test_ingest_resolves_missing_sku_id(self, test_db, missing_sku_id_excel):
+        """SKU_ID should resolve from SKU_key + MY_SIZE via dim_sku_size."""
+        result = ingest_sales(
+            xlsx_path=missing_sku_id_excel,
+            db_path=test_db,
+        )
+
+        assert result["inserted"] == 1
+        conn = sqlite3.connect(str(test_db))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT sku_id FROM sales_fact_v2").fetchone()
+        conn.close()
+
+        assert row["sku_id"] == "CL_LINE52_BLACK_M"
+
     def test_ingest_dedup_exact_key(self, test_db, sample_sales_excel):
-        """Test deduplication on exact key (order_id, sku_id, store_code, kaspi_offer_name)."""
+        """Test deduplication on exact key (order_id, store_code, kaspi_offer_name, sku_key, my_size)."""
         # First ingest
         result1 = ingest_sales(xlsx_path=sample_sales_excel, db_path=test_db)
         assert result1["inserted"] == 4

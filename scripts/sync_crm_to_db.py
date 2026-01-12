@@ -3,7 +3,7 @@
 Daily CRM -> Database sync script.
 
 Scheduled to run at 13:00 GMT+5 (08:00 UTC) daily.
-Syncs sales from SALES_KSP_CRM_V3.xlsx to sales_fact_v2 table.
+Syncs sales from SALES_KSP_CRM_V3.xlsx to sales_fact_v2 and fact_sales.
 
 Usage:
     python scripts/sync_crm_to_db.py
@@ -19,7 +19,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.ingest.sales_ingest import ingest_sales, parse_sales_excel
+from core.ingest.sales_ingest import (
+    ingest_sales,
+    ingest_sales_to_fact_sales,
+    parse_sales_excel,
+)
 from core.db import get_db
 
 
@@ -38,6 +42,10 @@ def main():
                         help="Skip ledger events (faster)")
     parser.add_argument("--no-reconcile", action="store_true",
                         help="Skip removing DB rows missing from current CRM date range")
+    parser.add_argument("--skip-fact-sales", action="store_true",
+                        help="Skip updating fact_sales from CRM")
+    parser.add_argument("--skip-aggregates", action="store_true",
+                        help="Skip rebuilding fact_sales_daily aggregates")
     args = parser.parse_args()
 
     print(f"=" * 60)
@@ -76,9 +84,10 @@ def main():
         for row in records:
             crm_keys.add((
                 str(row.get("order_id") or ""),
-                str(row.get("sku_id") or ""),
                 str(row.get("store_code") or ""),
                 str(row.get("kaspi_offer_name") or ""),
+                str(row.get("sku_key") or ""),
+                str(row.get("my_size") or ""),
             ))
             dates.append(row.get("order_date"))
 
@@ -89,7 +98,7 @@ def main():
         with get_db() as conn:
             existing = conn.execute(
                 """
-                SELECT sale_id, order_id, sku_id, store_code, kaspi_offer_name
+                SELECT sale_id, order_id, store_code, kaspi_offer_name, sku_key, my_size
                 FROM sales_fact_v2
                 WHERE order_date BETWEEN ? AND ?
                 """,
@@ -99,9 +108,10 @@ def main():
             for row in existing:
                 key = (
                     str(row["order_id"]),
-                    str(row["sku_id"]),
                     str(row["store_code"]),
                     str(row["kaspi_offer_name"] or ""),
+                    str(row["sku_key"] or ""),
+                    str(row["my_size"] or ""),
                 )
                 if key not in crm_keys:
                     stale_ids.append(row["sale_id"])
@@ -132,7 +142,7 @@ def main():
         print(f"ERROR during ingest: {e}")
         sys.exit(1)
 
-    print(f"\nSync Results:")
+    print(f"\nSync Results (sales_fact_v2):")
     print(f"  Inserted: {result.get('inserted', 0)}")
     print(f"  Skipped (dupes): {result.get('skipped', 0)}")
     print(f"  Returns processed: {result.get('returns_processed', 0)}")
@@ -147,6 +157,29 @@ def main():
         print(f"\n  Errors: {len(result['errors'])}")
         for err in result['errors'][:5]:
             print(f"    - {err}")
+
+    if not args.skip_fact_sales:
+        print("\nSyncing fact_sales from CRM...")
+        fact_result = ingest_sales_to_fact_sales(
+            xlsx_path=str(args.file),
+            sheet_name=args.sheet,
+            dry_run=args.dry_run,
+            source_file=args.file.name,
+        )
+        print(f"  fact_sales inserted: {fact_result.get('inserted', 0)}")
+        print(f"  fact_sales updated: {fact_result.get('updated', 0)}")
+        if fact_result.get("errors"):
+            print(f"  fact_sales errors: {len(fact_result['errors'])}")
+
+        if not args.skip_aggregates and fact_result.get("min_date") and fact_result.get("max_date"):
+            print("\nRebuilding fact_sales_daily aggregates...")
+            from scripts.build_daily_aggregates import build_all_aggregates
+            build_all_aggregates(
+                from_date=fact_result["min_date"],
+                to_date=fact_result["max_date"],
+                dry_run=args.dry_run,
+                verbose=True,
+            )
 
     print(f"\n{'=' * 60}")
     print(f"Sync complete!")

@@ -3,9 +3,10 @@ TASK-176: Sales Ingestion Module (Phase 10)
 
 Parses sales Excel files and ingests to sales_fact_v2 and stock_ledger.
 
-Key constraint: Unique key is (order_id, sku_id, store_code, kaspi_offer_name)
+Key constraint: Unique key is (order_id, store_code, kaspi_offer_name, sku_key, my_size)
 - Same order can have same kaspi_offer_name with qty=2 but different sizes
 - Same order can have different kaspi_offer_name with same sku_id
+- sku_id is resolved from (sku_key, my_size) when possible to avoid false dedup
 
 Tables used:
 - sales_fact_v2: Enhanced sales with return tracking
@@ -22,7 +23,8 @@ import pandas as pd
 
 from core.db import get_db, DEFAULT_DB_PATH
 from core.db.ledger import add_ledger_event, log_audit
-from core.utils.sku_normalize import infer_size_from_sku_id
+from core.calc.economics import calc_cogs, calc_delivery_fee, calc_net_rev
+from core.utils.sku_normalize import infer_size_from_sku_id, normalize_sku_key
 
 
 # Store code normalization map
@@ -43,6 +45,59 @@ def normalize_store_code(store_name: str) -> str:
 
     clean = str(store_name).lower().strip().replace(" ", "_")
     return STORE_CODE_MAP.get(clean, store_name.upper())
+
+
+def build_sales_dedupe_key(
+    order_id: str,
+    store_code: str,
+    kaspi_offer_name: str,
+    sku_key: str | None,
+    my_size: str | None,
+) -> tuple:
+    """Return the canonical dedupe key for sales records."""
+    return (
+        str(order_id or ""),
+        str(store_code or ""),
+        str(kaspi_offer_name or ""),
+        str(sku_key or ""),
+        str(my_size or ""),
+    )
+
+
+def resolve_sales_identity(
+    conn: sqlite3.Connection,
+    sku_id: str | None,
+    sku_key: str | None,
+    my_size: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve sku_key/sku_id/my_size from dim_sku_size when possible."""
+    sku_id = str(sku_id).strip() if sku_id else None
+    sku_key = str(sku_key).strip() if sku_key else None
+    my_size = str(my_size).strip() if my_size else None
+
+    if sku_key:
+        sku_key = normalize_sku_key(sku_key)
+
+    if sku_id and (not sku_key or not my_size):
+        row = conn.execute(
+            "SELECT sku_key, my_size FROM dim_sku_size WHERE sku_id = ?",
+            (sku_id,),
+        ).fetchone()
+        if row:
+            if not sku_key:
+                sku_key = row["sku_key"]
+            if not my_size:
+                my_size = row["my_size"]
+
+    if sku_key and my_size and not sku_id:
+        row = conn.execute(
+            "SELECT sku_id FROM dim_sku_size WHERE sku_key = ? AND my_size = ?",
+            (sku_key, my_size),
+        ).fetchone()
+        if row:
+            sku_id = row["sku_id"]
+
+    return sku_key, sku_id, my_size
 
 
 def parse_sales_excel(
@@ -299,7 +354,7 @@ def ingest_sales(
     """
     Ingest sales from Excel to sales_fact_v2 and stock_ledger.
 
-    Deduplication key: (order_id, sku_id, store_code, kaspi_offer_name)
+    Deduplication key: (order_id, store_code, kaspi_offer_name, sku_key, my_size)
 
     Steps:
     1. Parse Excel
@@ -341,12 +396,18 @@ def ingest_sales(
     with get_db(db_path) as conn:
         for rec in records:
             order_id = rec["order_id"]
-            sku_id = rec["sku_id"]
             store_code = rec["store_code"]
             kaspi_offer_name = rec["kaspi_offer_name"]
 
-            # Skip if missing sku_id
-            if not sku_id:
+            sku_key, sku_id, my_size = resolve_sales_identity(
+                conn,
+                rec.get("sku_id"),
+                rec.get("sku_key"),
+                rec.get("my_size"),
+            )
+
+            # Skip if missing resolved identity
+            if not sku_id or not sku_key or not my_size:
                 if kaspi_offer_name not in [u["offer"] for u in result["unmapped"]]:
                     result["unmapped"].append({"offer": kaspi_offer_name, "order_id": order_id})
                 continue
@@ -354,8 +415,21 @@ def ingest_sales(
             # Check for existing record (dedup)
             existing = conn.execute("""
                 SELECT sale_id, return_flag FROM sales_fact_v2
-                WHERE order_id = ? AND sku_id = ? AND store_code = ? AND kaspi_offer_name = ?
-            """, (order_id, sku_id, store_code, kaspi_offer_name)).fetchone()
+                WHERE order_id = ? AND store_code = ? AND kaspi_offer_name = ?
+                  AND sku_key = ? AND my_size = ?
+            """, (
+                order_id,
+                store_code,
+                kaspi_offer_name,
+                sku_key,
+                my_size,
+            )).fetchone()
+
+            if not existing:
+                existing = conn.execute("""
+                    SELECT sale_id, return_flag FROM sales_fact_v2
+                    WHERE order_id = ? AND sku_id = ? AND store_code = ? AND kaspi_offer_name = ?
+                """, (order_id, sku_id, store_code, kaspi_offer_name)).fetchone()
 
             if existing:
                 # Check if return status changed
@@ -401,9 +475,9 @@ def ingest_sales(
                 """, (
                     order_id,
                     rec["order_date"].isoformat() if isinstance(rec["order_date"], date) else rec["order_date"],
-                    rec["sku_key"],
+                    sku_key,
                     sku_id,
-                    rec["my_size"],
+                    my_size,
                     kaspi_offer_name,
                     store_code,
                     rec["quantity"],
@@ -501,6 +575,220 @@ def ingest_sales(
         )
 
     return result
+
+
+def ingest_sales_to_fact_sales(
+    xlsx_path: str,
+    sheet_name: str = "SALES_KSP_CRM_1",
+    dry_run: bool = False,
+    source_file: str | None = None,
+    db_path: Optional[Path] = None,
+) -> dict:
+    """
+    Ingest sales from CRM sheet into fact_sales with v8 economics.
+
+    Deduplication key: (order_id, store_code, kaspi_offer_name, sku_key, my_size)
+    """
+    if db_path is None:
+        db_path = DEFAULT_DB_PATH
+
+    if source_file is None:
+        source_file = Path(xlsx_path).name
+
+    records = parse_sales_excel(xlsx_path, sheet_name)
+
+    stats = {
+        "inserted": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": [],
+        "unmapped": [],
+        "min_date": None,
+        "max_date": None,
+    }
+
+    with get_db(db_path) as conn:
+        sku_meta = {
+            row["sku_key"]: {
+                "base_cost_cny": row["base_cost_cny"],
+                "weight_kg": row["weight_kg"],
+                "product_type": row["product_type"],
+                "cogs_kzt": row["cogs_kzt"],
+            }
+            for row in conn.execute(
+                """
+                SELECT sku_key, base_cost_cny, weight_kg, product_type, cogs_kzt
+                FROM dim_sku
+                """
+            ).fetchall()
+        }
+
+        for rec in records:
+            order_id = rec["order_id"]
+            order_date = rec["order_date"]
+            store_code = rec["store_code"]
+            kaspi_offer_name = rec["kaspi_offer_name"]
+            quantity = int(rec["quantity"] or 0)
+
+            if quantity <= 0:
+                stats["skipped"] += 1
+                continue
+
+            sku_key, sku_id, my_size = resolve_sales_identity(
+                conn,
+                rec.get("sku_id"),
+                rec.get("sku_key"),
+                rec.get("my_size"),
+            )
+
+            if not sku_key or not my_size or not sku_id:
+                stats["unmapped"].append({"offer": kaspi_offer_name, "order_id": order_id})
+                stats["skipped"] += 1
+                continue
+
+            sku_info = sku_meta.get(sku_key)
+            if not sku_info:
+                stats["errors"].append(f"Missing sku_key in dim_sku: {sku_key}")
+                stats["skipped"] += 1
+                continue
+
+            sell_price = rec.get("sell_price_kzt")
+            if sell_price is None:
+                stats["errors"].append(f"Missing sell_price_kzt for order {order_id}")
+                stats["skipped"] += 1
+                continue
+
+            base_cost = sku_info.get("base_cost_cny") or 0
+            weight_kg = sku_info.get("weight_kg") or 0
+            cogs_unit = None
+            if base_cost and weight_kg:
+                cogs_unit = calc_cogs(base_cost, weight_kg)
+            elif sku_info.get("cogs_kzt"):
+                cogs_unit = float(sku_info["cogs_kzt"])
+
+            delivery_fee = rec.get("delivery_fee")
+            if delivery_fee is None or delivery_fee <= 0:
+                delivery_fee = calc_delivery_fee(
+                    sell_price,
+                    weight_kg=weight_kg,
+                    delivery_type="city",
+                )
+
+            net_rev_unit = calc_net_rev(
+                sell_price,
+                delivery_fee=delivery_fee,
+                weight_kg=weight_kg,
+                as_of_date=order_date,
+            )
+
+            profit_unit = net_rev_unit - cogs_unit if cogs_unit is not None else None
+            line_net_rev = net_rev_unit * quantity
+            cogs_line = cogs_unit * quantity if cogs_unit is not None else None
+            profit_line = profit_unit * quantity if profit_unit is not None else None
+
+            existing = conn.execute(
+                """
+                SELECT id FROM fact_sales
+                WHERE order_id = ? AND store_code = ? AND kaspi_offer_name = ?
+                  AND sku_key = ? AND my_size = ?
+                """,
+                (order_id, store_code, kaspi_offer_name, sku_key, my_size),
+            ).fetchone()
+
+            payload = (
+                order_id,
+                kaspi_offer_name,
+                store_code,
+                order_date.isoformat() if isinstance(order_date, date) else order_date,
+                sku_key,
+                sku_id,
+                my_size,
+                quantity,
+                float(sell_price),
+                sku_info.get("product_type") or "CL",
+                "Kaspi",
+                delivery_fee,
+                net_rev_unit,
+                line_net_rev,
+                cogs_unit,
+                cogs_line,
+                profit_unit,
+                profit_line,
+                "KSP",
+            )
+
+            if existing:
+                if not dry_run:
+                    conn.execute(
+                        """
+                        UPDATE fact_sales
+                        SET kaspi_offer_name = ?,
+                            store_code = ?,
+                            order_date = ?,
+                            sku_key = ?,
+                            sku_id = ?,
+                            my_size = ?,
+                            quantity = ?,
+                            sell_price_kzt = ?,
+                            product_type = ?,
+                            channel = ?,
+                            delivery_fee = ?,
+                            net_rev_unit = ?,
+                            line_net_rev = ?,
+                            cogs_unit = ?,
+                            cogs_line = ?,
+                            profit_unit = ?,
+                            profit_line = ?,
+                            channel_code = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            kaspi_offer_name,
+                            store_code,
+                            order_date.isoformat() if isinstance(order_date, date) else order_date,
+                            sku_key,
+                            sku_id,
+                            my_size,
+                            quantity,
+                            float(sell_price),
+                            sku_info.get("product_type") or "CL",
+                            "Kaspi",
+                            delivery_fee,
+                            net_rev_unit,
+                            line_net_rev,
+                            cogs_unit,
+                            cogs_line,
+                            profit_unit,
+                            profit_line,
+                            "KSP",
+                            existing["id"],
+                        ),
+                    )
+                stats["updated"] += 1
+            else:
+                if not dry_run:
+                    conn.execute(
+                        """
+                        INSERT INTO fact_sales (
+                            order_id, kaspi_offer_name, store_code, order_date,
+                            sku_key, sku_id, my_size, quantity, sell_price_kzt,
+                            product_type, channel, delivery_fee,
+                            net_rev_unit, line_net_rev, cogs_unit, cogs_line,
+                            profit_unit, profit_line, channel_code
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        payload,
+                    )
+                stats["inserted"] += 1
+
+            if order_date:
+                iso_date = order_date.isoformat() if isinstance(order_date, date) else str(order_date)
+                if stats["min_date"] is None or iso_date < stats["min_date"]:
+                    stats["min_date"] = iso_date
+                if stats["max_date"] is None or iso_date > stats["max_date"]:
+                    stats["max_date"] = iso_date
+
+    return stats
 
 
 def update_returns_from_api(
