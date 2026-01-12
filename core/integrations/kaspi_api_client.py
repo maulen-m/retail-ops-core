@@ -656,20 +656,7 @@ class KaspiAPIClient:
         logger.info(f"Assembling order {order_code} with {parcel_count} parcels")
 
         base64_id = self._get_order_base64_id(order_code)
-
-        # Per Kaspi API docs: status='ASSEMBLE' and numberOfSpace (STRING) are required
-        data = {
-            'data': {
-                'type': 'orders',
-                'id': base64_id,
-                'attributes': {
-                    'status': 'ASSEMBLE',
-                    'numberOfSpace': str(parcel_count),
-                }
-            }
-        }
-
-        return self._request('POST', 'orders', json_data=data)
+        return self.assemble_order_by_id(base64_id, order_code, parcel_count=parcel_count)
 
     def assemble_order_by_id(
         self,
@@ -698,7 +685,23 @@ class KaspiAPIClient:
         self._require_write_enabled()
         logger.info(f"Assembling order {order_code} (ID: {base64_id}) with {parcel_count} parcels")
 
-        # Per Kaspi API docs: status='ASSEMBLE' and numberOfSpace (STRING) are required
+        # Preferred endpoint (works for Universal + other stores)
+        assemble_payload = {'data': {'numberOfSpace': str(parcel_count)}}
+        try:
+            result = self._request(
+                'POST',
+                f'orders/{base64_id}/assemble',
+                json_data=assemble_payload,
+            )
+            if result.success:
+                return result
+        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError):
+            # Fall back to legacy endpoint below
+            pass
+        except Exception as exc:
+            logger.warning(f"Assemble via /orders/{base64_id}/assemble failed: {exc}")
+
+        # Legacy fallback (some stores still accept status update on /orders)
         data = {
             'data': {
                 'type': 'orders',
