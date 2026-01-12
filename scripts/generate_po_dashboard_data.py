@@ -505,7 +505,14 @@ def get_all_active_skus(conn) -> list[dict]:
 
 def filter_valid_sizes(data: dict) -> dict:
     """Filter to only valid size codes."""
-    return {k: v for k, v in data.items() if k.upper() in VALID_SIZES or k in VALID_SIZES}
+    return {k: v for k, v in data.items() if k and (k.upper() in VALID_SIZES or k in VALID_SIZES)}
+
+
+def filter_sizes(data: dict, allow_all: bool = False) -> dict:
+    """Filter sizes for apparel, but keep all non-empty sizes for non-apparel."""
+    if allow_all:
+        return {k: v for k, v in data.items() if k}
+    return filter_valid_sizes(data)
 
 
 def get_size_sales_history_with_cutoff(
@@ -918,12 +925,14 @@ def generate_po_data(
         notes_list = []
         override_value = None
 
+        allow_all_sizes = sku.get("product_type") != "CL"
+
         if use_fixture:
             case = fixture_by_sku[sku_key]
             demand_result = None
             has_demand = True
-            size_current = filter_valid_sizes(case["size_current_stock"])
-            size_inbound = filter_valid_sizes(case["size_inbound_stock"])
+            size_current = filter_sizes(case["size_current_stock"], allow_all=allow_all_sizes)
+            size_inbound = filter_sizes(case["size_inbound_stock"], allow_all=allow_all_sizes)
         else:
             # Check if we have demand estimate for this SKU
             demand_result = demand_lookup.get(sku_key)
@@ -940,8 +949,14 @@ def generate_po_data(
                   AND snapshot_date = ?
             """, (sku_key, STOCK_DATE)).fetchall()
 
-            size_current = filter_valid_sizes({row['my_size']: row['current_stock'] for row in size_current_raw})
-            size_inbound = filter_valid_sizes({row['my_size']: row['inbound_stock'] for row in size_current_raw})
+            size_current = filter_sizes(
+                {row['my_size']: row['current_stock'] for row in size_current_raw},
+                allow_all=allow_all_sizes,
+            )
+            size_inbound = filter_sizes(
+                {row['my_size']: row['inbound_stock'] for row in size_current_raw},
+                allow_all=allow_all_sizes,
+            )
 
         # Track SKUs with no stock snapshot
         has_stock = len(size_current) > 0
@@ -1019,8 +1034,8 @@ def generate_po_data(
                 # Also build 90d sales approximation for fallback
                 size_sales_90d[size] = int(size_result.d_size * 90)
 
-        size_demands = filter_valid_sizes(size_demands)
-        size_sales_90d = filter_valid_sizes(size_sales_90d)
+        size_demands = filter_sizes(size_demands, allow_all=allow_all_sizes)
+        size_sales_90d = filter_sizes(size_sales_90d, allow_all=allow_all_sizes)
 
         # Renormalize size_demands to match SKU demand if invalid sizes were dropped
         if size_demands and d_sku_blended > 0:
@@ -1048,7 +1063,7 @@ def generate_po_data(
                 proxy_result = demand_lookup.get(proxy_key)
                 if proxy_result:
                     proxy_sizes = {size: res.d_size for size, res in proxy_result.size_results.items()}
-                    proxy_sizes = filter_valid_sizes(proxy_sizes)
+                    proxy_sizes = filter_sizes(proxy_sizes, allow_all=allow_all_sizes)
                     total_proxy = sum(proxy_sizes.values())
                     if total_proxy > 0:
                         scale = d_sku_blended / total_proxy
@@ -1057,7 +1072,7 @@ def generate_po_data(
 
             if not size_demands:
                 candidate_sizes = set(size_current.keys()) | set(size_inbound.keys()) | set(size_sales_90d.keys())
-                candidate_sizes = filter_valid_sizes({k: 1 for k in candidate_sizes})
+                candidate_sizes = filter_sizes({k: 1 for k in candidate_sizes}, allow_all=allow_all_sizes)
                 if candidate_sizes:
                     per_size = d_sku_blended / len(candidate_sizes)
                     size_demands = {k: per_size for k in candidate_sizes.keys()}

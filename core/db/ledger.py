@@ -434,10 +434,60 @@ def rebuild_snapshot_from_ledger(
         """, (snapshot_date.isoformat(),))
 
         # Step 4: Insert new snapshot rows
-        inserted = 0
+        # Include all active sizes even if they have no ledger events yet.
+        active_sizes = conn.execute("""
+            SELECT ds.sku_id, ds.sku_key, ds.my_size
+            FROM dim_sku_size ds
+            JOIN dim_sku d ON ds.sku_key = d.sku_key
+            WHERE ds.active_flag = 1
+              AND d.active_flag = 1
+              AND ds.my_size IS NOT NULL
+              AND ds.my_size != ''
+        """).fetchall()
+
+        base_rows = {
+            row["sku_id"]: (row["sku_key"], row["my_size"])
+            for row in active_sizes
+        }
+
         for row in ledger_balances:
-            sku_id = row["sku_id"]
-            current_stock = row["current_stock"]
+            base_rows.setdefault(row["sku_id"], (row["sku_key"], row["my_size"]))
+
+        inbound_missing = [sku_id for sku_id in inbound_by_sku if sku_id not in base_rows]
+        if inbound_missing:
+            placeholders = ",".join("?" for _ in inbound_missing)
+            size_rows = conn.execute(f"""
+                SELECT sku_id, sku_key, my_size
+                FROM dim_sku_size
+                WHERE sku_id IN ({placeholders})
+            """, inbound_missing).fetchall()
+            for row in size_rows:
+                base_rows.setdefault(row["sku_id"], (row["sku_key"], row["my_size"]))
+
+            still_missing = [sku_id for sku_id in inbound_missing if sku_id not in base_rows]
+            if still_missing:
+                placeholders = ",".join("?" for _ in still_missing)
+                fallback_rows = conn.execute(f"""
+                    SELECT sku_id, sku_key, my_size
+                    FROM fact_po_lines
+                    WHERE sku_id IN ({placeholders})
+                    UNION
+                    SELECT sku_id, sku_key, my_size
+                    FROM po_line
+                    WHERE sku_id IN ({placeholders})
+                """, still_missing * 2).fetchall()
+                for row in fallback_rows:
+                    base_rows.setdefault(row["sku_id"], (row["sku_key"], row["my_size"]))
+
+        ledger_by_sku = {
+            row["sku_id"]: row["current_stock"]
+            for row in ledger_balances
+        }
+
+        inserted = 0
+        for sku_id in sorted(base_rows.keys()):
+            sku_key, my_size = base_rows[sku_id]
+            current_stock = ledger_by_sku.get(sku_id, 0)
             inbound_stock = inbound_by_sku.get(sku_id, 0)
 
             conn.execute("""
@@ -446,8 +496,8 @@ def rebuild_snapshot_from_ledger(
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 sku_id,
-                row["sku_key"],
-                row["my_size"],
+                sku_key,
+                my_size,
                 current_stock,
                 inbound_stock,
                 snapshot_date.isoformat(),
