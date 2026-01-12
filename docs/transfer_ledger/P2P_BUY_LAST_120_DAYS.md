@@ -1,6 +1,6 @@
 # Binance P2P BUY (USDT/KZT) — Last 120 Days
 
-Window: 2025-09-14 → 2026-01-12
+Window: 2025-09-15 → 2026-01-13
 Current funding USDT (used for balance): 2067.37796
 Funding USDT (snapshot): 2067.37796
 

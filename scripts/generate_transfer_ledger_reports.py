@@ -21,6 +21,7 @@ from core.transfer_ledger.repository import (
     list_pos_for_allocation,
     get_po_total_cny_from_lines,
     list_po_funding_plan,
+    list_po_exchanger_allocations,
 )
 
 
@@ -497,12 +498,66 @@ def main() -> int:
         ])
 
     po_info_by_order: dict[str, dict] = {}
-    po_list = po_cny_list
+    mapped_info: dict[str, dict] = {}
 
+    # Prefer explicit PO mappings if present
+    alloc_rows = list_po_exchanger_allocations(db_path=args.db)
+    alloc_by_order = {r["exchanger_order_id"]: r for r in alloc_rows if r.get("exchanger_order_id")}
+    if alloc_by_order:
+        po_paid: dict[str, float] = {}
+        mapped_orders = []
+        for r in rows_ex:
+            ex_id = r["exchanger_order_id"]
+            if ex_id in alloc_by_order:
+                order_dt = _parse_dt(r["message_date"])
+                if order_dt:
+                    mapped_orders.append((order_dt, r))
+        mapped_orders.sort(key=lambda x: x[0])
+
+        for order_dt, row in mapped_orders:
+            ex_id = row["exchanger_order_id"]
+            alloc = alloc_by_order.get(ex_id, {})
+            po_id = alloc.get("po_id")
+            if not po_id:
+                continue
+            amount_cny = float(row["amount_cny"] or alloc.get("amount_cny") or 0)
+            amount_usdt = float(row["amount_usdt"] or alloc.get("amount_usdt") or 0)
+            if amount_cny <= 0 or amount_usdt <= 0:
+                continue
+            rate = amount_cny / amount_usdt
+            total_cny = po_plan_by_id.get(po_id, {}).get("total_cny")
+            paid = po_paid.get(po_id, 0.0) + amount_cny
+            po_paid[po_id] = paid
+            left_cny = total_cny - paid if total_cny else None
+
+            plan_total_usdt = po_plan_by_id.get(po_id, {}).get("total_usdt")
+            if plan_total_usdt is None and total_cny and rate > 0:
+                plan_total_usdt = total_cny / rate
+            if plan_total_usdt and total_cny and left_cny is not None:
+                left_usdt = plan_total_usdt * (left_cny / total_cny) if total_cny else None
+            else:
+                left_usdt = left_cny / rate if left_cny is not None and rate > 0 else None
+
+            avg_kzt = _avg_recent_rate(p2p_rates, order_dt, window=5)
+            left_kzt = left_usdt * avg_kzt if left_usdt is not None and avg_kzt is not None else None
+
+            mapped_info[ex_id] = {
+                "po_id": po_id,
+                "po_total_cny": total_cny,
+                "po_total_usdt": plan_total_usdt,
+                "po_paid_cny": paid,
+                "po_left_cny": left_cny,
+                "po_left_usdt": left_usdt,
+                "po_left_kzt": left_kzt,
+            }
+
+    po_list = po_cny_list
     if po_list:
         po_state = {po_id: {"total_cny": total_cny, "paid_cny": 0.0} for _, po_id, total_cny in po_list}
         orders_for_alloc = []
         for r in rows_ex:
+            if r["exchanger_order_id"] in mapped_info:
+                continue
             amount_cny = float(r["amount_cny"] or 0)
             amount_usdt = float(r["amount_usdt"] or 0)
             if amount_cny <= 0 or amount_usdt <= 0:
@@ -606,7 +661,7 @@ def main() -> int:
                 dur_min = int((max(end_list) - min(created_list)).total_seconds() // 60)
                 duration = str(dur_min)
 
-        po_info = po_info_by_order.get(order_key, {})
+        po_info = mapped_info.get(order_key) or po_info_by_order.get(order_key, {})
         po_id = po_info.get("po_id", "")
         po_total_cny = _fmt(po_info.get("po_total_cny"))
         po_total_usdt = _fmt(po_info.get("po_total_usdt"))

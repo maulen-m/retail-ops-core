@@ -37,6 +37,26 @@ Optional env vars:
 - `GMAIL_MAILBOX_Binance` (label for Binance withdrawal emails)
 - `GMAIL_QUERY_Binance` (query for Binance withdrawal emails)
 
+## Gmail push (option 2, automated)
+Configure Gmail API push so new emails trigger automatic sync:
+1) `scripts/gmail_watch_setup.py` — registers Gmail watch + stores historyId
+2) `scripts/gmail_pubsub_listener.py` — pulls Pub/Sub + runs sync
+3) `scripts/gmail_sync_history.py` — reads Gmail history and updates DB
+
+Required env vars:
+- `GMAIL_PUSH_PROJECT_ID`
+- `GMAIL_PUSH_TOPIC`
+- `GMAIL_PUSH_SUBSCRIPTION`
+- `GMAIL_OAUTH_CLIENT_JSON` (path to OAuth client JSON)
+- `GMAIL_TOKEN_PATH` (token cache; defaults to ~/.config/autonomous_business/gmail_token.json)
+- `GMAIL_PUSH_LABELS` (comma-separated; e.g. `Exchangers,Binance`)
+
+Dependencies:
+- `google-api-python-client`
+- `google-auth-httplib2`
+- `google-auth-oauthlib`
+- `google-cloud-pubsub`
+
 ## Auto FX derivation (USDT/KZT + USDT/CNY)
 Use `scripts/derive_fx_rates.py` to compute daily FX from:
 - Binance P2P BUY orders (USDT/KZT)
@@ -64,6 +84,15 @@ Generate reports:
 Use `scripts/import_po_funding_plan.py --xlsx <path>` to import PO totals and message dates
 from the Vibecode PO spreadsheet into `po_funding_plan` and `po_header`.
 The autopilot will import this if `PO_PLAN_XLSX` or `PO_FUNDING_PLAN_XLSX` is set.
+
+## PO inbound import (Excel)
+Use `scripts/import_po_inbound_xlsx.py --xlsx <path> --po-id PO-4` to import line items
+into `po_line` and update `po_header` totals for a PO inbound workbook.
+
+## Legacy CNY buy reconciliation
+Use `scripts/reconcile_legacy_cny_buy.py --xlsx <PO_storing_Vibecode_1.xlsx>` to map
+legacy CNY buy rows to PO IDs and backfill missing exchanger orders (without overriding
+existing fetched data).
 
 ## PO funding allocations (many-to-many)
 Use `transfer_ledger_cli.py allocate-po` to map any ledger entry to an internal PO ID.
