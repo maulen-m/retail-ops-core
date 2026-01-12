@@ -76,21 +76,19 @@ def resolve_sales_identity(
     sku_key = str(sku_key).strip() if sku_key else None
     my_size = str(my_size).strip() if my_size else None
 
-    if sku_key:
-        sku_key = normalize_sku_key(sku_key)
-
-    if sku_id and (not sku_key or not my_size):
+    if sku_id:
         row = conn.execute(
             "SELECT sku_key, my_size FROM dim_sku_size WHERE sku_id = ?",
             (sku_id,),
         ).fetchone()
         if row:
-            if not sku_key:
-                sku_key = row["sku_key"]
-            if not my_size:
-                my_size = row["my_size"]
+            sku_key = row["sku_key"]
+            my_size = row["my_size"]
 
-    if sku_key and my_size and not sku_id:
+    if sku_key:
+        sku_key = normalize_sku_key(sku_key)
+
+    if sku_key and my_size:
         row = conn.execute(
             "SELECT sku_id FROM dim_sku_size WHERE sku_key = ? AND my_size = ?",
             (sku_key, my_size),
