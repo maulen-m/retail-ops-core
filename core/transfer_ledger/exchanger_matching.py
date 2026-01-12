@@ -7,7 +7,7 @@ from typing import Optional
 
 from . import repository
 
-AMOUNT_TOLERANCE = 0.2
+AMOUNT_TOLERANCE = 2.0
 DATE_WINDOW_DAYS = 3
 
 
@@ -32,6 +32,35 @@ def _date_close(a: Optional[datetime], b: Optional[datetime], days: int = DATE_W
     return abs((a - b).total_seconds()) <= days * 86400
 
 
+def _partial_tokens(addr: str) -> Optional[tuple[str, str]]:
+    text = addr.strip()
+    if not text:
+        return None
+    for token in ("...", "…"):
+        if token in text:
+            pre, post = text.split(token, 1)
+            return pre.strip(), post.strip()
+    if len(text) <= 20:
+        return text[:6], text[-6:]
+    return None
+
+
+def address_match(order_addr: str, withdrawal_addr: str) -> bool:
+    if not order_addr or not withdrawal_addr:
+        return False
+    if order_addr == withdrawal_addr:
+        return True
+    tokens = _partial_tokens(order_addr)
+    if tokens:
+        pre, post = tokens
+        return withdrawal_addr.startswith(pre) and withdrawal_addr.endswith(post)
+    tokens = _partial_tokens(withdrawal_addr)
+    if tokens:
+        pre, post = tokens
+        return order_addr.startswith(pre) and order_addr.endswith(post)
+    return False
+
+
 def match_exchanger_order_for_withdrawal(
     withdrawal: dict,
     db_path=None,
@@ -41,12 +70,11 @@ def match_exchanger_order_for_withdrawal(
     amount = withdrawal.get("amount")
     apply_time = _parse_dt(withdrawal.get("apply_time"))
 
-    candidates: list[dict] = []
+    candidates = repository.list_exchanger_orders(db_path=db_path, limit=200)
     if address:
-        candidates = repository.find_exchanger_orders_by_address(address, db_path=db_path)
-
-    if not candidates:
-        candidates = repository.list_exchanger_orders(db_path=db_path, limit=200)
+        candidates = [
+            o for o in candidates if address_match(address, o.get("deposit_address") or "")
+        ] or candidates
 
     for order in candidates:
         order_amount = order.get("amount_usdt")
@@ -68,7 +96,7 @@ def label_withdrawals_for_order(order: dict, db_path=None) -> int:
 
     withdrawals = repository.list_withdrawals(db_path=db_path, only_unlabeled=True)
     if address:
-        withdrawals = [w for w in withdrawals if (w.get("address") or "") == address]
+        withdrawals = [w for w in withdrawals if address_match(address, w.get("address") or "")]
 
     labeled = 0
     for wd in withdrawals:
