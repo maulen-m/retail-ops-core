@@ -982,7 +982,7 @@ class TestWriteOperationsBase64ID:
 
     @patch('requests.Session.request')
     def test_assemble_order_uses_base64_id(self, mock_request, mock_env_with_write):
-        """Test assemble_order uses Base64 ID in payload."""
+        """Test assemble_order uses Base64 ID in assemble endpoint."""
         lookup_response = MagicMock()
         lookup_response.ok = True
         lookup_response.status_code = 200
@@ -1000,14 +1000,14 @@ class TestWriteOperationsBase64ID:
         client = KaspiAPIClient('UNIVERSAL')
         client.assemble_order('738784236')
 
-        # Verify Base64 ID in payload
+        # Verify Base64 ID in assemble URL
         write_call = mock_request.call_args_list[1]
-        json_data = write_call[1]['json']
-        assert json_data['data']['id'] == 'NzM4Nzg0MjM2'
+        url = write_call[1]['url']
+        assert 'orders/NzM4Nzg0MjM2/assemble' in url
 
     @patch('requests.Session.request')
     def test_assemble_order_uses_correct_format(self, mock_request, mock_env_with_write):
-        """Test assemble_order uses status='ASSEMBLE' and numberOfSpace per Kaspi API docs."""
+        """Test assemble_order uses numberOfSpace payload for assemble endpoint."""
         lookup_response = MagicMock()
         lookup_response.ok = True
         lookup_response.status_code = 200
@@ -1025,13 +1025,10 @@ class TestWriteOperationsBase64ID:
         client = KaspiAPIClient('UNIVERSAL')
         client.assemble_order('12345', parcel_count=2)
 
-        # Verify correct format per Kaspi API docs
+        # Verify correct format for assemble endpoint
         write_call = mock_request.call_args_list[1]
         json_data = write_call[1]['json']
-        attrs = json_data['data']['attributes']
-        assert attrs.get('status') == 'ASSEMBLE'
-        assert attrs.get('numberOfSpace') == '2'  # Kaspi API requires STRING, not int
-        assert 'state' not in attrs  # Should not use 'state' field
+        assert json_data['data']['numberOfSpace'] == '2'  # API requires STRING, not int
 
     @patch('requests.Session.request')
     def test_ship_order_uses_base64_id(self, mock_request, mock_env_with_write):
