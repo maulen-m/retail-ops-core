@@ -74,6 +74,7 @@ STORE_NAME_TO_API_CODE = {
     '11KZ': '11KZ',
     'STORE-B': 'STOREB',
 }
+API_CODE_TO_STORE_NAME = {v: k for k, v in STORE_NAME_TO_API_CODE.items()}
 
 # Heavy items (always separate package)
 HEAVY_ITEMS = {
@@ -542,6 +543,7 @@ def ship_orders(
     for order_ids in pending_orders.values():
         all_pending.update(order_ids)
 
+
     # Group orders by store for API client management
     orders_by_store: dict[str, dict[str, list[OrderItem]]] = defaultdict(dict)
     for order_id, items in orders_by_id.items():
@@ -839,6 +841,10 @@ def main():
     all_pending = set()
     for order_ids in pending_orders.values():
         all_pending.update(order_ids)
+    pending_store_for_order: dict[str, str] = {}
+    for store_code, order_ids in pending_orders.items():
+        for order_id in order_ids:
+            pending_store_for_order[order_id] = store_code
 
     # Step 2: Read orders from CRM
     print("\nStep 2: Reading CRM for MY_SIZE data (DB-first)...")
@@ -863,10 +869,32 @@ def main():
     skipped_db_no_size = 0
     skipped_db_store = 0
     missing_db_size_allowed = 0
+    added_api_only = 0
     if missing_in_crm and db_order_info:
         for order_id in missing_in_crm:
             info = db_order_info.get(order_id)
             if not info:
+                if not args.allow_missing_size:
+                    continue
+                store_code = pending_store_for_order.get(order_id)
+                if args.store:
+                    expected_code = STORE_NAME_TO_API_CODE.get(args.store, args.store)
+                    if store_code and store_code != expected_code:
+                        skipped_db_store += 1
+                        continue
+                store_name = API_CODE_TO_STORE_NAME.get(store_code or "", store_code or "UNKNOWN")
+                item = OrderItem(
+                    order_id=order_id,
+                    store_name=store_name,
+                    kaspi_name_core="UNKNOWN",
+                    my_size="",
+                    sku_key="",
+                    sku_id="",
+                    quantity=1,
+                    planned_date=None,
+                )
+                orders_by_id.setdefault(order_id, []).append(item)
+                added_api_only += 1
                 continue
             size = _coerce_str(info.get("size"))
             if not size:
@@ -899,6 +927,8 @@ def main():
 
     if added_db_only:
         print(f"  Added {added_db_only} DB-only pending orders (CRM missing)")
+    if added_api_only:
+        print(f"  Added {added_api_only} API-only pending orders (no CRM/DB)")
     if skipped_db_no_size:
         print(f"  Skipped {skipped_db_no_size} pending orders (no size in DB/CRM)")
     if skipped_db_store:
