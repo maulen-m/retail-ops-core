@@ -291,6 +291,40 @@ def upsert_binance_withdrawal(withdraw: dict, db_path: Optional[Path] = None) ->
     return existing is None
 
 
+def update_withdrawal_metadata(
+    withdraw_id: str,
+    address: Optional[str] = None,
+    tx_id: Optional[str] = None,
+    success_time: Optional[str] = None,
+    status: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    fields: list[str] = []
+    params: list = []
+    if address:
+        fields.append("address = ?")
+        params.append(address)
+    if tx_id:
+        fields.append("tx_id = ?")
+        params.append(tx_id)
+    if success_time:
+        fields.append("success_time = ?")
+        params.append(success_time)
+    if status:
+        fields.append("status = ?")
+        params.append(status)
+    if not fields:
+        return False
+    fields.append("updated_at = datetime('now')")
+    params.append(withdraw_id)
+    sql = f"UPDATE binance_withdrawals SET {', '.join(fields)} WHERE withdraw_id = ?"
+    with get_db(path) as conn:
+        cur = conn.execute(sql, params)
+        return cur.rowcount > 0
+
+
 def upsert_binance_deposit(deposit: dict, db_path: Optional[Path] = None) -> bool:
     path = db_path or DEFAULT_DB_PATH
     ensure_schema(path)
@@ -770,6 +804,87 @@ def list_po_funding_allocations(
     with get_db(path) as conn:
         rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
+
+
+def upsert_po_funding_plan(plan: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM po_funding_plan WHERE po_id = ? LIMIT 1",
+            (plan["po_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO po_funding_plan (po_id, message_date, total_cny, total_usdt, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(po_id) DO UPDATE SET
+                message_date = COALESCE(excluded.message_date, po_funding_plan.message_date),
+                total_cny = COALESCE(excluded.total_cny, po_funding_plan.total_cny),
+                total_usdt = COALESCE(excluded.total_usdt, po_funding_plan.total_usdt),
+                source = COALESCE(excluded.source, po_funding_plan.source),
+                updated_at = datetime('now')
+            """,
+            (
+                plan["po_id"],
+                plan.get("message_date"),
+                plan.get("total_cny"),
+                plan.get("total_usdt"),
+                plan.get("source"),
+            ),
+        )
+    return existing is None
+
+
+def list_po_funding_plan(db_path: Optional[Path] = None) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='po_funding_plan'"
+        ).fetchone()
+        if not table:
+            return []
+        rows = conn.execute(
+            """
+            SELECT po_id, message_date, total_cny, total_usdt, source, updated_at
+            FROM po_funding_plan
+            WHERE po_id IS NOT NULL
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_po_header_min(
+    po_id: str,
+    message_date: Optional[str] = None,
+    total_cost_cny: Optional[float] = None,
+    db_path: Optional[Path] = None,
+) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='po_header'"
+        ).fetchone()
+        if not table:
+            return False
+        existing = conn.execute(
+            "SELECT 1 FROM po_header WHERE po_id = ? LIMIT 1",
+            (po_id,),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO po_header (po_id, message_date, total_cost_cny, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(po_id) DO UPDATE SET
+                message_date = COALESCE(excluded.message_date, po_header.message_date),
+                total_cost_cny = COALESCE(excluded.total_cost_cny, po_header.total_cost_cny),
+                updated_at = datetime('now')
+            """,
+            (po_id, message_date, total_cost_cny),
+        )
+    return existing is None
 
 
 def list_pos_for_allocation(db_path: Optional[Path] = None) -> list[dict]:

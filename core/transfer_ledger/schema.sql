@@ -195,3 +195,16 @@ CREATE TABLE IF NOT EXISTS po_funding_allocations (
 
 CREATE INDEX IF NOT EXISTS idx_po_funding_po ON po_funding_allocations(po_id);
 CREATE INDEX IF NOT EXISTS idx_po_funding_entry ON po_funding_allocations(entry_id);
+
+-- PO funding plan totals (from Excel or manual sources)
+CREATE TABLE IF NOT EXISTS po_funding_plan (
+    po_id TEXT PRIMARY KEY,
+    message_date TEXT,
+    total_cny REAL,
+    total_usdt REAL,
+    source TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_po_funding_plan_date
+    ON po_funding_plan(message_date DESC);
