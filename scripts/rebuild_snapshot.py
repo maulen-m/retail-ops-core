@@ -322,6 +322,18 @@ def rebuild_snapshot(
     if total_events == 0 and mode in {"auto", "ledger"}:
         print("\nWARNING: No ledger events found. Falling back to simulation.")
         mode = "simulate"
+    elif mode in {"auto", "ledger"}:
+        balances = get_stock_balances_all(
+            store_code=store_code,
+            as_of_date=snapshot_date,
+            db_path=db_path,
+        )
+        negative_balances = sum(1 for v in balances.values() if v < 0)
+        if negative_balances:
+            print(f"\nWARNING: {negative_balances} negative ledger balances detected.")
+            if mode == "auto":
+                print("Auto mode: falling back to simulation to avoid negative snapshot.")
+                mode = "simulate"
 
     # Get existing snapshot for comparison
     old_snapshot = {}
