@@ -855,6 +855,59 @@ def list_po_funding_plan(db_path: Optional[Path] = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def upsert_po_exchanger_allocation(allocation: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM po_exchanger_allocations WHERE exchanger_order_id = ? LIMIT 1",
+            (allocation["exchanger_order_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO po_exchanger_allocations (
+                po_id, exchanger_order_id, amount_usdt, amount_cny, source, created_at
+            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(exchanger_order_id) DO UPDATE SET
+                po_id = excluded.po_id,
+                amount_usdt = COALESCE(excluded.amount_usdt, po_exchanger_allocations.amount_usdt),
+                amount_cny = COALESCE(excluded.amount_cny, po_exchanger_allocations.amount_cny),
+                source = COALESCE(excluded.source, po_exchanger_allocations.source),
+                created_at = po_exchanger_allocations.created_at
+            """,
+            (
+                allocation["po_id"],
+                allocation["exchanger_order_id"],
+                allocation.get("amount_usdt"),
+                allocation.get("amount_cny"),
+                allocation.get("source"),
+            ),
+        )
+    return existing is None
+
+
+def list_po_exchanger_allocations(
+    db_path: Optional[Path] = None,
+    po_id: Optional[str] = None,
+) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    params: list = []
+    where = ""
+    if po_id:
+        where = "WHERE po_id = ?"
+        params.append(po_id)
+    sql = f"""
+        SELECT allocation_id, po_id, exchanger_order_id, amount_usdt, amount_cny, source, created_at
+        FROM po_exchanger_allocations
+        {where}
+        ORDER BY allocation_id DESC
+    """
+    with get_db(path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
 def upsert_po_header_min(
     po_id: str,
     message_date: Optional[str] = None,

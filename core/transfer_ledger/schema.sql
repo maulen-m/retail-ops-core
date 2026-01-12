@@ -208,3 +208,25 @@ CREATE TABLE IF NOT EXISTS po_funding_plan (
 
 CREATE INDEX IF NOT EXISTS idx_po_funding_plan_date
     ON po_funding_plan(message_date DESC);
+
+-- Mapping between exchanger orders and PO IDs (legacy or manual)
+CREATE TABLE IF NOT EXISTS po_exchanger_allocations (
+    allocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    po_id TEXT NOT NULL,
+    exchanger_order_id TEXT NOT NULL,
+    amount_usdt REAL,
+    amount_cny REAL,
+    source TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE (exchanger_order_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_po_exchanger_po ON po_exchanger_allocations(po_id);
+
+-- Gmail sync state for push history
+CREATE TABLE IF NOT EXISTS gmail_sync_state (
+    email_address TEXT PRIMARY KEY,
+    history_id TEXT,
+    labels TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
