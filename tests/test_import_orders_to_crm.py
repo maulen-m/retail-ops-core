@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import openpyxl
+from openpyxl.worksheet.table import Table, TableStyleInfo
 import pandas as pd
 import pytest
 
@@ -247,7 +248,18 @@ def test_dry_run_mode():
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "TEST_SHEET"
+        ws.cell(row=1, column=2, value="Date")
         ws.cell(row=1, column=25, value="№ заказа")
+        ws.cell(row=1, column=33, value="Склад передачи КД")
+        table = Table(displayName="tb_SalesRaw", ref="A1:AG1")
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium9",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        ws.add_table(table)
         wb.save(crm_path)
         wb.close()
 
