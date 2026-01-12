@@ -5,7 +5,8 @@ End-of-Day Pipeline: Full orchestration script (Part 5: Cutover Ladder)
 Runs the complete end-of-day pipeline in sequence:
 0. validate_params.py - Validate parameters FIRST (fail-fast)
 1. sync_truth_workbook_to_db.py - Sync truth workbook to database
-2. sync_crm_to_db.py - Sync CRM sales data to database
+2. sync_crm_to_db.py - Sync CRM sales data to sales_fact_v2 + fact_sales
+2a. sync_kaspi_orders.py - Sync Kaspi API order statuses to fact_orders_kaspi
 3. generate_po_dashboard_data.py - Generate demand estimates and PO data
 4. smoke_test_dashboard.py - Validate dashboard invariants
 5. update_po_dashboard.py - Update dashboard with new data
@@ -300,6 +301,10 @@ def main():
                         help="Skip CRM sync step")
     parser.add_argument("--skip-workbook-sync", action="store_true",
                         help="Skip truth workbook sync step")
+    parser.add_argument("--skip-api-sync", action="store_true",
+                        help="Skip Kaspi API order status sync step (not recommended)")
+    parser.add_argument("--api-lookback-days", type=int, default=30,
+                        help="Lookback window for API order status sync (days)")
     parser.add_argument(
         "--workbook",
         type=Path,
@@ -391,9 +396,10 @@ def main():
 
 def _run_pipeline(args, start_time: datetime) -> int:
     """Run the actual pipeline steps. Returns exit code."""
-    from datetime import date
+    from datetime import date, timedelta
     cutoff_date = get_cutoff_date_almaty()
     os.environ.setdefault("AB_DAY_COMPLETE", "1")
+    api_since = (cutoff_date - timedelta(days=args.api_lookback_days)).isoformat()
 
     # Define pipeline steps
     # Part 5: validate_params FIRST (fail-fast), scorecard LAST
@@ -416,7 +422,13 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=not args.skip_sync
         ),
         PipelineStep(
-            name="2c. Rebuild Inventory Snapshot (ledger)",
+            name="2a. Sync Kaspi Orders (API)",
+            script="sync_kaspi_orders.py",
+            args=["--all", "--since", api_since],
+            required=not args.skip_api_sync,
+        ),
+        PipelineStep(
+            name="2b. Rebuild Inventory Snapshot (ledger)",
             script="rebuild_snapshot.py",
             args=["--date", cutoff_date.isoformat()],
             required=True,
@@ -427,7 +439,7 @@ def _run_pipeline(args, start_time: datetime) -> int:
     if args.po4_inbound:
         steps.append(
             PipelineStep(
-                name="2a. Import PO-4 inbound",
+                name="2c. Import PO-4 inbound",
                 script="import_po4_inbound.py",
                 args=[str(args.po4_inbound)],
                 required=True,
@@ -436,7 +448,7 @@ def _run_pipeline(args, start_time: datetime) -> int:
 
     steps.extend([
         PipelineStep(
-            name="2b. Validate Day Complete",
+            name="2d. Validate Day Complete",
             script="validate_day_complete.py",
             args=["--cutoff-date", cutoff_date.isoformat()],
             required=False
@@ -477,6 +489,9 @@ def _run_pipeline(args, start_time: datetime) -> int:
     if args.skip_sync:
         skip_scripts.append("sync_crm_to_db.py")
         print("Note: Skipping CRM sync step")
+    if args.skip_api_sync:
+        skip_scripts.append("sync_kaspi_orders.py")
+        print("Note: Skipping Kaspi API sync step")
     if skip_scripts:
         steps = [s for s in steps if s.script not in skip_scripts]
         print()
