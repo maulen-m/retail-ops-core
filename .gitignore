@@ -41,6 +41,9 @@ ENV/
 .claude/skills/
 .claude\ alias
 
+# Gmail OAuth (local-only)
+config/gmail/
+
 # OS
 .DS_Store
 ._*
