@@ -88,6 +88,13 @@ def _fmt(value, digits: int = 2) -> str:
         return ""
 
 
+def _last_updated_label(cur, sql: str, params: tuple = ()) -> str:
+    row = cur.execute(sql, params).fetchone()
+    if not row or row[0] is None:
+        return ""
+    return _fmt_dt(row[0])
+
+
 def _avg_recent_rate(rates: list[tuple[datetime, float]], dt: datetime | None, window: int = 5) -> float | None:
     if not dt:
         return None
@@ -235,6 +242,16 @@ def main() -> int:
         snap = snapshots[0]
         snapshot_usdt = snap.get("total") if snap.get("total") is not None else snap.get("free")
 
+    # Source last-updated summary (GMT+5)
+    source_updates = [
+        ("Exchanger emails", _last_updated_label(cur, "SELECT MAX(message_date) FROM exchanger_orders")),
+        ("Binance P2P (BUY)", _last_updated_label(cur, "SELECT MAX(create_time) FROM binance_c2c_orders WHERE trade_type='BUY' AND asset='USDT' AND fiat='KZT'")),
+        ("Binance withdrawals", _last_updated_label(cur, "SELECT MAX(apply_time) FROM binance_withdrawals")),
+        ("Binance deposits", _last_updated_label(cur, "SELECT MAX(insert_time) FROM binance_deposits")),
+        ("Binance transfers", _last_updated_label(cur, "SELECT MAX(timestamp) FROM binance_transfers")),
+        ("Funding snapshots", _last_updated_label(cur, "SELECT MAX(snapshot_time) FROM binance_funding_balances WHERE asset='USDT'")),
+    ]
+
     # Events for duration (optional table)
     events_by_order: dict[str, dict[str, list[datetime]]] = {}
     try:
@@ -311,7 +328,9 @@ def main() -> int:
         usdt_events.append((dt, f"p2p:{r['order_number']}", float(r["crypto_amount"] or 0)))
     for w in withdrawals_list:
         dt = w.get("apply_time")
-        usdt_events.append((dt, f"wd:{w['withdraw_id']}", -float(w.get("amount") or 0)))
+        amount = float(w.get("amount") or 0)
+        fee = float(w.get("transaction_fee") or 0)
+        usdt_events.append((dt, f"wd:{w['withdraw_id']}", -(amount + fee)))
     for d in rows_dep:
         if (d.get("coin") or "").upper() != "USDT":
             continue
@@ -510,6 +529,8 @@ def main() -> int:
     for r in rows_p2p:
         order = r["order_number"]
         dt = r["create_time"]
+        completed_dt = r["create_time"]
+        timeline_min = ""
         usdt = float(r["crypto_amount"] or 0)
         kzt = float(r["fiat_amount"] or 0)
         rate = float(r["unit_price"] or 0)
@@ -528,6 +549,8 @@ def main() -> int:
 
         p2p_entries.append([
             _fmt_dt(dt),
+            _fmt_dt(completed_dt),
+            timeline_min,
             str(order),
             acct,
             "ASSET",
@@ -547,6 +570,8 @@ def main() -> int:
         ])
         p2p_entries.append([
             _fmt_dt(dt),
+            _fmt_dt(completed_dt),
+            timeline_min,
             str(order),
             acct,
             "FIAT",
@@ -695,6 +720,7 @@ def main() -> int:
 
     # Exchanger entries
     ex_entries = []
+    completion_by_order: dict[str, datetime] = {}
     for r in rows_ex:
         order = dict(r)
         order_key = order["exchanger_order_id"]
@@ -727,7 +753,7 @@ def main() -> int:
                 ref_parts.append(f"addr={addr}")
         ref = " ".join(ref_parts)
 
-        # Duration
+        # Duration / completion time
         duration = ""
         if order_key in events_by_order:
             created_list = events_by_order[order_key].get("NEW") or []
@@ -737,6 +763,9 @@ def main() -> int:
             if created_list and end_list:
                 dur_min = int((max(end_list) - min(created_list)).total_seconds() // 60)
                 duration = str(dur_min)
+            if end_list:
+                completion_by_order[order_key] = max(end_list)
+        completed_at = completion_by_order.get(order_key)
 
         po_info = po_info_by_order.get(order_key, {})
         po_id = po_info.get("po_id", "")
@@ -750,6 +779,8 @@ def main() -> int:
         dt = order["message_date"]
         ex_entries.append([
             _fmt_dt(dt),
+            _fmt_dt(completed_at),
+            duration,
             str(order["order_id"] or order_key),
             order["exchanger"],
             "USDT_OUT",
@@ -758,7 +789,6 @@ def main() -> int:
             f"{-amount_cny:.2f}",
             f"{rate:.4f}",
             f"{bal:.2f}" if bal is not None else "",
-            duration,
             ref,
             po_id,
             po_total_cny,
@@ -770,6 +800,8 @@ def main() -> int:
         ])
         ex_entries.append([
             _fmt_dt(dt),
+            _fmt_dt(completed_at),
+            duration,
             str(order["order_id"] or order_key),
             order["exchanger"],
             "CNY_IN",
@@ -778,7 +810,6 @@ def main() -> int:
             f"{amount_cny:.2f}",
             f"{rate:.4f}",
             f"{bal:.2f}" if bal is not None else "",
-            duration,
             ref,
             po_id,
             po_total_cny,
@@ -849,8 +880,19 @@ def main() -> int:
             amount_usdt = _effective_usdt(base_usdt, fee_usdt)
             amount_cny = float(row["amount_cny"] or 0)
             rate = amount_cny / amount_usdt if amount_usdt else 0.0
+            completed_at = completion_by_order.get(row["exchanger_order_id"])
+            duration = ""
+            if row["exchanger_order_id"] in events_by_order:
+                created_list = events_by_order[row["exchanger_order_id"]].get("NEW") or []
+                end_list = events_by_order[row["exchanger_order_id"]].get("COMPLETED") or []
+                end_list = end_list or events_by_order[row["exchanger_order_id"]].get("CANCELLED") or []
+                if created_list and end_list:
+                    dur_min = int((max(end_list) - min(created_list)).total_seconds() // 60)
+                    duration = str(dur_min)
             po_timeline_rows.append([
                 _fmt_dt(order_dt),
+                _fmt_dt(completed_at),
+                duration,
                 str(row["order_id"] or row["exchanger_order_id"]),
                 row["exchanger"],
                 (row["status"] or "").upper(),
@@ -869,7 +911,8 @@ def main() -> int:
 
     # Tables
     p2p_cols = [
-        ("Date", 19), ("Order", 12), ("Acct", 10), ("Leg", 8), ("Curr", 5),
+        ("Date", 19), ("Completed_At", 19), ("Timeline_min", 12),
+        ("Order", 12), ("Acct", 10), ("Leg", 8), ("Curr", 5),
         ("Amount", 14), ("KZT_Value", 14), ("Rate", 10),
         ("USDT_Bal", 12), ("Counterparty", 80),
         ("PO", 12), ("PO_Tot_CNY", 12), ("PO_Tot_USDT", 12),
@@ -877,9 +920,10 @@ def main() -> int:
         ("PO_Left_KZT", 12)
     ]
     ex_cols = [
-        ("Date", 19), ("Order", 12), ("Exch", 12), ("Leg", 8), ("Curr", 5),
+        ("Date", 19), ("Completed_At", 19), ("Timeline_min", 12),
+        ("Order", 12), ("Exch", 12), ("Leg", 8), ("Curr", 5),
         ("Amount", 14), ("CNY_Value", 14), ("USDT/CNY", 10),
-        ("USDT_Bal", 12), ("Duration_min", 12), ("Ref", 50),
+        ("USDT_Bal", 12), ("Ref", 50),
         ("PO", 12), ("PO_Tot_CNY", 12), ("PO_Tot_USDT", 12),
         ("PO_Paid_CNY", 12), ("PO_Left_CNY", 12), ("PO_Left_USDT", 12),
         ("PO_Left_KZT", 12)
@@ -894,7 +938,8 @@ def main() -> int:
         ("Left_KZT", 12), ("Last_Payment", 19)
     ]
     po_timeline_cols = [
-        ("Date", 19), ("Order", 12), ("Exch", 12), ("Status", 10),
+        ("Date", 19), ("Completed_At", 19), ("Timeline_min", 12),
+        ("Order", 12), ("Exch", 12), ("Status", 10),
         ("USDT", 12), ("CNY", 12), ("USDT/CNY", 10), ("PO", 12),
         ("PO_Tot_CNY", 12), ("PO_Paid_CNY", 12), ("PO_Left_CNY", 12),
         ("PO_Left_USDT", 12), ("PO_Left_KZT", 12)
@@ -912,6 +957,11 @@ def main() -> int:
     p2p_doc.append(f"# Binance P2P BUY (USDT/KZT) — {label_suffix}")
     p2p_doc.append("")
     p2p_doc.append(f"Window: {window_label}")
+    p2p_doc.append("Sources last updated (GMT+5):")
+    p2p_doc.append("")
+    p2p_doc.append("```text")
+    p2p_doc.extend(_ascii_table(source_updates, [("Source", 28), ("Last_Update", 19)]))
+    p2p_doc.append("```")
     if current_usdt is not None:
         p2p_doc.append(f"Current funding USDT (used for balance): {current_usdt}")
     if api_usdt is not None:
@@ -932,6 +982,11 @@ def main() -> int:
     ex_doc.append(f"# Exchanger USDT→CNY Buys — {label_suffix}")
     ex_doc.append("")
     ex_doc.append(f"Window: {window_label}")
+    ex_doc.append("Sources last updated (GMT+5):")
+    ex_doc.append("")
+    ex_doc.append("```text")
+    ex_doc.extend(_ascii_table(source_updates, [("Source", 28), ("Last_Update", 19)]))
+    ex_doc.append("```")
     if current_usdt is not None:
         ex_doc.append(f"Current funding USDT (used for balance): {current_usdt}")
     if api_usdt is not None:
@@ -959,6 +1014,11 @@ def main() -> int:
     combo.append(f"# Transfer Ledger — {label_suffix} (Combined)")
     combo.append("")
     combo.append(f"Window: {window_label}")
+    combo.append("Sources last updated (GMT+5):")
+    combo.append("")
+    combo.append("```text")
+    combo.extend(_ascii_table(source_updates, [("Source", 28), ("Last_Update", 19)]))
+    combo.append("```")
     if current_usdt is not None:
         combo.append(f"Current funding USDT (used for balance): {current_usdt}")
     if api_usdt is not None:
@@ -992,6 +1052,11 @@ def main() -> int:
     po_doc.append(f"# PO Payments Timeline — {label_suffix}")
     po_doc.append("")
     po_doc.append(f"Window: {window_label}")
+    po_doc.append("Sources last updated (GMT+5):")
+    po_doc.append("")
+    po_doc.append("```text")
+    po_doc.extend(_ascii_table(source_updates, [("Source", 28), ("Last_Update", 19)]))
+    po_doc.append("```")
     po_doc.append("")
     po_doc.append("## Current PO Balances (as of last payment)")
     po_doc.append("")
