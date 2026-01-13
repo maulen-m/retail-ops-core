@@ -13,11 +13,21 @@ EXCHANGER_KEYWORDS = {
 }
 
 STATUS_MAP = {
-    "NEW": ["new exchange", "order for exchange"],
-    "IN_PROCESS": ["in payout processing", "waiting for confirmation"],
-    "COMPLETED": ["success done", "completed order"],
-    "PAID": ["paid order"],
-    "CANCELLED": ["order deleted", "cancelled order", "canceled order", "order cancelled", "order canceled"],
+    "NEW": ["new exchange", "order for exchange", "order created"],
+    "IN_PROCESS": ["in payout processing", "waiting for confirmation", "in payout", "processing"],
+    "COMPLETED": ["success done", "completed order", "successfully completed", "successfully completed."],
+    "PAID": ["paid order", "payment sent"],
+    "CANCELLED": [
+        "order deleted",
+        "cancelled order",
+        "canceled order",
+        "order cancelled",
+        "order canceled",
+        "cancelled by user",
+        "canceled by user",
+        "request cancelled",
+        "request canceled",
+    ],
 }
 
 
@@ -37,8 +47,8 @@ def _detect_exchanger(subject: str, from_addr: str, body: str) -> Optional[str]:
     return None
 
 
-def _detect_status(subject: str) -> Optional[str]:
-    lower = subject.lower()
+def _detect_status(text: str) -> Optional[str]:
+    lower = text.lower()
     for status, keys in STATUS_MAP.items():
         if any(k in lower for k in keys):
             return status
@@ -50,6 +60,12 @@ def _extract_order_id(subject: str) -> Optional[str]:
     if m:
         return m.group(1)
     m = re.search(r"order\s*(?:for\s*exchange\s*)?(\d{3,})", subject, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"(?:merchant|exchange)\s*(\d{3,})", subject, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"(\d{3,})\s*$", subject)
     if m:
         return m.group(1)
     return None
@@ -134,7 +150,7 @@ def parse_exchanger_email(msg: dict) -> Optional[dict]:
     if not exchanger:
         return None
 
-    status = _detect_status(subject)
+    status = _detect_status(body)
     order_id = _extract_order_id(subject) or _extract_order_id_from_body(body)
     direction = _extract_direction(subject, body)
     rate = _extract_rate(body)

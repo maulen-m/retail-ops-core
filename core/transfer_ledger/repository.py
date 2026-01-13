@@ -476,6 +476,70 @@ def upsert_exchanger_order(order: dict, db_path: Optional[Path] = None) -> bool:
     path = db_path or DEFAULT_DB_PATH
     ensure_schema(path)
     with get_db(path) as conn:
+        exchanger = (order.get("exchanger") or "").strip()
+        order_id = (order.get("order_id") or "").strip()
+        message_id = (order.get("message_id") or "").strip()
+        order_id_clean = order_id.strip("<>").replace(" ", "")
+        message_id_clean = message_id.strip("<>").replace(" ", "")
+        if exchanger and order_id_clean and message_id_clean and order_id_clean != message_id_clean:
+            legacy_key = f"{exchanger.upper()}:{message_id_clean}"
+            canonical_key = f"{exchanger.upper()}:{order_id_clean}"
+            if legacy_key != canonical_key:
+                legacy = conn.execute(
+                    "SELECT 1 FROM exchanger_orders WHERE exchanger_order_id = ? LIMIT 1",
+                    (legacy_key,),
+                ).fetchone()
+                canonical = conn.execute(
+                    "SELECT 1 FROM exchanger_orders WHERE exchanger_order_id = ? LIMIT 1",
+                    (canonical_key,),
+                ).fetchone()
+                if legacy and not canonical:
+                    conn.execute(
+                        "UPDATE exchanger_orders SET exchanger_order_id = ?, order_id = ? WHERE exchanger_order_id = ?",
+                        (canonical_key, order_id_clean, legacy_key),
+                    )
+                    conn.execute(
+                        "UPDATE exchanger_order_events SET exchanger_order_id = ? WHERE exchanger_order_id = ?",
+                        (canonical_key, legacy_key),
+                    )
+                    conn.execute(
+                        "UPDATE binance_withdrawals SET exchanger_order_id = ? WHERE exchanger_order_id = ?",
+                        (canonical_key, legacy_key),
+                    )
+                    conn.execute(
+                        "UPDATE po_exchanger_allocations SET exchanger_order_id = ? WHERE exchanger_order_id = ?",
+                        (canonical_key, legacy_key),
+                    )
+                elif legacy and canonical:
+                    alloc_exists = conn.execute(
+                        "SELECT 1 FROM po_exchanger_allocations WHERE exchanger_order_id = ? LIMIT 1",
+                        (canonical_key,),
+                    ).fetchone()
+                    conn.execute(
+                        "UPDATE exchanger_order_events SET exchanger_order_id = ? WHERE exchanger_order_id = ?",
+                        (canonical_key, legacy_key),
+                    )
+                    conn.execute(
+                        "UPDATE binance_withdrawals SET exchanger_order_id = ? WHERE exchanger_order_id = ?",
+                        (canonical_key, legacy_key),
+                    )
+                    if alloc_exists:
+                        conn.execute(
+                            "DELETE FROM po_exchanger_allocations WHERE exchanger_order_id = ?",
+                            (legacy_key,),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE po_exchanger_allocations SET exchanger_order_id = ? WHERE exchanger_order_id = ?",
+                            (canonical_key, legacy_key),
+                        )
+                    conn.execute(
+                        "DELETE FROM exchanger_orders WHERE exchanger_order_id = ?",
+                        (legacy_key,),
+                    )
+                order["exchanger_order_id"] = canonical_key
+                order["order_id"] = order_id_clean
+
         existing = conn.execute(
             "SELECT 1 FROM exchanger_orders WHERE exchanger_order_id = ? LIMIT 1",
             (order["exchanger_order_id"],),

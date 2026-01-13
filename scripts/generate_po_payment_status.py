@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
@@ -33,6 +33,25 @@ def _ascii_table(rows, cols):
         lines.append(line)
     lines.append(sep)
     return lines
+
+
+LOCAL_TZ = timezone(timedelta(hours=5))
+UTC = timezone.utc
+
+
+def _fmt_dt(value) -> str:
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return str(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    else:
+        dt = dt.astimezone(UTC)
+    local = dt.astimezone(LOCAL_TZ)
+    return local.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def main() -> int:
@@ -148,7 +167,7 @@ def main() -> int:
         rows.append(
             [
                 po_id,
-                message_date or "",
+                _fmt_dt(message_date),
                 _fmt(total_cny),
                 _fmt(paid_cny),
                 _fmt(left_cny),
@@ -156,7 +175,7 @@ def main() -> int:
                 _fmt(paid_usdt),
                 _fmt(left_usdt),
                 _fmt(left_kzt),
-                last_map.get(po_id, "") or "",
+                _fmt_dt(last_map.get(po_id, "")),
             ]
         )
 

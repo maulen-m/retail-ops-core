@@ -26,6 +26,9 @@ from core.transfer_ledger.repository import (
 
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
+LOCAL_TZ = timezone(timedelta(hours=5))
+UTC = timezone.utc
+EPOCH = datetime.min.replace(tzinfo=UTC)
 
 
 def _load_env_file(path: Path) -> None:
@@ -59,18 +62,21 @@ def _parse_dt(value) -> datetime | None:
         return None
     try:
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if dt.tzinfo is not None:
-            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = dt.astimezone(UTC)
         return dt
     except Exception:
         return None
 
 
 def _fmt_dt(value) -> str:
-    if not value:
+    dt = value if isinstance(value, datetime) else _parse_dt(value)
+    if not dt:
         return ""
-    text = str(value)
-    return text[:19].replace("T", " ")
+    local = dt.astimezone(LOCAL_TZ)
+    return local.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _fmt(value, digits: int = 2) -> str:
@@ -197,7 +203,7 @@ def main() -> int:
     if start_iso:
         ex_where += " AND message_date >= ?"
         ex_params.append(start_iso)
-    rows_ex = cur.execute(
+    rows_ex_all = cur.execute(
         f"""
         SELECT exchanger_order_id, exchanger, order_id, status, message_date,
                amount_usdt, amount_cny, deposit_address
@@ -207,6 +213,8 @@ def main() -> int:
         """,
         ex_params,
     ).fetchall()
+    rows_ex = [r for r in rows_ex_all if (r["status"] or "").upper() != "CANCELLED"]
+    rows_ex_cancelled = [r for r in rows_ex_all if (r["status"] or "").upper() == "CANCELLED"]
 
     if start_iso:
         rows_dep = list_deposits(db_path=args.db, start_time=start_iso, coin="USDT")
@@ -268,7 +276,7 @@ def main() -> int:
     else:
         withdrawals = cur.execute(
             """
-            SELECT withdraw_id, amount, address, apply_time, exchanger_order_id
+            SELECT withdraw_id, amount, address, apply_time, exchanger_order_id, account_label
             FROM binance_withdrawals
             """
         ).fetchall()
@@ -305,7 +313,7 @@ def main() -> int:
             usdt_events.append((dt, f"xfer:{t['transfer_id']}", delta))
 
     # Sort descending
-    usdt_events.sort(key=lambda x: _parse_dt(x[0]) or datetime.min, reverse=True)
+    usdt_events.sort(key=lambda x: _parse_dt(x[0]) or EPOCH, reverse=True)
 
     current_usdt = args.current_usdt
     api_usdt = None
@@ -409,6 +417,8 @@ def main() -> int:
 
     po_cny_list.sort(key=lambda x: (x[0], x[1]))
     po_usdt_list.sort(key=lambda x: (x[0], x[1]))
+    po_total_usdt_by_id = {po_id: total_usdt for _, po_id, total_usdt in po_usdt_list}
+    po_dates_by_id = {po_id: po_date for po_date, po_id, _ in po_cny_list}
 
     # Allocate P2P USDT buys to PO totals (USDT)
     po_info_by_p2p: dict[str, dict] = {}
@@ -534,66 +544,19 @@ def main() -> int:
         ])
 
     po_info_by_order: dict[str, dict] = {}
-    mapped_info: dict[str, dict] = {}
+    po_timeline_data: list[tuple[datetime, dict, dict]] = []
+    po_last_payment: dict[str, datetime] = {}
 
-    # Prefer explicit PO mappings if present
+    # Prefer explicit PO mappings if present, but compute a unified chronological timeline.
     alloc_rows = list_po_exchanger_allocations(db_path=args.db)
     alloc_by_order = {r["exchanger_order_id"]: r for r in alloc_rows if r.get("exchanger_order_id")}
-    if alloc_by_order:
-        po_paid: dict[str, float] = {}
-        mapped_orders = []
-        for r in rows_ex:
-            ex_id = r["exchanger_order_id"]
-            if ex_id in alloc_by_order:
-                order_dt = _parse_dt(r["message_date"])
-                if order_dt:
-                    mapped_orders.append((order_dt, r))
-        mapped_orders.sort(key=lambda x: x[0])
-
-        for order_dt, row in mapped_orders:
-            ex_id = row["exchanger_order_id"]
-            alloc = alloc_by_order.get(ex_id, {})
-            po_id = alloc.get("po_id")
-            if not po_id:
-                continue
-            amount_cny = float(row["amount_cny"] or alloc.get("amount_cny") or 0)
-            amount_usdt = float(row["amount_usdt"] or alloc.get("amount_usdt") or 0)
-            if amount_cny <= 0 or amount_usdt <= 0:
-                continue
-            rate = amount_cny / amount_usdt
-            total_cny = po_plan_by_id.get(po_id, {}).get("total_cny")
-            paid = po_paid.get(po_id, 0.0) + amount_cny
-            po_paid[po_id] = paid
-            left_cny = total_cny - paid if total_cny else None
-
-            plan_total_usdt = po_plan_by_id.get(po_id, {}).get("total_usdt")
-            if plan_total_usdt is None and total_cny and rate > 0:
-                plan_total_usdt = total_cny / rate
-            if plan_total_usdt and total_cny and left_cny is not None:
-                left_usdt = plan_total_usdt * (left_cny / total_cny) if total_cny else None
-            else:
-                left_usdt = left_cny / rate if left_cny is not None and rate > 0 else None
-
-            avg_kzt = _avg_recent_rate(p2p_rates, order_dt, window=5)
-            left_kzt = left_usdt * avg_kzt if left_usdt is not None and avg_kzt is not None else None
-
-            mapped_info[ex_id] = {
-                "po_id": po_id,
-                "po_total_cny": total_cny,
-                "po_total_usdt": plan_total_usdt,
-                "po_paid_cny": paid,
-                "po_left_cny": left_cny,
-                "po_left_usdt": left_usdt,
-                "po_left_kzt": left_kzt,
-            }
 
     po_list = po_cny_list
+    po_state: dict[str, dict] = {}
     if po_list:
         po_state = {po_id: {"total_cny": total_cny, "paid_cny": 0.0} for _, po_id, total_cny in po_list}
         orders_for_alloc = []
         for r in rows_ex:
-            if r["exchanger_order_id"] in mapped_info:
-                continue
             amount_cny = float(r["amount_cny"] or 0)
             amount_usdt = float(r["amount_usdt"] or 0)
             if amount_cny <= 0 or amount_usdt <= 0:
@@ -601,16 +564,61 @@ def main() -> int:
             order_dt = _parse_dt(r["message_date"])
             if not order_dt:
                 continue
-            rate = amount_cny / amount_usdt
-            orders_for_alloc.append((order_dt, r, rate))
+            status = (r["status"] or "").upper()
+            if status == "CANCELLED":
+                continue
+            orders_for_alloc.append((order_dt, r))
         orders_for_alloc.sort(key=lambda x: x[0])
 
         po_idx = 0
-        for order_dt, row, rate in orders_for_alloc:
+        for order_dt, row in orders_for_alloc:
             while po_idx + 1 < len(po_list) and order_dt >= po_list[po_idx + 1][0]:
                 po_idx += 1
 
-            remaining = float(row["amount_cny"] or 0)
+            ex_id = row["exchanger_order_id"]
+            amount_cny = float(row["amount_cny"] or 0)
+            amount_usdt = float(row["amount_usdt"] or 0)
+            if amount_cny <= 0 or amount_usdt <= 0:
+                continue
+            rate = amount_cny / amount_usdt if amount_usdt else 0.0
+
+            alloc = alloc_by_order.get(ex_id, {})
+            explicit_po = alloc.get("po_id")
+            if explicit_po and explicit_po in po_state:
+                state = po_state[explicit_po]
+                state["paid_cny"] += amount_cny
+                total_cny = state["total_cny"]
+                paid = state["paid_cny"]
+                left_cny = total_cny - paid
+
+                plan_total_usdt = po_plan_by_id.get(explicit_po, {}).get("total_usdt")
+                if plan_total_usdt is None and total_cny and rate > 0:
+                    plan_total_usdt = total_cny / rate
+                if plan_total_usdt and total_cny:
+                    po_total_usdt = plan_total_usdt
+                    left_usdt = plan_total_usdt * (left_cny / total_cny)
+                else:
+                    po_total_usdt = total_cny / rate if rate > 0 else None
+                    left_usdt = left_cny / rate if left_cny is not None and rate > 0 else None
+
+                avg_kzt = _avg_recent_rate(p2p_rates, order_dt, window=5)
+                left_kzt = left_usdt * avg_kzt if left_usdt is not None and avg_kzt is not None else None
+
+                info = {
+                    "po_id": explicit_po,
+                    "po_total_cny": total_cny,
+                    "po_total_usdt": po_total_usdt,
+                    "po_paid_cny": paid,
+                    "po_left_cny": left_cny,
+                    "po_left_usdt": left_usdt,
+                    "po_left_kzt": left_kzt,
+                }
+                po_info_by_order[ex_id] = info
+                po_timeline_data.append((order_dt, row, info))
+                po_last_payment[explicit_po] = order_dt
+                continue
+
+            remaining = amount_cny
             last_po_id = None
             last_po_total = None
             last_paid = None
@@ -623,9 +631,9 @@ def main() -> int:
                 if left <= 0:
                     i += 1
                     continue
-                alloc = min(left, remaining)
-                state["paid_cny"] += alloc
-                remaining -= alloc
+                alloc_amt = min(left, remaining)
+                state["paid_cny"] += alloc_amt
+                remaining -= alloc_amt
                 last_po_id = po_id
                 last_po_total = total_cny
                 last_paid = state["paid_cny"]
@@ -636,8 +644,7 @@ def main() -> int:
 
             if last_po_id:
                 avg_kzt = _avg_recent_rate(p2p_rates, order_dt, window=5)
-                plan = po_plan_by_id.get(last_po_id, {})
-                plan_total_usdt = plan.get("total_usdt")
+                plan_total_usdt = po_plan_by_id.get(last_po_id, {}).get("total_usdt")
                 if plan_total_usdt and last_po_total and last_po_total > 0 and last_left is not None:
                     po_total_usdt = plan_total_usdt
                     po_left_usdt = plan_total_usdt * (last_left / last_po_total)
@@ -645,7 +652,7 @@ def main() -> int:
                     po_total_usdt = last_po_total / rate if rate > 0 else None
                     po_left_usdt = last_left / rate if last_left is not None and rate > 0 else None
                 po_left_kzt = po_left_usdt * avg_kzt if po_left_usdt is not None and avg_kzt is not None else None
-                po_info_by_order[row["exchanger_order_id"]] = {
+                info = {
                     "po_id": last_po_id,
                     "po_total_cny": last_po_total,
                     "po_total_usdt": po_total_usdt,
@@ -654,6 +661,9 @@ def main() -> int:
                     "po_left_usdt": po_left_usdt,
                     "po_left_kzt": po_left_kzt,
                 }
+                po_info_by_order[ex_id] = info
+                po_timeline_data.append((order_dt, row, info))
+                po_last_payment[last_po_id] = order_dt
 
     # Exchanger entries
     ex_entries = []
@@ -700,7 +710,7 @@ def main() -> int:
                 dur_min = int((max(end_list) - min(created_list)).total_seconds() // 60)
                 duration = str(dur_min)
 
-        po_info = mapped_info.get(order_key) or po_info_by_order.get(order_key, {})
+        po_info = po_info_by_order.get(order_key, {})
         po_id = po_info.get("po_id", "")
         po_total_cny = _fmt(po_info.get("po_total_cny"))
         po_total_usdt = _fmt(po_info.get("po_total_usdt"))
@@ -751,6 +761,79 @@ def main() -> int:
             po_left_kzt,
         ])
 
+    # Cancelled orders summary (excluded from ledger allocations)
+    cancelled_entries = []
+    for r in rows_ex_cancelled:
+        amount_usdt = float(r["amount_usdt"] or 0)
+        amount_cny = float(r["amount_cny"] or 0)
+        cancelled_entries.append([
+            _fmt_dt(r["message_date"]),
+            str(r["order_id"] or r["exchanger_order_id"]),
+            r["exchanger"],
+            (r["status"] or "CANCELLED").upper(),
+            _fmt(amount_usdt),
+            _fmt(amount_cny),
+        ])
+
+    # PO balance + timeline rows
+    po_balance_rows = []
+    po_timeline_rows = []
+    if po_state:
+        po_keys = sorted(po_state.keys(), key=lambda k: po_dates_by_id.get(k) or EPOCH)
+        for po_id in po_keys:
+            state = po_state[po_id]
+            total_cny = state.get("total_cny")
+            paid_cny = state.get("paid_cny", 0.0)
+            left_cny = (total_cny - paid_cny) if total_cny is not None else None
+
+            po_total_usdt = po_total_usdt_by_id.get(po_id)
+            if po_total_usdt is None and total_cny:
+                rate = _avg_recent_rate(ex_rates, po_dates_by_id.get(po_id), window=5)
+                if rate and rate > 0:
+                    po_total_usdt = total_cny / rate
+            if po_total_usdt is not None and total_cny:
+                left_usdt = po_total_usdt * (left_cny / total_cny) if left_cny is not None else None
+            else:
+                left_usdt = None
+
+            last_dt = po_last_payment.get(po_id)
+            avg_kzt = _avg_recent_rate(p2p_rates, last_dt or po_dates_by_id.get(po_id), window=5)
+            left_kzt = left_usdt * avg_kzt if left_usdt is not None and avg_kzt is not None else None
+
+            po_balance_rows.append([
+                po_id,
+                _fmt_dt(po_dates_by_id.get(po_id)),
+                _fmt(total_cny),
+                _fmt(paid_cny),
+                _fmt(left_cny),
+                _fmt(po_total_usdt),
+                _fmt(left_usdt),
+                _fmt(left_kzt),
+                _fmt_dt(last_dt),
+            ])
+
+    if po_timeline_data:
+        po_timeline_data.sort(key=lambda x: x[0])
+        for order_dt, row, info in po_timeline_data:
+            amount_usdt = float(row["amount_usdt"] or 0)
+            amount_cny = float(row["amount_cny"] or 0)
+            rate = amount_cny / amount_usdt if amount_usdt else 0.0
+            po_timeline_rows.append([
+                _fmt_dt(order_dt),
+                str(row["order_id"] or row["exchanger_order_id"]),
+                row["exchanger"],
+                (row["status"] or "").upper(),
+                _fmt(amount_usdt),
+                _fmt(amount_cny),
+                f"{rate:.4f}" if rate else "",
+                info.get("po_id", ""),
+                _fmt(info.get("po_total_cny")),
+                _fmt(info.get("po_paid_cny")),
+                _fmt(info.get("po_left_cny")),
+                _fmt(info.get("po_left_usdt")),
+                _fmt(info.get("po_left_kzt")),
+            ])
+
     conn.close()
 
     # Tables
@@ -769,6 +852,21 @@ def main() -> int:
         ("PO", 12), ("PO_Tot_CNY", 12), ("PO_Tot_USDT", 12),
         ("PO_Paid_CNY", 12), ("PO_Left_CNY", 12), ("PO_Left_USDT", 12),
         ("PO_Left_KZT", 12)
+    ]
+    cancel_cols = [
+        ("Date", 19), ("Order", 12), ("Exch", 12), ("Status", 10),
+        ("USDT", 12), ("CNY", 12)
+    ]
+    po_balance_cols = [
+        ("PO", 12), ("PO_Date", 19), ("Total_CNY", 12), ("Paid_CNY", 12),
+        ("Left_CNY", 12), ("Total_USDT", 12), ("Left_USDT", 12),
+        ("Left_KZT", 12), ("Last_Payment", 19)
+    ]
+    po_timeline_cols = [
+        ("Date", 19), ("Order", 12), ("Exch", 12), ("Status", 10),
+        ("USDT", 12), ("CNY", 12), ("USDT/CNY", 10), ("PO", 12),
+        ("PO_Tot_CNY", 12), ("PO_Paid_CNY", 12), ("PO_Left_CNY", 12),
+        ("PO_Left_USDT", 12), ("PO_Left_KZT", 12)
     ]
 
     # Write docs
@@ -815,6 +913,13 @@ def main() -> int:
     ex_doc.append("```text")
     ex_doc.extend(_ascii_table(ex_entries, ex_cols))
     ex_doc.append("```")
+    if cancelled_entries:
+        ex_doc.append("")
+        ex_doc.append("## Cancelled Orders (Excluded from Ledger)")
+        ex_doc.append("")
+        ex_doc.append("```text")
+        ex_doc.extend(_ascii_table(cancelled_entries, cancel_cols))
+        ex_doc.append("```")
 
     (args.output_dir / f"EXCHANGER_BUY_{name_suffix}.md").write_text("\n".join(ex_doc))
 
@@ -841,12 +946,40 @@ def main() -> int:
     combo.append("```text")
     combo.extend(_ascii_table(ex_entries, ex_cols))
     combo.append("```")
+    if cancelled_entries:
+        combo.append("")
+        combo.append("## Cancelled Orders (Excluded from Ledger)")
+        combo.append("")
+        combo.append("```text")
+        combo.extend(_ascii_table(cancelled_entries, cancel_cols))
+        combo.append("```")
 
     (args.output_dir / f"TRANSFER_LEDGER_{name_suffix}.md").write_text("\n".join(combo))
+
+    # PO payments timeline
+    po_doc = []
+    po_doc.append(f"# PO Payments Timeline — {label_suffix}")
+    po_doc.append("")
+    po_doc.append(f"Window: {window_label}")
+    po_doc.append("")
+    po_doc.append("## Current PO Balances (as of last payment)")
+    po_doc.append("")
+    po_doc.append("```text")
+    po_doc.extend(_ascii_table(po_balance_rows, po_balance_cols))
+    po_doc.append("```")
+    po_doc.append("")
+    po_doc.append("## Chronological Payments")
+    po_doc.append("")
+    po_doc.append("```text")
+    po_doc.extend(_ascii_table(po_timeline_rows, po_timeline_cols))
+    po_doc.append("```")
+
+    (args.output_dir / f"PO_PAYMENTS_CHRONO_{name_suffix}.md").write_text("\n".join(po_doc))
 
     print(args.output_dir / f"P2P_BUY_{name_suffix}.md")
     print(args.output_dir / f"EXCHANGER_BUY_{name_suffix}.md")
     print(args.output_dir / f"TRANSFER_LEDGER_{name_suffix}.md")
+    print(args.output_dir / f"PO_PAYMENTS_CHRONO_{name_suffix}.md")
     return 0
 
 
