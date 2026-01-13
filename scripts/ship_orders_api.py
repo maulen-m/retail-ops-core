@@ -246,6 +246,17 @@ def _planned_date_from_order(order: dict) -> Optional[date]:
     return _timestamp_to_date(planned_ts)
 
 
+def _planned_ts_from_order(order: dict) -> Optional[int]:
+    """Extract planned courier transmission timestamp (ms) from API order."""
+    attrs = order.get('attributes', {})
+    delivery = attrs.get('kaspiDelivery', {})
+    return (
+        delivery.get('courierTransmissionPlanningDate')
+        or delivery.get('plannedDeliveryDate')
+        or attrs.get('plannedDeliveryDate')
+    )
+
+
 def normalize_store_name(value: Any) -> str:
     """Normalize store name from various formats."""
     if pd.isna(value) or not value:
@@ -474,7 +485,7 @@ def read_crm_orders(
 def get_pending_assembly_orders(
     target_date: Optional[date] = None,
     since_days: int = 7,
-) -> tuple[dict[str, set[str]], dict[str, dict[str, str]]]:
+) -> tuple[dict[str, set[str]], dict[str, dict[str, str]], dict[str, dict[str, int]]]:
     """
     Get orders in "Упаковка" stage from ALL stores via API.
 
@@ -485,6 +496,7 @@ def get_pending_assembly_orders(
     pending_by_store: dict[str, set[str]] = {}
     # Store-scoped base64 IDs prevent cross-store collisions on assemble.
     order_id_to_base64: dict[str, dict[str, str]] = {}
+    planned_ts_by_store: dict[str, dict[str, int]] = {}
 
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
@@ -499,12 +511,15 @@ def get_pending_assembly_orders(
                     order_code = order.get('attributes', {}).get('code', '')
                     base64_id = order.get('id', '')
                     planned_date = _planned_date_from_order(order)
+                    planned_ts = _planned_ts_from_order(order)
                     if target_date and planned_date != target_date:
                         continue
                     if order_code:
                         order_ids.add(order_code)
                         if base64_id:
                             order_id_to_base64.setdefault(store_code, {})[order_code] = base64_id
+                        if planned_ts:
+                            planned_ts_by_store.setdefault(store_code, {})[order_code] = planned_ts
                 pending_by_store[store_code] = order_ids
                 logger.info(f"{store_code}: {len(order_ids)} orders pending assembly")
             else:
@@ -514,13 +529,14 @@ def get_pending_assembly_orders(
             logger.warning(f"{store_code}: Auth error - {e}")
             pending_by_store[store_code] = set()
 
-    return pending_by_store, order_id_to_base64
+    return pending_by_store, order_id_to_base64, planned_ts_by_store
 
 
 def ship_orders(
     orders_by_id: dict[str, list[OrderItem]],
     pending_orders: dict[str, set[str]],
     order_id_to_base64: dict[str, dict[str, str]],
+    planned_ts_by_store: dict[str, dict[str, int]],
     dry_run: bool = False,
     verbose: bool = False,
     since_days: int = 7,
@@ -589,6 +605,16 @@ def ship_orders(
         retry_queue: dict[str, int] = {}
 
         for order_id, items in store_orders.items():
+            # Skip assemble if Kaspi planned time is in the future
+            planned_ts = planned_ts_by_store.get(api_store_code, {}).get(order_id)
+            if planned_ts:
+                planned_dt = datetime.fromtimestamp(planned_ts / 1000, tz=ALMATY_TZ)
+                if planned_dt > datetime.now(ALMATY_TZ):
+                    deferred += 1
+                    if verbose:
+                        print(f"      -> Deferred (planned {planned_dt.strftime('%Y-%m-%d %H:%M')})")
+                    continue
+
             # Calculate package count
             parcel_count = calculate_package_count(items)
 
@@ -756,6 +782,7 @@ def ship_orders(
                     errors.append(f"{store_name}: refresh pending failed - {refreshed.error}")
                     break
                 refreshed_map: dict[str, str] = {}
+                refreshed_planned: dict[str, int] = {}
                 for order in refreshed.data.get('data', []):
                     order_code = order.get('attributes', {}).get('code', '')
                     if not order_code:
@@ -763,6 +790,9 @@ def ship_orders(
                     base64_id = order.get('id', '')
                     if base64_id:
                         refreshed_map[order_code] = base64_id
+                    planned_ts = _planned_ts_from_order(order)
+                    if planned_ts:
+                        refreshed_planned[order_code] = planned_ts
                 still_retry: dict[str, int] = {}
                 for order_code, parcels in retry_queue.items():
                     base64_id = refreshed_map.get(order_code)
@@ -772,15 +802,28 @@ def ship_orders(
                             continue
                         still_retry[order_code] = parcels
                         continue
+                    planned_ts = refreshed_planned.get(order_code)
+                    if planned_ts:
+                        planned_dt = datetime.fromtimestamp(planned_ts / 1000, tz=ALMATY_TZ)
+                        if planned_dt > datetime.now(ALMATY_TZ):
+                            deferred += 1
+                            still_retry[order_code] = parcels
+                            if verbose:
+                                print(f"      {order_code}: Deferred (planned {planned_dt.strftime('%Y-%m-%d %H:%M')})")
+                            continue
+
                     result = client.assemble_order_by_id(base64_id, order_code, parcel_count=parcels)
                     if result.success:
                         if future_target:
                             deferred += 1
                             still_retry[order_code] = parcels
                             continue
-                        shipped += 1
-                        if verbose:
-                            print(f"      {order_code}: Shipped OK (refresh)")
+                        if _wait_for_assembled(order_code, base64_id):
+                            shipped += 1
+                            if verbose:
+                                print(f"      {order_code}: Shipped OK (refresh)")
+                            continue
+                        still_retry[order_code] = parcels
                         continue
                     err_text = str(result.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
@@ -878,7 +921,7 @@ def main():
 
     # Step 1: Get pending assembly orders from API
     print("Step 1: Fetching pending assembly orders from API...")
-    pending_orders, order_id_to_base64 = get_pending_assembly_orders(
+    pending_orders, order_id_to_base64, planned_ts_by_store = get_pending_assembly_orders(
         target_date=target_date,
         since_days=args.since_days,
     )
@@ -1014,6 +1057,7 @@ def main():
         orders_by_id,
         pending_orders,
         order_id_to_base64,
+        planned_ts_by_store,
         dry_run=args.dry_run,
         verbose=args.verbose,
         since_days=args.since_days,
