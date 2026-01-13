@@ -152,7 +152,7 @@ def _get_current_usdt_balance() -> float | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate transfer ledger reports")
     parser.add_argument("--db", type=Path, default=DB_PATH, help="Path to SQLite DB")
-    parser.add_argument("--days", type=int, default=120, help="Lookback days")
+    parser.add_argument("--days", type=int, default=None, help="Lookback days (omit or 0 for full history)")
     parser.add_argument("--current-usdt", type=float, default=None, help="Override current USDT balance")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "docs" / "transfer_ledger")
     args = parser.parse_args()
@@ -160,8 +160,11 @@ def main() -> int:
     _load_env_file(PROJECT_ROOT / ".env")
 
     end_dt = datetime.now()
-    start_dt = end_dt - timedelta(days=args.days)
-    start_iso = start_dt.isoformat()
+    start_dt = None
+    start_iso = None
+    if args.days and args.days > 0:
+        start_dt = end_dt - timedelta(days=args.days)
+        start_iso = start_dt.isoformat()
 
     import sqlite3
 
@@ -170,33 +173,47 @@ def main() -> int:
     cur = conn.cursor()
 
     # P2P orders (USDT/KZT)
+    p2p_where = (
+        "WHERE trade_type='BUY' AND asset='USDT' AND fiat='KZT' "
+        "AND order_status='COMPLETED'"
+    )
+    p2p_params: list = []
+    if start_iso:
+        p2p_where += " AND create_time >= ?"
+        p2p_params.append(start_iso)
     rows_p2p = cur.execute(
-        """
+        f"""
         SELECT order_number, create_time, fiat_amount, crypto_amount, unit_price, counterparty
         FROM binance_c2c_orders
-        WHERE trade_type='BUY' AND asset='USDT' AND fiat='KZT'
-          AND order_status='COMPLETED'
-          AND create_time >= ?
+        {p2p_where}
         ORDER BY create_time DESC
         """,
-        (start_iso,),
+        p2p_params,
     ).fetchall()
 
     # Exchanger orders (USDT->CNY)
+    ex_where = "WHERE amount_usdt IS NOT NULL AND amount_cny IS NOT NULL"
+    ex_params: list = []
+    if start_iso:
+        ex_where += " AND message_date >= ?"
+        ex_params.append(start_iso)
     rows_ex = cur.execute(
-        """
+        f"""
         SELECT exchanger_order_id, exchanger, order_id, status, message_date,
                amount_usdt, amount_cny, deposit_address
         FROM exchanger_orders
-        WHERE message_date >= ?
-          AND amount_usdt IS NOT NULL AND amount_cny IS NOT NULL
+        {ex_where}
         ORDER BY message_date DESC
         """,
-        (start_iso,),
+        ex_params,
     ).fetchall()
 
-    rows_dep = list_deposits(db_path=args.db, start_time=start_iso, coin="USDT")
-    rows_trans = list_transfers(db_path=args.db, start_time=start_iso, asset="USDT")
+    if start_iso:
+        rows_dep = list_deposits(db_path=args.db, start_time=start_iso, coin="USDT")
+        rows_trans = list_transfers(db_path=args.db, start_time=start_iso, asset="USDT")
+    else:
+        rows_dep = list_deposits(db_path=args.db, coin="USDT")
+        rows_trans = list_transfers(db_path=args.db, asset="USDT")
     snapshot_usdt = None
     snapshots = list_funding_balance_snapshots(db_path=args.db, asset="USDT", limit=1)
     if snapshots:
@@ -210,14 +227,22 @@ def main() -> int:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='exchanger_order_events'"
         ).fetchone()
         if table:
-            events = cur.execute(
-                """
-                SELECT exchanger_order_id, status, message_date
-                FROM exchanger_order_events
-                WHERE message_date >= ?
-                """,
-                (start_iso,),
-            ).fetchall()
+            if start_iso:
+                events = cur.execute(
+                    """
+                    SELECT exchanger_order_id, status, message_date
+                    FROM exchanger_order_events
+                    WHERE message_date >= ?
+                    """,
+                    (start_iso,),
+                ).fetchall()
+            else:
+                events = cur.execute(
+                    """
+                    SELECT exchanger_order_id, status, message_date
+                    FROM exchanger_order_events
+                    """
+                ).fetchall()
             for e in events:
                 oid = e["exchanger_order_id"]
                 if not oid:
@@ -231,14 +256,22 @@ def main() -> int:
         pass
 
     # Withdrawals for cross-ref + balances
-    withdrawals = cur.execute(
-        """
-        SELECT withdraw_id, amount, address, apply_time, exchanger_order_id
-        FROM binance_withdrawals
-        WHERE apply_time >= ?
-        """,
-        (start_iso,),
-    ).fetchall()
+    if start_iso:
+        withdrawals = cur.execute(
+            """
+            SELECT withdraw_id, amount, address, apply_time, exchanger_order_id
+            FROM binance_withdrawals
+            WHERE apply_time >= ?
+            """,
+            (start_iso,),
+        ).fetchall()
+    else:
+        withdrawals = cur.execute(
+            """
+            SELECT withdraw_id, amount, address, apply_time, exchanger_order_id
+            FROM binance_withdrawals
+            """
+        ).fetchall()
 
     withdrawals_list = [dict(w) for w in withdrawals]
     wd_by_order = {w["exchanger_order_id"]: w for w in withdrawals_list if w["exchanger_order_id"]}
@@ -737,9 +770,13 @@ def main() -> int:
 
     # P2P report
     p2p_doc = []
-    p2p_doc.append(f"# Binance P2P BUY (USDT/KZT) — Last {args.days} Days")
+    label_suffix = f"Last {args.days} Days" if start_dt else "Full History"
+    window_label = f"{start_dt.date().isoformat()} → {end_dt.date().isoformat()}" if start_dt else "full history"
+    name_suffix = f"LAST_{args.days}_DAYS" if start_dt else "FULL_HISTORY"
+
+    p2p_doc.append(f"# Binance P2P BUY (USDT/KZT) — {label_suffix}")
     p2p_doc.append("")
-    p2p_doc.append(f"Window: {start_dt.date().isoformat()} → {end_dt.date().isoformat()}")
+    p2p_doc.append(f"Window: {window_label}")
     if current_usdt is not None:
         p2p_doc.append(f"Current funding USDT (used for balance): {current_usdt}")
     if api_usdt is not None:
@@ -753,13 +790,13 @@ def main() -> int:
     p2p_doc.extend(_ascii_table(p2p_entries, p2p_cols))
     p2p_doc.append("```")
 
-    (args.output_dir / "P2P_BUY_LAST_120_DAYS.md").write_text("\n".join(p2p_doc))
+    (args.output_dir / f"P2P_BUY_{name_suffix}.md").write_text("\n".join(p2p_doc))
 
     # Exchanger report
     ex_doc = []
-    ex_doc.append(f"# Exchanger USDT→CNY Buys — Last {args.days} Days")
+    ex_doc.append(f"# Exchanger USDT→CNY Buys — {label_suffix}")
     ex_doc.append("")
-    ex_doc.append(f"Window: {start_dt.date().isoformat()} → {end_dt.date().isoformat()}")
+    ex_doc.append(f"Window: {window_label}")
     if current_usdt is not None:
         ex_doc.append(f"Current funding USDT (used for balance): {current_usdt}")
     if api_usdt is not None:
@@ -773,13 +810,13 @@ def main() -> int:
     ex_doc.extend(_ascii_table(ex_entries, ex_cols))
     ex_doc.append("```")
 
-    (args.output_dir / "EXCHANGER_BUY_LAST_120_DAYS.md").write_text("\n".join(ex_doc))
+    (args.output_dir / f"EXCHANGER_BUY_{name_suffix}.md").write_text("\n".join(ex_doc))
 
     # Combined report
     combo = []
-    combo.append(f"# Transfer Ledger — Last {args.days} Days (Combined)")
+    combo.append(f"# Transfer Ledger — {label_suffix} (Combined)")
     combo.append("")
-    combo.append(f"Window: {start_dt.date().isoformat()} → {end_dt.date().isoformat()}")
+    combo.append(f"Window: {window_label}")
     if current_usdt is not None:
         combo.append(f"Current funding USDT (used for balance): {current_usdt}")
     if api_usdt is not None:
@@ -799,11 +836,11 @@ def main() -> int:
     combo.extend(_ascii_table(ex_entries, ex_cols))
     combo.append("```")
 
-    (args.output_dir / "TRANSFER_LEDGER_LAST_120_DAYS.md").write_text("\n".join(combo))
+    (args.output_dir / f"TRANSFER_LEDGER_{name_suffix}.md").write_text("\n".join(combo))
 
-    print(args.output_dir / "P2P_BUY_LAST_120_DAYS.md")
-    print(args.output_dir / "EXCHANGER_BUY_LAST_120_DAYS.md")
-    print(args.output_dir / "TRANSFER_LEDGER_LAST_120_DAYS.md")
+    print(args.output_dir / f"P2P_BUY_{name_suffix}.md")
+    print(args.output_dir / f"EXCHANGER_BUY_{name_suffix}.md")
+    print(args.output_dir / f"TRANSFER_LEDGER_{name_suffix}.md")
     return 0
 
 
