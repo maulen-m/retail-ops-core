@@ -87,7 +87,10 @@ Reference tables (from PO_storing_Vibecode_1.xlsx):
 
 Auto-refresh:
 - Gmail push sync regenerates full-history reports after new messages.
-- Binance polling is scheduled via LaunchAgent `com.transferledger.autopilot` (30‑minute interval).
+- Binance polling is scheduled via LaunchAgent `com.transferledger.autopilot` (6‑hour interval).
+
+Multi-account note:
+- Set `BINANCE_ACCOUNT_LABEL` in `.env` when running Binance imports to tag rows by account.
 
 ## PO funding plan (Excel)
 Use `scripts/import_po_funding_plan.py --xlsx <path>` to import PO totals and message dates
