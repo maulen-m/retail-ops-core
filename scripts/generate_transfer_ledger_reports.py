@@ -95,6 +95,18 @@ def _last_updated_label(cur, sql: str, params: tuple = ()) -> str:
     return _fmt_dt(row[0])
 
 
+def _env_float(*keys: str) -> float | None:
+    for key in keys:
+        val = os.getenv(key)
+        if not val:
+            continue
+        try:
+            return float(str(val).replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _avg_recent_rate(rates: list[tuple[datetime, float]], dt: datetime | None, window: int = 5) -> float | None:
     if not dt:
         return None
@@ -355,6 +367,8 @@ def main() -> int:
     current_usdt = args.current_usdt
     api_usdt = None
     if current_usdt is None:
+        current_usdt = _env_float("LEDGER_CURRENT_USDT", "REPORT_CURRENT_USDT", "CURRENT_USDT_BALANCE")
+    if current_usdt is None:
         api_usdt = _get_current_usdt_balance()
         current_usdt = api_usdt if api_usdt is not None else snapshot_usdt
 
@@ -364,6 +378,20 @@ def main() -> int:
         for dt, key, delta in usdt_events:
             balance_after[key] = bal
             bal -= delta
+
+    balance_rows = []
+    balance_limit = int(os.getenv("LEDGER_BALANCE_ROWS", "50") or "50")
+    if balance_limit < 1:
+        balance_limit = 50
+    for dt, key, delta in usdt_events[:balance_limit]:
+        prefix, _, ref = key.partition(":")
+        balance_rows.append([
+            _fmt_dt(dt),
+            prefix.upper(),
+            ref,
+            _fmt(delta, 4),
+            _fmt(balance_after.get(key)),
+        ])
 
     p2p_rates: list[tuple[datetime, float]] = []
     for r in rows_p2p:
@@ -944,6 +972,9 @@ def main() -> int:
         ("PO_Tot_CNY", 12), ("PO_Paid_CNY", 12), ("PO_Left_CNY", 12),
         ("PO_Left_USDT", 12), ("PO_Left_KZT", 12)
     ]
+    balance_cols = [
+        ("Date", 19), ("Type", 8), ("Ref", 16), ("Delta_USDT", 12), ("Balance", 12)
+    ]
 
     # Write docs
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -974,6 +1005,13 @@ def main() -> int:
     p2p_doc.append("```text")
     p2p_doc.extend(_ascii_table(p2p_entries, p2p_cols))
     p2p_doc.append("```")
+    if balance_rows:
+        p2p_doc.append("")
+        p2p_doc.append("## Appendix: USDT Balance Reconciliation (most recent)")
+        p2p_doc.append("")
+        p2p_doc.append("```text")
+        p2p_doc.extend(_ascii_table(balance_rows, balance_cols))
+        p2p_doc.append("```")
 
     (args.output_dir / f"P2P_BUY_{name_suffix}.md").write_text("\n".join(p2p_doc))
 
@@ -1037,6 +1075,13 @@ def main() -> int:
     combo.append("```text")
     combo.extend(_ascii_table(ex_entries, ex_cols))
     combo.append("```")
+    if balance_rows:
+        combo.append("")
+        combo.append("## Appendix: USDT Balance Reconciliation (most recent)")
+        combo.append("")
+        combo.append("```text")
+        combo.extend(_ascii_table(balance_rows, balance_cols))
+        combo.append("```")
     if cancelled_entries:
         combo.append("")
         combo.append("## Cancelled Orders (Excluded from Ledger)")
