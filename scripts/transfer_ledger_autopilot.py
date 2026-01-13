@@ -451,9 +451,11 @@ def main() -> int:
     parser.add_argument("--query", default=None, help="Gmail search query")
     parser.add_argument("--since-days", type=int, default=30, help="Gmail lookback days")
     parser.add_argument("--limit", type=int, default=200, help="Max Gmail messages")
+    parser.add_argument("--skip-emails", action="store_true", help="Skip Gmail IMAP import")
     parser.add_argument("--statuses", default="COMPLETED", help="Exchanger statuses for FX")
     parser.add_argument("--current-usdt", type=float, default=None, help="Override current USDT balance")
     parser.add_argument("--reports", action="store_true", help="Generate Markdown reports")
+    parser.add_argument("--report-days", type=int, default=0, help="Report lookback days (0 for full history)")
     parser.add_argument("--transfer-types", default="MAIN_FUNDING,FUNDING_MAIN", help="Universal transfer types")
     parser.add_argument("--skip-deposits", action="store_true", help="Skip deposit history")
     parser.add_argument("--skip-transfers", action="store_true", help="Skip universal transfer history")
@@ -487,16 +489,19 @@ def main() -> int:
         ]
         subprocess.run(cmd, check=False)
 
-    print("[1/9] Importing exchanger emails...")
-    email_res = import_emails(args.db, mailbox, query, args.since_days, args.limit)
-    print(
-        f"  parsed={email_res['parsed']} inserted={email_res['inserted']} "
-        f"events={email_res['events']} labeled={email_res['labeled']}"
-    )
-    if email_res["errors"]:
-        print("  email errors (first 5):")
-        for e in email_res["errors"][:5]:
-            print(f"    - {e}")
+    if args.skip_emails:
+        print("[1/9] Skipping exchanger emails (IMAP)")
+    else:
+        print("[1/9] Importing exchanger emails...")
+        email_res = import_emails(args.db, mailbox, query, args.since_days, args.limit)
+        print(
+            f"  parsed={email_res['parsed']} inserted={email_res['inserted']} "
+            f"events={email_res['events']} labeled={email_res['labeled']}"
+        )
+        if email_res["errors"]:
+            print("  email errors (first 5):")
+            for e in email_res["errors"][:5]:
+                print(f"    - {e}")
 
     print("[2/9] Importing Binance P2P BUY orders...")
     p2p_res = import_p2p(args.db, args.days)
@@ -570,7 +575,9 @@ def main() -> int:
 
     if args.reports:
         print("[9/9] Generating reports...")
-        cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "generate_transfer_ledger_reports.py"), "--days", str(args.days)]
+        cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "generate_transfer_ledger_reports.py")]
+        if args.report_days and args.report_days > 0:
+            cmd += ["--days", str(args.report_days)]
         if args.current_usdt is not None:
             cmd += ["--current-usdt", str(args.current_usdt)]
         subprocess.run(cmd, check=False)

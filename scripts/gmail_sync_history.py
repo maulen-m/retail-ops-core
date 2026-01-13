@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from pathlib import Path
 import sys
 
@@ -214,6 +215,11 @@ def main() -> int:
         _set_sync_state("me", str(history_id), labels)
 
     print(f"Gmail sync updates: {updates}")
+    if updates > 0:
+        subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "generate_transfer_ledger_reports.py")],
+            check=False,
+        )
     return 0
 
 
