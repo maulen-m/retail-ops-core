@@ -72,8 +72,8 @@ def main() -> int:
             request={
                 "subscription": sub_path,
                 "max_messages": args.max_messages,
-                "timeout": args.timeout,
-            }
+            },
+            timeout=args.timeout,
         )
         if not response.received_messages:
             continue

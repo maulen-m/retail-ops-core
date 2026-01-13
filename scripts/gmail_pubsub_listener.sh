@@ -10,4 +10,7 @@ if [[ ! -x "$PY" ]]; then
 fi
 
 cd "$ROOT"
+if [[ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" && -f "$ROOT/config/gmail/service_account.json" ]]; then
+  export GOOGLE_APPLICATION_CREDENTIALS="$ROOT/config/gmail/service_account.json"
+fi
 "$PY" "$ROOT/scripts/gmail_pubsub_listener.py"

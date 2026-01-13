@@ -162,11 +162,15 @@ def main() -> int:
         print("Missing start historyId; run gmail_watch_setup.py first.")
         return 1
 
+    # Gmail history.list supports only a single labelId. If multiple labels are configured,
+    # skip label filtering to avoid invalid queries.
+    label_param = label_ids[0] if len(label_ids) == 1 else None
+
     history = service.users().history().list(
         userId="me",
         startHistoryId=start_history,
         historyTypes=["messageAdded"],
-        labelId=label_ids or None,
+        labelId=label_param,
     ).execute()
 
     history_id = history.get("historyId")
@@ -199,7 +203,7 @@ def main() -> int:
                 userId="me",
                 startHistoryId=start_history,
                 historyTypes=["messageAdded"],
-                labelId=label_ids or None,
+                labelId=label_param,
                 pageToken=page_token,
             ).execute()
             history_id = history.get("historyId") or history_id
