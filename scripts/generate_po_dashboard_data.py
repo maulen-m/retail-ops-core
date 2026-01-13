@@ -1016,7 +1016,7 @@ def generate_po_data(
         if use_fixture:
             d_sku_blended = sum(case["size_sales_90d"].values()) / 90.0
             sigma_sku = case["sigma_sku"]
-        elif has_demand:
+        elif demand_result is not None:
             d_sku_blended = demand_result.d_final
             sigma_sku = demand_result.sigma_final
         else:
@@ -1029,7 +1029,7 @@ def generate_po_data(
         if use_fixture:
             size_sales_90d = case["size_sales_90d"].copy()
             size_demands = {size: sales / 90.0 for size, sales in size_sales_90d.items()}
-        elif has_demand:
+        elif demand_result is not None:
             for size, size_result in demand_result.size_results.items():
                 # Use blended d_size directly (includes anchor weighting)
                 size_demands[size] = size_result.d_size
@@ -1053,6 +1053,9 @@ def generate_po_data(
                 override_value = float(override_value)
                 d_sku_blended = override_value
                 notes_list.append(f"D_OVERRIDE={override_value}")
+                if "NO_DEMAND_ESTIMATE" in notes_list:
+                    notes_list.remove("NO_DEMAND_ESTIMATE")
+                    skipped_no_demand = max(0, skipped_no_demand - 1)
                 total_size_demand = sum(size_demands.values()) if size_demands else 0
                 if total_size_demand > 0:
                     scale = override_value / total_size_demand
@@ -1221,7 +1224,7 @@ def generate_po_data(
             confidence = "FIXTURE"
             oos_type = "NONE"
             partial_oos_sizes = ""
-        elif has_demand:
+        elif demand_result is not None:
             d_final = demand_result.d_final
             d_anchor = demand_result.d_anchor
             d_data = demand_result.d_data

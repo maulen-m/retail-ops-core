@@ -26,7 +26,7 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 from dataclasses import dataclass, asdict
-from typing import Optional
+from typing import Optional, Tuple, Any
 import sys
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -47,6 +47,7 @@ from core.alerts.error_alerts import send_run_success_alert, send_run_failure_al
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 EXPORTS_DIR = PROJECT_ROOT / "exports"
+DASHBOARD_PATH = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
 
 
 @dataclass
@@ -86,6 +87,47 @@ class ScorecardSummary:
     blocked_by_missing_value_kzt: float
     override_count: int
     fallback_demand_count: int
+    source: str = ""
+
+
+def _load_dashboard_po(po_name: Optional[str] = None) -> Tuple[str, dict[str, Any]] | None:
+    if not DASHBOARD_PATH.exists():
+        return None
+    try:
+        data = json.loads(DASHBOARD_PATH.read_text())
+    except Exception:
+        return None
+
+    pos = data.get("pos", {})
+    if not isinstance(pos, dict) or not pos:
+        return None
+
+    if not po_name:
+        active = data.get("active_pos") or []
+        if active:
+            po_name = active[0]
+        elif "PO-5" in pos:
+            po_name = "PO-5"
+        else:
+            po_name = sorted(pos.keys())[0]
+
+    po_data = pos.get(po_name)
+    if not isinstance(po_data, dict):
+        return None
+
+    return po_name, po_data
+
+
+def _parse_override(notes: str) -> tuple[bool, Optional[float]]:
+    if not notes:
+        return False, None
+    if "D_OVERRIDE=" in notes:
+        try:
+            value = float(notes.split("D_OVERRIDE=")[1].split(",")[0].strip())
+        except Exception:
+            value = None
+        return True, value
+    return False, None
 
 
 def get_active_skus(db_path: Path) -> list[dict]:
@@ -149,6 +191,124 @@ def calculate_po_recommendations(db_path: Path) -> tuple[list[ScorecardSKU], Sco
     B = params.B
     z = params.z
     TV = params.TV
+
+    dashboard_po = _load_dashboard_po()
+    if dashboard_po:
+        po_name, po_data = dashboard_po
+        sku_rows = po_data.get("sku_level", [])
+        scorecard_skus: list[ScorecardSKU] = []
+
+        order_full = {"count": 0, "value": 0.0}
+        order_with_flag = {"count": 0, "value": 0.0}
+        review_required = {"count": 0, "value": 0.0}
+        blocked_roic = {"count": 0, "value": 0.0}
+        blocked_concentration = {"count": 0, "value": 0.0}
+        blocked_budget = {"count": 0, "value": 0.0}
+        blocked_missing = {"count": 0, "value": 0.0}
+        override_count = 0
+        fallback_count = 0
+
+        proposed_po: dict[str, int] = {}
+        unit_costs: dict[str, float] = {}
+
+        for row in sku_rows:
+            sku_key = row.get("sku_key") or ""
+            if not sku_key:
+                continue
+            po_qty = int(row.get("po_qty_total") or 0)
+            po_value_kzt = float(row.get("po_cogs_kzt") or 0.0)
+            roic_pct = float(row.get("roic_pct") or 0.0)
+            roic = roic_pct / 100.0
+            unit_cost_kzt = float(row.get("unit_cogs") or 0.0)
+            unit_costs[sku_key] = unit_cost_kzt
+            proposed_po[sku_key] = po_qty
+
+            notes = row.get("notes") or ""
+            override_applied, override_value = _parse_override(notes)
+            if override_applied:
+                override_count += 1
+            demand_fallback = "NO_DEMAND_ESTIMATE" in notes
+            if demand_fallback:
+                fallback_count += 1
+
+            if po_qty > 0:
+                if roic >= 0.20:
+                    roic_action = "ORDER_FULL"
+                    order_full["count"] += 1
+                    order_full["value"] += po_value_kzt
+                elif roic >= 0.10:
+                    roic_action = "ORDER_WITH_FLAG"
+                    order_with_flag["count"] += 1
+                    order_with_flag["value"] += po_value_kzt
+                else:
+                    roic_action = "REVIEW_REQUIRED"
+                    review_required["count"] += 1
+                    review_required["value"] += po_value_kzt
+            else:
+                roic_action = "REVIEW_REQUIRED"
+
+            guardrail_result = check_sku_guardrails(
+                sku_key=sku_key,
+                roic=roic,
+                order_qty=po_qty,
+                po_value_kzt=po_value_kzt,
+                unit_cost_kzt=unit_cost_kzt,
+            )
+
+            blocked_reason = ""
+            if not guardrail_result.approved:
+                blocked_reason = "; ".join(guardrail_result.blockers)
+                if "ROIC" in blocked_reason or "roic" in blocked_reason.lower():
+                    blocked_roic["count"] += 1
+                    blocked_roic["value"] += po_value_kzt
+                elif "concentration" in blocked_reason.lower():
+                    blocked_concentration["count"] += 1
+                    blocked_concentration["value"] += po_value_kzt
+                elif "budget" in blocked_reason.lower():
+                    blocked_budget["count"] += 1
+                    blocked_budget["value"] += po_value_kzt
+                elif "missing" in blocked_reason.lower() or "unit_costs" in blocked_reason:
+                    blocked_missing["count"] += 1
+                    blocked_missing["value"] += po_value_kzt
+
+            scorecard_skus.append(ScorecardSKU(
+                sku_key=sku_key,
+                po_qty=po_qty,
+                po_value_kzt=po_value_kzt,
+                roic_pct=roic_pct,
+                roic_action=roic_action,
+                guardrail_status=guardrail_result.guardrail_status,
+                blocked_reason=blocked_reason,
+                override_applied=override_applied,
+                override_value=override_value,
+                demand_fallback=demand_fallback,
+            ))
+
+        total_po_value = sum(s.po_value_kzt for s in scorecard_skus if s.po_qty > 0)
+        summary = ScorecardSummary(
+            scorecard_date=date.today().isoformat(),
+            total_skus=len([s for s in scorecard_skus if s.po_qty > 0]),
+            total_po_value_kzt=total_po_value,
+            order_full_count=order_full["count"],
+            order_full_value_kzt=order_full["value"],
+            order_with_flag_count=order_with_flag["count"],
+            order_with_flag_value_kzt=order_with_flag["value"],
+            review_required_count=review_required["count"],
+            review_required_value_kzt=review_required["value"],
+            blocked_by_roic_count=blocked_roic["count"],
+            blocked_by_roic_value_kzt=blocked_roic["value"],
+            blocked_by_concentration_count=blocked_concentration["count"],
+            blocked_by_concentration_value_kzt=blocked_concentration["value"],
+            blocked_by_budget_count=blocked_budget["count"],
+            blocked_by_budget_value_kzt=blocked_budget["value"],
+            blocked_by_missing_count=blocked_missing["count"],
+            blocked_by_missing_value_kzt=blocked_missing["value"],
+            override_count=override_count,
+            fallback_demand_count=fallback_count,
+            source=f"dashboard:{po_name}",
+        )
+
+        return scorecard_skus, summary
 
     skus = get_active_skus(db_path)
     inventory = get_current_inventory(db_path)
@@ -300,7 +460,8 @@ def calculate_po_recommendations(db_path: Path) -> tuple[list[ScorecardSKU], Sco
         blocked_by_missing_count=blocked_missing["count"],
         blocked_by_missing_value_kzt=blocked_missing["value"],
         override_count=override_count,
-        fallback_demand_count=fallback_count
+        fallback_demand_count=fallback_count,
+        source="db:computed",
     )
 
     return scorecard_skus, summary
@@ -326,6 +487,10 @@ def write_scorecard_csv(
         writer.writerow([])
 
         # Summary statistics
+        if summary.source:
+            writer.writerow(["Source", summary.source])
+            writer.writerow([])
+
         writer.writerow(["Metric", "Count", "Value (KZT)"])
         writer.writerow(["Total SKUs with Orders", summary.total_skus, f"{summary.total_po_value_kzt:,.0f}"])
         writer.writerow([])
@@ -404,7 +569,8 @@ def write_scorecard_csv(
 
 def format_telegram_digest(summary: ScorecardSummary) -> str:
     """Format summary for Telegram alert."""
-    return f"""<b>Shadow Mode Scorecard - {summary.scorecard_date}</b>
+    source_line = f"\n<b>Source:</b> {summary.source}" if summary.source else ""
+    return f"""<b>Shadow Mode Scorecard - {summary.scorecard_date}</b>{source_line}
 
 <b>Total Proposed Spend:</b> {summary.total_po_value_kzt:,.0f} KZT
 <b>SKUs with Orders:</b> {summary.total_skus}
@@ -441,6 +607,8 @@ def main():
 
             # Print summary
             print(f"\nSummary:")
+            if summary.source:
+                print(f"  Source: {summary.source}")
             print(f"  Total SKUs with Orders: {summary.total_skus}")
             print(f"  Total Proposed Spend: {summary.total_po_value_kzt:,.0f} KZT")
             print()
