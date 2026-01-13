@@ -890,6 +890,28 @@ class CRMSnapshot:
     delivery_fee_rows: list[tuple[int, Optional[date], float, float]]
 
 
+def _empty_snapshot() -> CRMSnapshot:
+    """Fallback snapshot for dry_run when CRM schema is incomplete."""
+    return CRMSnapshot(
+        date_col=1,
+        phone_col=None,
+        start_col=1,
+        end_col=1,
+        start_row=1,
+        end_row=1,
+        slice_headers=[],
+        order_ids=set(),
+        order_rows={},
+        existing_keys=set(),
+        column_positions={},
+        planned_col_abs=None,
+        table_date_col=None,
+        delivery_fee_col=None,
+        seller_fee_col=None,
+        delivery_fee_rows=[],
+    )
+
+
 def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSnapshot:
     """Load CRM metadata in a single openpyxl session (read-only snapshot)."""
     wb = load_workbook(filename=str(crm_path), read_only=False, data_only=True)
@@ -1899,7 +1921,14 @@ def main(
     print(f"Sorted by: Status (cancelled first), STORE_NAME, OrderID, Quantity, KASPI_OFFER_NAME, Date")
 
     # Inspect CRM structure (single openpyxl snapshot)
-    snapshot = load_crm_snapshot(args.crm_file, args.sheet, args.table)
+    try:
+        snapshot = load_crm_snapshot(args.crm_file, args.sheet, args.table)
+    except SystemExit as exc:
+        if args.dry_run:
+            print(f"[DRY RUN] Skipping CRM snapshot: {exc}")
+            snapshot = _empty_snapshot()
+        else:
+            raise
     date_abs = snapshot.date_col
     phone_abs = snapshot.phone_col
     start_abs = snapshot.start_col
