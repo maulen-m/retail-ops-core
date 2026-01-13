@@ -303,8 +303,13 @@ def main():
                         help="Skip truth workbook sync step")
     parser.add_argument("--skip-api-sync", action="store_true",
                         help="Skip Kaspi API order status sync step (not recommended)")
-    parser.add_argument("--api-lookback-days", type=int, default=30,
-                        help="Lookback window for API order status sync (days)")
+    max_lookback_days = 13
+    parser.add_argument(
+        "--api-lookback-days",
+        type=int,
+        default=max_lookback_days,
+        help=f"Lookback window for API order status sync (days, max {max_lookback_days})",
+    )
     parser.add_argument(
         "--workbook",
         type=Path,
@@ -327,6 +332,13 @@ def main():
     parser.add_argument("--no-lock", action="store_true",
                         help="Skip lock file (dangerous, for testing only)")
     args = parser.parse_args()
+
+    if args.api_lookback_days > max_lookback_days:
+        print(
+            f"WARNING: api-lookback-days={args.api_lookback_days} exceeds max {max_lookback_days}; "
+            f"clamping to {max_lookback_days}."
+        )
+        args.api_lookback_days = max_lookback_days
 
     start_time = datetime.now()
 

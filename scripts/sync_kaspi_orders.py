@@ -31,7 +31,7 @@ Environment Variables:
 import argparse
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 
 # Add project root to path
@@ -210,10 +210,38 @@ def main():
     setup_logging(args.verbose)
     engine = OrderSyncEngine()
 
+    max_lookback_days = 13
+
+    def parse_date(value: str) -> date:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+
     # Parse states if provided
     states = None
     if args.states:
         states = [s.strip() for s in args.states.split(',')]
+
+    if args.since:
+        try:
+            since_date = parse_date(args.since)
+        except ValueError:
+            print(f"ERROR: invalid --since date: {args.since} (expected YYYY-MM-DD)")
+            return 2
+
+        end_date = datetime.now().date()
+        if args.until:
+            try:
+                end_date = parse_date(args.until)
+            except ValueError:
+                print(f"ERROR: invalid --until date: {args.until} (expected YYYY-MM-DD)")
+                return 2
+
+        max_since = end_date - timedelta(days=max_lookback_days)
+        if since_date < max_since:
+            print(
+                f"WARNING: since={args.since} exceeds max lookback {max_lookback_days} days; "
+                f"clamping to {max_since.isoformat()}."
+            )
+            args.since = max_since.isoformat()
 
     print(f"\n{'=' * 60}")
     print("KASPI ORDER SYNC")
