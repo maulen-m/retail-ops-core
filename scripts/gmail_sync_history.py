@@ -17,6 +17,7 @@ from core.integrations.gmail_api_client import get_gmail_service, fetch_message_
 from core.transfer_ledger.binance_withdrawal_email_import import parse_binance_withdrawal_email
 from core.transfer_ledger.exchanger_email_import import parse_exchanger_email
 from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order, address_match
+from core.transfer_ledger.telegram_ledger_alerts import send_exchanger_update_alert
 from core.transfer_ledger.repository import (
     ensure_schema,
     upsert_exchanger_order,
@@ -189,7 +190,8 @@ def main() -> int:
                 order = parse_exchanger_email(payload)
                 if order:
                     is_new = upsert_exchanger_order(order)
-                    insert_exchanger_event(order)
+                    if insert_exchanger_event(order):
+                        send_exchanger_update_alert(order)
                     label_withdrawals_for_order(order)
                     updates += 1
 

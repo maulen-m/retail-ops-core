@@ -32,6 +32,7 @@ from core.transfer_ledger.repository import (
     upsert_binance_account_snapshot,
 )
 from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order
+from core.transfer_ledger.telegram_ledger_alerts import send_exchanger_update_alert
 from core.integrations.binance_c2c_client import BinanceC2CClient
 from core.transfer_ledger.binance_import import import_binance_orders
 from core.integrations.binance_wallet_client import BinanceWalletClient
@@ -150,6 +151,7 @@ def import_emails(db_path: Path, mailbox: str, query: str | None, since_days: in
                 inserted += 1
             if insert_exchanger_event(order, db_path=db_path):
                 events += 1
+                send_exchanger_update_alert(order, db_path=db_path)
             labeled += label_withdrawals_for_order(order, db_path=db_path)
         except Exception as exc:
             errors.append(str(exc))
