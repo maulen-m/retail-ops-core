@@ -183,7 +183,7 @@ def main() -> int:
         p2p_params.append(start_iso)
     rows_p2p = cur.execute(
         f"""
-        SELECT order_number, create_time, fiat_amount, crypto_amount, unit_price, counterparty
+        SELECT order_number, create_time, fiat_amount, crypto_amount, unit_price, counterparty, account_label
         FROM binance_c2c_orders
         {p2p_where}
         ORDER BY create_time DESC
@@ -259,8 +259,8 @@ def main() -> int:
     if start_iso:
         withdrawals = cur.execute(
             """
-            SELECT withdraw_id, amount, address, apply_time, exchanger_order_id
-            FROM binance_withdrawals
+        SELECT withdraw_id, amount, address, apply_time, exchanger_order_id, account_label
+        FROM binance_withdrawals
             WHERE apply_time >= ?
             """,
             (start_iso,),
@@ -482,6 +482,7 @@ def main() -> int:
         kzt = float(r["fiat_amount"] or 0)
         rate = float(r["unit_price"] or 0)
         cp = r["counterparty"] or ""
+        acct = r["account_label"] or ""
         bal = balance_after.get(f"p2p:{order}")
 
         po_info = po_info_by_p2p.get(order, {})
@@ -496,6 +497,7 @@ def main() -> int:
         p2p_entries.append([
             _fmt_dt(dt),
             str(order),
+            acct,
             "ASSET",
             "USDT",
             f"{usdt:.2f}",
@@ -514,6 +516,7 @@ def main() -> int:
         p2p_entries.append([
             _fmt_dt(dt),
             str(order),
+            acct,
             "FIAT",
             "KZT",
             f"{-kzt:.2f}",
@@ -674,6 +677,9 @@ def main() -> int:
             if wd_id:
                 ref_parts.append(f"wd={wd_id}")
                 bal = balance_after.get(f"wd:{wd_id}")
+            acct = match.get("account_label") or ""
+            if acct:
+                ref_parts.append(f"acct={acct}")
             addr = match.get("address") or order.get("deposit_address")
             if addr:
                 ref_parts.append(f"addr={addr}")
@@ -749,7 +755,7 @@ def main() -> int:
 
     # Tables
     p2p_cols = [
-        ("Date", 19), ("Order", 12), ("Leg", 8), ("Curr", 5),
+        ("Date", 19), ("Order", 12), ("Acct", 10), ("Leg", 8), ("Curr", 5),
         ("Amount", 14), ("KZT_Value", 14), ("Rate", 10),
         ("USDT_Bal", 12), ("Counterparty", 80),
         ("PO", 12), ("PO_Tot_CNY", 12), ("PO_Tot_USDT", 12),
