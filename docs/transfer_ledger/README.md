@@ -81,6 +81,14 @@ Generate reports:
 - `scripts/generate_transfer_ledger_reports.py --current-usdt 2067.37796` (full history)
 - `scripts/generate_po_payment_status.py`
 
+Reference tables (from PO_storing_Vibecode_1.xlsx):
+- `docs/transfer_ledger/SUPPLIER_INFO.md`
+- `docs/transfer_ledger/EXCHANGER_INFO.md`
+
+Auto-refresh:
+- Gmail push sync regenerates full-history reports after new messages.
+- Binance polling is scheduled via LaunchAgent `com.transferledger.autopilot` (30‑minute interval).
+
 ## PO funding plan (Excel)
 Use `scripts/import_po_funding_plan.py --xlsx <path>` to import PO totals and message dates
 from the Vibecode PO spreadsheet into `po_funding_plan` and `po_header`.
