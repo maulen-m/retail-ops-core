@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -51,6 +52,7 @@ def normalize_binance_deposit(raw: dict) -> dict:
     if amount is None:
         raise ValueError(f"Invalid deposit amount for {deposit_id}")
 
+    account_label = raw.get("account_label") or os.getenv("BINANCE_ACCOUNT_LABEL") or ""
     return {
         "deposit_id": str(deposit_id),
         "coin": (raw.get("coin") or "").upper(),
@@ -64,6 +66,7 @@ def normalize_binance_deposit(raw: dict) -> dict:
         "network": raw.get("network"),
         "transfer_type": raw.get("transferType"),
         "wallet_type": raw.get("walletType"),
+        "account_label": account_label,
         "raw_json": json.dumps(raw, ensure_ascii=False),
         "source": "BINANCE_DEPOSIT",
     }

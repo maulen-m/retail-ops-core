@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -53,6 +54,7 @@ def normalize_binance_transfer(raw: dict) -> dict:
 
     transfer_type = raw.get("type") or raw.get("transferType") or ""
 
+    account_label = raw.get("account_label") or os.getenv("BINANCE_ACCOUNT_LABEL") or ""
     return {
         "transfer_id": str(transfer_id),
         "asset": (raw.get("asset") or "").upper(),
@@ -60,6 +62,7 @@ def normalize_binance_transfer(raw: dict) -> dict:
         "transfer_type": str(transfer_type),
         "status": str(raw.get("status")) if raw.get("status") is not None else None,
         "timestamp": _to_iso(raw.get("timestamp")),
+        "account_label": account_label,
         "raw_json": json.dumps(raw, ensure_ascii=False),
         "source": "BINANCE_TRANSFER",
     }
