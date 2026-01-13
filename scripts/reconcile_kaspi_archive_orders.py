@@ -286,15 +286,18 @@ def load_db_sales(conn: sqlite3.Connection, since: date) -> pd.DataFrame:
     return df
 
 
-def _build_size_map(dim_sku_size: pd.DataFrame) -> dict[str, tuple[dict[str, str], list[str]]]:
+def _build_size_map(dim_sku_size: pd.DataFrame) -> tuple[dict[str, tuple[dict[str, str], list[str]]], dict[str, str]]:
     size_map: dict[str, tuple[dict[str, str], list[str]]] = {}
+    single_size_map: dict[str, str] = {}
     grouped = dim_sku_size.groupby("sku_key")["my_size"].apply(list).reset_index()
     for _, row in grouped.iterrows():
         sizes = [s for s in row["my_size"] if s and str(s).strip()]
         sizes_upper = {str(s).upper(): str(s) for s in sizes}
         sizes_sorted = sorted(sizes_upper.keys(), key=len, reverse=True)
         size_map[row["sku_key"]] = (sizes_upper, sizes_sorted)
-    return size_map
+        if len(sizes_upper) == 1:
+            single_size_map[row["sku_key"]] = next(iter(sizes_upper.values()))
+    return size_map, single_size_map
 
 
 def _infer_sku_key_from_article(article: str | None, sku_keys_sorted: list[str]) -> str | None:
@@ -409,6 +412,7 @@ def attach_mappings(
     crm_sales: pd.DataFrame,
     sku_keys_sorted: list[str],
     size_map: dict[str, tuple[dict[str, str], list[str]]],
+    single_size_map: dict[str, str],
 ) -> pd.DataFrame:
     crm_lookup = crm_sales[["store_code", "order_id", "kaspi_offer_name", "sku_key", "my_size"]].copy()
     crm_lookup = crm_lookup.drop_duplicates(subset=["store_code", "order_id", "kaspi_offer_name"])
@@ -455,6 +459,11 @@ def attach_mappings(
     y_df.loc[pb_mask, "my_size_final"] = y_df.loc[pb_mask, "pb_size"]
     y_df.loc[pb_mask, "size_source_final"] = "PB_SIZE"
     y_df["size_confidence_final"] = y_df["pb_size_share"].where(y_df["size_source_final"] == "PB_SIZE")
+
+    single_mask = y_df["my_size_final"].isna() & y_df["sku_key_final"].isin(single_size_map)
+    if single_mask.any():
+        y_df.loc[single_mask, "my_size_final"] = y_df.loc[single_mask, "sku_key_final"].map(single_size_map)
+        y_df.loc[single_mask, "size_source_final"] = "SKU_ONLY"
 
     return y_df
 
@@ -685,8 +694,17 @@ def main() -> int:
     )
     size_mix = build_size_mix(db_sales_all, crm_sales_all)
     sku_keys_sorted = sorted(dim_sku["sku_key"].dropna().astype(str).unique().tolist(), key=len, reverse=True)
-    size_map = _build_size_map(dim_sku_size)
-    y_df = attach_mappings(y_df, offer_map, size_mix, dim_sku, crm_sales_all, sku_keys_sorted, size_map)
+    size_map, single_size_map = _build_size_map(dim_sku_size)
+    y_df = attach_mappings(
+        y_df,
+        offer_map,
+        size_mix,
+        dim_sku,
+        crm_sales_all,
+        sku_keys_sorted,
+        size_map,
+        single_size_map,
+    )
 
     print("Updating Z with Y data...")
     stats = update_z_db(args.output_z, y_df, offer_map, size_mix)
