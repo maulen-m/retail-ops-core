@@ -704,24 +704,8 @@ class KaspiAPIClient:
         self._require_write_enabled()
         logger.info(f"Assembling order {order_code} (ID: {base64_id}) with {parcel_count} parcels")
 
-        # Preferred endpoint (works for Universal + other stores)
-        assemble_payload = {'data': {'numberOfSpace': str(parcel_count)}}
-        try:
-            result = self._request(
-                'POST',
-                f'orders/{base64_id}/assemble',
-                json_data=assemble_payload,
-            )
-            if result.success:
-                return result
-        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError):
-            # Fall back to legacy endpoint below
-            pass
-        except Exception as exc:
-            logger.warning(f"Assemble via /orders/{base64_id}/assemble failed: {exc}")
-
-        # Legacy fallback (some stores still accept status update on /orders)
-        data = {
+        # Primary (official) endpoint: POST /orders with ASSEMBLE status
+        primary_payload = {
             'data': {
                 'type': 'orders',
                 'id': base64_id,
@@ -731,8 +715,47 @@ class KaspiAPIClient:
                 }
             }
         }
+        primary_error: Optional[str] = None
+        primary_status: int = 0
+        try:
+            result = self._request('POST', 'orders', json_data=primary_payload)
+            primary_status = result.status_code or 0
+            if result.success:
+                return result
+            primary_error = result.error
+        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError) as exc:
+            primary_error = str(exc)
 
-        return self._request('POST', 'orders', json_data=data)
+        # Fallback endpoint (some stores still accept /assemble)
+        fallback_payload = {'data': {'numberOfSpace': str(parcel_count)}}
+        fallback_error: Optional[str] = None
+        fallback_status: int = 0
+        try:
+            fallback = self._request(
+                'POST',
+                f'orders/{base64_id}/assemble',
+                json_data=fallback_payload,
+            )
+            fallback_status = fallback.status_code or 0
+            if fallback.success:
+                return fallback
+            fallback_error = fallback.error
+        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError) as exc:
+            fallback_error = str(exc)
+        except Exception as exc:
+            fallback_error = f"Unexpected error: {exc}"
+
+        error_parts = []
+        if primary_error:
+            error_parts.append(f"primary: {primary_error}")
+        if fallback_error:
+            error_parts.append(f"fallback: {fallback_error}")
+        error_msg = "; ".join(error_parts) if error_parts else "Assemble failed"
+        return APIResponse(
+            success=False,
+            error=error_msg,
+            status_code=fallback_status or primary_status,
+        )
 
     def ship_order(self, order_code: str) -> APIResponse:
         """
