@@ -15,6 +15,7 @@ from core.transfer_ledger.repository import (
     list_pos_for_allocation,
     list_po_exchanger_allocations,
 )
+from core.transfer_ledger.exchanger_matching import address_match, AMOUNT_TOLERANCE, DATE_WINDOW_DAYS
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -159,6 +160,53 @@ def _load_p2p_orders(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _load_withdrawals(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT withdraw_id, amount, transaction_fee, address, apply_time, exchanger_order_id
+        FROM binance_withdrawals
+        ORDER BY apply_time DESC
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _amount_close(a: Optional[float], b: Optional[float]) -> bool:
+    if a is None or b is None:
+        return False
+    return abs(float(a) - float(b)) <= AMOUNT_TOLERANCE
+
+
+def _date_close(a: Optional[datetime], b: Optional[datetime]) -> bool:
+    if not a or not b:
+        return True
+    return abs((a - b).total_seconds()) <= DATE_WINDOW_DAYS * 86400
+
+
+def _match_withdrawal_for_order(order: dict, withdrawals: list[dict]) -> Optional[dict]:
+    address = (order.get("deposit_address") or "").strip()
+    amount = order.get("amount_usdt")
+    order_dt = _parse_dt(order.get("message_date"))
+    best = None
+    best_delta = None
+    for wd in withdrawals:
+        if address and not address_match(address, wd.get("address") or ""):
+            continue
+        if amount is not None and not _amount_close(amount, wd.get("amount")):
+            continue
+        wd_dt = _parse_dt(wd.get("apply_time"))
+        if not _date_close(order_dt, wd_dt):
+            continue
+        if order_dt and wd_dt:
+            delta = abs((wd_dt - order_dt).total_seconds())
+        else:
+            delta = 0
+        if best is None or (best_delta is not None and delta < best_delta):
+            best = wd
+            best_delta = delta
+    return best
+
+
 def _estimate_paid_kzt(paid_usdt: float, p2p_orders: list[dict]) -> Optional[float]:
     if paid_usdt <= 0:
         return None
@@ -190,6 +238,7 @@ def _build_po_state(
     po_plan: list[tuple[datetime, str, Optional[float], Optional[float]]],
     alloc_map: dict[str, str],
     ex_rates: list[tuple[datetime, float]],
+    fee_by_order: dict[str, float],
 ) -> tuple[dict[str, dict], dict[str, str], dict[str, datetime], dict[str, Optional[float]]]:
     po_state = {}
     po_dates = {}
@@ -228,7 +277,9 @@ def _build_po_state(
         if not order_dt:
             continue
         amount_cny = float(order.get("amount_cny") or 0)
-        amount_usdt = float(order.get("amount_usdt") or 0)
+        base_usdt = float(order.get("amount_usdt") or 0)
+        fee_usdt = float(fee_by_order.get(order.get("exchanger_order_id") or "", 0.0))
+        amount_usdt = base_usdt + fee_usdt
         if amount_cny <= 0 or amount_usdt <= 0:
             continue
 
@@ -292,6 +343,17 @@ def build_po_summary_for_order(order: dict, db_path: Path = DB_PATH) -> dict:
         return {"po_id": "", "note": "No PO plan data found"}
 
     orders = _load_exchanger_orders(conn)
+    withdrawals = _load_withdrawals(conn)
+    fee_by_order: dict[str, float] = {}
+    wd_by_order = {w.get("exchanger_order_id"): w for w in withdrawals if w.get("exchanger_order_id")}
+    for o in orders:
+        ex_id = o.get("exchanger_order_id")
+        match = wd_by_order.get(ex_id)
+        if not match:
+            match = _match_withdrawal_for_order(o, withdrawals)
+        if match:
+            fee_by_order[ex_id] = float(match.get("transaction_fee") or 0.0)
+
     ex_rates = []
     for r in orders:
         dt = _parse_dt(r.get("message_date"))
@@ -300,7 +362,8 @@ def build_po_summary_for_order(order: dict, db_path: Path = DB_PATH) -> dict:
         if not dt or amt_usdt is None or amt_cny is None:
             continue
         try:
-            rate = float(amt_cny) / float(amt_usdt)
+            eff_usdt = float(amt_usdt) + float(fee_by_order.get(r.get("exchanger_order_id") or "", 0.0))
+            rate = float(amt_cny) / eff_usdt
         except Exception:
             continue
         if rate > 0:
@@ -315,10 +378,18 @@ def build_po_summary_for_order(order: dict, db_path: Path = DB_PATH) -> dict:
         po_plan=po_plan,
         alloc_map=alloc_map,
         ex_rates=ex_rates,
+        fee_by_order=fee_by_order,
     )
 
     ex_id = order.get("exchanger_order_id")
     po_id = alloc_map.get(ex_id) or order_to_po.get(ex_id) or ""
+    order_fee_usdt = float(fee_by_order.get(ex_id, 0.0))
+    order_effective_usdt = None
+    try:
+        if order.get("amount_usdt") is not None:
+            order_effective_usdt = float(order.get("amount_usdt")) + order_fee_usdt
+    except Exception:
+        order_effective_usdt = None
 
     p2p_orders = _load_p2p_orders(conn)
     p2p_rates = []
@@ -387,6 +458,8 @@ def build_po_summary_for_order(order: dict, db_path: Path = DB_PATH) -> dict:
         "fx_usdt_cny": fx_usdt_cny,
         "fx_usdt_kzt": fx_usdt_kzt,
         "fx_cny_kzt": fx_cny_kzt,
+        "order_fee_usdt": order_fee_usdt,
+        "order_effective_usdt": order_effective_usdt,
     }
 
 
@@ -395,6 +468,17 @@ def build_pending_po_table(db_path: Path = DB_PATH, limit: int = 20) -> tuple[st
     conn.row_factory = sqlite3.Row
     po_plan = _load_po_plan(conn)
     orders = _load_exchanger_orders(conn)
+    withdrawals = _load_withdrawals(conn)
+    fee_by_order: dict[str, float] = {}
+    wd_by_order = {w.get("exchanger_order_id"): w for w in withdrawals if w.get("exchanger_order_id")}
+    for o in orders:
+        ex_id = o.get("exchanger_order_id")
+        match = wd_by_order.get(ex_id)
+        if not match:
+            match = _match_withdrawal_for_order(o, withdrawals)
+        if match:
+            fee_by_order[ex_id] = float(match.get("transaction_fee") or 0.0)
+
     ex_rates = []
     for r in orders:
         dt = _parse_dt(r.get("message_date"))
@@ -403,7 +487,8 @@ def build_pending_po_table(db_path: Path = DB_PATH, limit: int = 20) -> tuple[st
         if not dt or amt_usdt is None or amt_cny is None:
             continue
         try:
-            rate = float(amt_cny) / float(amt_usdt)
+            eff_usdt = float(amt_usdt) + float(fee_by_order.get(r.get("exchanger_order_id") or "", 0.0))
+            rate = float(amt_cny) / eff_usdt
         except Exception:
             continue
         if rate > 0:
@@ -418,6 +503,7 @@ def build_pending_po_table(db_path: Path = DB_PATH, limit: int = 20) -> tuple[st
         po_plan=po_plan,
         alloc_map=alloc_map,
         ex_rates=ex_rates,
+        fee_by_order=fee_by_order,
     )
 
     p2p_orders = _load_p2p_orders(conn)
@@ -497,9 +583,16 @@ def build_exchanger_update_message(order: dict, db_path: Path = DB_PATH) -> str:
     amount_usdt = order.get("amount_usdt")
     amount_cny = order.get("amount_cny")
     rate = None
-    if amount_usdt and amount_cny:
+    effective_usdt = summary.get("order_effective_usdt")
+    if effective_usdt is None and amount_usdt is not None:
         try:
-            rate = float(amount_cny) / float(amount_usdt)
+            effective_usdt = float(amount_usdt)
+        except Exception:
+            effective_usdt = None
+
+    if effective_usdt and amount_cny:
+        try:
+            rate = float(amount_cny) / float(effective_usdt)
         except Exception:
             rate = None
 
@@ -509,8 +602,12 @@ def build_exchanger_update_message(order: dict, db_path: Path = DB_PATH) -> str:
         f"<b>Status:</b> {(order.get('status') or '').upper()}",
         f"<b>Date:</b> {_fmt_dt(order.get('message_date'))}",
     ]
-    if amount_usdt and amount_cny:
-        header.append(f"<b>USDT → CNY:</b> {_fmt(amount_usdt)} → {_fmt(amount_cny)} (rate {_fmt(rate, 4)})")
+    if effective_usdt and amount_cny:
+        fee_usdt = summary.get("order_fee_usdt")
+        fee_line = f" incl fee {_fmt(fee_usdt)}" if fee_usdt else ""
+        header.append(
+            f"<b>USDT → CNY:</b> {_fmt(effective_usdt)}{fee_line} → {_fmt(amount_cny)} (rate {_fmt(rate, 4)})"
+        )
     addr = order.get("deposit_address")
     if addr:
         header.append(f"<b>Deposit:</b> <code>{addr}</code>")

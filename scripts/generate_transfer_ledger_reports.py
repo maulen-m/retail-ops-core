@@ -147,6 +147,13 @@ def _match_withdrawal_for_order(order: dict, withdrawals: list[dict], used_ids: 
     return best
 
 
+def _effective_usdt(amount_usdt: float, fee_usdt: float) -> float:
+    try:
+        return float(amount_usdt) + float(fee_usdt or 0)
+    except (TypeError, ValueError):
+        return float(amount_usdt or 0)
+
+
 def _get_current_usdt_balance() -> float | None:
     try:
         client = BinanceWalletClient()
@@ -267,7 +274,7 @@ def main() -> int:
     if start_iso:
         withdrawals = cur.execute(
             """
-        SELECT withdraw_id, amount, address, apply_time, exchanger_order_id, account_label
+        SELECT withdraw_id, amount, transaction_fee, address, apply_time, exchanger_order_id, account_label
         FROM binance_withdrawals
             WHERE apply_time >= ?
             """,
@@ -276,7 +283,7 @@ def main() -> int:
     else:
         withdrawals = cur.execute(
             """
-            SELECT withdraw_id, amount, address, apply_time, exchanger_order_id, account_label
+            SELECT withdraw_id, amount, transaction_fee, address, apply_time, exchanger_order_id, account_label
             FROM binance_withdrawals
             """
         ).fetchall()
@@ -285,6 +292,17 @@ def main() -> int:
     wd_by_order = {w["exchanger_order_id"]: w for w in withdrawals_list if w["exchanger_order_id"]}
     unmatched_withdrawals = [w for w in withdrawals_list if not w.get("exchanger_order_id")]
     used_withdrawals: set[str] = set()
+    order_matches: dict[str, dict] = {}
+
+    for r in rows_ex:
+        order_key = r["exchanger_order_id"]
+        match = wd_by_order.get(order_key)
+        if not match:
+            match = _match_withdrawal_for_order(dict(r), unmatched_withdrawals, used_withdrawals)
+            if match and match.get("withdraw_id"):
+                used_withdrawals.add(match["withdraw_id"])
+        if match:
+            order_matches[order_key] = match
 
     # Build USDT event timeline for balance
     usdt_events = []
@@ -343,11 +361,15 @@ def main() -> int:
     for r in rows_ex:
         dt = _parse_dt(r["message_date"])
         amount_usdt = r["amount_usdt"]
+        fee_usdt = 0.0
+        match = order_matches.get(r["exchanger_order_id"])
+        if match:
+            fee_usdt = float(match.get("transaction_fee") or 0)
         amount_cny = r["amount_cny"]
         if not dt or amount_usdt is None or amount_cny is None:
             continue
         try:
-            rate = float(amount_cny) / float(amount_usdt)
+            rate = float(amount_cny) / _effective_usdt(float(amount_usdt), fee_usdt)
         except (TypeError, ValueError, ZeroDivisionError):
             continue
         if rate > 0:
@@ -558,7 +580,10 @@ def main() -> int:
         orders_for_alloc = []
         for r in rows_ex:
             amount_cny = float(r["amount_cny"] or 0)
-            amount_usdt = float(r["amount_usdt"] or 0)
+            base_usdt = float(r["amount_usdt"] or 0)
+            match = order_matches.get(r["exchanger_order_id"])
+            fee_usdt = float(match.get("transaction_fee") or 0) if match else 0.0
+            amount_usdt = _effective_usdt(base_usdt, fee_usdt)
             if amount_cny <= 0 or amount_usdt <= 0:
                 continue
             order_dt = _parse_dt(r["message_date"])
@@ -577,7 +602,10 @@ def main() -> int:
 
             ex_id = row["exchanger_order_id"]
             amount_cny = float(row["amount_cny"] or 0)
-            amount_usdt = float(row["amount_usdt"] or 0)
+            base_usdt = float(row["amount_usdt"] or 0)
+            match = order_matches.get(ex_id)
+            fee_usdt = float(match.get("transaction_fee") or 0) if match else 0.0
+            amount_usdt = _effective_usdt(base_usdt, fee_usdt)
             if amount_cny <= 0 or amount_usdt <= 0:
                 continue
             rate = amount_cny / amount_usdt if amount_usdt else 0.0
@@ -670,16 +698,14 @@ def main() -> int:
     for r in rows_ex:
         order = dict(r)
         order_key = order["exchanger_order_id"]
-        amount_usdt = float(order["amount_usdt"] or 0)
+        base_usdt = float(order["amount_usdt"] or 0)
+        match = order_matches.get(order_key)
+        fee_usdt = float(match.get("transaction_fee") or 0) if match else 0.0
+        amount_usdt = _effective_usdt(base_usdt, fee_usdt)
         amount_cny = float(order["amount_cny"] or 0)
         if amount_usdt <= 0 or amount_cny <= 0:
             continue
         rate = amount_cny / amount_usdt
-        match = wd_by_order.get(order_key)
-        if not match:
-            match = _match_withdrawal_for_order(order, unmatched_withdrawals, used_withdrawals)
-            if match and match.get("withdraw_id"):
-                used_withdrawals.add(match["withdraw_id"])
         ref_parts = []
         bal = None
         if match:
@@ -687,6 +713,8 @@ def main() -> int:
             if wd_id:
                 ref_parts.append(f"wd={wd_id}")
                 bal = balance_after.get(f"wd:{wd_id}")
+            if fee_usdt:
+                ref_parts.append(f"fee={fee_usdt:.2f}")
             acct = match.get("account_label") or ""
             if acct:
                 ref_parts.append(f"acct={acct}")
@@ -815,7 +843,10 @@ def main() -> int:
     if po_timeline_data:
         po_timeline_data.sort(key=lambda x: x[0])
         for order_dt, row, info in po_timeline_data:
-            amount_usdt = float(row["amount_usdt"] or 0)
+            base_usdt = float(row["amount_usdt"] or 0)
+            match = order_matches.get(row["exchanger_order_id"])
+            fee_usdt = float(match.get("transaction_fee") or 0) if match else 0.0
+            amount_usdt = _effective_usdt(base_usdt, fee_usdt)
             amount_cny = float(row["amount_cny"] or 0)
             rate = amount_cny / amount_usdt if amount_usdt else 0.0
             po_timeline_rows.append([
