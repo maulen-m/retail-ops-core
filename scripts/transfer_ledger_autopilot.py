@@ -361,6 +361,7 @@ def import_transfers(db_path: Path, days: int, types: list[str]) -> dict:
 def snapshot_funding_balances(db_path: Path, asset: str | None = "USDT") -> dict:
     client = BinanceWalletClient()
     errors: list[str] = []
+    account_label = os.getenv("BINANCE_ACCOUNT_LABEL") or ""
     try:
         rows = client.get_funding_assets(asset=asset)
     except Exception as exc:
@@ -386,6 +387,7 @@ def snapshot_funding_balances(db_path: Path, asset: str | None = "USDT") -> dict
                 "free": free,
                 "locked": locked,
                 "total": total,
+                "account_label": account_label,
                 "raw_json": json.dumps(row, ensure_ascii=False),
                 "source": "BINANCE_FUNDING_BAL",
             },
@@ -397,6 +399,7 @@ def snapshot_funding_balances(db_path: Path, asset: str | None = "USDT") -> dict
 
 def import_account_snapshots(db_path: Path, days: int, account_type: str = "SPOT") -> dict:
     client = BinanceWalletClient()
+    account_label = os.getenv("BINANCE_ACCOUNT_LABEL") or ""
     end_date = date.today()
     start_date = end_date - timedelta(days=min(days, 30))
     start_dt = _date_bounds(start_date, end=False)
@@ -430,6 +433,7 @@ def import_account_snapshots(db_path: Path, days: int, account_type: str = "SPOT
                     "account_type": account_type,
                     "snapshot_time": snapshot_time,
                     "total_asset_btc": total_btc,
+                    "account_label": account_label,
                     "data_json": json.dumps(data, ensure_ascii=False),
                     "raw_json": json.dumps(row, ensure_ascii=False),
                     "source": "BINANCE_SNAPSHOT",
