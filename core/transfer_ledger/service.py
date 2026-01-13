@@ -135,6 +135,7 @@ def post_binance_p2p_trade(
     paid_at: Optional[date | datetime] = None,
     source: str = "BINANCE_P2P",
     counterparty: str = "",
+    account_label: str = "",
     db_path=None,
 ) -> list[int]:
     """
@@ -163,6 +164,13 @@ def post_binance_p2p_trade(
     asset_ref = f"{order_number}:{asset}"
     fiat_ref = f"{order_number}:{fiat}"
 
+    note_parts = []
+    if counterparty:
+        note_parts.append(f"counterparty={counterparty}")
+    if account_label:
+        note_parts.append(f"account={account_label}")
+    notes = "; ".join(note_parts)
+
     if not ledger_entry_exists("BINANCE_P2P", asset_ref, currency=asset, db_path=db_path):
         entry_asset = LedgerEntry(
             entry_id=None,
@@ -176,7 +184,7 @@ def post_binance_p2p_trade(
             reference_id=asset_ref,
             from_account="",
             to_account="",
-            notes=f"counterparty={counterparty}",
+            notes=notes,
         )
         entry_ids.append(insert_entry(entry_asset, db_path=db_path))
 
@@ -193,7 +201,7 @@ def post_binance_p2p_trade(
             reference_id=fiat_ref,
             from_account="",
             to_account="",
-            notes=f"counterparty={counterparty}",
+            notes=notes,
         )
         entry_ids.append(insert_entry(entry_fiat, db_path=db_path))
 
@@ -210,6 +218,7 @@ def post_binance_withdrawal(
     source: str = "BINANCE_WITHDRAW",
     counterparty_label: str = "",
     exchanger_order_id: str = "",
+    account_label: str = "",
     db_path=None,
 ) -> int:
     """
@@ -224,6 +233,8 @@ def post_binance_withdrawal(
     amount_kzt = -abs(amount_usdt) * usdt_kzt
 
     notes = f"network={network}; address={address}"
+    if account_label:
+        notes += f"; account={account_label}"
     if counterparty_label:
         notes += f"; label={counterparty_label}"
     if exchanger_order_id:

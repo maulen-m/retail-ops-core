@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS binance_c2c_orders (
     commission TEXT,
     counterparty TEXT,
     advertisement_role TEXT,
+    account_label TEXT,
     raw_json TEXT,
     source TEXT DEFAULT 'BINANCE_P2P',
     updated_at TEXT DEFAULT (datetime('now'))
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS binance_withdrawals (
     wallet_type TEXT,
     counterparty_label TEXT,
     exchanger_order_id TEXT,
+    account_label TEXT,
     raw_json TEXT,
     source TEXT DEFAULT 'BINANCE_WITHDRAW',
     updated_at TEXT DEFAULT (datetime('now'))
@@ -82,6 +84,7 @@ CREATE TABLE IF NOT EXISTS binance_deposits (
     network TEXT,
     transfer_type TEXT,
     wallet_type TEXT,
+    account_label TEXT,
     raw_json TEXT,
     source TEXT DEFAULT 'BINANCE_DEPOSIT',
     updated_at TEXT DEFAULT (datetime('now'))
@@ -98,6 +101,7 @@ CREATE TABLE IF NOT EXISTS binance_transfers (
     transfer_type TEXT NOT NULL,
     status TEXT,
     timestamp TEXT,
+    account_label TEXT,
     raw_json TEXT,
     source TEXT DEFAULT 'BINANCE_TRANSFER',
     updated_at TEXT DEFAULT (datetime('now'))
@@ -112,6 +116,7 @@ CREATE TABLE IF NOT EXISTS binance_account_snapshots (
     account_type TEXT NOT NULL,
     snapshot_time TEXT NOT NULL,
     total_asset_btc REAL,
+    account_label TEXT,
     data_json TEXT,
     raw_json TEXT,
     source TEXT DEFAULT 'BINANCE_SNAPSHOT',
@@ -128,6 +133,7 @@ CREATE TABLE IF NOT EXISTS binance_funding_balances (
     free REAL,
     locked REAL,
     total REAL,
+    account_label TEXT,
     raw_json TEXT,
     source TEXT DEFAULT 'BINANCE_FUNDING_BAL',
     updated_at TEXT DEFAULT (datetime('now')),

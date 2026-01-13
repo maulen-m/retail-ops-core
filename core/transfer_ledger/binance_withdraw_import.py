@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -55,6 +56,7 @@ def normalize_binance_withdrawal(raw: dict) -> dict:
     if amount is None:
         raise ValueError(f"Invalid withdrawal amount for {withdraw_id}")
 
+    account_label = raw.get("account_label") or os.getenv("BINANCE_ACCOUNT_LABEL") or ""
     return {
         "withdraw_id": str(withdraw_id),
         "tx_id": raw.get("txId"),
@@ -70,6 +72,7 @@ def normalize_binance_withdrawal(raw: dict) -> dict:
         "wallet_type": str(raw.get("walletType")) if raw.get("walletType") is not None else None,
         "counterparty_label": raw.get("counterparty_label"),
         "exchanger_order_id": raw.get("exchanger_order_id"),
+        "account_label": account_label,
         "raw_json": json.dumps(raw, ensure_ascii=False),
         "source": "BINANCE_WITHDRAW",
     }
@@ -115,6 +118,7 @@ def import_binance_withdrawals(
                         source=wd.get("source", "BINANCE_WITHDRAW"),
                         counterparty_label=wd.get("counterparty_label") or "",
                         exchanger_order_id=wd.get("exchanger_order_id") or "",
+                        account_label=wd.get("account_label") or "",
                         db_path=db_path,
                     )
                     ledger_entries += 1

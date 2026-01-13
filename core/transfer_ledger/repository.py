@@ -43,7 +43,33 @@ def ensure_schema(db_path: Optional[Path] = None) -> None:
             {
                 "counterparty_label": "TEXT",
                 "exchanger_order_id": "TEXT",
+                "account_label": "TEXT",
             },
+        )
+        _ensure_columns(
+            conn,
+            "binance_c2c_orders",
+            {"account_label": "TEXT"},
+        )
+        _ensure_columns(
+            conn,
+            "binance_deposits",
+            {"account_label": "TEXT"},
+        )
+        _ensure_columns(
+            conn,
+            "binance_transfers",
+            {"account_label": "TEXT"},
+        )
+        _ensure_columns(
+            conn,
+            "binance_account_snapshots",
+            {"account_label": "TEXT"},
+        )
+        _ensure_columns(
+            conn,
+            "binance_funding_balances",
+            {"account_label": "TEXT"},
         )
 
 
@@ -229,8 +255,8 @@ def upsert_binance_c2c_order(order: dict, db_path: Optional[Path] = None) -> boo
             INSERT OR REPLACE INTO binance_c2c_orders (
                 order_number, adv_no, trade_type, asset, fiat, fiat_amount, crypto_amount,
                 unit_price, order_status, create_time, commission, counterparty,
-                advertisement_role, raw_json, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                advertisement_role, account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 order["order_number"],
@@ -246,6 +272,7 @@ def upsert_binance_c2c_order(order: dict, db_path: Optional[Path] = None) -> boo
                 order.get("commission"),
                 order.get("counterparty"),
                 order.get("advertisement_role"),
+                order.get("account_label"),
                 order.get("raw_json"),
                 order.get("source", "BINANCE_P2P"),
             ),
@@ -266,8 +293,8 @@ def upsert_binance_withdrawal(withdraw: dict, db_path: Optional[Path] = None) ->
             INSERT OR REPLACE INTO binance_withdrawals (
                 withdraw_id, tx_id, coin, network, amount, transaction_fee, address,
                 address_tag, apply_time, success_time, status, wallet_type,
-                counterparty_label, exchanger_order_id, raw_json, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                counterparty_label, exchanger_order_id, account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 withdraw["withdraw_id"],
@@ -284,6 +311,7 @@ def upsert_binance_withdrawal(withdraw: dict, db_path: Optional[Path] = None) ->
                 withdraw.get("wallet_type"),
                 withdraw.get("counterparty_label"),
                 withdraw.get("exchanger_order_id"),
+                withdraw.get("account_label"),
                 withdraw.get("raw_json"),
                 withdraw.get("source", "BINANCE_WITHDRAW"),
             ),
@@ -338,8 +366,8 @@ def upsert_binance_deposit(deposit: dict, db_path: Optional[Path] = None) -> boo
             INSERT OR REPLACE INTO binance_deposits (
                 deposit_id, coin, amount, address, address_tag, tx_id,
                 insert_time, complete_time, status, network, transfer_type,
-                wallet_type, raw_json, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                wallet_type, account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 deposit["deposit_id"],
@@ -354,6 +382,7 @@ def upsert_binance_deposit(deposit: dict, db_path: Optional[Path] = None) -> boo
                 deposit.get("network"),
                 deposit.get("transfer_type"),
                 deposit.get("wallet_type"),
+                deposit.get("account_label"),
                 deposit.get("raw_json"),
                 deposit.get("source", "BINANCE_DEPOSIT"),
             ),
@@ -373,8 +402,8 @@ def upsert_binance_transfer(transfer: dict, db_path: Optional[Path] = None) -> b
             """
             INSERT OR REPLACE INTO binance_transfers (
                 transfer_id, asset, amount, transfer_type, status, timestamp,
-                raw_json, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 transfer["transfer_id"],
@@ -383,6 +412,7 @@ def upsert_binance_transfer(transfer: dict, db_path: Optional[Path] = None) -> b
                 transfer.get("transfer_type"),
                 transfer.get("status"),
                 transfer.get("timestamp"),
+                transfer.get("account_label"),
                 transfer.get("raw_json"),
                 transfer.get("source", "BINANCE_TRANSFER"),
             ),
@@ -402,14 +432,15 @@ def upsert_binance_account_snapshot(snapshot: dict, db_path: Optional[Path] = No
             """
             INSERT OR REPLACE INTO binance_account_snapshots (
                 snapshot_id, account_type, snapshot_time, total_asset_btc,
-                data_json, raw_json, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                account_label, data_json, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 snapshot["snapshot_id"],
                 snapshot.get("account_type"),
                 snapshot.get("snapshot_time"),
                 snapshot.get("total_asset_btc"),
+                snapshot.get("account_label"),
                 snapshot.get("data_json"),
                 snapshot.get("raw_json"),
                 snapshot.get("source", "BINANCE_SNAPSHOT"),
@@ -425,8 +456,8 @@ def insert_funding_balance_snapshot(snapshot: dict, db_path: Optional[Path] = No
         conn.execute(
             """
             INSERT OR REPLACE INTO binance_funding_balances (
-                snapshot_time, asset, free, locked, total, raw_json, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                snapshot_time, asset, free, locked, total, account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 snapshot.get("snapshot_time"),
@@ -434,6 +465,7 @@ def insert_funding_balance_snapshot(snapshot: dict, db_path: Optional[Path] = No
                 snapshot.get("free"),
                 snapshot.get("locked"),
                 snapshot.get("total"),
+                snapshot.get("account_label"),
                 snapshot.get("raw_json"),
                 snapshot.get("source", "BINANCE_FUNDING_BAL"),
             ),
@@ -608,7 +640,7 @@ def list_withdrawals(
         SELECT
             withdraw_id, tx_id, coin, network, amount, transaction_fee, address,
             address_tag, apply_time, success_time, status, wallet_type,
-            counterparty_label, exchanger_order_id
+            counterparty_label, exchanger_order_id, account_label
         FROM binance_withdrawals
         {where}
         ORDER BY apply_time DESC
@@ -638,7 +670,7 @@ def list_deposits(
         SELECT
             deposit_id, coin, amount, address, address_tag, tx_id,
             insert_time, complete_time, status, network, transfer_type,
-            wallet_type
+            wallet_type, account_label
         FROM binance_deposits
         {where}
         ORDER BY insert_time DESC
@@ -666,7 +698,7 @@ def list_transfers(
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"""
         SELECT
-            transfer_id, asset, amount, transfer_type, status, timestamp
+            transfer_id, asset, amount, transfer_type, status, timestamp, account_label
         FROM binance_transfers
         {where}
         ORDER BY timestamp DESC
