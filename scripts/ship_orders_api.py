@@ -557,7 +557,6 @@ def ship_orders(
     Returns summary dict with counts.
     """
     shipped = 0
-    deferred = 0
     skipped = 0
     already_shipped = 0
     errors = []
@@ -605,16 +604,6 @@ def ship_orders(
         retry_queue: dict[str, int] = {}
 
         for order_id, items in store_orders.items():
-            # Skip assemble if Kaspi planned time is in the future
-            planned_ts = planned_ts_by_store.get(api_store_code, {}).get(order_id)
-            if planned_ts:
-                planned_dt = datetime.fromtimestamp(planned_ts / 1000, tz=ALMATY_TZ)
-                if planned_dt > datetime.now(ALMATY_TZ):
-                    deferred += 1
-                    if verbose:
-                        print(f"      -> Deferred (planned {planned_dt.strftime('%Y-%m-%d %H:%M')})")
-                    continue
-
             # Calculate package count
             parcel_count = calculate_package_count(items)
 
@@ -683,8 +672,6 @@ def ship_orders(
                     result_fallback = client.assemble_order(order_id, parcel_count=parcel_count)
                     if result_fallback.success:
                         if future_target:
-                            nonlocal deferred
-                            deferred += 1
                             if verbose:
                                 print("      -> Deferred (future planned date)")
                             return False
@@ -726,11 +713,6 @@ def ship_orders(
             try:
                 result = client.assemble_order_by_id(base64_id, order_id, parcel_count=parcel_count)
                 if result.success:
-                    if future_target:
-                        deferred += 1
-                        if verbose:
-                            print("      -> Deferred (future planned date)")
-                        continue
                     if _wait_for_assembled(order_id, base64_id):
                         shipped += 1
                         if verbose:
@@ -803,21 +785,8 @@ def ship_orders(
                         still_retry[order_code] = parcels
                         continue
                     planned_ts = refreshed_planned.get(order_code)
-                    if planned_ts:
-                        planned_dt = datetime.fromtimestamp(planned_ts / 1000, tz=ALMATY_TZ)
-                        if planned_dt > datetime.now(ALMATY_TZ):
-                            deferred += 1
-                            still_retry[order_code] = parcels
-                            if verbose:
-                                print(f"      {order_code}: Deferred (planned {planned_dt.strftime('%Y-%m-%d %H:%M')})")
-                            continue
-
                     result = client.assemble_order_by_id(base64_id, order_code, parcel_count=parcels)
                     if result.success:
-                        if future_target:
-                            deferred += 1
-                            still_retry[order_code] = parcels
-                            continue
                         if _wait_for_assembled(order_code, base64_id):
                             shipped += 1
                             if verbose:
@@ -840,11 +809,17 @@ def ship_orders(
                     break
             if retry_queue:
                 for order_code in retry_queue:
-                    errors.append(f"{order_code}: Resource not found after refresh")
+                    planned_ts = planned_ts_by_store.get(api_store_code, {}).get(order_code)
+                    if planned_ts:
+                        planned_dt = datetime.fromtimestamp(planned_ts / 1000, tz=ALMATY_TZ)
+                        errors.append(
+                            f"{order_code}: Not assembled after refresh (planned {planned_dt.strftime('%Y-%m-%d %H:%M')})"
+                        )
+                    else:
+                        errors.append(f"{order_code}: Not assembled after refresh")
 
     return {
         'shipped': shipped,
-        'deferred': deferred,
         'skipped': skipped,
         'errors': errors,
     }
@@ -1069,8 +1044,6 @@ def main():
     print("  Summary")
     print("=" * 60)
     print(f"  Shipped: {result['shipped']}")
-    if result.get('deferred'):
-        print(f"  Deferred (future date): {result['deferred']}")
     print(f"  Skipped: {result['skipped']}")
     if result['errors']:
         print(f"  Errors: {len(result['errors'])}")
