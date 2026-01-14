@@ -333,6 +333,22 @@ def main() -> int:
         if match:
             order_matches[order_key] = match
 
+    # Virtual USDT_OUT events for unmatched exchanger orders (for balance display only)
+    virtual_ex_events: list[tuple[str | None, str, float]] = []
+    for r in rows_ex:
+        order_key = r["exchanger_order_id"]
+        if not order_key or order_key in order_matches:
+            continue
+        dt = r["message_date"]
+        amount_usdt = r["amount_usdt"]
+        if dt is None or amount_usdt is None:
+            continue
+        try:
+            delta = -float(amount_usdt)
+        except (TypeError, ValueError):
+            continue
+        virtual_ex_events.append((dt, f"ex:{order_key}", delta))
+
     # Build USDT event timeline for balance
     usdt_events = []
     for r in rows_p2p:
@@ -364,6 +380,11 @@ def main() -> int:
     # Sort descending
     usdt_events.sort(key=lambda x: _parse_dt(x[0]) or EPOCH, reverse=True)
 
+    display_usdt_events = list(usdt_events)
+    if virtual_ex_events:
+        display_usdt_events.extend(virtual_ex_events)
+        display_usdt_events.sort(key=lambda x: _parse_dt(x[0]) or EPOCH, reverse=True)
+
     current_usdt = args.current_usdt
     api_usdt = None
     if current_usdt is None:
@@ -377,6 +398,13 @@ def main() -> int:
         bal = float(current_usdt)
         for dt, key, delta in usdt_events:
             balance_after[key] = bal
+            bal -= delta
+
+    display_balance_after: dict[str, float] = {}
+    if current_usdt is not None:
+        bal = float(current_usdt)
+        for dt, key, delta in display_usdt_events:
+            display_balance_after[key] = bal
             bal -= delta
 
     balance_rows = []
@@ -766,7 +794,7 @@ def main() -> int:
             wd_id = match.get("withdraw_id")
             if wd_id:
                 ref_parts.append(f"wd={wd_id}")
-                bal = balance_after.get(f"wd:{wd_id}")
+                bal = display_balance_after.get(f"wd:{wd_id}")
             if fee_usdt:
                 ref_parts.append(f"fee={fee_usdt:.2f}")
             acct = match.get("account_label") or ""
@@ -779,6 +807,8 @@ def main() -> int:
             addr = order.get("deposit_address")
             if addr:
                 ref_parts.append(f"addr={addr}")
+        if bal is None:
+            bal = display_balance_after.get(f"ex:{order_key}")
         ref = " ".join(ref_parts)
 
         # Duration / completion time
