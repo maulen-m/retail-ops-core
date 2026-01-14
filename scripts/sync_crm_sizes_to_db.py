@@ -23,6 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db import get_db, DEFAULT_DB_PATH
 from core.paths import data_path
+from core.utils.sku_normalize import normalize_size
 
 DEFAULT_CRM = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
 DEFAULT_SHEET = "SALES_KSP_CRM_1"
@@ -75,6 +76,24 @@ def _coerce_size(value) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value).strip()
+
+
+def _load_size_synonyms(conn) -> dict[str, str]:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_size_synonyms'"
+    ).fetchone()
+    if not row:
+        return {}
+    rows = conn.execute(
+        "SELECT alias, canonical_size FROM dim_size_synonyms"
+    ).fetchall()
+    synonyms: dict[str, str] = {}
+    for alias, canonical in rows:
+        if not alias or not canonical:
+            continue
+        key = str(alias).upper().replace(" ", "").replace("-", "")
+        synonyms[key] = str(canonical).strip()
+    return synonyms
 
 
 def _normalize_store_code(value) -> str:
@@ -190,12 +209,19 @@ def sync_crm_sizes(
         if not _check_schema(conn):
             raise RuntimeError("Required schema missing.")
 
+        synonyms = _load_size_synonyms(conn)
+
         for _, row in working.iterrows():
             order_id = row[order_col]
             size = row[size_col]
             planned_date = _parse_date(row[date_col])
 
             if not size or planned_date is None:
+                skipped_orders += 1
+                continue
+
+            size = normalize_size(size, synonyms=synonyms) or ""
+            if not size:
                 skipped_orders += 1
                 continue
 

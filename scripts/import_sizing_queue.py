@@ -21,6 +21,7 @@ from typing import Any
 
 from core.db import DEFAULT_DB_PATH, get_db
 from core.paths import data_path, get_data_root
+from core.utils.sku_normalize import normalize_size
 
 
 SIZE_SOURCE = "QUEUE_MANUAL"
@@ -46,6 +47,24 @@ def _table_exists(conn, table: str) -> bool:
         (table,),
     ).fetchone()
     return bool(row)
+
+
+def _load_size_synonyms(conn) -> dict[str, str]:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_size_synonyms'"
+    ).fetchone()
+    if not row:
+        return {}
+    rows = conn.execute(
+        "SELECT alias, canonical_size FROM dim_size_synonyms"
+    ).fetchall()
+    synonyms: dict[str, str] = {}
+    for alias, canonical in rows:
+        if not alias or not canonical:
+            continue
+        key = str(alias).upper().replace(" ", "").replace("-", "")
+        synonyms[key] = str(canonical).strip()
+    return synonyms
 
 
 def _ensure_columns(conn) -> None:
@@ -110,6 +129,8 @@ def import_sizing_queue(
             )
         _ensure_columns(conn)
 
+        synonyms = _load_size_synonyms(conn)
+
         for row in rows:
             stats["rows"] += 1
             norm_row = {_normalize(k): v for k, v in row.items()}
@@ -134,6 +155,8 @@ def import_sizing_queue(
             my_size = str(my_size).strip()
             if my_size.lower() in ("", "nan", "none"):
                 my_size = ""
+            if my_size:
+                my_size = normalize_size(my_size, synonyms=synonyms) or ""
 
             height = _parse_int(
                 norm_row.get("customer_height_cm")
