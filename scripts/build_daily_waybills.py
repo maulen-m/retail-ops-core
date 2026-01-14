@@ -60,6 +60,7 @@ from core.paths import data_path, get_data_root
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
 from core.waybill.pdf_grouper import merge_pdfs
 from core.integrations.kaspi_api_client import KaspiAPIClient, STORE_TOKEN_MAP, KaspiAuthError
+from core.utils.kaspi_dates import planned_date_from_order
 
 # Default paths
 DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
@@ -249,26 +250,9 @@ def resolve_db_path(explicit: Optional[Path]) -> Optional[Path]:
     return None
 
 
-def _timestamp_to_date(ts: Optional[int]) -> Optional[date]:
-    """Convert millisecond timestamp to date."""
-    if ts is None:
-        return None
-    try:
-        return datetime.fromtimestamp(ts / 1000, tz=ALMATY_TZ).date()
-    except (ValueError, OSError):
-        return None
-
-
 def _planned_date_from_order(order: dict) -> Optional[date]:
     """Extract planned courier transmission date from API order."""
-    attrs = order.get('attributes', {})
-    delivery = attrs.get('kaspiDelivery', {})
-    planned_ts = (
-        delivery.get('courierTransmissionPlanningDate')
-        or delivery.get('plannedDeliveryDate')
-        or attrs.get('plannedDeliveryDate')
-    )
-    return _timestamp_to_date(planned_ts)
+    return planned_date_from_order(order)
 
 
 def get_api_order_ids_for_date(

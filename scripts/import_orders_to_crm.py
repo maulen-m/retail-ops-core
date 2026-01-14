@@ -43,6 +43,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.kaspi_api_client import KaspiAPIClient, KaspiAuthError, STORE_TOKEN_MAP
+from core.utils.kaspi_dates import planned_date_from_order
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
@@ -432,7 +433,8 @@ def _order_to_update_fields(order: dict) -> Dict[str, object]:
         russian_status = STATUS_MAP.get(api_status, STATUS_MAP.get(api_state, api_status))
 
     indicators = _get_state_indicators(api_state)
-    planned_date = _timestamp_to_ddmmyyyy(delivery.get('courierTransmissionPlanningDate'))
+    planned_date_obj = planned_date_from_order(order)
+    planned_date = planned_date_obj.strftime('%d.%m.%Y') if planned_date_obj else None
     status_change_date = _timestamp_to_ddmmyyyy(attrs.get('statusChangeDate'))
     buyer_cost, seller_cost = _extract_delivery_costs(order)
     comp = delivery.get('deliveryCostCompensation', 0)

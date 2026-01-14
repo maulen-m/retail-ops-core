@@ -28,6 +28,7 @@ from core.integrations.kaspi_api_client import (  # noqa: E402
     KaspiAuthError,
     STORE_TOKEN_MAP,
 )
+from core.utils.kaspi_dates import planned_date_from_order  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -96,24 +97,8 @@ def parse_date(value: Any) -> Optional[date]:
         return None
 
 
-def _timestamp_to_date(ts: Optional[int]) -> Optional[date]:
-    if ts is None:
-        return None
-    try:
-        return datetime.fromtimestamp(ts / 1000, tz=ALMATY_TZ).date()
-    except (ValueError, OSError):
-        return None
-
-
 def _planned_date_from_order(order: dict) -> Optional[date]:
-    attrs = order.get("attributes", {})
-    delivery = attrs.get("kaspiDelivery", {})
-    planned_ts = (
-        delivery.get("courierTransmissionPlanningDate")
-        or delivery.get("plannedDeliveryDate")
-        or attrs.get("plannedDeliveryDate")
-    )
-    return _timestamp_to_date(planned_ts)
+    return planned_date_from_order(order)
 
 
 def get_api_orders_by_store(

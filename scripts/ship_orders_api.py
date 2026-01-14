@@ -45,6 +45,7 @@ from core.integrations.kaspi_api_client import (
     STORE_TOKEN_MAP,
 )
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
+from core.utils.kaspi_dates import planned_date_from_order
 
 # Configure logging
 logging.basicConfig(
@@ -95,6 +96,34 @@ ASSEMBLE_VERIFY_RETRIES = int(os.environ.get("KASPI_ASSEMBLE_VERIFY_RETRIES", "5
 ASSEMBLE_VERIFY_DELAY = float(os.environ.get("KASPI_ASSEMBLE_VERIFY_DELAY", "3"))
 ASSEMBLE_REFRESH_RETRIES = int(os.environ.get("KASPI_ASSEMBLE_REFRESH_RETRIES", "1"))
 ASSEMBLE_REFRESH_DELAY = float(os.environ.get("KASPI_ASSEMBLE_REFRESH_DELAY", "10"))
+ASSEMBLE_VERIFY_RETRIES_UNIVERSAL = int(
+    os.environ.get("KASPI_ASSEMBLE_VERIFY_RETRIES_UNIVERSAL", "1")
+)
+ASSEMBLE_VERIFY_DELAY_UNIVERSAL = float(
+    os.environ.get("KASPI_ASSEMBLE_VERIFY_DELAY_UNIVERSAL", "0")
+)
+ASSEMBLE_REFRESH_RETRIES_UNIVERSAL = int(
+    os.environ.get("KASPI_ASSEMBLE_REFRESH_RETRIES_UNIVERSAL", "2")
+)
+ASSEMBLE_REFRESH_DELAY_UNIVERSAL = float(
+    os.environ.get("KASPI_ASSEMBLE_REFRESH_DELAY_UNIVERSAL", "60")
+)
+
+
+def _assemble_settings_for_store(store_code: str) -> tuple[int, float, int, float]:
+    if store_code.upper() == "UNIVERSAL":
+        return (
+            ASSEMBLE_VERIFY_RETRIES_UNIVERSAL,
+            ASSEMBLE_VERIFY_DELAY_UNIVERSAL,
+            ASSEMBLE_REFRESH_RETRIES_UNIVERSAL,
+            ASSEMBLE_REFRESH_DELAY_UNIVERSAL,
+        )
+    return (
+        ASSEMBLE_VERIFY_RETRIES,
+        ASSEMBLE_VERIFY_DELAY,
+        ASSEMBLE_REFRESH_RETRIES,
+        ASSEMBLE_REFRESH_DELAY,
+    )
 
 
 @dataclass
@@ -224,37 +253,9 @@ def parse_date(value: Any) -> Optional[date]:
     return None
 
 
-def _timestamp_to_date(ts: Optional[int]) -> Optional[date]:
-    """Convert millisecond timestamp to date."""
-    if ts is None:
-        return None
-    try:
-        return datetime.fromtimestamp(ts / 1000, tz=ALMATY_TZ).date()
-    except (ValueError, OSError):
-        return None
-
-
 def _planned_date_from_order(order: dict) -> Optional[date]:
     """Extract planned courier transmission date from API order."""
-    attrs = order.get('attributes', {})
-    delivery = attrs.get('kaspiDelivery', {})
-    planned_ts = (
-        delivery.get('courierTransmissionPlanningDate')
-        or delivery.get('plannedDeliveryDate')
-        or attrs.get('plannedDeliveryDate')
-    )
-    return _timestamp_to_date(planned_ts)
-
-
-def _planned_ts_from_order(order: dict) -> Optional[int]:
-    """Extract planned courier transmission timestamp (ms) from API order."""
-    attrs = order.get('attributes', {})
-    delivery = attrs.get('kaspiDelivery', {})
-    return (
-        delivery.get('courierTransmissionPlanningDate')
-        or delivery.get('plannedDeliveryDate')
-        or attrs.get('plannedDeliveryDate')
-    )
+    return planned_date_from_order(order)
 
 
 def normalize_store_name(value: Any) -> str:
@@ -485,7 +486,7 @@ def read_crm_orders(
 def get_pending_assembly_orders(
     target_date: Optional[date] = None,
     since_days: int = 7,
-) -> tuple[dict[str, set[str]], dict[str, dict[str, str]], dict[str, dict[str, int]]]:
+) -> tuple[dict[str, set[str]], dict[str, dict[str, str]], dict[str, dict[str, date]]]:
     """
     Get orders in "Упаковка" stage from ALL stores via API.
 
@@ -496,7 +497,7 @@ def get_pending_assembly_orders(
     pending_by_store: dict[str, set[str]] = {}
     # Store-scoped base64 IDs prevent cross-store collisions on assemble.
     order_id_to_base64: dict[str, dict[str, str]] = {}
-    planned_ts_by_store: dict[str, dict[str, int]] = {}
+    planned_date_by_store: dict[str, dict[str, date]] = {}
 
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
@@ -511,15 +512,14 @@ def get_pending_assembly_orders(
                     order_code = order.get('attributes', {}).get('code', '')
                     base64_id = order.get('id', '')
                     planned_date = _planned_date_from_order(order)
-                    planned_ts = _planned_ts_from_order(order)
                     if target_date and planned_date != target_date:
                         continue
                     if order_code:
                         order_ids.add(order_code)
                         if base64_id:
                             order_id_to_base64.setdefault(store_code, {})[order_code] = base64_id
-                        if planned_ts:
-                            planned_ts_by_store.setdefault(store_code, {})[order_code] = planned_ts
+                        if planned_date:
+                            planned_date_by_store.setdefault(store_code, {})[order_code] = planned_date
                 pending_by_store[store_code] = order_ids
                 logger.info(f"{store_code}: {len(order_ids)} orders pending assembly")
             else:
@@ -529,14 +529,14 @@ def get_pending_assembly_orders(
             logger.warning(f"{store_code}: Auth error - {e}")
             pending_by_store[store_code] = set()
 
-    return pending_by_store, order_id_to_base64, planned_ts_by_store
+    return pending_by_store, order_id_to_base64, planned_date_by_store
 
 
 def ship_orders(
     orders_by_id: dict[str, list[OrderItem]],
     pending_orders: dict[str, set[str]],
     order_id_to_base64: dict[str, dict[str, str]],
-    planned_ts_by_store: dict[str, dict[str, int]],
+    planned_date_by_store: dict[str, dict[str, date]],
     dry_run: bool = False,
     verbose: bool = False,
     since_days: int = 7,
@@ -601,6 +601,9 @@ def ship_orders(
             continue
 
         print(f"\n  Processing {store_name} ({len(store_orders)} orders)...")
+        verify_retries, verify_delay, refresh_retries, refresh_delay = _assemble_settings_for_store(
+            api_store_code
+        )
         retry_queue: dict[str, int] = {}
 
         for order_id, items in store_orders.items():
@@ -638,26 +641,36 @@ def ship_orders(
                 return {}
 
             def _wait_for_assembled(order_code: str, base64_hint: Optional[str] = None) -> bool:
-                for attempt in range(ASSEMBLE_VERIFY_RETRIES):
+                for attempt in range(verify_retries):
                     try:
                         detail = None
                         if base64_hint:
                             detail = client.get_order_by_id(base64_hint)
                             attrs = _extract_attrs(detail)
-                            if attrs.get('assembled') is True or client.get_waybill_url(_extract_order_obj(detail)):
+                            status = str(attrs.get('status', '')).upper()
+                            if (
+                                attrs.get('assembled') is True
+                                or status == 'ASSEMBLED'
+                                or client.get_waybill_url(_extract_order_obj(detail))
+                            ):
                                 if verbose:
                                     print("      -> Already assembled, skipping")
                                 return True
                         detail = client.get_order(order_code)
                         attrs = _extract_attrs(detail)
-                        if attrs.get('assembled') is True or client.get_waybill_url(_extract_order_obj(detail)):
+                        status = str(attrs.get('status', '')).upper()
+                        if (
+                            attrs.get('assembled') is True
+                            or status == 'ASSEMBLED'
+                            or client.get_waybill_url(_extract_order_obj(detail))
+                        ):
                             if verbose:
                                 print("      -> Already assembled, skipping")
                             return True
                     except Exception:
                         pass
-                    if attempt < ASSEMBLE_VERIFY_RETRIES - 1:
-                        time.sleep(ASSEMBLE_VERIFY_DELAY)
+                    if attempt < verify_retries - 1:
+                        time.sleep(verify_delay)
                 return False
 
             def _queue_retry(order_code: str, parcels: int) -> None:
@@ -752,13 +765,13 @@ def ship_orders(
                     if verbose:
                         print(f"      -> EXCEPTION: {e}")
 
-        if retry_queue and ASSEMBLE_REFRESH_RETRIES > 0:
+        if retry_queue and refresh_retries > 0:
             refresh_since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
             if verbose:
                 print(f"  Retrying {len(retry_queue)} orders after refresh...")
-            for attempt in range(ASSEMBLE_REFRESH_RETRIES):
-                if ASSEMBLE_REFRESH_DELAY > 0:
-                    time.sleep(ASSEMBLE_REFRESH_DELAY)
+            for attempt in range(refresh_retries):
+                if refresh_delay > 0:
+                    time.sleep(refresh_delay)
                 refreshed = client.get_pending_assembly_orders(since=refresh_since)
                 if not refreshed.success:
                     errors.append(f"{store_name}: refresh pending failed - {refreshed.error}")
@@ -772,19 +785,25 @@ def ship_orders(
                     base64_id = order.get('id', '')
                     if base64_id:
                         refreshed_map[order_code] = base64_id
-                    planned_ts = _planned_ts_from_order(order)
-                    if planned_ts:
-                        refreshed_planned[order_code] = planned_ts
+                    planned_date = _planned_date_from_order(order)
+                    if planned_date:
+                        refreshed_planned[order_code] = planned_date
                 still_retry: dict[str, int] = {}
                 for order_code, parcels in retry_queue.items():
                     base64_id = refreshed_map.get(order_code)
                     if not base64_id:
+                        # If order disappeared from pending list, assume assembled.
+                        if order_code not in refreshed_map:
+                            shipped += 1
+                            if verbose:
+                                print(f"      {order_code}: Assumed assembled (no longer pending)")
+                            continue
                         if _wait_for_assembled(order_code):
                             shipped += 1
                             continue
                         still_retry[order_code] = parcels
                         continue
-                    planned_ts = refreshed_planned.get(order_code)
+                    planned_date = refreshed_planned.get(order_code)
                     result = client.assemble_order_by_id(base64_id, order_code, parcel_count=parcels)
                     if result.success:
                         if _wait_for_assembled(order_code, base64_id):
@@ -809,11 +828,10 @@ def ship_orders(
                     break
             if retry_queue:
                 for order_code in retry_queue:
-                    planned_ts = planned_ts_by_store.get(api_store_code, {}).get(order_code)
-                    if planned_ts:
-                        planned_dt = datetime.fromtimestamp(planned_ts / 1000, tz=ALMATY_TZ)
+                    planned_date = planned_date_by_store.get(api_store_code, {}).get(order_code)
+                    if planned_date:
                         errors.append(
-                            f"{order_code}: Not assembled after refresh (planned {planned_dt.strftime('%Y-%m-%d %H:%M')})"
+                            f"{order_code}: Not assembled after refresh (planned {planned_date.isoformat()})"
                         )
                     else:
                         errors.append(f"{order_code}: Not assembled after refresh")
@@ -896,7 +914,7 @@ def main():
 
     # Step 1: Get pending assembly orders from API
     print("Step 1: Fetching pending assembly orders from API...")
-    pending_orders, order_id_to_base64, planned_ts_by_store = get_pending_assembly_orders(
+    pending_orders, order_id_to_base64, planned_date_by_store = get_pending_assembly_orders(
         target_date=target_date,
         since_days=args.since_days,
     )
@@ -1032,7 +1050,7 @@ def main():
         orders_by_id,
         pending_orders,
         order_id_to_base64,
-        planned_ts_by_store,
+        planned_date_by_store,
         dry_run=args.dry_run,
         verbose=args.verbose,
         since_days=args.since_days,

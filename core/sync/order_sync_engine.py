@@ -33,6 +33,7 @@ from core.integrations.kaspi_api_client import (
     get_client,
     STORE_TOKEN_MAP,
 )
+from core.utils.kaspi_dates import planned_date_from_order
 
 
 logger = logging.getLogger(__name__)
@@ -339,10 +340,9 @@ class OrderSyncEngine:
             ).strftime('%Y-%m-%d %H:%M:%S')
 
         planned_date = None
-        if delivery.get('plannedDeliveryDate'):
-            planned_date = datetime.fromtimestamp(
-                delivery['plannedDeliveryDate'] / 1000
-            ).strftime('%Y-%m-%d')
+        effective_planned = planned_date_from_order(api_order)
+        if effective_planned:
+            planned_date = effective_planned.isoformat()
 
         # Map Kaspi state to internal status
         kaspi_state = attrs.get('state', 'NEW')

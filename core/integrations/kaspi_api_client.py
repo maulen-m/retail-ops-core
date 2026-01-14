@@ -991,10 +991,14 @@ class KaspiAPIClient:
 
         # Filter to only unassembled orders
         orders = result.data.get('data', [])
-        pending = [
-            o for o in orders
-            if not o.get('attributes', {}).get('assembled', False)
-        ]
+        pending = []
+        for order in orders:
+            attrs = order.get('attributes', {}) or {}
+            assembled_flag = attrs.get('assembled', False)
+            status = str(attrs.get('status', '')).upper()
+            if assembled_flag or status == "ASSEMBLED":
+                continue
+            pending.append(order)
 
         return APIResponse(
             success=True,

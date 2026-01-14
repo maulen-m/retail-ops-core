@@ -160,17 +160,15 @@ EXTERNAL_BACKUP_ROOT="~/Library/CloudStorage/GoogleDrive-maintainer@example.com/
 EXTERNAL_ARCHIVE_DIR="${EXTERNAL_BACKUP_ROOT}/Kaspi_waybills/input_${TS}"
 EXTERNAL_PDFS_DIR="${EXTERNAL_BACKUP_ROOT}/Kaspi_waybills/pdfs_${TS}"
 mkdir -p "${ARCHIVE_DIR}/waybills"
-mkdir -p "${EXTERNAL_ARCHIVE_DIR}/waybills"
+mkdir -p "${EXTERNAL_ARCHIVE_DIR}"
 mkdir -p "${EXTERNAL_PDFS_DIR}"
 cp -p "${DATA_ROOT}/excel_ui/SALES_KSP_CRM_V3.xlsx" "${ARCHIVE_DIR}/" 2>/dev/null || true
 cp -p "${DATA_ROOT}/excel_ui/SALES_KSP_CRM_V3.xlsx" "${EXTERNAL_ARCHIVE_DIR}/" 2>/dev/null || true
 if [ -d "${DATA_ROOT}/excel_ui/ActiveOrders/waybills" ]; then
     cp -p "${DATA_ROOT}/excel_ui/ActiveOrders/waybills/"*.pdf "${ARCHIVE_DIR}/waybills/" 2>/dev/null || true
-    cp -p "${DATA_ROOT}/excel_ui/ActiveOrders/waybills/"*.pdf "${EXTERNAL_ARCHIVE_DIR}/waybills/" 2>/dev/null || true
 fi
 if [ -d "${DATA_ROOT}/excel_ui/ActiveOrders" ]; then
     cp -p "${DATA_ROOT}/excel_ui/ActiveOrders/"waybill*.zip "${ARCHIVE_DIR}/" 2>/dev/null || true
-    cp -p "${DATA_ROOT}/excel_ui/ActiveOrders/"waybill*.zip "${EXTERNAL_ARCHIVE_DIR}/" 2>/dev/null || true
 fi
 if [ -d "${DATA_ROOT}/excel_ui/Kaspi_orders/Today" ]; then
     cp -p "${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"*.pdf "${EXTERNAL_PDFS_DIR}/" 2>/dev/null || true
