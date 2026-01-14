@@ -35,6 +35,7 @@ No evidence = not done.
 - Do NOT change inventory formulas by “patching code.” Formulas live only in `docs/inventory/Master_Inventory_Rules_v8.md`.
 - No implicit DB migrations during validation. Use explicit migration scripts.
 - Parallel agents must use separate git worktrees; if unrelated changes appear, stop and switch worktree.
+- Parallel-agent protocol: see `.claude/PARALLEL_AGENTS.md`.
 
 ## 2.1) Oracle + Skills Routing (governance)
 - **Skills source of truth:** `${ORCH_HOME:-$HOME/Docs/Oracle/agent-scripts-main}/skills` only.
