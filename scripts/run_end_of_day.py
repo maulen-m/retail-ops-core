@@ -4,7 +4,7 @@ End-of-Day Pipeline: Full orchestration script (Part 5: Cutover Ladder)
 
 Runs the complete end-of-day pipeline in sequence:
 0. validate_params.py - Validate parameters FIRST (fail-fast)
-1. sync_truth_workbook_to_db.py - Sync truth workbook to database
+1. sync_truth_workbook_to_db.py - Optional workbook sync (DB is source of truth)
 2. sync_crm_to_db.py - Sync CRM sales data to sales_fact_v2 + fact_sales
 2a. sync_kaspi_orders.py - Sync Kaspi API order statuses to fact_orders_kaspi
 3. generate_po_dashboard_data.py - Generate demand estimates and PO data
@@ -27,7 +27,8 @@ Usage:
     python scripts/run_end_of_day.py
     python scripts/run_end_of_day.py --dry-run
     python scripts/run_end_of_day.py --skip-sync  # Skip CRM sync step
-    python scripts/run_end_of_day.py --skip-workbook-sync  # Skip workbook sync
+    python scripts/run_end_of_day.py --use-workbook-sync  # Enable workbook sync
+    python scripts/run_end_of_day.py --skip-workbook-sync  # Skip workbook sync (default)
     python scripts/run_end_of_day.py --po4-inbound /path/to/PO-4_inbound.xlsx
     python scripts/run_end_of_day.py --verbose
 """
@@ -299,8 +300,16 @@ def main():
                         help="Don't write to DB or produce outputs")
     parser.add_argument("--skip-sync", action="store_true",
                         help="Skip CRM sync step")
-    parser.add_argument("--skip-workbook-sync", action="store_true",
-                        help="Skip truth workbook sync step")
+    parser.add_argument(
+        "--use-workbook-sync",
+        action="store_true",
+        help="Enable workbook sync (default: off; DB is source of truth)",
+    )
+    parser.add_argument(
+        "--skip-workbook-sync",
+        action="store_true",
+        help="Skip truth workbook sync step (default; deprecated alias)",
+    )
     parser.add_argument("--skip-api-sync", action="store_true",
                         help="Skip Kaspi API order status sync step (not recommended)")
     max_lookback_days = 13
@@ -363,6 +372,10 @@ def main():
         print("WARNING: Running without lock file (--no-lock)")
         print()
 
+    # Default: skip workbook sync unless explicitly enabled
+    if not args.use_workbook_sync:
+        args.skip_workbook_sync = True
+
     if args.workbook is None:
         args.workbook = resolve_truth_workbook(DEFAULT_WORKBOOK)
 
@@ -377,7 +390,7 @@ def main():
                 lock.__exit__(None, None, None)
             sys.exit(3)
 
-    # Check if workbook is locked (unless skipping workbook sync)
+    # Check if workbook is locked (only if workbook sync enabled)
     if not args.skip_workbook_sync:
         if not args.workbook.exists():
             print(f"ERROR: Truth workbook not found: {args.workbook}")
@@ -497,7 +510,7 @@ def _run_pipeline(args, start_time: datetime) -> int:
     skip_scripts = []
     if args.skip_workbook_sync:
         skip_scripts.append("sync_truth_workbook_to_db.py")
-        print("Note: Skipping truth workbook sync step")
+        print("Note: DB is source of truth; skipping workbook sync")
     if args.skip_sync:
         skip_scripts.append("sync_crm_to_db.py")
         print("Note: Skipping CRM sync step")
