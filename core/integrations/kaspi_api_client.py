@@ -357,6 +357,25 @@ class KaspiAPIClient:
                 "Write operations disabled. Set ENABLE_KASPI_WRITE=1 to enable."
             )
 
+    def _extract_error_details(self, data: Any) -> Optional[str]:
+        """Extract JSON:API error details when response.ok but errors are present."""
+        if not isinstance(data, dict):
+            return None
+        errors = data.get('errors')
+        if not errors:
+            return None
+        parts: list[str] = []
+        if isinstance(errors, list):
+            for err in errors:
+                if isinstance(err, dict):
+                    detail = err.get('detail') or err.get('title') or err.get('code')
+                    parts.append(str(detail) if detail else str(err))
+                else:
+                    parts.append(str(err))
+        else:
+            parts.append(str(errors))
+        return "; ".join(p for p in parts if p)
+
     # =========================================================================
     # READ OPERATIONS
     # =========================================================================
@@ -721,8 +740,13 @@ class KaspiAPIClient:
             result = self._request('POST', 'orders', json_data=primary_payload)
             primary_status = result.status_code or 0
             if result.success:
-                return result
-            primary_error = result.error
+                api_errors = self._extract_error_details(result.data)
+                if api_errors:
+                    primary_error = f"API errors: {api_errors}"
+                else:
+                    return result
+            else:
+                primary_error = result.error
         except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError) as exc:
             primary_error = str(exc)
 
@@ -738,8 +762,13 @@ class KaspiAPIClient:
             )
             fallback_status = fallback.status_code or 0
             if fallback.success:
-                return fallback
-            fallback_error = fallback.error
+                api_errors = self._extract_error_details(fallback.data)
+                if api_errors:
+                    fallback_error = f"API errors: {api_errors}"
+                else:
+                    return fallback
+            else:
+                fallback_error = fallback.error
         except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError) as exc:
             fallback_error = str(exc)
         except Exception as exc:
@@ -756,6 +785,48 @@ class KaspiAPIClient:
             error=error_msg,
             status_code=fallback_status or primary_status,
         )
+
+    def assemble_order_by_id_fallback(
+        self,
+        base64_id: str,
+        order_code: str,
+        parcel_count: int = 1,
+    ) -> APIResponse:
+        """
+        Assemble order using the fallback endpoint only.
+
+        This is useful when the primary endpoint returns HTTP 200 but does not
+        actually transition the order to assembled state.
+        """
+        self._require_write_enabled()
+        logger.info(
+            f"Assembling order {order_code} (ID: {base64_id}) with {parcel_count} parcels [fallback]"
+        )
+        fallback_payload = {'data': {'numberOfSpace': str(parcel_count)}}
+        try:
+            fallback = self._request(
+                'POST',
+                f'orders/{base64_id}/assemble',
+                json_data=fallback_payload,
+            )
+            if fallback.success:
+                api_errors = self._extract_error_details(fallback.data)
+                if api_errors:
+                    return APIResponse(
+                        success=False,
+                        error=f"API errors: {api_errors}",
+                        status_code=fallback.status_code or 0,
+                        raw_response=fallback.raw_response,
+                    )
+            return fallback
+        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError):
+            raise
+        except Exception as exc:
+            return APIResponse(
+                success=False,
+                error=f"Unexpected error: {exc}",
+                status_code=0,
+            )
 
     def ship_order(self, order_code: str) -> APIResponse:
         """

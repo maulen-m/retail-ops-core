@@ -582,6 +582,7 @@ def ship_orders(
 
     today = datetime.now(ALMATY_TZ).date()
     future_target = bool(target_date and target_date > today)
+    debug_assemble = os.environ.get("KASPI_ASSEMBLE_DEBUG", "0") == "1"
 
     for store_name, store_orders in orders_by_store.items():
         # Get API store code
@@ -640,12 +641,29 @@ def ship_orders(
                     return data
                 return {}
 
+            def _log_assemble_state(prefix: str, detail: Optional[APIResponse]) -> None:
+                if not debug_assemble:
+                    return
+                if not detail or not detail.success:
+                    err = detail.error if detail else "no response"
+                    print(f"      -> {prefix} detail_error={err}")
+                    return
+                attrs = _extract_attrs(detail)
+                status = attrs.get('status')
+                assembled = attrs.get('assembled')
+                state = attrs.get('state')
+                waybill = bool(client.get_waybill_url(_extract_order_obj(detail)))
+                print(
+                    f"      -> {prefix} state={state} status={status} assembled={assembled} waybill={int(waybill)}"
+                )
+
             def _wait_for_assembled(order_code: str, base64_hint: Optional[str] = None) -> bool:
                 for attempt in range(verify_retries):
                     try:
                         detail = None
                         if base64_hint:
                             detail = client.get_order_by_id(base64_hint)
+                            _log_assemble_state("by_id", detail)
                             attrs = _extract_attrs(detail)
                             status = str(attrs.get('status', '')).upper()
                             if (
@@ -657,6 +675,7 @@ def ship_orders(
                                     print("      -> Already assembled, skipping")
                                 return True
                         detail = client.get_order(order_code)
+                        _log_assemble_state("by_code", detail)
                         attrs = _extract_attrs(detail)
                         status = str(attrs.get('status', '')).upper()
                         if (
@@ -682,7 +701,27 @@ def ship_orders(
                 if verbose:
                     print(f"      -> WARN: {reason}. Retrying with order code...")
                 try:
-                    result_fallback = client.assemble_order(order_id, parcel_count=parcel_count)
+                    result_fallback: Optional[APIResponse] = None
+                    if base64_hint:
+                        result_fallback = client.assemble_order_by_id_fallback(
+                            base64_hint,
+                            order_id,
+                            parcel_count=parcel_count,
+                        )
+                        err_text = str(result_fallback.error or "")
+                        if "not found" in err_text.lower() or "resource not found" in err_text.lower():
+                            result_fallback = client.assemble_order(
+                                order_id,
+                                parcel_count=parcel_count,
+                            )
+                    else:
+                        result_fallback = client.assemble_order(order_id, parcel_count=parcel_count)
+                    if debug_assemble and result_fallback:
+                        print(
+                            "      -> assemble fallback "
+                            f"status={result_fallback.status_code} "
+                            f"success={result_fallback.success} error={result_fallback.error}"
+                        )
                     if result_fallback.success:
                         if future_target:
                             if verbose:
@@ -725,13 +764,19 @@ def ship_orders(
             # Call API with pre-fetched Base64 ID (avoids re-fetch 404)
             try:
                 result = client.assemble_order_by_id(base64_id, order_id, parcel_count=parcel_count)
+                if debug_assemble:
+                    print(
+                        "      -> assemble primary "
+                        f"status={result.status_code} success={result.success} error={result.error}"
+                    )
                 if result.success:
                     if _wait_for_assembled(order_id, base64_id):
                         shipped += 1
                         if verbose:
                             print("      -> Shipped OK")
                     else:
-                        _queue_retry(order_id, parcel_count)
+                        if _fallback_assemble("No state change after primary assemble", base64_id):
+                            shipped += 1
                         continue
                 else:
                     # Some API errors return 404-equivalent errors without raising.
@@ -805,12 +850,38 @@ def ship_orders(
                         continue
                     planned_date = refreshed_planned.get(order_code)
                     result = client.assemble_order_by_id(base64_id, order_code, parcel_count=parcels)
+                    if debug_assemble:
+                        print(
+                            f"      {order_code}: assemble refresh "
+                            f"status={result.status_code} success={result.success} error={result.error}"
+                        )
                     if result.success:
                         if _wait_for_assembled(order_code, base64_id):
                             shipped += 1
                             if verbose:
                                 print(f"      {order_code}: Shipped OK (refresh)")
                             continue
+                        fallback = client.assemble_order_by_id_fallback(
+                            base64_id,
+                            order_code,
+                            parcel_count=parcels,
+                        )
+                        if debug_assemble:
+                            print(
+                                f"      {order_code}: fallback refresh "
+                                f"status={fallback.status_code} success={fallback.success} "
+                                f"error={fallback.error}"
+                            )
+                        if fallback.success and _wait_for_assembled(order_code, base64_id):
+                            shipped += 1
+                            if verbose:
+                                print(f"      {order_code}: Shipped OK (refresh fallback)")
+                            continue
+                        err_text = str(fallback.error or "")
+                        if "not found" in err_text.lower() or "resource not found" in err_text.lower():
+                            if _wait_for_assembled(order_code, base64_id):
+                                shipped += 1
+                                continue
                         still_retry[order_code] = parcels
                         continue
                     err_text = str(result.error or "")
