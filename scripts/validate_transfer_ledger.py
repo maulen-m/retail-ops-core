@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 import sys
 
@@ -259,7 +260,11 @@ def validate_reconciliation_invariants(db_path: Path) -> CheckResult:
     snapshots = list_funding_balance_snapshots(db_path=db_path, asset="USDT", limit=1)
     if snapshots:
         snapshot = snapshots[0]
-        snap_balance = to_decimal(snapshot.get("balance"))
+        snap_balance = to_decimal(snapshot.get("total"))
+        if snap_balance is None:
+            free = to_decimal(snapshot.get("free")) or Decimal("0")
+            locked = to_decimal(snapshot.get("locked")) or Decimal("0")
+            snap_balance = free + locked
         if snap_balance is None:
             warnings.append("Latest funding snapshot has no balance")
         else:
