@@ -56,6 +56,7 @@ run_gate() {
 # Required gates (per AGENTS.md)
 run_gate python3 scripts/validate_params.py --strict
 run_gate python3 scripts/run_end_of_day.py --verbose
+run_gate python3 scripts/validate_transfer_ledger.py --strict
 if [[ -z "${SKIP_TESTS:-}" ]]; then
   run_gate pytest -q
 else
