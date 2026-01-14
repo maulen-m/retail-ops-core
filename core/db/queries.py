@@ -241,10 +241,11 @@ def get_size_current_stock(
 
         # Get current stock from latest snapshot
         stock_data = conn.execute("""
-            SELECT my_size, current_stock
+            SELECT my_size, SUM(current_stock) as current_stock
             FROM fact_inventory_snapshot_size
             WHERE sku_key = ?
               AND snapshot_date = ?
+            GROUP BY my_size
         """, (sku_key, latest["max_date"])).fetchall()
 
         # Build result
@@ -304,10 +305,11 @@ def get_size_inbound(
 
         if latest and latest["max_date"]:
             inbound_data = conn.execute("""
-                SELECT my_size, inbound_stock
+                SELECT my_size, SUM(inbound_stock) as inbound_stock
                 FROM fact_inventory_snapshot_size
                 WHERE sku_key = ?
                   AND snapshot_date = ?
+                GROUP BY my_size
             """, (sku_key, latest["max_date"])).fetchall()
 
             for row in inbound_data:

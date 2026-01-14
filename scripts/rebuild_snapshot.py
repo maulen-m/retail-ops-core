@@ -142,12 +142,13 @@ def get_pending_inbound_by_sku(
         db_path = DEFAULT_DB_PATH
     inbound_by_sku: dict[str, int] = {}
     with get_db(db_path) as conn:
-        # Fact_PO_Lines: IN_TRANSIT only; exclude ETAs on/before snapshot (treated as arrived)
+        # Fact_PO_Lines: IN_TRANSIT/ARRIVED with ETA on/after snapshot (day-start snapshots)
         rows = conn.execute("""
             SELECT sku_id, SUM(order_quantity - received_qty) as inbound_stock
             FROM fact_po_lines
-            WHERE status = 'IN_TRANSIT'
-              AND (est_arrival_date IS NULL OR est_arrival_date > ?)
+            WHERE status IN ('IN_TRANSIT', 'ARRIVED')
+              AND (est_arrival_date IS NULL OR est_arrival_date >= ?)
+              AND po_id NOT IN (SELECT DISTINCT po_id FROM po_line)
             GROUP BY sku_id
         """, (snapshot_date.isoformat(),)).fetchall()
         for row in rows:
