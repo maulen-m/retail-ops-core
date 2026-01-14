@@ -70,7 +70,28 @@ MANUAL_OFFER_RULES = [
     ("Epson L805", "ELS_PRINTER_EPSON_L805_BLACK"),
     ("Marshall Major IV", "ELS_headphones_Marshall_4"),
     ("Marshall Major V", "ELS_headphones_Marshall_5"),
+    ("Epson L1800", "ELS_EPSON_PRINTER_L1800_BLACK"),
+    ("70mai", "ELS_70mai_Midrive_BLACK"),
+    ("Midrive UP03", "ELS_70mai_Midrive_BLACK"),
+    ("Canada Goose 1101", "CL_in_MEN_TERMO-canada_BLACK"),
+    ("GM SPORT 2882", "CL_in_WOMEN_TERMO-TNF_RED"),
+    ("PRO COMBAT однотонный 245", "CL_OC_MEN_LINE52_BLACK"),
+    ("Fashion 24052024", "CL_OC_MEN_LINE52_BLACK"),
+    ("FIT 719879020", "CL_OC_MEN_LINE52_BLACK"),
 ]
+
+DROP_OFFER_TOKENS = [
+    "Скелет Натуральный",
+]
+
+GENERIC_SIZE_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL"]
+
+INACTIVE_SKU_KEYS = {
+    "ELS_EPSON_PRINTER_L1800_BLACK",
+    "ELS_70mai_Midrive_BLACK",
+    "CL_in_MEN_TERMO-canada_BLACK",
+    "CL_in_WOMEN_TERMO-TNF_RED",
+}
 
 DATE_COLS = [
     "order_date",
@@ -153,6 +174,8 @@ def load_archive_exports(source_dir: Path) -> pd.DataFrame:
     df["kaspi_offer_name"] = df["kaspi_offer_name"].astype(str).str.strip()
     df["store_code"] = df["store_code"].astype(str).str.strip()
     df["quantity"] = df["quantity"].fillna(0).astype(int)
+    for token in DROP_OFFER_TOKENS:
+        df = df[~df["kaspi_offer_name"].str.contains(token, case=False, na=False)]
     df["unit_price_kzt"] = df.apply(
         lambda r: (r["amount_kzt"] / r["quantity"]) if r.get("quantity") else None,
         axis=1,
@@ -286,9 +309,20 @@ def load_db_sales(conn: sqlite3.Connection, since: date) -> pd.DataFrame:
     return df
 
 
-def _build_size_map(dim_sku_size: pd.DataFrame) -> tuple[dict[str, tuple[dict[str, str], list[str]]], dict[str, str]]:
+def _build_size_map(
+    dim_sku_size: pd.DataFrame,
+    dim_sku: pd.DataFrame,
+) -> tuple[dict[str, tuple[dict[str, str], list[str]]], dict[str, str], dict[str, str]]:
     size_map: dict[str, tuple[dict[str, str], list[str]]] = {}
     single_size_map: dict[str, str] = {}
+    els_default_map: dict[str, str] = {}
+    product_types = dict(dim_sku[["sku_key", "product_type"]].values)
+    sku_id_sizes = (
+        dim_sku_size.loc[dim_sku_size["sku_id"] == dim_sku_size["sku_key"], ["sku_key", "my_size"]]
+        .dropna()
+        .drop_duplicates(subset=["sku_key"])
+    )
+    sku_id_size_map = dict(sku_id_sizes.values)
     grouped = dim_sku_size.groupby("sku_key")["my_size"].apply(list).reset_index()
     for _, row in grouped.iterrows():
         sizes = [s for s in row["my_size"] if s and str(s).strip()]
@@ -297,7 +331,12 @@ def _build_size_map(dim_sku_size: pd.DataFrame) -> tuple[dict[str, tuple[dict[st
         size_map[row["sku_key"]] = (sizes_upper, sizes_sorted)
         if len(sizes_upper) == 1:
             single_size_map[row["sku_key"]] = next(iter(sizes_upper.values()))
-    return size_map, single_size_map
+        if product_types.get(row["sku_key"]) == "ELS":
+            default_size = "ONE_SIZE"
+            if default_size in sizes_upper:
+                default_size = sizes_upper[default_size]
+            els_default_map[row["sku_key"]] = default_size
+    return size_map, single_size_map, els_default_map
 
 
 def _infer_sku_key_from_article(article: str | None, sku_keys_sorted: list[str]) -> str | None:
@@ -337,6 +376,20 @@ def _infer_size_from_text(text: str | None, sizes_upper: dict[str, str], sizes_s
         pattern = rf"(?<![A-Z0-9]){re.escape(size_key)}(?![A-Z0-9])"
         if re.search(pattern, blob):
             return sizes_upper[size_key]
+    return None
+
+
+def _infer_generic_size(text: str | None) -> str | None:
+    if not text:
+        return None
+    blob = str(text).upper()
+    for token in GENERIC_SIZE_ORDER:
+        pattern = rf"(?<![A-Z0-9]){re.escape(token)}(?![A-Z0-9])"
+        if re.search(pattern, blob):
+            return token
+    match = re.search(r"(?<!\\d)(2[2-9]|30)(?!\\d)", blob)
+    if match:
+        return match.group(1)
     return None
 
 
@@ -413,6 +466,7 @@ def attach_mappings(
     sku_keys_sorted: list[str],
     size_map: dict[str, tuple[dict[str, str], list[str]]],
     single_size_map: dict[str, str],
+    els_default_map: dict[str, str],
 ) -> pd.DataFrame:
     crm_lookup = crm_sales[["store_code", "order_id", "kaspi_offer_name", "sku_key", "my_size"]].copy()
     crm_lookup = crm_lookup.drop_duplicates(subset=["store_code", "order_id", "kaspi_offer_name"])
@@ -465,16 +519,42 @@ def attach_mappings(
         y_df.loc[single_mask, "my_size_final"] = y_df.loc[single_mask, "sku_key_final"].map(single_size_map)
         y_df.loc[single_mask, "size_source_final"] = "SKU_ONLY"
 
+    els_mask = y_df["my_size_final"].isna() & y_df["sku_key_final"].isin(els_default_map)
+    if els_mask.any():
+        y_df.loc[els_mask, "my_size_final"] = y_df.loc[els_mask, "sku_key_final"].map(els_default_map)
+        y_df.loc[els_mask, "size_source_final"] = "ELS_DEFAULT"
+
+    generic_mask = y_df["my_size_final"].isna()
+    if generic_mask.any():
+        generic_sizes = y_df.loc[generic_mask, "kaspi_offer_name"].apply(_infer_generic_size)
+        y_df.loc[generic_mask, "my_size_final"] = generic_sizes
+        y_df.loc[generic_mask & y_df["my_size_final"].notna(), "size_source_final"] = "OFFER_TEXT"
+
+    unknown_els_mask = y_df["my_size_final"].isna() & y_df["sku_key_final"].fillna("").str.startswith("ELS_")
+    if unknown_els_mask.any():
+        y_df.loc[unknown_els_mask, "my_size_final"] = "ONE_SIZE"
+        y_df.loc[unknown_els_mask, "size_source_final"] = "ELS_DEFAULT"
+
     return y_df
 
 
-def update_z_db(z_db: Path, y_df: pd.DataFrame, offer_map: pd.DataFrame, size_mix: pd.DataFrame) -> dict[str, int]:
+def update_z_db(
+    z_db: Path,
+    y_df: pd.DataFrame,
+    offer_map: pd.DataFrame,
+    size_mix: pd.DataFrame,
+    offer_size_stats: pd.DataFrame | None = None,
+) -> dict[str, int]:
     conn = sqlite3.connect(str(z_db))
     conn.row_factory = sqlite3.Row
+
+    ensure_catalog_entries(conn, y_df)
 
     # Store mapping tables
     offer_map.to_sql("kaspi_offer_map", conn, if_exists="replace", index=False)
     size_mix.to_sql("kaspi_offer_size_mix", conn, if_exists="replace", index=False)
+    if offer_size_stats is not None:
+        offer_size_stats.to_sql("kaspi_offer_size_stats", conn, if_exists="replace", index=False)
 
     # Prepare Y table in Z
     y_table = y_df[[
@@ -653,6 +733,120 @@ def update_z_db(z_db: Path, y_df: pd.DataFrame, offer_map: pd.DataFrame, size_mi
     }
 
 
+def _size_sort_key(size: str | None) -> tuple[int, int]:
+    if not size:
+        return (99, 0)
+    size_str = str(size).upper()
+    if size_str in GENERIC_SIZE_ORDER:
+        return (0, GENERIC_SIZE_ORDER.index(size_str))
+    if size_str.isdigit():
+        return (1, int(size_str))
+    return (2, 0)
+
+
+def _size_order_value(size: str | None) -> int | None:
+    if not size:
+        return None
+    size_str = str(size).upper()
+    if size_str in GENERIC_SIZE_ORDER:
+        return GENERIC_SIZE_ORDER.index(size_str) + 1
+    if size_str.isdigit():
+        return int(size_str)
+    return None
+
+
+def ensure_catalog_entries(conn: sqlite3.Connection, y_df: pd.DataFrame) -> None:
+    existing = {
+        row[0]
+        for row in conn.execute("SELECT sku_key FROM dim_sku")
+    }
+    new_keys = {
+        key for key in y_df["sku_key_final"].dropna().unique().tolist()
+        if key not in existing
+    }
+    for sku_key in sorted(new_keys):
+        product_type = "ELS" if str(sku_key).upper().startswith("ELS_") else "CL"
+        active_flag = 0 if sku_key in INACTIVE_SKU_KEYS else 1
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO dim_sku (
+                sku_key, model, color, product_type, base_cost_cny, weight_kg,
+                category, gender, active_flag, price_missing_flag
+            ) VALUES (?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (sku_key, sku_key, product_type, 0.0, 0.0, active_flag, 1),
+        )
+
+    existing_sizes = {
+        (row[0], row[1])
+        for row in conn.execute("SELECT sku_key, my_size FROM dim_sku_size")
+    }
+    rows = y_df[["sku_key_final", "my_size_final"]].dropna().drop_duplicates().values.tolist()
+    for sku_key, my_size in rows:
+        if (sku_key, my_size) in existing_sizes:
+            continue
+        sku_id = re.sub(r"[^A-Z0-9]+", "_", f"{sku_key}_{my_size}".upper())
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO dim_sku_size (
+                sku_id, sku_key, my_size, size_order, active_flag
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (sku_id, sku_key, my_size, _size_order_value(my_size), 0),
+        )
+
+
+def build_offer_size_stats(
+    y_df: pd.DataFrame,
+    dim_sku_size: pd.DataFrame,
+    export_csv: Path,
+) -> pd.DataFrame:
+    df = y_df.copy()
+    df = df[df["kaspi_offer_name"].notna()].copy()
+    df["my_size_final"] = df["my_size_final"].apply(_normalize_text)
+    df["sku_key_final"] = df["sku_key_final"].apply(_normalize_text)
+    df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0).astype(int)
+
+    sku_id_map = (
+        dim_sku_size.dropna(subset=["sku_key", "my_size", "sku_id"])
+        .drop_duplicates(subset=["sku_key", "my_size"])
+        .set_index(["sku_key", "my_size"])["sku_id"]
+        .to_dict()
+    )
+    df["sku_id_final"] = df.apply(
+        lambda r: sku_id_map.get((r["sku_key_final"], r["my_size_final"])),
+        axis=1,
+    )
+
+    stats = (
+        df.groupby(["sku_key_final", "sku_id_final", "kaspi_offer_name", "my_size_final"], dropna=False)["quantity"]
+        .sum()
+        .reset_index()
+        .rename(columns={"quantity": "units"})
+    )
+    totals = stats.groupby("kaspi_offer_name")["units"].sum().reset_index().rename(columns={"units": "total_units"})
+    stats = stats.merge(totals, on="kaspi_offer_name", how="left")
+    stats["share"] = stats.apply(
+        lambda r: (r["units"] / r["total_units"]) if r["total_units"] else 0,
+        axis=1,
+    )
+    pb = (
+        stats.sort_values(by=["kaspi_offer_name", "units"], ascending=[True, False])
+        .groupby("kaspi_offer_name")
+        .head(1)[["kaspi_offer_name", "my_size_final", "share"]]
+        .rename(columns={"my_size_final": "pb_size", "share": "pb_size_share"})
+    )
+    stats = stats.merge(pb, on="kaspi_offer_name", how="left")
+
+    export_csv.parent.mkdir(parents=True, exist_ok=True)
+    stats = stats.sort_values(
+        by=["sku_key_final", "pb_size", "my_size_final"],
+        key=lambda col: col.map(_size_sort_key) if col.name in {"pb_size", "my_size_final"} else col,
+    )
+    stats.to_csv(export_csv, index=False)
+    return stats
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Reconcile Kaspi ArchiveOrders into Y/Z DBs.")
     parser.add_argument("--archive-dir", type=Path, required=True, help="Root folder with ArchiveOrders exports")
@@ -682,7 +876,7 @@ def main() -> int:
     db_sales_recent = load_db_sales(conn, since_dt)
     db_sales_all = load_db_sales(conn, date(2000, 1, 1))
     dim_sku = pd.read_sql_query("SELECT sku_key, product_type FROM dim_sku", conn)
-    dim_sku_size = pd.read_sql_query("SELECT sku_key, my_size FROM dim_sku_size", conn)
+    dim_sku_size = pd.read_sql_query("SELECT sku_key, my_size, sku_id FROM dim_sku_size", conn)
     conn.close()
 
     offer_map_recent = build_offer_map(db_sales_recent, crm_sales_recent)
@@ -694,7 +888,7 @@ def main() -> int:
     )
     size_mix = build_size_mix(db_sales_all, crm_sales_all)
     sku_keys_sorted = sorted(dim_sku["sku_key"].dropna().astype(str).unique().tolist(), key=len, reverse=True)
-    size_map, single_size_map = _build_size_map(dim_sku_size)
+    size_map, single_size_map, els_default_map = _build_size_map(dim_sku_size, dim_sku)
     y_df = attach_mappings(
         y_df,
         offer_map,
@@ -704,10 +898,16 @@ def main() -> int:
         sku_keys_sorted,
         size_map,
         single_size_map,
+        els_default_map,
     )
 
     print("Updating Z with Y data...")
-    stats = update_z_db(args.output_z, y_df, offer_map, size_mix)
+    offer_stats = build_offer_size_stats(
+        y_df,
+        dim_sku_size,
+        PROJECT_ROOT / "exports" / "kaspi_offer_size_report.csv",
+    )
+    stats = update_z_db(args.output_z, y_df, offer_map, size_mix, offer_stats)
 
     print("\nVALIDATION")
     print(f"Inserted new orders: {stats['inserted']}")
