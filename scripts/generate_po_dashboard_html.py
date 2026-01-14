@@ -1474,19 +1474,24 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             };
           }
 
-          const target = d_adjusted * (size.t_post_days || R);
-          const effective_L = size.days_until_arrival || (L + 3);
-          const consumption = d_adjusted * effective_L;
-          const pre_arrival = Math.max(0, (size.stock || 0) + (size.inbound || 0) - consumption);
-          const order_qty = Math.max(0, Math.round(target - pre_arrival));
+          const sizeOrderFromSku = parentSku?.size_orders?.[size.size];
+          const order_qty = Math.max(0, Math.round(sizeOrderFromSku ?? size.order_qty ?? 0));
+          const effective_L = size.days_until_arrival || parentSku?.days_until_arrival || (L + 3);
+          const consumption = size.consumption_until_arrival ?? (d_adjusted * effective_L);
+          const pre_arrival = size.pre_arrival ?? Math.max(
+            0,
+            (size.stock || 0) + (size.inbound || 0) + (size.active_inbound || 0) - consumption
+          );
+          const target = size.target ?? Math.round(d_adjusted * (size.t_post_days || R));
 
           const po_weight = order_qty * weight_per_unit;
-          const prep_days = size.sku_key.startsWith('CL_') ? sharedClothesPrep :
+          const prep_days = size.prep_days || parentSku?.prep_days ||
+                            (size.sku_key.startsWith('CL_') ? sharedClothesPrep :
                             size.sku_key.startsWith('ELS_') ? sharedElsPrep :
-                            Math.max(1, Math.ceil(1.3 * po_weight / 100));
-          const po_message_date = size.po_message_date || getTodayDate();
-          const po_send_date = addDays(po_message_date, prep_days);
-          const est_arr_date = addDays(po_send_date, L);
+                            Math.max(1, Math.ceil(1.3 * po_weight / 100)));
+          const po_message_date = size.po_message_date || parentSku?.po_message_date || getTodayDate();
+          const po_send_date = size.po_send_date || parentSku?.po_send_date || addDays(po_message_date, prep_days);
+          const est_arr_date = size.est_arr_date || parentSku?.est_arr_date || addDays(po_send_date, L);
 
           const pre_arr_doc = d_adjusted > 0 ? pre_arrival / d_adjusted : (pre_arrival > 0 ? 999 : 0);
           const post_arr_doc = d_adjusted > 0 ? (pre_arrival + order_qty) / d_adjusted : ((pre_arrival + order_qty) > 0 ? 999 : 0);

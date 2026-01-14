@@ -2155,12 +2155,12 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                     total_stock_inb = sum((s.get('stock', 0) or 0) + (s.get('inbound', 0) or 0) for s in base_sizes)
 
                     weights = {}
-                    if has_base_orders:
-                        for s in base_sizes:
-                            weights[s['size']] = max(0.0, float(s.get('order_qty', 0) or 0))
-                    elif total_d_size > 0:
+                    if total_d_size > 0:
                         for s in base_sizes:
                             weights[s['size']] = max(0.0, float(s.get('d_size', 0) or 0))
+                    elif has_base_orders:
+                        for s in base_sizes:
+                            weights[s['size']] = max(0.0, float(s.get('order_qty', 0) or 0))
                     elif total_target > 0:
                         for s in base_sizes:
                             weights[s['size']] = max(0.0, float(s.get('target', 0) or 0))
