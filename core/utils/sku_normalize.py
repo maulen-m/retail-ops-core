@@ -70,8 +70,24 @@ VALID_SIZES = {
     'ONE_SIZE', 'ONESIZE', 'OS',
 }
 
+SIZE_SYNONYMS = {
+    'ONESIZE': 'ONE_SIZE',
+    'ONE SIZE': 'ONE_SIZE',
+    'OS': 'ONE_SIZE',
+    'O/S': 'ONE_SIZE',
+    'XXL': '2XL',
+    'XXXL': '3XL',
+    'XXXXL': '4XL',
+    '2XLB': '2XL',
+    '2XL\u0411': '2XL',
+    '3XLB': '3XL',
+    '3XL\u0411': '3XL',
+    '4XLB': '4XL',
+    '4XL\u0411': '4XL',
+}
 
-def normalize_size(size, product_type: str = None) -> str:
+
+def normalize_size(size, product_type: str = None, synonyms: dict[str, str] | None = None) -> str:
     """
     Normalize size value to standard format.
 
@@ -94,17 +110,17 @@ def normalize_size(size, product_type: str = None) -> str:
         return None
 
     size_str = str(size).strip().upper()
+    size_clean = size_str.replace(" ", "").replace("-", "")
 
-    # Check if valid
-    if size_str in VALID_SIZES:
-        return size_str
+    if synonyms and size_clean in synonyms:
+        size_clean = synonyms[size_clean]
+    if size_clean in SIZE_SYNONYMS:
+        size_clean = SIZE_SYNONYMS[size_clean]
 
-    # Try without upper (for numeric)
-    size_orig = str(size).strip()
-    if size_orig in VALID_SIZES:
-        return size_orig
+    if size_clean in VALID_SIZES:
+        return size_clean
 
-    return None
+    return size_clean or None
 
 
 def infer_size_from_sku_id(sku_id: str | None) -> str | None:
@@ -120,7 +136,8 @@ def infer_size_from_sku_id(sku_id: str | None) -> str | None:
         return None
     _, suffix = raw.rsplit("_", 1)
     suffix = suffix.strip()
-    return suffix or None
+    normalized = normalize_size(suffix)
+    return normalized or suffix or None
 
 
 if __name__ == "__main__":

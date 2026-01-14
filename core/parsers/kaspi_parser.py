@@ -24,6 +24,8 @@ from datetime import datetime
 
 import pandas as pd
 
+from core.utils.sku_normalize import normalize_size
+
 
 # Russian column names from Kaspi ActiveOrders export
 COLUMN_MAP_RUSSIAN = {
@@ -117,10 +119,6 @@ def extract_sku_from_article(
     article = str(kaspi_article).strip().upper()
     offer_text = str(kaspi_offer or "").upper()
 
-    # Try to extract size from article or offer
-    my_size = _extract_size(article) or _extract_size(offer_text)
-    result["my_size"] = my_size
-
     # Try to detect product type from article patterns
     if "CL" in article or "КОМПЛЕКТ" in offer_text or "PRINT" in article:
         result["product_type"] = "CL"
@@ -131,14 +129,23 @@ def extract_sku_from_article(
     elif "FUR" in article:
         result["product_type"] = "FUR"
 
+    # Try to extract size from article or offer, then normalize
+    my_size_raw = _extract_size(article) or _extract_size(offer_text)
+    my_size = normalize_size(my_size_raw, product_type=result["product_type"])
+    result["my_size"] = my_size
+
     # If the article looks like our SKU format, use it directly
     sku_pattern = r"^([A-Z]+_[A-Z]+_[A-Z]+_[A-Z0-9]+_[A-Z]+)(?:_([A-Z0-9]+))?$"
     sku_match = re.match(sku_pattern, article)
     if sku_match:
         result["sku_key"] = sku_match.group(1)
         if sku_match.group(2):
-            result["my_size"] = sku_match.group(2)
-            result["sku_id"] = article
+            size_norm = normalize_size(sku_match.group(2), product_type=result["product_type"])
+            result["my_size"] = size_norm or sku_match.group(2)
+            if size_norm:
+                result["sku_id"] = f"{result['sku_key']}_{size_norm}"
+            else:
+                result["sku_id"] = article
         elif my_size:
             result["sku_id"] = f"{result['sku_key']}_{my_size}"
         return result

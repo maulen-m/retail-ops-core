@@ -24,7 +24,7 @@ import pandas as pd
 from core.db import get_db, DEFAULT_DB_PATH
 from core.db.ledger import add_ledger_event, log_audit
 from core.calc.economics import calc_cogs, calc_delivery_fee, calc_net_rev
-from core.utils.sku_normalize import infer_size_from_sku_id, normalize_sku_key
+from core.utils.sku_normalize import infer_size_from_sku_id, normalize_sku_key, normalize_size
 
 
 # Store code normalization map
@@ -37,6 +37,29 @@ STORE_CODE_MAP = {
     "samson": "SAMSON",
     "abyx": "ABYX",
 }
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _load_size_synonyms(conn: sqlite3.Connection) -> dict[str, str]:
+    if not _table_exists(conn, "dim_size_synonyms"):
+        return {}
+    rows = conn.execute(
+        "SELECT alias, canonical_size FROM dim_size_synonyms"
+    ).fetchall()
+    synonyms: dict[str, str] = {}
+    for alias, canonical in rows:
+        if not alias or not canonical:
+            continue
+        key = str(alias).upper().replace(" ", "").replace("-", "")
+        synonyms[key] = str(canonical).strip()
+    return synonyms
 
 
 def normalize_store_code(store_name: str) -> str:
@@ -75,6 +98,8 @@ def resolve_sales_identity(
     sku_id = str(sku_id).strip() if sku_id else None
     sku_key = str(sku_key).strip() if sku_key else None
     my_size = str(my_size).strip() if my_size else None
+    synonyms = _load_size_synonyms(conn)
+    my_size = normalize_size(my_size, synonyms=synonyms)
 
     if sku_id:
         row = conn.execute(
@@ -83,7 +108,7 @@ def resolve_sales_identity(
         ).fetchone()
         if row:
             sku_key = row["sku_key"]
-            my_size = row["my_size"]
+            my_size = normalize_size(row["my_size"], synonyms=synonyms)
 
     if sku_key:
         sku_key = normalize_sku_key(sku_key)
