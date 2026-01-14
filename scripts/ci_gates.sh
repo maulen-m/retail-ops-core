@@ -39,6 +39,7 @@ else
 fi
 
 run_gate "pytest" pytest -q
+run_gate "dashboard_invariants" python3 scripts/validate_po_dashboard_invariants.py
 run_gate "lint_docs" scripts/lint_docs.sh
 run_gate "check_no_db_tracked" scripts/check_no_db_tracked.sh
 
