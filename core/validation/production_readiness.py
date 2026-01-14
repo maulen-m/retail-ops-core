@@ -43,11 +43,11 @@ def _parse_iso_date(value: str | None, label: str, blockers: list[str]) -> date 
 def _extract_dashboard_view(output: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], str | None, str | None]:
     if "pos" in output:
         pos = output.get("pos", {})
-        po4 = pos.get("PO-4", {})
-        summary = po4.get("summary", output.get("summary", {}))
-        sku_level = po4.get("sku_level", [])
+        plan0 = pos.get("PLAN-0", {})
+        summary = plan0.get("summary", output.get("summary", {}))
+        sku_level = plan0.get("sku_level", [])
         stock_date = output.get("base_stock_date") or output.get("stock_date")
-        cutoff_date = output.get("cutoff_date") or po4.get("cutoff_date") or output.get("sales_data_cutoff")
+        cutoff_date = output.get("cutoff_date") or plan0.get("cutoff_date") or output.get("sales_data_cutoff")
         return summary, sku_level, stock_date, cutoff_date
 
     summary = output.get("summary", {})
@@ -106,6 +106,24 @@ def _fetch_active_skus(conn: sqlite3.Connection) -> set[str] | None:
         "SELECT sku_key FROM dim_sku WHERE active_flag = 1"
     ).fetchall()
     return {row[0] for row in rows if row[0]}
+
+
+def _fetch_portfolio_active_skus(conn: sqlite3.Connection) -> tuple[set[str] | None, str]:
+    if _table_exists(conn, "portfolio_active"):
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(portfolio_active)").fetchall()]
+        has_active = "active_flag" in columns
+        if has_active:
+            rows = conn.execute(
+                "SELECT sku_key FROM portfolio_active WHERE active_flag = 1"
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT sku_key FROM portfolio_active").fetchall()
+        return {row[0] for row in rows if row[0]}, "portfolio_active"
+
+    active = _fetch_active_skus(conn)
+    if active is None:
+        return None, "missing"
+    return active, "dim_sku.active_flag"
 
 
 def _count_missing_size_rows(
@@ -216,6 +234,8 @@ def evaluate_production_readiness(
         blockers.append("Day complete gate failed: sizes pending")
 
     active_skus: set[str] | None = None
+    portfolio_skus: set[str] | None = None
+    portfolio_source = "missing"
     missing_size_sales = 0
     missing_size_snapshot = 0
     missing_size_snapshot_date: str | None = None
@@ -241,14 +261,20 @@ def evaluate_production_readiness(
                             + ", ".join(recent_sales_missing_demand[:10])
                         )
 
-            active_skus = _fetch_active_skus(conn)
-            if active_skus is None:
-                blockers.append("Missing dim_sku table for active SKU coverage check")
-            else:
+            portfolio_skus, portfolio_source = _fetch_portfolio_active_skus(conn)
+            if portfolio_skus is None:
+                warnings.append("Missing portfolio_active scope; falling back to dim_sku.active_flag when available")
+                active_skus = _fetch_active_skus(conn)
+                if active_skus is None:
+                    blockers.append("Missing dim_sku table for active SKU coverage check")
+
+            scope_skus = portfolio_skus if portfolio_skus is not None else active_skus
+            if scope_skus is not None:
                 summary_total = summary.get("total_skus", len(sku_level))
-                if summary_total != len(active_skus):
+                scope_label = portfolio_source if portfolio_skus is not None else "dim_sku.active_flag"
+                if summary_total != len(scope_skus):
                     blockers.append(
-                        f"Dashboard SKU coverage mismatch: dashboard={summary_total} active_dim_sku={len(active_skus)}"
+                        f"Dashboard SKU coverage mismatch: dashboard={summary_total} {scope_label}={len(scope_skus)}"
                     )
 
             missing_size_sales = _count_missing_size_rows(conn, "fact_sales", "order_date", cutoff_dt)
@@ -270,6 +296,36 @@ def evaluate_production_readiness(
                 "Missing demand estimates detected (no DB available for recent-sales check)"
             )
 
+    if portfolio_skus is not None:
+        dashboard_skus = {sku.get("sku_key") for sku in sku_level if sku.get("sku_key")}
+        missing_from_dashboard = sorted(portfolio_skus - dashboard_skus)
+        if missing_from_dashboard:
+            blockers.append(
+                "Portfolio SKUs missing from dashboard: "
+                + ", ".join(missing_from_dashboard[:10])
+                + (" ..." if len(missing_from_dashboard) > 10 else "")
+            )
+
+        missing_stock_portfolio = sorted(
+            sku for sku in missing_stock_skus if sku in portfolio_skus
+        )
+        if missing_stock_portfolio:
+            blockers.append(
+                "Portfolio SKUs missing stock snapshot: "
+                + ", ".join(missing_stock_portfolio[:10])
+                + (" ..." if len(missing_stock_portfolio) > 10 else "")
+            )
+
+        missing_demand_portfolio = sorted(
+            sku for sku in missing_demand_skus if sku in portfolio_skus
+        )
+        if missing_demand_portfolio:
+            blockers.append(
+                "Portfolio SKUs missing demand estimates: "
+                + ", ".join(missing_demand_portfolio[:10])
+                + (" ..." if len(missing_demand_portfolio) > 10 else "")
+            )
+
     if missing_stock_blockers:
         blockers.append(
             "Missing stock snapshot for SKUs with orders/recent sales: "
@@ -289,6 +345,8 @@ def evaluate_production_readiness(
         "day_complete_ok": day_complete_ok,
         "stock_date": stock_date,
         "cutoff_date": cutoff_date,
+        "portfolio_active_skus": len(portfolio_skus) if portfolio_skus is not None else None,
+        "portfolio_active_source": portfolio_source,
     }
 
     return ReadinessReport(ok=not blockers, blockers=blockers, warnings=warnings, details=details)
