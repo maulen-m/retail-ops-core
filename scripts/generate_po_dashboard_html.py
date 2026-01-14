@@ -2,7 +2,7 @@
 """
 Generate PO Dashboard HTML file from JSON data.
 Embeds the JSON data directly into a single-file React webapp.
-Supports multiple POs (PO-4 through PO-10) with cascading calculations.
+Supports plan POs (PLAN-0 through PLAN-6) plus real PO lifecycle summaries.
 """
 
 import json
@@ -30,6 +30,14 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
     /* Header with PO selector */
     .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 12px; }
+    .plan-disclaimer { background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; padding: 10px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; margin-bottom: 12px; }
+    .real-po-section { background: #fff; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .real-po-title { font-size: 14px; font-weight: 700; color: #111827; margin-bottom: 8px; }
+    .real-po-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .real-po-table th { background: #f3f4f6; }
+    .status-pill { display: inline-block; padding: 2px 6px; border-radius: 999px; font-size: 10px; font-weight: 700; background: #e5e7eb; color: #374151; }
+    .status-pill.ok { background: #d1fae5; color: #065f46; }
+    .status-pill.warn { background: #fee2e2; color: #991b1b; }
 
     /* FX rates in header */
     .fx-rates { display: flex; gap: 16px; align-items: center; font-size: 14px; font-weight: 600; }
@@ -180,6 +188,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       return 999;
     };
 
+    const planIndex = (name) => {
+      if (!name || !name.startsWith('PLAN-')) return 0;
+      const idx = parseInt(name.split('-')[1], 10);
+      return Number.isFinite(idx) ? idx : 0;
+    };
+
     // LocalStorage helpers
     const loadFromStorage = (key, defaultValue) => {
       try {
@@ -196,7 +210,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
     function DateHeaders({ poData, activePO, isApproved }) {
       const { po_message_date, po_send_date, est_arr_date, summary } = poData;
-      const overridePrepDays = poData?.po_name === 'PO-5' ? poData.prep_days_clothes : null;
+      const overridePrepDays = planIndex(poData?.po_name) === 1 ? poData.prep_days_clothes : null;
       const prepDays = (Number.isFinite(overridePrepDays) && overridePrepDays > 0)
         ? overridePrepDays
         : (summary?.avg_prep_days || poData.sku_level?.[0]?.prep_days || 5);
@@ -211,7 +225,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         const clItems = approvedItems.filter(s => s.sku_key.startsWith('CL_'));
         const elsItems = approvedItems.filter(s => s.sku_key.startsWith('ELS_'));
 
-        // Clothes prep: override for PO-5, otherwise ceil(1.3 * total_weight_kg / 100)
+        // Clothes prep: override for PLAN-1, otherwise ceil(1.3 * total_weight_kg / 100)
         const totalClWeight = clItems.reduce((sum, s) => sum + (s.po_weight_kg || 0), 0);
         const clothesPrep = (Number.isFinite(overridePrepDays) && overridePrepDays > 0)
           ? overridePrepDays
@@ -374,6 +388,51 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       );
     }
 
+    function RealPOSection({ realPOs }) {
+      if (!realPOs || realPOs.length === 0) return null;
+
+      const statusClass = (status) => {
+        if (!status) return '';
+        if (status.startsWith('ARRIVED') || status === 'RECEIVED' || status === 'CLOSED') return 'ok';
+        if (status === 'DRAFT') return 'warn';
+        return '';
+      };
+
+      return (
+        <div className="real-po-section">
+          <div className="real-po-title">Real POs (Lifecycle)</div>
+          <table className="real-po-table">
+            <thead>
+              <tr>
+                <th>PO</th>
+                <th>Status</th>
+                <th>Message</th>
+                <th>Ship Cargo</th>
+                <th>AST Nom</th>
+                <th>AST Real</th>
+                <th>Units</th>
+                <th>Received</th>
+              </tr>
+            </thead>
+            <tbody>
+              {realPOs.map(po => (
+                <tr key={po.po_id}>
+                  <td><strong>{po.po_id}</strong></td>
+                  <td><span className={`status-pill ${statusClass(po.status)}`}>{po.status || '-'}</span></td>
+                  <td>{po.message_date || '-'}</td>
+                  <td>{po.ship_date_cargo || '-'}</td>
+                  <td>{po.ast_arrival_nom || '-'}</td>
+                  <td>{po.ast_arrival_real || '-'}</td>
+                  <td>{po.units_total || 0}</td>
+                  <td>{po.units_received || 0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
     // Export functions using SheetJS
     function exportCurrentPO(poData, poName, isApproved) {
       const wb = XLSX.utils.book_new();
@@ -486,7 +545,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
     function exportAllPOs(allPOs, isApproved) {
       const wb = XLSX.utils.book_new();
-      const poNames = Object.keys(allPOs).sort();
+      const poNames = Object.keys(allPOs).sort((a, b) => planIndex(a) - planIndex(b));
 
       // Sheet 1: First PO's SKU level data (with Approved column)
       if (poNames.length > 0) {
@@ -505,7 +564,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         XLSX.utils.book_append_sheet(wb, ws1, poNames[0]);
       }
 
-      // Sheet 2: All POs concatenated (with Approved column)
+      // Sheet 2: All plans concatenated (with Approved column)
       const allData = [];
       poNames.forEach(poName => {
         const poData = allPOs[poName];
@@ -531,7 +590,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         });
       });
       const ws2 = XLSX.utils.json_to_sheet(allData);
-      XLSX.utils.book_append_sheet(wb, ws2, 'All POs');
+      XLSX.utils.book_append_sheet(wb, ws2, 'All Plans');
 
       // Download
       const dateStr = getTodayDate().replace(/-/g, '');
@@ -1131,12 +1190,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     }
 
     function App() {
-      // Get PO names from data
+      // Get plan names from data
       const allPOs = DATA.pos || {};
-      const poNamesAll = Object.keys(allPOs).sort();
-      const poNames = (DATA.active_pos || poNamesAll).slice();
+      const poNamesAll = Object.keys(allPOs).sort((a, b) => planIndex(a) - planIndex(b));
+      const poNames = (DATA.active_pos || poNamesAll).slice().sort((a, b) => planIndex(a) - planIndex(b));
       const archivedPos = (DATA.archived_pos || []).slice();
-      const [activePO, setActivePO] = useState(poNames[0] || poNamesAll[0] || 'PO-4');
+      const [activePO, setActivePO] = useState(poNames[0] || poNamesAll[0] || 'PLAN-0');
       const [activeTab, setActiveTab] = useState('sku');
       const [search, setSearch] = useState('');
       const [filterMode, setFilterMode] = useState('all');
@@ -1155,7 +1214,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       const [multipliers, setMultipliers] = useState(() => loadFromStorage('po_multipliers', {}));
 
       // Approved state (per PO, per SKU, persisted in localStorage)
-      // Structure: { 'PO-4': { 'SKU_KEY': true/false }, ... }
+      // Structure: { 'PLAN-0': { 'SKU_KEY': true/false }, ... }
       // Default: all SKUs with po_qty_total > 0 are approved (true)
       const [approvedSkus, setApprovedSkus] = useState(() => loadFromStorage('po_approved_skus', {}));
 
@@ -1235,7 +1294,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
       const handleLockSortToggle = () => {
         if (!lockSort) {
-          const basePo = allPOs['PO-4'] || rawPoData;
+          const basePlanName = poNamesAll.find(name => planIndex(name) === 0) || poNamesAll[0];
+          const basePo = allPOs[basePlanName] || rawPoData;
           setLockedSkuOrder(computeSkuOrder(basePo));
         } else {
           setLockedSkuOrder([]);
@@ -1267,9 +1327,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         // Backend already calculated active_inbound correctly; we only need to track CHANGES
         // When user un-approves a SKU in prior PO, we subtract that from backend's active_inbound
         const inboundAdjustment = {};
+        const activePlanIdx = planIndex(activePO);
         poNamesAll.forEach(pName => {
-          // Only look at POs before the active one
-          if (pName >= activePO) return;
+          // Only look at plans before the active one
+          if (planIndex(pName) >= activePlanIdx) return;
 
           const prevPO = allPOs[pName];
           if (!prevPO || !prevPO.sku_level) return;
@@ -1289,8 +1350,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           });
         });
 
-        const isPO4 = rawPoData.po_name === 'PO-4';
-        const isPO5 = rawPoData.po_name === 'PO-5';
+        const isPlan0 = planIndex(rawPoData.po_name) === 0;
+        const isPlan1 = planIndex(rawPoData.po_name) === 1;
 
         // === SHARED PREP DAYS CALCULATION ===
         // Business rule: Each supplier ships only when ALL their approved items are prepared
@@ -1302,7 +1363,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           s.sku_key.startsWith('CL_')
         );
         const totalClWeight = approvedCL.reduce((sum, s) => sum + (s.po_weight_kg || 0), 0);
-        const prepOverride = isPO5 ? (rawPoData.prep_days_clothes || rawPoData.summary?.prep_days_clothes) : null;
+          const prepOverride = isPlan1 ? (rawPoData.prep_days_clothes || rawPoData.summary?.prep_days_clothes) : null;
         const sharedClothesPrep = (Number.isFinite(prepOverride) && prepOverride > 0)
           ? prepOverride
           : (totalClWeight > 0 ? Math.ceil(1.3 * totalClWeight / 100) : 0);
@@ -1316,14 +1377,14 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           // Recalculate unit_cogs with new FX rates
           const unit_cogs = (sku.base_cost_cny || 0) * cnyKzt + (sku.weight_per_unit_kg || 0) * DLV_RATE * usdKzt;
 
-          // Target = d_adjusted * t_post_days (PO-4 uses backend target)
-          const target = isPO4 ? (sku.target || 0) : d_adjusted * (sku.t_post_days || R);
+          // Target = d_adjusted * t_post_days (PLAN-0 uses backend target)
+          const target = isPlan0 ? (sku.target || 0) : d_adjusted * (sku.t_post_days || R);
 
           // Pre-arrival calculation:
-          // For PO-4 (base): use backend's pre_arrival directly (adjusted for demand multiplier)
-          // For PO-5+: use backend's pre_arrival + inbound adjustment from user un-approvals
+          // For PLAN-0 (base): use backend's pre_arrival directly (adjusted for demand multiplier)
+          // For PLAN-1+: use backend's pre_arrival + inbound adjustment from user un-approvals
           // effective_L = L + shared_prep_days (shared per supplier type)
-          const sku_prep = isPO4
+          const sku_prep = isPlan0
             ? (sku.prep_days || (sku.sku_key.startsWith('CL_') ? sharedClothesPrep : sharedElsPrep))
             : (sku.sku_key.startsWith('CL_') ? sharedClothesPrep :
                sku.sku_key.startsWith('ELS_') ? sharedElsPrep : 3); // fallback
@@ -1334,9 +1395,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           // Backend pre_arrival = stock_at_msg + active_inbound - consumption_msg_to_arr
           // If multiplier changed, we need to recalculate from scratch
           // If only approvals changed, we adjust backend's value
-          const inbound_adj = isPO4 ? 0 : (inboundAdjustment[sku.sku_key] || 0);
+          const inbound_adj = isPlan0 ? 0 : (inboundAdjustment[sku.sku_key] || 0);
           let pre_arrival;
-          if (isPO4) {
+          if (isPlan0) {
             pre_arrival = sku.pre_arrival || 0;
           } else if (mult === 1.0) {
             // No demand change: use backend's pre_arrival, adjust for unapprovals
@@ -1351,14 +1412,14 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           }
 
           // Order qty = max(0, target - pre_arrival)
-          const order_qty = isPO4 ? (sku.po_qty_total || 0) : Math.max(0, Math.round(target - pre_arrival));
+          const order_qty = isPlan0 ? (sku.po_qty_total || 0) : Math.max(0, Math.round(target - pre_arrival));
 
           // Weight and prep days
           // Use SHARED prep_days per supplier type (not per-SKU weight!)
           // Business rule: Supplier ships when ALL their items are prepared
           const weight_per_unit = sku.weight_per_unit_kg || 0.5;
           const po_weight = order_qty * weight_per_unit;
-          const prep_days = isPO4
+          const prep_days = isPlan0
             ? (sku.prep_days || (sku.sku_key.startsWith('CL_') ? sharedClothesPrep : sharedElsPrep))
             : (sku.sku_key.startsWith('CL_') ? sharedClothesPrep :
                sku.sku_key.startsWith('ELS_') ? sharedElsPrep :
@@ -1394,7 +1455,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
           // Recalculate size_orders based on multiplier
           const size_orders = {};
-          if (isPO4 && sku.size_orders) {
+          if (isPlan0 && sku.size_orders) {
             Object.entries(sku.size_orders).forEach(([size, origQty]) => {
               size_orders[size] = origQty;
             });
@@ -1594,7 +1655,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                   Export {activePO}
                 </button>
                 <button className="export-btn primary" onClick={() => exportAllPOs(DATA.pos, isApproved)}>
-                  Export All POs
+                  Export All Plans
                 </button>
               </div>
               <div className="po-selector">
@@ -1624,6 +1685,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
               )}
             </div>
           </div>
+
+          <div className="plan-disclaimer">
+            Plan POs are recommendations; only Real POs affect ledger.
+          </div>
+
+          <RealPOSection realPOs={DATA.real_pos || []} />
 
           <DateHeaders poData={poData} activePO={activePO} isApproved={isApproved} />
           <CutoffBanner poData={poData} />
@@ -1660,7 +1727,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
               <button
                 className={`filter-btn ${lockSort ? 'active' : ''}`}
                 onClick={handleLockSortToggle}
-                title="Lock PO-4 SKU order and reuse across all POs"
+                title="Lock PLAN-0 SKU order and reuse across all plans"
               >
                 Lock Sort
               </button>
@@ -1774,7 +1841,7 @@ def main():
 
     # Print summary
     print(f"Generated: {OUTPUT_PATH}")
-    print(f"  - POs included: {list(data.get('pos', {}).keys())}")
+    print(f"  - Plans included: {list(data.get('pos', {}).keys())}")
 
     for po_name, po_data in data.get('pos', {}).items():
         summary = po_data.get('summary', {})
