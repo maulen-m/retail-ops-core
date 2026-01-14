@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.binance_wallet_client import BinanceWalletClient
-from core.transfer_ledger.exchanger_matching import AMOUNT_TOLERANCE, DATE_WINDOW_DAYS, address_match
+from core.transfer_ledger.matching import match_withdrawal_for_order
 from core.transfer_ledger.repository import (
     list_deposits,
     list_transfers,
@@ -133,37 +133,6 @@ def _is_funding_wallet(value) -> bool:
         return False
     text = str(value).strip().upper()
     return text in {"1", "FUNDING"}
-
-
-def _match_withdrawal_for_order(order: dict, withdrawals: list[dict], used_ids: set[str]) -> dict | None:
-    amount = order.get("amount_usdt")
-    if amount is None:
-        return None
-    order_dt = _parse_dt(order.get("message_date"))
-    address = (order.get("deposit_address") or "").strip()
-
-    best = None
-    best_delta = float("inf")
-    for wd in withdrawals:
-        wd_id = wd.get("withdraw_id")
-        if not wd_id or wd_id in used_ids:
-            continue
-        if address and not address_match(address, wd.get("address") or ""):
-            continue
-        wd_amount = wd.get("amount")
-        if wd_amount is None or abs(float(wd_amount) - float(amount)) > AMOUNT_TOLERANCE:
-            continue
-        wd_dt = _parse_dt(wd.get("apply_time"))
-        if order_dt and wd_dt:
-            delta_sec = abs((wd_dt - order_dt).total_seconds())
-            if delta_sec > DATE_WINDOW_DAYS * 86400:
-                continue
-        else:
-            delta_sec = 0
-        if delta_sec < best_delta:
-            best = wd
-            best_delta = delta_sec
-    return best
 
 
 def _effective_usdt(amount_usdt: float, fee_usdt: float) -> float:
@@ -327,7 +296,8 @@ def main() -> int:
         order_key = r["exchanger_order_id"]
         match = wd_by_order.get(order_key)
         if not match:
-            match = _match_withdrawal_for_order(dict(r), unmatched_withdrawals, used_withdrawals)
+            result = match_withdrawal_for_order(dict(r), unmatched_withdrawals, used_withdrawals)
+            match = result.match
             if match and match.get("withdraw_id"):
                 used_withdrawals.add(match["withdraw_id"])
         if match:
