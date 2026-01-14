@@ -31,6 +31,49 @@ from core.db.ledger import (
     get_event_summary,
 )
 
+DIAGNOSTICS_DIR = Path(__file__).parent.parent / "exports"
+
+
+def write_negative_balance_report(
+    snapshot_date: date,
+    balances: dict,
+    db_path: Path,
+) -> Path | None:
+    negative = {sku_id: bal for sku_id, bal in balances.items() if bal < 0}
+    if not negative:
+        return None
+
+    DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = DIAGNOSTICS_DIR / f"ledger_negative_balances_{snapshot_date.isoformat()}.md"
+
+    with get_db(db_path) as conn, output_path.open("w", encoding="utf-8") as fh:
+        fh.write(f"# Negative Ledger Balances — {snapshot_date.isoformat()}\n\n")
+        fh.write(f"Total negative SKUs: {len(negative)}\n\n")
+
+        for sku_id, balance in sorted(negative.items(), key=lambda x: x[1]):
+            fh.write(f"## {sku_id} (balance {balance})\n\n")
+            rows = conn.execute(
+                """
+                SELECT event_date, event_type, qty_change, reference_id, notes
+                FROM stock_ledger
+                WHERE sku_id = ?
+                  AND event_date <= ?
+                ORDER BY event_date DESC, event_time DESC
+                LIMIT 8
+                """,
+                (sku_id, snapshot_date.isoformat()),
+            ).fetchall()
+
+            fh.write("| Date | Type | Qty | Ref | Notes |\n")
+            fh.write("| --- | --- | --- | --- | --- |\n")
+            for row in rows:
+                fh.write(
+                    f"| {row['event_date']} | {row['event_type']} | {row['qty_change']} | "
+                    f"{row['reference_id'] or ''} | {row['notes'] or ''} |\n"
+                )
+            fh.write("\n")
+
+    return output_path
 
 def get_existing_snapshot(
     snapshot_date: date,
@@ -321,9 +364,11 @@ def rebuild_snapshot(
         raise ValueError(f"Invalid mode: {mode}. Use ledger, simulate, or auto.")
 
     if total_events == 0 and mode in {"auto", "ledger"}:
-        print("\nWARNING: No ledger events found. Falling back to simulation.")
-        mode = "simulate"
-    elif mode in {"auto", "ledger"}:
+        raise RuntimeError(
+            "No ledger events found. Refusing to auto-simulate. "
+            "Re-run with --mode simulate if intended."
+        )
+    if mode in {"auto", "ledger"}:
         balances = get_stock_balances_all(
             store_code=store_code,
             as_of_date=snapshot_date,
@@ -331,10 +376,13 @@ def rebuild_snapshot(
         )
         negative_balances = sum(1 for v in balances.values() if v < 0)
         if negative_balances:
-            print(f"\nWARNING: {negative_balances} negative ledger balances detected.")
-            if mode == "auto":
-                print("Auto mode: falling back to simulation to avoid negative snapshot.")
-                mode = "simulate"
+            report_path = write_negative_balance_report(snapshot_date, balances, db_path)
+            msg = f"{negative_balances} negative ledger balances detected."
+            if report_path:
+                msg += f" Report: {report_path}"
+            raise RuntimeError(
+                f"{msg} Refusing to auto-simulate. Re-run with --mode simulate if intended."
+            )
 
     # Get existing snapshot for comparison
     old_snapshot = {}
@@ -344,9 +392,7 @@ def rebuild_snapshot(
 
     # Rebuild snapshot
     print(f"\nRebuilding snapshot (mode={mode})...")
-    if mode == "simulate" or (mode == "auto" and inbound_events == 0):
-        if mode == "auto" and inbound_events == 0:
-            print("  Auto mode: no INBOUND events found, using simulation from base snapshot.")
+    if mode == "simulate":
         sim_result = rebuild_snapshot_from_simulation(
             snapshot_date=snapshot_date,
             store_code=store_code,
@@ -362,23 +408,25 @@ def rebuild_snapshot(
             db_path=db_path,
         )
 
-        if mode == "auto":
-            with get_db(db_path) as conn:
-                negatives = conn.execute("""
-                    SELECT COUNT(*) as cnt
-                    FROM fact_inventory_snapshot_size
-                    WHERE snapshot_date = ? AND current_stock < 0
-                """, (snapshot_date.isoformat(),)).fetchone()["cnt"]
-            if negatives:
-                print(f"  WARNING: {negatives} negative balances after ledger rebuild; switching to simulation.")
-                sim_result = rebuild_snapshot_from_simulation(
-                    snapshot_date=snapshot_date,
-                    store_code=store_code,
-                    include_estimated_arrivals=include_estimated_arrivals,
-                    verbose=verbose,
-                    db_path=db_path,
-                )
-                rows_created = sim_result["rows_created"]
+        with get_db(db_path) as conn:
+            negatives = conn.execute("""
+                SELECT COUNT(*) as cnt
+                FROM fact_inventory_snapshot_size
+                WHERE snapshot_date = ? AND current_stock < 0
+            """, (snapshot_date.isoformat(),)).fetchone()["cnt"]
+        if negatives:
+            balances = get_stock_balances_all(
+                store_code=store_code,
+                as_of_date=snapshot_date,
+                db_path=db_path,
+            )
+            report_path = write_negative_balance_report(snapshot_date, balances, db_path)
+            msg = f"{negatives} negative balances after ledger rebuild."
+            if report_path:
+                msg += f" Report: {report_path}"
+            raise RuntimeError(
+                f"{msg} Refusing to auto-simulate. Re-run with --mode simulate if intended."
+            )
 
     # Get new snapshot for summary
     with get_db(db_path) as conn:
