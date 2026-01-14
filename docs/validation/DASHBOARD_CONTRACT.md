@@ -17,6 +17,7 @@ Top-level keys:
 - `cutoff_date` (YYYY-MM-DD string)
 - `summary` (object)
 - `pos` (object)
+- `real_pos` (list; may be empty)
 
 `summary` required fields:
 - `total_skus` (int)
@@ -24,9 +25,9 @@ Top-level keys:
 - `total_units` (int)
 
 `pos` required fields:
-- Must include key `PO-4` (fixture PO bucket)
-- `PO-4` must include:
-  - `po_name` (string, value "PO-4")
+- Must include key `PLAN-0` (fixture plan bucket)
+- `PLAN-0` must include:
+  - `po_name` (string, value "PLAN-0")
   - `summary` (object with `total_skus`, `total_units`)
   - `sku_level` (list)
 
@@ -36,6 +37,13 @@ Each `sku_level` entry must include:
 - `po_qty_total` (int)
 - `size_orders` (object {size: qty})
 - `roic_pct` (float, percentage)
+
+`real_pos` entry minimal fields:
+- `po_id` (string)
+- `status` (string)
+- `message_date` (YYYY-MM-DD or null)
+- `units_total` (int)
+- `units_received` (int)
 
 ## Invariants vs PO engine (same fixture input)
 For each SKU in the fixture:

@@ -76,9 +76,10 @@ def generate_dashboard_output(
         "generated_at": generated_at,
         "cutoff_date": cutoff_date,
         "summary": summary_min,
+        "real_pos": [],
         "pos": {
-            "PO-4": {
-                "po_name": "PO-4",
+            "PLAN-0": {
+                "po_name": "PLAN-0",
                 "summary": {
                     "total_skus": summary_min["total_skus"],
                     "total_units": summary_min["total_units"],
@@ -107,7 +108,7 @@ def validate_dashboard_output(
     """Validate output against the dashboard contract invariants."""
     errors: list[str] = []
 
-    for key in ("generated_at", "cutoff_date", "summary", "pos"):
+    for key in ("generated_at", "cutoff_date", "summary", "pos", "real_pos"):
         if key not in output:
             errors.append(f"Missing top-level key: {key}")
 
@@ -117,19 +118,23 @@ def validate_dashboard_output(
             errors.append(f"Missing summary key: {key}")
 
     pos = output.get("pos", {})
-    if "PO-4" not in pos:
-        errors.append("Missing PO-4 bucket in pos")
+    if "PLAN-0" not in pos:
+        errors.append("Missing PLAN-0 bucket in pos")
         return errors
 
-    po4 = pos.get("PO-4", {})
+    po4 = pos.get("PLAN-0", {})
     for key in ("po_name", "summary", "sku_level"):
         if key not in po4:
-            errors.append(f"Missing PO-4 key: {key}")
+            errors.append(f"Missing PLAN-0 key: {key}")
 
     sku_level = po4.get("sku_level", [])
     if not isinstance(sku_level, list) or not sku_level:
-        errors.append("PO-4 sku_level is empty or invalid")
+        errors.append("PLAN-0 sku_level is empty or invalid")
         return errors
+
+    real_pos = output.get("real_pos")
+    if real_pos is not None and not isinstance(real_pos, list):
+        errors.append("real_pos must be a list when present")
 
     total_units = 0
     skus_with_orders = 0
@@ -187,9 +192,9 @@ def validate_dashboard_output(
 
     po_summary = po4.get("summary", {})
     if po_summary.get("total_skus") != len(sku_level):
-        errors.append("PO-4 summary.total_skus mismatch")
+        errors.append("PLAN-0 summary.total_skus mismatch")
     if po_summary.get("total_units") != total_units:
-        errors.append("PO-4 summary.total_units mismatch")
+        errors.append("PLAN-0 summary.total_units mismatch")
 
     return errors
 

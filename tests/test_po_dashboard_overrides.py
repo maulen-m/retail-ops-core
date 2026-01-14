@@ -36,27 +36,27 @@ class TestDemandOverrides:
 
     def test_line52_demand_override(self, dashboard_data):
         """LINE52 must have d_sku=50."""
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
         line52 = None
         for sku in po4['sku_level']:
             if sku['sku_key'] == 'CL_OC_MEN_LINE52_BLACK':
                 line52 = sku
                 break
 
-        assert line52 is not None, "LINE52 not found in PO-4 sku_level"
+        assert line52 is not None, "LINE52 not found in PLAN-0 sku_level"
         assert abs(line52['d_sku'] - 50.0) < 0.01, f"LINE52 d_sku={line52['d_sku']}, expected=50.0"
         assert 'D_OVERRIDE' in line52.get('notes', ''), "LINE52 missing D_OVERRIDE note"
 
     def test_line51_demand_override(self, dashboard_data):
         """LINE51 must have d_sku=12."""
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
         line51 = None
         for sku in po4['sku_level']:
             if sku['sku_key'] == 'CL_OC_MEN_LINE51_WHITE':
                 line51 = sku
                 break
 
-        assert line51 is not None, "LINE51 not found in PO-4 sku_level"
+        assert line51 is not None, "LINE51 not found in PLAN-0 sku_level"
         assert abs(line51['d_sku'] - 12.0) < 0.01, f"LINE51 d_sku={line51['d_sku']}, expected=12.0"
         assert 'D_OVERRIDE' in line51.get('notes', ''), "LINE51 missing D_OVERRIDE note"
 
@@ -65,8 +65,8 @@ class TestPrepModelB:
     """Tests for Model B prep days requirements."""
 
     def test_all_cl_skus_same_prep_days_po4(self, dashboard_data):
-        """All CL SKUs in PO-4 should have same prep_days."""
-        po4 = dashboard_data['pos']['PO-4']
+        """All CL SKUs in PLAN-0 should have same prep_days."""
+        po4 = dashboard_data['pos']['PLAN-0']
         cl_prep_days = set()
 
         for sku in po4['sku_level']:
@@ -80,7 +80,7 @@ class TestPrepModelB:
             if sku_key.startswith('CL_'):
                 cl_prep_days.add(prep)
 
-        assert len(cl_prep_days) <= 1, f"PO-4 CL SKUs have inconsistent prep_days: {cl_prep_days}"
+        assert len(cl_prep_days) <= 1, f"PLAN-0 CL SKUs have inconsistent prep_days: {cl_prep_days}"
 
     def test_all_els_skus_prep_1(self, dashboard_data):
         """All ELS SKUs should have prep_days=1."""
@@ -101,7 +101,7 @@ class TestPrepModelB:
 
     def test_prep_days_reasonable(self, dashboard_data):
         """Verify Model B prep_days is reasonable for the weight."""
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
 
         # Calculate total CL weight and get prep_days
         total_cl_weight = 0.0
@@ -137,7 +137,7 @@ class TestNoSilentSkipping:
 
     def test_skus_accounted_for(self, dashboard_data):
         """Every SKU should appear in sku_level or skipped_skus."""
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
 
         sku_level_count = len(po4.get('sku_level', []))
         skipped_count = len(po4.get('skipped_skus', []))
@@ -154,7 +154,7 @@ class TestNoSilentSkipping:
 
     def test_line52_not_silently_skipped(self, dashboard_data):
         """LINE52 must appear somewhere in the output."""
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
 
         # Check sku_level
         found_in_sku_level = any(
@@ -184,7 +184,7 @@ class TestReconciliationInvariants:
         This ensures demand is properly distributed across sizes.
         Note: Unsized products (ELS_PRINTER_*) are excluded - they have no size_level entries.
         """
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
         failures = []
 
         for sku in po4['sku_level']:
@@ -220,7 +220,7 @@ class TestReconciliationInvariants:
         INVARIANT: po_qty_total == sum(size_orders) for every SKU.
         This ensures order totals match the sum of size allocations.
         """
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
         failures = []
 
         for sku in po4['sku_level']:
@@ -238,7 +238,7 @@ class TestReconciliationInvariants:
         """
         INVARIANT: sum of order_qty in size_level == po_qty_total in sku_level.
         """
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
         failures = []
 
         for sku in po4['sku_level']:
@@ -262,7 +262,7 @@ class TestModelCPrepCap:
         """
         Model C: prep_days <= R_days for all CL SKUs.
         """
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
         prep_model = po4.get('prep_model', 'C')
         r_days = po4.get('reorder_cycle_R', 10)
 
@@ -291,7 +291,7 @@ class TestModelCPrepCap:
 
     def test_prep_model_info_in_output(self, dashboard_data):
         """Verify prep model info is included in output."""
-        po4 = dashboard_data['pos']['PO-4']
+        po4 = dashboard_data['pos']['PLAN-0']
 
         assert 'prep_model' in po4, "prep_model not in output"
         assert po4['prep_model'] in ('B', 'C'), f"Invalid prep_model: {po4['prep_model']}"
