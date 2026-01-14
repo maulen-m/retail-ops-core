@@ -90,6 +90,15 @@ class ScorecardSummary:
     source: str = ""
 
 
+def _plan_index(name: str) -> int:
+    if not name.startswith("PLAN-"):
+        return 0
+    try:
+        return int(name.split("-", 1)[1])
+    except (ValueError, IndexError):
+        return 0
+
+
 def _load_dashboard_po(po_name: Optional[str] = None) -> Tuple[str, dict[str, Any]] | None:
     if not DASHBOARD_PATH.exists():
         return None
@@ -106,10 +115,12 @@ def _load_dashboard_po(po_name: Optional[str] = None) -> Tuple[str, dict[str, An
         active = data.get("active_pos") or []
         if active:
             po_name = active[0]
-        elif "PO-5" in pos:
-            po_name = "PO-5"
+        elif "PLAN-0" in pos:
+            po_name = "PLAN-0"
+        elif "PLAN-1" in pos:
+            po_name = "PLAN-1"
         else:
-            po_name = sorted(pos.keys())[0]
+            po_name = sorted(pos.keys(), key=_plan_index)[0]
 
     po_data = pos.get(po_name)
     if not isinstance(po_data, dict):

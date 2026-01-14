@@ -3,7 +3,7 @@
 Audit script for PO Dashboard output.
 
 Validates that:
-1. LINE52 and LINE51 exist in PO-4 (either in sku_level or skipped_skus)
+1. LINE52 and LINE51 exist in PLAN-0 (either in sku_level or skipped_skus)
 2. Demand overrides are applied (LINE52 D=50, LINE51 D=12)
 3. No silent skipping (all SKUs accounted for)
 
@@ -134,32 +134,32 @@ def find_sku_in_po(po_data: dict, sku_key: str) -> tuple[dict | None, bool]:
     return None, False
 
 
-def audit_po4(data: dict, required_overrides: dict) -> tuple[bool, list[str]]:
+def audit_plan0(data: dict, required_overrides: dict) -> tuple[bool, list[str]]:
     """
-    Audit PO-4 specifically.
+    Audit PLAN-0 specifically.
     Returns: (success, messages)
     """
     messages = []
     success = True
 
-    # Get PO-4 data
+    # Get PLAN-0 data
     pos = data.get('pos', {})
-    po4 = pos.get('PO-4')
+    plan0 = pos.get('PLAN-0')
 
-    if not po4:
+    if not plan0:
         # Maybe it's directly the PO data (old format)
         if 'sku_level' in data:
-            po4 = data
+            plan0 = data
         else:
-            messages.append("ERROR: PO-4 not found in data")
+            messages.append("ERROR: PLAN-0 not found in data")
             return False, messages
 
-    messages.append(f"PO-4 found: {po4.get('summary', {}).get('total_skus', 0)} total SKUs")
+    messages.append(f"PLAN-0 found: {plan0.get('summary', {}).get('total_skus', 0)} total SKUs")
 
     # Check each required SKU
     for sku_key in REQUIRED_SKUS:
         expected_d = required_overrides.get(sku_key, {}).get("d_override")
-        sku_data, in_skipped = find_sku_in_po(po4, sku_key)
+        sku_data, in_skipped = find_sku_in_po(plan0, sku_key)
 
         if sku_data is None:
             messages.append(f"FAIL: {sku_key} MISSING from both sku_level and skipped_skus")
@@ -252,10 +252,10 @@ def audit_no_silent_skips(data: dict) -> tuple[bool, list[str]]:
     messages = []
 
     pos = data.get('pos', {})
-    po4 = pos.get('PO-4', {})
+    plan0 = pos.get('PLAN-0', {})
 
-    sku_level = po4.get('sku_level', [])
-    skipped_skus = po4.get('skipped_skus', [])
+    sku_level = plan0.get('sku_level', [])
+    skipped_skus = plan0.get('skipped_skus', [])
 
     total_in_sku_level = len(sku_level)
     total_skipped = len(skipped_skus) if isinstance(skipped_skus, (list, dict)) else 0
@@ -337,11 +337,11 @@ def main():
     # Run audits
     all_success = True
 
-    # Audit PO-4 for required SKUs
+    # Audit PLAN-0 for required SKUs
     print("-"*60)
-    print("Audit 1: Required SKUs in PO-4")
+    print("Audit 1: Required SKUs in PLAN-0")
     print("-"*60)
-    success, messages = audit_po4(data, required_overrides)
+    success, messages = audit_plan0(data, required_overrides)
     for msg in messages:
         print(f"  {msg}")
     if not success:
@@ -377,10 +377,10 @@ def main():
         print("AUDIT FAILED")
         # Determine specific exit code
         pos = data.get('pos', {})
-        po4 = pos.get('PO-4', data if 'sku_level' in data else {})
+        plan0 = pos.get('PLAN-0', data if 'sku_level' in data else {})
 
-        line52, _ = find_sku_in_po(po4, "CL_OC_MEN_LINE52_BLACK")
-        line51, _ = find_sku_in_po(po4, "CL_OC_MEN_LINE51_WHITE")
+        line52, _ = find_sku_in_po(plan0, "CL_OC_MEN_LINE52_BLACK")
+        line51, _ = find_sku_in_po(plan0, "CL_OC_MEN_LINE51_WHITE")
 
         if line52 is None:
             print("Exit code 1: LINE52 missing everywhere")

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Export PO-4/5/6 scenario recalculation with blackout analysis.
+Export PLAN-0/1/2 scenario recalculation with blackout analysis.
 
-Produces exports/po_4_5_6_recalc.csv showing:
+Produces exports/po_plan_recalc.csv showing:
 - message_date, prep_days, ship_date_cargo, ETA
 - total qty, total weight, key SKUs and size splits
 - blackout warnings where applied
 
 Usage:
     python scripts/export_po_scenario.py
-    python scripts/export_po_scenario.py --all-pos       # Include PO-7 through PO-10
+    python scripts/export_po_scenario.py --all-pos       # Include PLAN-3 through PLAN-6
     python scripts/export_po_scenario.py --output FILE   # Custom output path
 """
 
@@ -29,7 +29,7 @@ from core.po.blackout import BlackoutManager, adjust_po_dates, CNY_2026
 
 # Paths
 DASHBOARD_JSON = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
-DEFAULT_OUTPUT = PROJECT_ROOT / "exports" / "po_4_5_6_recalc.csv"
+DEFAULT_OUTPUT = PROJECT_ROOT / "exports" / "po_plan_recalc.csv"
 
 
 def parse_date(date_str: str) -> Optional[date]:
@@ -114,11 +114,19 @@ def export_po_scenarios(
     if not pos_data:
         raise ValueError("No PO data found in dashboard JSON")
 
-    # Select which POs to include
+    def plan_index(name: str) -> int:
+        if not name.startswith("PLAN-"):
+            return 0
+        try:
+            return int(name.split("-", 1)[1])
+        except (ValueError, IndexError):
+            return 0
+
+    # Select which plans to include
     if include_all_pos:
-        po_names = sorted(pos_data.keys())
+        po_names = sorted(pos_data.keys(), key=plan_index)
     else:
-        po_names = ["PO-4", "PO-5", "PO-6"]
+        po_names = ["PLAN-0", "PLAN-1", "PLAN-2"]
 
     # Filter to only existing POs
     po_names = [name for name in po_names if name in pos_data]
