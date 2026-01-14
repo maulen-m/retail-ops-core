@@ -29,6 +29,7 @@ Usage:
     python scripts/run_end_of_day.py --skip-sync  # Skip CRM sync step
     python scripts/run_end_of_day.py --use-workbook-sync  # Enable workbook sync
     python scripts/run_end_of_day.py --skip-workbook-sync  # Skip workbook sync (default)
+    python scripts/run_end_of_day.py --auto-assign-sizes  # DB-first size assignment
     python scripts/run_end_of_day.py --skip-day-complete  # Skip day-complete gate
     python scripts/run_end_of_day.py --po4-inbound /path/to/PO-4_inbound.xlsx
     python scripts/run_end_of_day.py --verbose
@@ -315,6 +316,10 @@ def main():
                         help="Skip Kaspi API order status sync step (not recommended)")
     parser.add_argument("--skip-day-complete", action="store_true",
                         help="Skip day-complete validation gate (temporary)")
+    parser.add_argument("--auto-assign-sizes", action="store_true",
+                        help="Auto-assign sizes in DB before day-complete (DB-first, no CRM)")
+    parser.add_argument("--size-store", type=str, default=None,
+                        help="Store code for size assignment (default: all)")
     max_lookback_days = 13
     parser.add_argument(
         "--api-lookback-days",
@@ -378,6 +383,11 @@ def main():
     # Default: skip workbook sync unless explicitly enabled
     if not args.use_workbook_sync:
         args.skip_workbook_sync = True
+
+    if not args.skip_workbook_sync:
+        os.environ["AB_USE_TRUTH_WORKBOOK"] = "1"
+    else:
+        os.environ.pop("AB_USE_TRUTH_WORKBOOK", None)
 
     if args.workbook is None:
         args.workbook = resolve_truth_workbook(DEFAULT_WORKBOOK)
@@ -456,7 +466,7 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=not args.skip_api_sync,
         ),
         PipelineStep(
-            name="2b. Rebuild Inventory Snapshot (auto)",
+            name="2c. Rebuild Inventory Snapshot (auto)",
             script="rebuild_snapshot.py",
             args=["--date", cutoff_date.isoformat(), "--mode", "auto"],
             required=True,
@@ -464,10 +474,26 @@ def _run_pipeline(args, start_time: datetime) -> int:
         ),
     ]
 
+    if args.auto_assign_sizes:
+        size_args = ["--auto"]
+        if args.size_store:
+            size_args.extend(["--store", args.size_store])
+        if args.dry_run:
+            size_args.append("--dry-run")
+        steps.insert(
+            4,
+            PipelineStep(
+                name="2b. Auto-Assign Sizes (DB-first)",
+                script="assign_sizes.py",
+                args=size_args,
+                required=True,
+            ),
+        )
+
     if args.po4_inbound:
         steps.append(
             PipelineStep(
-                name="2c. Import PO-4 inbound",
+                name="2d. Import PO-4 inbound",
                 script="import_po4_inbound.py",
                 args=[str(args.po4_inbound)],
                 required=True,
@@ -476,7 +502,7 @@ def _run_pipeline(args, start_time: datetime) -> int:
 
     steps.extend([
         PipelineStep(
-            name="2d. Validate Day Complete",
+            name="2e. Validate Day Complete",
             script="validate_day_complete.py",
             args=["--cutoff-date", cutoff_date.isoformat()],
             required=False
