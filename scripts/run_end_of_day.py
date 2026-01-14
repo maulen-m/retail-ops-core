@@ -29,6 +29,7 @@ Usage:
     python scripts/run_end_of_day.py --skip-sync  # Skip CRM sync step
     python scripts/run_end_of_day.py --use-workbook-sync  # Enable workbook sync
     python scripts/run_end_of_day.py --skip-workbook-sync  # Skip workbook sync (default)
+    python scripts/run_end_of_day.py --skip-day-complete  # Skip day-complete gate
     python scripts/run_end_of_day.py --po4-inbound /path/to/PO-4_inbound.xlsx
     python scripts/run_end_of_day.py --verbose
 """
@@ -312,6 +313,8 @@ def main():
     )
     parser.add_argument("--skip-api-sync", action="store_true",
                         help="Skip Kaspi API order status sync step (not recommended)")
+    parser.add_argument("--skip-day-complete", action="store_true",
+                        help="Skip day-complete validation gate (temporary)")
     max_lookback_days = 13
     parser.add_argument(
         "--api-lookback-days",
@@ -517,6 +520,9 @@ def _run_pipeline(args, start_time: datetime) -> int:
     if args.skip_api_sync:
         skip_scripts.append("sync_kaspi_orders.py")
         print("Note: Skipping Kaspi API sync step")
+    if args.skip_day_complete:
+        skip_scripts.append("validate_day_complete.py")
+        print("Note: Skipping day-complete validation")
     if skip_scripts:
         steps = [s for s in steps if s.script not in skip_scripts]
         print()
