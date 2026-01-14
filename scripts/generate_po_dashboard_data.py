@@ -1589,7 +1589,7 @@ def load_po4_approved_orders(po_id: str = "PO-4") -> Optional[dict]:
             return None
 
         header = conn.execute(
-            "SELECT message_date, ship_date_seller FROM po_header WHERE po_id = ?",
+            "SELECT message_date, ship_date_seller, status FROM po_header WHERE po_id = ?",
             (po_id,),
         ).fetchone()
 
@@ -1613,6 +1613,7 @@ def load_po4_approved_orders(po_id: str = "PO-4") -> Optional[dict]:
             "po_id": po_id,
             "message_date": header["message_date"] if header else None,
             "ship_date": header["ship_date_seller"] if header else None,
+            "status": header["status"] if header else None,
             "orders_by_sku": orders_by_sku,
         }
     finally:
@@ -1853,7 +1854,12 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
     # Build cumulative orders per SKU for projection
     # Format: sku_key -> list of (arrival_date, order_qty_by_size)
     cumulative_orders = {}
-    if po4_actual and po4_actual.get("orders_by_sku"):
+    po4_in_transit = (
+        po4_actual
+        and po4_actual.get("orders_by_sku")
+        and po4_actual.get("status") not in {"ARRIVED_ALM", "ARRIVED_AST", "RECEIVED", "CLOSED"}
+    )
+    if po4_in_transit:
         ship_date = po4_actual.get("ship_date")
         po4_arr_date = None
         if ship_date:
@@ -1870,7 +1876,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 base_match = next((s for s in base_data["sku_level"] if s["sku_key"] == sku_key), None)
                 arr_date = date.fromisoformat(base_match["est_arr_date"]) if base_match else TODAY + timedelta(days=params.L)
             cumulative_orders[sku_key] = [(arr_date, total_qty, size_orders)]
-    else:
+    elif not po4_actual or not po4_actual.get("orders_by_sku"):
         for sku_line in base_data['sku_level']:
             sku_key = sku_line['sku_key']
             arr_date = date.fromisoformat(sku_line['est_arr_date'])
@@ -1884,7 +1890,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
     # Track existing inbound from PO-4 to avoid double counting vs snapshot inbound
     existing_inbound_by_sku: dict[str, int] = {}
     existing_inbound_by_size: dict[str, dict[str, int]] = {}
-    if po4_actual and po4_actual.get("orders_by_sku"):
+    if po4_in_transit:
         for sku_key, size_orders in po4_actual["orders_by_sku"].items():
             existing_inbound_by_sku[sku_key] = sum(size_orders.values())
             existing_inbound_by_size[sku_key] = dict(size_orders)

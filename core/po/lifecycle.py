@@ -477,8 +477,8 @@ def confirm_po_arrival(
             raise ValueError(f"PO not found: {po_id}")
 
         # Update arrival date
-        date_field = "alm_arrival_date" if arrival_type == "ALM" else "ast_arrival_date"
-        archive_field = f"archive_{date_field.replace('_date', '')}"
+        date_field = "alm_arrival_real" if arrival_type == "ALM" else "ast_arrival_real"
+        archive_field = f"archive_{date_field.replace('_real', '')}"
 
         # Set archive field if not already set
         if po[archive_field] is None:
