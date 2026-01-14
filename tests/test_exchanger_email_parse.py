@@ -50,3 +50,17 @@ def test_parse_uachanger_email():
     assert order["status"] == "NEW"
     assert order["deposit_address"].startswith("TVyWst")
     assert abs(order["rate_usdt_cny"] - (5000.0 / 733.08387)) < 1e-6
+
+
+def test_ignore_uachanger_auth_email():
+    msg = {
+        "subject": "Ваш код двухфакторной аутентификации",
+        "from": "uachanger2020@gmail.com",
+        "date": "2026-01-07T18:55:00+05:00",
+        "body_text": "Ваш код: 123456",
+        "body_html": "",
+        "message_id": "<auth@uachanger.com>",
+    }
+
+    order = parse_exchanger_email(msg)
+    assert order is None

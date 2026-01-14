@@ -30,6 +30,21 @@ STATUS_MAP = {
     ],
 }
 
+NON_ORDER_PATTERNS = {
+    "UAChanger": [
+        r"user registration",
+        r"двухфакторной аутентификации",
+        r"двухфактор",
+        r"two[- ]factor",
+        r"2fa",
+        r"verification code",
+        r"auth code",
+        r"подтверждение email",
+        r"email confirmation",
+        r"confirm(?:ation)? email",
+    ],
+}
+
 
 def _strip_html(html: str) -> str:
     return re.sub(r"<[^>]+>", " ", html or "")
@@ -53,6 +68,14 @@ def _detect_status(text: str) -> Optional[str]:
         if any(k in lower for k in keys):
             return status
     return None
+
+
+def _is_non_order_notice(exchanger: str, text: str) -> bool:
+    patterns = NON_ORDER_PATTERNS.get(exchanger, [])
+    if not patterns:
+        return False
+    lower = text.lower()
+    return any(re.search(pattern, lower) for pattern in patterns)
 
 
 def _extract_order_id(subject: str) -> Optional[str]:
@@ -148,6 +171,9 @@ def parse_exchanger_email(msg: dict) -> Optional[dict]:
 
     exchanger = _detect_exchanger(subject, from_addr, body)
     if not exchanger:
+        return None
+
+    if _is_non_order_notice(exchanger, body):
         return None
 
     status = _detect_status(body)

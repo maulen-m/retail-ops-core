@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 import sys
+from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -31,6 +32,7 @@ from core.transfer_ledger.repository import (
 )
 
 UTC = timezone.utc
+ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
 
 @dataclass
@@ -56,6 +58,22 @@ def _parse_dt_utc(value: object) -> datetime | None:
     if not dt:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _parse_snapshot_dt(value: object) -> datetime | None:
+    dt = parse_dt(value)
+    if not dt:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=ALMATY_TZ)
+
+
+def _snapshot_balance(snapshot: dict) -> Decimal | None:
+    total = to_decimal(snapshot.get("total"))
+    if total is not None:
+        return total
+    free = to_decimal(snapshot.get("free")) or Decimal("0")
+    locked = to_decimal(snapshot.get("locked")) or Decimal("0")
+    return free + locked
 
 
 def find_unmatched_withdrawals(
@@ -226,6 +244,59 @@ def _balance_from_binance(db_path: Path) -> Decimal:
     return total
 
 
+def _in_window(value: object, start_dt: datetime, end_dt: datetime) -> bool:
+    dt = _parse_dt_utc(value)
+    if not dt:
+        return False
+    return start_dt < dt <= end_dt
+
+
+def _balance_delta_from_binance(db_path: Path, start_dt: datetime, end_dt: datetime) -> Decimal:
+    with get_db(db_path) as conn:
+        p2p = conn.execute(
+            """
+            SELECT crypto_amount, create_time FROM binance_c2c_orders
+            WHERE trade_type='BUY' AND asset='USDT'
+            """
+        ).fetchall()
+        withdrawals = conn.execute(
+            "SELECT amount, transaction_fee, apply_time, success_time FROM binance_withdrawals WHERE coin='USDT'"
+        ).fetchall()
+        deposits = conn.execute(
+            "SELECT amount, insert_time FROM binance_deposits WHERE coin='USDT'"
+        ).fetchall()
+        transfers = conn.execute(
+            "SELECT amount, transfer_type, timestamp FROM binance_transfers WHERE asset='USDT'"
+        ).fetchall()
+
+    delta = to_decimal("0") or Decimal("0")
+    for row in p2p:
+        if _in_window(row["create_time"], start_dt, end_dt):
+            amt = to_decimal(row["crypto_amount"])
+            if amt is not None:
+                delta += amt
+    for row in withdrawals:
+        ts = row["apply_time"] or row["success_time"]
+        if _in_window(ts, start_dt, end_dt):
+            amt = to_decimal(row["amount"]) or Decimal("0")
+            fee = to_decimal(row["transaction_fee"]) or Decimal("0")
+            delta -= (amt + fee)
+    for row in deposits:
+        if _in_window(row["insert_time"], start_dt, end_dt):
+            amt = to_decimal(row["amount"])
+            if amt is not None:
+                delta += amt
+    for row in transfers:
+        if _in_window(row["timestamp"], start_dt, end_dt):
+            amt = to_decimal(row["amount"]) or Decimal("0")
+            ttype = (row["transfer_type"] or "").upper()
+            if ttype.startswith("FUNDING_"):
+                delta -= amt
+            elif ttype.endswith("_FUNDING"):
+                delta += amt
+    return delta
+
+
 def validate_reconciliation_invariants(db_path: Path) -> CheckResult:
     errors: list[str] = []
     warnings: list[str] = []
@@ -256,26 +327,30 @@ def validate_reconciliation_invariants(db_path: Path) -> CheckResult:
     for row in missing_fee:
         warnings.append(f"Missing BINANCE_WITHDRAWAL_FEE ledger entry for {row['withdraw_id']}")
 
-    # Compare funding snapshot vs derived balance (if snapshot exists)
-    snapshots = list_funding_balance_snapshots(db_path=db_path, asset="USDT", limit=1)
-    if snapshots:
-        snapshot = snapshots[0]
-        snap_balance = to_decimal(snapshot.get("total"))
-        if snap_balance is None:
-            free = to_decimal(snapshot.get("free")) or Decimal("0")
-            locked = to_decimal(snapshot.get("locked")) or Decimal("0")
-            snap_balance = free + locked
-        if snap_balance is None:
-            warnings.append("Latest funding snapshot has no balance")
-        else:
-            derived = _balance_from_binance(db_path)
-            diff = abs(derived - snap_balance)
-            if diff > USDT_AMOUNT_TOLERANCE:
-                warnings.append(
-                    f"Funding balance drift > tolerance: snapshot={snap_balance} derived={derived}"
-                )
+    # Compare funding snapshot deltas vs derived deltas (require >=2 snapshots)
+    snapshots = list_funding_balance_snapshots(db_path=db_path, asset="USDT", limit=2)
+    if len(snapshots) < 2:
+        warnings.append("Need at least 2 funding balance snapshots for USDT drift check")
     else:
-        warnings.append("No funding balance snapshots for USDT")
+        latest, previous = snapshots[0], snapshots[1]
+        latest_time = _parse_snapshot_dt(latest.get("snapshot_time"))
+        prev_time = _parse_snapshot_dt(previous.get("snapshot_time"))
+        if not latest_time or not prev_time:
+            warnings.append("Funding snapshot times are invalid")
+        else:
+            latest_bal = _snapshot_balance(latest)
+            prev_bal = _snapshot_balance(previous)
+            if latest_bal is None or prev_bal is None:
+                warnings.append("Funding snapshot has no balance totals")
+            else:
+                derived_delta = _balance_delta_from_binance(db_path, prev_time, latest_time)
+                snapshot_delta = latest_bal - prev_bal
+                diff = abs(derived_delta - snapshot_delta)
+                if diff > USDT_AMOUNT_TOLERANCE:
+                    warnings.append(
+                        "Funding balance delta drift > tolerance: "
+                        f"snapshot_delta={snapshot_delta} derived_delta={derived_delta}"
+                    )
 
     return CheckResult(
         name="reconciliation_invariants",
@@ -307,16 +382,16 @@ def validate_freshness_invariants(db_path: Path, now: datetime) -> CheckResult:
                 msg = f"{name} has no rows"
                 if required:
                     warnings.append(msg)
-                else:
-                    warnings.append(f"{msg} (optional source)")
                 continue
             last_dt = _parse_dt_utc(last_ts)
             age = _age_days(last_dt, now)
             if age is None:
-                warnings.append(f"{name} last timestamp is invalid")
+                if required:
+                    warnings.append(f"{name} last timestamp is invalid")
                 continue
             if age > 30:
-                warnings.append(f"{name} last updated {age:.1f} days ago")
+                if required:
+                    warnings.append(f"{name} last updated {age:.1f} days ago")
 
     return CheckResult(
         name="freshness_invariants",
