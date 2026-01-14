@@ -16,7 +16,8 @@ from core.db import get_db
 from core.integrations.gmail_api_client import get_gmail_service, fetch_message_raw
 from core.transfer_ledger.binance_withdrawal_email_import import parse_binance_withdrawal_email
 from core.transfer_ledger.exchanger_email_import import parse_exchanger_email
-from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order, address_match
+from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order
+from core.transfer_ledger.matching import address_match
 from core.transfer_ledger.telegram_ledger_alerts import send_exchanger_update_alert
 from core.transfer_ledger.repository import (
     ensure_schema,

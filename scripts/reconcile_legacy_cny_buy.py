@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db import get_db
-from core.transfer_ledger.exchanger_matching import AMOUNT_TOLERANCE, DATE_WINDOW_DAYS, address_match
+from core.transfer_ledger.matching import address_match, amount_close, date_close, parse_dt
 from core.transfer_ledger.exchanger_email_import import STATUS_MAP
 from core.transfer_ledger.repository import (
     ensure_schema,
@@ -101,21 +101,12 @@ def _match_exchanger_order(cur, order_id: str | None, address: str | None, amoun
         if address and dep_addr and not address_match(address, dep_addr):
             continue
         if amount_usdt is not None and amt is not None:
-            if abs(float(amt) - float(amount_usdt)) > AMOUNT_TOLERANCE:
+            if not amount_close(amt, amount_usdt):
                 continue
-        if dt and msg_date:
-            try:
-                msg_dt = _naive(datetime.fromisoformat(str(msg_date).replace("Z", "+00:00")))
-            except Exception:
-                msg_dt = None
-            if msg_dt:
-                delta = abs((msg_dt - dt).total_seconds())
-                if delta > DATE_WINDOW_DAYS * 86400:
-                    continue
-            else:
-                delta = 0
-        else:
-            delta = 0
+        msg_dt = _naive(parse_dt(msg_date))
+        if not date_close(msg_dt, dt):
+            continue
+        delta = abs((msg_dt - dt).total_seconds()) if msg_dt and dt else 0
         if best_delta is None or delta < best_delta:
             best = ex_id
             best_delta = delta
@@ -137,21 +128,12 @@ def _match_withdrawal(cur, address: str | None, amount_usdt: float | None, dt: d
         if address and addr and not address_match(address, addr):
             continue
         if amount_usdt is not None and amt is not None:
-            if abs(float(amt) - float(amount_usdt)) > AMOUNT_TOLERANCE:
+            if not amount_close(amt, amount_usdt):
                 continue
-        if dt and apply_time:
-            try:
-                wd_dt = _naive(datetime.fromisoformat(str(apply_time).replace("Z", "+00:00")))
-            except Exception:
-                wd_dt = None
-            if wd_dt:
-                delta = abs((wd_dt - dt).total_seconds())
-                if delta > DATE_WINDOW_DAYS * 86400:
-                    continue
-            else:
-                delta = 0
-        else:
-            delta = 0
+        wd_dt = _naive(parse_dt(apply_time))
+        if not date_close(wd_dt, dt):
+            continue
+        delta = abs((wd_dt - dt).total_seconds()) if wd_dt and dt else 0
         if best_delta is None or delta < best_delta:
             best = wd_id
             best_delta = delta

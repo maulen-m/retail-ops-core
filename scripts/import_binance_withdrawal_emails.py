@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-from datetime import datetime
 from pathlib import Path
 import sys
 
@@ -15,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.gmail_imap_client import fetch_messages
 from core.transfer_ledger.binance_withdrawal_email_import import parse_binance_withdrawal_email
-from core.transfer_ledger.exchanger_matching import AMOUNT_TOLERANCE, DATE_WINDOW_DAYS, address_match
+from core.transfer_ledger.matching import address_match, amount_close, date_close, parse_dt
 from core.transfer_ledger.repository import list_withdrawals, update_withdrawal_metadata
 
 
@@ -45,31 +44,16 @@ def _normalize_query(query: str) -> str:
     return re.sub(r"\s*;\s*", " OR ", query)
 
 
-def _parse_dt(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def _amount_close(a: float | None, b: float | None, tol: float = AMOUNT_TOLERANCE) -> bool:
-    if a is None or b is None:
-        return False
-    return abs(float(a) - float(b)) <= tol
-
-
 def _best_match(email_row: dict, withdrawals: list[dict]) -> dict | None:
     coin = (email_row.get("coin") or "").upper()
     amount = email_row.get("amount")
     address = email_row.get("address") or ""
     tx_id = email_row.get("tx_id") or ""
-    email_dt = _parse_dt(email_row.get("success_time") or email_row.get("message_date"))
+    email_dt = parse_dt(email_row.get("success_time") or email_row.get("message_date"))
 
     candidates = [w for w in withdrawals if (w.get("coin") or "").upper() == coin]
     if amount is not None:
-        candidates = [w for w in candidates if _amount_close(w.get("amount"), amount)]
+        candidates = [w for w in candidates if amount_close(w.get("amount"), amount)]
 
     if tx_id:
         tx_match = [w for w in candidates if (w.get("tx_id") or "") == tx_id]
@@ -87,13 +71,10 @@ def _best_match(email_row: dict, withdrawals: list[dict]) -> dict | None:
     best = None
     best_delta = float("inf")
     for w in candidates:
-        wd_dt = _parse_dt(w.get("apply_time") or w.get("success_time"))
-        if email_dt and wd_dt:
-            delta = abs((wd_dt - email_dt).total_seconds())
-            if delta > DATE_WINDOW_DAYS * 86400:
-                continue
-        else:
-            delta = 0
+        wd_dt = parse_dt(w.get("apply_time") or w.get("success_time"))
+        if not date_close(email_dt, wd_dt):
+            continue
+        delta = abs((wd_dt - email_dt).total_seconds()) if email_dt and wd_dt else 0
         if delta < best_delta:
             best = w
             best_delta = delta
