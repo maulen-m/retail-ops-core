@@ -10,10 +10,12 @@ PO Commands:
   add-line  - Add line item to PO
   update    - Update PO fields (dates, FX rates, etc.)
   arrive    - Confirm PO arrival (ALM or AST)
+  arrive-csv - Bulk confirm arrivals from CSV manifest
   receive   - Receive inventory (creates INBOUND events)
   cargo     - Enter cargo costs (weight + USD rate)
   show      - View PO details
   list      - List all POs
+  materialize-plan - Create a real PO draft from a dashboard plan
 
 Stock Commands:
   adjust    - Create stock adjustment (ADJUSTMENT event)
@@ -25,9 +27,11 @@ Usage:
   python scripts/po_cli.py add-line PO-2025-001 --sku LINE52 --size XL --qty 50 --cost 47
   python scripts/po_cli.py update PO-2025-001 --ship-cargo 2025-12-17
   python scripts/po_cli.py arrive PO-2025-001 --type AST --date 2025-12-30
+  python scripts/po_cli.py arrive-csv --csv arrivals.csv --type AST --date 2026-01-14
   python scripts/po_cli.py receive PO-2025-001
   python scripts/po_cli.py show PO-2025-001
   python scripts/po_cli.py list --status IN_TRANSIT
+  python scripts/po_cli.py materialize-plan --plan PLAN-0 --name PO-5 --supplier SUPP_A
   python scripts/po_cli.py adjust LINE52_XL --qty 5 --reason "Found in warehouse"
   python scripts/po_cli.py adjust LINE52_XL --qty -3 --reason "Damaged items write-off"
   python scripts/po_cli.py stock LINE52_XL
@@ -36,6 +40,9 @@ Usage:
 """
 
 import argparse
+import csv
+import hashlib
+import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -69,6 +76,17 @@ from core.db.ledger import (
     VALID_EVENT_TYPES,
 )
 
+PROJECT_ROOT = Path(__file__).parent.parent
+DEFAULT_DASHBOARD_PATH = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
+
+
+def _table_columns(conn, table_name: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    return bool(_table_columns(conn, table_name))
+
 
 def cmd_create(args):
     """Create a new PO."""
@@ -94,6 +112,166 @@ def cmd_create(args):
         alm, ast = update_po_eta(po_id, db_path=DEFAULT_DB_PATH)
         if ast:
             print(f"  ETA: ALM {alm}, AST {ast}")
+
+
+def cmd_materialize_plan(args):
+    """Materialize a plan from dashboard JSON into a real PO draft."""
+    dashboard_path = Path(args.dashboard) if args.dashboard else DEFAULT_DASHBOARD_PATH
+    if not dashboard_path.exists():
+        print(f"Dashboard JSON not found: {dashboard_path}")
+        sys.exit(2)
+
+    try:
+        dashboard = json.loads(dashboard_path.read_text())
+    except Exception as exc:
+        print(f"Failed to parse dashboard JSON: {exc}")
+        sys.exit(2)
+
+    pos = dashboard.get("pos", {})
+    plan = pos.get(args.plan)
+    if not isinstance(plan, dict):
+        print(f"Plan not found: {args.plan}")
+        sys.exit(2)
+
+    po_id = args.name
+    with get_db(DEFAULT_DB_PATH) as conn:
+        if _table_exists(conn, "po_header"):
+            exists = conn.execute(
+                "SELECT 1 FROM po_header WHERE po_id = ?",
+                (po_id,),
+            ).fetchone()
+            if exists:
+                print(f"PO already exists: {po_id}")
+                sys.exit(2)
+
+    plan_hash = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()[:12]
+    plan_msg = plan.get("po_message_date") or ""
+    notes_parts = [f"PLAN={args.plan}", f"PLAN_HASH={plan_hash}"]
+    if plan_msg:
+        notes_parts.append(f"PLAN_MSG_DATE={plan_msg}")
+    if args.notes:
+        notes_parts.append(args.notes)
+    notes = "; ".join(notes_parts)
+
+    create_po(
+        supplier_code=args.supplier,
+        po_id=po_id,
+        order_date=None,
+        notes=notes,
+        created_by=args.user or "cli",
+        db_path=DEFAULT_DB_PATH,
+    )
+
+    sku_cost_map = {}
+    sku_weight_map = {}
+    for sku in plan.get("sku_level", []):
+        sku_key = sku.get("sku_key")
+        if not sku_key:
+            continue
+        sku_cost_map[sku_key] = float(sku.get("base_cost_cny") or 0)
+        sku_weight_map[sku_key] = float(sku.get("weight_per_unit_kg") or 0)
+
+    units_total = 0
+    total_cost_cny = 0.0
+    weight_nom_kg = 0.0
+
+    size_lines = plan.get("size_level", [])
+    if not size_lines:
+        print("Plan has no size_level data; cannot materialize.")
+        sys.exit(2)
+
+    for line in size_lines:
+        order_qty = int(line.get("order_qty") or 0)
+        if order_qty <= 0:
+            continue
+        sku_key = line.get("sku_key") or ""
+        size = line.get("size") or ""
+        sku_id = line.get("sku_id") or (f"{sku_key}_{size}" if sku_key and size else sku_key)
+        unit_cost_cny = sku_cost_map.get(sku_key, 0.0)
+        add_po_line(
+            po_id=po_id,
+            sku_id=sku_id,
+            order_qty=order_qty,
+            unit_cost_cny=unit_cost_cny,
+            sku_key=sku_key or None,
+            my_size=size or None,
+            db_path=DEFAULT_DB_PATH,
+        )
+        units_total += order_qty
+        total_cost_cny += unit_cost_cny * order_qty
+        if line.get("weight_kg") is not None:
+            weight_nom_kg += float(line.get("weight_kg") or 0)
+        else:
+            weight_nom_kg += sku_weight_map.get(sku_key, 0.0) * order_qty
+
+    with get_db(DEFAULT_DB_PATH) as conn:
+        columns = _table_columns(conn, "po_header")
+        updates = []
+        values = []
+        if "units_total" in columns:
+            updates.append("units_total = ?")
+            values.append(units_total)
+        if "total_cost_cny" in columns:
+            updates.append("total_cost_cny = ?")
+            values.append(round(total_cost_cny, 2))
+        if "weight_nom_kg" in columns:
+            updates.append("weight_nom_kg = ?")
+            values.append(round(weight_nom_kg, 2))
+        if updates:
+            values.append(po_id)
+            conn.execute(
+                f"UPDATE po_header SET {', '.join(updates)} WHERE po_id = ?",
+                values,
+            )
+
+    print(f"Materialized plan {args.plan} → {po_id}")
+    print(f"  Units: {units_total}, Weight: {weight_nom_kg:.2f} kg, Cost: ¥{total_cost_cny:.0f}")
+
+
+def cmd_arrive_csv(args):
+    """Bulk confirm PO arrivals from CSV manifest."""
+    csv_path = Path(args.csv)
+    if not csv_path.exists():
+        print(f"CSV not found: {csv_path}")
+        sys.exit(2)
+
+    processed = 0
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            po_id = (row.get("po_id") or row.get("po") or "").strip()
+            if not po_id:
+                continue
+            arrival_type = (row.get("arrival_type") or row.get("type") or args.type or "").strip().upper()
+            if arrival_type not in {"ALM", "AST"}:
+                print(f"Invalid arrival type for {po_id}: {arrival_type}")
+                sys.exit(2)
+
+            arrival_date_str = (row.get("arrival_date") or row.get("date") or args.date or "").strip()
+            arrival_date = date.today()
+            if arrival_date_str:
+                arrival_date = datetime.strptime(arrival_date_str, "%Y-%m-%d").date()
+
+            partial_str = (row.get("partial") or row.get("partial_qty") or "").strip()
+            received_qty = None
+            if partial_str:
+                received_qty = {}
+                for item in partial_str.split(","):
+                    sku, qty = item.split(":")
+                    received_qty[sku] = int(qty)
+
+            confirm_po_arrival(
+                po_id=po_id,
+                arrival_type=arrival_type,
+                arrival_date=arrival_date,
+                received_qty_by_sku=received_qty,
+                create_ledger_events=not args.no_ledger,
+                db_path=DEFAULT_DB_PATH,
+            )
+            processed += 1
+            print(f"Arrived {po_id} ({arrival_type}) on {arrival_date.isoformat()}")
+
+    print(f"Processed {processed} arrivals")
 
 
 def cmd_add_line(args):
@@ -635,6 +813,22 @@ def main():
     p_close = subparsers.add_parser("close", help="Close a PO")
     p_close.add_argument("po_id", help="PO ID")
 
+    # materialize-plan
+    p_materialize = subparsers.add_parser("materialize-plan", help="Create a real PO draft from a plan")
+    p_materialize.add_argument("--plan", required=True, help="Plan name (e.g., PLAN-0)")
+    p_materialize.add_argument("--name", required=True, help="New PO ID (e.g., PO-5)")
+    p_materialize.add_argument("--supplier", default="SUPP_A", help="Supplier code")
+    p_materialize.add_argument("--dashboard", help="Path to po_dashboard_data.json")
+    p_materialize.add_argument("--notes", help="Extra notes to append")
+    p_materialize.add_argument("--user", help="User creating the PO")
+
+    # arrive-csv
+    p_arrive_csv = subparsers.add_parser("arrive-csv", help="Bulk confirm PO arrivals from CSV")
+    p_arrive_csv.add_argument("--csv", required=True, help="CSV manifest path")
+    p_arrive_csv.add_argument("--type", choices=["ALM", "AST", "alm", "ast"], help="Default arrival type")
+    p_arrive_csv.add_argument("--date", help="Default arrival date (YYYY-MM-DD)")
+    p_arrive_csv.add_argument("--no-ledger", action="store_true", help="Don't create ledger events")
+
     # ==============================================================================
     # Stock Commands (TASK-185)
     # ==============================================================================
@@ -691,6 +885,10 @@ def main():
         cmd_list(args)
     elif args.command == "close":
         cmd_close(args)
+    elif args.command == "materialize-plan":
+        cmd_materialize_plan(args)
+    elif args.command == "arrive-csv":
+        cmd_arrive_csv(args)
     # Stock commands (TASK-185)
     elif args.command == "adjust":
         cmd_adjust(args)

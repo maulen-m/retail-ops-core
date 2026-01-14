@@ -51,12 +51,20 @@ IMMUTABLE_FIELDS = frozenset([
 
 # Date fields that trigger status updates
 DATE_STATUS_MAP = {
+    "message_date": "SENT",
     "order_date": "SENT",
     "ship_date_seller": "SHIPPED_SELLER",
     "ship_date_cargo": "SHIPPED_CARGO",
     "alm_arrival_date": "ARRIVED_ALM",
     "ast_arrival_date": "ARRIVED_AST",
+    "alm_arrival_real": "ARRIVED_ALM",
+    "ast_arrival_real": "ARRIVED_AST",
 }
+
+
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row[1] == column_name for row in columns)
 
 
 def generate_po_id(prefix: str = "PO", db_path: Optional[Path] = None) -> str:
@@ -116,18 +124,24 @@ def create_po(
         status = "SENT"
 
     with get_db(db_path) as conn:
-        conn.execute("""
-            INSERT INTO po_header (
-                po_id, supplier_code, status, order_date, notes, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            po_id,
-            supplier_code,
-            status,
-            order_date.isoformat() if order_date else None,
-            notes,
-            created_by,
-        ))
+        columns = ["po_id", "supplier_code", "status", "notes", "created_by"]
+        values = [po_id, supplier_code, status, notes, created_by]
+
+        if order_date:
+            date_value = order_date.isoformat()
+            if _column_exists(conn, "po_header", "message_date"):
+                columns.insert(3, "message_date")
+                values.insert(3, date_value)
+            if _column_exists(conn, "po_header", "order_date"):
+                columns.insert(3, "order_date")
+                values.insert(3, date_value)
+
+        cols_sql = ", ".join(columns)
+        placeholders = ", ".join(["?"] * len(values))
+        conn.execute(
+            f"INSERT INTO po_header ({cols_sql}) VALUES ({placeholders})",
+            values,
+        )
 
     # Audit logging for PO creation
     log_audit(
