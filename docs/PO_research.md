@@ -31,7 +31,7 @@
 - Result = **D_final** (per SKU) + **D_size** per size.
 
 ### D) PO engine (size-aware)
-- `scripts/generate_po_dashboard_data.py` builds PO-4 (base) and projects PO-5..PO-10.
+- `scripts/generate_po_dashboard_data.py` builds PLAN-0 (base) and projects PLAN-1..PLAN-6.
 - For each SKU size:
   - Pre-arrival = stock_at_msg + active_inbound − consumption
   - Target = D_size × T_post (from v8 rules)
@@ -53,7 +53,7 @@
 
 ### Issue B — Size allocation zero for 3XL in PO-5
 **Symptom:** 3XL order_qty = 0 even with known shortage.  
-**Root cause:** Allocation weights used **prior PO-4 order mix**, which had 0 units for 3XL.  
+**Root cause:** Allocation weights used **prior PLAN-0 order mix**, which had 0 units for 3XL.  
 **Fix:** Allocation weights now prefer **D_size weights** (demand-based); 3XL receives order when D_size > 0.
 
 ### Issue C — Duplicate snapshot rows causing inbound/stock drift

@@ -69,4 +69,30 @@ used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in
 
 ---
 
+## 5. Portfolio Scope (DB)
+
+**Table:** `portfolio_active`  
+**Purpose:** Explicit list of SKUs that must be covered by dashboard readiness gates.
+
+| Col | Header | Type | Notes |
+|---:|---|---|---|
+| A | sku_key | TEXT (PK) | Style-level SKU |
+| B | active_flag | INTEGER | 1 = in portfolio, 0 = excluded |
+| C | notes | TEXT | Optional reason/context |
+| D | updated_at | DATETIME | Auto-updated timestamp |
+
+---
+
+## 6. Size Synonyms (DB)
+
+**Table:** `dim_size_synonyms`  
+**Purpose:** Canonicalize size aliases to a single MY_SIZE value.
+
+| Col | Header | Type | Notes |
+|---:|---|---|---|
+| A | alias | TEXT (PK) | Normalized alias (uppercase, no spaces) |
+| B | canonical_size | TEXT | Canonical size (e.g., 2XL, ONE_SIZE) |
+| C | notes | TEXT | Optional context |
+| D | updated_at | DATETIME | Auto-updated timestamp |
+
 *Kaspi-only until further notice.*
