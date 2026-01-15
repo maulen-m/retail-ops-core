@@ -137,7 +137,11 @@ def infer_size_from_sku_id(sku_id: str | None) -> str | None:
     _, suffix = raw.rsplit("_", 1)
     suffix = suffix.strip()
     normalized = normalize_size(suffix)
-    return normalized or suffix or None
+    if not normalized:
+        return None
+    if normalized not in VALID_SIZES:
+        return None
+    return normalized
 
 
 if __name__ == "__main__":
