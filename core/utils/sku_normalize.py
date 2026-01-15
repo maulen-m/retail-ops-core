@@ -110,7 +110,7 @@ def normalize_size(size, product_type: str = None, synonyms: dict[str, str] | No
         return None
 
     size_str = str(size).strip().upper()
-    size_clean = size_str.replace(" ", "").replace("-", "")
+    size_clean = "".join(size_str.split()).replace("-", "")
 
     if synonyms and size_clean in synonyms:
         size_clean = synonyms[size_clean]

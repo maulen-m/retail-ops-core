@@ -109,6 +109,21 @@ def resolve_sales_identity(
         if row:
             sku_key = row["sku_key"]
             my_size = normalize_size(row["my_size"], synonyms=synonyms)
+        else:
+            # Attempt to normalize sku_id suffix (handles stray spaces like "_ XL")
+            if "_" in sku_id:
+                base, suffix = sku_id.rsplit("_", 1)
+                candidate_size = normalize_size(suffix, synonyms=synonyms)
+                candidate_key = normalize_sku_key(base)
+                if candidate_key and candidate_size:
+                    row2 = conn.execute(
+                        "SELECT sku_id FROM dim_sku_size WHERE sku_key = ? AND my_size = ?",
+                        (candidate_key, candidate_size),
+                    ).fetchone()
+                    if row2:
+                        sku_id = row2["sku_id"]
+                        sku_key = candidate_key
+                        my_size = candidate_size
 
     if sku_key:
         sku_key = normalize_sku_key(sku_key)
