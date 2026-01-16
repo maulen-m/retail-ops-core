@@ -221,17 +221,19 @@ def get_stock_balance(
         as_of_date = date.today()
 
     with get_db(db_path) as conn:
-        result = conn.execute("""
+        params = [sku_id, as_of_date.isoformat() if isinstance(as_of_date, date) else as_of_date]
+        store_filter = ""
+        if store_code and store_code != "UNIVERSAL":
+            store_filter = "AND store_code = ?"
+            params.insert(1, store_code)
+
+        result = conn.execute(f"""
             SELECT COALESCE(SUM(qty_change), 0) as balance
             FROM stock_ledger
             WHERE sku_id = ?
-              AND store_code = ?
+              {store_filter}
               AND event_date <= ?
-        """, (
-            sku_id,
-            store_code,
-            as_of_date.isoformat() if isinstance(as_of_date, date) else as_of_date,
-        )).fetchone()
+        """, params).fetchone()
 
         return result["balance"] if result else 0
 
@@ -256,16 +258,20 @@ def get_stock_balances_all(
         as_of_date = date.today()
 
     with get_db(db_path) as conn:
-        rows = conn.execute("""
+        params = [as_of_date.isoformat() if isinstance(as_of_date, date) else as_of_date]
+        store_filter = ""
+        if store_code and store_code != "UNIVERSAL":
+            store_filter = "WHERE store_code = ? AND event_date <= ?"
+            params.insert(0, store_code)
+        else:
+            store_filter = "WHERE event_date <= ?"
+
+        rows = conn.execute(f"""
             SELECT sku_id, SUM(qty_change) as balance
             FROM stock_ledger
-            WHERE store_code = ?
-              AND event_date <= ?
+            {store_filter}
             GROUP BY sku_id
-        """, (
-            store_code,
-            as_of_date.isoformat() if isinstance(as_of_date, date) else as_of_date,
-        )).fetchall()
+        """, params).fetchall()
 
         return {row["sku_id"]: row["balance"] for row in rows}
 
@@ -374,20 +380,23 @@ def rebuild_snapshot_from_ledger(
             return any(c[1] == column for c in cols)
 
         # Step 1: Calculate current stock from ledger
-        ledger_balances = conn.execute("""
+        params = [snapshot_date.isoformat()]
+        store_filter = ""
+        if store_code and store_code != "UNIVERSAL":
+            store_filter = "AND store_code = ?"
+            params.append(store_code)
+
+        ledger_balances = conn.execute(f"""
             SELECT
                 sku_id,
                 sku_key,
                 my_size,
                 SUM(qty_change) as current_stock
             FROM stock_ledger
-            WHERE store_code = ?
-              AND event_date <= ?
+            WHERE event_date <= ?
+              {store_filter}
             GROUP BY sku_id, sku_key, my_size
-        """, (
-            store_code,
-            snapshot_date.isoformat(),
-        )).fetchall()
+        """, params).fetchall()
 
         # Step 2: Calculate inbound stock from pending PO lines
         # Join with po_header to get only non-received POs
@@ -596,19 +605,23 @@ def get_event_summary(
         as_of_date = date.today()
 
     with get_db(db_path) as conn:
-        rows = conn.execute("""
+        params = [as_of_date.isoformat()]
+        store_filter = ""
+        if store_code and store_code != "UNIVERSAL":
+            store_filter = "WHERE store_code = ? AND event_date <= ?"
+            params.insert(0, store_code)
+        else:
+            store_filter = "WHERE event_date <= ?"
+
+        rows = conn.execute(f"""
             SELECT
                 event_type,
                 COUNT(*) as event_count,
                 SUM(qty_change) as qty_total
             FROM stock_ledger
-            WHERE store_code = ?
-              AND event_date <= ?
+            {store_filter}
             GROUP BY event_type
-        """, (
-            store_code,
-            as_of_date.isoformat(),
-        )).fetchall()
+        """, params).fetchall()
 
         result = {}
         for row in rows:
