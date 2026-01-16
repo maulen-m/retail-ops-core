@@ -466,6 +466,12 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=not args.skip_api_sync,
         ),
         PipelineStep(
+            name="2b. Backfill Order Sizes (Archive)",
+            script="backfill_kaspi_order_sizes.py",
+            args=["--cutoff-date", cutoff_date.isoformat()],
+            required=True,
+        ),
+        PipelineStep(
             name="2c. Rebuild Inventory Snapshot (auto)",
             script="rebuild_snapshot.py",
             args=["--date", cutoff_date.isoformat(), "--mode", "auto"],
