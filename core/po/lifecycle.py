@@ -490,17 +490,39 @@ def confirm_po_arrival(
         if not po:
             raise ValueError(f"PO not found: {po_id}")
 
-        # Update arrival date
-        date_field = "alm_arrival_real" if arrival_type == "ALM" else "ast_arrival_real"
-        archive_field = f"archive_{date_field.replace('_real', '')}"
+        # Update arrival date (support legacy column names)
+        cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(po_header)").fetchall()
+        }
+        if arrival_type == "ALM":
+            if "alm_arrival_real" in cols:
+                date_field = "alm_arrival_real"
+                archive_field = "archive_alm_arrival"
+            elif "alm_arrival_date" in cols:
+                date_field = "alm_arrival_date"
+                archive_field = "archive_alm_arrival"
+            else:
+                raise ValueError("po_header missing ALM arrival columns")
+        else:
+            if "ast_arrival_real" in cols:
+                date_field = "ast_arrival_real"
+                archive_field = "archive_ast_arrival"
+            elif "ast_arrival_date" in cols:
+                date_field = "ast_arrival_date"
+                archive_field = "archive_ast_arrival"
+            else:
+                raise ValueError("po_header missing AST arrival columns")
 
         # Set archive field if not already set
-        if po[archive_field] is None:
-            conn.execute(f"""
+        if archive_field in cols and po[archive_field] is None:
+            conn.execute(
+                f"""
                 UPDATE po_header
                 SET {archive_field} = ?, updated_at = ?
                 WHERE po_id = ?
-            """, (arrival_date.isoformat(), datetime.now().isoformat(), po_id))
+            """,
+                (arrival_date.isoformat(), datetime.now().isoformat(), po_id),
+            )
 
         # Update arrival date
         conn.execute(f"""
