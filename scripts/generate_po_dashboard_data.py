@@ -1694,17 +1694,38 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
                     "units_received": int(row["units_received"] or 0),
                 }
 
-        headers = conn.execute(
-            """
-            SELECT po_id, supplier_code, status, message_date, ship_date_seller, ship_date_cargo,
-                   alm_arrival_nom, ast_arrival_nom, alm_arrival_real, ast_arrival_real,
-                   units_total, units_received, weight_nom_kg, weight_real_kg,
-                   total_cost_cny, total_cost_kzt_supplier, total_landed_cost_kzt,
-                   notes, created_at, updated_at
+        header_cols = [row["name"] for row in conn.execute("PRAGMA table_info(po_header)")]
+        has_notes = "notes" in header_cols
+        select_cols = [
+            "po_id",
+            "supplier_code",
+            "status",
+            "message_date",
+            "ship_date_seller",
+            "ship_date_cargo",
+            "alm_arrival_nom",
+            "ast_arrival_nom",
+            "alm_arrival_real",
+            "ast_arrival_real",
+            "units_total",
+            "units_received",
+            "weight_nom_kg",
+            "weight_real_kg",
+            "total_cost_cny",
+            "total_cost_kzt_supplier",
+            "total_landed_cost_kzt",
+        ]
+        if has_notes:
+            select_cols.append("notes")
+        else:
+            select_cols.append("NULL as notes")
+        select_cols.extend(["created_at", "updated_at"])
+        query = f"""
+            SELECT {", ".join(select_cols)}
             FROM po_header
             ORDER BY COALESCE(message_date, created_at) DESC
-            """
-        ).fetchall()
+        """
+        headers = conn.execute(query).fetchall()
 
         real_pos = []
         for row in headers:
