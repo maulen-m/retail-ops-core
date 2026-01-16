@@ -1516,7 +1516,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           const weight_per_unit = parentSku?.weight_per_unit_kg || 0.5;
           const unit_cogs = parentSku?.unit_cogs || size.unit_cogs || 5000;
 
-          if (isPO4) {
+          if (isPlan0) {
             const order_qty = size.order_qty || 0;
             const po_weight = order_qty * weight_per_unit;
             const prep_days = size.prep_days || parentSku?.prep_days || 1;
