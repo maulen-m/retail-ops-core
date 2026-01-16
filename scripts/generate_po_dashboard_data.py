@@ -37,6 +37,7 @@ from core.calc.demand_estimator import DemandEstimator, ConfidenceLevel, OOSType
 from core.calc.stock_timeline import StockTimelineBuilder
 from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
 from core.po.blackout import adjust_po_dates, CNY_2026
+from core.utils.sku_normalize import normalize_size
 
 # Constants
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
@@ -547,15 +548,36 @@ def get_all_active_skus(conn) -> list[dict]:
 
 
 def filter_valid_sizes(data: dict) -> dict:
-    """Filter to only valid size codes."""
-    return {k: v for k, v in data.items() if k and (k.upper() in VALID_SIZES or k in VALID_SIZES)}
+    """Normalize and filter to valid size codes, merging duplicates."""
+    normalized: dict[str, float] = {}
+    for raw_size, value in data.items():
+        size = normalize_size(raw_size)
+        if not size:
+            continue
+        if size.upper() not in VALID_SIZES and size not in VALID_SIZES:
+            continue
+        normalized[size] = normalized.get(size, 0) + (value or 0)
+    return normalized
 
 
-def filter_sizes(data: dict, allow_all: bool = False) -> dict:
-    """Filter sizes for apparel, but keep all non-empty sizes for non-apparel."""
-    if allow_all:
-        return {k: v for k, v in data.items() if k}
-    return filter_valid_sizes(data)
+def filter_sizes(data: dict, allow_all: bool = False, product_type: str | None = None) -> dict:
+    """Filter sizes for apparel, normalize/merge keys, and collapse non-apparel to ONE_SIZE."""
+    if not data:
+        return {}
+    normalized: dict[str, float] = {}
+    for raw_size, value in data.items():
+        if raw_size is None or str(raw_size).strip() == "":
+            continue
+        if allow_all and product_type and product_type.upper() != "CL":
+            size = "ONE_SIZE"
+        else:
+            size = normalize_size(raw_size)
+        if not size:
+            continue
+        if not allow_all and size.upper() not in VALID_SIZES and size not in VALID_SIZES:
+            continue
+        normalized[size] = normalized.get(size, 0) + (value or 0)
+    return normalized
 
 
 def get_size_sales_history_with_cutoff(
@@ -974,14 +996,23 @@ def generate_po_data(
         notes_list = []
         override_value = None
 
-        allow_all_sizes = sku.get("product_type") != "CL"
+        product_type = sku.get("product_type") or "CL"
+        allow_all_sizes = product_type != "CL"
 
         if use_fixture:
             case = fixture_by_sku[sku_key]
             demand_result = None
             has_demand = True
-            size_current = filter_sizes(case["size_current_stock"], allow_all=allow_all_sizes)
-            size_inbound = filter_sizes(case["size_inbound_stock"], allow_all=allow_all_sizes)
+            size_current = filter_sizes(
+                case["size_current_stock"],
+                allow_all=allow_all_sizes,
+                product_type=product_type,
+            )
+            size_inbound = filter_sizes(
+                case["size_inbound_stock"],
+                allow_all=allow_all_sizes,
+                product_type=product_type,
+            )
         else:
             # Check if we have demand estimate for this SKU
             demand_result = demand_lookup.get(sku_key)
@@ -1008,10 +1039,12 @@ def generate_po_data(
             size_current = filter_sizes(
                 size_current_map,
                 allow_all=allow_all_sizes,
+                product_type=product_type,
             )
             size_inbound = filter_sizes(
                 size_inbound_map,
                 allow_all=allow_all_sizes,
+                product_type=product_type,
             )
 
         # Track SKUs with no stock snapshot
@@ -1024,7 +1057,6 @@ def generate_po_data(
         if use_fixture:
             base_cost_cny = sku['base_cost_cny'] or 50
             weight_kg = sku['weight_kg'] or 0.5
-            product_type = sku['product_type'] or 'CL'
             unit_cogs = case["unit_cogs"]
             unit_profit = case["unit_profit"]
             avg_net_price = unit_profit + unit_cogs
@@ -1092,8 +1124,16 @@ def generate_po_data(
                 # Also build 90d sales approximation for fallback
                 size_sales_90d[size] = int(size_result.d_size * 90)
 
-        size_demands = filter_sizes(size_demands, allow_all=allow_all_sizes)
-        size_sales_90d = filter_sizes(size_sales_90d, allow_all=allow_all_sizes)
+        size_demands = filter_sizes(
+            size_demands,
+            allow_all=allow_all_sizes,
+            product_type=product_type,
+        )
+        size_sales_90d = filter_sizes(
+            size_sales_90d,
+            allow_all=allow_all_sizes,
+            product_type=product_type,
+        )
 
         # Renormalize size_demands to match SKU demand if invalid sizes were dropped
         if size_demands and d_sku_blended > 0:
@@ -1124,7 +1164,11 @@ def generate_po_data(
                 proxy_result = demand_lookup.get(proxy_key)
                 if proxy_result:
                     proxy_sizes = {size: res.d_size for size, res in proxy_result.size_results.items()}
-                    proxy_sizes = filter_sizes(proxy_sizes, allow_all=allow_all_sizes)
+                    proxy_sizes = filter_sizes(
+                        proxy_sizes,
+                        allow_all=allow_all_sizes,
+                        product_type=product_type,
+                    )
                     total_proxy = sum(proxy_sizes.values())
                     if total_proxy > 0:
                         scale = d_sku_blended / total_proxy
@@ -1133,7 +1177,11 @@ def generate_po_data(
 
             if not size_demands:
                 candidate_sizes = set(size_current.keys()) | set(size_inbound.keys()) | set(size_sales_90d.keys())
-                candidate_sizes = filter_sizes({k: 1 for k in candidate_sizes}, allow_all=allow_all_sizes)
+                candidate_sizes = filter_sizes(
+                    {k: 1 for k in candidate_sizes},
+                    allow_all=allow_all_sizes,
+                    product_type=product_type,
+                )
                 if candidate_sizes:
                     per_size = d_sku_blended / len(candidate_sizes)
                     size_demands = {k: per_size for k in candidate_sizes.keys()}
