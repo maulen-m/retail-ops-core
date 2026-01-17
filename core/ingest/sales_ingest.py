@@ -15,6 +15,7 @@ Tables used:
 """
 
 import sqlite3
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -24,7 +25,26 @@ import pandas as pd
 from core.db import get_db, DEFAULT_DB_PATH
 from core.db.ledger import add_ledger_event, log_audit
 from core.calc.economics import calc_cogs, calc_delivery_fee, calc_net_rev
-from core.utils.sku_normalize import infer_size_from_sku_id, normalize_sku_key, normalize_size
+from core.utils.sku_normalize import (
+    VALID_SIZES,
+    infer_size_from_sku_id,
+    normalize_sku_key,
+    normalize_size,
+)
+
+_SIZE_TOKEN_RE = re.compile(r"[A-Z0-9]+")
+
+
+def infer_size_from_offer_name(offer_name: str | None, synonyms: dict[str, str] | None = None) -> str | None:
+    """Infer size token from a Kaspi offer name string."""
+    if not offer_name:
+        return None
+    tokens = _SIZE_TOKEN_RE.findall(str(offer_name).upper())
+    for token in tokens:
+        candidate = normalize_size(token, synonyms=synonyms)
+        if candidate and candidate in VALID_SIZES:
+            return candidate
+    return None
 
 
 # Store code normalization map
@@ -93,6 +113,7 @@ def resolve_sales_identity(
     sku_id: str | None,
     sku_key: str | None,
     my_size: str | None,
+    kaspi_offer_name: str | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Resolve sku_key/sku_id/my_size from dim_sku_size when possible."""
     sku_id = str(sku_id).strip() if sku_id else None
@@ -127,6 +148,11 @@ def resolve_sales_identity(
 
     if sku_key:
         sku_key = normalize_sku_key(sku_key)
+
+    if not my_size and kaspi_offer_name and sku_key and sku_key.startswith("CL_"):
+        inferred = infer_size_from_offer_name(kaspi_offer_name, synonyms=synonyms)
+        if inferred:
+            my_size = inferred
 
     if sku_key and my_size:
         row = conn.execute(
@@ -443,6 +469,7 @@ def ingest_sales(
                 rec.get("sku_id"),
                 rec.get("sku_key"),
                 rec.get("my_size"),
+                kaspi_offer_name,
             )
 
             # Skip if missing resolved identity
@@ -724,6 +751,7 @@ def ingest_sales_to_fact_sales(
                 rec.get("sku_id"),
                 rec.get("sku_key"),
                 rec.get("my_size"),
+                kaspi_offer_name,
             )
 
             if not sku_key or not my_size or not sku_id:

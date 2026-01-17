@@ -86,6 +86,7 @@ def _build_crm_keys(
             rec.get("sku_id"),
             rec.get("sku_key"),
             rec.get("my_size"),
+            rec.get("kaspi_offer_name"),
         )
         if not sku_key or not my_size:
             unmapped += 1
