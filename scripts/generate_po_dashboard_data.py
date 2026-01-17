@@ -36,6 +36,7 @@ from core.config.business_params import get_demand_overrides, get_fx_rates
 from core.calc.demand_estimator import DemandEstimator, ConfidenceLevel, OOSType
 from core.calc.stock_timeline import StockTimelineBuilder
 from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
+from core.calc.size_allocation import calc_deficit_capped_order_qty
 from core.po.blackout import adjust_po_dates, CNY_2026
 from core.utils.sku_normalize import normalize_size
 
@@ -835,8 +836,15 @@ def calc_po_draft_manual(
         consumption_until_arrival = d_size * effective_L
         pre_arrival_size = max(0, stock + inbound - consumption_until_arrival)
 
-        # Order quantity = gap between target and pre-arrival
-        order_qty_size = max(0, int(round(target_size - pre_arrival_size)))
+        # Order quantity = gap between target and pre-arrival (deficit-capped for CL)
+        if product_type and str(product_type).upper().startswith("CL"):
+            order_qty_size = calc_deficit_capped_order_qty(
+                d_size=d_size,
+                t_post=T_post,
+                pre_arrival_stock=pre_arrival_size,
+            )
+        else:
+            order_qty_size = max(0, int(round(target_size - pre_arrival_size)))
 
         size_allocations[size] = {
             'stock': stock,
@@ -1449,7 +1457,7 @@ def generate_po_data(
             # Get ROP for this size
             rop_size = alloc['rop']
 
-            deficit = max(0, int(rop_size - size_stock - size_inb))
+            deficit = max(0, int(ceil((target_size - pre_arrival_size) - 1e-9)))
             size_weight = weight_kg * order_qty
 
             # Size-level DOC
@@ -2235,8 +2243,203 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 target = base_sku['target']
             rop = base_sku['rop_total']
 
-            # Order qty
+            adj = adjust_po_dates(po_message_date, po_send_date, po_arr_date)
+            po_send_date = adj["ship_date"]
+            po_arr_date = adj["est_arrival"]
+
+            # Order qty (SKU-level baseline)
             order_qty = max(0, int(round(target - pre_arrival)))
+
+            size_orders_this_po: dict[str, int] = {}
+            size_level_rows: list[dict] = []
+
+            # Size-level processing
+            base_sizes = [s for s in base_data['size_level'] if s['sku_key'] == sku_key]
+            if base_sizes and sku_key.startswith("CL"):
+                for base_size in base_sizes:
+                    size = base_size['size']
+                    d_size = base_size['d_size']
+
+                    # === SIZE-LEVEL INBOUND CLASSIFICATION ===
+                    size_active_inbound = active_inbound_by_size.get(size, 0)
+                    existing_size_inbound = existing_inbound_by_size.get(sku_key, {}).get(size, 0)
+                    size_inbound_snapshot = max(0, base_size['inbound'] - existing_size_inbound)
+                    size_inbound_total = size_inbound_snapshot + size_active_inbound
+
+                    # === SIZE-LEVEL CONSUMPTION & PRE-ARRIVAL (from MESSAGE DATE) ===
+                    size_stock_at_msg = _stock_at_message_date(
+                        current_stock=base_size['stock'],
+                        inbound_stock=size_inbound_snapshot,
+                        d_sku=d_size,
+                        days_offset=days_offset,
+                        arrivals=arrival_events_by_size.get(size, []),
+                    )
+                    size_consumption_msg_to_arr = d_size * effective_L
+                    size_pre_arrival = max(0, size_stock_at_msg + size_active_inbound - size_consumption_msg_to_arr)
+
+                    if po_num == 5 and d_size > 0:
+                        ss_total_size = base_size['target'] - (d_size * R)
+                        t_post_size = effective_R_sku + (ss_total_size / d_size)
+                        target_size = d_size * t_post_size
+                    else:
+                        t_post_size = base_size['t_post_days']
+                        target_size = base_size['target']
+
+                    size_order_qty = calc_deficit_capped_order_qty(
+                        d_size=d_size,
+                        t_post=t_post_size,
+                        pre_arrival_stock=size_pre_arrival
+                    )
+                    size_orders_this_po[size] = size_order_qty
+                    size_deficit = max(0, int(ceil((target_size - size_pre_arrival) - 1e-9)))
+
+                    # DOC for size
+                    if d_size > 0:
+                        size_pre_doc = size_pre_arrival / d_size
+                        size_post_doc = (size_pre_arrival + size_order_qty) / d_size
+                    else:
+                        size_pre_doc = 999.0
+                        size_post_doc = 999.0
+
+                    size_line = {
+                        'sku_key': sku_key,
+                        'sku_id': f"{sku_key}_{size}",
+                        'size': size,
+                        'stock': base_size['stock'],
+                        'inbound': size_inbound_snapshot,
+                        'active_inbound': size_active_inbound,
+                        'inbound_total': size_inbound_total,
+                        'days_until_arrival': effective_L,
+                        'consumption_until_arrival': round(size_consumption_msg_to_arr, 2),  # msg→arr only
+                        'pre_arrival': int(size_pre_arrival),
+                        'd_size': d_size,
+                        't_post_days': round(t_post_size, 1),
+                        'target': round(target_size, 1),
+                        'rop_size': base_size['rop_size'],
+                        'deficit_size': size_deficit,
+                        'order_qty': size_order_qty,
+                        'weight_kg': round(weight_kg * size_order_qty, 2),
+                        'prep_days': prep_days,
+                        'po_send_date': po_send_date.isoformat(),
+                        'po_message_date': po_message_date.isoformat(),
+                        'est_arr_date': po_arr_date.isoformat(),
+                        'pre_arr_doc': round(size_pre_doc, 1),
+                        'post_arr_doc': round(size_post_doc, 1),
+                        'roic_pct': base_sku['roic_pct'],
+                        'notes': ''
+                    }
+                    size_level_rows.append(size_line)
+
+                order_qty = sum(size_orders_this_po.values())
+            elif order_qty > 0 and base_sizes:
+                has_base_orders = any((s.get('order_qty') or 0) > 0 for s in base_sizes)
+                total_d_size = sum(s.get('d_size', 0) or 0 for s in base_sizes)
+                total_target = sum(s.get('target', 0) or 0 for s in base_sizes)
+                total_stock_inb = sum((s.get('stock', 0) or 0) + (s.get('inbound', 0) or 0) for s in base_sizes)
+
+                weights = {}
+                if total_d_size > 0:
+                    for s in base_sizes:
+                        weights[s['size']] = max(0.0, float(s.get('d_size', 0) or 0))
+                elif has_base_orders:
+                    for s in base_sizes:
+                        weights[s['size']] = max(0.0, float(s.get('order_qty', 0) or 0))
+                elif total_target > 0:
+                    for s in base_sizes:
+                        weights[s['size']] = max(0.0, float(s.get('target', 0) or 0))
+                elif total_stock_inb > 0:
+                    for s in base_sizes:
+                        weights[s['size']] = max(0.0, float((s.get('stock', 0) or 0) + (s.get('inbound', 0) or 0)))
+                else:
+                    for s in base_sizes:
+                        weights[s['size']] = 1.0
+
+                total_weight = sum(weights.values()) or 1.0
+                raw_alloc = {}
+                for size, w in weights.items():
+                    raw_alloc[size] = (order_qty * w) / total_weight
+
+                floor_alloc = {size: int(raw) for size, raw in raw_alloc.items()}
+                remainder = order_qty - sum(floor_alloc.values())
+                if remainder > 0:
+                    ranked = sorted(
+                        raw_alloc.items(),
+                        key=lambda item: (item[1] - int(item[1])),
+                        reverse=True,
+                    )
+                    for size, _ in ranked[:remainder]:
+                        floor_alloc[size] += 1
+
+                for base_size in base_sizes:
+                    size = base_size['size']
+                    d_size = base_size['d_size']
+
+                    # === SIZE-LEVEL INBOUND CLASSIFICATION ===
+                    size_active_inbound = active_inbound_by_size.get(size, 0)
+                    existing_size_inbound = existing_inbound_by_size.get(sku_key, {}).get(size, 0)
+                    size_inbound_snapshot = max(0, base_size['inbound'] - existing_size_inbound)
+                    size_inbound_total = size_inbound_snapshot + size_active_inbound
+
+                    # === SIZE-LEVEL CONSUMPTION & PRE-ARRIVAL (from MESSAGE DATE) ===
+                    size_stock_at_msg = _stock_at_message_date(
+                        current_stock=base_size['stock'],
+                        inbound_stock=size_inbound_snapshot,
+                        d_sku=d_size,
+                        days_offset=days_offset,
+                        arrivals=arrival_events_by_size.get(size, []),
+                    )
+                    size_consumption_msg_to_arr = d_size * effective_L
+                    size_pre_arrival = max(0, size_stock_at_msg + size_active_inbound - size_consumption_msg_to_arr)
+
+                    size_order_qty = int(floor_alloc.get(size, 0))
+                    size_orders_this_po[size] = size_order_qty
+
+                    if po_num == 5 and d_size > 0:
+                        ss_total_size = base_size['target'] - (d_size * R)
+                        t_post_size = effective_R_sku + (ss_total_size / d_size)
+                        target_size = d_size * t_post_size
+                    else:
+                        t_post_size = base_size['t_post_days']
+                        target_size = base_size['target']
+
+                    # DOC for size
+                    if d_size > 0:
+                        size_pre_doc = size_pre_arrival / d_size
+                        size_post_doc = (size_pre_arrival + size_order_qty) / d_size
+                    else:
+                        size_pre_doc = 999.0
+                        size_post_doc = 999.0
+                    size_deficit = max(0, int(ceil((target_size - size_pre_arrival) - 1e-9)))
+
+                    size_line = {
+                        'sku_key': sku_key,
+                        'sku_id': f"{sku_key}_{size}",
+                        'size': size,
+                        'stock': base_size['stock'],
+                        'inbound': size_inbound_snapshot,
+                        'active_inbound': size_active_inbound,
+                        'inbound_total': size_inbound_total,
+                        'days_until_arrival': effective_L,
+                        'consumption_until_arrival': round(size_consumption_msg_to_arr, 2),  # msg→arr only
+                        'pre_arrival': int(size_pre_arrival),
+                        'd_size': d_size,
+                        't_post_days': round(t_post_size, 1),
+                        'target': round(target_size, 1),
+                        'rop_size': base_size['rop_size'],
+                        'deficit_size': size_deficit,
+                        'order_qty': size_order_qty,
+                        'weight_kg': round(weight_kg * size_order_qty, 2),
+                        'prep_days': prep_days,
+                        'po_send_date': po_send_date.isoformat(),
+                        'po_message_date': po_message_date.isoformat(),
+                        'est_arr_date': po_arr_date.isoformat(),
+                        'pre_arr_doc': round(size_pre_doc, 1),
+                        'post_arr_doc': round(size_post_doc, 1),
+                        'roic_pct': base_sku['roic_pct'],
+                        'notes': ''
+                    }
+                    size_level_rows.append(size_line)
+
             po_weight = weight_kg * order_qty
 
             base_cost_cny = base_sku.get('base_cost_cny') or 0
@@ -2261,15 +2464,10 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 post_arr_doc = 999.0 if (pre_arrival + order_qty) > 0 else 0.0
 
             # Build SKU line
-            size_orders_this_po = {}
             t_post_days = base_sku.get('t_post_days', R)
             if po_num == 5 and d_sku > 0:
                 ss_total = base_sku['target'] - (d_sku * R)
                 t_post_days = effective_R_sku + (ss_total / d_sku)
-
-            adj = adjust_po_dates(po_message_date, po_send_date, po_arr_date)
-            po_send_date = adj["ship_date"]
-            po_arr_date = adj["est_arrival"]
 
             inbound_total_display = inbound_stock + active_inbound
 
@@ -2326,6 +2524,9 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             }
             po_data['sku_level'].append(sku_line)
 
+            for size_line in size_level_rows:
+                po_data['size_level'].append(size_line)
+
             # Update summary
             po_data['summary']['total_skus'] += 1
             if order_qty > 0:
@@ -2343,120 +2544,8 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             if base_sku['roic_below_threshold']:
                 po_data['summary']['low_roic_skus'] += 1
 
-            # Size-level processing (simplified - proportional allocation)
+            # Add to cumulative for next PO
             if order_qty > 0:
-                # Get size mix from base data
-                base_sizes = [s for s in base_data['size_level'] if s['sku_key'] == sku_key]
-                if base_sizes:
-                    has_base_orders = any((s.get('order_qty') or 0) > 0 for s in base_sizes)
-                    total_d_size = sum(s.get('d_size', 0) or 0 for s in base_sizes)
-                    total_target = sum(s.get('target', 0) or 0 for s in base_sizes)
-                    total_stock_inb = sum((s.get('stock', 0) or 0) + (s.get('inbound', 0) or 0) for s in base_sizes)
-
-                    weights = {}
-                    if total_d_size > 0:
-                        for s in base_sizes:
-                            weights[s['size']] = max(0.0, float(s.get('d_size', 0) or 0))
-                    elif has_base_orders:
-                        for s in base_sizes:
-                            weights[s['size']] = max(0.0, float(s.get('order_qty', 0) or 0))
-                    elif total_target > 0:
-                        for s in base_sizes:
-                            weights[s['size']] = max(0.0, float(s.get('target', 0) or 0))
-                    elif total_stock_inb > 0:
-                        for s in base_sizes:
-                            weights[s['size']] = max(0.0, float((s.get('stock', 0) or 0) + (s.get('inbound', 0) or 0)))
-                    else:
-                        for s in base_sizes:
-                            weights[s['size']] = 1.0
-
-                    total_weight = sum(weights.values()) or 1.0
-                    raw_alloc = {}
-                    for size, w in weights.items():
-                        raw_alloc[size] = (order_qty * w) / total_weight
-
-                    floor_alloc = {size: int(raw) for size, raw in raw_alloc.items()}
-                    remainder = order_qty - sum(floor_alloc.values())
-                    if remainder > 0:
-                        ranked = sorted(
-                            raw_alloc.items(),
-                            key=lambda item: (item[1] - int(item[1])),
-                            reverse=True,
-                        )
-                        for size, _ in ranked[:remainder]:
-                            floor_alloc[size] += 1
-
-                    for base_size in base_sizes:
-                        size = base_size['size']
-                        d_size = base_size['d_size']
-
-                        # === SIZE-LEVEL INBOUND CLASSIFICATION ===
-                        size_active_inbound = active_inbound_by_size.get(size, 0)
-                        existing_size_inbound = existing_inbound_by_size.get(sku_key, {}).get(size, 0)
-                        size_inbound_snapshot = max(0, base_size['inbound'] - existing_size_inbound)
-                        size_inbound_total = size_inbound_snapshot + size_active_inbound
-
-                        # === SIZE-LEVEL CONSUMPTION & PRE-ARRIVAL (from MESSAGE DATE) ===
-                        size_stock_at_msg = _stock_at_message_date(
-                            current_stock=base_size['stock'],
-                            inbound_stock=size_inbound_snapshot,
-                            d_sku=d_size,
-                            days_offset=days_offset,
-                            arrivals=arrival_events_by_size.get(size, []),
-                        )
-                        size_consumption_msg_to_arr = d_size * effective_L
-                        size_pre_arrival = max(0, size_stock_at_msg + size_active_inbound - size_consumption_msg_to_arr)
-
-                        size_order_qty = int(floor_alloc.get(size, 0))
-                        size_orders_this_po[size] = size_order_qty
-
-                        if po_num == 5 and d_size > 0:
-                            ss_total_size = base_size['target'] - (d_size * R)
-                            t_post_size = effective_R_sku + (ss_total_size / d_size)
-                            target_size = d_size * t_post_size
-                        else:
-                            t_post_size = base_size['t_post_days']
-                            target_size = base_size['target']
-
-                        # DOC for size
-                        if d_size > 0:
-                            size_pre_doc = size_pre_arrival / d_size
-                            size_post_doc = (size_pre_arrival + size_order_qty) / d_size
-                        else:
-                            size_pre_doc = 999.0
-                            size_post_doc = 999.0
-
-                        size_line = {
-                            'sku_key': sku_key,
-                            'sku_id': f"{sku_key}_{size}",
-                            'size': size,
-                            'stock': base_size['stock'],
-                            'inbound': size_inbound_snapshot,
-                            'active_inbound': size_active_inbound,
-                            'inbound_total': size_inbound_total,
-                            'days_until_arrival': effective_L,
-                            'consumption_until_arrival': round(size_consumption_msg_to_arr, 2),  # msg→arr only
-                            'pre_arrival': int(size_pre_arrival),
-                            'd_size': d_size,
-                            't_post_days': round(t_post_size, 1),
-                            'target': round(target_size, 1),
-                            'rop_size': base_size['rop_size'],
-                            'deficit_size': max(0, int(base_size['rop_size'] - size_pre_arrival)),
-                            'order_qty': size_order_qty,
-                            'weight_kg': round(weight_kg * size_order_qty, 2),
-                            'prep_days': prep_days,
-                            'po_send_date': po_send_date.isoformat(),
-                            'po_message_date': po_message_date.isoformat(),
-                            'est_arr_date': po_arr_date.isoformat(),
-                            'pre_arr_doc': round(size_pre_doc, 1),
-                            'post_arr_doc': round(size_post_doc, 1),
-                            'roic_pct': base_sku['roic_pct'],
-                            'notes': ''
-                        }
-                        po_data['size_level'].append(size_line)
-                        size_orders_this_po[size] = size_order_qty
-
-                # Add to cumulative for next PO
                 if sku_key not in cumulative_orders:
                     cumulative_orders[sku_key] = []
                 cumulative_orders[sku_key].append((po_arr_date, order_qty, size_orders_this_po))

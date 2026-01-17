@@ -1430,8 +1430,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             pre_arrival = Math.max(0, (sku.stock || 0) + (sku.inbound || 0) + adjusted_inbound - consumption);
           }
 
-          // Order qty = max(0, target - pre_arrival)
-          const order_qty = isPlan0 ? (sku.po_qty_total || 0) : Math.max(0, Math.round(target - pre_arrival));
+          // Order qty = use backend size_orders when present (no UI re-allocation)
+          const order_qty_base = isPlan0 ? (sku.po_qty_total || 0) : Math.max(0, Math.round(target - pre_arrival));
+          const backendSizeOrders = sku.size_orders || {};
+          const backendSizeTotal = Object.values(backendSizeOrders).reduce((a, b) => a + b, 0);
+          const hasBackendSizes = Object.keys(backendSizeOrders).length > 0;
+          const order_qty = hasBackendSizes ? backendSizeTotal : order_qty_base;
 
           // Weight and prep days
           // Use SHARED prep_days per supplier type (not per-SKU weight!)
@@ -1472,27 +1476,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           const roic_pct = k_avg > 0 ? (monthly_profit / k_avg) * 100 : 0;
           const profit_margin_pct = unit_cogs > 0 ? (profit_unit / unit_cogs) * 100 : 0;
 
-          // Recalculate size_orders based on multiplier
-          const size_orders = {};
-          if (isPlan0 && sku.size_orders) {
-            Object.entries(sku.size_orders).forEach(([size, origQty]) => {
-              size_orders[size] = origQty;
-            });
-          } else if (sku.size_orders) {
-            const totalOriginal = Object.values(sku.size_orders).reduce((a, b) => a + b, 0);
-            if (totalOriginal > 0 && order_qty > 0) {
-              Object.entries(sku.size_orders).forEach(([size, origQty]) => {
-                const ratio = origQty / totalOriginal;
-                size_orders[size] = Math.round(order_qty * ratio);
-              });
-              // Adjust to match total
-              const newTotal = Object.values(size_orders).reduce((a, b) => a + b, 0);
-              if (newTotal !== order_qty && Object.keys(size_orders).length > 0) {
-                const firstSize = Object.keys(size_orders)[0];
-                size_orders[firstSize] += (order_qty - newTotal);
-              }
-            }
-          }
+          const size_orders = backendSizeOrders;
 
           return {
             ...sku,
@@ -1554,8 +1538,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             };
           }
 
-          const sizeOrderFromSku = parentSku?.size_orders?.[size.size];
-          const order_qty = Math.max(0, Math.round(sizeOrderFromSku ?? size.order_qty ?? 0));
+          const order_qty = Math.max(0, Math.round(size.order_qty ?? 0));
           const effective_L = size.days_until_arrival || parentSku?.days_until_arrival || (L + 3);
           const consumption = size.consumption_until_arrival ?? (d_adjusted * effective_L);
           const pre_arrival = size.pre_arrival ?? Math.max(
