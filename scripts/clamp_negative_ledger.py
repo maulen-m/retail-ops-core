@@ -43,6 +43,11 @@ def main() -> int:
     parser.add_argument("--store-code", default="UNIVERSAL", help="Store code (default: UNIVERSAL = all stores)")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="DB path")
     parser.add_argument("--apply", action="store_true", help="Apply adjustments (default: dry-run)")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-clamp even if prior clamp adjustments exist for the snapshot date",
+    )
     args = parser.parse_args()
 
     snapshot_date = _parse_date(args.snapshot_date)
@@ -50,6 +55,8 @@ def main() -> int:
 
     with get_db(args.db) as conn:
         existing = _load_existing_adjustments(conn, snapshot_date, ref_id)
+        if args.force:
+            existing = set()
 
         balances = get_stock_balances_all(
             store_code=args.store_code,
