@@ -35,6 +35,7 @@ def _insert(
     assigned: str = "",
     my_size: str = "",
     kaspi_status: str = "KASPI_DELIVERY",
+    sku_id: str = "SKU-1",
 ) -> None:
     conn.execute(
         """
@@ -43,7 +44,7 @@ def _insert(
             internal_status, kaspi_status, assigned_size, my_size
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (order_id, "SKU-1", "UNIVERSAL", planned, internal, kaspi_status, assigned, my_size),
+        (order_id, sku_id, "UNIVERSAL", planned, internal, kaspi_status, assigned, my_size),
     )
 
 
@@ -80,6 +81,19 @@ def test_day_complete_ignores_future_and_non_ready(tmp_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     _insert(conn, "1003", "2026-01-10", "READY")
     _insert(conn, "1004", "2026-01-08", "CANCELLED", kaspi_status="CANCELLED")
+    conn.commit()
+    conn.close()
+
+    report = evaluate_day_complete(db_path, date(2026, 1, 8))
+    assert report.ok
+    assert report.details["violations"] == 0
+
+
+def test_day_complete_skips_missing_line_items(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _make_db(db_path)
+    conn = sqlite3.connect(db_path)
+    _insert(conn, "1005", "2026-01-08", "READY", sku_id="")
     conn.commit()
     conn.close()
 

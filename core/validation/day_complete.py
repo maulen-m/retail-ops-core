@@ -48,6 +48,7 @@ _REQUIRED_COLUMNS = {
     "assigned_size",
     "my_size",
 }
+_OPTIONAL_COLUMNS = {"kaspi_offer_name"}
 
 
 def _normalize(value: Any) -> str:
@@ -124,10 +125,23 @@ def evaluate_day_complete(db_path: Path, cutoff_date: date) -> DayCompleteReport
                 details={"cutoff_date": cutoff_date.isoformat()},
             )
 
+        select_cols = [
+            "order_id",
+            "sku_id",
+            "store_code",
+            "planned_shipment_date",
+            "internal_status",
+            "kaspi_status",
+            "assigned_size",
+            "my_size",
+        ]
+        has_offer_name = "kaspi_offer_name" in col_names
+        if has_offer_name:
+            select_cols.append("kaspi_offer_name")
+
         rows = conn.execute(
-            """
-            SELECT order_id, sku_id, store_code, planned_shipment_date,
-                   internal_status, kaspi_status, assigned_size, my_size
+            f"""
+            SELECT {", ".join(select_cols)}
             FROM fact_orders_kaspi
             WHERE planned_shipment_date IS NOT NULL
             """
@@ -137,12 +151,17 @@ def evaluate_day_complete(db_path: Path, cutoff_date: date) -> DayCompleteReport
 
     eligible = 0
     violations: list[DayCompleteViolation] = []
+    skipped_missing_line_items = 0
 
     for row in rows:
         planned_date = _parse_date(row["planned_shipment_date"])
         if planned_date is None or planned_date > cutoff_date:
             continue
         if not _is_ready_status(row["internal_status"], row["kaspi_status"]):
+            continue
+        offer_name = row["kaspi_offer_name"] if has_offer_name else ""
+        if not _normalize(row["sku_id"]) and not _normalize(offer_name):
+            skipped_missing_line_items += 1
             continue
 
         eligible += 1
@@ -164,6 +183,7 @@ def evaluate_day_complete(db_path: Path, cutoff_date: date) -> DayCompleteReport
         "cutoff_date": cutoff_date.isoformat(),
         "eligible_orders": eligible,
         "violations": len(violations),
+        "skipped_missing_line_items": skipped_missing_line_items,
     }
 
     ok = not violations

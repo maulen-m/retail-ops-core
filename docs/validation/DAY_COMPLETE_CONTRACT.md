@@ -15,6 +15,7 @@ An order is eligible when ALL are true:
 - `planned_shipment_date` is not null
 - `planned_shipment_date` <= `cutoff_date`
 - Status indicates shipment readiness or completion
+- Order has a line item identifier (`sku_id` or `kaspi_offer_name` present)
 
 Status rule (either):
 - `internal_status` in {`READY`, `SHIPPED`, `COMPLETED`}
