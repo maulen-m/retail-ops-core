@@ -75,7 +75,9 @@ def main() -> int:
     plan_name = args.plan
     if not plan_name:
         active = payload.get("active_pos") or []
-        if active:
+        if "PLAN-1" in pos:
+            plan_name = "PLAN-1"
+        elif active:
             plan_name = active[0]
         elif "PLAN-0" in pos:
             plan_name = "PLAN-0"
@@ -103,6 +105,7 @@ def main() -> int:
         sku_key = sku.get("sku_key")
         if not sku_key:
             continue
+        is_cl = str(sku_key).startswith("CL_")
         size_rows = size_by_sku.get(sku_key, [])
 
         # No negative order quantities
@@ -136,6 +139,23 @@ def main() -> int:
             if int(row.get("order_qty", 0) or 0) < 0:
                 errors.append(f"{sku_key}: negative size order_qty for {row.get('size')}")
                 break
+
+        # Deficit-capped ordering for CL sizes
+        if is_cl:
+            for row in size_rows:
+                try:
+                    pre_arrival = float(row.get("pre_arrival", 0) or 0)
+                    target = float(row.get("target", 0) or 0)
+                    deficit = float(row.get("deficit_size", 0) or 0)
+                    order_qty = int(row.get("order_qty", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if (target > 0 and pre_arrival >= target) or deficit <= 0:
+                    if order_qty > 0:
+                        errors.append(
+                            f"{sku_key}: size {row.get('size')} has no deficit but order_qty={order_qty}"
+                        )
+                        break
 
         # d_size sum vs d_sku
         d_sku = float(sku.get("d_sku", 0) or 0)

@@ -854,6 +854,64 @@ class TestOrderQtyForSize:
 
 
 # =============================================================================
+# TASK-307: Deficit-capped size ordering (CL)
+# =============================================================================
+
+class TestDeficitCappedOrderQty:
+    """Tests for calc_deficit_capped_order_qty()"""
+
+    def test_overstock_small_sizes_zero(self):
+        """Overstocked S/M should order 0; short XL/2XL should order > 0."""
+        from core.calc.size_allocation import calc_deficit_capped_order_qty
+
+        # S and M: pre_arrival >= target -> 0
+        qty_s = calc_deficit_capped_order_qty(d_size=1.0, t_post=20.0, pre_arrival_stock=25.0)
+        qty_m = calc_deficit_capped_order_qty(d_size=0.8, t_post=20.0, pre_arrival_stock=20.0)
+
+        # XL/2XL: pre_arrival < target -> > 0
+        qty_xl = calc_deficit_capped_order_qty(d_size=2.0, t_post=20.0, pre_arrival_stock=10.0)
+        qty_2xl = calc_deficit_capped_order_qty(d_size=1.5, t_post=20.0, pre_arrival_stock=5.0)
+
+        assert qty_s == 0
+        assert qty_m == 0
+        assert qty_xl > 0
+        assert qty_2xl > 0
+
+    def test_generate_po_draft_overstock_sizes_zero(self):
+        """Allocator should keep overstocked sizes at 0 for CL SKUs."""
+        from core.calc.size_allocation import generate_po_draft
+
+        draft = generate_po_draft(
+            sku_key="CL_TEST_OVERSTOCK",
+            store_code="UNIVERSAL",
+            size_sales_90d={"S": 90, "M": 90, "XL": 180, "2XL": 180},
+            size_current_stock={"S": 500, "M": 500, "XL": 0, "2XL": 0},
+            size_inbound_stock={"S": 0, "M": 0, "XL": 0, "2XL": 0},
+            size_sales_history={
+                "S": [1] * 90,
+                "M": [1] * 90,
+                "XL": [2] * 90,
+                "2XL": [2] * 90,
+            },
+            size_stock_history={
+                "S": [500] * 90,
+                "M": [500] * 90,
+                "XL": [0] * 90,
+                "2XL": [0] * 90,
+            },
+            unit_cogs=100.0,
+            unit_profit=30.0,
+            sigma_sku=1.0,
+            sku_age_days=120,
+        )
+
+        allocs = {size: alloc.order_qty_adjusted for size, alloc in draft.allocations.items()}
+        assert allocs["S"] == 0
+        assert allocs["M"] == 0
+        assert allocs["XL"] > 0
+        assert allocs["2XL"] > 0
+
+# =============================================================================
 # TASK-160: New SKU adjustments (5 tests)
 # =============================================================================
 
