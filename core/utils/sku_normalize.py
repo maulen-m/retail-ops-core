@@ -144,6 +144,34 @@ def infer_size_from_sku_id(sku_id: str | None) -> str | None:
     return normalized
 
 
+def normalize_sku_id(sku_id: str | None, sku_key_hint: str | None = None) -> str | None:
+    """
+    Normalize sku_id to canonical form: <normalized_sku_key>_<normalized_size>.
+
+    If size cannot be inferred, returns normalized sku_key only.
+    """
+    if not sku_id and not sku_key_hint:
+        return None
+
+    raw = str(sku_id).strip() if sku_id else ""
+    raw = " ".join(raw.split())
+    raw = raw.upper()
+
+    size = infer_size_from_sku_id(raw)
+    base = raw
+    if size and "_" in raw:
+        base = raw.rsplit("_", 1)[0]
+
+    if sku_key_hint:
+        base = normalize_sku_key(str(sku_key_hint).strip())
+    else:
+        base = normalize_sku_key(base)
+
+    if size:
+        return f"{base}_{size}"
+    return base
+
+
 if __name__ == "__main__":
     # Quick test
     test_cases = [
