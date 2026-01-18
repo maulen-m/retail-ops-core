@@ -305,11 +305,12 @@ class TestRebuildSnapshot:
     def test_rebuild_snapshot_matches_ledger(self, test_db):
         """Test snapshot rebuilding matches ledger totals."""
         today = date.today()
+        yesterday = today - timedelta(days=1)
 
         # Add some events
-        add_ledger_event("INITIAL", "TEST_SKU_KEY_S", 10, today, db_path=test_db)
-        add_ledger_event("INITIAL", "TEST_SKU_KEY_M", 20, today, db_path=test_db)
-        add_ledger_event("SALE", "TEST_SKU_KEY_S", -3, today, db_path=test_db)
+        add_ledger_event("INITIAL", "TEST_SKU_KEY_S", 10, yesterday, db_path=test_db)
+        add_ledger_event("INITIAL", "TEST_SKU_KEY_M", 20, yesterday, db_path=test_db)
+        add_ledger_event("SALE", "TEST_SKU_KEY_S", -3, yesterday, db_path=test_db)
 
         # Rebuild snapshot
         rows_created = rebuild_snapshot_from_ledger(snapshot_date=today, db_path=test_db)
@@ -338,9 +339,10 @@ class TestRebuildSnapshot:
     def test_rebuild_includes_inbound(self, test_db):
         """Test snapshot includes pending PO inbound stock."""
         today = date.today()
+        yesterday = today - timedelta(days=1)
 
         # Add initial stock
-        add_ledger_event("INITIAL", "TEST_SKU_KEY_L", 50, today, db_path=test_db)
+        add_ledger_event("INITIAL", "TEST_SKU_KEY_L", 50, yesterday, db_path=test_db)
 
         # Add pending PO
         conn = sqlite3.connect(str(test_db))
