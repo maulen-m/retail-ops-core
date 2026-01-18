@@ -14,10 +14,17 @@
 cd ~/Docs/Autonomous_business
 source .venv/bin/activate 2>/dev/null || true
 if [ -f ".env" ]; then
-    set -a
-    source .env
-    set +a
+    source scripts/load_env.sh ".env"
 fi
+
+SKIP_SHIP=0
+for arg in "$@"; do
+    case "$arg" in
+        --skip-ship|--download-only)
+            SKIP_SHIP=1
+            ;;
+    esac
+done
 
 # Ensure PDF merge dependency is available (pypdf preferred)
 python - <<'PY'
@@ -56,7 +63,11 @@ echo ""
 # Preflight checks (CRM exists, backups, columns, shipping guard if enabled)
 echo "Preflight: checking CRM + environment..."
 echo "----------------------------------------"
-if [ "${ENABLE_KASPI_WRITE}" = "1" ]; then
+if [ "${SKIP_SHIP}" -eq 1 ]; then
+    SHIPPING_ENABLED=0
+    echo "INFO: --skip-ship enabled. Shipping step will be skipped."
+    python scripts/ops_preflight.py
+elif [ "${ENABLE_KASPI_WRITE}" = "1" ]; then
     SHIPPING_ENABLED=1
     python scripts/ops_preflight.py --shipping
 else
@@ -128,7 +139,7 @@ if [ "${SHIPPING_ENABLED}" -eq 1 ]; then
 
     echo ""
 else
-    echo "Step 1: Shipping orders skipped (ENABLE_KASPI_WRITE != 1)"
+    echo "Step 1: Shipping orders skipped"
     echo ""
 fi
 

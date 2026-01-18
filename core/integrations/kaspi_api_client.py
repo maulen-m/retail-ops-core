@@ -376,6 +376,35 @@ class KaspiAPIClient:
             parts.append(str(errors))
         return "; ".join(p for p in parts if p)
 
+    def _log_assemble_response(self, label: str, response: APIResponse) -> None:
+        """Log assemble responses when KASPI_ASSEMBLE_DEBUG=1."""
+        if os.environ.get("KASPI_ASSEMBLE_DEBUG", "0") != "1":
+            return
+        if not response:
+            logger.info("Assemble %s: no response", label)
+            return
+        data = response.data if isinstance(response.data, dict) else {}
+        attrs = None
+        if isinstance(data, dict):
+            if isinstance(data.get('data'), dict):
+                attrs = data['data'].get('attributes', {})
+            else:
+                attrs = data.get('attributes', {})
+        errors = self._extract_error_details(data)
+        status = attrs.get('status') if isinstance(attrs, dict) else None
+        assembled = attrs.get('assembled') if isinstance(attrs, dict) else None
+        number_of_space = attrs.get('numberOfSpace') if isinstance(attrs, dict) else None
+        logger.info(
+            "Assemble %s: status_code=%s success=%s errors=%s status=%s assembled=%s numberOfSpace=%s",
+            label,
+            response.status_code,
+            response.success,
+            errors,
+            status,
+            assembled,
+            number_of_space,
+        )
+
     # =========================================================================
     # READ OPERATIONS
     # =========================================================================
@@ -730,6 +759,7 @@ class KaspiAPIClient:
                 'id': base64_id,
                 'attributes': {
                     'status': 'ASSEMBLE',
+                    'code': order_code,
                     'numberOfSpace': str(parcel_count),
                 }
             }
@@ -738,6 +768,7 @@ class KaspiAPIClient:
         primary_status: int = 0
         try:
             result = self._request('POST', 'orders', json_data=primary_payload)
+            self._log_assemble_response("primary", result)
             primary_status = result.status_code or 0
             if result.success:
                 api_errors = self._extract_error_details(result.data)
@@ -760,6 +791,7 @@ class KaspiAPIClient:
                 f'orders/{base64_id}/assemble',
                 json_data=fallback_payload,
             )
+            self._log_assemble_response("fallback", fallback)
             fallback_status = fallback.status_code or 0
             if fallback.success:
                 api_errors = self._extract_error_details(fallback.data)
@@ -809,6 +841,7 @@ class KaspiAPIClient:
                 f'orders/{base64_id}/assemble',
                 json_data=fallback_payload,
             )
+            self._log_assemble_response("fallback-only", fallback)
             if fallback.success:
                 api_errors = self._extract_error_details(fallback.data)
                 if api_errors:

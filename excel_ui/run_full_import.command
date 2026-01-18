@@ -9,9 +9,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 source .venv/bin/activate 2>/dev/null || true
 if [ -f ".env" ]; then
-    set -a
-    source .env
-    set +a
+    source scripts/load_env.sh ".env"
 fi
 
 if [ -z "${AB_DATA_DIR:-}" ] && [ -z "${DATA_DIR:-}" ]; then
