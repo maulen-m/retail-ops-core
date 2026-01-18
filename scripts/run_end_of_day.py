@@ -522,7 +522,13 @@ def _run_pipeline(args, start_time: datetime) -> int:
 
     steps.extend([
         PipelineStep(
-            name="2f. Validate Day Complete",
+            name="2f. Validate Snapshot vs Snapshot_Z",
+            script="validate_snapshot_vs_snapshot_z.py",
+            args=["--snapshot-date", cutoff_date.isoformat()],
+            required=True
+        ),
+        PipelineStep(
+            name="2g. Validate Day Complete",
             script="validate_day_complete.py",
             args=["--cutoff-date", cutoff_date.isoformat()],
             required=False
