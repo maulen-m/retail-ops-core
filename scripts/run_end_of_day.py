@@ -524,7 +524,6 @@ def _run_pipeline(args, start_time: datetime) -> int:
         PipelineStep(
             name="2f. Validate Snapshot vs Snapshot_Z",
             script="validate_snapshot_vs_snapshot_z.py",
-            args=["--snapshot-date", cutoff_date.isoformat()],
             required=True
         ),
         PipelineStep(
