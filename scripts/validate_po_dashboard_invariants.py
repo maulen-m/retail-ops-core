@@ -166,6 +166,52 @@ def main() -> int:
                     f"{sku_key}: sum(d_size)={d_size_sum:.4f} vs d_sku={d_sku:.4f}"
                 )
 
+    # PLAN chain DoC floor invariant
+    plan_names = sorted(pos.keys(), key=_plan_index)
+    base_plan_name = "PLAN-0" if "PLAN-0" in pos else plan_names[0]
+    base_plan = pos.get(base_plan_name, {})
+    base_r = float(base_plan.get("reorder_cycle_R", 0) or 0)
+    base_map: dict[str, tuple[float, float]] = {}
+    for sku in base_plan.get("sku_level", []):
+        sku_key = sku.get("sku_key")
+        if not sku_key:
+            continue
+        d_sku = float(sku.get("d_sku", 0) or 0)
+        target = float(sku.get("target", 0) or 0)
+        base_map[sku_key] = (d_sku, target)
+
+    for idx in range(len(plan_names) - 1):
+        curr_name = plan_names[idx]
+        curr = pos.get(curr_name, {})
+        if _plan_index(curr_name) < 1:
+            continue
+        nxt = pos.get(plan_names[idx + 1], {})
+        curr_by_sku = {s.get("sku_key"): s for s in curr.get("sku_level", []) if s.get("sku_key")}
+        for next_sku in nxt.get("sku_level", []):
+            sku_key = next_sku.get("sku_key")
+            if not sku_key:
+                continue
+            if not str(sku_key).startswith("CL_"):
+                continue
+            base_vals = base_map.get(sku_key)
+            if not base_vals:
+                continue
+            base_d, base_target = base_vals
+            if base_d <= 0:
+                continue
+            prev = curr_by_sku.get(sku_key, {})
+            prev_order_qty = int(prev.get("po_qty_total", 0) or 0)
+            if prev_order_qty <= 0:
+                continue
+            ss_total = max(0.0, base_target - (base_d * base_r))
+            ss_total_days = ss_total / base_d if base_d > 0 else 0.0
+            pre_arr_doc = float(next_sku.get("pre_arr_doc", 0) or 0)
+            if pre_arr_doc < (ss_total_days - 0.25):
+                errors.append(
+                    f"{sku_key}: {plan_names[idx+1]} pre_arr_doc={pre_arr_doc:.2f} < "
+                    f"SS_total/D={ss_total_days:.2f} (prev {plan_names[idx]} qty={prev_order_qty})"
+                )
+
     if errors:
         print("INVARIANT FAILURES:")
         for err in errors[:20]:
