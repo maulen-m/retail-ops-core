@@ -32,11 +32,9 @@ TABLES = [
 def _product_type_from_key(sku_key: str | None) -> str | None:
     if not sku_key:
         return None
-    if sku_key.startswith("ELS"):
-        return "ELS"
     if sku_key.startswith("CL"):
         return "CL"
-    return None
+    return "NON_CL"
 
 
 def _table_columns(conn, table: str) -> set[str]:
@@ -72,11 +70,11 @@ def main() -> int:
                 normalized_key = normalize_sku_key(sku_key) if sku_key else None
                 product_type = _product_type_from_key(normalized_key or sku_key)
                 normalized_size = normalize_size(my_size, product_type) if my_size is not None else None
-                if product_type == "ELS":
+                if product_type and product_type != "CL":
                     normalized_size = "ONE_SIZE"
 
                 normalized_id = normalize_sku_id(sku_id, normalized_key or sku_key)
-                if product_type == "ELS" and normalized_key:
+                if product_type and product_type != "CL" and normalized_key:
                     normalized_id = normalized_key
 
                 changes = {}
