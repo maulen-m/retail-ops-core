@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 
@@ -43,7 +43,7 @@ def _load_ledger_balances(conn, snapshot_date: str) -> dict[str, int]:
         """
         SELECT sku_id, SUM(qty_change) AS balance
         FROM stock_ledger
-        WHERE event_date <= ?
+        WHERE event_date < ?
         GROUP BY sku_id
         """,
         (snapshot_date,),
@@ -51,10 +51,10 @@ def _load_ledger_balances(conn, snapshot_date: str) -> dict[str, int]:
     return {row["sku_id"]: int(row["balance"] or 0) for row in rows}
 
 
-def _load_existing_adjustments(conn, snapshot_date: str, ref_id: str) -> set[str]:
+def _load_existing_adjustments(conn, snapshot_date: str, ref_id: str) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT sku_id
+        SELECT sku_id, sku_key, my_size, qty_change
         FROM stock_ledger
         WHERE event_date = ?
           AND event_type = 'ADJUSTMENT'
@@ -62,10 +62,10 @@ def _load_existing_adjustments(conn, snapshot_date: str, ref_id: str) -> set[str
         """,
         (snapshot_date, ref_id),
     ).fetchall()
-    return {row["sku_id"] for row in rows}
+    return [dict(row) for row in rows]
 
 
-def _insert_adjustment(conn, snapshot_date: str, row: dict, diff: int, ref_id: str) -> None:
+def _insert_adjustment(conn, event_date: str, row: dict, diff: int, ref_id: str, notes: str) -> None:
     conn.execute(
         """
         INSERT INTO stock_ledger (
@@ -75,13 +75,13 @@ def _insert_adjustment(conn, snapshot_date: str, row: dict, diff: int, ref_id: s
         ) VALUES (?, 'ADJUSTMENT', ?, ?, ?, 'UNIVERSAL', ?, NULL, ?, 'ADJUSTMENT', NULL, ?, 'SYSTEM', 'system')
         """,
         (
-            snapshot_date,
+            event_date,
             row["sku_key"],
             row["sku_id"],
             row["my_size"],
             diff,
             ref_id,
-            f"Reconcile ledger to snapshot {snapshot_date}",
+            notes,
         ),
     )
 
@@ -91,10 +91,16 @@ def main() -> int:
     parser.add_argument("--snapshot-date", required=True, help="Snapshot date YYYY-MM-DD")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="DB path")
     parser.add_argument("--apply", action="store_true", help="Apply adjustments (default: dry-run)")
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Reverse existing adjustments for this snapshot date before applying new ones",
+    )
     args = parser.parse_args()
 
     snapshot_date = _parse_date(args.snapshot_date)
     ref_id = f"SNAPSHOT_RECON_{snapshot_date}"
+    adjust_date = (datetime.strptime(snapshot_date, "%Y-%m-%d").date() - timedelta(days=1)).isoformat()
 
     with get_db(args.db) as conn:
         snapshot = _load_snapshot(conn, snapshot_date)
@@ -102,7 +108,24 @@ def main() -> int:
             raise SystemExit(f"No snapshot rows found for {snapshot_date}")
 
         balances = _load_ledger_balances(conn, snapshot_date)
-        existing = _load_existing_adjustments(conn, snapshot_date, ref_id)
+        existing_rows = _load_existing_adjustments(conn, snapshot_date, ref_id)
+        existing = {row["sku_id"] for row in existing_rows}
+
+        if args.replace and existing_rows:
+            rev_id = f"{ref_id}_REV"
+            existing_rev = _load_existing_adjustments(conn, snapshot_date, rev_id)
+            if not existing_rev:
+                for row in existing_rows:
+                    if args.apply:
+                        _insert_adjustment(
+                            conn,
+                            snapshot_date,
+                            row,
+                            -int(row["qty_change"] or 0),
+                            rev_id,
+                            f"Reverse prior reconcile {snapshot_date}",
+                        )
+            existing = set()
 
         stats = defaultdict(int)
 
@@ -120,7 +143,14 @@ def main() -> int:
             stats["adjustments"] += 1
             stats["units"] += diff
             if args.apply:
-                _insert_adjustment(conn, snapshot_date, snap, diff, ref_id)
+                _insert_adjustment(
+                    conn,
+                    adjust_date,
+                    snap,
+                    diff,
+                    ref_id,
+                    f"Reconcile ledger to snapshot {snapshot_date} (morning)",
+                )
 
         # For SKUs missing from snapshot but negative in ledger, clamp to 0
         for sku_id, balance in balances.items():
@@ -144,7 +174,14 @@ def main() -> int:
                 else:
                     row["sku_key"] = sku_id.rsplit("_", 1)[0] if "_" in sku_id else sku_id
                     row["my_size"] = sku_id.rsplit("_", 1)[1] if "_" in sku_id else "UNKNOWN"
-                _insert_adjustment(conn, snapshot_date, row, -balance, ref_id)
+                _insert_adjustment(
+                    conn,
+                    adjust_date,
+                    row,
+                    -balance,
+                    ref_id,
+                    f"Reconcile ledger to snapshot {snapshot_date} (morning)",
+                )
 
         if args.apply:
             conn.commit()

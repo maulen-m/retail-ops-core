@@ -393,6 +393,8 @@ def rebuild_snapshot_from_ledger(
             store_filter = "AND store_code = ?"
             params.append(store_code)
 
+        # Snapshot semantics: MORNING stock before same-day events.
+        # Use event_date < snapshot_date to exclude same-day sales/arrivals.
         ledger_balances = conn.execute(f"""
             SELECT
                 sku_id,
@@ -400,7 +402,7 @@ def rebuild_snapshot_from_ledger(
                 my_size,
                 SUM(qty_change) as current_stock
             FROM stock_ledger
-            WHERE event_date <= ?
+            WHERE event_date < ?
               {store_filter}
             GROUP BY sku_id, sku_key, my_size
         """, params).fetchall()
@@ -519,10 +521,10 @@ def rebuild_snapshot_from_ledger(
                 for row in fallback_rows:
                     base_rows.setdefault(row["sku_id"], (row["sku_key"], row["my_size"]))
 
-        ledger_by_sku = {
-            row["sku_id"]: row["current_stock"]
-            for row in ledger_balances
-        }
+        ledger_by_sku: dict[str, int] = {}
+        for row in ledger_balances:
+            sku_id = row["sku_id"]
+            ledger_by_sku[sku_id] = ledger_by_sku.get(sku_id, 0) + (row["current_stock"] or 0)
 
         inserted = 0
         for sku_id in sorted(base_rows.keys()):

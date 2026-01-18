@@ -75,6 +75,33 @@ def write_negative_balance_report(
 
     return output_path
 
+
+def get_stock_balances_exclusive(
+    snapshot_date: date,
+    store_code: str = "UNIVERSAL",
+    db_path: Path = None,
+) -> dict:
+    """Return ledger balances with event_date < snapshot_date (morning semantics)."""
+    if db_path is None:
+        db_path = DEFAULT_DB_PATH
+    params = [snapshot_date.isoformat()]
+    store_filter = ""
+    if store_code and store_code != "ALL":
+        store_filter = "AND store_code = ?"
+        params.append(store_code)
+    with get_db(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT sku_id, SUM(qty_change) as balance
+            FROM stock_ledger
+            WHERE event_date < ?
+              {store_filter}
+            GROUP BY sku_id
+            """,
+            params,
+        ).fetchall()
+    return {row["sku_id"]: row["balance"] for row in rows}
+
 def get_existing_snapshot(
     snapshot_date: date,
     store_code: str = "UNIVERSAL",
@@ -369,9 +396,9 @@ def rebuild_snapshot(
             "Re-run with --mode simulate if intended."
         )
     if mode in {"auto", "ledger"}:
-        balances = get_stock_balances_all(
+        balances = get_stock_balances_exclusive(
+            snapshot_date=snapshot_date,
             store_code=store_code,
-            as_of_date=snapshot_date,
             db_path=db_path,
         )
         negative_balances = sum(1 for v in balances.values() if v < 0)
@@ -415,9 +442,9 @@ def rebuild_snapshot(
                 WHERE snapshot_date = ? AND current_stock < 0
             """, (snapshot_date.isoformat(),)).fetchone()["cnt"]
         if negatives:
-            balances = get_stock_balances_all(
+            balances = get_stock_balances_exclusive(
+                snapshot_date=snapshot_date,
                 store_code=store_code,
-                as_of_date=snapshot_date,
                 db_path=db_path,
             )
             report_path = write_negative_balance_report(snapshot_date, balances, db_path)
