@@ -36,6 +36,14 @@ VALID_EVENT_TYPES = frozenset([
     "WRITE_OFF",    # Damage/loss (decreases stock)
 ])
 
+CANONICAL_STORE_CODE = "UNIVERSAL"
+ALL_STORES_CODE = "ALL"
+
+
+def inventory_pool_store_code() -> str:
+    """Canonical store_code used for inventory pool."""
+    return CANONICAL_STORE_CODE
+
 
 def log_audit(
     table_name: str,
@@ -223,7 +231,7 @@ def get_stock_balance(
     with get_db(db_path) as conn:
         params = [sku_id, as_of_date.isoformat() if isinstance(as_of_date, date) else as_of_date]
         store_filter = ""
-        if store_code and store_code != "UNIVERSAL":
+        if store_code and store_code != ALL_STORES_CODE:
             store_filter = "AND store_code = ?"
             params.insert(1, store_code)
 
@@ -259,8 +267,7 @@ def get_stock_balances_all(
 
     with get_db(db_path) as conn:
         params = [as_of_date.isoformat() if isinstance(as_of_date, date) else as_of_date]
-        store_filter = ""
-        if store_code and store_code != "UNIVERSAL":
+        if store_code and store_code != ALL_STORES_CODE:
             store_filter = "WHERE store_code = ? AND event_date <= ?"
             params.insert(0, store_code)
         else:
@@ -382,7 +389,7 @@ def rebuild_snapshot_from_ledger(
         # Step 1: Calculate current stock from ledger
         params = [snapshot_date.isoformat()]
         store_filter = ""
-        if store_code and store_code != "UNIVERSAL":
+        if store_code and store_code != ALL_STORES_CODE:
             store_filter = "AND store_code = ?"
             params.append(store_code)
 
@@ -606,8 +613,7 @@ def get_event_summary(
 
     with get_db(db_path) as conn:
         params = [as_of_date.isoformat()]
-        store_filter = ""
-        if store_code and store_code != "UNIVERSAL":
+        if store_code and store_code != ALL_STORES_CODE:
             store_filter = "WHERE store_code = ? AND event_date <= ?"
             params.insert(0, store_code)
         else:

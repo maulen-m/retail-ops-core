@@ -23,7 +23,7 @@ from typing import Optional
 import pandas as pd
 
 from core.db import get_db, DEFAULT_DB_PATH
-from core.db.ledger import add_ledger_event, log_audit
+from core.db.ledger import add_ledger_event, log_audit, inventory_pool_store_code
 from core.calc.economics import calc_cogs, calc_delivery_fee, calc_net_rev
 from core.utils.sku_normalize import (
     VALID_SIZES,
@@ -614,7 +614,7 @@ def ingest_sales(
                 sku_id=event["sku_id"],
                 qty_change=event["qty_change"],
                 event_date=event["event_date"],
-                store_code=event["store_code"],
+                store_code=inventory_pool_store_code(),
                 reference_id=event["reference_id"],
                 reference_type=event["reference_type"],
                 kaspi_offer_name=event.get("kaspi_offer_name"),
@@ -1013,7 +1013,7 @@ def update_returns_from_api(
                 pending_ledger_events.append({
                     "sku_id": sku_id,
                     "qty_change": sale["quantity"],
-                    "store_code": store_code,
+            "store_code": store_code,
                     "reference_id": order_id,
                     "kaspi_offer_name": sale["kaspi_offer_name"],
                 })
@@ -1046,7 +1046,7 @@ def update_returns_from_api(
             sku_id=event["sku_id"],
             qty_change=event["qty_change"],
             event_date=date.today(),
-            store_code=event["store_code"],
+            store_code=inventory_pool_store_code(),
             reference_id=event["reference_id"],
             reference_type="SALE",
             kaspi_offer_name=event["kaspi_offer_name"],
