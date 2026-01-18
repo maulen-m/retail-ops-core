@@ -2028,6 +2028,18 @@ def _stock_at_message_date(
     return stock
 
 
+def _adjusted_plan_dates(
+    message_date: date,
+    prep_days: int,
+    lead_time: int,
+) -> tuple[date, date]:
+    """Return adjusted ship/arrival dates with blackout rules applied."""
+    ship_date = message_date + timedelta(days=prep_days)
+    est_arrival = ship_date + timedelta(days=lead_time)
+    adj = adjust_po_dates(message_date, ship_date, est_arrival)
+    return adj["ship_date"], adj["est_arrival"]
+
+
 def generate_multi_po_data(num_pos: int = 7) -> dict:
     """
     Generate data for multiple plans (PLAN-0 through PLAN-6).
@@ -2165,10 +2177,11 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             else:
                 prep_days = po5_prep_days if po_num == 5 else prep_days_clothes
 
-            # This PO's send and arrival dates
-            po_send_date = po_message_date + timedelta(days=prep_days)
-            po_arr_date = po_send_date + timedelta(days=L)
-            effective_L = prep_days + L
+            # This PO's send and arrival dates (blackout-aware)
+            po_send_date, po_arr_date = _adjusted_plan_dates(
+                po_message_date, prep_days, L
+            )
+            effective_L = max(0, (po_arr_date - po_message_date).days)
 
             # === INBOUND CLASSIFICATION (stock-first approach) ===
             # Classify previous PO arrivals into three buckets:
@@ -2229,9 +2242,11 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             # Target and ROP (same formula)
             if po_num == 5:
                 next_prep_days = 1 if sku_key.startswith("ELS_") else prep_days_clothes
-                po5_arrival = po_message_date + timedelta(days=prep_days + L)
-                po6_arrival = po6_message_date + timedelta(days=next_prep_days + L)
-                effective_R_sku = max(0, (po6_arrival - po5_arrival).days)
+                po5_arrival = po_arr_date
+                po6_arrival = _adjusted_plan_dates(
+                    po6_message_date, next_prep_days, L
+                )[1]
+                effective_R_sku = max(0, (po6_arrival - po_message_date).days)
             else:
                 effective_R_sku = R
 
@@ -2242,10 +2257,6 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             else:
                 target = base_sku['target']
             rop = base_sku['rop_total']
-
-            adj = adjust_po_dates(po_message_date, po_send_date, po_arr_date)
-            po_send_date = adj["ship_date"]
-            po_arr_date = adj["est_arrival"]
 
             # Order qty (SKU-level baseline)
             order_qty = max(0, int(round(target - pre_arrival)))
