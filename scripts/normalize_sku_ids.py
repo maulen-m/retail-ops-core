@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db import get_db, DEFAULT_DB_PATH
-from core.utils.sku_normalize import normalize_sku_id, normalize_sku_key, normalize_size
+from core.utils.sku_normalize import normalize_sku_id, normalize_sku_key, normalize_size, VALID_SIZES
 
 
 TABLES = [
@@ -72,8 +72,12 @@ def main() -> int:
                 normalized_key = normalize_sku_key(sku_key) if sku_key else None
                 product_type = _product_type_from_key(normalized_key or sku_key)
                 normalized_size = normalize_size(my_size, product_type) if my_size is not None else None
+                if product_type == "ELS":
+                    normalized_size = "ONE_SIZE"
 
                 normalized_id = normalize_sku_id(sku_id, normalized_key or sku_key)
+                if product_type == "ELS" and normalized_key:
+                    normalized_id = normalized_key
 
                 changes = {}
                 if normalized_key and normalized_key != sku_key:
