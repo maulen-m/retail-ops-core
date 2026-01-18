@@ -45,6 +45,11 @@ def main() -> int:
     parser.add_argument("--snapshot-date", help="Snapshot date YYYY-MM-DD (default: Snapshot_Z_date mode)")
     parser.add_argument("--tolerance", type=int, default=1, help="Max abs diff per size (default 1)")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="DB path")
+    parser.add_argument(
+        "--report",
+        default=str(EXPORT_DIR / "validate_snapshot_vs_snapshot_z_report.csv"),
+        help="Output report path",
+    )
     args = parser.parse_args()
 
     workbook_path = Path(args.workbook).expanduser()
@@ -112,7 +117,7 @@ def main() -> int:
     db_rows = { (r["sku_key"], r["my_size"]): int(r["current_stock"] or 0) for r in rows }
 
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = EXPORT_DIR / "validate_snapshot_vs_snapshot_z_report.csv"
+    report_path = Path(args.report)
 
     failures = 0
     with report_path.open("w", newline="", encoding="utf-8") as fh:

@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db import get_db, DEFAULT_DB_PATH
-from core.utils.sku_normalize import infer_size_from_sku_id
+from core.utils.sku_normalize import infer_size_from_sku_id, normalize_sku_key, normalize_size, normalize_sku_id
 
 
 def _parse_date(value) -> str | None:
@@ -66,7 +66,15 @@ def main() -> int:
         raise SystemExit(f"Workbook not found: {workbook_path}")
 
     print(f"Reading DIM_SKU_ID from {workbook_path} ...")
-    df = pd.read_excel(workbook_path, sheet_name="DIM_SKU_ID")
+    df = pd.read_excel(
+        workbook_path,
+        sheet_name="DIM_SKU_ID",
+        dtype={
+            "SKU_ID": "string",
+            "SKU_key": "string",
+            "MY_SIZE": "string",
+        },
+    )
 
     required_cols = {"SKU_ID", "SKU_key", "MY_SIZE", "Snapshot_Z_date", "Snapshot_Z"}
     missing = required_cols.difference(set(df.columns))
@@ -91,6 +99,8 @@ def main() -> int:
         if not snapshot_date:
             raise SystemExit("Snapshot_Z_date missing or empty.")
 
+    df["sku_key"] = df["sku_key"].apply(lambda value: normalize_sku_key(str(value).strip()) if value is not None else None)
+
     df["my_size"] = df["my_size"].where(df["my_size"].notna(), None)
     df["my_size"] = df["my_size"].apply(lambda value: str(value).strip() if value is not None else None)
     df.loc[df["my_size"] == "", "my_size"] = None
@@ -101,6 +111,9 @@ def main() -> int:
             infer_size_from_sku_id
         )
 
+    df["my_size"] = df["my_size"].apply(lambda value: normalize_size(value, "CL") if value is not None else None)
+    df["sku_id"] = df.apply(lambda r: normalize_sku_id(r["sku_id"], r["sku_key"]), axis=1)
+
     df["current_stock"] = pd.to_numeric(df["current_stock"], errors="coerce").fillna(0).astype(int)
     if not args.allow_negative:
         df["current_stock"] = df["current_stock"].clip(lower=0)
@@ -109,6 +122,10 @@ def main() -> int:
 
     cols = ["snapshot_date", "sku_id", "sku_key", "my_size", "current_stock", "inbound_stock"]
     df = df[cols].dropna(subset=["sku_id", "sku_key", "my_size"])
+    df = (
+        df.groupby(["snapshot_date", "sku_id", "sku_key", "my_size"], as_index=False)
+        .agg({"current_stock": "sum", "inbound_stock": "sum"})
+    )
 
     with get_db(args.db) as conn:
         print(f"Clearing existing snapshot rows for {snapshot_date} ...")
