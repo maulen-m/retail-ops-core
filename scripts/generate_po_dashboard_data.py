@@ -2452,11 +2452,30 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                             + next_active_inbound_by_size.get(size, 0.0)
                             - (d_size * next_effective_L),
                         )
+                        meta["ss_total_size"] = ss_total_size
+                        meta["pre_arrival_next"] = size_pre_arrival_next
                         extra_units = max(
                             0,
                             int(ceil((ss_total_size - size_pre_arrival_next) - 1e-9)),
                         )
                         size_topups[size] = extra_units
+
+                    size_topups_total = sum(size_topups.values())
+                    if extra_units_total > size_topups_total:
+                        missing = extra_units_total - size_topups_total
+                        candidates = [
+                            (meta.get("ss_total_size", 0.0) - meta.get("pre_arrival_next", 0.0), meta["size"])
+                            for meta in size_meta
+                            if meta.get("ss_total_size", 0.0) > meta.get("pre_arrival_next", 0.0)
+                        ]
+                        candidates.sort(reverse=True)
+                        if candidates:
+                            idx = 0
+                            while missing > 0:
+                                _, size = candidates[idx % len(candidates)]
+                                size_topups[size] = size_topups.get(size, 0) + 1
+                                missing -= 1
+                                idx += 1
 
                 for meta in size_meta:
                     size = meta["size"]
