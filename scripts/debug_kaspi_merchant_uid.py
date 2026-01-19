@@ -39,7 +39,7 @@ def _sanitize_headers(headers: dict[str, Any]) -> dict[str, Any]:
     sanitized = {}
     for key, value in (headers or {}).items():
         low = key.lower()
-        if low in {"authorization", "x-auth-token", "cookie"}:
+        if low in {"authorization", "x-auth-token", "cookie", "set-cookie"}:
             sanitized[key] = "[REDACTED]"
         else:
             sanitized[key] = value
