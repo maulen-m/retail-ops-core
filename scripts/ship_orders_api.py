@@ -1213,11 +1213,26 @@ def main():
         action='store_true',
         help='Allow assembling pending orders even if size is missing'
     )
+    parser.add_argument(
+        '--merchant-uid',
+        help='Override X-Merchant-Uid header value for Kaspi API (optional)'
+    )
+    parser.add_argument(
+        '--use-merchant-uid',
+        action='store_true',
+        help='Enable X-Merchant-Uid header using config/env values'
+    )
 
     args = parser.parse_args()
 
     # Load environment variables
     load_dotenv()
+
+    if args.merchant_uid:
+        os.environ["KASPI_MERCHANT_UID_OVERRIDE"] = args.merchant_uid
+        os.environ["KASPI_SEND_MERCHANT_UID"] = "1"
+    elif args.use_merchant_uid:
+        os.environ["KASPI_SEND_MERCHANT_UID"] = "1"
 
     # Parse target date
     if args.date:

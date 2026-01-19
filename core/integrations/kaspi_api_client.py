@@ -31,12 +31,15 @@ Usage:
 import os
 import time
 import logging
+from functools import lru_cache
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from enum import Enum
 
 import requests
+import yaml
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -49,6 +52,9 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 BASE_URL = "https://kaspi.kz/shop/api/v2"
+
+# Config path for store settings
+CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "kaspi_stores.yaml"
 
 # Rate limit: 50 requests per second (conservative)
 RATE_LIMIT_RPS = 50
@@ -69,6 +75,10 @@ MAX_PAGE_SIZE = 100           # Kaspi API max items per page
 
 # Token environment variable prefix
 TOKEN_ENV_PREFIX = "KASPI_TOKEN_"
+MERCHANT_UID_ENV_PREFIX = "KASPI_MERCHANT_UID_"
+SEND_MERCHANT_UID_ENV = "KASPI_SEND_MERCHANT_UID"
+MERCHANT_UID_OVERRIDE_ENV = "KASPI_MERCHANT_UID_OVERRIDE"
+MERCHANT_UID_DEBUG_ENV = "KASPI_MERCHANT_UID_DEBUG"
 
 # Store code mapping to env var names
 STORE_TOKEN_MAP = {
@@ -78,6 +88,27 @@ STORE_TOKEN_MAP = {
     'MELVIS': 'KASPI_TOKEN_MELVIS',
     'STOREB': 'KASPI_TOKEN_STOREB',
 }
+
+
+@lru_cache(maxsize=1)
+def _load_store_config() -> dict:
+    """Load store config (cached)."""
+    try:
+        if CONFIG_PATH.exists():
+            with CONFIG_PATH.open("r", encoding="utf-8") as handle:
+                return yaml.safe_load(handle) or {}
+    except Exception as exc:
+        logger.warning(f"Failed to read kaspi store config: {exc}")
+    return {}
+
+
+def _get_store_merchant_uid(store_code: str) -> Optional[str]:
+    """Return merchant uid from config for store (if present)."""
+    config = _load_store_config()
+    store_cfg = (config.get("stores") or {}).get(store_code, {})
+    if isinstance(store_cfg, dict):
+        return store_cfg.get("merchant_uid") or None
+    return None
 
 
 class OrderState(str, Enum):
@@ -185,6 +216,8 @@ class KaspiAPIClient:
         token: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
         enable_writes: Optional[bool] = None,
+        merchant_uid: Optional[str] = None,
+        send_merchant_uid: Optional[bool] = None,
     ):
         self.store_code = store_code.upper()
         self.timeout = timeout
@@ -197,12 +230,40 @@ class KaspiAPIClient:
         else:
             self.writes_enabled = os.environ.get('ENABLE_KASPI_WRITE', '0') == '1'
 
+        # Merchant UID (optional, off by default)
+        self.merchant_uid = merchant_uid
+        if self.merchant_uid is None:
+            env_value = os.environ.get(f"{MERCHANT_UID_ENV_PREFIX}{self.store_code}")
+            self.merchant_uid = env_value or _get_store_merchant_uid(self.store_code)
+        override_uid = os.environ.get(MERCHANT_UID_OVERRIDE_ENV)
+        if override_uid:
+            self.merchant_uid = override_uid
+
+        if send_merchant_uid is None:
+            self.send_merchant_uid = os.environ.get(SEND_MERCHANT_UID_ENV, '0') == '1'
+        else:
+            self.send_merchant_uid = send_merchant_uid
+
         # Setup session with retry logic
         self._session = self._create_session()
 
         logger.info(
             f"KaspiAPIClient initialized for {self.store_code}, "
             f"writes_enabled={self.writes_enabled}"
+        )
+
+    def _should_send_merchant_uid(self) -> bool:
+        return bool(self.send_merchant_uid and self.merchant_uid)
+
+    def _log_merchant_uid_header(self, header_present: bool) -> None:
+        if os.environ.get(MERCHANT_UID_DEBUG_ENV, '0') != '1':
+            return
+        status = "ON" if header_present else "OFF"
+        logger.info(
+            "Merchant UID header %s for %s: %s",
+            status,
+            self.store_code,
+            self.merchant_uid or "NONE",
         )
 
     def _load_token(self, store_code: str) -> str:
@@ -242,13 +303,19 @@ class KaspiAPIClient:
 
     def _get_headers(self) -> dict:
         """Get request headers with authorization."""
-        return {
+        headers = {
             'Authorization': self._token,
             'X-Auth-Token': self._token,
             'Accept': 'application/vnd.api+json',
             'Content-Type': 'application/vnd.api+json',
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
+        if self._should_send_merchant_uid():
+            headers['X-Merchant-Uid'] = self.merchant_uid
+            self._log_merchant_uid_header(True)
+        else:
+            self._log_merchant_uid_header(False)
+        return headers
 
     def _rate_limit(self):
         """Apply rate limiting between requests."""
