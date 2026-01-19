@@ -4,13 +4,13 @@ Audit script for PO Dashboard output.
 
 Validates that:
 1. LINE52 and LINE51 exist in PLAN-0 (either in sku_level or skipped_skus)
-2. Demand overrides are applied (LINE52 D=50, LINE51 D=12)
+2. Demand overrides are applied (LINE52 D=35, LINE51 D=12)
 3. No silent skipping (all SKUs accounted for)
 
 Exit codes:
   0 - All checks passed
   1 - LINE52 missing everywhere
-  2 - LINE52 exists but D_override not applied (d_sku != 50)
+  2 - LINE52 exists but D_override not applied (d_sku != 35)
   3 - LINE51 exists but D_override not applied (d_sku != 12)
   4 - LINE51 missing everywhere
   5 - Other validation error
@@ -31,10 +31,10 @@ DB_PATH = PROJECT_ROOT / "db" / "app.db"
 # Required demand overrides (time-boxed)
 REQUIRED_OVERRIDES = {
     "CL_OC_MEN_LINE52_BLACK": {
-        "d_override": 50.0,
+        "d_override": 35.0,
         "start_date": "2026-01-01",
         "end_date": "2026-03-01",
-        "reason": "Jan-Feb seasonal spike",
+        "reason": "Feb slowdown; PO-5 readiness",
     },
     "CL_OC_MEN_LINE51_WHITE": {
         "d_override": 12.0,

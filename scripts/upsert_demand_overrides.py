@@ -25,10 +25,10 @@ DB_PATH = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OVERRIDES = [
     {
         "sku_key": "CL_OC_MEN_LINE52_BLACK",
-        "d_override": 50.0,
+        "d_override": 35.0,
         "start_date": "2026-01-01",
         "end_date": "2026-03-01",
-        "reason": "Jan-Feb seasonal spike",
+        "reason": "Feb slowdown; PO-5 readiness",
         "source": "MANUAL",
         "active_flag": 1,
     },

@@ -7,7 +7,7 @@ INVARIANTS:
 - po_qty_total == sum(size_orders) for every SKU
 
 REQUIREMENTS:
-- LINE52 (CL_OC_MEN_LINE52_BLACK): D = 50
+- LINE52 (CL_OC_MEN_LINE52_BLACK): D = 35
 - LINE51 (CL_OC_MEN_LINE51_WHITE): D = 12
 - Model B: all CL SKUs have same prep_days, all ELS have prep_days=1
 - Model C (default): prep_days <= R_days
@@ -35,7 +35,7 @@ class TestDemandOverrides:
     """Tests for demand override requirements."""
 
     def test_line52_demand_override(self, dashboard_data):
-        """LINE52 must have d_sku=50."""
+        """LINE52 must have d_sku=35."""
         po4 = dashboard_data['pos']['PLAN-0']
         line52 = None
         for sku in po4['sku_level']:
@@ -44,7 +44,7 @@ class TestDemandOverrides:
                 break
 
         assert line52 is not None, "LINE52 not found in PLAN-0 sku_level"
-        assert abs(line52['d_sku'] - 50.0) < 0.01, f"LINE52 d_sku={line52['d_sku']}, expected=50.0"
+        assert abs(line52['d_sku'] - 35.0) < 0.01, f"LINE52 d_sku={line52['d_sku']}, expected=35.0"
         assert 'D_OVERRIDE' in line52.get('notes', ''), "LINE52 missing D_OVERRIDE note"
 
     def test_line51_demand_override(self, dashboard_data):
