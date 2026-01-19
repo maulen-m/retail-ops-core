@@ -2237,7 +2237,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             po_send_date, po_arr_date = _adjusted_plan_dates(
                 po_message_date, prep_days, L
             )
-            if po_num == 5 and PO5_SEND_DATE_OVERRIDE:
+            if po_num == 5 and PO5_SEND_DATE_OVERRIDE and not sku_key.startswith("ELS_"):
                 po_send_date = PO5_SEND_DATE_OVERRIDE
                 prep_days = max(0, (po_send_date - po_message_date).days)
                 po_arr_date = po_send_date + timedelta(days=L)
