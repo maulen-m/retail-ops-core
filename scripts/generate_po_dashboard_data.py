@@ -58,6 +58,8 @@ VALID_SIZES = {'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', 'XS',
 
 # PO-5 prep-days override (supplier will finish faster pre-holiday)
 PO5_PREP_DAYS_OVERRIDE = 18
+# PO-5 send-date override (explicit request; bypass blackout adjustments)
+PO5_SEND_DATE_OVERRIDE = date(2026, 2, 4)
 
 # Plan naming (dashboard)
 PLAN_BASE_PO_NUM = 4  # PO-4 becomes PLAN-0
@@ -1988,11 +1990,14 @@ def _build_po_schedule(today: date, params, prep_days_clothes: int) -> tuple[dic
     po6_default = today + timedelta(days=2 * params.R)
 
     po5_prep_days = PO5_PREP_DAYS_OVERRIDE or prep_days_clothes
-    # Ensure PO-5 ship date is BEFORE blackout_start (blackout is inclusive)
-    po5_latest = blackout_start - timedelta(days=po5_prep_days + 1)
-    po5_message = min(po5_default, po5_latest)
-    if po5_message < today:
-        po5_message = today
+    if PO5_SEND_DATE_OVERRIDE:
+        po5_message = max(today, PO5_SEND_DATE_OVERRIDE - timedelta(days=po5_prep_days))
+    else:
+        # Ensure PO-5 ship date is BEFORE blackout_start (blackout is inclusive)
+        po5_latest = blackout_start - timedelta(days=po5_prep_days + 1)
+        po5_message = min(po5_default, po5_latest)
+        if po5_message < today:
+            po5_message = today
 
     po6_message = max(po6_default, blackout_end)
 
@@ -2147,6 +2152,9 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
 
     prep_days_clothes = base_data.get("prep_days_clothes", 1)
     po5_prep_days = PO5_PREP_DAYS_OVERRIDE or prep_days_clothes
+    if PO5_SEND_DATE_OVERRIDE:
+        po5_message_date = po_schedule.get("PO-5", TODAY + timedelta(days=R))
+        po5_prep_days = max(0, (PO5_SEND_DATE_OVERRIDE - po5_message_date).days)
     po6_message_date = po_schedule.get("PO-6", TODAY + timedelta(days=2 * R))
 
     # Generate PLAN-1 through PLAN-6 (PO-5 through PO-10 internally)
@@ -2229,6 +2237,10 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             po_send_date, po_arr_date = _adjusted_plan_dates(
                 po_message_date, prep_days, L
             )
+            if po_num == 5 and PO5_SEND_DATE_OVERRIDE:
+                po_send_date = PO5_SEND_DATE_OVERRIDE
+                prep_days = max(0, (po_send_date - po_message_date).days)
+                po_arr_date = po_send_date + timedelta(days=L)
             effective_L = max(0, (po_arr_date - po_message_date).days)
 
             # === INBOUND CLASSIFICATION (stock-first approach) ===
