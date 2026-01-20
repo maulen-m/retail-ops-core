@@ -480,7 +480,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       XLSX.utils.book_append_sheet(wb, ws1, 'SKU Level');
 
       // Sheet 2: Size Level
-      const sizeData = (poData.size_level || []).map(s => ({
+      const sizeData = (poData.size_level || [])
+        .slice()
+        .sort((a, b) => {
+          const skuCmp = String(a.sku_key || '').localeCompare(String(b.sku_key || ''));
+          if (skuCmp !== 0) return skuCmp;
+          const ra = sizeRank(a.size);
+          const rb = sizeRank(b.size);
+          if (ra !== rb) return ra - rb;
+          return String(a.size || '').localeCompare(String(b.size || ''));
+        })
+        .map(s => ({
         'SKU Key': s.sku_key,
         'Size': s.size,
         'Stock': s.stock,

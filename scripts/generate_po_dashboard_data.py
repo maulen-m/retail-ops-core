@@ -36,7 +36,7 @@ from core.config.business_params import get_demand_overrides, get_fx_rates
 from core.calc.demand_estimator import DemandEstimator, ConfidenceLevel, OOSType
 from core.calc.stock_timeline import StockTimelineBuilder
 from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
-from core.calc.size_allocation import calc_deficit_capped_order_qty
+from core.calc.size_allocation import calc_deficit_capped_order_qty, round_qty_to_5_up
 from core.po.blackout import adjust_po_dates, CNY_2026
 from core.utils.sku_normalize import normalize_size
 
@@ -859,7 +859,7 @@ def calc_po_draft_manual(
                 pre_arrival_stock=pre_arrival_size,
             )
             # Round apparel size quantities to nearest 5 (ceiling)
-            order_qty_size = int(ceil(order_qty_size / 5.0) * 5) if order_qty_size > 0 else 0
+            order_qty_size = round_qty_to_5_up(int(order_qty_size)) if order_qty_size > 0 else 0
         else:
             order_qty_size = max(0, int(round(target_size - pre_arrival_size)))
 
@@ -2415,6 +2415,8 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                         t_post=t_post_base,
                         pre_arrival_stock=size_pre_arrival
                     )
+                    if sku_key.startswith("CL"):
+                        size_order_base = round_qty_to_5_up(int(size_order_base)) if size_order_base > 0 else 0
                     size_orders_base[size] = size_order_base
                     size_meta.append(
                         {
@@ -2516,6 +2518,8 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                         t_post=t_post_size,
                         pre_arrival_stock=meta["pre_arrival"]
                     )
+                    if sku_key.startswith("CL"):
+                        size_order_qty = round_qty_to_5_up(int(size_order_qty)) if size_order_qty > 0 else 0
                     size_orders_this_po[size] = size_order_qty
                     size_deficit = max(0, int(ceil((target_size - meta["pre_arrival"]) - 1e-9)))
 
