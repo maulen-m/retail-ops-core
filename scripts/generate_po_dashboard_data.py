@@ -354,7 +354,7 @@ def persist_demand_estimates(
 def _load_override_windows(
     conn: sqlite3.Connection,
     sku_keys: list[str]
-) -> dict[str, dict]:
+) -> dict[str, list[dict]]:
     if not sku_keys:
         return {}
     try:
@@ -369,17 +369,20 @@ def _load_override_windows(
             SELECT sku_key, d_override, start_date, end_date
             FROM dim_demand_overrides
             WHERE sku_key IN ({placeholders})
+            ORDER BY start_date
             """,
             sku_keys,
         ).fetchall()
-        return {
-            row["sku_key"]: {
-                "d_override": row["d_override"],
-                "start_date": row["start_date"],
-                "end_date": row["end_date"],
-            }
-            for row in rows
-        }
+        windows: dict[str, list[dict]] = {}
+        for row in rows:
+            windows.setdefault(row["sku_key"], []).append(
+                {
+                    "d_override": row["d_override"],
+                    "start_date": row["start_date"],
+                    "end_date": row["end_date"],
+                }
+            )
+        return windows
     except Exception:
         return {}
 
@@ -487,11 +490,13 @@ def export_supplier_po(
 
     override_lines = []
     for sku_key in ["CL_OC_MEN_LINE52_BLACK", "CL_OC_MEN_LINE51_WHITE"]:
-        info = override_info.get(sku_key)
-        if info:
-            override_lines.append(
-                f"- {sku_key}: D={info['d_override']} (window {info['start_date']} → {info['end_date']})"
-            )
+        windows = override_info.get(sku_key)
+        if windows:
+            window_texts = [
+                f"D={w['d_override']} (window {w['start_date']} → {w['end_date']})"
+                for w in windows
+            ]
+            override_lines.append(f"- {sku_key}: " + "; ".join(window_texts))
         else:
             override_lines.append(f"- {sku_key}: override not found")
 

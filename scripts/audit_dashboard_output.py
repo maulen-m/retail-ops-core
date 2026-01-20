@@ -4,13 +4,13 @@ Audit script for PO Dashboard output.
 
 Validates that:
 1. LINE52 and LINE51 exist in PLAN-0 (either in sku_level or skipped_skus)
-2. Demand overrides are applied (LINE52 D=35, LINE51 D=12)
+2. Demand overrides are applied (LINE52 D=40 or D=30 depending on window, LINE51 D=12)
 3. No silent skipping (all SKUs accounted for)
 
 Exit codes:
   0 - All checks passed
   1 - LINE52 missing everywhere
-  2 - LINE52 exists but D_override not applied (d_sku != 35)
+  2 - LINE52 exists but D_override not applied (d_sku != expected)
   3 - LINE51 exists but D_override not applied (d_sku != 12)
   4 - LINE51 missing everywhere
   5 - Other validation error
@@ -30,18 +30,28 @@ DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
 # Required demand overrides (time-boxed)
 REQUIRED_OVERRIDES = {
-    "CL_OC_MEN_LINE52_BLACK": {
-        "d_override": 35.0,
-        "start_date": "2026-01-01",
-        "end_date": "2026-03-01",
-        "reason": "Feb slowdown; PO-5 readiness",
-    },
-    "CL_OC_MEN_LINE51_WHITE": {
-        "d_override": 12.0,
-        "start_date": "2026-01-01",
-        "end_date": "2026-03-01",
-        "reason": "Marketing uplift + new Kaspi images",
-    },
+    "CL_OC_MEN_LINE52_BLACK": [
+        {
+            "d_override": 40.0,
+            "start_date": "2026-01-01",
+            "end_date": "2026-03-01",
+            "reason": "CNY slowdown window 1; PO-5 readiness",
+        },
+        {
+            "d_override": 30.0,
+            "start_date": "2026-03-01",
+            "end_date": "2026-06-01",
+            "reason": "CNY slowdown window 2; post-blackout normalization",
+        },
+    ],
+    "CL_OC_MEN_LINE51_WHITE": [
+        {
+            "d_override": 12.0,
+            "start_date": "2026-01-01",
+            "end_date": "2026-03-01",
+            "reason": "Marketing uplift + new Kaspi images",
+        }
+    ],
 }
 
 REQUIRED_SKUS = list(REQUIRED_OVERRIDES.keys())
@@ -82,11 +92,13 @@ def _normalize_date(value: str | None) -> date | None:
 
 def required_overrides_for_date(as_of_date: date) -> dict:
     required = {}
-    for sku_key, meta in REQUIRED_OVERRIDES.items():
-        start = _normalize_date(meta.get("start_date"))
-        end = _normalize_date(meta.get("end_date"))
-        if start and end and start <= as_of_date < end:
-            required[sku_key] = meta
+    for sku_key, windows in REQUIRED_OVERRIDES.items():
+        for meta in windows:
+            start = _normalize_date(meta.get("start_date"))
+            end = _normalize_date(meta.get("end_date"))
+            if start and end and start <= as_of_date < end:
+                required[sku_key] = meta
+                break
     return required
 
 
@@ -99,14 +111,19 @@ def load_active_overrides(
         return {}
     as_of = as_of_date.isoformat()
     cursor = conn.execute("""
-        SELECT sku_key, d_override
+        SELECT sku_key, d_override, start_date
         FROM dim_demand_overrides
         WHERE active_flag = 1
           AND (start_date IS NULL OR start_date <= ?)
           AND (end_date IS NULL OR end_date > ?)
           AND sku_key IN ({placeholders})
+        ORDER BY start_date DESC
     """.format(placeholders=",".join(["?"] * len(sku_keys))), [as_of, as_of, *sku_keys])
-    return {row[0]: row[1] for row in cursor.fetchall()}
+    overrides = {}
+    for sku_key, d_override, _ in cursor.fetchall():
+        if sku_key not in overrides:
+            overrides[sku_key] = d_override
+    return overrides
 
 
 def find_sku_in_po(po_data: dict, sku_key: str) -> tuple[dict | None, bool]:

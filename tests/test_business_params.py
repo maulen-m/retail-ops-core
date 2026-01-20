@@ -378,8 +378,8 @@ class TestSetDemandOverride:
         finally:
             db_path.unlink(missing_ok=True)
 
-    def test_set_demand_override_replaces_on_same_sku(self):
-        """Setting override for same sku_key should replace."""
+    def test_set_demand_override_replaces_on_same_window(self):
+        """Setting override for same sku_key and window should replace."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
@@ -388,6 +388,8 @@ class TestSetDemandOverride:
             set_demand_override(
                 sku_key="TEST_SKU",
                 d_override=25.0,
+                start_date="2026-01-01",
+                end_date="2026-03-01",
                 reason="Initial",
                 db_path=db_path
             )
@@ -396,6 +398,8 @@ class TestSetDemandOverride:
             set_demand_override(
                 sku_key="TEST_SKU",
                 d_override=50.0,
+                start_date="2026-01-01",
+                end_date="2026-03-01",
                 reason="Updated",
                 db_path=db_path
             )
@@ -411,6 +415,40 @@ class TestSetDemandOverride:
             assert count == 1
             assert d_override == 50.0
             assert reason == "Updated"
+        finally:
+            db_path.unlink(missing_ok=True)
+
+    def test_set_demand_override_allows_multiple_windows(self):
+        """Setting overrides for different windows should create multiple rows."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            set_demand_override(
+                sku_key="TEST_SKU",
+                d_override=25.0,
+                start_date="2026-01-01",
+                end_date="2026-03-01",
+                reason="Window 1",
+                db_path=db_path,
+            )
+            set_demand_override(
+                sku_key="TEST_SKU",
+                d_override=30.0,
+                start_date="2026-03-01",
+                end_date="2026-06-01",
+                reason="Window 2",
+                db_path=db_path,
+            )
+
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM dim_demand_overrides WHERE sku_key = 'TEST_SKU'"
+            )
+            count = cursor.fetchone()[0]
+            conn.close()
+
+            assert count == 2
         finally:
             db_path.unlink(missing_ok=True)
 

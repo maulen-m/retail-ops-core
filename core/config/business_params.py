@@ -297,6 +297,7 @@ def get_demand_overrides(
 
     Returns a dict mapping sku_key -> d_override for active overrides.
     Active if start_date <= as_of_date < end_date (and active_flag=1).
+    If multiple active windows exist, the latest start_date wins.
     Falls back to empty dict if table doesn't exist or is empty.
 
     Args:
@@ -342,20 +343,24 @@ def get_demand_overrides(
 
         if has_dates:
             cursor.execute("""
-                SELECT sku_key, d_override
+                SELECT sku_key, d_override, start_date
                 FROM dim_demand_overrides
                 WHERE active_flag = 1
                   AND (start_date IS NULL OR start_date <= ?)
                   AND (end_date IS NULL OR end_date > ?)
+                ORDER BY start_date DESC
             """, (as_of_iso, as_of_iso))
         else:
             cursor.execute("""
-                SELECT sku_key, d_override
+                SELECT sku_key, d_override, NULL as start_date
                 FROM dim_demand_overrides
                 WHERE active_flag = 1
             """)
 
-        result = {row[0]: row[1] for row in cursor.fetchall()}
+        result = {}
+        for sku_key, d_override, _ in cursor.fetchall():
+            if sku_key not in result:
+                result[sku_key] = d_override
         conn.close()
         return result
 
@@ -375,6 +380,7 @@ def set_demand_override(
 ) -> None:
     """
     Insert or update a demand override in dim_demand_overrides table.
+    Multi-window overrides are supported via (sku_key, start_date, end_date).
 
     Args:
         sku_key: SKU key to override (e.g., "CL_OC_MEN_LINE52_BLACK")
@@ -398,10 +404,11 @@ def set_demand_override(
     try:
         cursor = conn.cursor()
 
-        # Ensure table exists
+        # Ensure table exists (multi-window schema)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS dim_demand_overrides (
-                sku_key TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sku_key TEXT NOT NULL,
                 d_override REAL NOT NULL,
                 start_date TEXT,
                 end_date TEXT,
@@ -413,34 +420,75 @@ def set_demand_override(
             )
         """)
 
-        # Backfill missing columns for older tables
+        # Backfill/migrate older schemas if id column missing
         cursor.execute("PRAGMA table_info(dim_demand_overrides)")
         existing = {row[1] for row in cursor.fetchall()}
-        for col, col_type in {
-            "start_date": "TEXT",
-            "end_date": "TEXT",
-        }.items():
-            if col not in existing:
-                try:
-                    cursor.execute(
-                        f"ALTER TABLE dim_demand_overrides ADD COLUMN {col} {col_type}"
-                    )
-                except sqlite3.OperationalError as exc:
-                    if "duplicate column name" not in str(exc).lower():
-                        raise
+        if "id" not in existing:
+            has_start = "start_date" in existing
+            has_end = "end_date" in existing
+            has_reason = "reason" in existing
+            has_source = "source" in existing
+            has_active = "active_flag" in existing
+            has_created = "created_at" in existing
+            has_updated = "updated_at" in existing
+            cursor.execute("""
+                CREATE TABLE dim_demand_overrides_v2 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sku_key TEXT NOT NULL,
+                    d_override REAL NOT NULL,
+                    start_date TEXT,
+                    end_date TEXT,
+                    reason TEXT,
+                    source TEXT,
+                    active_flag INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            cursor.execute(f"""
+                INSERT INTO dim_demand_overrides_v2
+                (sku_key, d_override, start_date, end_date, reason, source, active_flag, created_at, updated_at)
+                SELECT
+                    sku_key,
+                    d_override,
+                    {"start_date" if has_start else "NULL"} as start_date,
+                    {"end_date" if has_end else "NULL"} as end_date,
+                    {"reason" if has_reason else "NULL"} as reason,
+                    {"source" if has_source else "NULL"} as source,
+                    {"active_flag" if has_active else "1"} as active_flag,
+                    {"created_at" if has_created else "datetime('now')"} as created_at,
+                    {"updated_at" if has_updated else "datetime('now')"} as updated_at
+                FROM dim_demand_overrides
+            """)
+            cursor.execute("DROP TABLE dim_demand_overrides")
+            cursor.execute("ALTER TABLE dim_demand_overrides_v2 RENAME TO dim_demand_overrides")
 
-        # Preserve created_at if record exists
         cursor.execute(
-            "SELECT created_at FROM dim_demand_overrides WHERE sku_key = ?",
-            (sku_key,)
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_demand_overrides_window "
+            "ON dim_demand_overrides(sku_key, start_date, end_date)"
+        )
+
+        # Preserve created_at if record exists for same window
+        cursor.execute(
+            """
+            SELECT created_at FROM dim_demand_overrides
+            WHERE sku_key = ? AND start_date = ? AND end_date = ?
+            """,
+            (sku_key, start.isoformat(), end.isoformat())
         )
         row = cursor.fetchone()
         created_at = row[0] if row and row[0] else None
 
         cursor.execute("""
-            INSERT OR REPLACE INTO dim_demand_overrides
+            INSERT INTO dim_demand_overrides
             (sku_key, d_override, start_date, end_date, reason, source, active_flag, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+            ON CONFLICT(sku_key, start_date, end_date) DO UPDATE SET
+                d_override = excluded.d_override,
+                reason = excluded.reason,
+                source = excluded.source,
+                active_flag = excluded.active_flag,
+                updated_at = excluded.updated_at
         """, (
             sku_key,
             d_override,

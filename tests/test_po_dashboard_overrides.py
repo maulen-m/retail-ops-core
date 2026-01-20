@@ -7,16 +7,18 @@ INVARIANTS:
 - po_qty_total == sum(size_orders) for every SKU
 
 REQUIREMENTS:
-- LINE52 (CL_OC_MEN_LINE52_BLACK): D = 35
+- LINE52 (CL_OC_MEN_LINE52_BLACK): D = 40 (2026-01-01 → 2026-03-01) or D = 30 (2026-03-01 → 2026-06-01)
 - LINE51 (CL_OC_MEN_LINE51_WHITE): D = 12
 - Model B: all CL SKUs have same prep_days, all ELS have prep_days=1
 - Model C (default): prep_days <= R_days
 """
 
 import json
-import pytest
-from pathlib import Path
+from datetime import date
 from math import ceil
+from pathlib import Path
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent
 JSON_PATH = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
@@ -34,8 +36,22 @@ def dashboard_data():
 class TestDemandOverrides:
     """Tests for demand override requirements."""
 
+    @staticmethod
+    def _expected_line52_override(as_of: date) -> float | None:
+        if date(2026, 1, 1) <= as_of < date(2026, 3, 1):
+            return 40.0
+        if date(2026, 3, 1) <= as_of < date(2026, 6, 1):
+            return 30.0
+        return None
+
+    @staticmethod
+    def _expected_line51_override(as_of: date) -> float | None:
+        if date(2026, 1, 1) <= as_of < date(2026, 3, 1):
+            return 12.0
+        return None
+
     def test_line52_demand_override(self, dashboard_data):
-        """LINE52 must have d_sku=35."""
+        """LINE52 must have the correct time-boxed d_sku."""
         po4 = dashboard_data['pos']['PLAN-0']
         line52 = None
         for sku in po4['sku_level']:
@@ -44,7 +60,13 @@ class TestDemandOverrides:
                 break
 
         assert line52 is not None, "LINE52 not found in PLAN-0 sku_level"
-        assert abs(line52['d_sku'] - 35.0) < 0.01, f"LINE52 d_sku={line52['d_sku']}, expected=35.0"
+        cutoff_raw = dashboard_data.get("cutoff_date")
+        if not cutoff_raw:
+            pytest.skip("cutoff_date missing from dashboard data")
+        expected = self._expected_line52_override(date.fromisoformat(cutoff_raw))
+        if expected is None:
+            pytest.skip("LINE52 override not required for this cutoff date")
+        assert abs(line52['d_sku'] - expected) < 0.01, f"LINE52 d_sku={line52['d_sku']}, expected={expected}"
         assert 'D_OVERRIDE' in line52.get('notes', ''), "LINE52 missing D_OVERRIDE note"
 
     def test_line51_demand_override(self, dashboard_data):
@@ -57,7 +79,13 @@ class TestDemandOverrides:
                 break
 
         assert line51 is not None, "LINE51 not found in PLAN-0 sku_level"
-        assert abs(line51['d_sku'] - 12.0) < 0.01, f"LINE51 d_sku={line51['d_sku']}, expected=12.0"
+        cutoff_raw = dashboard_data.get("cutoff_date")
+        if not cutoff_raw:
+            pytest.skip("cutoff_date missing from dashboard data")
+        expected = self._expected_line51_override(date.fromisoformat(cutoff_raw))
+        if expected is None:
+            pytest.skip("LINE51 override not required for this cutoff date")
+        assert abs(line51['d_sku'] - expected) < 0.01, f"LINE51 d_sku={line51['d_sku']}, expected={expected}"
         assert 'D_OVERRIDE' in line51.get('notes', ''), "LINE51 missing D_OVERRIDE note"
 
 

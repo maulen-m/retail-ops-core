@@ -150,7 +150,8 @@ def ensure_tables_exist(conn: sqlite3.Connection):
     # dim_demand_overrides
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS dim_demand_overrides (
-            sku_key TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku_key TEXT NOT NULL,
             d_override REAL NOT NULL,
             start_date TEXT,
             end_date TEXT,
@@ -160,6 +161,10 @@ def ensure_tables_exist(conn: sqlite3.Connection):
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         )
+    """)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_demand_overrides_window
+        ON dim_demand_overrides(sku_key, start_date, end_date)
     """)
 
     # dim_budget_caps
