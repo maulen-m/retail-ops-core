@@ -672,6 +672,13 @@ def calc_deficit_capped_order_qty(
     return max(0, int(ceil(deficit - eps)))
 
 
+def round_qty_to_5_up(qty: int) -> int:
+    """Round order qty up to the nearest 5 (0 stays 0)."""
+    if qty <= 0:
+        return 0
+    return int(ceil(qty / 5.0) * 5)
+
+
 # =============================================================================
 # TASK-160: New SKU adjustments
 # =============================================================================
@@ -1128,6 +1135,15 @@ def generate_po_draft(
         size_allocations_adjusted[size] = adj_qty
         if factor < 1.0:
             draft.new_sku_factor = factor
+
+    # ==========================================================================
+    # Step 8.5: Round apparel size quantities to nearest 5 (ceiling)
+    # ==========================================================================
+    if should_order and is_cl:
+        rounded_allocations: dict[str, int] = {}
+        for size, qty in size_allocations_adjusted.items():
+            rounded_allocations[size] = round_qty_to_5_up(qty)
+        size_allocations_adjusted = rounded_allocations
 
     # ==========================================================================
     # Step 9: Build totals and SizeAllocation objects

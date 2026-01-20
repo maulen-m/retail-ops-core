@@ -850,6 +850,8 @@ def calc_po_draft_manual(
                 t_post=T_post,
                 pre_arrival_stock=pre_arrival_size,
             )
+            # Round apparel size quantities to nearest 5 (ceiling)
+            order_qty_size = int(ceil(order_qty_size / 5.0) * 5) if order_qty_size > 0 else 0
         else:
             order_qty_size = max(0, int(round(target_size - pre_arrival_size)))
 
@@ -1447,7 +1449,12 @@ def generate_po_data(
 
         # Size-level lines (include zero-order sizes for reconciliation)
         for size, alloc in size_allocs_for_lines.items():
-            order_qty = alloc['order_qty']
+            if isinstance(alloc, dict):
+                order_qty = int(alloc.get("order_qty_adjusted", alloc.get("order_qty", 0)) or 0)
+            else:
+                order_qty = int(
+                    getattr(alloc, "order_qty_adjusted", getattr(alloc, "order_qty", 0)) or 0
+                )
 
             # Skip invalid sizes
             if size.upper() not in VALID_SIZES and size not in VALID_SIZES:
