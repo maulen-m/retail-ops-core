@@ -56,6 +56,14 @@ VALID_SIZES = {'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', 'XS',
                '26', '28', '30', '32', '34', '36', '38', '40', '42',
                'ONE_SIZE', 'ONESIZE', 'OS'}
 
+
+def _canonicalize_size_for_sku(sku_key: str, size: str | None) -> str | None:
+    if not size:
+        return size
+    product_type = "CL" if str(sku_key or "").startswith("CL_") else None
+    normalized = normalize_size(size, product_type=product_type)
+    return normalized or size
+
 # PO-5 prep-days override (supplier will finish faster pre-holiday)
 PO5_PREP_DAYS_OVERRIDE = 18
 # PO-5 send-date override (explicit request; bypass blackout adjustments)
@@ -1298,12 +1306,17 @@ def generate_po_data(
 
         size_orders = {}
         for size, alloc in size_allocs.items():
+            canonical_size = _canonicalize_size_for_sku(sku_key, size)
             if isinstance(alloc, dict):
-                size_orders[size] = int(alloc.get('order_qty_adjusted', alloc.get('order_qty', 0)) or 0)
+                qty = int(alloc.get('order_qty_adjusted', alloc.get('order_qty', 0)) or 0)
             else:
-                size_orders[size] = int(
+                qty = int(
                     getattr(alloc, "order_qty_adjusted", getattr(alloc, "order_qty", 0)) or 0
                 )
+            if canonical_size in size_orders:
+                size_orders[canonical_size] += qty
+            else:
+                size_orders[canonical_size] = qty
 
         # Calculate dates
         po_weight = weight_kg * total_qty
@@ -1455,9 +1468,12 @@ def generate_po_data(
                 order_qty = int(
                     getattr(alloc, "order_qty_adjusted", getattr(alloc, "order_qty", 0)) or 0
                 )
+            canonical_size = _canonicalize_size_for_sku(sku_key, size)
 
             # Skip invalid sizes
-            if size.upper() not in VALID_SIZES and size not in VALID_SIZES:
+            if canonical_size is None:
+                continue
+            if canonical_size.upper() not in VALID_SIZES and canonical_size not in VALID_SIZES:
                 continue
 
             size_stock = alloc['stock']
@@ -1484,8 +1500,8 @@ def generate_po_data(
 
             size_line = SizePOLine(
                 sku_key=sku_key,
-                sku_id=f"{sku_key}_{size}",
-                size=size,
+                sku_id=f"{sku_key}_{canonical_size}",
+                size=canonical_size,
                 stock=size_stock,
                 inbound=size_inb,
                 active_inbound=0,  # PO-4: no previous POs

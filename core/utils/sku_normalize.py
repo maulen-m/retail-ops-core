@@ -86,6 +86,19 @@ SIZE_SYNONYMS = {
     '4XL\u0411': '4XL',
 }
 
+ADULT_CL_NUMERIC_SYNONYMS = {
+    '42': 'S',
+    '44': 'M',
+    '46': 'L',
+    '48': 'XL',
+    '50': 'XL',
+    '52': '2XL',
+    '54': '3XL',
+    '56': '4XL',
+    '58': '4XL',
+    '60': '4XL',
+}
+
 
 def normalize_size(size, product_type: str = None, synonyms: dict[str, str] | None = None) -> str:
     """
@@ -114,6 +127,9 @@ def normalize_size(size, product_type: str = None, synonyms: dict[str, str] | No
 
     if synonyms and size_clean in synonyms:
         size_clean = synonyms[size_clean]
+    if product_type and product_type.upper().startswith("CL"):
+        if size_clean in ADULT_CL_NUMERIC_SYNONYMS:
+            size_clean = ADULT_CL_NUMERIC_SYNONYMS[size_clean]
     if size_clean in SIZE_SYNONYMS:
         size_clean = SIZE_SYNONYMS[size_clean]
 

@@ -17,6 +17,10 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.utils.sku_normalize import normalize_size
+
 DEFAULT_DASHBOARD_PATH = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
 
 
@@ -24,6 +28,25 @@ def _normalize_size(size: str | None) -> str:
     if not size:
         return ""
     return str(size).upper().replace(" ", "").replace("-", "")
+
+
+def _is_kid_sku(sku_key: str) -> bool:
+    key = (sku_key or "").upper()
+    return "KID" in key or "KIDS" in key
+
+
+def _is_non_canonical_cl_size(sku_key: str, raw_size: str | None) -> bool:
+    if not raw_size:
+        return False
+    if _is_kid_sku(sku_key):
+        return False
+    normalized_raw = _normalize_size(raw_size)
+    canonical = normalize_size(normalized_raw, product_type="CL")
+    if not canonical:
+        return True
+    if normalized_raw.isdigit() and not canonical.isdigit():
+        return True
+    return normalized_raw != canonical
 
 
 def _plan_index(name: str) -> int:
@@ -139,6 +162,18 @@ def main() -> int:
             if int(row.get("order_qty", 0) or 0) < 0:
                 errors.append(f"{sku_key}: negative size order_qty for {row.get('size')}")
                 break
+
+        # Hard gate: non-canonical adult CL sizes must not be ordered
+        if is_cl:
+            for row in size_rows:
+                order_qty = int(row.get("order_qty", 0) or 0)
+                if order_qty <= 0:
+                    continue
+                if _is_non_canonical_cl_size(sku_key, row.get("size")):
+                    errors.append(
+                        f"{sku_key}: non-canonical size {row.get('size')} with order_qty={order_qty}"
+                    )
+                    break
 
         # Deficit-capped ordering for CL sizes
         if is_cl:

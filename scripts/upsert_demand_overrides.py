@@ -50,6 +50,15 @@ DEFAULT_OVERRIDES = [
         "source": "MANUAL",
         "active_flag": 1,
     },
+    {
+        "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+        "d_override": 10.0,
+        "start_date": "2026-01-01",
+        "end_date": "2026-03-01",
+        "reason": "Manual demand override for PO-5 readiness",
+        "source": "MANUAL",
+        "active_flag": 1,
+    },
 ]
 
 
