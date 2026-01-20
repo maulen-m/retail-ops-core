@@ -1850,7 +1850,7 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
         conn.close()
 
 
-def apply_po4_overrides(base_data: dict, po4_data: dict, params) -> dict:
+def apply_po4_overrides(base_data: dict, po4_data: dict, params, fx_rates) -> dict:
     """Override PO-4 quantities with approved supplier quantities."""
     orders_by_sku = po4_data.get("orders_by_sku", {})
     if not orders_by_sku:
@@ -1870,6 +1870,15 @@ def apply_po4_overrides(base_data: dict, po4_data: dict, params) -> dict:
 
     total_units = 0
     skus_with_orders = 0
+    sku_meta = {
+        s.get("sku_key"): {
+            "weight_per_unit_kg": s.get("weight_per_unit_kg") or 0.0,
+            "base_cost_cny": s.get("base_cost_cny") or 0.0,
+            "base_cost_kzt": s.get("base_cost_kzt") or 0.0,
+            "unit_cogs": s.get("unit_cogs") or 0.0,
+        }
+        for s in base_data.get("sku_level", [])
+    }
     for sku_line in base_data.get("sku_level", []):
         sku_key = sku_line.get("sku_key")
         size_map = orders_by_sku.get(sku_key, {})
@@ -1900,6 +1909,8 @@ def apply_po4_overrides(base_data: dict, po4_data: dict, params) -> dict:
         unit_weight = 0.0
         if prev_qty:
             unit_weight = (size_line.get("weight_kg") or 0.0) / prev_qty
+        if unit_weight <= 0:
+            unit_weight = sku_meta.get(sku_key, {}).get("weight_per_unit_kg") or 0.0
         size_line["order_qty"] = int(size_map.get(size, 0))
         size_line["weight_kg"] = round(unit_weight * size_line["order_qty"], 2)
         if message_date:
@@ -1957,8 +1968,22 @@ def apply_po4_overrides(base_data: dict, po4_data: dict, params) -> dict:
 
     for sku_line in base_data.get("sku_level", []):
         sku_key = sku_line.get("sku_key")
-        if sku_key in weight_by_sku:
-            sku_line["po_weight_kg"] = round(weight_by_sku[sku_key], 2)
+        total_qty = int(sku_line.get("po_qty_total") or 0)
+        meta = sku_meta.get(sku_key, {})
+        weight_per_unit = meta.get("weight_per_unit_kg") or sku_line.get("weight_per_unit_kg") or 0.0
+        po_weight = weight_by_sku.get(sku_key)
+        if po_weight is None or po_weight <= 0:
+            po_weight = weight_per_unit * total_qty
+        sku_line["po_weight_kg"] = round(po_weight, 2)
+        base_cost_cny = meta.get("base_cost_cny") or sku_line.get("base_cost_cny") or 0.0
+        base_cost_kzt = meta.get("base_cost_kzt") or sku_line.get("base_cost_kzt") or 0.0
+        unit_cogs = meta.get("unit_cogs") or sku_line.get("unit_cogs") or 0.0
+        sku_line["po_base_cost_cny"] = round(base_cost_cny * total_qty, 2)
+        sku_line["po_base_cost_kzt"] = round(base_cost_kzt * total_qty, 2)
+        po_dlv_usd = po_weight * fx_rates.dlv_rate_usd_kg
+        sku_line["po_dlv_usd"] = round(po_dlv_usd, 2)
+        sku_line["po_dlv_kzt"] = round(po_dlv_usd * fx_rates.usd_kzt, 2)
+        sku_line["po_cogs_kzt"] = round(unit_cogs * total_qty, 2)
 
     size_horizontal = []
     for sku_line in base_data.get("sku_level", []):
@@ -2125,7 +2150,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
     base_data = generate_po_data()
     po4_actual = load_po4_approved_orders()
     if po4_actual:
-        base_data = apply_po4_overrides(base_data, po4_actual, params)
+        base_data = apply_po4_overrides(base_data, po4_actual, params, fx_rates)
 
     # Store all plans
     all_pos = {plan_name_from_po_num(4): base_data}
