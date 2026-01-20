@@ -59,6 +59,15 @@ DEFAULT_OVERRIDES = [
         "source": "MANUAL",
         "active_flag": 1,
     },
+    {
+        "sku_key": "CL_NEW-CLO_MEN_BERSERK-RUSH_WHITE",
+        "d_override": 0.4,
+        "start_date": "2026-01-20",
+        "end_date": "9999-12-31",
+        "reason": "Manual demand override (low demand)",
+        "source": "MANUAL",
+        "active_flag": 1,
+    },
 ]
 
 
