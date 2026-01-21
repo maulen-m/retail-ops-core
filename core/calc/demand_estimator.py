@@ -71,11 +71,11 @@ class DemandEstimatorConfig:
     medium_conf_days: int = 30
     low_conf_days: int = 14
 
-    # Anchor weights by confidence level
-    high_conf_anchor_weight: float = 0.1    # 10% anchor when high conf
-    medium_conf_anchor_weight: float = 0.3  # 30% anchor when medium
-    low_conf_anchor_weight: float = 0.5     # 50% anchor when low
-    anchor_only_weight: float = 0.8         # 80% anchor when very low
+    # Anchor weights by confidence level (force anchor-only for size mix)
+    high_conf_anchor_weight: float = 1.0
+    medium_conf_anchor_weight: float = 1.0
+    low_conf_anchor_weight: float = 1.0
+    anchor_only_weight: float = 1.0
 
     # Confidence uplift factors
     marginal_uplift: float = 1.2   # 20% uplift for 14-29 good days
@@ -1004,10 +1004,8 @@ class DemandEstimator:
             a_share = anchor_shares.get(size, 0.0)
             d_share = data_shares.get(size, 0.0)
 
-            # Adjust weight for partial OOS sizes (trust anchor more)
-            local_w = anchor_weight
-            if size in partial_oos_sizes and anchor:
-                local_w = min(0.95, local_w + 0.3)
+            # Force anchor-only size shares when anchors are present
+            local_w = 1.0 if anchor and anchor.size_shares else anchor_weight
 
             # Blend
             if a_share > 0 or d_share > 0:
@@ -1017,8 +1015,14 @@ class DemandEstimator:
 
             blended_shares[size] = blended
 
-        # Apply guardrails and renormalize
-        final_shares = self._apply_size_guardrails(blended_shares)
+        # Apply guardrails only when not using anchor-only shares
+        if anchor and anchor.size_shares and local_w >= 1.0:
+            total = sum(blended_shares.values())
+            final_shares = (
+                {s: v / total for s, v in blended_shares.items()} if total > 0 else blended_shares
+            )
+        else:
+            final_shares = self._apply_size_guardrails(blended_shares)
 
         # Build results
         results: dict[str, SizeDemandResult] = {}

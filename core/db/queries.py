@@ -354,42 +354,8 @@ def get_size_sales_90d(
     Returns:
         Dict mapping size -> total units sold in last 90 days
     """
-    with get_db(db_path) as conn:
-        # Get all sizes for this SKU
-        sizes_result = conn.execute("""
-            SELECT DISTINCT my_size, size_order
-            FROM dim_sku_size
-            WHERE sku_key = ?
-            ORDER BY size_order
-        """, (sku_key,)).fetchall()
-
-        sizes = [row["my_size"] for row in sizes_result]
-
-        if not sizes:
-            return {}
-
-        # Calculate date range
-        end_date = date.today()
-        start_date = end_date - timedelta(days=90)
-
-        # Get aggregated sales
-        sales_data = conn.execute("""
-            SELECT my_size, SUM(units) as total_units
-            FROM fact_sales_daily_size
-            WHERE sku_key = ?
-              AND store_code = ?
-              AND sale_date >= ?
-              AND sale_date <= ?
-            GROUP BY my_size
-        """, (sku_key, store_code, start_date.isoformat(), end_date.isoformat())).fetchall()
-
-        # Build result
-        result = {size: 0 for size in sizes}
-        for row in sales_data:
-            if row["my_size"] in result:
-                result[row["my_size"]] = row["total_units"] or 0
-
-        return result
+    # Use sales_fact_v2 for size shares (newer data source)
+    return get_size_sales_90d_v2(sku_key, store_code=store_code, db_path=db_path)
 
 
 def get_sku_age_days(
