@@ -2355,8 +2355,11 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
             # Target and ROP (base target first)
             base_target = base_sku['target']
             rop = base_sku['rop_total']
-            ss_total = max(0.0, base_target - (d_sku * R)) if d_sku > 0 else 0.0
-            target = base_target
+            base_ss_total = max(0.0, base_target - (d_sku * R)) if d_sku > 0 else 0.0
+            effective_R = R
+            t_post_days = effective_R + (base_ss_total / d_sku) if d_sku > 0 else effective_R
+            ss_total = base_ss_total
+            target = d_sku * t_post_days
 
             # Base order qty from PLAN-0 target
             order_qty_base = max(0, int(round(target - pre_arrival)))
@@ -2378,6 +2381,10 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                 next_effective_L = max(0, (next_arrival_date - next_message_date).days)
                 next_days_offset = (next_message_date - TODAY).days
                 arrival_gap_days = max(0, (next_arrival_date - po_arr_date).days)
+                if arrival_gap_days is not None and arrival_gap_days > 0:
+                    effective_R = arrival_gap_days
+                    t_post_days = effective_R + (base_ss_total / d_sku) if d_sku > 0 else effective_R
+                    target = d_sku * t_post_days
 
             if next_message_date and d_sku > 0 and not sku_key.startswith("CL_"):
                 if next_arrival_date:
@@ -2433,8 +2440,9 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                     size_consumption_msg_to_arr = d_size * effective_L
                     size_pre_arrival = max(0, size_stock_at_msg + size_active_inbound - size_consumption_msg_to_arr)
 
-                    t_post_base = base_size['t_post_days']
-                    target_base = base_size['target']
+                    base_ss_total_size = max(0.0, base_size['target'] - (d_size * R)) if d_size > 0 else 0.0
+                    t_post_base = (effective_R + (base_ss_total_size / d_size)) if d_size > 0 else effective_R
+                    target_base = d_size * t_post_base
                     size_order_base = calc_deficit_capped_order_qty(
                         d_size=d_size,
                         t_post=t_post_base,
@@ -2457,6 +2465,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                             "target_base": target_base,
                             "t_post_base": t_post_base,
                             "rop_size": base_size['rop_size'],
+                            "ss_total_size": base_ss_total_size,
                             "base_order_qty": size_order_base,
                         }
                     )
@@ -2493,7 +2502,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                         if d_size <= 0:
                             size_topups[size] = 0
                             continue
-                        ss_total_size = max(0.0, meta["target_base"] - (d_size * R))
+                        ss_total_size = meta.get("ss_total_size", 0.0)
                         size_stock_at_msg_next = _stock_at_message_date(
                             current_stock=meta["stock"],
                             inbound_stock=meta["inbound_snapshot"],
@@ -2584,7 +2593,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                         'est_arr_date': po_arr_date.isoformat(),
                         'pre_arr_doc': round(size_pre_doc, 1),
                         'post_arr_doc': round(size_post_doc, 1),
-                        'ss_total': round(max(0.0, meta["target_base"] - (d_size * R)), 2),
+                        'ss_total': round(meta.get("ss_total_size", 0.0), 2),
                         'ss_days': round(ss_days_size, 2),
                         'arrival_gap_days': arrival_gap_days,
                         'roic_pct': base_sku['roic_pct'],
@@ -2593,8 +2602,8 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
                     size_level_rows.append(size_line)
 
                 order_qty = sum(size_orders_this_po.values())
-                if next_message_date and d_sku > 0:
-                    target = base_target + sum(size_topups.values())
+                if d_sku > 0:
+                    target = (d_sku * effective_R) + base_ss_total + sum(size_topups.values())
                 # For CL, align SKU-level pre_arrival with size-constrained totals
                 pre_arrival = int(sum(meta["pre_arrival"] for meta in size_meta))
                 stock_at_msg = sum(meta["stock_at_msg"] for meta in size_meta)
