@@ -134,65 +134,861 @@ def _render_html(rows: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(rows)
     html = f"""<!DOCTYPE html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"UTF-8\" />
-  <title>Cashflow Calendar</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CASHFLOW MONITOR - RETRO TERMINAL</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; }}
-    h1 {{ margin-bottom: 6px; }}
-    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }}
-    .card {{ background: #f7f7f9; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; }}
-    .label {{ color: #6b7280; font-size: 12px; }}
-    .value {{ font-size: 16px; font-weight: 600; }}
-    .controls {{ margin-bottom: 12px; display: flex; gap: 10px; align-items: center; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
-    th, td {{ border: 1px solid #ddd; padding: 6px 8px; text-align: right; }}
-    th {{ background: #f3f4f6; text-align: right; }}
-    td:first-child, th:first-child {{ text-align: left; }}
-    .chart {{ margin: 16px 0; }}
-    .breach {{ color: #b91c1c; font-weight: 700; }}
+    /* ========================================
+       CSS VARIABLES - THEME SYSTEM
+       ======================================== */
+    :root {{
+      --bg-primary: #0a0a0a;
+      --bg-secondary: #1a1a1a;
+      --bg-card: #1f1f1f;
+      --bg-input: #141414;
+      --bg-table: #121212;
+
+      --text-primary: #ffaa00;
+      --text-secondary: #ff8800;
+      --text-accent: #ffcc44;
+      --text-dim: #996600;
+      --text-muted: #664400;
+
+      --border-primary: #ff8800;
+      --border-secondary: #664400;
+
+      --glow-color: #ffaa00;
+      --glow-intense: #ff8800;
+
+      --positive-color: #00ff88;
+      --negative-color: #ff4444;
+      --warning-color: #ffdd00;
+
+      --chart-cash: #ffaa00;
+      --chart-capital: #00ddff;
+      --chart-receivables: #ff6688;
+      --chart-grid: rgba(255, 170, 0, 0.12);
+      --chart-axis: rgba(255, 170, 0, 0.4);
+
+      --scanline-opacity: 0.04;
+      --pixel-border: 2px;
+    }}
+
+    body.theme-light {{
+      --bg-primary: #f4f1e8;
+      --bg-secondary: #ebe7d9;
+      --bg-card: #fefdfb;
+      --bg-input: #ffffff;
+      --bg-table: #faf9f6;
+
+      --text-primary: #2d2520;
+      --text-secondary: #4a3f35;
+      --text-accent: #1a1410;
+      --text-dim: #6b5d52;
+      --text-muted: #9a8a7a;
+
+      --border-primary: #3d3228;
+      --border-secondary: #bab0a0;
+
+      --glow-color: transparent;
+      --glow-intense: transparent;
+
+      --positive-color: #2d7a4a;
+      --negative-color: #b83232;
+      --warning-color: #d4a017;
+
+      --chart-cash: #2d2520;
+      --chart-capital: #0088aa;
+      --chart-receivables: #aa3355;
+      --chart-grid: rgba(45, 37, 32, 0.08);
+      --chart-axis: rgba(45, 37, 32, 0.3);
+
+      --scanline-opacity: 0.015;
+    }}
+
+    /* ========================================
+       BASE STYLES
+       ======================================== */
+    * {{
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }}
+
+    body {{
+      font-family: 'VT323', monospace;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      overflow-x: hidden;
+      transition: background 0.3s ease, color 0.3s ease;
+    }}
+
+    .pixel-font {{
+      font-family: 'Press Start 2P', cursive;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      line-height: 1.6;
+    }}
+
+    .monospace-font {{
+      font-family: 'VT323', monospace;
+      letter-spacing: 0.03em;
+    }}
+
+    /* ========================================
+       LAYOUT CONTAINER
+       ======================================== */
+    .retro-container {{
+      min-height: 100vh;
+      padding: 20px;
+      position: relative;
+    }}
+
+    /* CRT Scanline Effect */
+    .retro-container::before {{
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: repeating-linear-gradient(
+        0deg,
+        rgba(0, 0, 0, var(--scanline-opacity)) 0px,
+        transparent 1px,
+        transparent 2px,
+        rgba(0, 0, 0, var(--scanline-opacity)) 3px
+      );
+      pointer-events: none;
+      z-index: 1000;
+      animation: scanline 8s linear infinite;
+    }}
+
+    @keyframes scanline {{
+      0% {{ transform: translateY(0); }}
+      100% {{ transform: translateY(4px); }}
+    }}
+
+    /* ========================================
+       HEADER
+       ======================================== */
+    .retro-header {{
+      position: relative;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: var(--pixel-border) solid var(--border-primary);
+    }}
+
+    .title-bar {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }}
+
+    .pixel-title {{
+      font-size: clamp(16px, 3vw, 24px);
+      color: var(--text-accent);
+      text-shadow:
+        0 0 8px var(--glow-color),
+        0 0 12px var(--glow-intense);
+    }}
+
+    .subtitle {{
+      font-size: 18px;
+      color: var(--text-dim);
+      margin-top: 8px;
+    }}
+
+    .theme-toggle-container {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }}
+
+    .toggle-label {{
+      font-size: 14px;
+      color: var(--text-secondary);
+    }}
+
+    .toggle-switch {{
+      position: relative;
+      display: inline-block;
+      width: 60px;
+      height: 28px;
+    }}
+
+    .toggle-switch input {{
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }}
+
+    .toggle-slider {{
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: var(--bg-input);
+      border: var(--pixel-border) solid var(--border-primary);
+      transition: 0.3s;
+    }}
+
+    .toggle-slider::before {{
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 22px;
+      left: 3px;
+      bottom: 3px;
+      background-color: var(--text-primary);
+      transition: 0.3s;
+      box-shadow: 0 0 6px var(--glow-color);
+    }}
+
+    .toggle-switch input:checked + .toggle-slider::before {{
+      transform: translateX(28px);
+    }}
+
+    /* ========================================
+       STICKY SUMMARY CARDS
+       ======================================== */
+    .summary-container {{
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--bg-primary);
+      padding: 16px 0;
+      border-bottom: var(--pixel-border) solid var(--border-primary);
+      margin-bottom: 24px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    }}
+
+    .section-label {{
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 12px;
+    }}
+
+    .summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }}
+
+    .metric-card {{
+      background: var(--bg-card);
+      border: var(--pixel-border) solid var(--border-primary);
+      padding: 16px;
+      position: relative;
+      box-shadow:
+        4px 4px 0 var(--border-secondary),
+        inset 0 0 20px rgba(0, 0, 0, 0.3);
+      transition: transform 0.2s ease;
+    }}
+
+    .metric-card:hover {{
+      transform: translateY(-2px);
+    }}
+
+    .metric-card.breach-card {{
+      border-color: var(--negative-color);
+      animation: breach-pulse 2s ease-in-out infinite;
+    }}
+
+    @keyframes breach-pulse {{
+      0%, 100% {{ box-shadow: 4px 4px 0 var(--border-secondary), inset 0 0 20px rgba(255, 68, 68, 0.2); }}
+      50% {{ box-shadow: 4px 4px 0 var(--negative-color), inset 0 0 30px rgba(255, 68, 68, 0.4); }}
+    }}
+
+    .card-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }}
+
+    .card-label {{
+      font-size: 8px;
+      color: var(--text-dim);
+    }}
+
+    .trend-indicator {{
+      font-size: 14px;
+      font-weight: bold;
+    }}
+
+    .trend-indicator.up {{
+      color: var(--positive-color);
+    }}
+
+    .trend-indicator.down {{
+      color: var(--negative-color);
+    }}
+
+    .card-value-row {{
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 6px;
+    }}
+
+    .card-value {{
+      font-size: 28px;
+      font-weight: 400;
+      color: var(--text-accent);
+      text-shadow: 0 0 8px var(--glow-color);
+    }}
+
+    .card-value.breach-value {{
+      color: var(--negative-color);
+      text-shadow: 0 0 8px var(--negative-color);
+    }}
+
+    .card-unit {{
+      font-size: 16px;
+      color: var(--text-dim);
+    }}
+
+    .card-meta {{
+      font-size: 14px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }}
+
+    .change-value {{
+      font-weight: bold;
+    }}
+
+    .change-value.positive {{
+      color: var(--positive-color);
+    }}
+
+    .change-value.negative {{
+      color: var(--negative-color);
+    }}
+
+    .sparkline {{
+      width: 100%;
+      height: 30px;
+      margin-top: 8px;
+      opacity: 0.8;
+    }}
+
+    .warning-badge {{
+      background: var(--warning-color);
+      color: #000;
+      padding: 4px 8px;
+      font-size: 8px;
+      margin-top: 8px;
+      display: inline-block;
+      font-weight: bold;
+    }}
+
+    .warning-icon {{
+      color: var(--negative-color);
+      font-size: 12px;
+      animation: blink 1s infinite;
+    }}
+
+    @keyframes blink {{
+      0%, 50% {{ opacity: 1; }}
+      51%, 100% {{ opacity: 0.3; }}
+    }}
+
+    /* ========================================
+       CHART SECTION
+       ======================================== */
+    .chart-section {{
+      margin-bottom: 32px;
+      background: var(--bg-card);
+      border: var(--pixel-border) solid var(--border-primary);
+      padding: 20px;
+      box-shadow: 4px 4px 0 var(--border-secondary);
+    }}
+
+    .chart-wrapper {{
+      position: relative;
+      margin-top: 16px;
+    }}
+
+    #cashChart {{
+      width: 100%;
+      height: 400px;
+      max-width: 1400px;
+      display: block;
+    }}
+
+    .chart-legend {{
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }}
+
+    .legend-item {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 16px;
+    }}
+
+    .legend-color {{
+      width: 20px;
+      height: 3px;
+      display: inline-block;
+    }}
+
+    .legend-color.cash {{
+      background: var(--chart-cash);
+      box-shadow: 0 0 4px var(--chart-cash);
+    }}
+
+    .legend-color.capital {{
+      background: var(--chart-capital);
+    }}
+
+    .legend-color.receivables {{
+      background: var(--chart-receivables);
+    }}
+
+    .chart-tooltip {{
+      position: fixed;
+      background: var(--bg-card);
+      border: var(--pixel-border) solid var(--border-primary);
+      padding: 12px;
+      pointer-events: none;
+      z-index: 2000;
+      box-shadow: 4px 4px 0 var(--border-secondary);
+      min-width: 200px;
+    }}
+
+    .chart-tooltip.hidden {{
+      display: none;
+    }}
+
+    .tooltip-date {{
+      font-size: 10px;
+      color: var(--text-accent);
+      margin-bottom: 8px;
+      border-bottom: 1px solid var(--border-secondary);
+      padding-bottom: 4px;
+    }}
+
+    .tooltip-row {{
+      font-size: 14px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 4px 0;
+    }}
+
+    .tooltip-label {{
+      color: var(--text-dim);
+    }}
+
+    .tooltip-value {{
+      color: var(--text-accent);
+      font-weight: bold;
+    }}
+
+    .tooltip-forecast {{
+      font-size: 10px;
+      color: var(--warning-color);
+      margin-top: 6px;
+      text-align: center;
+    }}
+
+    /* ========================================
+       CONTROLS SECTION
+       ======================================== */
+    .controls-section {{
+      margin-bottom: 24px;
+    }}
+
+    .retro-controls {{
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      align-items: center;
+    }}
+
+    .control-group {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }}
+
+    .control-label {{
+      font-size: 10px;
+      color: var(--text-secondary);
+    }}
+
+    .retro-select {{
+      font-family: 'VT323', monospace;
+      font-size: 18px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      border: var(--pixel-border) solid var(--border-primary);
+      padding: 8px 32px 8px 12px;
+      cursor: pointer;
+      appearance: none;
+      background-image: url('data:image/svg+xml;utf8,<svg fill="{{\'%23\' + \'ffaa00\'}}" height="24" viewBox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>');
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      text-transform: uppercase;
+      transition: all 0.2s;
+    }}
+
+    .retro-select:focus {{
+      outline: none;
+      box-shadow: 0 0 0 2px var(--glow-color);
+    }}
+
+    .retro-select:hover {{
+      background: var(--bg-card);
+    }}
+
+    .retro-checkbox {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 16px;
+    }}
+
+    .retro-checkbox input[type="checkbox"] {{
+      display: none;
+    }}
+
+    .checkbox-custom {{
+      width: 20px;
+      height: 20px;
+      border: var(--pixel-border) solid var(--border-primary);
+      background: var(--bg-input);
+      position: relative;
+      transition: all 0.2s;
+    }}
+
+    .retro-checkbox:hover .checkbox-custom {{
+      background: var(--bg-card);
+    }}
+
+    .retro-checkbox input:checked + .checkbox-custom::after {{
+      content: '✕';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: var(--text-accent);
+      font-size: 16px;
+      font-weight: bold;
+    }}
+
+    /* ========================================
+       TABLE SECTION
+       ======================================== */
+    .table-section {{
+      margin-bottom: 32px;
+    }}
+
+    .table-wrapper {{
+      overflow: auto;
+      max-height: 600px;
+      border: var(--pixel-border) solid var(--border-primary);
+      background: var(--bg-table);
+      box-shadow: 4px 4px 0 var(--border-secondary);
+    }}
+
+    .retro-table {{
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 16px;
+    }}
+
+    .retro-table thead {{
+      position: sticky;
+      top: 0;
+      z-index: 90;
+    }}
+
+    .retro-table thead th {{
+      background: var(--bg-secondary);
+      color: var(--text-accent);
+      border: 1px solid var(--border-primary);
+      padding: 10px 12px;
+      text-align: right;
+      font-weight: bold;
+      white-space: nowrap;
+    }}
+
+    .retro-table tbody td {{
+      border: 1px solid var(--border-secondary);
+      padding: 8px 12px;
+      text-align: right;
+      background: var(--bg-table);
+    }}
+
+    .retro-table tbody tr:nth-child(even) td {{
+      background: var(--bg-card);
+    }}
+
+    .retro-table tbody tr:hover td {{
+      background: var(--bg-secondary);
+    }}
+
+    .retro-table td:first-child,
+    .retro-table th:first-child {{
+      position: sticky;
+      left: 0;
+      z-index: 80;
+      text-align: left;
+    }}
+
+    .retro-table thead th:first-child {{
+      z-index: 95;
+      background: var(--bg-secondary);
+    }}
+
+    .date-cell {{
+      font-weight: bold;
+      white-space: nowrap;
+      color: var(--text-accent);
+    }}
+
+    .negative-value {{
+      color: var(--negative-color);
+    }}
+
+    .forecast-row {{
+      background: var(--bg-input);
+      font-style: italic;
+    }}
+
+    /* ========================================
+       FOOTER
+       ======================================== */
+    .retro-footer {{
+      margin-top: 48px;
+      padding-top: 16px;
+      border-top: var(--pixel-border) solid var(--border-primary);
+      text-align: center;
+      font-size: 14px;
+      color: var(--text-dim);
+      position: relative;
+    }}
+
+    .footer-text {{
+      animation: footer-glow 3s ease-in-out infinite;
+    }}
+
+    @keyframes footer-glow {{
+      0%, 100% {{ opacity: 0.6; }}
+      50% {{ opacity: 1; }}
+    }}
+
+    /* ========================================
+       RESPONSIVE
+       ======================================== */
+    @media (max-width: 768px) {{
+      .pixel-title {{
+        font-size: 14px;
+      }}
+
+      .summary-grid {{
+        grid-template-columns: 1fr;
+      }}
+
+      #cashChart {{
+        height: 300px;
+      }}
+
+      .retro-table {{
+        font-size: 14px;
+      }}
+
+      .card-value {{
+        font-size: 22px;
+      }}
+    }}
   </style>
 </head>
-<body>
-  <h1>Cashflow Calendar</h1>
-  <div class=\"summary\" id=\"summary\"></div>
-  <div class=\"chart\">
-    <canvas id=\"cashChart\" height=\"140\"></canvas>
+
+<body class="theme-dark">
+  <div class="retro-container">
+    <!-- Header -->
+    <header class="retro-header">
+      <div class="title-bar">
+        <div>
+          <h1 class="pixel-title pixel-font">CASHFLOW MONITOR</h1>
+          <div class="subtitle monospace-font">Financial Command Center</div>
+        </div>
+        <div class="theme-toggle-container">
+          <label class="toggle-switch">
+            <input type="checkbox" id="themeToggle">
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="toggle-label monospace-font">AMBER / BEIGE</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Summary Cards -->
+    <section class="summary-container">
+      <div class="section-label pixel-font">KEY METRICS</div>
+      <div class="summary-grid" id="summary"></div>
+    </section>
+
+    <!-- Chart -->
+    <section class="chart-section">
+      <div class="section-label pixel-font">CAPITAL VISUALIZATION</div>
+      <div class="chart-wrapper">
+        <canvas id="cashChart"></canvas>
+        <div class="chart-legend">
+          <div class="legend-item monospace-font">
+            <span class="legend-color cash"></span>
+            <span class="legend-label">Cash Balance</span>
+          </div>
+          <div class="legend-item monospace-font">
+            <span class="legend-color capital"></span>
+            <span class="legend-label">Total Capital</span>
+          </div>
+          <div class="legend-item monospace-font">
+            <span class="legend-color receivables"></span>
+            <span class="legend-label">Receivables</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tooltip -->
+    <div id="chartTooltip" class="chart-tooltip hidden monospace-font"></div>
+
+    <!-- Controls -->
+    <section class="controls-section">
+      <div class="retro-controls">
+        <div class="control-group">
+          <label class="control-label pixel-font">TIME RANGE</label>
+          <select id="rangeSelect" class="retro-select">
+            <option value="30">LAST 30 DAYS</option>
+            <option value="90" selected>LAST 90 DAYS</option>
+            <option value="all">ALL DATA</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label class="retro-checkbox">
+            <input type="checkbox" id="forecastToggle" checked>
+            <span class="checkbox-custom"></span>
+            <span class="pixel-font">INCLUDE FORECAST</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- Data Table -->
+    <section class="table-section">
+      <div class="section-label pixel-font">DETAILED LEDGER</div>
+      <div class="table-wrapper">
+        <table id="table" class="retro-table monospace-font"></table>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="retro-footer">
+      <div class="footer-text monospace-font">
+        SYSTEM OPERATIONAL // DATA REFRESH: <span id="refreshTime"></span>
+      </div>
+    </footer>
   </div>
-  <div class=\"controls\">
-    <label>Show range:
-      <select id=\"rangeSelect\">
-        <option value=\"30\" selected>Last 30 days</option>
-        <option value=\"90\">Last 90 days</option>
-        <option value=\"all\">All</option>
-      </select>
-    </label>
-    <label><input type=\"checkbox\" id=\"forecastToggle\" checked> Include forecast</label>
-  </div>
-  <table id=\"table\"></table>
+
   <script>
+    // ========================================
+    // DATA INJECTION
+    // ========================================
     const rows = {data};
+
+    // ========================================
+    // DOM ELEMENTS
+    // ========================================
     const summary = document.getElementById('summary');
     const forecastToggle = document.getElementById('forecastToggle');
     const rangeSelect = document.getElementById('rangeSelect');
+    const themeToggle = document.getElementById('themeToggle');
+    const body = document.body;
+    const chartCanvas = document.getElementById('cashChart');
+    const tooltip = document.getElementById('chartTooltip');
 
-    function formatKzt(val) {{
-      return Number(val || 0).toLocaleString('en-US', {{ maximumFractionDigits: 0 }});
+    // ========================================
+    // THEME MANAGEMENT
+    // ========================================
+    const savedTheme = localStorage.getItem('cashflow-theme') || 'dark';
+    if (savedTheme === 'light') {{
+      body.classList.remove('theme-dark');
+      body.classList.add('theme-light');
+      themeToggle.checked = true;
     }}
 
-    function buildSummary(rows) {{
-      if (!rows.length) {{ summary.textContent = 'No data'; return; }}
-      const last = rows.filter(r => !r.is_forecast).slice(-1)[0] || rows[rows.length-1];
-      const minRow = rows.reduce((a,b)=> (a.cash_close < b.cash_close ? a : b));
-      const breach = (minRow.cash_close || 0) < 0;
-      summary.innerHTML = `
-        <div class=\"card\"><div class=\"label\">Cash (close)</div><div class=\"value\">${'{'}formatKzt(last.cash_close){'}'} KZT</div></div>
-        <div class=\"card\"><div class=\"label\">Receivables (close)</div><div class=\"value\">${'{'}formatKzt(last.receivables_close){'}'} KZT</div></div>
-        <div class=\"card\"><div class=\"label\">Inventory Cost (close)</div><div class=\"value\">${'{'}formatKzt(last.inventory_cost_close){'}'} KZT</div></div>
-        <div class=\"card\"><div class=\"label\">Capital (close)</div><div class=\"value\">${'{'}formatKzt(last.capital_close){'}'} KZT</div></div>
-        <div class=\"card\"><div class=\"label\">Min Cash</div><div class=\"value ${'{'}breach ? 'breach' : ''{'}'}\">${'{'}formatKzt(minRow.cash_close){'}'} KZT (${ '{'}minRow.date{'}'})</div></div>
-      `;
+    themeToggle.addEventListener('change', function() {{
+      if (this.checked) {{
+        body.classList.remove('theme-dark');
+        body.classList.add('theme-light');
+        localStorage.setItem('cashflow-theme', 'light');
+      }} else {{
+        body.classList.remove('theme-light');
+        body.classList.add('theme-dark');
+        localStorage.setItem('cashflow-theme', 'dark');
+      }}
+      renderChart();
+    }});
+
+    // ========================================
+    // HELPER FUNCTIONS
+    // ========================================
+    function formatKzt(val) {{
+      const num = Math.round(Number(val || 0));
+      return num.toString().replace(/\B(?=(\d{{{3}}})+(?!\d))/g, ' ');
+    }}
+
+    function calculateTrends(data) {{
+      if (data.length < 2) return null;
+
+      const recent = data[data.length - 1];
+      const previous30 = data.length > 30 ? data[data.length - 31] : data[0];
+
+      const trends = {{}};
+
+      ['cash_close', 'receivables_close', 'inventory_cost_close', 'capital_close'].forEach(key => {{
+        const currentVal = Number(recent[key] || 0);
+        const previousVal = Number(previous30[key] || 0);
+        const change = currentVal - previousVal;
+        const changePercent = previousVal !== 0 ? (change / Math.abs(previousVal)) * 100 : 0;
+
+        trends[key] = {{
+          current: currentVal,
+          previous: previousVal,
+          change: change,
+          changePercent: changePercent,
+          direction: change >= 0 ? 'up' : 'down',
+          isPositive: change >= 0
+        }};
+      }});
+
+      return trends;
     }}
 
     function filterRows() {{
@@ -208,42 +1004,433 @@ def _render_html(rows: list[dict], path: Path) -> None:
       return filtered;
     }}
 
-    function renderTable() {{
-      const data = filterRows();
-      const table = document.getElementById('table');
-      if (!data.length) {{
-        table.innerHTML = '<tr><td>No data</td></tr>';
-        return;
-      }}
-      const headers = Object.keys(data[0]);
-      table.innerHTML = '<thead><tr>' + headers.map(h => `<th>${'{'}h{'}'}</th>`).join('') + '</tr></thead>' +
-        '<tbody>' + data.map(r => '<tr>' + headers.map(h => `<td>${'{'}r[h] ?? ''{'}'}</td>`).join('') + '</tr>').join('') + '</tbody>';
-    }}
+    // ========================================
+    // SPARKLINE RENDERING
+    // ========================================
+    function renderSparkline(canvasId, data, key) {{
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
 
-    function renderChart() {{
-      const data = filterRows();
-      const canvas = document.getElementById('cashChart');
       const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (!data.length) return;
-      const values = data.map(r => Number(r.cash_close || 0));
+      const width = canvas.width;
+      const height = canvas.height;
+
+      ctx.clearRect(0, 0, width, height);
+
+      const values = data.slice(-30).map(r => Number(r[key] || 0));
+      if (values.length < 2) return;
+
       const min = Math.min(...values);
       const max = Math.max(...values);
-      const pad = 10;
-      const w = canvas.width - pad * 2;
-      const h = canvas.height - pad * 2;
-      ctx.strokeStyle = '#111827';
+      const range = max - min || 1;
+
+      const isLightTheme = body.classList.contains('theme-light');
+      const lineColor = isLightTheme ? '#2d2520' : '#ffaa00';
+
+      ctx.strokeStyle = lineColor;
       ctx.lineWidth = 2;
       ctx.beginPath();
+
       values.forEach((val, i) => {{
-        const x = pad + (w * i) / Math.max(values.length - 1, 1);
-        const y = pad + h - (h * (val - min)) / Math.max(max - min, 1);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        const x = (i / (values.length - 1)) * width;
+        const y = height - ((val - min) / range) * (height - 4) - 2;
+
+        if (i === 0) {{
+          ctx.moveTo(x, y);
+        }} else {{
+          ctx.lineTo(x, y);
+        }}
       }});
+
       ctx.stroke();
     }}
 
+    // ========================================
+    // SUMMARY CARDS
+    // ========================================
+    function buildSummary(rows) {{
+      if (!rows.length) {{
+        summary.innerHTML = '<div class="monospace-font">NO DATA AVAILABLE</div>';
+        return;
+      }}
+
+      const actualData = rows.filter(r => !r.is_forecast);
+      const last = actualData.length > 0 ? actualData[actualData.length - 1] : rows[rows.length - 1];
+
+      const trends = calculateTrends(actualData.length > 0 ? actualData : rows);
+
+      const minRow = rows.reduce((a, b) => (a.cash_close < b.cash_close ? a : b));
+      const breach = (minRow.cash_close || 0) < 0;
+
+      let breachWarning = '';
+      if (!breach && trends && trends.cash_close.direction === 'down') {{
+        const daysToZero = Math.abs(trends.cash_close.current / (trends.cash_close.change / 30));
+        if (daysToZero < 60 && daysToZero > 0) {{
+          breachWarning = `<div class="warning-badge pixel-font">! ${{Math.floor(daysToZero)}} DAYS TO ZERO</div>`;
+        }}
+      }}
+
+      summary.innerHTML = `
+        <div class="metric-card">
+          <div class="card-header">
+            <span class="card-label pixel-font">CASH BALANCE</span>
+            ${{trends ? `<span class="trend-indicator ${{trends.cash_close.direction}}">${{trends.cash_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
+          </div>
+          <div class="card-value-row">
+            <span class="card-value monospace-font">${{formatKzt(last.cash_close)}}</span>
+            <span class="card-unit">KZT</span>
+          </div>
+          ${{trends ? `
+            <div class="card-meta">
+              <span class="change-value ${{trends.cash_close.isPositive ? 'positive' : 'negative'}}">
+                ${{trends.cash_close.isPositive ? '+' : ''}}${{trends.cash_close.changePercent.toFixed(1)}}%
+              </span>
+              <span class="change-period">vs 30d</span>
+            </div>
+          ` : ''}}
+          <canvas class="sparkline" id="sparkline-cash" width="240" height="30"></canvas>
+          ${{breachWarning}}
+        </div>
+
+        <div class="metric-card">
+          <div class="card-header">
+            <span class="card-label pixel-font">RECEIVABLES</span>
+            ${{trends ? `<span class="trend-indicator ${{trends.receivables_close.direction}}">${{trends.receivables_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
+          </div>
+          <div class="card-value-row">
+            <span class="card-value monospace-font">${{formatKzt(last.receivables_close)}}</span>
+            <span class="card-unit">KZT</span>
+          </div>
+          ${{trends ? `
+            <div class="card-meta">
+              <span class="change-value ${{trends.receivables_close.isPositive ? 'positive' : 'negative'}}">
+                ${{trends.receivables_close.isPositive ? '+' : ''}}${{trends.receivables_close.changePercent.toFixed(1)}}%
+              </span>
+              <span class="change-period">vs 30d</span>
+            </div>
+          ` : ''}}
+          <canvas class="sparkline" id="sparkline-receivables" width="240" height="30"></canvas>
+        </div>
+
+        <div class="metric-card">
+          <div class="card-header">
+            <span class="card-label pixel-font">INVENTORY COST</span>
+            ${{trends ? `<span class="trend-indicator ${{trends.inventory_cost_close.direction}}">${{trends.inventory_cost_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
+          </div>
+          <div class="card-value-row">
+            <span class="card-value monospace-font">${{formatKzt(last.inventory_cost_close)}}</span>
+            <span class="card-unit">KZT</span>
+          </div>
+          ${{trends ? `
+            <div class="card-meta">
+              <span class="change-value ${{trends.inventory_cost_close.isPositive ? 'positive' : 'negative'}}">
+                ${{trends.inventory_cost_close.isPositive ? '+' : ''}}${{trends.inventory_cost_close.changePercent.toFixed(1)}}%
+              </span>
+              <span class="change-period">vs 30d</span>
+            </div>
+          ` : ''}}
+          <canvas class="sparkline" id="sparkline-inventory" width="240" height="30"></canvas>
+        </div>
+
+        <div class="metric-card">
+          <div class="card-header">
+            <span class="card-label pixel-font">TOTAL CAPITAL</span>
+            ${{trends ? `<span class="trend-indicator ${{trends.capital_close.direction}}">${{trends.capital_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
+          </div>
+          <div class="card-value-row">
+            <span class="card-value monospace-font">${{formatKzt(last.capital_close)}}</span>
+            <span class="card-unit">KZT</span>
+          </div>
+          ${{trends ? `
+            <div class="card-meta">
+              <span class="change-value ${{trends.capital_close.isPositive ? 'positive' : 'negative'}}">
+                ${{trends.capital_close.isPositive ? '+' : ''}}${{trends.capital_close.changePercent.toFixed(1)}}%
+              </span>
+              <span class="change-period">vs 30d</span>
+            </div>
+          ` : ''}}
+          <canvas class="sparkline" id="sparkline-capital" width="240" height="30"></canvas>
+        </div>
+
+        <div class="metric-card ${{breach ? 'breach-card' : ''}}">
+          <div class="card-header">
+            <span class="card-label pixel-font">MINIMUM CASH</span>
+            ${{breach ? '<span class="warning-icon pixel-font">!</span>' : ''}}
+          </div>
+          <div class="card-value-row">
+            <span class="card-value ${{breach ? 'breach-value' : ''}} monospace-font">${{formatKzt(minRow.cash_close)}}</span>
+            <span class="card-unit">KZT</span>
+          </div>
+          <div class="card-meta">
+            <span class="change-period">${{minRow.date}}</span>
+          </div>
+          ${{breach ? '<div class="warning-badge pixel-font">BREACH DETECTED</div>' : ''}}
+        </div>
+      `;
+
+      setTimeout(() => {{
+        renderSparkline('sparkline-cash', actualData.length > 0 ? actualData : rows, 'cash_close');
+        renderSparkline('sparkline-receivables', actualData.length > 0 ? actualData : rows, 'receivables_close');
+        renderSparkline('sparkline-inventory', actualData.length > 0 ? actualData : rows, 'inventory_cost_close');
+        renderSparkline('sparkline-capital', actualData.length > 0 ? actualData : rows, 'capital_close');
+      }}, 10);
+    }}
+
+    // ========================================
+    // CHART RENDERING
+    // ========================================
+    function renderChart() {{
+      const data = filterRows();
+      const canvas = chartCanvas;
+      const ctx = canvas.getContext('2d');
+
+      // Set canvas size
+      canvas.width = canvas.offsetWidth;
+      canvas.height = 400;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (!data.length) return;
+
+      const padding = {{ top: 40, right: 60, bottom: 60, left: 80 }};
+      const width = canvas.width - padding.left - padding.right;
+      const height = canvas.height - padding.top - padding.bottom;
+
+      const isLightTheme = body.classList.contains('theme-light');
+      const colors = {{
+        cash: isLightTheme ? '#2d2520' : '#ffaa00',
+        capital: isLightTheme ? '#0088aa' : '#00ddff',
+        receivables: isLightTheme ? '#aa3355' : '#ff6688',
+        grid: isLightTheme ? 'rgba(45, 37, 32, 0.08)' : 'rgba(255, 170, 0, 0.12)',
+        axis: isLightTheme ? 'rgba(45, 37, 32, 0.3)' : 'rgba(255, 170, 0, 0.4)',
+        text: isLightTheme ? '#2d2520' : '#ffaa00'
+      }};
+
+      const cashValues = data.map(r => Number(r.cash_close || 0));
+      const capitalValues = data.map(r => Number(r.capital_close || 0));
+      const receivablesValues = data.map(r => Number(r.receivables_close || 0));
+
+      const allValues = [...cashValues, ...capitalValues, ...receivablesValues];
+      const minVal = Math.min(...allValues);
+      const maxVal = Math.max(...allValues);
+      const range = maxVal - minVal || 1;
+
+      function getY(val) {{
+        return padding.top + height - ((val - minVal) / range) * height;
+      }}
+
+      function getX(i) {{
+        return padding.left + (width * i) / Math.max(data.length - 1, 1);
+      }}
+
+      // Draw grid
+      ctx.strokeStyle = colors.grid;
+      ctx.lineWidth = 1;
+
+      for (let i = 0; i <= 5; i++) {{
+        const y = padding.top + (height / 5) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + width, y);
+        ctx.stroke();
+      }}
+
+      const gridInterval = Math.max(Math.floor(data.length / 10), 1);
+      for (let i = 0; i < data.length; i += gridInterval) {{
+        const x = getX(i);
+        ctx.beginPath();
+        ctx.moveTo(x, padding.top);
+        ctx.lineTo(x, padding.top + height);
+        ctx.stroke();
+      }}
+
+      // Draw axes
+      ctx.strokeStyle = colors.axis;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, padding.top);
+      ctx.lineTo(padding.left, padding.top + height);
+      ctx.lineTo(padding.left + width, padding.top + height);
+      ctx.stroke();
+
+      // Draw axis labels
+      ctx.fillStyle = colors.text;
+      ctx.font = '16px VT323';
+      ctx.textAlign = 'right';
+      ctx.fillText(formatKzt(maxVal), padding.left - 10, padding.top + 5);
+      ctx.fillText(formatKzt(minVal), padding.left - 10, padding.top + height + 5);
+
+      // Y-axis label
+      ctx.save();
+      ctx.translate(20, padding.top + height / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = 'center';
+      ctx.font = '18px VT323';
+      ctx.fillText('KZT', 0, 0);
+      ctx.restore();
+
+      // X-axis labels
+      ctx.textAlign = 'center';
+      ctx.font = '16px VT323';
+      const labelInterval = Math.max(Math.floor(data.length / 6), 1);
+      for (let i = 0; i < data.length; i += labelInterval) {{
+        const x = getX(i);
+        const date = data[i].date.substring(5);
+        ctx.fillText(date, x, padding.top + height + 25);
+      }}
+
+      // Draw lines
+      function drawLine(values, color, withGlow = false) {{
+        if (withGlow && !isLightTheme) {{
+          ctx.shadowBlur = 8;
+          ctx.shadowColor = color;
+        }}
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+
+        values.forEach((val, i) => {{
+          const x = getX(i);
+          const y = getY(val);
+
+          if (i === 0) {{
+            ctx.moveTo(x, y);
+          }} else {{
+            ctx.lineTo(x, y);
+          }}
+        }});
+
+        ctx.stroke();
+
+        if (withGlow) {{
+          ctx.shadowBlur = 0;
+        }}
+      }}
+
+      drawLine(receivablesValues, colors.receivables, false);
+      drawLine(capitalValues, colors.capital, false);
+      drawLine(cashValues, colors.cash, true);
+
+      canvas.chartData = {{
+        data: data,
+        padding: padding,
+        width: width,
+        height: height,
+        minVal: minVal,
+        maxVal: maxVal,
+        getX: getX,
+        getY: getY
+      }};
+    }}
+
+    // ========================================
+    // CHART TOOLTIP
+    // ========================================
+    chartCanvas.addEventListener('mousemove', function(e) {{
+      if (!this.chartData) return;
+
+      const rect = this.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      const {{ data, padding, width }} = this.chartData;
+
+      if (x < padding.left || x > padding.left + width) {{
+        tooltip.classList.add('hidden');
+        return;
+      }}
+
+      const relativeX = x - padding.left;
+      const index = Math.round((relativeX / width) * (data.length - 1));
+
+      if (index < 0 || index >= data.length) {{
+        tooltip.classList.add('hidden');
+        return;
+      }}
+
+      const point = data[index];
+
+      const tooltipHTML = `
+        <div class="tooltip-date pixel-font">${{point.date}}</div>
+        <div class="tooltip-row">
+          <span class="tooltip-label">Cash:</span>
+          <span class="tooltip-value">${{formatKzt(point.cash_close)}} KZT</span>
+        </div>
+        <div class="tooltip-row">
+          <span class="tooltip-label">Capital:</span>
+          <span class="tooltip-value">${{formatKzt(point.capital_close)}} KZT</span>
+        </div>
+        <div class="tooltip-row">
+          <span class="tooltip-label">Receivables:</span>
+          <span class="tooltip-value">${{formatKzt(point.receivables_close)}} KZT</span>
+        </div>
+        ${{point.is_forecast ? '<div class="tooltip-forecast pixel-font">FORECAST</div>' : ''}}
+      `;
+
+      tooltip.innerHTML = tooltipHTML;
+      tooltip.style.left = (e.clientX + 15) + 'px';
+      tooltip.style.top = (e.clientY + 15) + 'px';
+      tooltip.classList.remove('hidden');
+    }});
+
+    chartCanvas.addEventListener('mouseleave', function() {{
+      tooltip.classList.add('hidden');
+    }});
+
+    // ========================================
+    // TABLE RENDERING
+    // ========================================
+    function renderTable() {{
+      const data = filterRows();
+      const table = document.getElementById('table');
+
+      if (!data.length) {{
+        table.innerHTML = '<tr><td class="monospace-font">NO DATA AVAILABLE</td></tr>';
+        return;
+      }}
+
+      const headers = Object.keys(data[0]);
+
+      let headerHTML = '<thead><tr>';
+      headers.forEach(h => {{
+        const displayName = h.replace(/_/g, ' ').toUpperCase();
+        headerHTML += `<th class="pixel-font">${{displayName}}</th>`;
+      }});
+      headerHTML += '</tr></thead>';
+
+      let bodyHTML = '<tbody>';
+      data.forEach(row => {{
+        const rowClass = row.is_forecast ? 'forecast-row' : '';
+        bodyHTML += `<tr class="${{rowClass}}">`;
+        headers.forEach(h => {{
+          let cellValue = row[h] ?? '';
+          let cellClass = 'monospace-font';
+
+          if (h === 'date') {{
+            cellClass += ' date-cell';
+            cellValue = `<strong>${{cellValue}}</strong>`;
+          }}
+          else if (typeof cellValue === 'number' || !isNaN(cellValue)) {{
+            cellValue = formatKzt(cellValue);
+
+            if (Number(row[h]) < 0) {{
+              cellClass += ' negative-value';
+            }}
+          }}
+
+          bodyHTML += `<td class="${{cellClass}}">${{cellValue}}</td>`;
+        }});
+        bodyHTML += '</tr>';
+      }});
+      bodyHTML += '</tbody>';
+
+      table.innerHTML = headerHTML + bodyHTML;
+    }}
+
+    // ========================================
+    // RENDER ALL
+    // ========================================
     function renderAll() {{
       const filtered = filterRows();
       buildSummary(filtered);
@@ -251,10 +1438,38 @@ def _render_html(rows: list[dict], path: Path) -> None:
       renderChart();
     }}
 
+    // ========================================
+    // UPDATE REFRESH TIME
+    // ========================================
+    function updateRefreshTime() {{
+      const now = new Date();
+      const timeString = now.toLocaleTimeString('en-US', {{
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      }});
+      const refreshElement = document.getElementById('refreshTime');
+      if (refreshElement) {{
+        refreshElement.textContent = timeString;
+      }}
+    }}
+
+    // ========================================
+    // EVENT LISTENERS
+    // ========================================
     forecastToggle.addEventListener('change', renderAll);
     rangeSelect.addEventListener('change', renderAll);
 
+    window.addEventListener('resize', () => {{
+      renderChart();
+    }});
+
+    // ========================================
+    // INITIALIZATION
+    // ========================================
     renderAll();
+    updateRefreshTime();
   </script>
 </body>
 </html>"""
