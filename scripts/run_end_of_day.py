@@ -549,6 +549,12 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=True
         ),
         PipelineStep(
+            name="5a. Update Cashflow Dashboard",
+            script="update_cashflow_dashboard.py",
+            args=["--rebuild"],
+            required=True
+        ),
+        PipelineStep(
             name="6. Audit Dashboard Output",
             script="audit_dashboard_output.py",
             required=True
