@@ -32,7 +32,7 @@ DB_PATH = PROJECT_ROOT / "db" / "app.db"
 REQUIRED_OVERRIDES = {
     "CL_OC_MEN_LINE52_BLACK": [
         {
-            "d_override": 40.0,
+            "d_override": 30.0,
             "start_date": "2026-01-01",
             "end_date": "2026-03-01",
             "reason": "CNY slowdown window 1; PO-5 readiness",

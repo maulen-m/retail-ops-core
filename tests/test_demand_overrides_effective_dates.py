@@ -72,7 +72,9 @@ def test_upsert_demand_overrides_idempotent(tmp_path: Path) -> None:
     rows = cursor.fetchall()
     conn.close()
 
-    assert len(rows) == 3
+    assert len(rows) == 5
     sku_keys = [row[0] for row in rows]
     assert sku_keys.count("CL_OC_MEN_LINE52_BLACK") == 2
     assert sku_keys.count("CL_OC_MEN_LINE51_WHITE") == 1
+    assert sku_keys.count("CL_NEW-CLO2_MEN_SUIT-61_BLACK") == 1
+    assert sku_keys.count("CL_NEW-CLO_MEN_BERSERK-RUSH_WHITE") == 1

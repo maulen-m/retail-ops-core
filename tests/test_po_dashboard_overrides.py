@@ -7,7 +7,7 @@ INVARIANTS:
 - po_qty_total == sum(size_orders) for every SKU
 
 REQUIREMENTS:
-- LINE52 (CL_OC_MEN_LINE52_BLACK): D = 40 (2026-01-01 → 2026-03-01) or D = 30 (2026-03-01 → 2026-06-01)
+- LINE52 (CL_OC_MEN_LINE52_BLACK): D = 30 (2026-01-01 → 2026-03-01) or D = 30 (2026-03-01 → 2026-06-01)
 - LINE51 (CL_OC_MEN_LINE51_WHITE): D = 12
 - Model B: all CL SKUs have same prep_days, all ELS have prep_days=1
 - Model C (default): prep_days <= R_days
@@ -39,7 +39,7 @@ class TestDemandOverrides:
     @staticmethod
     def _expected_line52_override(as_of: date) -> float | None:
         if date(2026, 1, 1) <= as_of < date(2026, 3, 1):
-            return 40.0
+            return 30.0
         if date(2026, 3, 1) <= as_of < date(2026, 6, 1):
             return 30.0
         return None

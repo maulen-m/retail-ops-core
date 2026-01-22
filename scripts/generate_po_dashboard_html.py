@@ -92,7 +92,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     .card-value { font-size: 22px; font-weight: 600; color: var(--text); }
     .card-value.highlight { color: var(--accent-strong); }
     .card-value.zero { color: var(--text-faint); }
-    .card-sub { font-size: 10px; color: var(--text-faint); margin-top: 4px; }
+    .card-sub { font-size: 20px; color: var(--text-faint); margin-top: 4px; }
     .card-sub.bags { font-size: 12px; color: var(--text-muted); font-weight: 500; }
 
     /* Totals section */
@@ -379,6 +379,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           count: items.length
         };
       }, [poData, activePO, isApproved]);
+      const usdtCny = Number(fxRates?.usdt_cny) > 0 ? Number(fxRates.usdt_cny) : null;
+      const baseCostUsdt = usdtCny ? (totals.po_base_cost_cny / usdtCny) : null;
 
       return (
         <div className="totals-section">
@@ -386,6 +388,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           <div className="totals-item">
             <span className="totals-label">Base Cost (CNY)</span>
             <span className="totals-value">¥{totals.po_base_cost_cny.toLocaleString(undefined, {maximumFractionDigits: 0})}</span>
+          </div>
+          <div className="totals-item">
+            <span className="totals-label">Base Cost (USDT)</span>
+            <span className="totals-value">
+              {baseCostUsdt !== null ? `$${baseCostUsdt.toLocaleString(undefined, {maximumFractionDigits: 0})}` : '-'}
+            </span>
           </div>
           <div className="totals-item">
             <span className="totals-label">Base Cost (KZT)</span>
@@ -407,7 +415,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       );
     }
 
-    function RealPOSection({ realPOs }) {
+    function RealPOSection({ realPOs, bagsByPo, onBagsChange }) {
       if (!realPOs || realPOs.length === 0) return null;
 
       const statusClass = (status) => {
@@ -430,22 +438,39 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 <th>AST Nom</th>
                 <th>AST Real</th>
                 <th>Units</th>
+                <th>Weight (kg)</th>
                 <th>Received</th>
+                <th>Bags</th>
               </tr>
             </thead>
             <tbody>
-              {realPOs.map(po => (
-                <tr key={po.po_id}>
-                  <td><strong>{po.po_id}</strong></td>
-                  <td><span className={`status-pill ${statusClass(po.status)}`}>{po.status || '-'}</span></td>
-                  <td>{po.message_date || '-'}</td>
-                  <td>{po.ship_date_cargo || '-'}</td>
-                  <td>{po.ast_arrival_nom || '-'}</td>
-                  <td>{po.ast_arrival_real || '-'}</td>
-                  <td>{po.units_total || 0}</td>
-                  <td>{po.units_received || 0}</td>
-                </tr>
-              ))}
+              {realPOs.map(po => {
+                const weight = Number(po.weight_real_kg || po.weight_nom_kg || 0);
+                return (
+                  <tr key={po.po_id}>
+                    <td><strong>{po.po_id}</strong></td>
+                    <td><span className={`status-pill ${statusClass(po.status)}`}>{po.status || '-'}</span></td>
+                    <td>{po.message_date || '-'}</td>
+                    <td>{po.ship_date_cargo || '-'}</td>
+                    <td>{po.ast_arrival_nom || '-'}</td>
+                    <td>{po.ast_arrival_real || '-'}</td>
+                    <td>{po.units_total || 0}</td>
+                    <td>{weight.toFixed(1)}</td>
+                    <td>{po.units_received || 0}</td>
+                    <td>
+                      <input
+                        className="fx-rate-input"
+                        style={{ width: '70px' }}
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={(bagsByPo?.[po.po_id] ?? po.total_places ?? '')}
+                        onChange={(e) => onBagsChange(po.po_id, e.target.value)}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -572,9 +597,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       XLSX.writeFile(wb, `${poName}_Export_${dateStr}.xlsx`);
     }
 
-    function exportAllPOs(allPOs, isApproved) {
+    function exportAllPOs(allPOs, planNames, isApproved) {
       const wb = XLSX.utils.book_new();
-      const poNames = Object.keys(allPOs).sort((a, b) => planIndex(a) - planIndex(b));
+      const poNames = (planNames || Object.keys(allPOs)).slice().sort((a, b) => planIndex(a) - planIndex(b));
 
       // Sheet 1: First PO's SKU level data (with Approved column)
       if (poNames.length > 0) {
@@ -1226,7 +1251,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       const poNamesAll = Object.keys(allPOs).sort((a, b) => planIndex(a) - planIndex(b));
       const poNames = (DATA.active_pos || poNamesAll).slice().sort((a, b) => planIndex(a) - planIndex(b));
       const archivedPos = (DATA.archived_pos || []).slice();
-      const [activePO, setActivePO] = useState(poNames[0] || poNamesAll[0] || 'PLAN-0');
+      const preferredPlan = poNames.find(name => planIndex(name) === 1) || poNames[0] || poNamesAll[0] || 'PLAN-1';
+      const [activePO, setActivePO] = useState(preferredPlan);
       const [activeTab, setActiveTab] = useState('sku');
       const [search, setSearch] = useState('');
       const [filterMode, setFilterMode] = useState('all');
@@ -1238,7 +1264,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       const [lockedSkuOrder, setLockedSkuOrder] = useState([]);
 
       // FX rates state (editable, persisted in localStorage)
-      const defaultFxRates = DATA.fx_rates || { cny_kzt: 78.0, usd_kzt: 530.0 };
+      const defaultFxRates = DATA.fx_rates || { cny_kzt: 78.0, usd_kzt: 530.0, usdt_cny: null };
       const [fxRates, setFxRates] = useState(() => loadFromStorage('po_fx_rates', defaultFxRates));
 
       // Multipliers state (per SKU, persisted in localStorage)
@@ -1248,6 +1274,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       // Structure: { 'PLAN-0': { 'SKU_KEY': true/false }, ... }
       // Default: all SKUs with po_qty_total > 0 are approved (true)
       const [approvedSkus, setApprovedSkus] = useState(() => loadFromStorage('po_approved_skus', {}));
+
+      // Bags per real PO (persisted)
+      const [bagsByPo, setBagsByPo] = useState(() => loadFromStorage('po_bags', {}));
 
       // Handler to toggle approval
       const handleApprovalChange = useCallback((poName, skuKey, approved) => {
@@ -1284,9 +1313,21 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         saveToStorage('po_approved_skus', approvedSkus);
       }, [approvedSkus]);
 
+      // Persist bags on change
+      useEffect(() => {
+        saveToStorage('po_bags', bagsByPo);
+      }, [bagsByPo]);
+
       const handleFxChange = (key, value) => {
         const numVal = parseFloat(value) || 0;
         setFxRates(prev => ({ ...prev, [key]: numVal }));
+      };
+
+      const handleBagsChange = (poId, value) => {
+        const trimmed = value === '' ? '' : String(value).trim();
+        const parsed = trimmed === '' ? '' : parseInt(trimmed, 10);
+        const nextVal = Number.isFinite(parsed) ? parsed : '';
+        setBagsByPo(prev => ({ ...prev, [poId]: nextVal }));
       };
 
       const handleMultiplierChange = (skuKey, value) => {
@@ -1325,7 +1366,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
       const handleLockSortToggle = () => {
         if (!lockSort) {
-          const basePlanName = poNamesAll.find(name => planIndex(name) === 0) || poNamesAll[0];
+          const basePlanName = poNames.find(name => planIndex(name) === 0) || poNames[0] || poNamesAll[0];
           const basePo = allPOs[basePlanName] || rawPoData;
           setLockedSkuOrder(computeSkuOrder(basePo));
         } else {
@@ -1371,30 +1412,18 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 </div>
               </div>
             </div>
-            <div style={{display: 'flex', gap: '12px', alignItems: 'center'}}>
+            <div style={{display: 'flex', gap: '12px', alignItems: 'flex-start'}}>
               <div className="export-btns">
                 <button className="export-btn" onClick={() => exportCurrentPO(poData, activePO, isApproved)}>
                   Export {activePO}
                 </button>
-                <button className="export-btn primary" onClick={() => exportAllPOs(DATA.pos, isApproved)}>
+                <button className="export-btn primary" onClick={() => exportAllPOs(allPOs, poNames, isApproved)}>
                   Export All Plans
                 </button>
               </div>
-              <div className="po-selector">
-                {poNames.map(po => (
-                  <button
-                    key={po}
-                    className={`po-btn ${activePO === po ? 'active' : ''}`}
-                    onClick={() => setActivePO(po)}
-                  >
-                    {po}
-                  </button>
-                ))}
-              </div>
-              {archivedPos.length > 0 && (
-                <div className="po-selector" style={{marginTop:'6px'}}>
-                  <span style={{fontSize:'12px', color:'#6b7280', marginRight:'6px'}}>Archived:</span>
-                  {archivedPos.map(po => (
+              <div style={{display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px'}}>
+                <div className="po-selector">
+                  {poNames.map(po => (
                     <button
                       key={po}
                       className={`po-btn ${activePO === po ? 'active' : ''}`}
@@ -1404,7 +1433,21 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                     </button>
                   ))}
                 </div>
-              )}
+                {archivedPos.length > 0 && (
+                  <div className="po-selector">
+                    <span style={{fontSize:'12px', color:'#6b7280', marginRight:'6px'}}>Archived:</span>
+                    {archivedPos.map(po => (
+                      <button
+                        key={po}
+                        className={`po-btn ${activePO === po ? 'active' : ''}`}
+                        onClick={() => setActivePO(po)}
+                      >
+                        {po}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1412,7 +1455,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             Plan POs are recommendations; only Real POs affect ledger.
           </div>
 
-          <RealPOSection realPOs={DATA.real_pos || []} />
+          <RealPOSection realPOs={DATA.real_pos || []} bagsByPo={bagsByPo} onBagsChange={handleBagsChange} />
 
           <DateHeaders poData={poData} activePO={activePO} isApproved={isApproved} />
           <CutoffBanner poData={poData} />

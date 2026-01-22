@@ -14,7 +14,9 @@ import json
 import statistics
 import csv
 import pandas as pd
-from datetime import date, timedelta
+import re
+import copy
+from datetime import date, timedelta, datetime
 from pathlib import Path
 from math import ceil
 from dataclasses import dataclass, asdict
@@ -29,7 +31,8 @@ from core.db.queries import (
     get_size_current_stock,
     get_size_inbound,
     get_sku_age_days,
-    get_cutoff_date_almaty
+    get_cutoff_date_almaty,
+    get_sku_sizes,
 )
 from core.config.inventory_params import get_params
 from core.config.business_params import get_demand_overrides, get_fx_rates
@@ -84,6 +87,61 @@ def plan_index_from_name(plan_name: str) -> int:
         return int(plan_name.split("-", 1)[1])
     except (ValueError, IndexError):
         return 0
+
+
+def _parse_po_num(po_id: str) -> Optional[int]:
+    if not po_id:
+        return None
+    match = re.match(r"^PO-(\d+)", str(po_id).strip())
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _parse_iso_date(val: Optional[str]) -> Optional[date]:
+    if not val:
+        return None
+    try:
+        return date.fromisoformat(val)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(val).date()
+        except ValueError:
+            return None
+
+
+def resolve_last_real_po(db_path: Path = DB_PATH) -> tuple[str, int, Optional[str]]:
+    """Return (po_id, po_num, message_date) for the most recent PO-* header."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT po_id, message_date, created_at
+            FROM po_header
+            WHERE po_id LIKE 'PO-%'
+            """
+        ).fetchall()
+        if not rows:
+            return ("PO-4", 4, None)
+
+        def row_key(row):
+            msg = _parse_iso_date(row["message_date"])
+            if msg:
+                return (msg, row["po_id"])
+            created = _parse_iso_date(row["created_at"])
+            return (created or date(1970, 1, 1), row["po_id"])
+
+        rows_sorted = sorted(rows, key=row_key, reverse=True)
+        best = rows_sorted[0]
+        po_id = best["po_id"]
+        po_num = _parse_po_num(po_id) or 4
+        return (po_id, po_num, best["message_date"])
+    finally:
+        conn.close()
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -1160,6 +1218,10 @@ def generate_po_data(
             product_type=product_type,
         )
 
+        if size_demands and sum(size_demands.values()) <= 0:
+            size_demands = {}
+            size_sales_90d = {}
+
         # Renormalize size_demands to match SKU demand if invalid sizes were dropped
         if size_demands and d_sku_blended > 0:
             total_size_demand = sum(size_demands.values())
@@ -1211,6 +1273,22 @@ def generate_po_data(
                     per_size = d_sku_blended / len(candidate_sizes)
                     size_demands = {k: per_size for k in candidate_sizes.keys()}
                     notes_list.append("SIZE_MIX_FALLBACK=UNIFORM")
+
+            if not size_demands:
+                try:
+                    dim_sizes = get_sku_sizes(sku_key, DB_PATH)
+                    dim_map = {row.get("my_size"): 1 for row in dim_sizes if row.get("my_size")}
+                    dim_map = filter_sizes(
+                        dim_map,
+                        allow_all=allow_all_sizes,
+                        product_type=product_type,
+                    )
+                    if dim_map:
+                        per_size = d_sku_blended / len(dim_map)
+                        size_demands = {k: per_size for k in dim_map.keys()}
+                        notes_list.append("SIZE_MIX_FALLBACK=DIM_SKU_SIZE")
+                except Exception:
+                    pass
 
             if size_demands:
                 size_sales_90d = {k: int(round(v * 90)) for k, v in size_demands.items()}
@@ -1674,7 +1752,7 @@ def generate_po_data(
 
     output = {
         "generated_at": generated_at,
-        "po_name": plan_name_from_po_num(4),  # Base plan identifier
+        "po_name": plan_name_from_po_num(PLAN_BASE_PO_NUM),  # Base plan identifier
         "plan_index": 0,
         "po_message_date": TODAY.isoformat(),  # Message date for this plan
         "cutoff_date": output_cutoff,
@@ -1707,8 +1785,8 @@ def generate_po_data(
     return output
 
 
-def load_po4_approved_orders(po_id: str = "PO-4") -> Optional[dict]:
-    """Load approved PO-4 orders from po_line/po_header."""
+def load_po_orders(po_id: str) -> Optional[dict]:
+    """Load PO orders from po_line/po_header."""
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     try:
@@ -1725,7 +1803,10 @@ def load_po4_approved_orders(po_id: str = "PO-4") -> Optional[dict]:
             return None
 
         header = conn.execute(
-            "SELECT message_date, ship_date_seller, status FROM po_header WHERE po_id = ?",
+            """
+            SELECT message_date, ship_date_seller, ship_date_cargo, status
+            FROM po_header WHERE po_id = ?
+            """,
             (po_id,),
         ).fetchone()
 
@@ -1748,12 +1829,18 @@ def load_po4_approved_orders(po_id: str = "PO-4") -> Optional[dict]:
         return {
             "po_id": po_id,
             "message_date": header["message_date"] if header else None,
-            "ship_date": header["ship_date_seller"] if header else None,
+            "ship_date_seller": header["ship_date_seller"] if header else None,
+            "ship_date_cargo": header["ship_date_cargo"] if header else None,
             "status": header["status"] if header else None,
             "orders_by_sku": orders_by_sku,
         }
     finally:
         conn.close()
+
+
+def load_po4_approved_orders(po_id: str = "PO-4") -> Optional[dict]:
+    """Back-compat wrapper for PO-4 override."""
+    return load_po_orders(po_id)
 
 
 def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
@@ -1797,6 +1884,7 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
             "units_received",
             "weight_nom_kg",
             "weight_real_kg",
+            "total_places",
             "total_cost_cny",
             "total_cost_kzt_supplier",
             "total_landed_cost_kzt",
@@ -1814,6 +1902,7 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
         headers = conn.execute(query).fetchall()
 
         real_pos = []
+        cutoff_recent = TODAY - timedelta(days=7)
         for row in headers:
             po_id = row["po_id"]
             summary = line_summary.get(po_id, {})
@@ -1823,6 +1912,14 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
             units_received = row["units_received"]
             if units_received is None or units_received == 0:
                 units_received = summary.get("units_received", 0)
+            status = row["status"]
+            arrival_date = row["ast_arrival_real"] or row["alm_arrival_real"]
+            arrival_dt = _parse_iso_date(arrival_date)
+            inbound = status not in {"ARRIVED_ALM", "ARRIVED_AST", "RECEIVED", "CLOSED"}
+            recent_received = arrival_dt and arrival_dt >= cutoff_recent
+            if not (inbound or recent_received):
+                continue
+
             real_pos.append({
                 "po_id": po_id,
                 "supplier_code": row["supplier_code"],
@@ -1838,6 +1935,7 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
                 "units_received": int(units_received or 0),
                 "weight_nom_kg": row["weight_nom_kg"],
                 "weight_real_kg": row["weight_real_kg"],
+                "total_places": row["total_places"],
                 "total_cost_cny": row["total_cost_cny"],
                 "total_cost_kzt_supplier": row["total_cost_kzt_supplier"],
                 "total_landed_cost_kzt": row["total_landed_cost_kzt"],
@@ -1850,14 +1948,58 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
         conn.close()
 
 
-def apply_po4_overrides(base_data: dict, po4_data: dict, params, fx_rates) -> dict:
-    """Override PO-4 quantities with approved supplier quantities."""
-    orders_by_sku = po4_data.get("orders_by_sku", {})
+def get_last_usdt_cny_rate(db_path: Path = DB_PATH, min_cny: float = 30000.0) -> tuple[Optional[float], Optional[str]]:
+    """Return (rate_usdt_cny, source) for the latest ≥min_cny exchanger order, or dim_fx_rates."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if _table_exists(conn, "exchanger_orders"):
+            row = conn.execute(
+                """
+                SELECT rate_usdt_cny
+                FROM exchanger_orders
+                WHERE amount_cny >= ?
+                  AND rate_usdt_cny IS NOT NULL
+                  AND rate_usdt_cny > 0
+                ORDER BY message_date DESC, exchanger_order_id DESC
+                LIMIT 1
+                """,
+                (min_cny,),
+            ).fetchone()
+            if row and row["rate_usdt_cny"]:
+                return float(row["rate_usdt_cny"]), "exchanger_orders"
+
+        if _table_exists(conn, "dim_fx_rates"):
+            row = conn.execute(
+                """
+                SELECT usdt_cny
+                FROM dim_fx_rates
+                WHERE effective_date <= ?
+                ORDER BY effective_date DESC
+                LIMIT 1
+                """,
+                (TODAY.isoformat(),),
+            ).fetchone()
+            if row and row["usdt_cny"]:
+                return float(row["usdt_cny"]), "dim_fx_rates"
+
+        return None, None
+    finally:
+        conn.close()
+
+
+def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict:
+    """Override plan quantities with approved supplier quantities from a real PO."""
+    orders_by_sku = po_data.get("orders_by_sku", {})
     if not orders_by_sku:
         return base_data
 
-    message_date = po4_data.get("message_date") or base_data.get("po_message_date")
-    ship_date = po4_data.get("ship_date")
+    message_date = po_data.get("message_date") or base_data.get("po_message_date")
+    ship_date = (
+        po_data.get("ship_date_seller")
+        or po_data.get("ship_date_cargo")
+        or po_data.get("ship_date")
+    )
     prep_days_override = None
     if message_date and ship_date:
         try:
@@ -2034,7 +2176,17 @@ def apply_po4_overrides(base_data: dict, po4_data: dict, params, fx_rates) -> di
     return base_data
 
 
-def _build_po_schedule(today: date, params, prep_days_clothes: int) -> tuple[dict[str, date], int]:
+def apply_po4_overrides(base_data: dict, po4_data: dict, params, fx_rates) -> dict:
+    """Back-compat wrapper for PO-4 override."""
+    return apply_po_overrides(base_data, po4_data, params, fx_rates)
+
+
+def _build_po_schedule(
+    today: date,
+    params,
+    prep_days_clothes: int,
+    max_po_num: int = 10,
+) -> tuple[dict[str, date], int]:
     """Build PO message dates with CNY blackout constraints."""
     blackout_start = CNY_2026.start_date
     blackout_end = CNY_2026.end_date
@@ -2055,7 +2207,7 @@ def _build_po_schedule(today: date, params, prep_days_clothes: int) -> tuple[dic
     po6_message = max(po6_default, blackout_end)
 
     schedule = {"PO-5": po5_message, "PO-6": po6_message}
-    for po_num in range(7, 11):
+    for po_num in range(7, max_po_num + 1):
         schedule[f"PO-{po_num}"] = po6_message + timedelta(days=(po_num - 6) * params.R)
 
     gap_days = (po6_message - po5_message).days
@@ -2132,7 +2284,7 @@ def _adjusted_plan_dates(
     return adj["ship_date"], adj["est_arrival"]
 
 
-def generate_multi_po_data(num_pos: int = 7) -> dict:
+def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
     """
     Generate data for multiple plans (PLAN-0 through PLAN-6).
 
@@ -2146,45 +2298,53 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
     R = params.R  # Reorder cycle (typically 10 days)
     L = params.L  # Lead time
 
-    # Generate base PO-4 data
-    base_data = generate_po_data()
-    po4_actual = load_po4_approved_orders()
-    if po4_actual:
-        base_data = apply_po4_overrides(base_data, po4_actual, params, fx_rates)
+    base_po_id, base_po_num, _ = resolve_last_real_po()
+    global PLAN_BASE_PO_NUM
+    PLAN_BASE_PO_NUM = base_po_num
 
-    # Store all plans
-    all_pos = {plan_name_from_po_num(4): base_data}
+    base_template = generate_po_data()
+    base_data = copy.deepcopy(base_template)
+    base_po_actual = load_po_orders(base_po_id)
+    if base_po_actual:
+        base_data = apply_po_overrides(base_data, base_po_actual, params, fx_rates)
+    base_data["po_name"] = plan_name_from_po_num(base_po_num)
+
+    # Store all plans (PLAN-0 is the most recent real PO)
+    all_pos = {plan_name_from_po_num(base_po_num): base_data}
 
     # Build cumulative orders per SKU for projection
     # Format: sku_key -> list of (arrival_date, order_qty_by_size)
     cumulative_orders = {}
-    po4_in_transit = (
-        po4_actual
-        and po4_actual.get("orders_by_sku")
-        and po4_actual.get("status") not in {"ARRIVED_ALM", "ARRIVED_AST", "RECEIVED", "CLOSED"}
+    base_in_transit = (
+        base_po_actual
+        and base_po_actual.get("orders_by_sku")
+        and base_po_actual.get("status") not in {"ARRIVED_ALM", "ARRIVED_AST", "RECEIVED", "CLOSED"}
     )
-    if po4_in_transit:
-        ship_date = po4_actual.get("ship_date")
-        po4_arr_date = None
+    if base_in_transit:
+        ship_date = (
+            base_po_actual.get("ship_date_seller")
+            or base_po_actual.get("ship_date_cargo")
+            or base_po_actual.get("ship_date")
+        )
+        base_arr_date = None
         if ship_date:
             try:
-                po4_arr_date = date.fromisoformat(ship_date) + timedelta(days=params.L)
+                base_arr_date = date.fromisoformat(ship_date) + timedelta(days=params.L)
             except ValueError:
-                po4_arr_date = None
-        for sku_key, size_orders in po4_actual["orders_by_sku"].items():
+                base_arr_date = None
+        for sku_key, size_orders in base_po_actual["orders_by_sku"].items():
             total_qty = sum(size_orders.values())
             if total_qty <= 0:
                 continue
-            arr_date = po4_arr_date
+            arr_date = base_arr_date
             if not arr_date:
                 base_match = next((s for s in base_data["sku_level"] if s["sku_key"] == sku_key), None)
                 arr_date = date.fromisoformat(base_match["est_arr_date"]) if base_match else TODAY + timedelta(days=params.L)
             cumulative_orders[sku_key] = [(arr_date, total_qty, size_orders)]
-    elif not po4_actual or not po4_actual.get("orders_by_sku"):
+    elif not base_po_actual or not base_po_actual.get("orders_by_sku"):
         for sku_line in base_data['sku_level']:
             sku_key = sku_line['sku_key']
             arr_date = date.fromisoformat(sku_line['est_arr_date'])
-            # Get size orders from size_level
             size_orders = {}
             for size_line in base_data['size_level']:
                 if size_line['sku_key'] == sku_key:
@@ -2194,13 +2354,14 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
     # Track existing inbound from PO-4 to avoid double counting vs snapshot inbound
     existing_inbound_by_sku: dict[str, int] = {}
     existing_inbound_by_size: dict[str, dict[str, int]] = {}
-    if po4_in_transit:
-        for sku_key, size_orders in po4_actual["orders_by_sku"].items():
+    if base_in_transit:
+        for sku_key, size_orders in base_po_actual["orders_by_sku"].items():
             existing_inbound_by_sku[sku_key] = sum(size_orders.values())
             existing_inbound_by_size[sku_key] = dict(size_orders)
 
+    max_po_num = base_po_num + num_pos - 1
     po_schedule, po5_msg_gap_days = _build_po_schedule(
-        TODAY, params, base_data.get("prep_days_clothes", 1)
+        TODAY, params, base_data.get("prep_days_clothes", 1), max_po_num=max_po_num
     )
 
     prep_days_clothes = base_data.get("prep_days_clothes", 1)
@@ -2211,15 +2372,19 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
     po6_message_date = po_schedule.get("PO-6", TODAY + timedelta(days=2 * R))
 
     # Generate PLAN-1 through PLAN-6 (PO-5 through PO-10 internally)
-    for po_num in range(5, 4 + num_pos):
+    for po_num in range(base_po_num + 1, base_po_num + num_pos):
         po_name = plan_name_from_po_num(po_num)
-        po_message_date = po_schedule.get(f"PO-{po_num}", TODAY + timedelta(days=(po_num - 4) * R))
+        po_message_date = po_schedule.get(
+            f"PO-{po_num}",
+            TODAY + timedelta(days=(po_num - base_po_num) * R),
+        )
         days_offset = (po_message_date - TODAY).days
         next_po_num = po_num + 1
         next_message_date = None
-        if next_po_num <= 4 + num_pos:
+        if next_po_num <= max_po_num:
             next_message_date = po_schedule.get(
-                f"PO-{next_po_num}", TODAY + timedelta(days=(next_po_num - 4) * R)
+                f"PO-{next_po_num}",
+                TODAY + timedelta(days=(next_po_num - base_po_num) * R),
             )
 
         if next_message_date:
@@ -2871,7 +3036,7 @@ def generate_multi_po_data(num_pos: int = 7) -> dict:
 
         all_pos[po_name] = po_data
 
-    return all_pos
+    return all_pos, base_template
 
 
 if __name__ == "__main__":
@@ -2882,12 +3047,12 @@ if __name__ == "__main__":
     print()
 
     # Generate all plans (PLAN-0 through PLAN-6)
-    all_pos = generate_multi_po_data(num_pos=7)
+    all_pos, base_template = generate_multi_po_data(num_pos=7)
 
     # Ensure output directory exists
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    base_plan_name = plan_name_from_po_num(4)
+    base_plan_name = plan_name_from_po_num(PLAN_BASE_PO_NUM)
     base_summary = all_pos.get(base_plan_name, {}).get("summary", {})
     if "priority_skus" not in base_summary:
         base_summary["priority_skus"] = 0
@@ -2895,10 +3060,23 @@ if __name__ == "__main__":
     day_complete_env = os.environ.get("AB_DAY_COMPLETE", "1").strip().lower()
     day_complete_ok = day_complete_env not in {"0", "false", "no"}
 
+    params = get_params()
+    fx_rates = get_fx_rates(CUTOFF_DATE, db_path=DB_PATH)
     archived_pos = []
-    active_pos = list(all_pos.keys())
+    archive_ids = ["Line52_PO-9", "PO-4", "PO-4.1", "PO-4.2", "PO-5"]
+    for po_id in archive_ids:
+        po_actual = load_po_orders(po_id)
+        if not po_actual:
+            continue
+        archive_data = apply_po_overrides(copy.deepcopy(base_template), po_actual, params, fx_rates)
+        archive_data["po_name"] = po_id
+        all_pos[po_id] = archive_data
+        archived_pos.append(po_id)
+
+    active_pos = [name for name in all_pos.keys() if name.startswith("PLAN-")]
     active_pos.sort(key=plan_index_from_name)
     real_pos = load_real_pos()
+    usdt_cny_rate, usdt_cny_source = get_last_usdt_cny_rate(DB_PATH)
 
     # Save combined data
     combined_data = {
@@ -2911,6 +3089,11 @@ if __name__ == "__main__":
         "active_pos": active_pos,
         "archived_pos": archived_pos,
         "real_pos": real_pos,
+        "fx_rates": {
+            **fx_rates.to_dict(),
+            "usdt_cny": usdt_cny_rate,
+            "usdt_cny_source": usdt_cny_source,
+        },
     }
 
     with open(OUTPUT_PATH, 'w') as f:
