@@ -21,7 +21,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db.queries import get_cutoff_date_almaty
-from scripts.rebuild_cashflow_calendar import compute_daily_rows, _fetch_manual_events, _build_system_events
+from scripts.rebuild_cashflow_calendar import (
+    compute_daily_rows,
+    _fetch_manual_events,
+    _build_system_events,
+    _resolve_start_end,
+)
 from core.config.business_params import get_fx_rates
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 EXPORT_DIR = PROJECT_ROOT / "exports"
@@ -133,12 +138,17 @@ def main() -> int:
     args = parser.parse_args()
 
     cutoff = get_cutoff_date_almaty()
-    start = date.fromisoformat(args.start_date) if args.start_date else cutoff
-    end = date.fromisoformat(args.end_date) if args.end_date else cutoff
+    start = date.fromisoformat(args.start_date) if args.start_date else None
+    end = date.fromisoformat(args.end_date) if args.end_date else None
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
 
     with sqlite3.connect(str(args.db)) as conn:
         conn.row_factory = sqlite3.Row
+        if start is None or end is None:
+            resolved_start, resolved_end = _resolve_start_end(conn)
+            start = start or resolved_start
+            end = end or resolved_end
+
         rows = _load_daily_from_db(conn, start, end)
 
         if args.rebuild or not rows:
