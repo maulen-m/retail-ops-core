@@ -1,0 +1,15 @@
+## Kaspi Pay bank account IDs by store (Kaspi-only).
+# Source: filenames under
+# ~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/kaspi_pay/statements/kaspi_stores
+
+stores:
+  UNIVERSAL:
+    account_id: KZ33722S000009759291
+  ACMEWEAR:
+    account_id: KZ79722S000025066615
+  "11KZ":
+    account_id: KZ98722S000034752208
+  MELVIS:
+    account_id: KZ19722S000042347760
+  STOREB: # folder name: STORE-B
+    account_id: KZ60722S000042225287
