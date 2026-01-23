@@ -14,10 +14,32 @@
 cd ~/Docs/Autonomous_business
 source .venv/bin/activate 2>/dev/null || true
 if [ -f ".env" ]; then
-    set -a
-    # Skip GMAIL_* entries (contain spaces/parentheses that break `source`)
-    source <(grep -v '^GMAIL_' .env)
-    set +a
+    ENV_EXPORTS=$(python3 - <<'PY'
+import shlex
+from pathlib import Path
+
+p = Path(".env")
+if not p.exists():
+    raise SystemExit(0)
+
+for raw in p.read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if line.startswith("GMAIL_"):
+        continue
+    if "=" not in line:
+        continue
+    key, val = line.split("=", 1)
+    key = key.strip()
+    if not key:
+        continue
+    print(f"export {key}={shlex.quote(val.strip())}")
+PY
+)
+    if [ -n "${ENV_EXPORTS}" ]; then
+        eval "${ENV_EXPORTS}"
+    fi
 fi
 
 # Ensure PDF merge dependency is available (pypdf preferred)
@@ -91,14 +113,20 @@ echo ""
 # Preflight checks (CRM exists, backups, columns, shipping guard if enabled)
 echo "Preflight: checking CRM + environment..."
 echo "----------------------------------------"
-if [ "${ENABLE_KASPI_WRITE}" = "1" ]; then
-    SHIPPING_ENABLED=1
-    python scripts/ops_preflight.py --shipping
-else
-    SHIPPING_ENABLED=0
-    echo "WARNING: ENABLE_KASPI_WRITE is not set to 1. Shipping will be skipped."
-    python scripts/ops_preflight.py
+if [ -z "${ENABLE_KASPI_WRITE:-}" ]; then
+    echo "ERROR: ENABLE_KASPI_WRITE is not set. Did .env load?"
+    echo "Press Enter to close..."
+    read
+    exit 1
 fi
+if [ "${ENABLE_KASPI_WRITE}" != "1" ]; then
+    echo "ERROR: ENABLE_KASPI_WRITE=${ENABLE_KASPI_WRITE} (set to 1 in .env to ship)"
+    echo "Press Enter to close..."
+    read
+    exit 1
+fi
+SHIPPING_ENABLED=1
+python scripts/ops_preflight.py --shipping
 
 if [ $? -ne 0 ]; then
     echo ""
