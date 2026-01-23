@@ -21,11 +21,23 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db.queries import get_cutoff_date_almaty
+from core.cashflow.payout_model import load_payout_model
 from core.config.business_params import get_fx_rates
 from core.calc.economics import calc_cogs
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 
-AUTO_EVENT_TYPES = {"SALE_ACCRUED", "COGS_RECOGNIZED"}
+AUTO_EVENT_TYPES = {"SALE_ACCRUED", "COGS_RECOGNIZED", "PAYOUT_EXPECTED"}
+EXPENSE_EVENT_TYPES = {
+    "EXPENSE",
+    "KASPI_FEES",
+    "DELIVERY_FEES",
+    "ADS",
+    "BONUS",
+    "TRANSFER",
+    "LOAN_PAYMENT",
+    "UNKNOWN",
+}
+PAYOUT_EVENT_TYPES = {"PAYOUT_RECEIVED", "PAYOUT_EXPECTED"}
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -210,6 +222,18 @@ def _build_system_events(
     run_id: str,
 ) -> list[dict]:
     sales_by_date, cogs_by_date = _build_sales_aggregates(conn, start_date, end_date, fx_rates)
+    payout_model = load_payout_model()
+    last_statement_date = None
+    if _table_exists(conn, "fact_cashflow_events"):
+        row = conn.execute(
+            """
+            SELECT MAX(event_date) as max_date
+            FROM fact_cashflow_events
+            WHERE source = 'STATEMENT_ACTUAL'
+            """
+        ).fetchone()
+        if row and row["max_date"]:
+            last_statement_date = date.fromisoformat(row["max_date"])
     events: list[dict] = []
     for sale_date, amount in sales_by_date.items():
         if amount == 0:
@@ -220,7 +244,31 @@ def _build_system_events(
                 "event_type": "SALE_ACCRUED",
                 "account": "RECEIVABLES",
                 "amount_kzt": round(amount, 2),
-                "source": "SYSTEM",
+                "source": "ORDER_MODELLED",
+                "run_id": run_id,
+            }
+        )
+        sale_day = date.fromisoformat(sale_date)
+        if last_statement_date and sale_day <= last_statement_date:
+            continue
+        payout_date = sale_day + timedelta(days=payout_model.base_lag_days)
+        events.append(
+            {
+                "event_date": payout_date.isoformat(),
+                "event_type": "PAYOUT_EXPECTED",
+                "account": "CASH",
+                "amount_kzt": round(amount, 2),
+                "source": "ORDER_MODELLED",
+                "run_id": run_id,
+            }
+        )
+        events.append(
+            {
+                "event_date": payout_date.isoformat(),
+                "event_type": "PAYOUT_EXPECTED",
+                "account": "RECEIVABLES",
+                "amount_kzt": round(-abs(amount), 2),
+                "source": "ORDER_MODELLED",
                 "run_id": run_id,
             }
         )
@@ -233,7 +281,7 @@ def _build_system_events(
                 "event_type": "COGS_RECOGNIZED",
                 "account": "INVENTORY_COST",
                 "amount_kzt": round(-abs(amount), 2),
-                "source": "SYSTEM",
+                "source": "ORDER_MODELLED",
                 "run_id": run_id,
             }
         )
@@ -253,7 +301,7 @@ def _fetch_manual_events(
                ref_type, ref_id, notes, source, run_id, event_hash
         FROM fact_cashflow_events
         WHERE event_date BETWEEN ? AND ?
-          AND NOT (source = 'SYSTEM' AND event_type IN ('SALE_ACCRUED', 'COGS_RECOGNIZED'))
+          AND NOT (source IN ('SYSTEM', 'ORDER_MODELLED') AND event_type IN ('SALE_ACCRUED', 'COGS_RECOGNIZED', 'PAYOUT_EXPECTED'))
         """,
         (start_date.isoformat(), end_date.isoformat()),
     ).fetchall()
@@ -296,10 +344,20 @@ def compute_daily_rows(
         inventory_close = inventory_open + inv_flow
 
         sales_accrued = sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "SALE_ACCRUED")
-        payouts_received = sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "PAYOUT_RECEIVED")
+        payouts_received = sum(
+            e.get("amount_kzt", 0.0)
+            for e in day_events
+            if e.get("event_type") in PAYOUT_EVENT_TYPES
+        )
         refunds = abs(sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "REFUND"))
         po_payments = abs(sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "PO_PAYMENT"))
-        expenses = abs(sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "EXPENSE"))
+        expenses = abs(
+            sum(
+                e.get("amount_kzt", 0.0)
+                for e in day_events
+                if e.get("event_type") in EXPENSE_EVENT_TYPES
+            )
+        )
         cogs = abs(sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "COGS_RECOGNIZED"))
 
         profit_accrual = sales_accrued - cogs - expenses
@@ -365,8 +423,8 @@ def rebuild_cashflow_calendar(
                 """
                 DELETE FROM fact_cashflow_events
                 WHERE event_date BETWEEN ? AND ?
-                  AND source = 'SYSTEM'
-                  AND event_type IN ('SALE_ACCRUED', 'COGS_RECOGNIZED')
+                  AND source IN ('SYSTEM', 'ORDER_MODELLED')
+                  AND event_type IN ('SALE_ACCRUED', 'COGS_RECOGNIZED', 'PAYOUT_EXPECTED')
                 """,
                 (start_date.isoformat(), end_date.isoformat()),
             )

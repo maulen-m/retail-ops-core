@@ -21,7 +21,7 @@ Usage:
 import logging
 import yaml
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -127,6 +127,63 @@ class OrderSyncEngine:
         """Get API client for a store."""
         return get_client(store_code)
 
+    def _ensure_sync_log_table(self, conn) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kaspi_order_sync_log (
+                store_code TEXT PRIMARY KEY,
+                last_success_ts TEXT NOT NULL,
+                min_date_seen TEXT,
+                max_date_seen TEXT,
+                orders_fetched INTEGER,
+                orders_inserted INTEGER,
+                orders_updated INTEGER,
+                run_id TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+
+    def _extract_order_date(self, api_order: dict) -> Optional[date]:
+        attrs = api_order.get("attributes", {})
+        if attrs.get("creationDate"):
+            try:
+                return datetime.fromtimestamp(attrs["creationDate"] / 1000).date()
+            except Exception:
+                return None
+        return None
+
+    def _record_sync_log(
+        self,
+        conn,
+        store_code: str,
+        orders: list[dict],
+        result: SyncResult,
+        run_id: str,
+    ) -> None:
+        self._ensure_sync_log_table(conn)
+        dates = [d for d in (self._extract_order_date(o) for o in orders) if d]
+        min_date = min(dates).isoformat() if dates else None
+        max_date = max(dates).isoformat() if dates else None
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO kaspi_order_sync_log (
+                store_code, last_success_ts, min_date_seen, max_date_seen,
+                orders_fetched, orders_inserted, orders_updated, run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                store_code,
+                datetime.now().isoformat(timespec="seconds"),
+                min_date,
+                max_date,
+                result.orders_fetched,
+                result.orders_inserted,
+                result.orders_updated,
+                run_id,
+            ),
+        )
+
     # =========================================================================
     # SINGLE STORE SYNC
     # =========================================================================
@@ -153,6 +210,7 @@ class OrderSyncEngine:
             SyncResult with counts and status changes
         """
         start_time = datetime.now()
+        run_id = start_time.strftime("%Y%m%d_%H%M%S")
         result = SyncResult(store_code=store_code, success=True)
 
         logger.info(f"Starting sync for {store_code}, since={since}, dry_run={dry_run}")
@@ -190,6 +248,8 @@ class OrderSyncEngine:
                     except Exception as e:
                         logger.error(f"Error saving order {order.get('id')}: {e}")
                         result.errors.append(str(e))
+                if result.success:
+                    self._record_sync_log(conn, store_code, orders, result, run_id)
 
         except KaspiAuthError as e:
             logger.error(f"Auth error for {store_code}: {e}")

@@ -28,11 +28,13 @@ from scripts.rebuild_cashflow_calendar import (
     _resolve_start_end,
 )
 from core.config.business_params import get_fx_rates
+from core.cashflow.payout_model import load_payout_model
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 EXPORT_DIR = PROJECT_ROOT / "exports"
 CSV_PATH = EXPORT_DIR / "cashflow_calendar.csv"
 HTML_PATH = EXPORT_DIR / "cashflow_dashboard.html"
 MIN_CASH_PATH = EXPORT_DIR / "min_cash_summary.txt"
+TRUST_REPORT_PATH = EXPORT_DIR / "cashflow_trust_report_{label}.md"
 BACKUP_DIR = PROJECT_ROOT / "backups"
 
 
@@ -116,23 +118,106 @@ def _write_csv(rows: list[dict], path: Path) -> None:
     tmp.replace(path)
 
 
-def _write_min_cash(rows: list[dict], path: Path) -> None:
+def _write_min_cash(rows: list[dict], rows_conservative: list[dict] | None, path: Path) -> None:
     if not rows:
         return
-    min_row = min(rows, key=lambda r: r.get("cash_close", 0) or 0)
-    breach = "YES" if (min_row.get("cash_close", 0) or 0) < 0 else "NO"
+    base_min = _min_cash(rows)
+    conservative_min = _min_cash(rows_conservative) if rows_conservative else base_min
+    base_breach = "YES" if (base_min.get("cash_close", 0) or 0) < 0 else "NO"
+    cons_breach = "YES" if (conservative_min.get("cash_close", 0) or 0) < 0 else "NO"
     lines = [
-        f"min_cash_kzt: {min_row.get('cash_close', 0)}",
-        f"min_cash_date: {min_row.get('date')}",
-        f"breach: {breach}",
+        f"base_min_cash_kzt: {base_min.get('cash_close', 0)}",
+        f"base_min_cash_date: {base_min.get('date')}",
+        f"base_breach: {base_breach}",
+        f"conservative_min_cash_kzt: {conservative_min.get('cash_close', 0)}",
+        f"conservative_min_cash_date: {conservative_min.get('date')}",
+        f"conservative_breach: {cons_breach}",
     ]
     path.write_text("\n".join(lines) + "\n")
 
 
-def _render_html(rows: list[dict], path: Path) -> None:
+def _min_cash(rows: list[dict]) -> dict:
+    if not rows:
+        return {"date": None, "cash_close": 0}
+    return min(rows, key=lambda r: r.get("cash_close", 0) or 0)
+
+
+def _load_last_statement_date(conn: sqlite3.Connection) -> str | None:
+    if not _table_exists(conn, "fact_cashflow_events"):
+        return None
+    row = conn.execute(
+        "SELECT MAX(event_date) as max_date FROM fact_cashflow_events WHERE source = 'STATEMENT_ACTUAL'"
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def _load_sync_age_hours(conn: sqlite3.Connection) -> float | None:
+    if not _table_exists(conn, "kaspi_order_sync_log"):
+        return None
+    rows = conn.execute("SELECT last_success_ts FROM kaspi_order_sync_log").fetchall()
+    if not rows:
+        return None
+    now = datetime.now()
+    ages = []
+    for row in rows:
+        if not row[0]:
+            continue
+        try:
+            last_ts = datetime.fromisoformat(row[0])
+        except Exception:
+            continue
+        ages.append((now - last_ts).total_seconds() / 3600)
+    return max(ages) if ages else None
+
+
+def _write_trust_report(
+    path: Path,
+    last_statement_date: str | None,
+    sync_age_hours: float | None,
+    rows: list[dict],
+) -> None:
+    statement_days = 0
+    modelled_days = 0
+    forecast_days = 0
+    last_statement = None
+    if last_statement_date:
+        try:
+            last_statement = date.fromisoformat(last_statement_date)
+        except Exception:
+            last_statement = None
+    for row in rows:
+        row_date = date.fromisoformat(row["date"])
+        if row.get("is_forecast"):
+            forecast_days += 1
+        elif last_statement and row_date <= last_statement:
+            statement_days += 1
+        else:
+            modelled_days += 1
+
+    lines = [
+        "# Cashflow Trust Report",
+        "",
+        f"- last_statement_date: {last_statement_date or 'NONE'}",
+        f"- statement_backed_days: {statement_days}",
+        f"- modelled_days: {modelled_days}",
+        f"- forecast_days: {forecast_days}",
+        f"- order_sync_age_hours: {sync_age_hours if sync_age_hours is not None else 'UNKNOWN'}",
+        "",
+        "Legend:",
+        "- STATEMENT_ACTUAL: derived from MT940 statements",
+        "- ORDER_MODELLED: derived from Orders API + payout model",
+        "- FORECAST_MODEL: forward projections",
+        "",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _render_html(rows: list[dict], path: Path, meta: dict) -> None:
     _backup_file(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(rows)
+    meta_json = json.dumps(meta)
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -403,6 +488,48 @@ def _render_html(rows: list[dict], path: Path) -> None:
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 16px;
+    }}
+
+    .trust-banner {{
+      margin: 20px 0 32px;
+      padding: 16px;
+      border: var(--pixel-border) solid var(--border-primary);
+      background: linear-gradient(135deg, rgba(255, 136, 0, 0.08), rgba(0, 0, 0, 0.2));
+      box-shadow: 0 0 12px rgba(255, 170, 0, 0.2);
+    }}
+
+    .trust-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }}
+
+    .trust-card {{
+      border: 1px solid var(--border-secondary);
+      background: var(--bg-card);
+      padding: 12px;
+      border-radius: 8px;
+    }}
+
+    .trust-label {{
+      font-size: 8px;
+      color: var(--text-dim);
+      letter-spacing: 0.08em;
+    }}
+
+    .trust-value {{
+      font-size: 14px;
+      margin-top: 6px;
+    }}
+
+    .badge {{
+      display: inline-block;
+      padding: 2px 8px;
+      border: 1px solid var(--border-secondary);
+      border-radius: 999px;
+      font-size: 8px;
+      margin-left: 6px;
+      color: var(--text-accent);
     }}
 
     .metric-card {{
@@ -995,6 +1122,12 @@ def _render_html(rows: list[dict], path: Path) -> None:
       </div>
     </header>
 
+    <!-- Trust Banner -->
+    <section class="trust-banner">
+      <div class="section-label pixel-font">TRUST STATUS</div>
+      <div class="trust-grid" id="trustSummary"></div>
+    </section>
+
     <!-- Summary Cards -->
     <section class="summary-container">
       <div class="metrics-header">
@@ -1053,6 +1186,17 @@ def _render_html(rows: list[dict], path: Path) -> None:
             <span class="pixel-font">INCLUDE FORECAST</span>
           </label>
         </div>
+        <div class="control-group">
+          <label class="retro-checkbox">
+            <input type="checkbox" id="statementToggle">
+            <span class="checkbox-custom"></span>
+            <span class="pixel-font">STATEMENT ONLY</span>
+          </label>
+        </div>
+        <div class="control-group">
+          <label class="control-label pixel-font">STORE</label>
+          <select id="storeSelect" class="retro-select"></select>
+        </div>
       </div>
     </section>
 
@@ -1083,17 +1227,26 @@ def _render_html(rows: list[dict], path: Path) -> None:
     // DATA INJECTION
     // ========================================
     const rows = {data};
+    const meta = {meta_json};
 
     // ========================================
     // DOM ELEMENTS
     // ========================================
     const summary = document.getElementById('summary');
+    const trustSummary = document.getElementById('trustSummary');
     const forecastToggle = document.getElementById('forecastToggle');
+    const statementToggle = document.getElementById('statementToggle');
     const rangeSelect = document.getElementById('rangeSelect');
+    const storeSelect = document.getElementById('storeSelect');
     const themeToggle = document.getElementById('themeToggle');
     const body = document.body;
     const chartCanvas = document.getElementById('cashChart');
     const tooltip = document.getElementById('chartTooltip');
+
+    const storeCodes = Array.from(new Set(rows.map(r => r.store_code).filter(Boolean)));
+    const storeOptions = ['ALL', ...storeCodes];
+    storeSelect.innerHTML = storeOptions.map(code => `<option value="${{code}}">${{code}}</option>`).join('');
+    storeSelect.disabled = storeOptions.length <= 1;
 
     // ========================================
     // THEME MANAGEMENT
@@ -1153,10 +1306,44 @@ def _render_html(rows: list[dict], path: Path) -> None:
       return trends;
     }}
 
+    function buildTrustSummary() {{
+      const statementDate = meta.last_statement_date || 'NONE';
+      const syncAge = meta.order_sync_age_hours !== null && meta.order_sync_age_hours !== undefined
+        ? (meta.order_sync_age_hours.toFixed(1) + 'h')
+        : 'UNKNOWN';
+      const baseMin = meta.min_cash_base || {{}};
+      const consMin = meta.min_cash_conservative || baseMin;
+      trustSummary.innerHTML = `
+        <div class="trust-card">
+          <div class="trust-label pixel-font">LAST STATEMENT</div>
+          <div class="trust-value monospace-font">${{statementDate}}<span class="badge">ACTUAL</span></div>
+        </div>
+        <div class="trust-card">
+          <div class="trust-label pixel-font">ORDER SYNC AGE</div>
+          <div class="trust-value monospace-font">${{syncAge}}</div>
+        </div>
+        <div class="trust-card">
+          <div class="trust-label pixel-font">MIN CASH (BASE)</div>
+          <div class="trust-value monospace-font">${{formatKzt(baseMin.cash_close)}} KZT on ${{baseMin.date}}</div>
+        </div>
+        <div class="trust-card">
+          <div class="trust-label pixel-font">MIN CASH (CONS)</div>
+          <div class="trust-value monospace-font">${{formatKzt(consMin.cash_close)}} KZT on ${{consMin.date}}</div>
+        </div>
+      `;
+    }}
+
     function filterRows() {{
       let filtered = rows.slice();
       if (!forecastToggle.checked) {{
         filtered = filtered.filter(r => !r.is_forecast);
+      }}
+      if (statementToggle.checked) {{
+        filtered = filtered.filter(r => r.trust === 'STATEMENT_ACTUAL');
+      }}
+      const storeVal = storeSelect.value;
+      if (storeVal && storeVal !== 'ALL') {{
+        filtered = filtered.filter(r => r.store_code === storeVal);
       }}
       const rangeVal = rangeSelect.value;
       if (rangeVal !== 'all') {{
@@ -1218,6 +1405,16 @@ def _render_html(rows: list[dict], path: Path) -> None:
 
       const actualData = rows.filter(r => !r.is_forecast);
       const last = actualData.length > 0 ? actualData[actualData.length - 1] : rows[rows.length - 1];
+      const lastDate = new Date(last.date);
+      const futureRows = rows.filter(r => new Date(r.date) > lastDate);
+
+      const next14 = futureRows.filter(r => (new Date(r.date) - lastDate) <= 14 * 24 * 3600 * 1000);
+      const next30 = futureRows.filter(r => (new Date(r.date) - lastDate) <= 30 * 24 * 3600 * 1000);
+      const next60 = futureRows.filter(r => (new Date(r.date) - lastDate) <= 60 * 24 * 3600 * 1000);
+
+      const payouts14 = next14.reduce((sum, r) => sum + Number(r.payouts_received_kzt || 0), 0);
+      const po30 = next30.reduce((sum, r) => sum + Number(r.po_payments_kzt || 0), 0);
+      const po60 = next60.reduce((sum, r) => sum + Number(r.po_payments_kzt || 0), 0);
 
       const trends = calculateTrends(actualData.length > 0 ? actualData : rows);
 
@@ -1327,6 +1524,45 @@ def _render_html(rows: list[dict], path: Path) -> None:
             <span class="change-period">${{minRow.date}}</span>
           </div>
           ${{breach ? '<div class="warning-badge pixel-font">BREACH DETECTED</div>' : ''}}
+        </div>
+
+        <div class="metric-card">
+          <div class="card-header">
+            <span class="card-label pixel-font">PAYOUTS (NEXT 14D)</span>
+          </div>
+          <div class="card-value-row">
+            <span class="card-value monospace-font">${{formatKzt(payouts14)}}</span>
+            <span class="card-unit">KZT</span>
+          </div>
+          <div class="card-meta">
+            <span class="change-period">expected cash-in</span>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="card-header">
+            <span class="card-label pixel-font">PO PAYMENTS (30D)</span>
+          </div>
+          <div class="card-value-row">
+            <span class="card-value monospace-font">${{formatKzt(po30)}}</span>
+            <span class="card-unit">KZT</span>
+          </div>
+          <div class="card-meta">
+            <span class="change-period">commitments</span>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="card-header">
+            <span class="card-label pixel-font">PO PAYMENTS (60D)</span>
+          </div>
+          <div class="card-value-row">
+            <span class="card-value monospace-font">${{formatKzt(po60)}}</span>
+            <span class="card-unit">KZT</span>
+          </div>
+          <div class="card-meta">
+            <span class="change-period">commitments</span>
+          </div>
         </div>
       `;
 
@@ -1701,6 +1937,10 @@ def _render_html(rows: list[dict], path: Path) -> None:
           <span class="tooltip-label">Receivables:</span>
           <span class="tooltip-value">${{formatKzt(point.receivables_close)}} KZT</span>
         </div>
+        <div class="tooltip-row">
+          <span class="tooltip-label">Trust:</span>
+          <span class="tooltip-value">${{point.trust || ''}}</span>
+        </div>
         ${{point.is_forecast ? '<div class="tooltip-forecast pixel-font">FORECAST</div>' : ''}}
       `;
 
@@ -1796,6 +2036,7 @@ def _render_html(rows: list[dict], path: Path) -> None:
     // ========================================
     function renderAll() {{
       const filtered = filterRows();
+      buildTrustSummary();
       buildSummary(filtered);
       renderTable();
       renderChart();
@@ -1842,6 +2083,8 @@ def _render_html(rows: list[dict], path: Path) -> None:
     // EVENT LISTENERS
     // ========================================
     forecastToggle.addEventListener('change', renderAll);
+    statementToggle.addEventListener('change', renderAll);
+    storeSelect.addEventListener('change', renderAll);
     rangeSelect.addEventListener('change', renderAll);
 
     window.addEventListener('resize', () => {{
@@ -1965,7 +2208,7 @@ def main() -> int:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="Path to SQLite DB")
     parser.add_argument("--history-days", type=int, default=90)
     parser.add_argument("--forecast-days", type=int, default=120)
-    parser.add_argument("--payout-lag-days", type=int, default=7)
+    parser.add_argument("--payout-lag-days", type=int, default=None)
     parser.add_argument("--rebuild", action="store_true", help="Rebuild calendar before export")
     parser.add_argument("--apply", action="store_true", help="Apply rebuild (requires ENABLE_CASHFLOW_WRITE=1)")
     parser.add_argument("--run-id", type=str, default=None, help="Run id for audit")
@@ -1973,9 +2216,15 @@ def main() -> int:
 
     cutoff = get_cutoff_date_almaty()
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+    payout_model = load_payout_model()
+    base_lag = args.payout_lag_days if args.payout_lag_days is not None else payout_model.base_lag_days
+    conservative_lag = max(payout_model.conservative_lag_days, base_lag)
 
+    applied_daily = False
     with sqlite3.connect(str(args.db)) as conn:
         conn.row_factory = sqlite3.Row
+        last_statement_date = _load_last_statement_date(conn)
+        sync_age_hours = _load_sync_age_hours(conn)
         resolved_start, resolved_end = _resolve_start_end(conn)
         history_end = cutoff
         if _table_exists(conn, "fact_cashflow_events"):
@@ -1998,7 +2247,10 @@ def main() -> int:
             rows = compute_daily_rows(manual + system, history_start, history_end, run_id=run_id)
             for r in rows:
                 r["is_forecast"] = False
-            if args.apply:
+            apply_daily = args.apply and history_start == resolved_start and history_end == resolved_end
+            if args.apply and not apply_daily:
+                print("WARN: Skipping daily table update (partial range rebuild).")
+            if apply_daily:
                 if os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
                     raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
                 conn.execute(
@@ -2025,6 +2277,7 @@ def main() -> int:
                         ),
                     )
                 conn.commit()
+                applied_daily = True
         else:
             for r in rows:
                 r["is_forecast"] = False
@@ -2032,16 +2285,52 @@ def main() -> int:
         forecast_start = history_end + timedelta(days=1)
         forecast_end = forecast_start + timedelta(days=args.forecast_days - 1)
         commitments = _load_commitments(conn, forecast_start, forecast_end)
-        forecast_rows = _build_forecast_rows(rows, commitments, args.forecast_days, args.payout_lag_days, run_id)
+        forecast_rows = _build_forecast_rows(rows, commitments, args.forecast_days, base_lag, run_id)
+        forecast_rows_conservative = _build_forecast_rows(rows, commitments, args.forecast_days, conservative_lag, run_id)
 
     all_rows = rows + forecast_rows
+    all_rows_conservative = rows + forecast_rows_conservative
+
+    if last_statement_date:
+        try:
+            last_statement = date.fromisoformat(last_statement_date)
+        except Exception:
+            last_statement = None
+    else:
+        last_statement = None
+
+    for row in all_rows:
+        row_date = date.fromisoformat(row["date"])
+        if row.get("is_forecast"):
+            trust = "FORECAST_MODEL"
+        elif last_statement and row_date <= last_statement:
+            trust = "STATEMENT_ACTUAL"
+        else:
+            trust = "ORDER_MODELLED"
+        row["trust"] = trust
+
+    min_base = _min_cash(all_rows) if all_rows else {"date": None, "cash_close": 0}
+    min_cons = _min_cash(all_rows_conservative) if all_rows_conservative else min_base
+    trust_path = Path(str(TRUST_REPORT_PATH).format(label=cutoff.isoformat()))
+    _write_trust_report(trust_path, last_statement_date, sync_age_hours, all_rows)
 
     _write_csv(all_rows, CSV_PATH)
-    _write_min_cash(all_rows, MIN_CASH_PATH)
-    _render_html(all_rows, HTML_PATH)
+    _write_min_cash(all_rows, all_rows_conservative, MIN_CASH_PATH)
+    _render_html(
+        all_rows,
+        HTML_PATH,
+        {
+            "last_statement_date": last_statement_date,
+            "order_sync_age_hours": sync_age_hours,
+            "min_cash_base": min_base,
+            "min_cash_conservative": min_cons,
+            "payout_lag_base": base_lag,
+            "payout_lag_conservative": conservative_lag,
+        },
+    )
 
     print(f"Cashflow exports updated: {CSV_PATH} | {HTML_PATH}")
-    if args.apply:
+    if applied_daily:
         print("  APPLY: daily table updated.")
     else:
         print("  DRY RUN: daily table not updated (exports generated).")

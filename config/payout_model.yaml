@@ -1,0 +1,5 @@
+payout_lag_days_base: 6
+payout_lag_days_conservative: 11
+updated_at: '2026-01-24T01:28:19.266648'
+sample_size: 337
+source: STATEMENT_ACTUAL

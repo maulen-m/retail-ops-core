@@ -466,6 +466,11 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=not args.skip_api_sync,
         ),
         PipelineStep(
+            name="2a2. Validate Kaspi Orders Sync Freshness",
+            script="validate_kaspi_order_sync_freshness.py",
+            required=True,
+        ),
+        PipelineStep(
             name="2b. Backfill Order Sizes (Archive)",
             script="backfill_kaspi_order_sizes.py",
             args=["--cutoff-date", cutoff_date.isoformat()],
@@ -520,12 +525,21 @@ def _run_pipeline(args, start_time: datetime) -> int:
             )
         )
 
+    snapshot_z_path = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
+    snapshot_z_required = snapshot_z_path.exists()
+    if not snapshot_z_required:
+        print("Note: Snapshot_Z workbook missing; skipping validate_snapshot_vs_snapshot_z (DB is source of truth).")
+
+    if snapshot_z_required:
+        steps.append(
+            PipelineStep(
+                name="2f. Validate Snapshot vs Snapshot_Z",
+                script="validate_snapshot_vs_snapshot_z.py",
+                required=True
+            )
+        )
+
     steps.extend([
-        PipelineStep(
-            name="2f. Validate Snapshot vs Snapshot_Z",
-            script="validate_snapshot_vs_snapshot_z.py",
-            required=True
-        ),
         PipelineStep(
             name="2g. Validate Day Complete",
             script="validate_day_complete.py",

@@ -1,0 +1,16 @@
+# Kaspi Pay MT940 :86: code mapping (Kaspi-only).
+# Categories are used to classify statement cashflow events.
+# Unknown codes are allowed and will be reported as UNKNOWN.
+
+codes:
+  "190": PAYOUT_RECEIVED
+  "191": REFUND
+  "342": ADS
+  "421": TRANSFER
+  "841": LOAN_PAYMENT
+  "851": DELIVERY_FEES
+  "858": KASPI_FEES
+  "880": BONUS
+
+# Default category when code is missing or unmapped.
+default_category: UNKNOWN
