@@ -4,3 +4,6 @@
 !*.command
 !*.md
 !backups/
+!assemble_per_store/
+!assemble_per_store/*.command
+!assemble_per_store/*.sh

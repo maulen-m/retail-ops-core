@@ -66,6 +66,7 @@ STORE_MAP = {
     '30137883_PP1': 'AcmeWear',
     '30000001_PP1': 'Universal',
     '30290083_PP1': '11KZ',
+    '30362323_PP1': 'Store-C',
     '30000002_PP1': 'STORE-B',
 }
 
@@ -74,6 +75,7 @@ STORE_NAME_TO_API_CODE = {
     'AcmeWear': 'ACMEWEAR',
     'Universal': 'UNIVERSAL',
     '11KZ': '11KZ',
+    'Store-C': 'MELVIS',
     'STORE-B': 'STOREB',
 }
 API_CODE_TO_STORE_NAME = {v: k for k, v in STORE_NAME_TO_API_CODE.items()}
@@ -486,6 +488,7 @@ def read_crm_orders(
 def get_pending_assembly_orders(
     target_date: Optional[date] = None,
     since_days: int = 7,
+    store_codes: Optional[set[str]] = None,
 ) -> tuple[dict[str, set[str]], dict[str, dict[str, str]], dict[str, dict[str, date]]]:
     """
     Get orders in "Упаковка" stage from ALL stores via API.
@@ -501,7 +504,10 @@ def get_pending_assembly_orders(
 
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
-    for store_code in STORE_TOKEN_MAP.keys():
+    selected = store_codes or set(STORE_TOKEN_MAP.keys())
+    store_iter = [code for code in STORE_TOKEN_MAP.keys() if code in selected]
+
+    for store_code in store_iter:
         try:
             client = KaspiAPIClient(store_code=store_code)
             result = client.get_pending_assembly_orders(since=since)
@@ -860,7 +866,7 @@ def main():
     )
     parser.add_argument(
         '--store',
-        choices=['AcmeWear', 'Universal', '11KZ', 'STORE-B'],
+        choices=['AcmeWear', 'Universal', '11KZ', 'Store-C', 'STORE-B'],
         help='Filter by store (optional)'
     )
     parser.add_argument(
@@ -914,9 +920,13 @@ def main():
 
     # Step 1: Get pending assembly orders from API
     print("Step 1: Fetching pending assembly orders from API...")
+    api_store_codes = None
+    if args.store:
+        api_store_codes = {STORE_NAME_TO_API_CODE.get(args.store, args.store).upper()}
     pending_orders, order_id_to_base64, planned_date_by_store = get_pending_assembly_orders(
         target_date=target_date,
         since_days=args.since_days,
+        store_codes=api_store_codes,
     )
 
     total_pending = sum(len(ids) for ids in pending_orders.values())

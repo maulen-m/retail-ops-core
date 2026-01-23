@@ -10,7 +10,8 @@ cd "${PROJECT_ROOT}"
 source .venv/bin/activate 2>/dev/null || true
 if [ -f ".env" ]; then
     set -a
-    source .env
+    # Skip GMAIL_* entries (contain spaces/parentheses that break `source`)
+    source <(grep -v '^GMAIL_' .env)
     set +a
 fi
 
@@ -59,6 +60,66 @@ if [ $? -ne 0 ]; then
     echo "Press Enter to close..."
     [[ -t 0 ]] && read
     exit 1
+fi
+
+# Ensure MELVIS rows are present (fallback fetch + merge if missing)
+if [ -f "excel_ui/ActiveOrders/ActiveOrders.xlsx" ]; then
+    HAS_MELVIS=$(python3 - <<'PY'
+import pandas as pd
+from pathlib import Path
+p = Path("excel_ui/ActiveOrders/ActiveOrders.xlsx")
+try:
+    df = pd.read_excel(p)
+except Exception:
+    print("0")
+    raise SystemExit(0)
+
+col = None
+for c in ("Склад передачи КД", "STORE_NAME", "Склад передачи КД"):
+    if c in df.columns:
+        col = c
+        break
+
+if not col:
+    print("0")
+else:
+    vals = df[col].astype(str)
+    has_code = (vals == "30362323_PP1").any()
+    has_name = vals.str.contains(r"\bMELVIS\b|\bStore-C\b", regex=True, na=False).any()
+    print("1" if (has_code or has_name) else "0")
+PY
+)
+    if [ "${HAS_MELVIS}" = "0" ]; then
+        if [ -n "${KASPI_TOKEN_MELVIS:-}" ]; then
+            echo "MELVIS rows not found in ActiveOrders. Fetching MELVIS..."
+            TMP_DIR=$(mktemp -d -t kaspi_store-c_import)
+            MELVIS_OUT="${TMP_DIR}/ActiveOrders_MELVIS.xlsx"
+            python scripts/export_api_orders.py --store MELVIS --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" --refetch-missing-costs --verbose --no-archive --output "${MELVIS_OUT}"
+            if [ $? -eq 0 ] && [ -f "${MELVIS_OUT}" ]; then
+                MELVIS_OUT="${MELVIS_OUT}" python3 - <<'PY'
+import pandas as pd
+from pathlib import Path
+import os
+base = Path("excel_ui/ActiveOrders/ActiveOrders.xlsx")
+store-c_path = os.environ.get("MELVIS_OUT", "")
+store-c = Path(store-c_path) if store-c_path else None
+if store-c and base.exists() and store-c.exists():
+    df_base = pd.read_excel(base)
+    df_store-c = pd.read_excel(store-c)
+    merged = pd.concat([df_base, df_store-c], ignore_index=True).drop_duplicates()
+    merged.to_excel(base, index=False, engine='openpyxl')
+    print(f"Merged MELVIS rows: +{len(df_store-c)} (deduped to {len(merged)})")
+PY
+            else
+                echo "WARNING: MELVIS export failed or missing output."
+                WARNINGS+=("MELVIS export failed or missing output. Fix: check KASPI_TOKEN_MELVIS and API connectivity.")
+            fi
+            rm -rf "${TMP_DIR}"
+        else
+            echo "WARNING: KASPI_TOKEN_MELVIS not set; skipping MELVIS fetch."
+            WARNINGS+=("MELVIS token missing; MELVIS fetch skipped.")
+        fi
+    fi
 fi
 
 # Quick sanity check on exported ActiveOrders

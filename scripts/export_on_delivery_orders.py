@@ -110,7 +110,7 @@ STORE_WAREHOUSE_MAP = {
     'ACMEWEAR': '30137883_PP1',
     '11KZ': '30290083_PP1',
     'STOREB': '30000002_PP1',
-    'MELVIS': '30000002_PP1',
+    'MELVIS': '30362323_PP1',
 }
 
 # Balance sheet configuration

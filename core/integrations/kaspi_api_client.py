@@ -15,6 +15,12 @@ Environment Variables:
     KASPI_TOKEN_11KZ: Token for 11KZ store
     KASPI_TOKEN_MELVIS: Token for Store-C store
     KASPI_TOKEN_STOREB: Token for MGroup store
+    KASPI_MERCHANT_UID: Default merchant UID header (optional)
+    KASPI_MERCHANT_UID_UNIVERSAL: Merchant UID header for Universal (optional)
+    KASPI_MERCHANT_UID_ACMEWEAR: Merchant UID header for AcmeWear (optional)
+    KASPI_MERCHANT_UID_11KZ: Merchant UID header for 11KZ (optional)
+    KASPI_MERCHANT_UID_MELVIS: Merchant UID header for Store-C (optional)
+    KASPI_MERCHANT_UID_STOREB: Merchant UID header for MGroup (optional)
     ENABLE_KASPI_WRITE: Set to "1" to enable write operations (default: "0")
 
 Usage:
@@ -69,6 +75,7 @@ MAX_PAGE_SIZE = 100           # Kaspi API max items per page
 
 # Token environment variable prefix
 TOKEN_ENV_PREFIX = "KASPI_TOKEN_"
+MERCHANT_UID_ENV_PREFIX = "KASPI_MERCHANT_UID_"
 
 # Store code mapping to env var names
 STORE_TOKEN_MAP = {
@@ -185,10 +192,16 @@ class KaspiAPIClient:
         token: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
         enable_writes: Optional[bool] = None,
+        merchant_uid: Optional[str] = None,
     ):
         self.store_code = store_code.upper()
         self.timeout = timeout
         self._token = token or self._load_token(self.store_code)
+        self._merchant_uid = (
+            merchant_uid.strip()
+            if isinstance(merchant_uid, str) and merchant_uid.strip()
+            else self._load_merchant_uid(self.store_code)
+        )
         self._last_request_time = 0.0
 
         # Write operations guard
@@ -223,6 +236,32 @@ class KaspiAPIClient:
 
         return token
 
+    def _load_merchant_uid(self, store_code: str) -> Optional[str]:
+        """Load optional merchant UID header from environment."""
+        store_env = f"{MERCHANT_UID_ENV_PREFIX}{store_code}"
+        store_value = os.environ.get(store_env)
+        if store_value and store_value.strip():
+            return store_value.strip()
+        default_value = os.environ.get("KASPI_MERCHANT_UID")
+        if default_value and default_value.strip():
+            return default_value.strip()
+        # Fallback to config/kaspi_stores.yaml if present
+        try:
+            from pathlib import Path
+            import yaml  # type: ignore
+
+            config_path = Path(__file__).resolve().parents[2] / "config" / "kaspi_stores.yaml"
+            if config_path.exists():
+                with config_path.open("r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+                store_cfg = (config.get("stores") or {}).get(store_code.upper()) or {}
+                cfg_val = store_cfg.get("merchant_uid") or store_cfg.get("account_id")
+                if cfg_val:
+                    return str(cfg_val).strip()
+        except Exception as exc:
+            logger.debug(f"Merchant UID config load failed: {exc}")
+        return None
+
     def _create_session(self) -> requests.Session:
         """Create session with retry adapter."""
         session = requests.Session()
@@ -242,13 +281,16 @@ class KaspiAPIClient:
 
     def _get_headers(self) -> dict:
         """Get request headers with authorization."""
-        return {
+        headers = {
             'Authorization': self._token,
             'X-Auth-Token': self._token,
             'Accept': 'application/vnd.api+json',
             'Content-Type': 'application/vnd.api+json',
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
+        if self._merchant_uid:
+            headers['X-Merchant-Uid'] = self._merchant_uid
+        return headers
 
     def _rate_limit(self):
         """Apply rate limiting between requests."""

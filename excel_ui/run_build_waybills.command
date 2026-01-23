@@ -15,7 +15,8 @@ cd ~/Docs/Autonomous_business
 source .venv/bin/activate 2>/dev/null || true
 if [ -f ".env" ]; then
     set -a
-    source .env
+    # Skip GMAIL_* entries (contain spaces/parentheses that break `source`)
+    source <(grep -v '^GMAIL_' .env)
     set +a
 fi
 
@@ -45,6 +46,40 @@ if [ -z "${AB_DATA_DIR:-}" ] && [ -z "${DATA_DIR:-}" ]; then
     export DATA_DIR="~/Docs/Autonomous_business"
 fi
 DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-~/Docs/Autonomous_business}}"
+
+# Merchant UID headers (store-specific). Prefer config/kaspi_stores.yaml when available.
+MERCHANT_EXPORTS=$(python3 - <<'PY' 2>/dev/null
+from pathlib import Path
+import sys
+try:
+    import yaml
+except Exception:
+    sys.exit(0)
+
+config_path = Path("config/kaspi_stores.yaml")
+if not config_path.exists():
+    sys.exit(0)
+
+config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+stores = config.get("stores") or {}
+for store_code, info in stores.items():
+    if not isinstance(info, dict):
+        continue
+    uid = info.get("merchant_uid") or info.get("account_id")
+    if uid:
+        print(f'export KASPI_MERCHANT_UID_{store_code.upper()}=\"{uid}\"')
+PY
+)
+if [ -n "${MERCHANT_EXPORTS}" ]; then
+    eval "${MERCHANT_EXPORTS}"
+fi
+
+# Fallback defaults (if config/env missing)
+export KASPI_MERCHANT_UID_UNIVERSAL="${KASPI_MERCHANT_UID_UNIVERSAL:-30000001}"
+export KASPI_MERCHANT_UID_ACMEWEAR="${KASPI_MERCHANT_UID_ACMEWEAR:-30137883}"
+export KASPI_MERCHANT_UID_11KZ="${KASPI_MERCHANT_UID_11KZ:-30290083}"
+export KASPI_MERCHANT_UID_MELVIS="${KASPI_MERCHANT_UID_MELVIS:-30362323}"
+export KASPI_MERCHANT_UID_STOREB="${KASPI_MERCHANT_UID_STOREB:-30000002}"
 
 echo "========================================"
 echo "  Full Waybill Workflow"
@@ -118,13 +153,53 @@ echo ""
 if [ "${SHIPPING_ENABLED}" -eq 1 ]; then
     echo "Step 1: Shipping orders (setting package count)..."
     echo "----------------------------------------"
-    python scripts/ship_orders_api.py --verbose --since-days "${LOOKBACK_DAYS}"
-
-    if [ $? -ne 0 ]; then
-        echo ""
-        echo "WARNING: Ship orders encountered errors (see above)"
-        echo "Continuing to next step..."
+    SHIP_STORES="${KASPI_SHIP_STORES:-Universal AcmeWear 11KZ Store-C STORE-B}"
+    if [ "${SHIP_STORES}" = "ALL" ]; then
+        SHIP_STORES="Universal AcmeWear 11KZ Store-C STORE-B"
     fi
+    ASSEMBLE_DIR="${DATA_ROOT}/excel_ui/assemble_per_store"
+    for STORE in ${SHIP_STORES}; do
+        STORE_LABEL=""
+        SCRIPT_PATH=""
+        case "${STORE}" in
+            Universal|UNIVERSAL)
+                STORE_LABEL="Universal"
+                SCRIPT_PATH="${ASSEMBLE_DIR}/run_assemble_universal.command"
+                ;;
+            AcmeWear|ACMEWEAR)
+                STORE_LABEL="AcmeWear"
+                SCRIPT_PATH="${ASSEMBLE_DIR}/run_assemble_acmewear.command"
+                ;;
+            11KZ|store-d|11kZ)
+                STORE_LABEL="11KZ"
+                SCRIPT_PATH="${ASSEMBLE_DIR}/run_assemble_store-d.command"
+                ;;
+            Store-C|MELVIS)
+                STORE_LABEL="Store-C"
+                SCRIPT_PATH="${ASSEMBLE_DIR}/run_assemble_store-c.command"
+                ;;
+            STORE-B|STOREB|Mgroup)
+                STORE_LABEL="STORE-B"
+                SCRIPT_PATH="${ASSEMBLE_DIR}/run_assemble_storeb.command"
+                ;;
+            *)
+                echo "WARNING: Unknown store in KASPI_SHIP_STORES: ${STORE}. Skipping."
+                continue
+                ;;
+        esac
+        echo ""
+        echo "Shipping store: ${STORE_LABEL}"
+        if [ -x "${SCRIPT_PATH}" ]; then
+            SKIP_PREFLIGHT=1 SKIP_WAIT=1 "${SCRIPT_PATH}"
+        else
+            python scripts/ship_orders_api.py --verbose --since-days "${LOOKBACK_DAYS}" --store "${STORE_LABEL}"
+        fi
+        if [ $? -ne 0 ]; then
+            echo ""
+            echo "WARNING: Ship orders encountered errors for ${STORE_LABEL} (see above)"
+            echo "Continuing to next store..."
+        fi
+    done
 
     echo ""
 else

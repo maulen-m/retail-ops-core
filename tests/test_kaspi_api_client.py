@@ -234,6 +234,13 @@ class TestRequestBuilding:
         assert headers['Content-Type'] == 'application/vnd.api+json'
         assert headers['Accept'] == 'application/vnd.api+json'
 
+    def test_headers_include_merchant_uid_when_set(self, mock_env):
+        """Test that merchant UID header is included when configured."""
+        with patch.dict(os.environ, {'KASPI_MERCHANT_UID_UNIVERSAL': '30000001'}, clear=False):
+            client = KaspiAPIClient(store_code='UNIVERSAL')
+            headers = client._get_headers()
+            assert headers.get('X-Merchant-Uid') == '30000001'
+
 
 # =============================================================================
 # DATE CONVERSION TESTS
