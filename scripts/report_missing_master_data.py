@@ -89,24 +89,43 @@ def get_missing_master_data(
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
+    # Detect available columns for compatibility across schema versions
+    sku_cols = {row[1] for row in conn.execute("PRAGMA table_info(dim_sku)").fetchall()}
+    has_sku_id = "sku_id" in sku_cols
+    has_price = "kaspi_price_kzt" in sku_cols
+    has_supplier = "supplier_code" in sku_cols
+    has_avg_price = "avg_sell_price_kzt_used" in sku_cols
+    has_price_missing_flag = "price_missing_flag" in sku_cols
+
+    sku_id_expr = "s.sku_id" if has_sku_id else "COALESCE(MIN(ss.sku_id), s.sku_key)"
+    price_expr = (
+        "s.kaspi_price_kzt" if has_price
+        else ("s.avg_sell_price_kzt_used" if has_avg_price else "0")
+    )
+    supplier_expr = "s.supplier_code" if has_supplier else "NULL"
+    price_missing_flag_expr = "s.price_missing_flag" if has_price_missing_flag else "NULL"
+
     report = MissingDataReport(report_date=date.today().isoformat())
 
     # Get all active SKUs with their data
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT
             s.sku_key,
-            s.sku_id,
+            {sku_id_expr} as sku_id,
             s.model as product_name,
             s.weight_kg,
             s.base_cost_cny,
             COALESCE(s.cogs_kzt, 0) as cogs_kzt,
-            COALESCE(s.kaspi_price_kzt, 0) as kaspi_price_kzt,
-            s.supplier_code,
+            COALESCE({price_expr}, 0) as kaspi_price_kzt,
+            {supplier_expr} as supplier_code,
+            {price_missing_flag_expr} as price_missing_flag,
             COALESCE(de.d_final, m.d30, 0) as daily_demand
         FROM dim_sku s
+        LEFT JOIN dim_sku_size ss ON s.sku_key = ss.sku_key
         LEFT JOIN fact_demand_estimates de ON s.sku_key = de.sku_key
         LEFT JOIN fact_sku_metrics m ON s.sku_key = m.sku_key
         WHERE s.active_flag = 1
+        GROUP BY s.sku_key
     """).fetchall()
 
     report.total_skus_checked = len(rows)
@@ -124,13 +143,16 @@ def get_missing_master_data(
             missing.append('cost')
             report.missing_cost += 1
 
-        # Check price
-        if not row['kaspi_price_kzt'] or row['kaspi_price_kzt'] <= 0:
+        # Check price (prefer price_missing_flag when present)
+        if has_price_missing_flag and row['price_missing_flag'] == 1:
+            missing.append('price')
+            report.missing_price += 1
+        elif not row['kaspi_price_kzt'] or row['kaspi_price_kzt'] <= 0:
             missing.append('price')
             report.missing_price += 1
 
         # Check supplier
-        if not row['supplier_code']:
+        if has_supplier and not row['supplier_code']:
             missing.append('supplier')
             report.missing_supplier += 1
 

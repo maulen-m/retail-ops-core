@@ -66,6 +66,7 @@ used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in
 - Delivery fees must use the **matrix lookup** (v8). No legacy tiers.
 - VAT = **0.04** is enforced in Net_rev_unit.
 - All formulas follow `Master_Inventory_Rules_v8.md`.
+- Kaspi `Артикул` embeds `sku_key` at the beginning. Parsers must strip trailing size/id tokens and use the prefix as `SKU_key` (and `SKU_ID = SKU_key + size` when size is present).
 
 ---
 

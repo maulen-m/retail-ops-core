@@ -81,6 +81,35 @@ SIZE_PATTERNS = {
     r"\b(\d{2})\b(?![\d/])": lambda m: m.group(1),  # standalone 48, 50, etc.
 }
 
+SIZE_TOKENS = {
+    "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL",
+    "ONE_SIZE", "ONESIZE", "OS",
+}
+
+
+def _looks_like_size_token(token: str) -> bool:
+    """Heuristic for suffix tokens that encode size info in Артикул."""
+    if not token:
+        return False
+    t = token.strip().strip("()")
+    if not t:
+        return False
+    t_upper = t.upper()
+    if t_upper in SIZE_TOKENS:
+        return True
+    if "/" in t_upper:
+        if any(size in t_upper for size in SIZE_TOKENS):
+            return True
+        if any(ch.isdigit() for ch in t_upper) and any(ch.isalpha() for ch in t_upper):
+            return True
+    if t_upper.isdigit() and len(t_upper) in (2, 3):
+        return True
+    if "-" in t_upper:
+        parts = [p for p in t_upper.split("-") if p]
+        if parts and all(p.isdigit() for p in parts):
+            return True
+    return False
+
 
 def extract_sku_from_article(
     kaspi_article: str,
@@ -116,7 +145,8 @@ def extract_sku_from_article(
     if not kaspi_article:
         return result
 
-    article = str(kaspi_article).strip().upper()
+    article_raw = str(kaspi_article).strip()
+    article = article_raw.upper()
     offer_text = str(kaspi_offer or "").upper()
 
     # Try to detect product type from article patterns
@@ -134,9 +164,41 @@ def extract_sku_from_article(
     my_size = normalize_size(my_size_raw, product_type=result["product_type"])
     result["my_size"] = my_size
 
+    # SKU_key is embedded at the beginning of Артикул
+    raw_tokens = [t for t in article_raw.split("_") if t]
+    upper_tokens = [t.upper() for t in raw_tokens]
+    size_token = None
+    while upper_tokens:
+        token = upper_tokens[-1].strip()
+        if not token:
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        token_stripped = token.strip("()")
+        if _looks_like_size_token(token_stripped):
+            size_token = raw_tokens[-1]
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        if token_stripped.isdigit() and len(token_stripped) >= 4:
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        break
+
+    if raw_tokens and len(raw_tokens) >= 2:
+        candidate = "_".join(raw_tokens)
+        result["sku_key"] = candidate
+        if not result["my_size"] and size_token:
+            size_norm = normalize_size(size_token, product_type=result["product_type"])
+            result["my_size"] = size_norm or size_token
+        if result["my_size"]:
+            result["sku_id"] = f"{result['sku_key']}_{result['my_size']}"
+        return result
+
     # If the article looks like our SKU format, use it directly
-    sku_pattern = r"^([A-Z]+_[A-Z]+_[A-Z]+_[A-Z0-9]+_[A-Z]+)(?:_([A-Z0-9]+))?$"
-    sku_match = re.match(sku_pattern, article)
+    sku_pattern = r"^([A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+)(?:_([A-Za-z0-9-]+))?$"
+    sku_match = re.match(sku_pattern, article_raw)
     if sku_match:
         result["sku_key"] = sku_match.group(1)
         if sku_match.group(2):
@@ -145,7 +207,7 @@ def extract_sku_from_article(
             if size_norm:
                 result["sku_id"] = f"{result['sku_key']}_{size_norm}"
             else:
-                result["sku_id"] = article
+                result["sku_id"] = article_raw
         elif my_size:
             result["sku_id"] = f"{result['sku_key']}_{my_size}"
         return result

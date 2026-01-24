@@ -241,6 +241,31 @@ def _extract_size_from_article(article: str) -> Optional[str]:
     return None
 
 
+def _looks_like_size_token(token: str) -> bool:
+    """Heuristic for suffix tokens that encode size info in Артикул."""
+    if not token:
+        return False
+    t = token.strip().strip("()")
+    if not t:
+        return False
+    t_upper = t.upper()
+    size_tokens = {"XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "ONE_SIZE", "ONESIZE", "OS"}
+    if t_upper in size_tokens:
+        return True
+    if "/" in t_upper:
+        if any(size in t_upper for size in size_tokens):
+            return True
+        if any(ch.isdigit() for ch in t_upper) and any(ch.isalpha() for ch in t_upper):
+            return True
+    if t_upper.isdigit() and len(t_upper) in (2, 3):
+        return True
+    if "-" in t_upper:
+        parts = [p for p in t_upper.split("-") if p]
+        if parts and all(p.isdigit() for p in parts):
+            return True
+    return False
+
+
 def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
     """
     Extract SKU components from article and/or kaspi name.
@@ -253,7 +278,8 @@ def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
     if not article:
         return result
 
-    article = str(article).upper().strip()
+    article_raw = str(article).strip()
+    article = article_raw.upper()
 
     # Extract size first
     my_size = _extract_size_from_article(article)
@@ -261,16 +287,46 @@ def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
         my_size = _extract_size_from_article(kaspi_name)
     result['my_size'] = my_size
 
+    # SKU_key is embedded at the beginning of Артикул
+    raw_tokens = [t for t in article_raw.split("_") if t]
+    upper_tokens = [t.upper() for t in raw_tokens]
+    size_token = None
+    while upper_tokens:
+        token = upper_tokens[-1].strip()
+        if not token:
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        token_stripped = token.strip("()")
+        if _looks_like_size_token(token_stripped):
+            size_token = raw_tokens[-1]
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        if token_stripped.isdigit() and len(token_stripped) >= 4:
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        break
+
+    if raw_tokens and len(raw_tokens) >= 2:
+        result['sku_key'] = "_".join(raw_tokens)
+        if not result.get('my_size') and size_token:
+            result['my_size'] = size_token
+        if result.get('my_size'):
+            result['sku_id'] = f"{result['sku_key']}_{result['my_size']}"
+        return result
+
     # Check if article is already in our SKU format
     # Pattern: TYPE_LINE_GENDER_MODEL_COLOR or TYPE_LINE_GENDER_MODEL_COLOR_SIZE
-    sku_pattern = r'^([A-Z]+_[A-Z]+_[A-Z]+_[A-Z0-9]+_[A-Z]+)(?:_([A-Z0-9]+))?$'
-    match = re.match(sku_pattern, article)
+    sku_pattern = r'^([A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+)(?:_([A-Za-z0-9-]+))?$'
+    match = re.match(sku_pattern, article_raw)
 
     if match:
         result['sku_key'] = match.group(1)
         if match.group(2):
             result['my_size'] = match.group(2)
-            result['sku_id'] = article
+            result['sku_id'] = article_raw
         elif my_size:
             result['sku_id'] = f"{result['sku_key']}_{my_size}"
 

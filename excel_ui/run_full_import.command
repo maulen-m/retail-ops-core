@@ -168,6 +168,42 @@ PY
     fi
 fi
 
+# Preflight: SKU prefix parse sanity check (Артикул → SKU_key)
+if [ -f "excel_ui/ActiveOrders/ActiveOrders.xlsx" ]; then
+    echo ""
+    echo "Preflight: SKU prefix parse sanity check..."
+    echo "----------------------------------------"
+    python - <<'PY'
+import pandas as pd
+from core.parsers.kaspi_parser import extract_sku_from_article
+
+path = "excel_ui/ActiveOrders/ActiveOrders.xlsx"
+df = pd.read_excel(path)
+if "Артикул" not in df.columns:
+    print("ActiveOrders: no Артикул column; skipping SKU parse check.")
+    raise SystemExit(0)
+
+offer_col = "Название товара в Kaspi Магазине"
+offers = df[offer_col] if offer_col in df.columns else [None] * len(df)
+
+total = len(df)
+mapped = 0
+for article, offer in zip(df["Артикул"], offers):
+    parsed = extract_sku_from_article(article, offer)
+    if parsed.get("sku_key"):
+        mapped += 1
+
+rate = (mapped / total) if total else 0
+print(f"SKU parsed: {mapped}/{total} ({rate:.0%})")
+if total > 0 and rate < 0.7:
+    print("WARNING: Low SKU parse rate. Check Артикул formatting / SKU prefix rule.")
+PY
+    if [ $? -ne 0 ]; then
+        echo "WARNING: SKU parse sanity check failed."
+        WARNINGS+=("SKU parse sanity check failed. Fix: verify Артикул format or parser logic.")
+    fi
+fi
+
 # Step 1b: Sync DB from API (order lifecycle)
 echo ""
 echo "Step 1b: Syncing DB from API..."

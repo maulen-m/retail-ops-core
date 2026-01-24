@@ -61,6 +61,13 @@ logs/
 exports/
 reports/
 
+# Excel exports (generated)
+*_raw.xlsx
+*_econ.xlsx
+excel_ui/ActiveOrders/on_delivery/
+excel_ui/ActiveOrders/on_delivery/**/*.xlsx
+excel_ui/ActiveOrders/*.xlsx
+
 # Backups
 backups/
 archives/
