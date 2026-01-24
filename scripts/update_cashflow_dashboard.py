@@ -171,15 +171,31 @@ def _load_sync_age_hours(conn: sqlite3.Connection) -> float | None:
     return max(ages) if ages else None
 
 
+def _load_manual_balance_dates(conn: sqlite3.Connection) -> set[str]:
+    if not _table_exists(conn, "fact_cashflow_events"):
+        return set()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT event_date
+        FROM fact_cashflow_events
+        WHERE source = 'MANUAL'
+          AND event_type IN ('BALANCE_CHECK', 'OPENING_BALANCE')
+        """
+    ).fetchall()
+    return {row[0] for row in rows if row and row[0]}
+
+
 def _write_trust_report(
     path: Path,
     last_statement_date: str | None,
     sync_age_hours: float | None,
     rows: list[dict],
+    manual_dates: set[str],
 ) -> None:
     statement_days = 0
     modelled_days = 0
     forecast_days = 0
+    manual_days = 0
     last_statement = None
     if last_statement_date:
         try:
@@ -192,6 +208,8 @@ def _write_trust_report(
             forecast_days += 1
         elif last_statement and row_date <= last_statement:
             statement_days += 1
+        elif row["date"] in manual_dates:
+            manual_days += 1
         else:
             modelled_days += 1
 
@@ -200,6 +218,7 @@ def _write_trust_report(
         "",
         f"- last_statement_date: {last_statement_date or 'NONE'}",
         f"- statement_backed_days: {statement_days}",
+        f"- manual_balance_days: {manual_days}",
         f"- modelled_days: {modelled_days}",
         f"- forecast_days: {forecast_days}",
         f"- order_sync_age_hours: {sync_age_hours if sync_age_hours is not None else 'UNKNOWN'}",
@@ -1312,6 +1331,7 @@ def _render_html(rows: list[dict], path: Path, meta: dict) -> None:
       const syncAge = meta.order_sync_age_hours !== null && meta.order_sync_age_hours !== undefined
         ? (meta.order_sync_age_hours.toFixed(1) + 'h')
         : 'UNKNOWN';
+      const manualDate = meta.last_manual_balance_date || 'NONE';
       const baseMin = meta.min_cash_base || {{}};
       const consMin = meta.min_cash_conservative || baseMin;
       trustSummary.innerHTML = `
@@ -1322,6 +1342,10 @@ def _render_html(rows: list[dict], path: Path, meta: dict) -> None:
         <div class="trust-card">
           <div class="trust-label pixel-font">ORDER SYNC AGE</div>
           <div class="trust-value monospace-font">${{syncAge}}</div>
+        </div>
+        <div class="trust-card">
+          <div class="trust-label pixel-font">LAST BALANCE CHECK</div>
+          <div class="trust-value monospace-font">${{manualDate}}<span class="badge">MANUAL</span></div>
         </div>
         <div class="trust-card">
           <div class="trust-label pixel-font">MIN CASH (BASE)</div>
@@ -2226,6 +2250,7 @@ def main() -> int:
         conn.row_factory = sqlite3.Row
         last_statement_date = _load_last_statement_date(conn)
         sync_age_hours = _load_sync_age_hours(conn)
+        manual_dates = _load_manual_balance_dates(conn)
         resolved_start, resolved_end = _resolve_start_end(conn)
         history_end = cutoff
         if _table_exists(conn, "fact_cashflow_events"):
@@ -2314,6 +2339,8 @@ def main() -> int:
             trust = "FORECAST_MODEL"
         elif last_statement and row_date <= last_statement:
             trust = "STATEMENT_ACTUAL"
+        elif row["date"] in manual_dates:
+            trust = "MANUAL"
         else:
             trust = "ORDER_MODELLED"
         row["trust"] = trust
@@ -2321,15 +2348,17 @@ def main() -> int:
     min_base = _min_cash(all_rows) if all_rows else {"date": None, "cash_close": 0}
     min_cons = _min_cash(all_rows_conservative) if all_rows_conservative else min_base
     trust_path = Path(str(TRUST_REPORT_PATH).format(label=cutoff.isoformat()))
-    _write_trust_report(trust_path, last_statement_date, sync_age_hours, all_rows)
+    _write_trust_report(trust_path, last_statement_date, sync_age_hours, all_rows, manual_dates)
 
     _write_csv(all_rows, CSV_PATH)
     _write_min_cash(all_rows, all_rows_conservative, MIN_CASH_PATH)
+    last_manual = max(manual_dates) if manual_dates else None
     _render_html(
         all_rows,
         HTML_PATH,
         {
             "last_statement_date": last_statement_date,
+            "last_manual_balance_date": last_manual,
             "order_sync_age_hours": sync_age_hours,
             "min_cash_base": min_base,
             "min_cash_conservative": min_cons,
