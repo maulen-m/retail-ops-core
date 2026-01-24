@@ -233,10 +233,11 @@ def _write_trust_report(
     path.write_text("\n".join(lines) + "\n")
 
 
-def _render_html(rows: list[dict], path: Path, meta: dict) -> None:
+def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, meta: dict) -> None:
     _backup_file(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(rows)
+    data_conservative = json.dumps(rows_conservative)
     meta_json = json.dumps(meta)
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1207,6 +1208,13 @@ def _render_html(rows: list[dict], path: Path, meta: dict) -> None:
           </label>
         </div>
         <div class="control-group">
+          <label class="control-label pixel-font">SCENARIO</label>
+          <select id="scenarioSelect" class="retro-select">
+            <option value="base" selected>BASE</option>
+            <option value="conservative">CONSERVATIVE</option>
+          </select>
+        </div>
+        <div class="control-group">
           <label class="retro-checkbox">
             <input type="checkbox" id="statementToggle">
             <span class="checkbox-custom"></span>
@@ -1246,7 +1254,9 @@ def _render_html(rows: list[dict], path: Path, meta: dict) -> None:
     // ========================================
     // DATA INJECTION
     // ========================================
-    const rows = {data};
+    const rowsBase = {data};
+    const rowsConservative = {data_conservative};
+    let rows = rowsBase;
     const meta = {meta_json};
 
     // ========================================
@@ -1258,12 +1268,13 @@ def _render_html(rows: list[dict], path: Path, meta: dict) -> None:
     const statementToggle = document.getElementById('statementToggle');
     const rangeSelect = document.getElementById('rangeSelect');
     const storeSelect = document.getElementById('storeSelect');
+    const scenarioSelect = document.getElementById('scenarioSelect');
     const themeToggle = document.getElementById('themeToggle');
     const body = document.body;
     const chartCanvas = document.getElementById('cashChart');
     const tooltip = document.getElementById('chartTooltip');
 
-    const storeCodes = Array.from(new Set(rows.map(r => r.store_code).filter(Boolean)));
+    const storeCodes = Array.from(new Set(rowsBase.map(r => r.store_code).filter(Boolean)));
     const storeOptions = ['ALL', ...storeCodes];
     storeSelect.innerHTML = storeOptions.map(code => `<option value="${{code}}">${{code}}</option>`).join('');
     storeSelect.disabled = storeOptions.length <= 1;
@@ -2111,6 +2122,10 @@ def _render_html(rows: list[dict], path: Path, meta: dict) -> None:
     statementToggle.addEventListener('change', renderAll);
     storeSelect.addEventListener('change', renderAll);
     rangeSelect.addEventListener('change', renderAll);
+    scenarioSelect.addEventListener('change', () => {{
+      rows = scenarioSelect.value === 'conservative' ? rowsConservative : rowsBase;
+      renderAll();
+    }});
 
     window.addEventListener('resize', () => {{
       renderChart();
@@ -2355,6 +2370,7 @@ def main() -> int:
     last_manual = max(manual_dates) if manual_dates else None
     _render_html(
         all_rows,
+        all_rows_conservative,
         HTML_PATH,
         {
             "last_statement_date": last_statement_date,
