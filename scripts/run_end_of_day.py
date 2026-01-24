@@ -576,6 +576,11 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=True
         ),
         PipelineStep(
+            name="5a2. Cashflow PO Preflight",
+            script="cashflow_preflight_po.py",
+            required=True,
+        ),
+        PipelineStep(
             name="5b. Validate Inventory Cost Drift",
             script="validate_inventory_cost_drift.py",
             required=True
