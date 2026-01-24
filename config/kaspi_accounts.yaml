@@ -16,3 +16,6 @@ kaspi:
     - name: "STORE-B"
       account_id: "30000002"
       auth: "${KASPI_TOKEN_STOREB}"
+    - name: "MELVIS"
+      account_id: "30362323"
+      auth: "${KASPI_TOKEN_STOREB}"
