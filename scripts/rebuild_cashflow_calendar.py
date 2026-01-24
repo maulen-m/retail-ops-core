@@ -214,6 +214,22 @@ def _build_sales_aggregates(
     return sales_by_date, cogs_by_date
 
 
+def _inventory_anchor_date(conn: sqlite3.Connection) -> date | None:
+    if not _table_exists(conn, "fact_cashflow_events"):
+        return None
+    row = conn.execute(
+        """
+        SELECT MAX(event_date) as max_date
+        FROM fact_cashflow_events
+        WHERE account = 'INVENTORY_COST'
+          AND event_type IN ('INVENTORY_OPEN', 'OPENING_BALANCE')
+        """
+    ).fetchone()
+    if row and row["max_date"]:
+        return date.fromisoformat(row["max_date"])
+    return None
+
+
 def _build_system_events(
     conn: sqlite3.Connection,
     start_date: date,
@@ -234,6 +250,7 @@ def _build_system_events(
         ).fetchone()
         if row and row["max_date"]:
             last_statement_date = date.fromisoformat(row["max_date"])
+    inventory_anchor_date = _inventory_anchor_date(conn)
     events: list[dict] = []
     for sale_date, amount in sales_by_date.items():
         if amount == 0:
@@ -274,6 +291,8 @@ def _build_system_events(
         )
     for sale_date, amount in cogs_by_date.items():
         if amount == 0:
+            continue
+        if inventory_anchor_date and date.fromisoformat(sale_date) < inventory_anchor_date:
             continue
         events.append(
             {
@@ -413,6 +432,17 @@ def rebuild_cashflow_calendar(
 
         system_events = _build_system_events(conn, start_date, end_date, fx_rates, run_id)
         manual_events = _fetch_manual_events(conn, start_date, end_date)
+        inventory_anchor_date = _inventory_anchor_date(conn)
+        if inventory_anchor_date:
+            anchor_key = inventory_anchor_date.isoformat()
+            manual_events = [
+                e
+                for e in manual_events
+                if not (
+                    e.get("account") == "INVENTORY_COST"
+                    and _normalize_date(e.get("event_date")) < anchor_key
+                )
+            ]
         all_events = manual_events + system_events
 
         if apply:

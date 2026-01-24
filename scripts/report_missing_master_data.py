@@ -40,6 +40,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.tracking.run_tracker import RunTracker
 from core.alerts.error_alerts import send_error_alert, send_success_alert
 
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone() is not None
+
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 EXPORTS_DIR = PROJECT_ROOT / "exports"
 
@@ -96,8 +103,14 @@ def get_missing_master_data(
     has_supplier = "supplier_code" in sku_cols
     has_avg_price = "avg_sell_price_kzt_used" in sku_cols
     has_price_missing_flag = "price_missing_flag" in sku_cols
+    has_dim_sku_size = _table_exists(conn, "dim_sku_size")
 
-    sku_id_expr = "s.sku_id" if has_sku_id else "COALESCE(MIN(ss.sku_id), s.sku_key)"
+    if has_sku_id:
+        sku_id_expr = "s.sku_id"
+    elif has_dim_sku_size:
+        sku_id_expr = "COALESCE(MIN(ss.sku_id), s.sku_key)"
+    else:
+        sku_id_expr = "s.sku_key"
     price_expr = (
         "s.kaspi_price_kzt" if has_price
         else ("s.avg_sell_price_kzt_used" if has_avg_price else "0")
@@ -108,6 +121,7 @@ def get_missing_master_data(
     report = MissingDataReport(report_date=date.today().isoformat())
 
     # Get all active SKUs with their data
+    size_join = "LEFT JOIN dim_sku_size ss ON s.sku_key = ss.sku_key" if has_dim_sku_size else ""
     rows = conn.execute(f"""
         SELECT
             s.sku_key,
@@ -121,7 +135,7 @@ def get_missing_master_data(
             {price_missing_flag_expr} as price_missing_flag,
             COALESCE(de.d_final, m.d30, 0) as daily_demand
         FROM dim_sku s
-        LEFT JOIN dim_sku_size ss ON s.sku_key = ss.sku_key
+        {size_join}
         LEFT JOIN fact_demand_estimates de ON s.sku_key = de.sku_key
         LEFT JOIN fact_sku_metrics m ON s.sku_key = m.sku_key
         WHERE s.active_flag = 1
