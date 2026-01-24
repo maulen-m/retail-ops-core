@@ -230,12 +230,35 @@ def _inventory_anchor_date(conn: sqlite3.Connection) -> date | None:
     return None
 
 
+def _has_order_modelled_events(
+    conn: sqlite3.Connection,
+    start_date: date,
+    end_date: date,
+) -> bool:
+    if not _table_exists(conn, "fact_cashflow_events"):
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM fact_cashflow_events
+        WHERE event_date BETWEEN ? AND ?
+          AND source = 'ORDER_MODELLED'
+          AND event_type IN ('SALE_ACCRUED', 'PAYOUT_EXPECTED', 'REFUND')
+        LIMIT 1
+        """,
+        (start_date.isoformat(), end_date.isoformat()),
+    ).fetchone()
+    return row is not None
+
+
 def _build_system_events(
     conn: sqlite3.Connection,
     start_date: date,
     end_date: date,
     fx_rates,
     run_id: str,
+    *,
+    skip_sales: bool = False,
 ) -> list[dict]:
     sales_by_date, cogs_by_date = _build_sales_aggregates(conn, start_date, end_date, fx_rates)
     payout_model = load_payout_model()
@@ -252,43 +275,44 @@ def _build_system_events(
             last_statement_date = date.fromisoformat(row["max_date"])
     inventory_anchor_date = _inventory_anchor_date(conn)
     events: list[dict] = []
-    for sale_date, amount in sales_by_date.items():
-        if amount == 0:
-            continue
-        events.append(
-            {
-                "event_date": sale_date,
-                "event_type": "SALE_ACCRUED",
-                "account": "RECEIVABLES",
-                "amount_kzt": round(amount, 2),
-                "source": "ORDER_MODELLED",
-                "run_id": run_id,
-            }
-        )
-        sale_day = date.fromisoformat(sale_date)
-        if last_statement_date and sale_day <= last_statement_date:
-            continue
-        payout_date = sale_day + timedelta(days=payout_model.base_lag_days)
-        events.append(
-            {
-                "event_date": payout_date.isoformat(),
-                "event_type": "PAYOUT_EXPECTED",
-                "account": "CASH",
-                "amount_kzt": round(amount, 2),
-                "source": "ORDER_MODELLED",
-                "run_id": run_id,
-            }
-        )
-        events.append(
-            {
-                "event_date": payout_date.isoformat(),
-                "event_type": "PAYOUT_EXPECTED",
-                "account": "RECEIVABLES",
-                "amount_kzt": round(-abs(amount), 2),
-                "source": "ORDER_MODELLED",
-                "run_id": run_id,
-            }
-        )
+    if not skip_sales:
+        for sale_date, amount in sales_by_date.items():
+            if amount == 0:
+                continue
+            events.append(
+                {
+                    "event_date": sale_date,
+                    "event_type": "SALE_ACCRUED",
+                    "account": "RECEIVABLES",
+                    "amount_kzt": round(amount, 2),
+                    "source": "SYSTEM",
+                    "run_id": run_id,
+                }
+            )
+            sale_day = date.fromisoformat(sale_date)
+            if last_statement_date and sale_day <= last_statement_date:
+                continue
+            payout_date = sale_day + timedelta(days=payout_model.base_lag_days)
+            events.append(
+                {
+                    "event_date": payout_date.isoformat(),
+                    "event_type": "PAYOUT_EXPECTED",
+                    "account": "CASH",
+                    "amount_kzt": round(amount, 2),
+                    "source": "SYSTEM",
+                    "run_id": run_id,
+                }
+            )
+            events.append(
+                {
+                    "event_date": payout_date.isoformat(),
+                    "event_type": "PAYOUT_EXPECTED",
+                    "account": "RECEIVABLES",
+                    "amount_kzt": round(-abs(amount), 2),
+                    "source": "SYSTEM",
+                    "run_id": run_id,
+                }
+            )
     for sale_date, amount in cogs_by_date.items():
         if amount == 0:
             continue
@@ -300,7 +324,7 @@ def _build_system_events(
                 "event_type": "COGS_RECOGNIZED",
                 "account": "INVENTORY_COST",
                 "amount_kzt": round(-abs(amount), 2),
-                "source": "ORDER_MODELLED",
+                "source": "SYSTEM",
                 "run_id": run_id,
             }
         )
@@ -320,7 +344,7 @@ def _fetch_manual_events(
                ref_type, ref_id, notes, source, run_id, event_hash
         FROM fact_cashflow_events
         WHERE event_date BETWEEN ? AND ?
-          AND NOT (source IN ('SYSTEM', 'ORDER_MODELLED') AND event_type IN ('SALE_ACCRUED', 'COGS_RECOGNIZED', 'PAYOUT_EXPECTED'))
+          AND NOT (source = 'SYSTEM' AND event_type IN ('SALE_ACCRUED', 'COGS_RECOGNIZED', 'PAYOUT_EXPECTED'))
         """,
         (start_date.isoformat(), end_date.isoformat()),
     ).fetchall()
@@ -430,7 +454,15 @@ def rebuild_cashflow_calendar(
         if not _table_exists(conn, "fact_cashflow_events"):
             raise RuntimeError("fact_cashflow_events missing; run migrate_018_cashflow_calendar.py")
 
-        system_events = _build_system_events(conn, start_date, end_date, fx_rates, run_id)
+        skip_sales = _has_order_modelled_events(conn, start_date, end_date)
+        system_events = _build_system_events(
+            conn,
+            start_date,
+            end_date,
+            fx_rates,
+            run_id,
+            skip_sales=skip_sales,
+        )
         manual_events = _fetch_manual_events(conn, start_date, end_date)
         inventory_anchor_date = _inventory_anchor_date(conn)
         if inventory_anchor_date:
@@ -453,7 +485,7 @@ def rebuild_cashflow_calendar(
                 """
                 DELETE FROM fact_cashflow_events
                 WHERE event_date BETWEEN ? AND ?
-                  AND source IN ('SYSTEM', 'ORDER_MODELLED')
+                  AND source = 'SYSTEM'
                   AND event_type IN ('SALE_ACCRUED', 'COGS_RECOGNIZED', 'PAYOUT_EXPECTED')
                 """,
                 (start_date.isoformat(), end_date.isoformat()),

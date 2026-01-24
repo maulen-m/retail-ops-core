@@ -25,6 +25,7 @@ from scripts.rebuild_cashflow_calendar import (
     compute_daily_rows,
     _fetch_manual_events,
     _build_system_events,
+    _has_order_modelled_events,
     _resolve_start_end,
 )
 from core.config.business_params import get_fx_rates
@@ -2243,7 +2244,15 @@ def main() -> int:
         if args.rebuild or not rows:
             fx_rates = get_fx_rates(history_end, db_path=args.db)
             manual = _fetch_manual_events(conn, history_start, history_end)
-            system = _build_system_events(conn, history_start, history_end, fx_rates, run_id)
+            skip_sales = _has_order_modelled_events(conn, history_start, history_end)
+            system = _build_system_events(
+                conn,
+                history_start,
+                history_end,
+                fx_rates,
+                run_id,
+                skip_sales=skip_sales,
+            )
             rows = compute_daily_rows(manual + system, history_start, history_end, run_id=run_id)
             for r in rows:
                 r["is_forecast"] = False

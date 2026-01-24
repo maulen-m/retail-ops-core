@@ -477,6 +477,13 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=True,
         ),
         PipelineStep(
+            name="2b2. Translate Orders to Cashflow",
+            script="translate_orders_to_cashflow_events.py",
+            args=["--since", api_since, "--until", cutoff_date.isoformat(), "--apply"],
+            required=True,
+            skip_on_dry_run=True,
+        ),
+        PipelineStep(
             name="2c. Sync PO Arrivals to Ledger (auto)",
             script="sync_po_arrivals_to_ledger.py",
             args=["--snapshot-date", cutoff_date.isoformat(), "--apply"],
