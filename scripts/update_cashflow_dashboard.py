@@ -379,6 +379,26 @@ def _render_html(rows: list[dict], path: Path) -> None:
       margin-bottom: 12px;
     }}
 
+    /* Header flex container for KEY METRICS and Today date */
+    .metrics-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }}
+
+    .today-block {{
+      background: var(--bg-card);
+      border: var(--pixel-border) solid var(--border-primary);
+      padding: 8px 16px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      box-shadow: 2px 2px 0 var(--border-secondary);
+      white-space: nowrap;
+    }}
+
     .summary-grid {{
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -388,7 +408,7 @@ def _render_html(rows: list[dict], path: Path) -> None:
     .metric-card {{
       background: var(--bg-card);
       border: var(--pixel-border) solid var(--border-primary);
-      padding: 16px;
+      padding: 12px;
       position: relative;
       box-shadow:
         4px 4px 0 var(--border-secondary),
@@ -418,12 +438,12 @@ def _render_html(rows: list[dict], path: Path) -> None:
     }}
 
     .card-label {{
-      font-size: 8px;
+      font-size: 6px;
       color: var(--text-dim);
     }}
 
     .trend-indicator {{
-      font-size: 14px;
+      font-size: 10px;
       font-weight: bold;
     }}
 
@@ -443,7 +463,7 @@ def _render_html(rows: list[dict], path: Path) -> None:
     }}
 
     .card-value {{
-      font-size: 28px;
+      font-size: 26px;
       font-weight: 400;
       color: var(--text-accent);
       text-shadow: 0 0 8px var(--glow-color);
@@ -455,14 +475,14 @@ def _render_html(rows: list[dict], path: Path) -> None:
     }}
 
     .card-unit {{
-      font-size: 16px;
+      font-size: 15px;
       color: var(--text-dim);
     }}
 
     .card-meta {{
-      font-size: 14px;
+      font-size: 10px;
       color: var(--text-muted);
-      margin-bottom: 8px;
+      margin-bottom: 0;
       display: flex;
       gap: 8px;
       align-items: center;
@@ -481,20 +501,11 @@ def _render_html(rows: list[dict], path: Path) -> None:
     }}
 
     .sparkline {{
-      width: 100%;
-      height: 30px;
-      margin-top: 8px;
-      opacity: 0.8;
+      display: none;
     }}
 
     .warning-badge {{
-      background: var(--warning-color);
-      color: #000;
-      padding: 4px 8px;
-      font-size: 8px;
-      margin-top: 8px;
-      display: inline-block;
-      font-weight: bold;
+      display: none;
     }}
 
     .warning-icon {{
@@ -526,7 +537,7 @@ def _render_html(rows: list[dict], path: Path) -> None:
 
     #cashChart {{
       width: 100%;
-      height: 400px;
+      height: 80px;
       max-width: 1400px;
       display: block;
     }}
@@ -610,6 +621,73 @@ def _render_html(rows: list[dict], path: Path) -> None:
       color: var(--warning-color);
       margin-top: 6px;
       text-align: center;
+    }}
+
+    /* ========================================
+       PERIOD STATISTICS SECTION
+       ======================================== */
+    .stats-section {{
+      margin-bottom: 32px;
+      background: var(--bg-card);
+      border: var(--pixel-border) solid var(--border-primary);
+      padding: 20px;
+      box-shadow: 4px 4px 0 var(--border-secondary);
+    }}
+
+    .stats-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(177px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }}
+
+    .stat-card {{
+      background: var(--bg-table);
+      border: var(--pixel-border) solid var(--border-secondary);
+      padding: 12px;
+      position: relative;
+      box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
+      min-height: 92px;
+    }}
+
+    .stat-card:hover {{
+      transform: translateY(-1px);
+      transition: transform 0.2s ease;
+    }}
+
+    .stat-card.yesterday {{
+      grid-row: 2;
+    }}
+
+    .stat-label {{
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+      display: block;
+    }}
+
+    .stat-value {{
+      font-size: 23px;
+      font-weight: 400;
+      color: var(--text-accent);
+      text-shadow: 0 0 4px var(--glow-color);
+    }}
+
+    .stat-unit {{
+      font-size: 16px;
+      color: var(--text-dim);
+      margin-left: 4px;
+    }}
+
+    .stat-period {{
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }}
+
+    .stat-value.na {{
+      color: var(--text-muted);
+      font-style: italic;
     }}
 
     /* ========================================
@@ -706,6 +784,45 @@ def _render_html(rows: list[dict], path: Path) -> None:
       margin-bottom: 32px;
     }}
 
+    /* Table navigation container */
+    .table-nav-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }}
+
+    .table-nav-buttons {{
+      display: flex;
+      gap: 8px;
+    }}
+
+    .retro-nav-button {{
+      background: var(--bg-card);
+      border: var(--pixel-border) solid var(--border-primary);
+      color: var(--text-primary);
+      padding: 8px 16px;
+      cursor: pointer;
+      font-family: 'Press Start 2P', cursive;
+      font-size: 10px;
+      text-transform: uppercase;
+      transition: all 0.2s;
+      box-shadow: 2px 2px 0 var(--border-secondary);
+    }}
+
+    .retro-nav-button:hover {{
+      transform: translateY(-2px);
+      box-shadow: 4px 4px 0 var(--border-secondary);
+      background: var(--bg-secondary);
+    }}
+
+    .retro-nav-button:active {{
+      transform: translateY(0);
+      box-shadow: 1px 1px 0 var(--border-secondary);
+    }}
+
     .table-wrapper {{
       overflow: auto;
       max-height: 600px;
@@ -714,11 +831,41 @@ def _render_html(rows: list[dict], path: Path) -> None:
       box-shadow: 4px 4px 0 var(--border-secondary);
     }}
 
+    /* Custom scrollbar for table wrapper */
+    .table-wrapper::-webkit-scrollbar {{
+      width: 12px;
+      height: 12px;
+    }}
+
+    .table-wrapper::-webkit-scrollbar-track {{
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-primary);
+    }}
+
+    .table-wrapper::-webkit-scrollbar-thumb {{
+      background: var(--border-primary);
+      border: 2px solid var(--bg-secondary);
+    }}
+
+    .table-wrapper::-webkit-scrollbar-thumb:hover {{
+      background: var(--text-secondary);
+    }}
+
+    .table-wrapper::-webkit-scrollbar-corner {{
+      background: var(--bg-secondary);
+    }}
+
+    /* Firefox scrollbar styling */
+    .table-wrapper {{
+      scrollbar-color: var(--border-primary) var(--bg-secondary);
+      scrollbar-width: thin;
+    }}
+
     .retro-table {{
       width: 100%;
       border-collapse: separate;
       border-spacing: 0;
-      font-size: 16px;
+      font-size: 21px;
     }}
 
     .retro-table thead {{
@@ -815,7 +962,7 @@ def _render_html(rows: list[dict], path: Path) -> None:
       }}
 
       #cashChart {{
-        height: 300px;
+        height: 60px;
       }}
 
       .retro-table {{
@@ -823,7 +970,7 @@ def _render_html(rows: list[dict], path: Path) -> None:
       }}
 
       .card-value {{
-        font-size: 22px;
+        font-size: 20px;
       }}
     }}
   </style>
@@ -850,7 +997,10 @@ def _render_html(rows: list[dict], path: Path) -> None:
 
     <!-- Summary Cards -->
     <section class="summary-container">
-      <div class="section-label pixel-font">KEY METRICS</div>
+      <div class="metrics-header">
+        <div class="section-label pixel-font">KEY METRICS</div>
+        <div class="today-block pixel-font" id="todayDate"></div>
+      </div>
       <div class="summary-grid" id="summary"></div>
     </section>
 
@@ -874,6 +1024,12 @@ def _render_html(rows: list[dict], path: Path) -> None:
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- Period Statistics -->
+    <section class="stats-section">
+      <div class="section-label pixel-font">PERIOD STATISTICS</div>
+      <div class="stats-grid" id="statsGrid"></div>
     </section>
 
     <!-- Tooltip -->
@@ -902,8 +1058,14 @@ def _render_html(rows: list[dict], path: Path) -> None:
 
     <!-- Data Table -->
     <section class="table-section">
-      <div class="section-label pixel-font">DETAILED LEDGER</div>
-      <div class="table-wrapper">
+      <div class="table-nav-header">
+        <div class="section-label pixel-font">DETAILED LEDGER</div>
+        <div class="table-nav-buttons">
+          <button class="retro-nav-button" id="scrollToTop">▲ TOP</button>
+          <button class="retro-nav-button" id="scrollToBottom">▼ BOTTOM</button>
+        </div>
+      </div>
+      <div class="table-wrapper" id="tableWrapper">
         <table id="table" class="retro-table monospace-font"></table>
       </div>
     </section>
@@ -1177,6 +1339,180 @@ def _render_html(rows: list[dict], path: Path) -> None:
     }}
 
     // ========================================
+    // PERIOD STATISTICS CALCULATIONS
+    // ========================================
+    function calculatePeriodStats(rows) {{
+      const actualData = rows.filter(r => !r.is_forecast);
+
+      if (actualData.length === 0) {{
+        return null;
+      }}
+
+      const sortedData = actualData.slice().sort((a, b) =>
+        a.date.localeCompare(b.date)
+      );
+
+      const result = {{
+        yesterday: {{}},
+        avg7d: {{}},
+        avg14d: {{}}
+      }};
+
+      // Yesterday = most recent actual date
+      const yesterday = sortedData[sortedData.length - 1];
+      result.yesterday = {{
+        cash: Number(yesterday.cash_close || 0),
+        receivables: Number(yesterday.receivables_close || 0),
+        cogs: Number(yesterday.cogs_kzt || 0),
+        profit: Number(yesterday.profit_accrual_kzt || 0),
+        soldUnits: 'N/A',
+        date: yesterday.date
+      }};
+
+      // 7-day averages
+      const last7Days = sortedData.slice(-7);
+      if (last7Days.length > 0) {{
+        result.avg7d.receivables = last7Days.reduce((sum, r) =>
+          sum + Number(r.receivables_close || 0), 0) / last7Days.length;
+        result.avg7d.cogs = last7Days.reduce((sum, r) =>
+          sum + Number(r.cogs_kzt || 0), 0) / last7Days.length;
+        result.avg7d.profit = last7Days.reduce((sum, r) =>
+          sum + Number(r.profit_accrual_kzt || 0), 0) / last7Days.length;
+      }}
+
+      // 14-day averages
+      const last14Days = sortedData.slice(-14);
+      if (last14Days.length > 0) {{
+        result.avg14d.receivables = last14Days.reduce((sum, r) =>
+          sum + Number(r.receivables_close || 0), 0) / last14Days.length;
+        result.avg14d.cogs = last14Days.reduce((sum, r) =>
+          sum + Number(r.cogs_kzt || 0), 0) / last14Days.length;
+        result.avg14d.profit = last14Days.reduce((sum, r) =>
+          sum + Number(r.profit_accrual_kzt || 0), 0) / last14Days.length;
+      }}
+
+      return result;
+    }}
+
+    // ========================================
+    // RENDER PERIOD STATISTICS
+    // ========================================
+    function renderPeriodStats(rows) {{
+      const statsGrid = document.getElementById('statsGrid');
+      if (!statsGrid) return;
+
+      const stats = calculatePeriodStats(rows);
+
+      if (!stats) {{
+        statsGrid.innerHTML = '<div class="monospace-font">NO ACTUAL DATA AVAILABLE</div>';
+        return;
+      }}
+
+      statsGrid.innerHTML = `
+        <!-- 7-Day Averages -->
+        <div class="stat-card">
+          <span class="stat-label pixel-font">7D AVG RECEIVABLES</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.avg7d.receivables || 0)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">Last 7 days</div>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label pixel-font">7D AVG COGS</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.avg7d.cogs || 0)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">Last 7 days</div>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label pixel-font">7D AVG PROFIT</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.avg7d.profit || 0)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">Last 7 days</div>
+        </div>
+
+        <!-- 14-Day Averages -->
+        <div class="stat-card">
+          <span class="stat-label pixel-font">14D AVG RECEIVABLES</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.avg14d.receivables || 0)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">Last 14 days</div>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label pixel-font">14D AVG COGS</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.avg14d.cogs || 0)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">Last 14 days</div>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label pixel-font">14D AVG PROFIT</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.avg14d.profit || 0)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">Last 14 days</div>
+        </div>
+
+        <!-- Yesterday's Values -->
+        <div class="stat-card yesterday">
+          <span class="stat-label pixel-font">YESTERDAY CASH</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.yesterday.cash)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">${{stats.yesterday.date}}</div>
+        </div>
+
+        <div class="stat-card yesterday">
+          <span class="stat-label pixel-font">YESTERDAY RECEIVABLES</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.yesterday.receivables)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">${{stats.yesterday.date}}</div>
+        </div>
+
+        <div class="stat-card yesterday">
+          <span class="stat-label pixel-font">YESTERDAY COGS</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.yesterday.cogs)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">${{stats.yesterday.date}}</div>
+        </div>
+
+        <div class="stat-card yesterday">
+          <span class="stat-label pixel-font">YESTERDAY PROFIT</span>
+          <div>
+            <span class="stat-value monospace-font">${{formatKzt(stats.yesterday.profit)}}</span>
+            <span class="stat-unit">KZT</span>
+          </div>
+          <div class="stat-period monospace-font">${{stats.yesterday.date}}</div>
+        </div>
+
+        <div class="stat-card yesterday">
+          <span class="stat-label pixel-font">YESTERDAY SOLD UNITS</span>
+          <div>
+            <span class="stat-value na monospace-font">${{stats.yesterday.soldUnits}}</span>
+          </div>
+          <div class="stat-period monospace-font">${{stats.yesterday.date}}</div>
+        </div>
+      `;
+    }}
+
+    // ========================================
     // CHART RENDERING
     // ========================================
     function renderChart() {{
@@ -1186,13 +1522,13 @@ def _render_html(rows: list[dict], path: Path) -> None:
 
       // Set canvas size
       canvas.width = canvas.offsetWidth;
-      canvas.height = 400;
+      canvas.height = 80;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       if (!data.length) return;
 
-      const padding = {{ top: 40, right: 60, bottom: 60, left: 80 }};
+      const padding = {{ top: 20, right: 40, bottom: 40, left: 60 }};
       const width = canvas.width - padding.left - padding.right;
       const height = canvas.height - padding.top - padding.bottom;
 
@@ -1255,7 +1591,7 @@ def _render_html(rows: list[dict], path: Path) -> None:
 
       // Draw axis labels
       ctx.fillStyle = colors.text;
-      ctx.font = '16px VT323';
+      ctx.font = '21px VT323';
       ctx.textAlign = 'right';
       ctx.fillText(formatKzt(maxVal), padding.left - 10, padding.top + 5);
       ctx.fillText(formatKzt(minVal), padding.left - 10, padding.top + height + 5);
@@ -1265,13 +1601,13 @@ def _render_html(rows: list[dict], path: Path) -> None:
       ctx.translate(20, padding.top + height / 2);
       ctx.rotate(-Math.PI / 2);
       ctx.textAlign = 'center';
-      ctx.font = '18px VT323';
+      ctx.font = '23px VT323';
       ctx.fillText('KZT', 0, 0);
       ctx.restore();
 
       // X-axis labels
       ctx.textAlign = 'center';
-      ctx.font = '16px VT323';
+      ctx.font = '21px VT323';
       const labelInterval = Math.max(Math.floor(data.length / 6), 1);
       for (let i = 0; i < data.length; i += labelInterval) {{
         const x = getX(i);
@@ -1429,6 +1765,33 @@ def _render_html(rows: list[dict], path: Path) -> None:
     }}
 
     // ========================================
+    // TABLE NAVIGATION
+    // ========================================
+    function setupTableNavigation() {{
+      const tableWrapper = document.getElementById('tableWrapper');
+      const scrollToTop = document.getElementById('scrollToTop');
+      const scrollToBottom = document.getElementById('scrollToBottom');
+
+      if (scrollToTop && tableWrapper) {{
+        scrollToTop.addEventListener('click', function() {{
+          tableWrapper.scrollTo({{
+            top: 0,
+            behavior: 'instant'
+          }});
+        }});
+      }}
+
+      if (scrollToBottom && tableWrapper) {{
+        scrollToBottom.addEventListener('click', function() {{
+          tableWrapper.scrollTo({{
+            top: tableWrapper.scrollHeight,
+            behavior: 'instant'
+          }});
+        }});
+      }}
+    }}
+
+    // ========================================
     // RENDER ALL
     // ========================================
     function renderAll() {{
@@ -1436,6 +1799,7 @@ def _render_html(rows: list[dict], path: Path) -> None:
       buildSummary(filtered);
       renderTable();
       renderChart();
+      renderPeriodStats(rows);
     }}
 
     // ========================================
@@ -1456,6 +1820,25 @@ def _render_html(rows: list[dict], path: Path) -> None:
     }}
 
     // ========================================
+    // UPDATE TODAY DATE
+    // ========================================
+    function updateTodayDate() {{
+      const now = new Date();
+      const almatyDate = new Date(now.toLocaleString('en-US', {{
+        timeZone: 'Asia/Almaty'
+      }}));
+
+      const day = String(almatyDate.getDate()).padStart(2, '0');
+      const month = String(almatyDate.getMonth() + 1).padStart(2, '0');
+      const year = almatyDate.getFullYear();
+
+      const todayElement = document.getElementById('todayDate');
+      if (todayElement) {{
+        todayElement.textContent = `Today - ${{day}}.${{month}}.${{year}}`;
+      }}
+    }}
+
+    // ========================================
     // EVENT LISTENERS
     // ========================================
     forecastToggle.addEventListener('change', renderAll);
@@ -1470,6 +1853,8 @@ def _render_html(rows: list[dict], path: Path) -> None:
     // ========================================
     renderAll();
     updateRefreshTime();
+    updateTodayDate();
+    setupTableNavigation();
   </script>
 </body>
 </html>"""
