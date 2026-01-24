@@ -1,0 +1,50 @@
+## Cash balances by store/account (manual snapshot).
+## Store codes mirror config/kaspi_pay_accounts.yaml.
+## Amounts are raw balances in account currency.
+
+as_of: 2026-01-24
+stores:
+  UNIVERSAL:
+    accounts:
+      kaspi_gold:
+        balance_kzt: 904548
+      kaspi_pay:
+        balance_kzt: 91608
+      bcc:
+        balance_kzt: 243091
+      freedom:
+        balance_kzt: 27000
+      cash_kzt:
+        balance_kzt: 110000
+      cash_usd:
+        balance_usd: 100
+      cash_rub:
+        balance_rub: 10000
+      binance_usdt:
+        balance_usdt: 334.07
+  "11KZ":
+    accounts:
+      kaspi_gold:
+        balance_kzt: 3000
+      kaspi_pay:
+        balance_kzt: 146874
+      binance_usdt:
+        balance_usdt: 950
+  STOREB:
+    accounts:
+      kaspi_gold:
+        balance_kzt: 42676
+      kaspi_pay:
+        balance_kzt: 41071
+  ACMEWEAR:
+    accounts:
+      kaspi_gold:
+        balance_kzt: 502299
+      kaspi_pay:
+        balance_kzt: 79241
+  MELVIS:
+    accounts:
+      kaspi_gold:
+        balance_kzt: 0
+      kaspi_pay:
+        balance_kzt: 0
