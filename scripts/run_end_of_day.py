@@ -578,6 +578,11 @@ def _run_pipeline(args, start_time: datetime) -> int:
         PipelineStep(
             name="5a2. Cashflow PO Preflight",
             script="cashflow_preflight_po.py",
+            args=(
+                ["--override", "--reason", os.environ["CASHFLOW_PREFLIGHT_OVERRIDE_REASON"]]
+                if os.environ.get("CASHFLOW_PREFLIGHT_OVERRIDE_REASON")
+                else []
+            ),
             required=True,
         ),
         PipelineStep(

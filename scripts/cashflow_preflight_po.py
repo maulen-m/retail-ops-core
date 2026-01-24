@@ -18,7 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.cashflow.payout_model import load_payout_model
 from core.db.queries import get_cutoff_date_almaty
-from scripts.update_cashflow_dashboard import _build_forecast_rows
+from scripts.update_cashflow_dashboard import _build_forecast_rows, Commitment
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 EXPORT_PATH = PROJECT_ROOT / "exports" / "cashflow_preflight_report.txt"
@@ -52,7 +52,7 @@ def _load_daily(conn: sqlite3.Connection, cutoff: date, history_days: int) -> li
     return [dict(r) for r in rows]
 
 
-def _load_commitments(conn: sqlite3.Connection, start: date, end: date) -> list:
+def _load_commitments(conn: sqlite3.Connection, start: date, end: date) -> list[Commitment]:
     if not _table_exists(conn, "fact_cashflow_commitments"):
         return []
     rows = conn.execute(
@@ -64,14 +64,14 @@ def _load_commitments(conn: sqlite3.Connection, start: date, end: date) -> list:
         (start.isoformat(), end.isoformat()),
     ).fetchall()
     return [
-        {
-            "commit_date": r[0],
-            "commit_type": r[1],
-            "amount_kzt": float(r[2] or 0.0),
-            "scenario_tag": r[3],
-            "ref_id": r[4],
-            "notes": r[5],
-        }
+        Commitment(
+            commit_date=r[0],
+            commit_type=r[1],
+            amount_kzt=float(r[2] or 0.0),
+            scenario_tag=r[3],
+            ref_id=r[4],
+            notes=r[5],
+        )
         for r in rows
     ]
 
