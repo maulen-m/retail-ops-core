@@ -26,6 +26,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from core.utils.sku_map import lookup_sku_from_offer
+
 
 # Path to column mapping config
 CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "kaspi_column_map.yaml"
@@ -316,6 +318,17 @@ def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
         if result.get('my_size'):
             result['sku_id'] = f"{result['sku_key']}_{result['my_size']}"
         return result
+
+    # Fallback: lookup by Kaspi_name_core mapping
+    if kaspi_name:
+        sku_key, map_size = lookup_sku_from_offer(kaspi_name)
+        if sku_key:
+            result['sku_key'] = sku_key
+            if not result.get('my_size') and map_size:
+                result['my_size'] = map_size
+            if result.get('my_size'):
+                result['sku_id'] = f"{result['sku_key']}_{result['my_size']}"
+            return result
 
     # Check if article is already in our SKU format
     # Pattern: TYPE_LINE_GENDER_MODEL_COLOR or TYPE_LINE_GENDER_MODEL_COLOR_SIZE

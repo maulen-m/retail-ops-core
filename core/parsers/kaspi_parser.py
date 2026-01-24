@@ -25,6 +25,7 @@ from datetime import datetime
 import pandas as pd
 
 from core.utils.sku_normalize import normalize_size
+from core.utils.sku_map import lookup_sku_from_offer
 
 
 # Russian column names from Kaspi ActiveOrders export
@@ -195,6 +196,18 @@ def extract_sku_from_article(
         if result["my_size"]:
             result["sku_id"] = f"{result['sku_key']}_{result['my_size']}"
         return result
+
+    # Fallback: lookup by Kaspi_name_core mapping
+    if offer_text:
+        sku_key, map_size = lookup_sku_from_offer(offer_text)
+        if sku_key:
+            result["sku_key"] = sku_key
+            if not result["my_size"] and map_size:
+                size_norm = normalize_size(map_size, product_type=result["product_type"])
+                result["my_size"] = size_norm or map_size
+            if result["my_size"]:
+                result["sku_id"] = f"{result['sku_key']}_{result['my_size']}"
+            return result
 
     # If the article looks like our SKU format, use it directly
     sku_pattern = r"^([A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+)(?:_([A-Za-z0-9-]+))?$"
