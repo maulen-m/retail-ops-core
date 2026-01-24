@@ -569,6 +569,11 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=True
         ),
         PipelineStep(
+            name="5b. Validate Inventory Cost Drift",
+            script="validate_inventory_cost_drift.py",
+            required=True
+        ),
+        PipelineStep(
             name="6. Audit Dashboard Output",
             script="audit_dashboard_output.py",
             required=True
