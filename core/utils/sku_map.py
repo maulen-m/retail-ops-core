@@ -13,6 +13,13 @@ DEFAULT_SKU_MAP_PATH = Path(
 )
 
 _SKU_MAP_CACHE: dict[str, dict[str, Optional[str]]] | None = None
+_OFFER_OVERRIDES = [
+    {
+        "pattern": "podium_rash-32",
+        "sku_key": "CL_OC_MEN_LINE52_BLACK",
+        "my_size": None,
+    },
+]
 
 
 def _normalize_text(value: str) -> str:
@@ -91,6 +98,11 @@ def get_sku_map() -> dict[str, dict[str, Optional[str]]]:
 def lookup_sku_from_offer(offer_name: str) -> Tuple[Optional[str], Optional[str]]:
     if not offer_name:
         return None, None
+    normalized_offer = _normalize_text(offer_name)
+    for override in _OFFER_OVERRIDES:
+        pattern = override.get("pattern")
+        if pattern and pattern in normalized_offer:
+            return override.get("sku_key"), override.get("my_size")
     mapping = get_sku_map()
     if not mapping:
         return None, None

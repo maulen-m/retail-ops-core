@@ -189,6 +189,13 @@ def norm(s: str) -> str:
     return s
 
 
+def normalize_article_code(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    return re.sub(r"^[\\d\\s]+", "", text).strip()
+
+
 def map_headers(df: pd.DataFrame) -> Dict[str, str]:
     """Return dict canonical_key -> actual df column name."""
     colmap = {}
@@ -1459,7 +1466,7 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
             return S["offer_name"]
 
         if h in {"артикул"} and "sku" in S:
-            return S["sku"]
+            return S["sku"].apply(normalize_article_code)
 
         if h in {"складпередачикд", "складпередачикурьерскойдоставки"} and "warehouse" in S:
             return S["warehouse"]

@@ -88,6 +88,13 @@ SIZE_TOKENS = {
 }
 
 
+def _strip_article_prefix(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    return re.sub(r"^[\\d\\s]+", "", text).strip()
+
+
 def _looks_like_size_token(token: str) -> bool:
     """Heuristic for suffix tokens that encode size info in Артикул."""
     if not token:
@@ -146,7 +153,7 @@ def extract_sku_from_article(
     if not kaspi_article:
         return result
 
-    article_raw = str(kaspi_article).strip()
+    article_raw = _strip_article_prefix(kaspi_article)
     article = article_raw.upper()
     offer_text = str(kaspi_offer or "").upper()
 

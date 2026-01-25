@@ -268,6 +268,13 @@ def _looks_like_size_token(token: str) -> bool:
     return False
 
 
+def _strip_article_prefix(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    return re.sub(r"^[\\d\\s]+", "", text).strip()
+
+
 def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
     """
     Extract SKU components from article and/or kaspi name.
@@ -280,7 +287,7 @@ def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
     if not article:
         return result
 
-    article_raw = str(article).strip()
+    article_raw = _strip_article_prefix(article)
     article = article_raw.upper()
 
     # Extract size first
