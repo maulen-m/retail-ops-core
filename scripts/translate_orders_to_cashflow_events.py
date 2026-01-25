@@ -205,11 +205,6 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                         **base_fields,
                     }
                 )
-            elif status == "ON_DELIVERY":
-                counts["on_delivery"] += 1
-            else:
-                counts["ignored"] += 1
-                continue
                 events.append(
                     {
                         "event_date": event_date,
@@ -239,6 +234,8 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                         **base_fields,
                     }
                 )
+            elif status == "ON_DELIVERY":
+                counts["on_delivery"] += 1
             else:
                 counts["ignored"] += 1
                 continue

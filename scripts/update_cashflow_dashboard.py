@@ -1528,9 +1528,9 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
       const syncAge = meta.order_sync_age_hours !== null && meta.order_sync_age_hours !== undefined
         ? (meta.order_sync_age_hours.toFixed(1) + 'h')
         : 'UNKNOWN';
-      const syncAges = meta.order_sync_ages || {};
+      const syncAges = meta.order_sync_ages || {{}};
       const syncList = Object.keys(syncAges).length
-        ? Object.entries(syncAges).map(([k, v]) => `${k}: ${v.toFixed(1)}h`).join('<br>')
+        ? Object.entries(syncAges).map(([k, v]) => `${{k}}: ${{v.toFixed(1)}}h`).join('<br>')
         : 'NONE';
       const manualDate = meta.last_balance_check_date || meta.last_manual_balance_date || 'NONE';
       const baseMin = meta.min_cash_base || {{}};
