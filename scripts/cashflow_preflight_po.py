@@ -34,6 +34,14 @@ class PreflightResult:
     reason: str | None = None
 
 
+@dataclass
+class PreflightSummary:
+    ok: bool
+    base: PreflightResult
+    conservative: PreflightResult
+    horizon_days: int
+
+
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
@@ -76,6 +84,14 @@ def _load_commitments(conn: sqlite3.Connection, start: date, end: date) -> list[
     ]
 
 
+def _filter_commitments(commitments: list[Commitment], scenario: str) -> list[Commitment]:
+    if scenario == "conservative":
+        allowed = {None, "", "base", "conservative"}
+    else:
+        allowed = {None, "", "base"}
+    return [c for c in commitments if (c.scenario_tag or "base") in allowed]
+
+
 def _min_cash(rows: list[dict]) -> dict:
     if not rows:
         return {"date": None, "cash_close": 0}
@@ -108,8 +124,11 @@ def evaluate_preflight(db_path: Path, horizon_days: int, scenario: str, min_cash
         last_date = date.fromisoformat(history[-1]["date"])
         forecast_start = last_date + timedelta(days=1)
         forecast_end = forecast_start + timedelta(days=horizon_days - 1)
-        commitments = _load_commitments(conn, forecast_start, forecast_end)
-        forecast_rows = _build_forecast_rows(history, commitments, horizon_days, payout_lag, "preflight")
+        commitments = _filter_commitments(
+            _load_commitments(conn, forecast_start, forecast_end),
+            scenario,
+        )
+        forecast_rows = _build_forecast_rows(history, commitments, horizon_days, payout_lag, "preflight", scenario=scenario)
         all_rows = history + forecast_rows
 
     min_row = _min_cash(all_rows)
@@ -131,24 +150,32 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Cashflow preflight for PO affordability")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="Path to SQLite DB")
     parser.add_argument("--days", type=int, default=60, help="Forecast horizon days")
-    parser.add_argument("--scenario", choices=["base", "conservative"], default="base")
     parser.add_argument("--min-cash", type=float, default=0.0, help="Minimum acceptable cash close")
     parser.add_argument("--override", action="store_true", help="Allow failure with explicit reason")
     parser.add_argument("--reason", type=str, default=None, help="Override reason for failing preflight")
     args = parser.parse_args()
 
-    result = evaluate_preflight(args.db, args.days, args.scenario, args.min_cash)
+    base_result = evaluate_preflight(args.db, args.days, "base", args.min_cash)
+    cons_result = evaluate_preflight(args.db, args.days, "conservative", args.min_cash)
+    ok = cons_result.ok
+    summary = PreflightSummary(
+        ok=ok,
+        base=base_result,
+        conservative=cons_result,
+        horizon_days=args.days,
+    )
 
     lines = [
-        f"scenario: {result.scenario}",
-        f"horizon_days: {result.horizon_days}",
-        f"min_cash_kzt: {result.min_cash:.2f}",
-        f"min_cash_date: {result.min_cash_date}",
-        f"status: {'PASS' if result.ok else 'FAIL'}",
+        f"horizon_days: {summary.horizon_days}",
+        f"base_min_cash_kzt: {summary.base.min_cash:.2f}",
+        f"base_min_cash_date: {summary.base.min_cash_date}",
+        f"conservative_min_cash_kzt: {summary.conservative.min_cash:.2f}",
+        f"conservative_min_cash_date: {summary.conservative.min_cash_date}",
+        f"status: {'PASS' if summary.ok else 'FAIL'}",
     ]
 
-    if not result.ok:
-        lines.append(f"reason: {result.reason}")
+    if not summary.ok:
+        lines.append(f"reason: {summary.conservative.reason}")
         if args.override:
             if not args.reason:
                 print("FAIL: override requires --reason")
