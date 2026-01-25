@@ -67,6 +67,12 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
   then reconciled when statements are available.
 - If bank statements are not ingested, keep payouts as **expected** rather than **actual**.
 
+### E) On-delivery policy (at-risk receivables)
+- Orders with internal status **SHIPPED** (Kaspi: “Передан курьеру”) are treated as **ON_DELIVERY**.
+- ON_DELIVERY is **visible** but **not counted as sold** in base cashflow.
+- Aggressive scenario can include a **partial credit** of ON_DELIVERY net revenue
+  (see `config/cashflow_scenarios.yaml` → `on_delivery_credit_rate`).
+
 ---
 
 ## 5) How to maintain full history with a 14‑day API limit
@@ -133,4 +139,3 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 - core/integrations/kaspi_api_client.py
 - core/sync/order_sync_engine.py
 - docs/DAILY_SOP.md
-

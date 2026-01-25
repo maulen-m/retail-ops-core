@@ -20,18 +20,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db.queries import get_cutoff_date_almaty
 from core.cashflow.payout_model import load_payout_model
+from core.cashflow.order_status import normalize_order_status
 from core.config.business_params import get_vat_rate
 from core.calc.economics import calc_delivery_fee, calc_net_rev
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "kaspi_column_map.yaml"
 EXPORT_PATH = PROJECT_ROOT / "exports" / "orders_to_cashflow_report.txt"
-
-COMPLETED_INTERNAL = {"COMPLETED"}
-CANCELLED_INTERNAL = {"CANCELLED", "RETURNED"}
-COMPLETED_RU = {"завершен", "выдан", "архив", "archive"}
-CANCELLED_RU = {"отменен", "возврат", "возвращен"}
-
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return conn.execute(
@@ -68,34 +63,6 @@ def _parse_date(value: str | None) -> str | None:
             return date.fromisoformat(value[:10]).isoformat()
         except Exception:
             return None
-
-
-def _normalize_status(internal_status: str | None, kaspi_status: str | None, config: dict) -> str:
-    internal = (internal_status or "").strip().upper()
-    if internal in COMPLETED_INTERNAL:
-        return "COMPLETED"
-    if internal in CANCELLED_INTERNAL:
-        return "CANCELLED"
-
-    kaspi_raw = (kaspi_status or "").strip()
-    kaspi_norm = kaspi_raw.lower()
-    if kaspi_norm in COMPLETED_RU:
-        return "COMPLETED"
-    if kaspi_norm in CANCELLED_RU:
-        return "CANCELLED"
-
-    # Fallback to config mapping if available
-    status_filters = (config or {}).get("status_filters", {})
-    for _, info in status_filters.items():
-        if info.get("russian") == kaspi_raw:
-            mapped = (info.get("internal") or "").upper()
-            if mapped in COMPLETED_INTERNAL:
-                return "COMPLETED"
-            if mapped in CANCELLED_INTERNAL:
-                return "CANCELLED"
-            return mapped
-
-    return internal if internal else "NEW"
 
 
 def _load_dim_sku_weights(conn: sqlite3.Connection) -> dict[str, float]:
@@ -150,10 +117,10 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
 
         payout_model = load_payout_model()
         events = []
-        counts = {"completed": 0, "cancelled": 0, "ignored": 0}
+        counts = {"completed": 0, "cancelled": 0, "on_delivery": 0, "ignored": 0}
 
         for row in rows:
-            status = _normalize_status(row["internal_status"], row["kaspi_status"], config)
+            status = normalize_order_status(row["internal_status"], row["kaspi_status"], config)
             event_date = (
                 _parse_date(row["status_updated_at"])
                 or _parse_date(row["actual_shipment_date"])
@@ -238,6 +205,11 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                         **base_fields,
                     }
                 )
+            elif status == "ON_DELIVERY":
+                counts["on_delivery"] += 1
+            else:
+                counts["ignored"] += 1
+                continue
                 events.append(
                     {
                         "event_date": event_date,
@@ -289,6 +261,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
         report_lines.append(f"Orders scanned: {len(rows)}")
         report_lines.append(f"Completed orders: {counts['completed']}")
         report_lines.append(f"Cancelled/returned orders: {counts['cancelled']}")
+        report_lines.append(f"On-delivery orders: {counts['on_delivery']}")
         report_lines.append(f"Ignored orders: {counts['ignored']}")
         report_lines.append(f"New cashflow events: {len(new_events)}")
 
