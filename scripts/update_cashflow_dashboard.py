@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import sqlite3
+import yaml
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -30,13 +31,17 @@ from scripts.rebuild_cashflow_calendar import (
 )
 from core.config.business_params import get_fx_rates
 from core.cashflow.payout_model import load_payout_model
+from core.cashflow.order_status import normalize_order_status
+from core.calc.economics import calc_delivery_fee, calc_net_rev
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 EXPORT_DIR = PROJECT_ROOT / "exports"
 CSV_PATH = EXPORT_DIR / "cashflow_calendar.csv"
 HTML_PATH = EXPORT_DIR / "cashflow_dashboard.html"
 MIN_CASH_PATH = EXPORT_DIR / "min_cash_summary.txt"
 TRUST_REPORT_PATH = EXPORT_DIR / "cashflow_trust_report_{label}.md"
+DRIFT_REPORT_PATH = EXPORT_DIR / "cashflow_drift_report_{label}.md"
 BACKUP_DIR = PROJECT_ROOT / "backups"
+SCENARIOS_CONFIG = PROJECT_ROOT / "config" / "cashflow_scenarios.yaml"
 
 
 @dataclass
@@ -47,6 +52,78 @@ class Commitment:
     scenario_tag: str | None
     ref_id: str | None
     notes: str | None
+
+
+def _load_scenarios_config() -> dict:
+    defaults = {
+        "on_delivery_credit_rate": 0.6,
+        "on_delivery_lookback_days": 14,
+        "aggressive_enabled": True,
+    }
+    if not SCENARIOS_CONFIG.exists():
+        return defaults
+    try:
+        data = yaml.safe_load(SCENARIOS_CONFIG.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return defaults
+    merged = {**defaults, **data}
+    return merged
+
+
+def _filter_commitments(commitments: list[Commitment], scenario: str) -> list[Commitment]:
+    if scenario == "conservative":
+        allowed = {None, "", "base", "conservative"}
+    elif scenario == "aggressive":
+        allowed = {None, "", "base", "aggressive"}
+    else:
+        allowed = {None, "", "base"}
+    return [c for c in commitments if (c.scenario_tag or "base") in allowed]
+
+
+def _load_sync_ages(conn: sqlite3.Connection) -> dict[str, float]:
+    if not _table_exists(conn, "kaspi_order_sync_log"):
+        return {}
+    rows = conn.execute("SELECT store_code, last_success_ts FROM kaspi_order_sync_log").fetchall()
+    if not rows:
+        return {}
+    now = datetime.now()
+    ages: dict[str, float] = {}
+    for store_code, last_ts in rows:
+        if not last_ts or not store_code:
+            continue
+        try:
+            last_dt = datetime.fromisoformat(last_ts)
+        except Exception:
+            continue
+        ages[store_code] = (now - last_dt).total_seconds() / 3600
+    return ages
+
+
+def _max_sync_age(sync_ages: dict[str, float]) -> float | None:
+    if not sync_ages:
+        return None
+    return max(sync_ages.values())
+
+
+def _load_last_balance_check_date(conn: sqlite3.Connection) -> str | None:
+    if not _table_exists(conn, "fact_cashflow_events"):
+        return None
+    row = conn.execute(
+        """
+        SELECT MAX(event_date) as max_date
+        FROM fact_cashflow_events
+        WHERE source = 'MANUAL'
+          AND event_type IN ('BALANCE_CHECK', 'OPENING_BALANCE')
+        """
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def _load_dim_sku_weights(conn: sqlite3.Connection) -> dict[str, float]:
+    if not _table_exists(conn, "dim_sku"):
+        return {}
+    rows = conn.execute("SELECT sku_key, weight_kg FROM dim_sku").fetchall()
+    return {row[0]: float(row[1] or 0.0) for row in rows}
 
 
 def _backup_file(path: Path) -> None:
@@ -153,22 +230,8 @@ def _load_last_statement_date(conn: sqlite3.Connection) -> str | None:
 
 
 def _load_sync_age_hours(conn: sqlite3.Connection) -> float | None:
-    if not _table_exists(conn, "kaspi_order_sync_log"):
-        return None
-    rows = conn.execute("SELECT last_success_ts FROM kaspi_order_sync_log").fetchall()
-    if not rows:
-        return None
-    now = datetime.now()
-    ages = []
-    for row in rows:
-        if not row[0]:
-            continue
-        try:
-            last_ts = datetime.fromisoformat(row[0])
-        except Exception:
-            continue
-        ages.append((now - last_ts).total_seconds() / 3600)
-    return max(ages) if ages else None
+    sync_ages = _load_sync_ages(conn)
+    return _max_sync_age(sync_ages)
 
 
 def _load_manual_balance_dates(conn: sqlite3.Connection) -> set[str]:
@@ -185,12 +248,103 @@ def _load_manual_balance_dates(conn: sqlite3.Connection) -> set[str]:
     return {row[0] for row in rows if row and row[0]}
 
 
+def _load_on_delivery_summary(conn: sqlite3.Connection, since: date, until: date) -> dict:
+    if not _table_exists(conn, "fact_orders_kaspi"):
+        return {"orders": 0, "net_rev_kzt": 0.0, "stores": {}}
+
+    config = {}
+    config_path = PROJECT_ROOT / "config" / "kaspi_column_map.yaml"
+    if config_path.exists():
+        try:
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            config = {}
+
+    weights = _load_dim_sku_weights(conn)
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM fact_orders_kaspi
+        WHERE date(COALESCE(status_updated_at, actual_shipment_date, planned_shipment_date, created_at))
+              BETWEEN ? AND ?
+        """,
+        (since.isoformat(), until.isoformat()),
+    ).fetchall()
+
+    total_net = 0.0
+    order_ids: set[str] = set()
+    store_summary: dict[str, dict[str, float]] = {}
+    store_orders: dict[str, set[str]] = {}
+
+    def _parse_date(value: str | None) -> date | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value).date()
+        except Exception:
+            try:
+                return date.fromisoformat(value[:10])
+            except Exception:
+                return None
+
+    for row in rows:
+        status = normalize_order_status(row["internal_status"], row["kaspi_status"], config)
+        if status != "ON_DELIVERY":
+            continue
+        qty = float(row["quantity"] or 0.0)
+        if qty <= 0:
+            continue
+        price_unit = float(row["unit_price_kzt"] or 0.0)
+        sku_key = row["sku_key"]
+        weight = weights.get(sku_key or "", 0.0)
+        delivery_fee = calc_delivery_fee(price_unit, weight_kg=weight, delivery_type="city")
+        as_of_date = (
+            _parse_date(row["status_updated_at"])
+            or _parse_date(row["actual_shipment_date"])
+            or _parse_date(row["planned_shipment_date"])
+            or _parse_date(row["created_at"])
+            or since
+        )
+        net_rev_unit = calc_net_rev(
+            price_unit,
+            delivery_fee=delivery_fee,
+            weight_kg=weight,
+            as_of_date=as_of_date,
+        )
+        net_rev_line = round(net_rev_unit * qty, 2) if net_rev_unit is not None else 0.0
+        total_net += net_rev_line
+        order_id = row["order_id"]
+        if order_id:
+            order_ids.add(order_id)
+
+        store_code = row["store_code"] or "UNKNOWN"
+        store_row = store_summary.setdefault(store_code, {"orders": 0.0, "net_rev_kzt": 0.0})
+        store_orders.setdefault(store_code, set())
+        store_row["net_rev_kzt"] += net_rev_line
+        if order_id:
+            store_orders[store_code].add(order_id)
+
+    for store_code, metrics in store_summary.items():
+        store_summary[store_code] = {
+            "orders": len(store_orders.get(store_code, set())),
+            "net_rev_kzt": round(metrics.get("net_rev_kzt", 0.0), 2),
+        }
+
+    return {
+        "orders": len(order_ids),
+        "net_rev_kzt": round(total_net, 2),
+        "stores": store_summary,
+    }
+
+
 def _write_trust_report(
     path: Path,
     last_statement_date: str | None,
-    sync_age_hours: float | None,
+    sync_ages: dict[str, float],
     rows: list[dict],
     manual_dates: set[str],
+    last_balance_check: str | None,
+    on_delivery_summary: dict,
 ) -> None:
     statement_days = 0
     modelled_days = 0
@@ -213,6 +367,7 @@ def _write_trust_report(
         else:
             modelled_days += 1
 
+    sync_age_hours = _max_sync_age(sync_ages)
     lines = [
         "# Cashflow Trust Report",
         "",
@@ -221,23 +376,39 @@ def _write_trust_report(
         f"- manual_balance_days: {manual_days}",
         f"- modelled_days: {modelled_days}",
         f"- forecast_days: {forecast_days}",
-        f"- order_sync_age_hours: {sync_age_hours if sync_age_hours is not None else 'UNKNOWN'}",
-        "",
-        "Legend:",
-        "- STATEMENT_ACTUAL: derived from MT940 statements",
-        "- ORDER_MODELLED: derived from Orders API + payout model",
-        "- FORECAST_MODEL: forward projections",
-        "",
+        f"- last_balance_check_date: {last_balance_check or 'NONE'}",
+        f"- order_sync_age_hours_max: {sync_age_hours if sync_age_hours is not None else 'UNKNOWN'}",
+        "- order_sync_age_hours_by_store:",
     ]
+    if sync_ages:
+        for store_code, age in sorted(sync_ages.items()):
+            lines.append(f"  - {store_code}: {age:.2f}h")
+    else:
+        lines.append("  - NONE")
+
+    lines.extend(
+        [
+            f"- on_delivery_orders: {on_delivery_summary.get('orders', 0)}",
+            f"- on_delivery_net_rev_kzt: {on_delivery_summary.get('net_rev_kzt', 0.0)}",
+            "",
+            "Legend:",
+            "- STATEMENT_ACTUAL: derived from MT940 statements",
+            "- MANUAL: balance check or opening balance imported manually",
+            "- ORDER_MODELLED: derived from Orders API + payout model",
+            "- FORECAST_MODEL: forward projections",
+            "",
+        ]
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
 
 
-def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, meta: dict) -> None:
+def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressive: list[dict], path: Path, meta: dict) -> None:
     _backup_file(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(rows)
     data_conservative = json.dumps(rows_conservative)
+    data_aggressive = json.dumps(rows_aggressive)
     meta_json = json.dumps(meta)
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -541,6 +712,12 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, me
     .trust-value {{
       font-size: 14px;
       margin-top: 6px;
+    }}
+
+    .subnote {{
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 4px;
     }}
 
     .badge {{
@@ -1212,6 +1389,7 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, me
           <select id="scenarioSelect" class="retro-select">
             <option value="base" selected>BASE</option>
             <option value="conservative">CONSERVATIVE</option>
+            <option value="aggressive">AGGRESSIVE</option>
           </select>
         </div>
         <div class="control-group">
@@ -1256,6 +1434,7 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, me
     // ========================================
     const rowsBase = {data};
     const rowsConservative = {data_conservative};
+    const rowsAggressive = {data_aggressive};
     let rows = rowsBase;
     const meta = {meta_json};
 
@@ -1278,6 +1457,13 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, me
     const storeOptions = ['ALL', ...storeCodes];
     storeSelect.innerHTML = storeOptions.map(code => `<option value="${{code}}">${{code}}</option>`).join('');
     storeSelect.disabled = storeOptions.length <= 1;
+
+    if (!meta.aggressive_enabled) {{
+      const aggressiveOpt = scenarioSelect.querySelector('option[value="aggressive"]');
+      if (aggressiveOpt) {{
+        aggressiveOpt.remove();
+      }}
+    }}
 
     // ========================================
     // THEME MANAGEMENT
@@ -1342,9 +1528,14 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, me
       const syncAge = meta.order_sync_age_hours !== null && meta.order_sync_age_hours !== undefined
         ? (meta.order_sync_age_hours.toFixed(1) + 'h')
         : 'UNKNOWN';
-      const manualDate = meta.last_manual_balance_date || 'NONE';
+      const syncAges = meta.order_sync_ages || {};
+      const syncList = Object.keys(syncAges).length
+        ? Object.entries(syncAges).map(([k, v]) => `${k}: ${v.toFixed(1)}h`).join('<br>')
+        : 'NONE';
+      const manualDate = meta.last_balance_check_date || meta.last_manual_balance_date || 'NONE';
       const baseMin = meta.min_cash_base || {{}};
       const consMin = meta.min_cash_conservative || baseMin;
+      const onDelivery = meta.on_delivery_summary || {{}};
       trustSummary.innerHTML = `
         <div class="trust-card">
           <div class="trust-label pixel-font">LAST STATEMENT</div>
@@ -1352,7 +1543,7 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, me
         </div>
         <div class="trust-card">
           <div class="trust-label pixel-font">ORDER SYNC AGE</div>
-          <div class="trust-value monospace-font">${{syncAge}}</div>
+          <div class="trust-value monospace-font">${{syncAge}}<div class="subnote monospace-font">${{syncList}}</div></div>
         </div>
         <div class="trust-card">
           <div class="trust-label pixel-font">LAST BALANCE CHECK</div>
@@ -1365,6 +1556,10 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, me
         <div class="trust-card">
           <div class="trust-label pixel-font">MIN CASH (CONS)</div>
           <div class="trust-value monospace-font">${{formatKzt(consMin.cash_close)}} KZT on ${{consMin.date}}</div>
+        </div>
+        <div class="trust-card">
+          <div class="trust-label pixel-font">ON-DELIVERY (14d)</div>
+          <div class="trust-value monospace-font">${{onDelivery.orders || 0}} orders / ${{formatKzt(onDelivery.net_rev_kzt || 0)}} KZT</div>
         </div>
       `;
     }}
@@ -2123,7 +2318,13 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, me
     storeSelect.addEventListener('change', renderAll);
     rangeSelect.addEventListener('change', renderAll);
     scenarioSelect.addEventListener('change', () => {{
-      rows = scenarioSelect.value === 'conservative' ? rowsConservative : rowsBase;
+      if (scenarioSelect.value === 'conservative') {{
+        rows = rowsConservative;
+      }} else if (scenarioSelect.value === 'aggressive') {{
+        rows = rowsAggressive;
+      }} else {{
+        rows = rowsBase;
+      }}
       renderAll();
     }});
 
@@ -2146,6 +2347,86 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], path: Path, me
     tmp.replace(path)
 
 
+def _write_drift_report(
+    conn: sqlite3.Connection,
+    path: Path,
+    last_statement_date: str | None,
+    lookback_days: int = 30,
+) -> None:
+    if not _table_exists(conn, "fact_cashflow_events"):
+        return
+    if not last_statement_date:
+        path.write_text("# Cashflow Drift Report\n\nNo statement-backed data available.\n")
+        return
+    try:
+        last_statement = date.fromisoformat(last_statement_date)
+    except Exception:
+        path.write_text("# Cashflow Drift Report\n\nInvalid last_statement_date.\n")
+        return
+
+    start = last_statement - timedelta(days=lookback_days - 1)
+    expected_rows = conn.execute(
+        """
+        SELECT event_date, SUM(amount_kzt) as amount
+        FROM fact_cashflow_events
+        WHERE event_type = 'PAYOUT_EXPECTED'
+          AND event_date BETWEEN ? AND ?
+        GROUP BY event_date
+        """,
+        (start.isoformat(), last_statement.isoformat()),
+    ).fetchall()
+    actual_rows = conn.execute(
+        """
+        SELECT event_date, SUM(amount_kzt) as amount
+        FROM fact_cashflow_events
+        WHERE event_type = 'PAYOUT_RECEIVED'
+          AND source = 'STATEMENT_ACTUAL'
+          AND event_date BETWEEN ? AND ?
+        GROUP BY event_date
+        """,
+        (start.isoformat(), last_statement.isoformat()),
+    ).fetchall()
+
+    expected = {row[0]: float(row[1] or 0.0) for row in expected_rows}
+    actual = {row[0]: float(row[1] or 0.0) for row in actual_rows}
+
+    lines = [
+        "# Cashflow Drift Report",
+        f"- window_start: {start.isoformat()}",
+        f"- window_end: {last_statement.isoformat()}",
+        "",
+        "| date | expected_kzt | actual_kzt | drift_kzt |",
+        "| --- | --- | --- | --- |",
+    ]
+    total_expected = 0.0
+    total_actual = 0.0
+    total_abs = 0.0
+
+    for i in range(lookback_days):
+        day = start + timedelta(days=i)
+        key = day.isoformat()
+        exp = expected.get(key, 0.0)
+        act = actual.get(key, 0.0)
+        drift = act - exp
+        total_expected += exp
+        total_actual += act
+        total_abs += abs(drift)
+        lines.append(f"| {key} | {exp:.2f} | {act:.2f} | {drift:.2f} |")
+
+    mae = total_abs / lookback_days if lookback_days else 0.0
+    lines.extend(
+        [
+            "",
+            f"total_expected_kzt: {total_expected:.2f}",
+            f"total_actual_kzt: {total_actual:.2f}",
+            f"total_drift_kzt: {(total_actual - total_expected):.2f}",
+            f"mean_abs_drift_kzt: {mae:.2f}",
+        ]
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+
+
 def _avg(values: list[float]) -> float:
     if not values:
         return 0.0
@@ -2158,6 +2439,8 @@ def _build_forecast_rows(
     days: int,
     payout_lag_days: int,
     run_id: str,
+    scenario: str = "base",
+    on_delivery_credit_kzt: float = 0.0,
 ) -> list[dict]:
     if not history_rows:
         return []
@@ -2175,7 +2458,7 @@ def _build_forecast_rows(
         sales_queue.insert(0, avg_sales)
 
     commitments_by_date: dict[str, list[Commitment]] = {}
-    for c in commitments:
+    for c in _filter_commitments(commitments, scenario):
         commitments_by_date.setdefault(c.commit_date, []).append(c)
 
     forecast_rows = []
@@ -2188,6 +2471,8 @@ def _build_forecast_rows(
         day_key = day.isoformat()
 
         sales = avg_sales
+        if i == 1 and on_delivery_credit_kzt > 0:
+            sales += on_delivery_credit_kzt
         cogs = avg_cogs
         payout = sales_queue.pop(0) if sales_queue else avg_sales
         sales_queue.append(sales)
@@ -2259,13 +2544,19 @@ def main() -> int:
     payout_model = load_payout_model()
     base_lag = args.payout_lag_days if args.payout_lag_days is not None else payout_model.base_lag_days
     conservative_lag = max(payout_model.conservative_lag_days, base_lag)
+    scenarios_cfg = _load_scenarios_config()
+    on_delivery_lookback = int(scenarios_cfg.get("on_delivery_lookback_days", 14))
+    on_delivery_credit_rate = float(scenarios_cfg.get("on_delivery_credit_rate", 0.6))
+    aggressive_enabled = bool(scenarios_cfg.get("aggressive_enabled", True))
 
     applied_daily = False
     with sqlite3.connect(str(args.db)) as conn:
         conn.row_factory = sqlite3.Row
         last_statement_date = _load_last_statement_date(conn)
-        sync_age_hours = _load_sync_age_hours(conn)
+        sync_ages = _load_sync_ages(conn)
+        sync_age_hours = _max_sync_age(sync_ages)
         manual_dates = _load_manual_balance_dates(conn)
+        last_balance_check = _load_last_balance_check_date(conn)
         resolved_start, resolved_end = _resolve_start_end(conn)
         history_end = cutoff
         if _table_exists(conn, "fact_cashflow_events"):
@@ -2334,11 +2625,35 @@ def main() -> int:
         forecast_start = history_end + timedelta(days=1)
         forecast_end = forecast_start + timedelta(days=args.forecast_days - 1)
         commitments = _load_commitments(conn, forecast_start, forecast_end)
-        forecast_rows = _build_forecast_rows(rows, commitments, args.forecast_days, base_lag, run_id)
-        forecast_rows_conservative = _build_forecast_rows(rows, commitments, args.forecast_days, conservative_lag, run_id)
+        on_delivery_summary = _load_on_delivery_summary(
+            conn,
+            cutoff - timedelta(days=on_delivery_lookback - 1),
+            cutoff,
+        )
+        on_delivery_credit_kzt = (
+            float(on_delivery_summary.get("net_rev_kzt", 0.0)) * on_delivery_credit_rate
+            if aggressive_enabled
+            else 0.0
+        )
+        forecast_rows = _build_forecast_rows(
+            rows, commitments, args.forecast_days, base_lag, run_id, scenario="base"
+        )
+        forecast_rows_conservative = _build_forecast_rows(
+            rows, commitments, args.forecast_days, conservative_lag, run_id, scenario="conservative"
+        )
+        forecast_rows_aggressive = _build_forecast_rows(
+            rows,
+            commitments,
+            args.forecast_days,
+            base_lag,
+            run_id,
+            scenario="aggressive",
+            on_delivery_credit_kzt=on_delivery_credit_kzt,
+        )
 
     all_rows = rows + forecast_rows
     all_rows_conservative = rows + forecast_rows_conservative
+    all_rows_aggressive = rows + (forecast_rows_aggressive if aggressive_enabled else forecast_rows)
 
     if last_statement_date:
         try:
@@ -2362,8 +2677,19 @@ def main() -> int:
 
     min_base = _min_cash(all_rows) if all_rows else {"date": None, "cash_close": 0}
     min_cons = _min_cash(all_rows_conservative) if all_rows_conservative else min_base
+    min_aggr = _min_cash(all_rows_aggressive) if all_rows_aggressive else min_base
     trust_path = Path(str(TRUST_REPORT_PATH).format(label=cutoff.isoformat()))
-    _write_trust_report(trust_path, last_statement_date, sync_age_hours, all_rows, manual_dates)
+    _write_trust_report(
+        trust_path,
+        last_statement_date,
+        sync_ages,
+        all_rows,
+        manual_dates,
+        last_balance_check,
+        on_delivery_summary,
+    )
+    drift_path = Path(str(DRIFT_REPORT_PATH).format(label=cutoff.isoformat()))
+    _write_drift_report(conn, drift_path, last_statement_date)
 
     _write_csv(all_rows, CSV_PATH)
     _write_min_cash(all_rows, all_rows_conservative, MIN_CASH_PATH)
@@ -2371,15 +2697,22 @@ def main() -> int:
     _render_html(
         all_rows,
         all_rows_conservative,
+        all_rows_aggressive,
         HTML_PATH,
         {
             "last_statement_date": last_statement_date,
             "last_manual_balance_date": last_manual,
+            "last_balance_check_date": last_balance_check,
             "order_sync_age_hours": sync_age_hours,
+            "order_sync_ages": sync_ages,
             "min_cash_base": min_base,
             "min_cash_conservative": min_cons,
+            "min_cash_aggressive": min_aggr,
             "payout_lag_base": base_lag,
             "payout_lag_conservative": conservative_lag,
+            "on_delivery_summary": on_delivery_summary,
+            "on_delivery_credit_rate": on_delivery_credit_rate,
+            "aggressive_enabled": aggressive_enabled,
         },
     )
 

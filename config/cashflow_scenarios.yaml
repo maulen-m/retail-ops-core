@@ -1,0 +1,4 @@
+# Cashflow scenario tuning
+on_delivery_credit_rate: 0.6
+on_delivery_lookback_days: 14
+aggressive_enabled: true
