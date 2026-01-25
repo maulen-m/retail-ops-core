@@ -471,6 +471,17 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=True,
         ),
         PipelineStep(
+            name="2a3. Export On-Delivery Orders (econ)",
+            script="export_on_delivery_with_econ.py",
+            args=[
+                "--days",
+                os.environ.get("KASPI_ON_DELIVERY_LOOKBACK_DAYS")
+                or os.environ.get("KASPI_LOOKBACK_DAYS_LONG")
+                or "14",
+            ],
+            required=not args.skip_api_sync,
+        ),
+        PipelineStep(
             name="2b. Backfill Order Sizes (Archive)",
             script="backfill_kaspi_order_sizes.py",
             args=["--cutoff-date", cutoff_date.isoformat()],
