@@ -2,7 +2,7 @@
 ## Store codes mirror config/kaspi_pay_accounts.yaml.
 ## Amounts are raw balances in account currency.
 
-as_of: 2026-01-24
+as_of: 2026-01-24 13:49:00 GMT+5
 stores:
   UNIVERSAL:
     accounts:

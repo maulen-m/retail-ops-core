@@ -31,7 +31,7 @@ def _normalize_amount(val: str | None) -> float:
         return 0.0
 
 
-def import_commitments(csv_path: Path, db_path: Path, apply: bool) -> int:
+def import_commitments(csv_path: Path, db_path: Path, apply: bool, replace: bool) -> int:
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV not found: {csv_path}")
     if not db_path.exists():
@@ -81,6 +81,15 @@ def import_commitments(csv_path: Path, db_path: Path, apply: bool) -> int:
         if apply:
             if os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
                 raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
+            if replace:
+                refs = {(r["ref_id"], r["commit_type"]) for r in to_insert if r.get("ref_id")}
+                for ref_id, commit_type in refs:
+                    conn.execute(
+                        "DELETE FROM fact_cashflow_commitments WHERE ref_id = ? AND commit_type = ?",
+                        (ref_id, commit_type),
+                    )
+                if refs:
+                    print(f"APPLY: replaced commitments for {len(refs)} ref_id(s).")
             for r in new_rows:
                 conn.execute(
                     """
@@ -111,9 +120,10 @@ def main() -> int:
     parser.add_argument("csv_path", type=Path, help="Path to commitments CSV")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--replace", action="store_true", help="Replace existing commitments for same ref_id + type")
     args = parser.parse_args()
 
-    return import_commitments(args.csv_path, args.db, args.apply)
+    return import_commitments(args.csv_path, args.db, args.apply, args.replace)
 
 
 if __name__ == "__main__":

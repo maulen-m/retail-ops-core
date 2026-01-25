@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import csv
 import sqlite3
+from datetime import date, datetime
 from pathlib import Path
 
 import sys
@@ -27,12 +28,32 @@ def main() -> int:
     parser.add_argument("--po-id", action="append", dest="po_ids", default=["PO-4.1", "PO-4.2", "PO-5"])
     parser.add_argument("--scenario-tag", type=str, default="base")
     parser.add_argument("--as-of", type=str, default="2026-01-22")
+    parser.add_argument("--min-date", type=str, default="2026-03-01")
     args = parser.parse_args()
 
     if not args.db.exists():
         raise FileNotFoundError(f"DB not found: {args.db}")
 
-    fx = get_fx_rates(args.as_of, db_path=args.db)
+    def _coerce_date(value: str | None) -> date | None:
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(text).date()
+        except ValueError:
+            return None
+
+    as_of_date = _coerce_date(args.as_of) or date.today()
+    min_date = _coerce_date(args.min_date)
+
+    fx = get_fx_rates(as_of_date.isoformat(), db_path=args.db)
 
     with sqlite3.connect(str(args.db)) as conn:
         conn.row_factory = sqlite3.Row
@@ -51,14 +72,18 @@ def main() -> int:
         if total_cny <= 0:
             continue
         amount_kzt = round(total_cny * fx.cny_kzt, 2)
-        commit_date = row["ship_date_cargo"] or row["message_date"] or args.as_of
+        commit_dt = _coerce_date(row["ship_date_cargo"]) or _coerce_date(row["message_date"]) or as_of_date
+        notes = "Auto-generated from po_header total_cost_cny"
+        if min_date and commit_dt < min_date:
+            commit_dt = min_date
+            notes = f"{notes}; deferred until {min_date.isoformat()} (CNY payment delay)"
         out_rows.append({
-            "commit_date": commit_date,
+            "commit_date": commit_dt.isoformat(),
             "amount_kzt": amount_kzt,
             "po_id": row["po_id"],
             "supplier": row["supplier_code"],
             "scenario_tag": args.scenario_tag,
-            "notes": "Auto-generated from po_header total_cost_cny",
+            "notes": notes,
             "commit_type": "PO_PAYMENT",
         })
 

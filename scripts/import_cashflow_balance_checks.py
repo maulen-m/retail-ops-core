@@ -49,6 +49,22 @@ def _event_hash(event: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _parse_as_of(value: str) -> datetime:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("bank_accounts.yaml missing 'as_of'")
+    cleaned = raw.replace("GMT+5", "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise ValueError(f"Unrecognized as_of format: {raw}") from exc
+
+
 def import_balance_checks(config_path: Path, db_path: Path, apply: bool, run_id: str) -> int:
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
@@ -56,12 +72,16 @@ def import_balance_checks(config_path: Path, db_path: Path, apply: bool, run_id:
         raise FileNotFoundError(f"DB not found: {db_path}")
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    as_of = config.get("as_of")
-    if not as_of:
-        raise ValueError("bank_accounts.yaml missing 'as_of'")
+    as_of_raw = config.get("as_of")
+    as_of_dt = _parse_as_of(as_of_raw)
+    as_of_date = as_of_dt.date()
 
-    fx_rates = get_fx_rates(date.fromisoformat(as_of), db_path=db_path)
-    report_lines = [f"as_of: {as_of}", f"usd_kzt: {fx_rates.usd_kzt}"]
+    fx_rates = get_fx_rates(as_of_date, db_path=db_path)
+    report_lines = [
+        f"as_of_raw: {as_of_raw}",
+        f"as_of_date: {as_of_date.isoformat()}",
+        f"usd_kzt: {fx_rates.usd_kzt}",
+    ]
 
     events = []
     total_kzt = 0.0
@@ -94,7 +114,7 @@ def import_balance_checks(config_path: Path, db_path: Path, apply: bool, run_id:
             total_kzt += amount_kzt
             events.append(
                 {
-                    "event_date": as_of,
+                    "event_date": as_of_date.isoformat(),
                     "event_type": "BALANCE_CHECK",
                     "account": "CASH",
                     "amount_kzt": round(amount_kzt, 2),
