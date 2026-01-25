@@ -92,3 +92,27 @@ def test_preflight_passes_on_positive_cash(tmp_path):
     _init_db(db_path, cash_close=100)
     result = evaluate_preflight(db_path, horizon_days=10, scenario="base", min_cash_threshold=0)
     assert result.ok is True
+
+
+def test_preflight_conservative_blocks_with_conservative_commitment(tmp_path):
+    db_path = tmp_path / "preflight.db"
+    _init_db(db_path, cash_close=100)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        commit_date = (get_cutoff_date_almaty() + date.resolution).isoformat()
+        conn.execute(
+            """
+            INSERT INTO fact_cashflow_commitments (
+                commit_date, commit_type, amount_kzt, scenario_tag, ref_id, notes
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (commit_date, "PO_PAYMENT", 500.0, "conservative", "PO-TEST", "test"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    base = evaluate_preflight(db_path, horizon_days=5, scenario="base", min_cash_threshold=0)
+    cons = evaluate_preflight(db_path, horizon_days=5, scenario="conservative", min_cash_threshold=0)
+    assert base.ok is True
+    assert cons.ok is False
