@@ -496,6 +496,7 @@ class KaspiAPIClient:
         """
         all_orders = []
         page = 0
+        include_user = _include_has_user(include_orders)
 
         while page < max_pages:
             response = self.list_orders(
@@ -516,6 +517,10 @@ class KaspiAPIClient:
             data = response.data.get('data', [])
             if not data:
                 break
+
+            if include_user:
+                included = response.data.get('included', []) if isinstance(response.data, dict) else []
+                _attach_included_user(data, included)
 
             all_orders.extend(data)
             page += 1
@@ -1198,6 +1203,39 @@ class KaspiAPIClient:
 # =============================================================================
 # FACTORY FUNCTIONS
 # =============================================================================
+
+
+def _include_has_user(include_orders: Optional[Union[str, Iterable[str]]]) -> bool:
+    if not include_orders:
+        return False
+    if isinstance(include_orders, str):
+        items = [s.strip() for s in include_orders.split(",") if s.strip()]
+    else:
+        items = [str(s).strip() for s in include_orders if str(s).strip()]
+    return "user" in {item.lower() for item in items}
+
+
+def _attach_included_user(orders: list[dict], included: list[dict]) -> None:
+    if not included:
+        return
+    user_map: dict[str, dict] = {}
+    for item in included:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") not in {"customers", "users"}:
+            continue
+        item_id = item.get("id")
+        if item_id:
+            user_map[str(item_id)] = item.get("attributes", {}) or {}
+    if not user_map:
+        return
+    for order in orders:
+        rel = order.get("relationships", {}) if isinstance(order, dict) else {}
+        user_rel = rel.get("user", {}) if isinstance(rel, dict) else {}
+        user_data = user_rel.get("data", {}) if isinstance(user_rel, dict) else {}
+        user_id = user_data.get("id")
+        if user_id and str(user_id) in user_map:
+            order["included_user"] = user_map[str(user_id)]
 
 def get_client(store_code: str, **kwargs) -> KaspiAPIClient:
     """

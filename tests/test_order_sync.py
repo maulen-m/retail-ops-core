@@ -52,12 +52,35 @@ def temp_db():
             store_code TEXT NOT NULL,
             channel_code TEXT DEFAULT 'KSP',
             kaspi_status TEXT,
+            kaspi_status_detail TEXT,
             internal_status TEXT,
             unit_price_kzt REAL,
             quantity INTEGER DEFAULT 1,
             created_at TEXT,
             planned_shipment_date TEXT,
+            planned_delivery_date TEXT,
+            courier_transmission_planning_date TEXT,
+            courier_transmission_date TEXT,
+            actual_shipment_date TEXT,
             waybill_url TEXT,
+            waybill_number TEXT,
+            delivery_mode TEXT,
+            payment_mode TEXT,
+            signature_required INTEGER,
+            credit_term INTEGER,
+            pre_order INTEGER,
+            approved_by_bank_date TEXT,
+            reservation_date TEXT,
+            delivery_cost REAL,
+            delivery_cost_for_seller REAL,
+            delivery_address TEXT,
+            is_imei_required INTEGER,
+            express INTEGER,
+            returned_to_warehouse INTEGER,
+            category TEXT,
+            customer_first_name TEXT,
+            customer_last_name TEXT,
+            customer_phone TEXT,
             source TEXT DEFAULT 'API',
             imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
             status_updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -142,20 +165,46 @@ def sample_api_orders():
             'attributes': {
                 'code': '111111',
                 'state': 'NEW',
+                'status': 'APPROVED_BY_BANK',
                 'totalPrice': 10000,
                 'deliveryCost': 0,
+                'deliveryCostForSeller': 150,
+                'deliveryMode': 'DELIVERY_LOCAL',
+                'paymentMode': 'PREPAID',
+                'signatureRequired': False,
+                'creditTerm': 12,
+                'preOrder': False,
+                'approvedByBankDate': int(datetime(2025, 12, 7, 10, 5).timestamp() * 1000),
+                'reservationDate': int(datetime(2025, 12, 9, 12, 0).timestamp() * 1000),
+                'isImeiRequired': False,
+                'category': 'Sportswear',
                 'creationDate': int(datetime(2025, 12, 7, 10, 0).timestamp() * 1000),
                 'kaspiDelivery': {
                     'waybill': None,
+                    'waybillNumber': 'WB-111',
                     'plannedDeliveryDate': int(datetime(2025, 12, 10).timestamp() * 1000),
+                    'courierTransmissionPlanningDate': int(datetime(2025, 12, 8, 9, 0).timestamp() * 1000),
+                    'courierTransmissionDate': int(datetime(2025, 12, 8, 15, 30).timestamp() * 1000),
+                    'deliveryCostForSeller': 140,
+                    'express': False,
+                    'returnedToWarehouse': False,
+                    'address': {
+                        'formattedAddress': 'Almaty, Abay 1'
+                    },
                 }
-            }
+            },
+            'included_user': {
+                'firstName': 'Ivan',
+                'lastName': 'Ivanov',
+                'cellPhone': '77001234567',
+            },
         },
         {
             'id': 'order-002',
             'attributes': {
                 'code': '222222',
                 'state': 'ACCEPTED_BY_MERCHANT',
+                'status': 'ACCEPTED_BY_MERCHANT',
                 'totalPrice': 15000,
                 'deliveryCost': 500,
                 'creationDate': int(datetime(2025, 12, 6, 14, 30).timestamp() * 1000),
@@ -170,6 +219,7 @@ def sample_api_orders():
             'attributes': {
                 'code': '333333',
                 'state': 'KASPI_DELIVERY',
+                'status': 'ACCEPTED_BY_MERCHANT',
                 'totalPrice': 20000,
                 'deliveryCost': 1000,
                 'creationDate': int(datetime(2025, 12, 5, 9, 0).timestamp() * 1000),
@@ -252,9 +302,16 @@ class TestOrderParsing:
         assert parsed['order_id'] == '111111'
         assert parsed['store_code'] == 'UNIVERSAL'
         assert parsed['kaspi_status'] == 'NEW'
+        assert parsed['kaspi_status_detail'] == 'APPROVED_BY_BANK'
         assert parsed['internal_status'] == 'NEW'
         assert parsed['unit_price_kzt'] == 10000
         assert parsed['waybill_url'] is None
+        assert parsed['delivery_mode'] == 'DELIVERY_LOCAL'
+        assert parsed['payment_mode'] == 'PREPAID'
+        assert parsed['signature_required'] is False
+        assert parsed['customer_first_name'] == 'Ivan'
+        assert parsed['customer_last_name'] == 'Ivanov'
+        assert parsed['customer_phone'] == '77001234567'
 
     def test_parse_accepted_order(self, engine, sample_api_orders):
         """Test parsing ACCEPTED_BY_MERCHANT order."""

@@ -393,6 +393,15 @@ class OrderSyncEngine:
         """
         attrs = api_order.get('attributes', {})
         delivery = attrs.get('kaspiDelivery', {})
+        customer = attrs.get('customer') or api_order.get('included_user') or {}
+
+        def _ts_to_str(ts: Optional[int]) -> Optional[str]:
+            if ts is None:
+                return None
+            try:
+                return datetime.fromtimestamp(ts / 1000).strftime('%Y-%m-%d %H:%M:%S')
+            except (OSError, ValueError, TypeError):
+                return None
 
         # Parse dates
         created_at = None
@@ -406,24 +415,74 @@ class OrderSyncEngine:
         if effective_planned:
             planned_date = effective_planned.isoformat()
 
+        planned_delivery_date = _ts_to_str(
+            delivery.get('plannedDeliveryDate') or attrs.get('plannedDeliveryDate')
+        )
+        courier_transmission_planning_date = _ts_to_str(
+            delivery.get('courierTransmissionPlanningDate')
+        )
+        courier_transmission_date = _ts_to_str(
+            delivery.get('courierTransmissionDate')
+        )
+        approved_by_bank_date = _ts_to_str(attrs.get('approvedByBankDate'))
+        reservation_date = _ts_to_str(attrs.get('reservationDate'))
+
+        address = delivery.get('address') or {}
+        delivery_address = (
+            address.get('formattedAddress')
+            or address.get('fullAddress')
+            or address.get('address')
+            or attrs.get('deliveryAddress')
+        )
+
         # Map Kaspi state to internal status
         kaspi_state = attrs.get('state', 'NEW')
         internal_status = self._map_state_to_status(kaspi_state)
 
         # Extract waybill URL
         waybill_url = delivery.get('waybill')
+        waybill_number = delivery.get('waybillNumber') or attrs.get('waybillNumber')
 
         return {
             'order_id': attrs.get('code', api_order.get('id', '')),
             'store_code': store_code,
             'channel_code': 'KSP',
             'kaspi_status': kaspi_state,
+            'kaspi_status_detail': attrs.get('status'),
             'internal_status': internal_status,
             'unit_price_kzt': attrs.get('totalPrice', 0),
             'quantity': 1,  # Will be updated from entries
             'created_at': created_at,
             'planned_shipment_date': planned_date,
+            'planned_delivery_date': planned_delivery_date,
+            'courier_transmission_planning_date': courier_transmission_planning_date,
+            'courier_transmission_date': courier_transmission_date,
+            'actual_shipment_date': courier_transmission_date,
             'waybill_url': waybill_url,
+            'waybill_number': waybill_number,
+            'delivery_mode': attrs.get('deliveryMode'),
+            'payment_mode': attrs.get('paymentMode'),
+            'signature_required': attrs.get('signatureRequired'),
+            'credit_term': attrs.get('creditTerm'),
+            'pre_order': attrs.get('preOrder'),
+            'approved_by_bank_date': approved_by_bank_date,
+            'reservation_date': reservation_date,
+            'delivery_cost': attrs.get('deliveryCost'),
+            'delivery_cost_for_seller': (
+                attrs.get('deliveryCostForSeller')
+                or delivery.get('deliveryCostForSeller')
+            ),
+            'delivery_address': delivery_address,
+            'is_imei_required': attrs.get('isImeiRequired'),
+            'express': delivery.get('express') or attrs.get('express'),
+            'returned_to_warehouse': (
+                delivery.get('returnedToWarehouse')
+                or attrs.get('returnedToWarehouse')
+            ),
+            'category': attrs.get('category'),
+            'customer_first_name': customer.get('firstName'),
+            'customer_last_name': customer.get('lastName'),
+            'customer_phone': customer.get('cellPhone'),
             'source': 'API',
         }
 
@@ -454,23 +513,56 @@ class OrderSyncEngine:
             """
             INSERT INTO fact_orders_kaspi (
                 order_id, store_code, channel_code,
-                kaspi_status, internal_status,
+                kaspi_status, kaspi_status_detail, internal_status,
                 unit_price_kzt, quantity,
-                created_at, planned_shipment_date,
-                waybill_url, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, planned_shipment_date, planned_delivery_date,
+                courier_transmission_planning_date, courier_transmission_date,
+                actual_shipment_date,
+                waybill_url, waybill_number,
+                delivery_mode, payment_mode,
+                signature_required, credit_term, pre_order,
+                approved_by_bank_date, reservation_date,
+                delivery_cost, delivery_cost_for_seller,
+                delivery_address, is_imei_required,
+                express, returned_to_warehouse, category,
+                customer_first_name, customer_last_name, customer_phone,
+                source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order_data['order_id'],
                 order_data['store_code'],
                 order_data['channel_code'],
                 order_data['kaspi_status'],
+                order_data.get('kaspi_status_detail'),
                 order_data['internal_status'],
                 order_data['unit_price_kzt'],
                 order_data['quantity'],
                 order_data['created_at'],
                 order_data['planned_shipment_date'],
+                order_data.get('planned_delivery_date'),
+                order_data.get('courier_transmission_planning_date'),
+                order_data.get('courier_transmission_date'),
+                order_data.get('actual_shipment_date'),
                 order_data['waybill_url'],
+                order_data.get('waybill_number'),
+                order_data.get('delivery_mode'),
+                order_data.get('payment_mode'),
+                order_data.get('signature_required'),
+                order_data.get('credit_term'),
+                order_data.get('pre_order'),
+                order_data.get('approved_by_bank_date'),
+                order_data.get('reservation_date'),
+                order_data.get('delivery_cost'),
+                order_data.get('delivery_cost_for_seller'),
+                order_data.get('delivery_address'),
+                order_data.get('is_imei_required'),
+                order_data.get('express'),
+                order_data.get('returned_to_warehouse'),
+                order_data.get('category'),
+                order_data.get('customer_first_name'),
+                order_data.get('customer_last_name'),
+                order_data.get('customer_phone'),
                 order_data['source'],
             )
         )
@@ -481,19 +573,65 @@ class OrderSyncEngine:
             """
             UPDATE fact_orders_kaspi SET
                 kaspi_status = ?,
+                kaspi_status_detail = COALESCE(?, kaspi_status_detail),
                 internal_status = ?,
                 unit_price_kzt = ?,
                 planned_shipment_date = ?,
+                planned_delivery_date = COALESCE(?, planned_delivery_date),
+                courier_transmission_planning_date = COALESCE(?, courier_transmission_planning_date),
+                courier_transmission_date = COALESCE(?, courier_transmission_date),
+                actual_shipment_date = COALESCE(?, actual_shipment_date),
                 waybill_url = ?,
+                waybill_number = COALESCE(?, waybill_number),
+                delivery_mode = COALESCE(?, delivery_mode),
+                payment_mode = COALESCE(?, payment_mode),
+                signature_required = COALESCE(?, signature_required),
+                credit_term = COALESCE(?, credit_term),
+                pre_order = COALESCE(?, pre_order),
+                approved_by_bank_date = COALESCE(?, approved_by_bank_date),
+                reservation_date = COALESCE(?, reservation_date),
+                delivery_cost = COALESCE(?, delivery_cost),
+                delivery_cost_for_seller = COALESCE(?, delivery_cost_for_seller),
+                delivery_address = COALESCE(?, delivery_address),
+                is_imei_required = COALESCE(?, is_imei_required),
+                express = COALESCE(?, express),
+                returned_to_warehouse = COALESCE(?, returned_to_warehouse),
+                category = COALESCE(?, category),
+                customer_first_name = COALESCE(?, customer_first_name),
+                customer_last_name = COALESCE(?, customer_last_name),
+                customer_phone = COALESCE(?, customer_phone),
                 status_updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
             (
                 order_data['kaspi_status'],
+                order_data.get('kaspi_status_detail'),
                 order_data['internal_status'],
                 order_data['unit_price_kzt'],
                 order_data['planned_shipment_date'],
+                order_data.get('planned_delivery_date'),
+                order_data.get('courier_transmission_planning_date'),
+                order_data.get('courier_transmission_date'),
+                order_data.get('actual_shipment_date'),
                 order_data['waybill_url'],
+                order_data.get('waybill_number'),
+                order_data.get('delivery_mode'),
+                order_data.get('payment_mode'),
+                order_data.get('signature_required'),
+                order_data.get('credit_term'),
+                order_data.get('pre_order'),
+                order_data.get('approved_by_bank_date'),
+                order_data.get('reservation_date'),
+                order_data.get('delivery_cost'),
+                order_data.get('delivery_cost_for_seller'),
+                order_data.get('delivery_address'),
+                order_data.get('is_imei_required'),
+                order_data.get('express'),
+                order_data.get('returned_to_warehouse'),
+                order_data.get('category'),
+                order_data.get('customer_first_name'),
+                order_data.get('customer_last_name'),
+                order_data.get('customer_phone'),
                 row_id,
             )
         )

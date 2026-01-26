@@ -107,6 +107,19 @@ response = client.get_order('123456789')
 waybill = client.download_waybill('https://kaspi.kz/waybill/xxx.pdf')
 ```
 
+#### Query filters (supported)
+
+```python
+# Optional filters for list_orders/list_all_orders
+orders = client.list_all_orders(
+    state='KASPI_DELIVERY',
+    since='2025-12-01',
+    delivery_type='DELIVERY',
+    signature_required=False,
+    include_orders='user',
+)
+```
+
 #### Order States
 
 | Kaspi State | Internal Status | Description |
@@ -120,6 +133,20 @@ waybill = client.download_waybill('https://kaspi.kz/waybill/xxx.pdf')
 | CANCELLED | CANCELLED | Order cancelled |
 | RETURNING | RETURNING | Customer returning |
 | RETURNED | RETURNED | Returned to seller |
+
+#### Extended API fields captured (fact_orders_kaspi)
+
+The API sync now stores additional attributes from the order payload:
+
+- `kaspi_status_detail` (API status: APPROVED_BY_BANK, ACCEPTED_BY_MERCHANT, etc.)
+- `planned_delivery_date`, `courier_transmission_planning_date`, `courier_transmission_date`
+- `delivery_mode`, `payment_mode`, `signature_required`, `credit_term`, `pre_order`
+- `approved_by_bank_date`, `reservation_date`
+- `delivery_cost`, `delivery_cost_for_seller`, `delivery_address`
+- `is_imei_required`, `express`, `returned_to_warehouse`, `category`
+- `customer_first_name`, `customer_last_name`, `customer_phone`
+
+Migration: `python scripts/migrate_014_kaspi_api_fields.py`
 
 #### Write Operations
 

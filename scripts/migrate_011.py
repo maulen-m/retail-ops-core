@@ -47,10 +47,14 @@ def migrate():
             -- Dates
             created_at TEXT,
             planned_shipment_date TEXT,
+            planned_delivery_date TEXT,
+            courier_transmission_planning_date TEXT,
+            courier_transmission_date TEXT,
             actual_shipment_date TEXT,
 
             -- Status tracking
-            kaspi_status TEXT,           -- Raw Kaspi status (Russian)
+            kaspi_status TEXT,           -- Raw Kaspi state
+            kaspi_status_detail TEXT,    -- API status (e.g., APPROVED_BY_BANK)
             internal_status TEXT DEFAULT 'NEW',  -- NEW, READY, SHIPPED, COMPLETED, CANCELLED
             status_updated_at TEXT,
 
@@ -58,6 +62,29 @@ def migrate():
             waybill_url TEXT,
             waybill_number TEXT,
             waybill_downloaded INTEGER DEFAULT 0,
+
+            -- Delivery/payment details
+            delivery_mode TEXT,
+            payment_mode TEXT,
+            signature_required INTEGER,
+            credit_term INTEGER,
+            pre_order INTEGER,
+            approved_by_bank_date TEXT,
+            reservation_date TEXT,
+            delivery_cost REAL,
+            delivery_cost_for_seller REAL,
+            delivery_address TEXT,
+            is_imei_required INTEGER,
+            express INTEGER,
+            returned_to_warehouse INTEGER,
+
+            -- Product metadata
+            category TEXT,
+
+            -- Customer info
+            customer_first_name TEXT,
+            customer_last_name TEXT,
+            customer_phone TEXT,
 
             -- Audit
             source TEXT DEFAULT 'EXCEL_EXPORT',  -- EXCEL_EXPORT, API
