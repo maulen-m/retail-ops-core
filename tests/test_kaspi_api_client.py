@@ -608,6 +608,32 @@ class TestListOrdersStatusFilter:
         assert params.get('filter[orders][state]') == 'KASPI_DELIVERY'
 
 
+class TestListOrdersExtraFilters:
+    """Tests for list_orders extra filter parameters."""
+
+    @patch('requests.Session.request')
+    def test_list_orders_with_extra_filters(self, mock_request, mock_env):
+        """Test list_orders accepts deliveryType, signatureRequired, include orders."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'data': []}
+        mock_request.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+        client.list_orders(
+            state='KASPI_DELIVERY',
+            delivery_type='DELIVERY',
+            signature_required=False,
+            include_orders='user',
+        )
+
+        call_kwargs = mock_request.call_args[1]
+        params = call_kwargs.get('params', {})
+        assert params.get('filter[orders][deliveryType]') == 'DELIVERY'
+        assert params.get('filter[orders][signatureRequired]') == 'false'
+        assert params.get('include[orders]') == 'user'
+
 class TestGetOrderByCode:
     """Tests for get_order using filter approach."""
 

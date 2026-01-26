@@ -177,7 +177,11 @@ def get_target_orders_from_api(
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
     try:
-        orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+        orders = client.list_all_orders(
+            state='KASPI_DELIVERY',
+            since=since,
+            include_orders='user',
+        )
     except Exception as exc:
         logger.warning(f"{store_code}: API list error - {exc}")
         return [], True
@@ -543,7 +547,11 @@ def download_waybills_for_store(
         if verbose:
             print(f"    Fetching KASPI_DELIVERY orders from {store_code}...")
 
-        orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+        orders = client.list_all_orders(
+            state='KASPI_DELIVERY',
+            since=since,
+            include_orders='user',
+        )
 
         if verbose:
             print(f"    API returned {len(orders)} orders, filtering to {len(target_order_ids)} targets")

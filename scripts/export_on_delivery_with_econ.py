@@ -79,7 +79,13 @@ def _fetch_on_delivery_and_cancelled(
         if verbose:
             print(f"  Fetching from {store_code} (since {since})...")
 
-        orders = client.list_all_orders(state="KASPI_DELIVERY", since=since)
+        orders = client.list_all_orders(
+            state="KASPI_DELIVERY",
+            since=since,
+            delivery_type="DELIVERY",
+            signature_required=False,
+            include_orders="user",
+        )
 
         if verbose:
             print(f"    Found {len(orders)} orders in KASPI_DELIVERY state")

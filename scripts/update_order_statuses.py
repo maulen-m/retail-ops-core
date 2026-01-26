@@ -205,7 +205,11 @@ def fetch_order_statuses(order_ids: Set[str], days_back: int = 7, verbose: bool 
 
         # Fetch ALL orders (no state filter) to get full status picture
         try:
-            orders = client.list_all_orders(state=None, since=since)
+            orders = client.list_all_orders(
+                state=None,
+                since=since,
+                include_orders="user",
+            )
         except Exception as e:
             if verbose:
                 print(f"    Error: {e}")

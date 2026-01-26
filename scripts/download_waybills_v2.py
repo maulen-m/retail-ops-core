@@ -69,7 +69,11 @@ def get_todays_orders_from_api(
     since = (datetime.now() - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
     # Fetch all KASPI_DELIVERY orders
-    orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+    orders = client.list_all_orders(
+        state='KASPI_DELIVERY',
+        since=since,
+        include_orders='user',
+    )
 
     if verbose:
         print(f"    API returned {len(orders)} KASPI_DELIVERY orders")

@@ -312,6 +312,7 @@ class OrderSyncEngine:
                     state=state,
                     since=since,
                     until=until,
+                    include_orders="user",
                 )
                 all_orders.extend(orders)
             return all_orders
@@ -320,6 +321,7 @@ class OrderSyncEngine:
         return client.list_all_orders(
             since=since,
             until=until,
+            include_orders="user",
         )
 
     def _save_order(

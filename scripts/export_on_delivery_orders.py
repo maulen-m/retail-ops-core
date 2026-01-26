@@ -442,7 +442,13 @@ def export_on_delivery_orders(
             print(f"  Fetching from {store_code} (since {since})...")
 
         # Fetch only KASPI_DELIVERY state (no archive - we want active deliveries)
-        orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+        orders = client.list_all_orders(
+            state='KASPI_DELIVERY',
+            since=since,
+            delivery_type='DELIVERY',
+            signature_required=False,
+            include_orders='user',
+        )
 
         if verbose:
             print(f"    Found {len(orders)} orders in KASPI_DELIVERY state")

@@ -276,7 +276,11 @@ def get_api_order_ids_for_date(
     for store_code in stores:
         try:
             client = KaspiAPIClient(store_code=store_code)
-            orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+            orders = client.list_all_orders(
+                state='KASPI_DELIVERY',
+                since=since,
+                include_orders='user',
+            )
         except KaspiAuthError as exc:
             logger.warning(f"{store_code}: Auth error - {exc}")
             error_stores.add(store_code)

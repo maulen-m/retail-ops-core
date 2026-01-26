@@ -40,6 +40,17 @@ from core.integrations.kaspi_api_client import (
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_bool(value: Optional[str]) -> Optional[bool]:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected boolean: true/false")
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -504,6 +515,9 @@ def export_store_orders(
     refetch_missing_costs: bool = False,
     db_direct: bool = False,
     db_direct_dry_run: bool = False,
+    delivery_type: Optional[str] = None,
+    signature_required: Optional[bool] = None,
+    include_orders: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from a single store.
@@ -530,7 +544,13 @@ def export_store_orders(
         print(f"  Fetching orders from {store_code} (since {since})...")
 
     # Fetch active orders
-    orders = client.list_all_orders(state=state, since=since)
+    orders = client.list_all_orders(
+        state=state,
+        since=since,
+        delivery_type=delivery_type,
+        signature_required=signature_required,
+        include_orders=include_orders,
+    )
 
     if verbose:
         print(f"    Found {len(orders)} active orders")
@@ -539,7 +559,13 @@ def export_store_orders(
     if include_archive and state != 'ARCHIVE':
         if verbose:
             print(f"    Fetching ARCHIVE orders...")
-        archive_orders = client.list_all_orders(state='ARCHIVE', since=since)
+        archive_orders = client.list_all_orders(
+            state='ARCHIVE',
+            since=since,
+            delivery_type=delivery_type,
+            signature_required=signature_required,
+            include_orders=include_orders,
+        )
         if verbose:
             print(f"    Found {len(archive_orders)} archive orders")
 
@@ -608,6 +634,9 @@ def export_all_stores(
     refetch_missing_costs: bool = False,
     db_direct: bool = False,
     db_direct_dry_run: bool = False,
+    delivery_type: Optional[str] = None,
+    signature_required: Optional[bool] = None,
+    include_orders: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from all configured stores.
@@ -633,6 +662,9 @@ def export_all_stores(
             refetch_missing_costs=refetch_missing_costs,
             db_direct=db_direct,
             db_direct_dry_run=db_direct_dry_run,
+            delivery_type=delivery_type,
+            signature_required=signature_required,
+            include_orders=include_orders,
         )
         all_rows.extend(rows)
 
@@ -767,6 +799,23 @@ def main():
         help='Filter by order state (default: KASPI_DELIVERY)'
     )
     parser.add_argument(
+        '--delivery-type',
+        type=str,
+        choices=['DELIVERY', 'PICKUP'],
+        help='Filter by delivery type (use only when state != PICKUP)'
+    )
+    parser.add_argument(
+        '--signature-required',
+        type=_parse_bool,
+        help='Filter by signatureRequired (true/false)'
+    )
+    parser.add_argument(
+        '--include-orders',
+        type=str,
+        default='user',
+        help='Include extra order data (comma-separated). Use \"none\" to disable.'
+    )
+    parser.add_argument(
         '--days',
         type=int,
         default=14,
@@ -852,6 +901,10 @@ def main():
     target_date = args.planned_date  # Custom date or None (will default to today)
 
     include_archive = not args.no_archive
+    include_orders = None
+    if args.include_orders:
+        if args.include_orders.strip().lower() != 'none':
+            include_orders = [s.strip() for s in args.include_orders.split(',') if s.strip()]
 
     print(f"  State filter: {state_filter or 'ALL'}")
     print(f"  Lookback: {args.days} days")
@@ -877,6 +930,9 @@ def main():
             refetch_missing_costs=args.refetch_missing_costs,
             db_direct=args.db_direct,
             db_direct_dry_run=args.db_direct_dry_run,
+            delivery_type=args.delivery_type,
+            signature_required=args.signature_required,
+            include_orders=include_orders,
         )
     else:
         print(f"Exporting from {args.store}...")
@@ -889,6 +945,9 @@ def main():
             refetch_missing_costs=args.refetch_missing_costs,
             db_direct=args.db_direct,
             db_direct_dry_run=args.db_direct_dry_run,
+            delivery_type=args.delivery_type,
+            signature_required=args.signature_required,
+            include_orders=include_orders,
         )
 
     print(f"\nTotal rows from API: {len(rows)}")

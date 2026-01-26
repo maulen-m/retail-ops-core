@@ -39,7 +39,7 @@ import time
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, Union
 from enum import Enum
 
 import requests
@@ -411,6 +411,9 @@ class KaspiAPIClient:
         until: Optional[str] = None,
         page_number: int = 0,
         page_size: int = 100,
+        delivery_type: Optional[str] = None,
+        signature_required: Optional[bool] = None,
+        include_orders: Optional[Union[str, Iterable[str]]] = None,
     ) -> APIResponse:
         """
         List orders with optional filters.
@@ -423,6 +426,9 @@ class KaspiAPIClient:
             until: Filter orders created before this date
             page_number: Page number (0-indexed)
             page_size: Items per page (max 100)
+            delivery_type: Filter by delivery type (DELIVERY or PICKUP)
+            signature_required: Filter by signature requirement (True/False)
+            include_orders: Extra data to include (e.g., 'user')
 
         Returns:
             APIResponse with list of orders in data
@@ -437,6 +443,20 @@ class KaspiAPIClient:
 
         if status:
             params['filter[orders][status]'] = status
+
+        if delivery_type and state != 'PICKUP':
+            params['filter[orders][deliveryType]'] = delivery_type
+
+        if signature_required is not None and state != 'SIGN_REQUIRED':
+            params['filter[orders][signatureRequired]'] = str(signature_required).lower()
+
+        if include_orders:
+            if isinstance(include_orders, (list, tuple, set)):
+                include_value = ",".join([str(v) for v in include_orders if v])
+            else:
+                include_value = str(include_orders)
+            if include_value:
+                params['include[orders]'] = include_value
 
         if since:
             # Convert to milliseconds timestamp if date string
@@ -455,6 +475,9 @@ class KaspiAPIClient:
         since: Optional[str] = None,
         until: Optional[str] = None,
         max_pages: int = 100,
+        delivery_type: Optional[str] = None,
+        signature_required: Optional[bool] = None,
+        include_orders: Optional[Union[str, Iterable[str]]] = None,
     ) -> list[dict]:
         """
         List all orders with pagination handling.
@@ -464,6 +487,9 @@ class KaspiAPIClient:
             since: Filter orders created after this date
             until: Filter orders created before this date
             max_pages: Maximum pages to fetch (safety limit)
+            delivery_type: Filter by delivery type (DELIVERY or PICKUP)
+            signature_required: Filter by signature requirement (True/False)
+            include_orders: Extra data to include (e.g., 'user')
 
         Returns:
             List of all order dicts
@@ -478,6 +504,9 @@ class KaspiAPIClient:
                 until=until,
                 page_number=page,
                 page_size=100,
+                delivery_type=delivery_type,
+                signature_required=signature_required,
+                include_orders=include_orders,
             )
 
             if not response.success:
