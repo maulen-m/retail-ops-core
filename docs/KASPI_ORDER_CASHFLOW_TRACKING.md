@@ -12,7 +12,7 @@ for autonomous, always-on maintenance.
 and are fragile (human-in-the-loop). This system prioritizes reliability and continuity:
 - API data is available daily, consistently, across all stores.
 - If we capture full 14‑day windows **every day**, we never lose status changes.
-- We can reconstruct accruals/receivables and estimate cash timing without manual work.
+- Cash is recognized **at delivery (D1)**; no receivables model is used for Kaspi Pay.
 
 **Trade-off (explicit):** minor deviations vs bank statements are acceptable when the
 system remains autonomous and deterministic.
@@ -49,29 +49,28 @@ From Kaspi API + internal mapping:
 
 We track **events** and derive daily cashflow calendars. Suggested mapping:
 
-### A) Sales accrual (receivable)
+### A) Cash-in at delivered (D1)
 - Trigger: order reaches **COMPLETED** (delivered).
-- Event: `RECEIVABLE += net_revenue` (after Kaspi commission + fees).
+- Event: `CASH_IN` to the store’s **Kaspi Pay** cash account.
+- **No receivables model for Kaspi Pay** in D1 mode.
 
 ### B) Commission + delivery fees
-- Commission is a cost embedded in net revenue (or separate expense event).
+- Commission is refunded on returns.
 - Delivery fee charged to seller is **always a cost**, even on refunds.
 
 ### C) Refund / return
 - Trigger: order becomes RETURNED (or CANCELLED after delivery).
-- Event: reverse receivable and reverse commission accrual.
-- Delivery fee **remains a cost** (not reversed).
+- Event: **reverse cash-in**.
+- Delivery fee **remains a cost** (not refunded).
 
 ### D) Cash payout
-- Payouts are best modeled as **estimated cash inflow** based on payout schedule,
-  then reconciled when statements are available.
-- If bank statements are not ingested, keep payouts as **expected** rather than **actual**.
+- In D1 mode, **cash is recognized at delivery**; no payout lag model is used for Kaspi Pay.
+- Statements are used for **anchor + reconciliation**, not daily payouts.
 
-### E) On-delivery policy (at-risk receivables)
+### E) On-delivery policy (inventory-on-delivery)
 - Orders with internal status **SHIPPED** (Kaspi: “Передан курьеру”) are treated as **ON_DELIVERY**.
-- ON_DELIVERY is **visible** but **not counted as sold** in base cashflow.
-- Aggressive scenario can include a **partial credit** of ON_DELIVERY net revenue
-  (see `config/cashflow_scenarios.yaml` → `on_delivery_credit_rate`).
+- ON_DELIVERY is **inventory-at-cost**, tracked in `INVENTORY_ON_DELIVERY_COST`.
+- No cash is recognized for ON_DELIVERY in base cashflow.
 
 ---
 
@@ -88,7 +87,16 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 
 ---
 
-## 6) Recommended implementation pattern
+## 6) Inventory valuation scope (F3)
+
+- Inventory value includes **on-hand + inbound**.
+- **Base cost** is capitalized when supplier payment is made.
+- **Landed costs** are added when paid/known.
+- On-delivery inventory is tracked separately via `INVENTORY_ON_DELIVERY_COST`.
+
+---
+
+## 7) Recommended implementation pattern
 
 1) **Orders sync**
    - `scripts/sync_kaspi_orders.py --all --since <cutoff>` (daily in EOD).
@@ -108,11 +116,11 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 
 ---
 
-## 7) Using orders data for cashflow categories
+## 8) Using orders data for cashflow categories
 
 **Credits (inflows):**
-- Delivered orders (COMPLETED) → receivable
-- Payouts (if known) → cash
+- Delivered orders (COMPLETED) → cash (Kaspi Pay account)
+- Statement-backed payouts (if available) → reconciliation only
 
 **Debits (outflows):**
 - Commission (always)
@@ -121,7 +129,7 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 
 ---
 
-## 8) Reliability notes
+## 9) Reliability notes
 
 - API-first flow is resilient to missing bank statements.
 - Minor differences vs bank ledger are acceptable if:
@@ -131,7 +139,7 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 
 ---
 
-## 9) Source-of-truth files
+## 10) Source-of-truth files
 
 - docs/KASPI_API_INTEGRATION.md
 - docs/Kaspi_API_Official_document_8.12.2025_GP.md

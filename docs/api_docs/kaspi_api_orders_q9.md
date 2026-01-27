@@ -1,0 +1,131 @@
+9. Как с помощью API в Магазине на Kaspi.kz узнать адрес склада?
+Для этого отправьте API-запрос. Можно использовать любой сервис, например, Postman, Insomnia, Paw, Swagger, SoapUI или настроить интеграцию с вашей системой учета.
+
+ 
+
+Параметр
+
+Значение
+
+pointOfServiceId
+
+Уникальный код склада
+
+ 
+
+Чтобы его узнать:
+
+с помощью API в Магазине на Kaspi.kz. получите информацию о складе, с которого покупатель заказал товар;
+скопируйте значение атрибута «id» для "type": "pointofservices"
+ 
+
+ Посмотреть пример запроса
+
+GET
+https://kaspi.kz/shop/api/v2/pointofservices/pointofservicesId
+Content-Type: application/vnd.api+json
+X-Auth-Token: token
+ 
+
+В ответе вы получите название и адрес склада.
+
+ 
+
+Атрибут
+
+Значение
+
+id
+
+Уникальный код склада
+
+address
+
+Адрес склада
+
+ 
+
+streetName
+
+streetNumber
+
+town
+
+district
+
+building
+
+formattedAddress
+
+ 
+
+ 
+
+latitude
+
+longitude
+
+улица
+
+номер дома
+
+город
+
+район
+
+номер строения
+
+полный адрес
+
+ 
+
+Географическая координата:
+
+широта
+
+долгота
+
+displayName
+
+Название склада
+
+ 
+
+ Посмотреть пример ответа
+
+ {
+    "data": {
+        "type": "pointofservices",
+        "id": "pointofservicesId",
+        "attributes": {
+            "address": {
+                "streetName": " улица Каныша Сатпаева",
+                "streetNumber": " 22/1",
+                "town": "г. Алматы",
+                "district": null,
+                "building": null,
+                "apartment": null,
+                "formattedAddress": "г. Алматы,  улица Каныша Сатпаева,  22/1",
+                "latitude": 43.23662559520485,
+                "longitude": 76.93337309399296
+            },
+            "displayName": "PP1"
+        },
+        "relationships": {
+            "city": {
+                "links": {
+                    "self": "https://kaspi.kz/shop/api/v2/pointofservices/pointofservicesId/relationships/city",
+                    "related": "https://kaspi.kz/shop/api/v2/pointofservices/pointofservicesId/city"
+                },
+                "data": {
+                    "type": "cities",
+                    "id": "citiesID"
+                }
+            }
+        },
+        "links": {
+            "self": "https://kaspi.kz/shop/api/v2/pointofservices/pointofservicesId"
+        }
+    },
+    "included": []
+}
