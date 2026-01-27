@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.cashflow.payout_model import load_payout_model
+from core.cashflow.refund_reserve import compute_refund_reserve_series, apply_refund_reserve
 from core.db.queries import get_cutoff_date_almaty
 from scripts.update_cashflow_dashboard import _build_forecast_rows, Commitment
 
@@ -125,7 +126,15 @@ def _min_cash(rows: list[dict]) -> dict:
     return min(rows, key=lambda r: r.get("cash_close", 0) or 0)
 
 
-def evaluate_preflight(db_path: Path, horizon_days: int, scenario: str, min_cash_threshold: float) -> PreflightResult:
+def evaluate_preflight(
+    db_path: Path,
+    horizon_days: int,
+    scenario: str,
+    min_cash_threshold: float,
+    refund_rate: float = 0.0,
+    refund_days: int = 14,
+    apply_reserve: bool = False,
+) -> PreflightResult:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
 
@@ -163,6 +172,9 @@ def evaluate_preflight(db_path: Path, horizon_days: int, scenario: str, min_cash
         )
         forecast_rows = _build_forecast_rows(history, commitments, horizon_days, payout_lag, "preflight", scenario=scenario)
         all_rows = history + forecast_rows
+        if apply_reserve and refund_rate > 0:
+            reserve_series = compute_refund_reserve_series(all_rows, refund_rate, refund_days)
+            all_rows = apply_refund_reserve(all_rows, reserve_series)
 
     rows_for_min = [
         r
@@ -202,11 +214,26 @@ def main() -> int:
         print("FAIL: OPEX commitments missing; import OPEX protocol before preflight.")
         return 2
 
-    base_floor = max(ABSOLUTE_CASH_FLOOR_KZT, opex_monthly * 1.0)
-    cons_floor = (opex_monthly * 1.5) + ABSOLUTE_CASH_FLOOR_KZT
+    scenarios_cfg = _load_scenarios_config()
+    abs_floor = float(scenarios_cfg.get("cash_floor_abs_kzt", ABSOLUTE_CASH_FLOOR_KZT))
+    base_mult = float(scenarios_cfg.get("cash_floor_base_mult", 1.0))
+    cons_mult = float(scenarios_cfg.get("cash_floor_cons_mult", 1.5))
+    refund_rate = float(scenarios_cfg.get("refund_reserve_rate", 0.0))
+    refund_days = int(scenarios_cfg.get("refund_reserve_days", 14))
+
+    base_floor = max(abs_floor, opex_monthly * base_mult)
+    cons_floor = (opex_monthly * cons_mult) + abs_floor
 
     base_result = evaluate_preflight(args.db, args.days, "base", base_floor)
-    cons_result = evaluate_preflight(args.db, args.days, "conservative", cons_floor)
+    cons_result = evaluate_preflight(
+        args.db,
+        args.days,
+        "conservative",
+        cons_floor,
+        refund_rate=refund_rate,
+        refund_days=refund_days,
+        apply_reserve=True,
+    )
     ok = cons_result.ok
     summary = PreflightSummary(
         ok=ok,
@@ -224,6 +251,8 @@ def main() -> int:
         f"conservative_floor_kzt: {cons_floor:.2f}",
         f"conservative_min_cash_kzt: {summary.conservative.min_cash:.2f}",
         f"conservative_min_cash_date: {summary.conservative.min_cash_date}",
+        f"refund_reserve_rate: {refund_rate:.4f}",
+        f"refund_reserve_days: {refund_days}",
         f"status: {'PASS' if summary.ok else 'FAIL'}",
     ]
 

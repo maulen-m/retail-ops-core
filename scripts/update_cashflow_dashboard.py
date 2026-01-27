@@ -35,6 +35,7 @@ from scripts.rebuild_cashflow_calendar import (
 from core.config.business_params import get_fx_rates
 from core.cashflow.payout_model import load_payout_model
 from core.cashflow.order_status import normalize_order_status
+from core.cashflow.refund_reserve import compute_refund_reserve_series, apply_refund_reserve
 from core.calc.economics import calc_delivery_fee, calc_net_rev
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 EXPORT_DIR = PROJECT_ROOT / "exports"
@@ -45,6 +46,7 @@ TRUST_REPORT_PATH = EXPORT_DIR / "cashflow_trust_report_{label}.md"
 DRIFT_REPORT_PATH = EXPORT_DIR / "cashflow_drift_report_{label}.md"
 BACKUP_DIR = PROJECT_ROOT / "backups"
 SCENARIOS_CONFIG = PROJECT_ROOT / "config" / "cashflow_scenarios.yaml"
+KASPI_STORES_CONFIG = PROJECT_ROOT / "config" / "kaspi_stores.yaml"
 
 
 @dataclass
@@ -62,6 +64,8 @@ def _load_scenarios_config() -> dict:
         "on_delivery_credit_rate": 0.6,
         "on_delivery_lookback_days": 14,
         "aggressive_enabled": True,
+        "refund_reserve_rate": 0.0,
+        "refund_reserve_days": 14,
     }
     if not SCENARIOS_CONFIG.exists():
         return defaults
@@ -100,6 +104,49 @@ def _load_sync_ages(conn: sqlite3.Connection) -> dict[str, float]:
             continue
         ages[store_code] = (now - last_dt).total_seconds() / 3600
     return ages
+
+
+def _load_required_stores() -> list[str]:
+    if not KASPI_STORES_CONFIG.exists():
+        return []
+    try:
+        data = yaml.safe_load(KASPI_STORES_CONFIG.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    settings = data.get("settings") or {}
+    required = settings.get("required_fresh_stores") or []
+    if required:
+        return list(required)
+    stores = []
+    for code, meta in (data.get("stores") or {}).items():
+        if meta.get("sync_enabled", True):
+            stores.append(code)
+    return stores
+
+
+def _load_order_sync_window(conn: sqlite3.Connection) -> tuple[date | None, date | None]:
+    if not _table_exists(conn, "kaspi_order_sync_log"):
+        return None, None
+    required = _load_required_stores()
+    if not required:
+        return None, None
+    min_dates = []
+    max_dates = []
+    for store in required:
+        row = conn.execute(
+            "SELECT min_date_seen, max_date_seen FROM kaspi_order_sync_log WHERE store_code = ?",
+            (store,),
+        ).fetchone()
+        if not row or not row[0] or not row[1]:
+            return None, None
+        try:
+            min_dates.append(date.fromisoformat(row[0]))
+            max_dates.append(date.fromisoformat(row[1]))
+        except Exception:
+            return None, None
+    if not min_dates or not max_dates:
+        return None, None
+    return max(min_dates), min(max_dates)
 
 
 def _max_sync_age(sync_ages: dict[str, float]) -> float | None:
@@ -340,15 +387,11 @@ def _load_on_delivery_summary(conn: sqlite3.Connection, since: date, until: date
     }
 
 
-def _write_trust_report(
-    path: Path,
-    last_statement_date: str | None,
-    sync_ages: dict[str, float],
+def _compute_trust_counts(
     rows: list[dict],
+    last_statement_date: str | None,
     manual_dates: set[str],
-    last_balance_check: str | None,
-    on_delivery_summary: dict,
-) -> None:
+) -> dict[str, int]:
     statement_days = 0
     modelled_days = 0
     forecast_days = 0
@@ -369,16 +412,33 @@ def _write_trust_report(
             manual_days += 1
         else:
             modelled_days += 1
+    return {
+        "statement_days": statement_days,
+        "manual_days": manual_days,
+        "modelled_days": modelled_days,
+        "forecast_days": forecast_days,
+    }
 
+
+def _write_trust_report(
+    path: Path,
+    last_statement_date: str | None,
+    sync_ages: dict[str, float],
+    rows: list[dict],
+    manual_dates: set[str],
+    last_balance_check: str | None,
+    on_delivery_summary: dict,
+) -> dict[str, int]:
+    counts = _compute_trust_counts(rows, last_statement_date, manual_dates)
     sync_age_hours = _max_sync_age(sync_ages)
     lines = [
         "# Cashflow Trust Report",
         "",
         f"- last_statement_date: {last_statement_date or 'NONE'}",
-        f"- statement_backed_days: {statement_days}",
-        f"- manual_balance_days: {manual_days}",
-        f"- modelled_days: {modelled_days}",
-        f"- forecast_days: {forecast_days}",
+        f"- statement_backed_days: {counts['statement_days']}",
+        f"- manual_balance_days: {counts['manual_days']}",
+        f"- modelled_days: {counts['modelled_days']}",
+        f"- forecast_days: {counts['forecast_days']}",
         f"- last_balance_check_date: {last_balance_check or 'NONE'}",
         f"- order_sync_age_hours_max: {sync_age_hours if sync_age_hours is not None else 'UNKNOWN'}",
         "- order_sync_age_hours_by_store:",
@@ -404,6 +464,7 @@ def _write_trust_report(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
+    return counts
 
 
 def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressive: list[dict], path: Path, meta: dict) -> None:
@@ -691,6 +752,39 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
       border: var(--pixel-border) solid var(--border-primary);
       background: linear-gradient(135deg, rgba(255, 136, 0, 0.08), rgba(0, 0, 0, 0.2));
       box-shadow: 0 0 12px rgba(255, 170, 0, 0.2);
+    }}
+
+    .on-delivery-panel {{
+      margin: 0 0 28px;
+      padding: 14px 16px;
+      border: 1px solid rgba(80, 160, 255, 0.35);
+      background: rgba(20, 24, 36, 0.9);
+      border-radius: 10px;
+    }}
+
+    .on-delivery-panel .panel-title {{
+      font-size: 10px;
+      color: var(--text-dim);
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+    }}
+
+    .on-delivery-table table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }}
+
+    .on-delivery-table th,
+    .on-delivery-table td {{
+      padding: 6px 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }}
+
+    .on-delivery-table th {{
+      color: var(--text-muted);
+      text-align: left;
     }}
 
     .trust-grid {{
@@ -1329,6 +1423,11 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
       <div class="trust-grid" id="trustSummary"></div>
     </section>
 
+    <section class="on-delivery-panel">
+      <div class="panel-title pixel-font">ON-DELIVERY BY STORE</div>
+      <div class="on-delivery-table" id="onDeliveryTable"></div>
+    </section>
+
     <!-- Summary Cards -->
     <section class="summary-container">
       <div class="metrics-header">
@@ -1446,6 +1545,7 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
     // ========================================
     const summary = document.getElementById('summary');
     const trustSummary = document.getElementById('trustSummary');
+    const onDeliveryTable = document.getElementById('onDeliveryTable');
     const forecastToggle = document.getElementById('forecastToggle');
     const statementToggle = document.getElementById('statementToggle');
     const rangeSelect = document.getElementById('rangeSelect');
@@ -1539,6 +1639,11 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
       const baseMin = meta.min_cash_base || {{}};
       const consMin = meta.min_cash_conservative || baseMin;
       const onDelivery = meta.on_delivery_summary || {{}};
+      const reserve = meta.refund_reserve_conservative || {{}};
+      const trustCounts = meta.trust_counts || {{}};
+      const reserveLabel = reserve.rate && reserve.days
+        ? `(${{(reserve.rate * 100).toFixed(0)}}% / ${{reserve.days}}d)`
+        : '';
       trustSummary.innerHTML = `
         <div class="trust-card">
           <div class="trust-label pixel-font">LAST STATEMENT</div>
@@ -1561,9 +1666,51 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
           <div class="trust-value monospace-font">${{formatKzt(consMin.cash_close)}} KZT on ${{consMin.date}}</div>
         </div>
         <div class="trust-card">
+          <div class="trust-label pixel-font">REFUND RESERVE (CONS)</div>
+          <div class="trust-value monospace-font">${{formatKzt(reserve.balance_kzt || 0)}} KZT <span class="subnote monospace-font">${{reserveLabel}}</span></div>
+        </div>
+        <div class="trust-card">
+          <div class="trust-label pixel-font">STATEMENT DAYS</div>
+          <div class="trust-value monospace-font">${{trustCounts.statement_days || 0}}</div>
+        </div>
+        <div class="trust-card">
+          <div class="trust-label pixel-font">MODELLED DAYS</div>
+          <div class="trust-value monospace-font">${{trustCounts.modelled_days || 0}}</div>
+        </div>
+        <div class="trust-card">
           <div class="trust-label pixel-font">ON-DELIVERY (14d)</div>
           <div class="trust-value monospace-font">${{onDelivery.orders || 0}} orders / ${{formatKzt(onDelivery.net_rev_kzt || 0)}} KZT</div>
         </div>
+      `;
+    }}
+
+    function renderOnDeliveryTable() {{
+      if (!onDeliveryTable) return;
+      const summary = meta.on_delivery_summary || {{}};
+      const stores = summary.stores || {{}};
+      const entries = Object.entries(stores).sort((a, b) => (b[1].net_rev_kzt || 0) - (a[1].net_rev_kzt || 0));
+      if (!entries.length) {{
+        onDeliveryTable.innerHTML = '<div class="subnote monospace-font">No on-delivery rows in the lookback window.</div>';
+        return;
+      }}
+      const rowsHtml = entries.map(([store, data]) => `
+        <tr>
+          <td>${{store}}</td>
+          <td>${{data.orders || 0}}</td>
+          <td>${{formatKzt(data.net_rev_kzt || 0)}} KZT</td>
+        </tr>
+      `).join('');
+      onDeliveryTable.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Store</th>
+              <th>Orders</th>
+              <th>Net Rev (KZT)</th>
+            </tr>
+          </thead>
+          <tbody>${{rowsHtml}}</tbody>
+        </table>
       `;
     }}
 
@@ -2271,6 +2418,7 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
     function renderAll() {{
       const filtered = filterRows();
       buildTrustSummary();
+      renderOnDeliveryTable();
       buildSummary(filtered);
       renderTable();
       renderChart();
@@ -2368,6 +2516,34 @@ def _write_drift_report(
         return
 
     start = last_statement - timedelta(days=lookback_days - 1)
+    api_start, api_end = _load_order_sync_window(conn)
+    if not api_start or not api_end:
+        lines = [
+            "# Cashflow Drift Report",
+            f"- window_start: {start.isoformat()}",
+            f"- window_end: {last_statement.isoformat()}",
+            "- coverage_status: INSUFFICIENT COVERAGE (missing order sync window)",
+        ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n")
+        return
+    drift_start = max(start, api_start)
+    drift_end = min(last_statement, api_end)
+    if drift_end < drift_start:
+        lines = [
+            "# Cashflow Drift Report",
+            f"- window_start: {start.isoformat()}",
+            f"- window_end: {last_statement.isoformat()}",
+            f"- api_window_start: {api_start.isoformat()}",
+            f"- api_window_end: {api_end.isoformat()}",
+            "- coverage_status: INSUFFICIENT COVERAGE (no overlap)",
+        ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n")
+        return
+    coverage_days = (drift_end - drift_start).days + 1
+    coverage_pct = (coverage_days / lookback_days) if lookback_days else 0.0
+    coverage_status = "OK" if coverage_days >= lookback_days else "INSUFFICIENT COVERAGE"
     expected_rows = conn.execute(
         """
         SELECT event_date, SUM(amount_kzt) as amount
@@ -2377,7 +2553,7 @@ def _write_drift_report(
           AND event_date BETWEEN ? AND ?
         GROUP BY event_date
         """,
-        (start.isoformat(), last_statement.isoformat()),
+        (drift_start.isoformat(), drift_end.isoformat()),
     ).fetchall()
     actual_rows = conn.execute(
         """
@@ -2388,7 +2564,7 @@ def _write_drift_report(
           AND event_date BETWEEN ? AND ?
         GROUP BY event_date
         """,
-        (start.isoformat(), last_statement.isoformat()),
+        (drift_start.isoformat(), drift_end.isoformat()),
     ).fetchall()
 
     expected = {row[0]: float(row[1] or 0.0) for row in expected_rows}
@@ -2398,6 +2574,13 @@ def _write_drift_report(
         "# Cashflow Drift Report",
         f"- window_start: {start.isoformat()}",
         f"- window_end: {last_statement.isoformat()}",
+        f"- api_window_start: {api_start.isoformat()}",
+        f"- api_window_end: {api_end.isoformat()}",
+        f"- drift_window_start: {drift_start.isoformat()}",
+        f"- drift_window_end: {drift_end.isoformat()}",
+        f"- coverage_days: {coverage_days}",
+        f"- coverage_pct: {coverage_pct:.2f}",
+        f"- coverage_status: {coverage_status}",
         "",
         "| date | expected_kzt | actual_kzt | drift_kzt |",
         "| --- | --- | --- | --- |",
@@ -2406,8 +2589,8 @@ def _write_drift_report(
     total_actual = 0.0
     total_abs = 0.0
 
-    for i in range(lookback_days):
-        day = start + timedelta(days=i)
+    for i in range((drift_end - drift_start).days + 1):
+        day = drift_start + timedelta(days=i)
         key = day.isoformat()
         exp = expected.get(key, 0.0)
         act = actual.get(key, 0.0)
@@ -2417,7 +2600,8 @@ def _write_drift_report(
         total_abs += abs(drift)
         lines.append(f"| {key} | {exp:.2f} | {act:.2f} | {drift:.2f} |")
 
-    mae = total_abs / lookback_days if lookback_days else 0.0
+    drift_days = (drift_end - drift_start).days + 1
+    mae = total_abs / drift_days if drift_days else 0.0
     lines.extend(
         [
             "",
@@ -2697,6 +2881,22 @@ def main() -> int:
     all_rows_conservative = rows + forecast_rows_conservative
     all_rows_aggressive = rows + (forecast_rows_aggressive if aggressive_enabled else forecast_rows)
 
+    refund_rate = float(scenarios_cfg.get("refund_reserve_rate", 0.0))
+    refund_days = int(scenarios_cfg.get("refund_reserve_days", 14))
+    for row in all_rows:
+        row.setdefault("refund_reserve_kzt", 0.0)
+        row.setdefault("refund_reserve_delta_kzt", 0.0)
+    for row in all_rows_aggressive:
+        row.setdefault("refund_reserve_kzt", 0.0)
+        row.setdefault("refund_reserve_delta_kzt", 0.0)
+    if refund_rate > 0:
+        reserve_series = compute_refund_reserve_series(all_rows_conservative, refund_rate, refund_days)
+        all_rows_conservative = apply_refund_reserve(all_rows_conservative, reserve_series)
+    else:
+        for row in all_rows_conservative:
+            row.setdefault("refund_reserve_kzt", 0.0)
+            row.setdefault("refund_reserve_delta_kzt", 0.0)
+
     if last_statement_date:
         try:
             last_statement = date.fromisoformat(last_statement_date)
@@ -2720,8 +2920,11 @@ def main() -> int:
     min_base = _min_cash(all_rows) if all_rows else {"date": None, "cash_close": 0}
     min_cons = _min_cash(all_rows_conservative) if all_rows_conservative else min_base
     min_aggr = _min_cash(all_rows_aggressive) if all_rows_aggressive else min_base
+    refund_balance = 0.0
+    if all_rows_conservative:
+        refund_balance = float(all_rows_conservative[-1].get("refund_reserve_kzt", 0.0) or 0.0)
     trust_path = Path(str(TRUST_REPORT_PATH).format(label=cutoff.isoformat()))
-    _write_trust_report(
+    trust_counts = _write_trust_report(
         trust_path,
         last_statement_date,
         sync_ages,
@@ -2737,26 +2940,32 @@ def main() -> int:
     _write_min_cash(all_rows, all_rows_conservative, MIN_CASH_PATH)
     last_manual = max(manual_dates) if manual_dates else None
     _render_html(
-        all_rows,
-        all_rows_conservative,
-        all_rows_aggressive,
-        HTML_PATH,
-        {
-            "last_statement_date": last_statement_date,
-            "last_manual_balance_date": last_manual,
-            "last_balance_check_date": last_balance_check,
-            "order_sync_age_hours": sync_age_hours,
-            "order_sync_ages": sync_ages,
-            "min_cash_base": min_base,
-            "min_cash_conservative": min_cons,
-            "min_cash_aggressive": min_aggr,
-            "payout_lag_base": base_lag,
-            "payout_lag_conservative": conservative_lag,
-            "on_delivery_summary": on_delivery_summary,
-            "on_delivery_credit_rate": on_delivery_credit_rate,
-            "aggressive_enabled": aggressive_enabled,
-        },
-    )
+            all_rows,
+            all_rows_conservative,
+            all_rows_aggressive,
+            HTML_PATH,
+            {
+                "last_statement_date": last_statement_date,
+                "last_manual_balance_date": last_manual,
+                "last_balance_check_date": last_balance_check,
+                "order_sync_age_hours": sync_age_hours,
+                "order_sync_ages": sync_ages,
+                "trust_counts": trust_counts,
+                "min_cash_base": min_base,
+                "min_cash_conservative": min_cons,
+                "min_cash_aggressive": min_aggr,
+                "refund_reserve_conservative": {
+                    "balance_kzt": refund_balance,
+                    "rate": refund_rate,
+                    "days": refund_days,
+                },
+                "payout_lag_base": base_lag,
+                "payout_lag_conservative": conservative_lag,
+                "on_delivery_summary": on_delivery_summary,
+                "on_delivery_credit_rate": on_delivery_credit_rate,
+                "aggressive_enabled": aggressive_enabled,
+            },
+        )
 
     print(f"Cashflow exports updated: {CSV_PATH} | {HTML_PATH}")
     if applied_daily:
