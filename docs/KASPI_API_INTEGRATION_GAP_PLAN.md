@@ -4,6 +4,8 @@
 
 Document the remaining gaps between the official Kaspi API Q&A docs and the current workflow, and propose a low‑risk integration path that preserves current stability.
 
+See also: `docs/api_docs/api_gap_opprotunity_examples.md` (examples of value unlocked).
+
 ## Inputs
 
 Reviewed formatted docs in `docs/api_docs/formatted/` (Q1, Q2, Q4–Q11).
@@ -69,4 +71,3 @@ Currently we store only order‑level records in `fact_orders_kaspi`. Line‑ite
 - Feature flag name and default value
 - Cache invalidation strategy for masterproduct/point‑of‑service
 - Whether to backfill historical order entries or only new orders
-

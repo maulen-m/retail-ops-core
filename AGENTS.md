@@ -1,5 +1,6 @@
 > CONTROL PLANE (GLOBAL RULES)
 > Control plane: ${ORCH_HOME:-$HOME/Docs/Oracle/agent-scripts-main}
+AGENTS_VERSION: 2026-01-27
 > Read: ${ORCH_HOME:-$HOME/Docs/Oracle/agent-scripts-main}/AGENTS.MD BEFORE ANYTHING (skip if missing).
 >
 > Precedence (highest → lowest):
@@ -9,12 +10,30 @@
 >
 > If instructions conflict: follow higher precedence and log the resolution in .claude/DECISIONS.md.
 
+
 # AGENTS.md — Autonomous_business (Kaspi) — Inventory + PO + Cashflow
 
 Purpose: single always-loaded entrypoint for any agent working in this repo.
 Goal: maximize profit growth while protecting capital (cash survivability + correctness). Prefer links to owning docs over duplication.
 
 ## 0) Mandatory reading order (before coding)
+### REQUIRED: READCHECK handshake (first assistant message)
+Before any code changes, the agent must output a READCHECK block (in chat) and log it to `.claude/SESSION_LOG.md`:
+
+READCHECK:
+- control-plane AGENTS.MD: READ | MISSING
+- repo AGENTS.md: READ
+- CLAUDE.md (if present): READ
+- docs/00_START_HERE.md: READ
+- .claude/OPERATING.md: READ
+- .claude/GOALS.md + .claude/TASKS.md: READ
+- owning spec(s) for this task: <list exact paths>
+- planned verification gates: <list commands>
+- assumptions (if any): <bullets; if none, say NONE>
+
+If READCHECK cannot be completed (missing files / contradictions / unclear scope): STOP and ask.
+
+0) CLAUDE.md (if present; behavioral guardrails)
 1) docs/00_START_HERE.md
 2) .claude/OPERATING.md (how we work + gates + evidence protocol)
 3) Check .claude/GOALS.md + .claude/TASKS.md (current phase, stop conditions, what “DONE” means)

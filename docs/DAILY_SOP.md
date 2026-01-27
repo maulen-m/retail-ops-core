@@ -915,7 +915,7 @@ python scripts/ship_orders_api.py --store UNIVERSAL --verbose
 
 ### Step 2: Download Waybills via API
 
-Downloads waybill PDFs for TODAY's batch only (exact date match).
+Downloads waybill PDFs for TODAY's batch only (exact date match) unless overdue is included.
 
 ```bash
 # Download today's waybills
@@ -929,6 +929,9 @@ python scripts/download_waybills_api.py --date 2025-12-10
 
 # All historical orders (not just today)
 python scripts/download_waybills_api.py --all-dates
+
+# Include overdue orders (planned_date <= today, bounded by lookback)
+python scripts/download_waybills_api.py --include-overdue
 ```
 
 **Output:**
@@ -942,11 +945,14 @@ excel_ui/ActiveOrders/waybills/
 **Filtering:**
 - Only downloads for orders with MY_SIZE filled in CRM
 - Default: Only orders where `planned_date == today`
-- Use `--all-dates` for `planned_date <= today`
+- Use `--include-overdue` for `planned_date <= today` (bounded by lookback)
+- Use `--all-dates` for `planned_date <= today` with no lower bound
 
 ### Step 3: Build Waybill Bundles
 
 Groups PDFs by store and type. Same as Phase 11, but uses API-downloaded waybills.
+When overdue is included, output is split into:
+`excel_ui/Kaspi_orders/Today/TODAY/` and `excel_ui/Kaspi_orders/Today/OVERDUE/`.
 
 ```bash
 python scripts/build_daily_waybills.py --verbose
