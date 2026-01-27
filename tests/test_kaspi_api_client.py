@@ -724,6 +724,24 @@ class TestPendingAssemblyOrders:
         assert result.data['meta']['totalCount'] == 2
 
 
+def test_list_all_orders_passes_status(mock_env):
+    client = KaspiAPIClient('UNIVERSAL')
+    captured = {}
+
+    def fake_list_orders(**kwargs):
+        captured.update(kwargs)
+        return APIResponse(success=True, data={'data': []}, status_code=200)
+
+    with patch.object(client, "list_orders", side_effect=fake_list_orders):
+        client.list_all_orders(
+            state="KASPI_DELIVERY",
+            status="ACCEPTED_BY_MERCHANT",
+            since="2026-01-01",
+        )
+
+    assert captured["status"] == "ACCEPTED_BY_MERCHANT"
+
+
 class TestAPIConstants:
     """Tests for API configuration constants."""
 

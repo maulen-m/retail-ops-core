@@ -472,6 +472,7 @@ class KaspiAPIClient:
     def list_all_orders(
         self,
         state: Optional[str] = None,
+        status: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
         max_pages: int = 100,
@@ -484,6 +485,7 @@ class KaspiAPIClient:
 
         Args:
             state: Filter by order state
+            status: Filter by order status (APPROVED_BY_BANK, ACCEPTED_BY_MERCHANT, etc.)
             since: Filter orders created after this date
             until: Filter orders created before this date
             max_pages: Maximum pages to fetch (safety limit)
@@ -501,6 +503,7 @@ class KaspiAPIClient:
         while page < max_pages:
             response = self.list_orders(
                 state=state,
+                status=status,
                 since=since,
                 until=until,
                 page_number=page,

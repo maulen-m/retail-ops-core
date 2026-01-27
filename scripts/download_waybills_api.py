@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -110,6 +111,38 @@ DB_STORE_TO_API = {
     'PP2': 'ACMEWEAR',
 }
 
+ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
+READY_STATUS_RU = "Ожидает передачи курьеру"
+READY_STATUS_EN = "Awaiting courier"
+
+
+def _is_signature_required(value: Any) -> bool:
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "да", "требуется", "required"}:
+        return True
+    if text in {"false", "0", "no", "нет", "не требуется", "not required"}:
+        return False
+    return False
+
+
+def _is_accepted_by_merchant(value: Any) -> bool:
+    return str(value or "").strip().upper() == ACCEPTED_BY_MERCHANT
+
+
+def _is_ready_status(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.upper() == "READY":
+        return True
+    return text in {READY_STATUS_RU, READY_STATUS_EN}
+
 
 def resolve_db_path(explicit: Optional[Path]) -> Optional[Path]:
     """Resolve DB path, preferring DATA_DIR if present."""
@@ -180,8 +213,10 @@ def get_target_orders_from_api(
     try:
         orders = client.list_all_orders(
             state='KASPI_DELIVERY',
+            status=ACCEPTED_BY_MERCHANT,
             since=since,
             include_orders='user',
+            signature_required=False,
         )
     except Exception as exc:
         logger.warning(f"{store_code}: API list error - {exc}")
@@ -193,6 +228,12 @@ def get_target_orders_from_api(
     filtered = []
     min_date = target_date - timedelta(days=since_days)
     for order in orders:
+        attrs = order.get("attributes", {}) or {}
+        status = attrs.get("status")
+        if not _is_accepted_by_merchant(status):
+            continue
+        if _is_signature_required(attrs.get("signatureRequired")):
+            continue
         planned_date = _planned_date_from_order(order)
         if planned_date is None:
             continue
@@ -320,7 +361,15 @@ def get_target_order_ids_from_db(
             return {}
 
         query = """
-            SELECT order_id, store_code, assigned_size, my_size, planned_shipment_date
+            SELECT
+                order_id,
+                store_code,
+                assigned_size,
+                my_size,
+                planned_shipment_date,
+                kaspi_status_detail,
+                internal_status,
+                signature_required
             FROM fact_orders_kaspi
             WHERE (
                 (assigned_size IS NOT NULL AND assigned_size != '')
@@ -349,6 +398,17 @@ def get_target_order_ids_from_db(
         if order_id.endswith(".0"):
             order_id = order_id[:-2]
         if not order_id:
+            continue
+
+        kaspi_status_detail = row["kaspi_status_detail"]
+        internal_status = row["internal_status"]
+        if not _is_accepted_by_merchant(kaspi_status_detail):
+            if kaspi_status_detail and str(kaspi_status_detail).strip():
+                continue
+            if not _is_ready_status(internal_status):
+                continue
+
+        if _is_signature_required(row["signature_required"]):
             continue
 
         api_store = normalize_api_store_code(row["store_code"])
@@ -406,14 +466,34 @@ def get_target_order_ids_from_crm(
 
     logger.info(f"Reading CRM from {crm_path}")
     df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    status_col = None
+    for name in ("Статус", "STATUS", "Status"):
+        if name in df.columns:
+            status_col = name
+            break
+    signature_col = None
+    for name in ("Требуется подписание", "Signature Required"):
+        if name in df.columns:
+            signature_col = name
+            break
 
     orders_by_store: dict[str, set[str]] = defaultdict(set)
     skipped_no_size = 0
     skipped_wrong_date = 0
+    skipped_wrong_status = 0
+    skipped_signature_required = 0
     skipped_unknown_store = 0
     store_filter_api = normalize_api_store_code(store_filter) if store_filter else None
 
     for _, row in df.iterrows():
+        if status_col is not None:
+            if not _is_ready_status(row.get(status_col)):
+                skipped_wrong_status += 1
+                continue
+        if signature_col is not None:
+            if _is_signature_required(row.get(signature_col)):
+                skipped_signature_required += 1
+                continue
         # Check MY_SIZE is filled
         my_size = str(row.get('MY_SIZE', '')).strip()
         if not my_size or my_size.lower() in ('nan', 'none', ''):
@@ -478,7 +558,10 @@ def get_target_order_ids_from_crm(
             )
         else:
             logger.info(f"Found {total_orders} orders in CRM (date <= {target_date})")
-    logger.info(f"Skipped {skipped_no_size} without MY_SIZE, {skipped_wrong_date} wrong date")
+    logger.info(
+        f"Skipped {skipped_no_size} without MY_SIZE, {skipped_wrong_date} wrong date, "
+        f"{skipped_wrong_status} wrong status, {skipped_signature_required} signature required"
+    )
     if skipped_unknown_store:
         logger.info(f"Skipped {skipped_unknown_store} with unknown stores")
 
@@ -913,6 +996,26 @@ def download_all_waybills(
             status_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         except Exception as exc:
             logger.warning(f"Failed to write selection status file: {exc}")
+        selection_path = output_dir / "_waybill_selection_orders.json"
+        selection_payload = {
+            "target_date": target_date.isoformat(),
+            "selection_status": selection_status,
+            "include_overdue": include_overdue,
+            "all_dates": all_dates,
+            "exact_date": exact_date,
+            "since_days": since_days,
+            "stores": {
+                store: sorted(list(order_ids))
+                for store, order_ids in target_orders_by_store.items()
+            },
+        }
+        try:
+            selection_path.write_text(
+                json.dumps(selection_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to write selection cache: {exc}")
 
     return {
         'downloaded': total_downloaded,

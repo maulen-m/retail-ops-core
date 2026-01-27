@@ -7,6 +7,8 @@ Phase 11 TASK-192: Daily waybill grouping workflow.
 Reads orders from SALES_KSP_CRM_V3.xlsx (with MY_SIZE filled), extracts waybill PDFs
 from ZIP files, groups them by store/type, and creates organized output folders with manifests.
 
+If --include-overdue is used, outputs are split into TODAY/OVERDUE subfolders.
+
 Usage:
     python scripts/build_daily_waybills.py
     python scripts/build_daily_waybills.py --date 2025-12-10
@@ -16,6 +18,7 @@ Usage:
 
 import argparse
 import csv
+import json
 import logging
 import os
 import re
@@ -50,6 +53,9 @@ logger = logging.getLogger(__name__)
 
 # Kaspi dates are in Asia/Almaty timezone
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
+ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
+READY_STATUS_RU = "Ожидает передачи курьеру"
+READY_STATUS_EN = "Awaiting courier"
 
 # Project root
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -75,6 +81,34 @@ STORE_MAP = {
     '30290083_PP1': '11KZ',
     '30000002_PP1': 'STORE-B',
 }
+
+
+def _is_signature_required(value: Any) -> bool:
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "да", "требуется", "required"}:
+        return True
+    if text in {"false", "0", "no", "нет", "не требуется", "not required"}:
+        return False
+    return False
+
+
+def _is_accepted_by_merchant(value: Any) -> bool:
+    return str(value or "").strip().upper() == ACCEPTED_BY_MERCHANT
+
+
+def _is_ready_status(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.upper() == "READY":
+        return True
+    return text in {READY_STATUS_RU, READY_STATUS_EN}
 
 # Reverse mapping for lookup
 STORE_NAME_TO_CODE = {v: k for k, v in STORE_MAP.items()}
@@ -280,7 +314,9 @@ def get_api_order_ids_for_date(
             client = KaspiAPIClient(store_code=store_code)
             orders = client.list_all_orders(
                 state='KASPI_DELIVERY',
+                status=ACCEPTED_BY_MERCHANT,
                 since=since,
+                signature_required=False,
                 include_orders='user',
             )
         except KaspiAuthError as exc:
@@ -297,6 +333,11 @@ def get_api_order_ids_for_date(
 
         ids: set[str] = set()
         for order in orders:
+            attrs = order.get("attributes", {}) or {}
+            if not _is_accepted_by_merchant(attrs.get("status")):
+                continue
+            if _is_signature_required(attrs.get("signatureRequired")):
+                continue
             planned_date = _planned_date_from_order(order)
             if include_overdue:
                 if planned_date and min_date <= planned_date <= target_date:
@@ -315,6 +356,45 @@ def get_api_order_ids_for_date(
             logger.info(f"{store_code}: {len(ids)} orders for {target_date}")
 
     return orders_by_store, error_stores
+
+
+def _selection_mode(include_overdue: bool, exact_date: bool) -> str:
+    if include_overdue:
+        return "overdue"
+    if exact_date:
+        return "exact"
+    return "exact"
+
+
+def load_selection_cache(
+    waybill_dir: Path,
+    target_date: date,
+    include_overdue: bool,
+    exact_date: bool,
+) -> Optional[dict[str, set[str]]]:
+    """Load API selection cache from waybill download step, if compatible."""
+    cache_path = waybill_dir / "waybills" / "_waybill_selection_orders.json"
+    if not cache_path.exists():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if payload.get("target_date") != target_date.isoformat():
+        return None
+
+    requested_mode = _selection_mode(include_overdue, exact_date)
+    cache_mode = "overdue" if payload.get("include_overdue") else "exact"
+    if payload.get("all_dates"):
+        cache_mode = "all"
+    if requested_mode != cache_mode:
+        return None
+
+    stores = {store: set(order_ids or []) for store, order_ids in (payload.get("stores") or {}).items()}
+    if not any(stores.values()):
+        return None
+    return stores
 
 
 def normalize_store_display(value: Any) -> str:
@@ -344,6 +424,18 @@ def _coerce_str(value: Any) -> str:
     if value is None or pd.isna(value):
         return ""
     return str(value).strip()
+
+
+def load_crm_dataframe(crm_path: Path, sheet_name: str) -> Optional[pd.DataFrame]:
+    """Load CRM once to avoid repeated reads."""
+    if not crm_path.exists():
+        return None
+    try:
+        logger.info(f"Reading CRM from {crm_path}")
+        return pd.read_excel(crm_path, sheet_name=sheet_name)
+    except Exception as exc:
+        logger.warning(f"Failed to read CRM workbook: {exc}")
+        return None
 
 
 def _pick_size(assigned_size: Any, my_size: Any) -> str:
@@ -393,7 +485,10 @@ def read_db_orders(
                 quantity,
                 assigned_size,
                 my_size,
-                planned_shipment_date
+                planned_shipment_date,
+                kaspi_status_detail,
+                internal_status,
+                signature_required
             FROM fact_orders_kaspi
             WHERE (
                 (assigned_size IS NOT NULL AND assigned_size != '')
@@ -436,6 +531,16 @@ def read_db_orders(
         planned_date = parse_date(row["planned_shipment_date"])
         if not planned_date:
             skipped_no_date += 1
+            continue
+
+        kaspi_status_detail = row["kaspi_status_detail"]
+        internal_status = row["internal_status"]
+        if not _is_accepted_by_merchant(kaspi_status_detail):
+            if kaspi_status_detail and str(kaspi_status_detail).strip():
+                continue
+            if not _is_ready_status(internal_status):
+                continue
+        if _is_signature_required(row["signature_required"]):
             continue
 
         kaspi_offer_name = _coerce_str(row["kaspi_offer_name"])
@@ -493,6 +598,7 @@ def read_crm_orders(
     order_id_filter: Optional[set[str]] = None,
     lookback_days: Optional[int] = None,
     apply_date_filter: bool = True,
+    crm_df: Optional[pd.DataFrame] = None,
 ) -> list[OrderItem]:
     """
     Read orders from CRM Excel file.
@@ -506,8 +612,10 @@ def read_crm_orders(
     if not crm_path.exists():
         raise FileNotFoundError(f"CRM file not found: {crm_path}")
 
-    logger.info(f"Reading CRM from {crm_path}")
-    df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    df = crm_df
+    if df is None:
+        logger.info(f"Reading CRM from {crm_path}")
+        df = pd.read_excel(crm_path, sheet_name=sheet_name)
 
     orders = []
     skipped_no_size = 0
@@ -637,6 +745,7 @@ def enrich_orders_with_crm(
     target_date: date,
     lookback_days: Optional[int] = None,
     apply_date_filter: bool = True,
+    crm_df: Optional[pd.DataFrame] = None,
 ) -> list[OrderItem]:
     """Use CRM rows to enrich grouping fields (Kaspi_name_core, MY_SIZE, qty)."""
     if not db_orders:
@@ -650,6 +759,7 @@ def enrich_orders_with_crm(
         order_id_filter=order_ids,
         lookback_days=lookback_days,
         apply_date_filter=apply_date_filter,
+        crm_df=crm_df,
     )
     if not crm_orders:
         return db_orders
@@ -681,6 +791,7 @@ def get_crm_missing_info(
     target_date: date,
     order_ids: set[str],
     lookback_days: Optional[int] = None,
+    crm_df: Optional[pd.DataFrame] = None,
 ) -> tuple[set[str], set[str]]:
     """
     Return (missing_in_crm, missing_size) for target_date.
@@ -691,7 +802,9 @@ def get_crm_missing_info(
     if not crm_path.exists() or not order_ids:
         return set(order_ids), set()
 
-    df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    df = crm_df
+    if df is None:
+        df = pd.read_excel(crm_path, sheet_name=sheet_name)
     missing_in_crm = set(order_ids)
     missing_size = set()
 
@@ -1031,6 +1144,32 @@ def count_packages(groups: list[WaybillGroup]) -> int:
     return packages
 
 
+def is_overdue_group(group: WaybillGroup, target_date: date) -> bool:
+    """Return True if any planned date is before target_date."""
+    planned_dates = [item.planned_date for item in group.items if item.planned_date]
+    if not planned_dates:
+        return False
+    return min(planned_dates) < target_date
+
+
+def split_groups_by_overdue(
+    groups_by_store: dict[str, list[WaybillGroup]],
+    target_date: date,
+) -> tuple[dict[str, list[WaybillGroup]], dict[str, list[WaybillGroup]]]:
+    """Split groups into (today, overdue) by planned date."""
+    today: dict[str, list[WaybillGroup]] = defaultdict(list)
+    overdue: dict[str, list[WaybillGroup]] = defaultdict(list)
+
+    for store, groups in groups_by_store.items():
+        for group in groups:
+            if is_overdue_group(group, target_date):
+                overdue[store].append(group)
+            else:
+                today[store].append(group)
+
+    return dict(today), dict(overdue)
+
+
 def build_store_output(
     store_name: str,
     groups: list[WaybillGroup],
@@ -1065,19 +1204,22 @@ def build_store_output(
         logger.info(f"DRY RUN: Would create {store_dir}")
         return stats
 
-    # Create directories
-    normal_dir = store_dir / "NORMAL_singles"
-    multi_line_dir = store_dir / "SPECIAL_multi_line"
-    multi_qty_dir = store_dir / "SPECIAL_multi_qty"
-
-    normal_dir.mkdir(parents=True, exist_ok=True)
-    multi_line_dir.mkdir(parents=True, exist_ok=True)
-    multi_qty_dir.mkdir(parents=True, exist_ok=True)
-
     # Group by type
     normal_groups = [g for g in groups if g.group_type == "NORMAL"]
     multi_qty_groups = [g for g in groups if g.group_type == "MULTI_QTY"]
     multi_line_groups = [g for g in groups if g.group_type == "MULTI_LINE"]
+
+    # Create directories (only for non-empty groups)
+    store_dir.mkdir(parents=True, exist_ok=True)
+    normal_dir = store_dir / "NORMAL_singles" if normal_groups else None
+    multi_line_dir = store_dir / "SPECIAL_multi_line" if multi_line_groups else None
+    multi_qty_dir = store_dir / "SPECIAL_multi_qty" if multi_qty_groups else None
+    if normal_dir:
+        normal_dir.mkdir(parents=True, exist_ok=True)
+    if multi_line_dir:
+        multi_line_dir.mkdir(parents=True, exist_ok=True)
+    if multi_qty_dir:
+        multi_qty_dir.mkdir(parents=True, exist_ok=True)
 
     # Sort each type
     normal_groups.sort(key=manifest_sort_key)
@@ -1421,6 +1563,8 @@ def main(
         'multi_line': 0,
     }
 
+    crm_df = load_crm_dataframe(crm_path, sheet_name)
+
     # Read orders (DB-first, CRM fallback)
     resolved_db_path = resolve_db_path(db_path)
     orders: list[OrderItem] = []
@@ -1428,24 +1572,36 @@ def main(
 
     # Prefer Kaspi API planned date for selection (freshest)
     api_since_days = max(lookback_days if lookback_days is not None else 7, 7)
-    api_orders_by_store, api_error_stores = get_api_order_ids_for_date(
-        target_date=target_date,
-        since_days=api_since_days,
-        verbose=verbose,
-        include_overdue=include_overdue,
+    api_orders_by_store: dict[str, set[str]] = {}
+    api_error_stores: set[str] = set()
+    selection_cache = load_selection_cache(
+        waybill_dir, target_date, include_overdue=include_overdue, exact_date=exact_date
     )
-    if api_error_stores:
-        logger.warning(
-            "API selection failed for stores: "
-            + ", ".join(sorted(api_error_stores))
-            + " — falling back to DB/CRM selection for all stores"
-        )
-        api_order_ids = set()
-    elif api_orders_by_store:
+    if selection_cache:
+        api_orders_by_store = selection_cache
         api_order_ids = set().union(*api_orders_by_store.values())
         logger.info(
-            f"API selection: {len(api_order_ids)} orders for {target_date}"
+            f"Using cached API selection: {len(api_order_ids)} orders for {target_date}"
         )
+    else:
+        api_orders_by_store, api_error_stores = get_api_order_ids_for_date(
+            target_date=target_date,
+            since_days=api_since_days,
+            verbose=verbose,
+            include_overdue=include_overdue,
+        )
+        if api_error_stores:
+            logger.warning(
+                "API selection failed for stores: "
+                + ", ".join(sorted(api_error_stores))
+                + " — falling back to DB/CRM selection for all stores"
+            )
+            api_order_ids = set()
+        elif api_orders_by_store:
+            api_order_ids = set().union(*api_orders_by_store.values())
+            logger.info(
+                f"API selection: {len(api_order_ids)} orders for {target_date}"
+            )
 
     if resolved_db_path:
         logger.info(f"DB: {resolved_db_path}")
@@ -1465,6 +1621,7 @@ def main(
                 target_date,
                 lookback_days,
                 apply_date_filter=not bool(api_order_ids),
+                crm_df=crm_df,
             )
             # Add CRM-only orders missing in DB to avoid exclusions
             crm_all = read_crm_orders(
@@ -1474,6 +1631,7 @@ def main(
                 order_id_filter=api_order_ids if api_order_ids else None,
                 lookback_days=lookback_days,
                 apply_date_filter=not bool(api_order_ids),
+                crm_df=crm_df,
             )
             if crm_all:
                 existing_ids = {o.order_id for o in orders}
@@ -1494,6 +1652,7 @@ def main(
             order_id_filter=api_order_ids if api_order_ids else None,
             lookback_days=lookback_days,
             apply_date_filter=not bool(api_order_ids),
+            crm_df=crm_df,
         )
     stats['orders_read'] = len(orders)
 
@@ -1520,7 +1679,12 @@ def main(
         if db_orders or api_order_ids:
             base_ids = api_order_ids or {o.order_id for o in db_orders}
             missing_crm_ids, missing_size_ids = get_crm_missing_info(
-                crm_path, sheet_name, target_date, base_ids, lookback_days
+                crm_path,
+                sheet_name,
+                target_date,
+                base_ids,
+                lookback_days,
+                crm_df=crm_df,
             )
             db_store_map = {o.order_id: o.store_name for o in db_orders}
             for oid in sorted(missing_crm_ids):
@@ -1552,19 +1716,37 @@ def main(
         # Date prefix for folders (DD.MM.YY)
         date_prefix = target_date.strftime("%d.%m.%y")
 
-        # Build output for each store
-        for store_name, store_groups in groups_by_store.items():
-            logger.info(f"Processing store: {store_name} ({len(store_groups)} groups)")
-
-            store_stats = build_store_output(
-                store_name, store_groups, output_dir, date_prefix, dry_run
+        output_sets: list[tuple[str, dict[str, list[WaybillGroup]]]] = []
+        if include_overdue:
+            today_groups, overdue_groups = split_groups_by_overdue(
+                groups_by_store, target_date
             )
+            if today_groups:
+                output_sets.append(("TODAY", today_groups))
+            if overdue_groups:
+                output_sets.append(("OVERDUE", overdue_groups))
+        else:
+            output_sets.append(("", dict(groups_by_store)))
 
-            stats['stores_processed'] += 1
-            stats['total_packages'] += store_stats['packages']
-            stats['normal'] += store_stats['normal']
-            stats['multi_qty'] += store_stats['multi_qty']
-            stats['multi_line'] += store_stats['multi_line']
+        # Build output for each store
+        for label, store_groups_map in output_sets:
+            base_dir = output_dir / label if label else output_dir
+            if not dry_run and store_groups_map:
+                base_dir.mkdir(parents=True, exist_ok=True)
+            for store_name, store_groups in store_groups_map.items():
+                logger.info(
+                    f"Processing store: {store_name} ({len(store_groups)} groups)"
+                )
+
+                store_stats = build_store_output(
+                    store_name, store_groups, base_dir, date_prefix, dry_run
+                )
+
+                stats['stores_processed'] += 1
+                stats['total_packages'] += store_stats['packages']
+                stats['normal'] += store_stats['normal']
+                stats['multi_qty'] += store_stats['multi_qty']
+                stats['multi_line'] += store_stats['multi_line']
 
         # Write top-level files
         if not dry_run:

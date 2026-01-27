@@ -8,6 +8,9 @@ Checks:
 - DB pending orders for target date (fact_orders_kaspi)
 - ActiveOrders export for target date (if file exists)
 
+Optional:
+- --include-overdue includes planned date <= target (bounded by --lookback-days if set)
+
 Prints mismatches and exits with code:
   0 = OK / no mismatches found
   1 = missing required files or DB not available
@@ -38,6 +41,37 @@ ALMATY_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_CRM = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
 DEFAULT_SHEET = "SALES_KSP_CRM_1"
 DEFAULT_ACTIVE = data_path("excel_ui", "ActiveOrders", "ActiveOrders.xlsx")
+ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
+READY_STATUS_RU = "Ожидает передачи курьеру"
+READY_STATUS_EN = "Awaiting courier"
+
+
+def _is_signature_required(value) -> bool:
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "да", "требуется", "required"}:
+        return True
+    if text in {"false", "0", "no", "нет", "не требуется", "not required"}:
+        return False
+    return False
+
+
+def _is_accepted_by_merchant(value) -> bool:
+    return str(value or "").strip().upper() == ACCEPTED_BY_MERCHANT
+
+
+def _is_ready_status(value) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.upper() == "READY":
+        return True
+    return text in {READY_STATUS_RU, READY_STATUS_EN}
 
 
 def _norm_status(value: str) -> str:
@@ -87,7 +121,13 @@ def _get_target_date(arg: Optional[str]) -> date:
     return dtp.parse(arg).date()
 
 
-def read_crm_pending(crm_path: Path, sheet: str, target_date: date) -> Set[str]:
+def read_crm_pending(
+    crm_path: Path,
+    sheet: str,
+    target_date: date,
+    include_overdue: bool = False,
+    lookback_days: Optional[int] = None,
+) -> Set[str]:
     df = pd.read_excel(crm_path, sheet_name=sheet)
 
     order_col = None
@@ -97,6 +137,11 @@ def read_crm_pending(crm_path: Path, sheet: str, target_date: date) -> Set[str]:
             break
 
     status_col = "Статус" if "Статус" in df.columns else None
+    signature_col = None
+    for name in ("Требуется подписание", "Signature Required"):
+        if name in df.columns:
+            signature_col = name
+            break
     planned_col = None
     for name in ("PLANNED_SHIPPING_DATE", "Плановая дата передачи курьеру"):
         if name in df.columns:
@@ -112,35 +157,77 @@ def read_crm_pending(crm_path: Path, sheet: str, target_date: date) -> Set[str]:
         if not order_id:
             continue
         planned = _parse_date(row.get(planned_col))
-        if planned != target_date:
+        if not planned:
             continue
-        status = str(row.get(status_col) or "").strip()
-        if status != "Ожидает передачи курьеру":
+        if include_overdue:
+            if planned > target_date:
+                continue
+            if lookback_days is not None:
+                min_date = target_date - timedelta(days=lookback_days)
+                if planned < min_date:
+                    continue
+        else:
+            if planned != target_date:
+                continue
+        status = row.get(status_col)
+        if not _is_ready_status(status):
+            continue
+        if signature_col and _is_signature_required(row.get(signature_col)):
             continue
         pending.add(order_id)
 
     return pending
 
 
-def read_active_orders_pending(active_path: Path, target_date: date) -> Set[str]:
+def read_active_orders_pending(
+    active_path: Path,
+    target_date: date,
+    include_overdue: bool = False,
+    lookback_days: Optional[int] = None,
+) -> Set[str]:
     if not active_path.exists():
         return set()
     df = pd.read_excel(active_path)
     if "№ заказа" not in df.columns or "Плановая дата передачи курьеру" not in df.columns:
         return set()
+    status_col = "Статус" if "Статус" in df.columns else None
+    signature_col = None
+    for name in ("Требуется подписание", "Signature Required"):
+        if name in df.columns:
+            signature_col = name
+            break
     pending = set()
     for _, row in df.iterrows():
         order_id = _clean_order_id(row.get("№ заказа"))
         if not order_id:
             continue
-        planned = _parse_date(row.get("Плановая дата передачи курьеру"))
-        if planned != target_date:
+        if status_col and not _is_ready_status(row.get(status_col)):
             continue
+        if signature_col and _is_signature_required(row.get(signature_col)):
+            continue
+        planned = _parse_date(row.get("Плановая дата передачи курьеру"))
+        if not planned:
+            continue
+        if include_overdue:
+            if planned > target_date:
+                continue
+            if lookback_days is not None:
+                min_date = target_date - timedelta(days=lookback_days)
+                if planned < min_date:
+                    continue
+        else:
+            if planned != target_date:
+                continue
         pending.add(order_id)
     return pending
 
 
-def read_db_pending(db_path: Path, target_date: date) -> Tuple[int, Set[str]]:
+def read_db_pending(
+    db_path: Path,
+    target_date: date,
+    include_overdue: bool = False,
+    lookback_days: Optional[int] = None,
+) -> Tuple[int, Set[str]]:
     if not db_path.exists():
         return 0, set()
 
@@ -151,14 +238,27 @@ def read_db_pending(db_path: Path, target_date: date) -> Tuple[int, Set[str]]:
         if not table:
             return 0, set()
 
-        rows = conn.execute(
+        if include_overdue:
+            query = """
+                SELECT order_id, kaspi_status, kaspi_status_detail, internal_status, signature_required
+                FROM fact_orders_kaspi
+                WHERE planned_shipment_date <= ?
             """
-            SELECT order_id, kaspi_status, internal_status
-            FROM fact_orders_kaspi
-            WHERE planned_shipment_date = ?
-            """,
-            (target_date.isoformat(),),
-        ).fetchall()
+            params = [target_date.isoformat()]
+            if lookback_days is not None:
+                min_date = (target_date - timedelta(days=lookback_days)).isoformat()
+                query += " AND planned_shipment_date >= ?"
+                params.append(min_date)
+            rows = conn.execute(query, params).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT order_id, kaspi_status, kaspi_status_detail, internal_status, signature_required
+                FROM fact_orders_kaspi
+                WHERE planned_shipment_date = ?
+                """,
+                (target_date.isoformat(),),
+            ).fetchall()
 
     total = len(rows)
     pending = set()
@@ -176,19 +276,22 @@ def read_db_pending(db_path: Path, target_date: date) -> Tuple[int, Set[str]]:
         "возвращен",
         "возвращается",
     }
-    pending_status = {"kaspi_delivery", "ожидаетпередачикурьеру"}
-    pending_internal = {"ready", "shipped"}
-
     for row in rows:
         order_id = _clean_order_id(row["order_id"])
         if not order_id:
             continue
         status_norm = _norm_status(row["kaspi_status"])
         internal_norm = _norm_status(row["internal_status"])
+        status_detail = row["kaspi_status_detail"]
+        if _is_signature_required(row["signature_required"]):
+            continue
 
         if status_norm in terminal or internal_norm in terminal:
             continue
-        if status_norm in pending_status or internal_norm in pending_internal:
+        if _is_accepted_by_merchant(status_detail):
+            pending.add(order_id)
+            continue
+        if (status_detail is None or str(status_detail).strip() == "") and _is_ready_status(row["internal_status"]):
             pending.add(order_id)
 
     return total, pending
@@ -201,26 +304,51 @@ def main() -> int:
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--active-orders", type=Path, default=DEFAULT_ACTIVE)
     parser.add_argument("--date", type=str, default="today")
+    parser.add_argument("--include-overdue", action="store_true")
+    parser.add_argument("--lookback-days", type=int, default=None)
     args = parser.parse_args()
 
     target_date = _get_target_date(args.date)
 
-    print(f"Pending order validation for {target_date.isoformat()}")
+    if args.include_overdue:
+        window = ""
+        if args.lookback_days is not None:
+            min_date = target_date - timedelta(days=args.lookback_days)
+            window = f" (range {min_date.isoformat()} to {target_date.isoformat()})"
+        print(f"Pending order validation for <= {target_date.isoformat()}{window}")
+    else:
+        print(f"Pending order validation for {target_date.isoformat()}")
 
     if not args.crm_file.exists():
         print(f"ERROR: CRM file not found: {args.crm_file}")
         return 1
 
-    crm_pending = read_crm_pending(args.crm_file, args.sheet, target_date)
+    crm_pending = read_crm_pending(
+        args.crm_file,
+        args.sheet,
+        target_date,
+        include_overdue=args.include_overdue,
+        lookback_days=args.lookback_days,
+    )
     print(f"CRM pending orders: {len(crm_pending)}")
 
-    db_total, db_pending = read_db_pending(args.db_path, target_date)
+    db_total, db_pending = read_db_pending(
+        args.db_path,
+        target_date,
+        include_overdue=args.include_overdue,
+        lookback_days=args.lookback_days,
+    )
     if db_total == 0:
         print("DB check skipped (no orders for date or table missing).")
     else:
         print(f"DB orders for date: {db_total} (pending={len(db_pending)})")
 
-    active_pending = read_active_orders_pending(args.active_orders, target_date)
+    active_pending = read_active_orders_pending(
+        args.active_orders,
+        target_date,
+        include_overdue=args.include_overdue,
+        lookback_days=args.lookback_days,
+    )
     if active_pending:
         print(f"ActiveOrders pending: {len(active_pending)}")
     else:

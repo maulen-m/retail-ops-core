@@ -7,6 +7,7 @@ Compares Kaspi API (planned date = target) vs CRM/DB/PDF/output.
 
 import argparse
 import csv
+import json
 import logging
 import re
 import sys
@@ -39,6 +40,26 @@ logger = logging.getLogger(__name__)
 
 # Kaspi dates are in Asia/Almaty timezone
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
+ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
+
+
+def _is_signature_required(value: Any) -> bool:
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "да", "требуется", "required"}:
+        return True
+    if text in {"false", "0", "no", "нет", "не требуется", "not required"}:
+        return False
+    return False
+
+
+def _is_accepted_by_merchant(value: Any) -> bool:
+    return str(value or "").strip().upper() == ACCEPTED_BY_MERCHANT
 
 DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
 DEFAULT_WAYBILL_DIR = data_path("excel_ui", "ActiveOrders")
@@ -114,6 +135,7 @@ def get_api_orders_by_store(
     since_days: int = 7,
     store_filter: Optional[str] = None,
     verbose: bool = False,
+    include_overdue: bool = False,
 ) -> tuple[dict[str, set[str]], set[str]]:
     orders_by_store: dict[str, set[str]] = {}
     error_stores: set[str] = set()
@@ -125,12 +147,15 @@ def get_api_orders_by_store(
 
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime("%Y-%m-%d")
 
+    min_date = target_date - timedelta(days=since_days)
     for store_code in stores:
         try:
             client = KaspiAPIClient(store_code=store_code)
             orders = client.list_all_orders(
                 state="KASPI_DELIVERY",
+                status=ACCEPTED_BY_MERCHANT,
                 since=since,
+                signature_required=False,
                 include_orders="user",
             )
         except KaspiAuthError as exc:
@@ -147,11 +172,22 @@ def get_api_orders_by_store(
 
         ids = set()
         for order in orders:
+            attrs = order.get("attributes", {}) or {}
+            if not _is_accepted_by_merchant(attrs.get("status")):
+                continue
+            if _is_signature_required(attrs.get("signatureRequired")):
+                continue
             planned = _planned_date_from_order(order)
-            if planned == target_date:
-                code = order.get("attributes", {}).get("code", "")
-                if code:
-                    ids.add(code)
+            if include_overdue:
+                if planned and min_date <= planned <= target_date:
+                    code = order.get("attributes", {}).get("code", "")
+                    if code:
+                        ids.add(code)
+            else:
+                if planned == target_date:
+                    code = order.get("attributes", {}).get("code", "")
+                    if code:
+                        ids.add(code)
 
         if ids:
             orders_by_store[store_code] = ids
@@ -161,10 +197,42 @@ def get_api_orders_by_store(
     return orders_by_store, error_stores
 
 
+def load_selection_cache(
+    waybill_dir: Path,
+    target_date: date,
+    include_overdue: bool,
+) -> Optional[dict[str, set[str]]]:
+    """Load cached API selection from waybill download step."""
+    cache_path = waybill_dir / "waybills" / "_waybill_selection_orders.json"
+    if not cache_path.exists():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if payload.get("target_date") != target_date.isoformat():
+        return None
+
+    cache_mode = "overdue" if payload.get("include_overdue") else "exact"
+    if payload.get("all_dates"):
+        cache_mode = "all"
+    requested_mode = "overdue" if include_overdue else "exact"
+    if cache_mode != requested_mode:
+        return None
+
+    stores = {store: set(order_ids or []) for store, order_ids in (payload.get("stores") or {}).items()}
+    if not any(stores.values()):
+        return None
+    return stores
+
+
 def get_crm_orders(
     crm_path: Path,
     sheet_name: str,
     target_date: date,
+    include_overdue: bool = False,
+    lookback_days: Optional[int] = None,
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Return (crm_all, crm_with_size) per store for target date."""
     if not crm_path.exists():
@@ -188,8 +256,18 @@ def get_crm_orders(
         planned_date = parse_date(row.get("PLANNED_SHIPPING_DATE"))
         if not planned_date:
             planned_date = parse_date(row.get("Плановая дата передачи курьеру"))
-        if planned_date != target_date:
+        if not planned_date:
             continue
+        if include_overdue:
+            if planned_date > target_date:
+                continue
+            if lookback_days is not None:
+                min_date = target_date - timedelta(days=lookback_days)
+                if planned_date < min_date:
+                    continue
+        else:
+            if planned_date != target_date:
+                continue
 
         store_name = row.get("STORE_NAME")
         if pd.isna(store_name):
@@ -332,6 +410,8 @@ def main() -> int:
     parser.add_argument("--since-days", type=int, default=7)
     parser.add_argument("--store", help="Filter by store (ACMEWEAR/UNIVERSAL/11KZ/STOREB)")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--include-overdue", action="store_true")
+    parser.add_argument("--no-selection-cache", action="store_true")
     args = parser.parse_args()
 
     load_dotenv(PROJECT_ROOT / ".env")
@@ -351,13 +431,35 @@ def main() -> int:
     print(f"DB: {db_path}")
     print(f"Waybill dir: {args.waybill_dir}")
     print(f"Output dir: {args.output_dir}")
+    if args.include_overdue:
+        print(f"Date mode: planned <= target (lookback {args.since_days}d)")
     print()
 
-    api_by_store, api_errors = get_api_orders_by_store(
-        target_date, since_days=args.since_days, store_filter=args.store, verbose=args.verbose
-    )
+    api_by_store = None
+    api_errors: set[str] = set()
+    if not args.no_selection_cache:
+        api_by_store = load_selection_cache(
+            args.waybill_dir, target_date, include_overdue=args.include_overdue
+        )
+        if api_by_store:
+            logger.info("Using cached API selection from waybill download step")
 
-    crm_all, crm_size = get_crm_orders(args.crm_file, args.sheet, target_date)
+    if api_by_store is None:
+        api_by_store, api_errors = get_api_orders_by_store(
+            target_date,
+            since_days=args.since_days,
+            store_filter=args.store,
+            verbose=args.verbose,
+            include_overdue=args.include_overdue,
+        )
+
+    crm_all, crm_size = get_crm_orders(
+        args.crm_file,
+        args.sheet,
+        target_date,
+        include_overdue=args.include_overdue,
+        lookback_days=args.since_days if args.include_overdue else None,
+    )
     waybills = load_waybills(args.waybill_dir)
     assigned, bundles, packages = load_output_assigned(args.output_dir)
 
