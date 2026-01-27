@@ -1,0 +1,28 @@
+# Kaspi pricelist XML configuration
+# Fill warehouses with Kaspi storeId values (e.g., PP1/PP2 or numeric IDs).
+
+defaults:
+  brand: "No brand"
+  preorder_days: 7
+  stock_allocation: "split_even"
+
+stores:
+  UNIVERSAL:
+    company: "UNIVERSAL"
+    warehouses: []
+
+  ACMEWEAR:
+    company: "ACMEWEAR"
+    warehouses: []
+
+  11KZ:
+    company: "11KZ"
+    warehouses: []
+
+  MELVIS:
+    company: "MELVIS"
+    warehouses: []
+
+  STOREB:
+    company: "STOREB"
+    warehouses: []
