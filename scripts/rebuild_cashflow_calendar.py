@@ -575,7 +575,7 @@ def rebuild_cashflow_calendar(
                         sales_accrued_kzt, payouts_received_kzt, refunds_kzt, po_payments_kzt,
                         expenses_kzt, cogs_kzt, cash_flow_kzt, receivables_flow_kzt,
                         inventory_cost_flow_kzt, profit_accrual_kzt, run_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row["date"],

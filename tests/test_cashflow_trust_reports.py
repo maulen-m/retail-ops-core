@@ -72,3 +72,33 @@ def test_drift_report_insufficient_coverage(tmp_path, monkeypatch):
 
     content = out_path.read_text(encoding="utf-8")
     assert "INSUFFICIENT COVERAGE" in content
+
+
+def test_drift_report_respects_api_window(tmp_path, monkeypatch):
+    db_path = tmp_path / "drift_ok.db"
+    _init_drift_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO kaspi_order_sync_log (store_code, last_success_ts, min_date_seen, max_date_seen)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("TEST", "2026-01-05T00:00:00", "2026-01-01", "2026-01-10"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(dashboard, "_load_required_stores", lambda: ["TEST"])
+
+    out_path = tmp_path / "drift_ok.md"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        dashboard._write_drift_report(conn, out_path, "2026-01-10", lookback_days=5)
+    finally:
+        conn.close()
+
+    content = out_path.read_text(encoding="utf-8")
+    assert "coverage_status: OK" in content
