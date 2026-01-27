@@ -5,6 +5,11 @@ Phase 9.5 — Kaspi Order Automation
 ## Overview
 
 This document describes the integration with Kaspi Shop API for automated order management, waybill downloads, and order status tracking.
+Price/stock sync via price list is documented separately: `docs/api_docs/formatted/KASPI_PRICE_STOCK_SYNC_VIA_PRICELIST.md`.
+
+Agent task framing for price/stock sync:
+- Implement generator + validators + tests first.
+- Add safe publishing workflow only after tests: dry‑run → diff → enable flag.
 
 Gap plan: see `docs/KASPI_API_INTEGRATION_GAP_PLAN.md`.
 
