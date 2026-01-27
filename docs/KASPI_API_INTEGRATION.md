@@ -6,6 +6,8 @@ Phase 9.5 — Kaspi Order Automation
 
 This document describes the integration with Kaspi Shop API for automated order management, waybill downloads, and order status tracking.
 
+Gap plan: see `docs/KASPI_API_INTEGRATION_GAP_PLAN.md`.
+
 ## Architecture
 
 ```
