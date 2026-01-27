@@ -3,7 +3,8 @@
 
 ```
 +==============================================================================+
-|  OBJECTIVE: Define a decision-grade cashflow anchor (cash + receivables +    |
+|  OBJECTIVE: Define a decision-grade cashflow anchor (cash + inventory +      |
+|  NOTE (2026-01-26): D1 cash-in at DELIVERED; no receivables model for Kaspi.  |
 |  inventory at cost + commitments) with rules that won't break in practice.   |
 |                                                                              |
 |  Below is the exact clarifying-questions checklist I need you to answer so   |

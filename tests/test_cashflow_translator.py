@@ -149,3 +149,59 @@ def test_translate_orders_refund_requires_sale(tmp_path, monkeypatch):
         assert refund_count == 1
     finally:
         conn.close()
+
+
+def test_translate_orders_on_delivery_moves_inventory(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU3", 0.95, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD3",
+                "UNIVERSAL",
+                "Передан курьеру",
+                "SHIPPED",
+                "2026-01-20",
+                1,
+                12000,
+                "SKU3",
+                "SKU3_S",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        events = conn.execute(
+            """
+            SELECT event_type, account, amount_kzt
+            FROM fact_cashflow_events
+            WHERE ref_id = 'ORD3'
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    event_types = {row[0] for row in events}
+    accounts = {row[1] for row in events}
+    assert "CASH_IN" not in event_types
+    assert event_types == {"INVENTORY_MOVE"}
+    assert "INVENTORY_ON_HAND_COST" in accounts
+    assert "INVENTORY_ON_DELIVERY_COST" in accounts

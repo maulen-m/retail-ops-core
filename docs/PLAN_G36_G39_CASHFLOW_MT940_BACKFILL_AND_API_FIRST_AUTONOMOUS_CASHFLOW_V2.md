@@ -190,3 +190,6 @@ Create an Oracle pack including:
 - trust report
 - sync-log evidence
 - DB backup path
+# SUPERSEDED (Truth Contract 2026-01-26)
+This plan assumes payout-lag modelling after statements. Current truth contract uses **D1 cash-in at DELIVERED** (no receivables model).  
+Use for historical context only. See: `docs/CASHFLOW_TRUTH_CONTRACT_2026-01-26.md`.

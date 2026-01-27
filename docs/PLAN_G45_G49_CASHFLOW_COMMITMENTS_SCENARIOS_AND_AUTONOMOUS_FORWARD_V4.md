@@ -161,3 +161,6 @@ Stop immediately on first failure. Log failure in .claude/ISSUES.md and .claude/
 # Rollback
 - Always DB-backup before any write.
 - If any regression: `git revert <commit>` and restore DB backup.
+# SUPERSEDED (Truth Contract 2026-01-26)
+This plan assumes receivables + payout lag. Current truth contract uses **D1 cash-in at DELIVERED** (no receivables model).  
+Use for historical context only. See: `docs/CASHFLOW_TRUTH_CONTRACT_2026-01-26.md`.

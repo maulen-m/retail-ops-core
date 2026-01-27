@@ -287,4 +287,7 @@ Every milestone requires:
   - sample outputs (csv/html)
 
 Keep commits atomic (schema, scripts, UI, gates in separate commits).
+# SUPERSEDED (Truth Contract 2026-01-26)
+This plan assumes receivables + payout lag. Current truth contract uses **D1 cash-in at DELIVERED** (no receivables model).  
+Use for historical context only. See: `docs/CASHFLOW_TRUTH_CONTRACT_2026-01-26.md`.
 

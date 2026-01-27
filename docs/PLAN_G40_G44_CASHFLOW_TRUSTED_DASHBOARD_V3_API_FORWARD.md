@@ -94,3 +94,6 @@ Gate:
 - `python3 scripts/update_cashflow_dashboard.py`
 - `python3 scripts/validate_cashflow_invariants.py`
 - `python3 scripts/validate_inventory_cost_drift.py`
+# SUPERSEDED (Truth Contract 2026-01-26)
+This plan assumes receivables + payout lag. Current truth contract uses **D1 cash-in at DELIVERED** (no receivables model).  
+Use for historical context only. See: `docs/CASHFLOW_TRUTH_CONTRACT_2026-01-26.md`.

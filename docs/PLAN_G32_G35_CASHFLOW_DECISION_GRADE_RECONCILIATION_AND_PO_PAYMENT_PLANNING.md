@@ -144,3 +144,6 @@ Evidence outputs required:
 ## Next Actions
 1) Implement Tasks 1–5 first (truth + reconciliation) before UI polish.
 2) Only after reconciliation passes, trust projections for PO payments.
+# SUPERSEDED (Truth Contract 2026-01-26)
+This plan assumes receivables + payout lag. Current truth contract uses **D1 cash-in at DELIVERED** (no receivables model).  
+Use for historical context only. See: `docs/CASHFLOW_TRUTH_CONTRACT_2026-01-26.md`.
