@@ -19,7 +19,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -708,10 +708,30 @@ def ingest_rows_to_db(
     return stats
 
 
+def _parse_planned_date(value: Any) -> Optional[date]:
+    """Parse planned date from known formats."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    value_str = str(value).strip()
+    if not value_str:
+        return None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value_str, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def filter_rows_by_planned_date(
     rows: List[Dict[str, Any]],
     target_date: Optional[str] = None,
     verbose: bool = False,
+    include_overdue: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Filter rows by planned courier transmission date.
@@ -730,15 +750,28 @@ def filter_rows_by_planned_date(
     # Default to today
     if not target_date:
         target_date = datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
+    target_dt = _parse_planned_date(target_date) if include_overdue else None
 
     filtered = []
     for row in rows:
         planned = row.get('Плановая дата передачи курьеру', '')
-        if planned == target_date:
-            filtered.append(row)
+        if include_overdue:
+            planned_dt = _parse_planned_date(planned)
+            if planned_dt and target_dt and planned_dt <= target_dt:
+                filtered.append(row)
+        else:
+            if planned == target_date:
+                filtered.append(row)
 
     if verbose:
-        print(f"    Filtered: {len(filtered)}/{len(rows)} orders have planned date = {target_date}")
+        if include_overdue:
+            print(
+                f"    Filtered: {len(filtered)}/{len(rows)} orders have planned date <= {target_date}"
+            )
+        else:
+            print(
+                f"    Filtered: {len(filtered)}/{len(rows)} orders have planned date = {target_date}"
+            )
 
     return filtered
 
@@ -844,6 +877,11 @@ def main():
         help='Only export orders with planned delivery date = today (default: True)'
     )
     parser.add_argument(
+        '--include-overdue',
+        action='store_true',
+        help='Include orders with planned delivery date <= target date (today by default)'
+    )
+    parser.add_argument(
         '--all-dates',
         action='store_true',
         help='Export orders regardless of planned delivery date (overrides --today-only)'
@@ -897,7 +935,16 @@ def main():
 
     # Determine date filter for planned delivery date
     # Default: today only (unless --all-dates is specified)
-    apply_date_filter = not args.all_dates
+    if args.all_dates and args.include_overdue:
+        logger.warning("Both --all-dates and --include-overdue set; using --all-dates.")
+        args.include_overdue = False
+    if args.all_dates:
+        date_mode = "all"
+    elif args.include_overdue:
+        date_mode = "overdue"
+    else:
+        date_mode = "exact"
+    apply_date_filter = date_mode != "all"
     target_date = args.planned_date  # Custom date or None (will default to today)
 
     include_archive = not args.no_archive
@@ -913,7 +960,10 @@ def main():
     print(f"  DB direct ingest: {args.db_direct}")
     if apply_date_filter:
         display_date = target_date or datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
-        print(f"  Planned date filter: {display_date}")
+        if date_mode == "overdue":
+            print(f"  Planned date filter: <= {display_date}")
+        else:
+            print(f"  Planned date filter: {display_date}")
     else:
         print(f"  Planned date filter: ALL dates")
     print(f"  Output: {args.output}")
@@ -960,7 +1010,12 @@ def main():
 
     # Apply planned date filter (Phase 12 Part 3 - only pending orders for today)
     if apply_date_filter and rows:
-        rows = filter_rows_by_planned_date(rows, target_date, verbose=args.verbose)
+        rows = filter_rows_by_planned_date(
+            rows,
+            target_date,
+            verbose=args.verbose,
+            include_overdue=(date_mode == "overdue"),
+        )
         print(f"Rows after date filter: {len(rows)}")
 
     if not rows:

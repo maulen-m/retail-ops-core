@@ -23,6 +23,10 @@ def _load_store_codes() -> list[str]:
         return []
     with CONFIG_PATH.open("r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
+    settings = data.get("settings") or {}
+    required = settings.get("required_fresh_stores") or []
+    if required:
+        return list(required)
     stores = []
     for code, meta in (data.get("stores") or {}).items():
         if meta.get("sync_enabled", True):

@@ -238,7 +238,12 @@ fi
 # Step 2: Download waybills
 echo "Step 2: Downloading waybills via API..."
 echo "----------------------------------------"
-python scripts/download_waybills_api.py --verbose --days "${LOOKBACK_DAYS}" --exact-date --fallback-crm
+INCLUDE_OVERDUE="${KASPI_INCLUDE_OVERDUE:-1}"
+DATE_FLAG="--exact-date"
+if [ "${INCLUDE_OVERDUE}" = "1" ]; then
+    DATE_FLAG="--include-overdue"
+fi
+python scripts/download_waybills_api.py --verbose --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --fallback-crm
 
 if [ $? -ne 0 ]; then
     echo ""
@@ -251,7 +256,7 @@ echo ""
 # Step 3: Build waybill bundles
 echo "Step 3: Building waybill bundles..."
 echo "----------------------------------------"
-python scripts/build_daily_waybills.py --verbose --lookback-days "${LOOKBACK_DAYS}" --exact-date
+python scripts/build_daily_waybills.py --verbose --lookback-days "${LOOKBACK_DAYS}" ${DATE_FLAG}
 
 echo ""
 # Archive inputs (CRM + waybill PDFs) for backup

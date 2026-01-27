@@ -61,6 +61,12 @@ if [ -z "${LOOKBACK_DAYS}" ]; then
     fi
 fi
 
+INCLUDE_OVERDUE="${KASPI_INCLUDE_OVERDUE:-1}"
+DATE_FLAG=""
+if [ "${INCLUDE_OVERDUE}" = "1" ]; then
+    DATE_FLAG="--include-overdue"
+fi
+
 WARNINGS=()
 
 echo "========================================"
@@ -74,7 +80,7 @@ echo ""
 # Step 1: Download pending orders for TODAY (no archive for speed)
 echo "Step 1: Downloading TODAY's pending orders from Kaspi API..."
 echo "----------------------------------------"
-python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" --refetch-missing-costs --verbose --no-archive
+python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --refetch-missing-costs --verbose --no-archive
 
 if [ $? -ne 0 ]; then
     echo ""

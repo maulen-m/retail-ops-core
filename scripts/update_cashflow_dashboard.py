@@ -24,9 +24,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.db.queries import get_cutoff_date_almaty
 from scripts.rebuild_cashflow_calendar import (
     compute_daily_rows,
+    _ensure_daily_columns,
     _fetch_manual_events,
     _build_system_events,
     _has_order_modelled_events,
+    _inventory_anchor_date,
+    INVENTORY_ACCOUNTS,
     _resolve_start_end,
 )
 from core.config.business_params import get_fx_rates
@@ -2369,7 +2372,8 @@ def _write_drift_report(
         """
         SELECT event_date, SUM(amount_kzt) as amount
         FROM fact_cashflow_events
-        WHERE event_type = 'PAYOUT_EXPECTED'
+        WHERE event_type = 'CASH_IN'
+          AND source = 'ORDER_MODELLED'
           AND event_date BETWEEN ? AND ?
         GROUP BY event_date
         """,
@@ -2453,9 +2457,11 @@ def _build_forecast_rows(
     avg_cogs = _avg([float(r["cogs_kzt"]) for r in tail])
 
     # Seed payout queue with last payout_lag_days of sales
-    sales_queue = [float(r["sales_accrued_kzt"]) for r in history_rows[-payout_lag_days:]]
-    while len(sales_queue) < payout_lag_days:
-        sales_queue.insert(0, avg_sales)
+    sales_queue: list[float] = []
+    if payout_lag_days > 0:
+        sales_queue = [float(r["sales_accrued_kzt"]) for r in history_rows[-payout_lag_days:]]
+        while len(sales_queue) < payout_lag_days:
+            sales_queue.insert(0, avg_sales)
 
     commitments_by_date: dict[str, list[Commitment]] = {}
     for c in _filter_commitments(commitments, scenario):
@@ -2474,11 +2480,15 @@ def _build_forecast_rows(
         if i == 1 and on_delivery_credit_kzt > 0:
             sales += on_delivery_credit_kzt
         cogs = avg_cogs
-        payout = sales_queue.pop(0) if sales_queue else avg_sales
-        sales_queue.append(sales)
-
-        cash_flow = payout
-        receivables_flow = sales - payout
+        if payout_lag_days <= 0:
+            payout = sales
+            cash_flow = sales
+            receivables_flow = 0.0
+        else:
+            payout = sales_queue.pop(0) if sales_queue else avg_sales
+            sales_queue.append(sales)
+            cash_flow = payout
+            receivables_flow = sales - payout
         inventory_flow = -cogs
 
         po_payments = 0.0
@@ -2545,6 +2555,13 @@ def main() -> int:
     base_lag = args.payout_lag_days if args.payout_lag_days is not None else payout_model.base_lag_days
     conservative_lag = max(payout_model.conservative_lag_days, base_lag)
     scenarios_cfg = _load_scenarios_config()
+    payout_override = scenarios_cfg.get("payout_lag_days_override")
+    if payout_override is not None:
+        base_lag = int(payout_override)
+        conservative_lag = int(payout_override)
+    if str(scenarios_cfg.get("cash_in_mode", "")).lower() == "delivered":
+        base_lag = 0
+        conservative_lag = 0
     on_delivery_lookback = int(scenarios_cfg.get("on_delivery_lookback_days", 14))
     on_delivery_credit_rate = float(scenarios_cfg.get("on_delivery_credit_rate", 0.6))
     aggressive_enabled = bool(scenarios_cfg.get("aggressive_enabled", True))
@@ -2552,6 +2569,8 @@ def main() -> int:
     applied_daily = False
     with sqlite3.connect(str(args.db)) as conn:
         conn.row_factory = sqlite3.Row
+        if _table_exists(conn, "fact_cashflow_daily"):
+            _ensure_daily_columns(conn)
         last_statement_date = _load_last_statement_date(conn)
         sync_ages = _load_sync_ages(conn)
         sync_age_hours = _max_sync_age(sync_ages)
@@ -2569,12 +2588,26 @@ def main() -> int:
                 except Exception:
                     pass
         history_start = max(resolved_start, cutoff - timedelta(days=args.history_days - 1))
+        if args.apply:
+            history_start = resolved_start
+            history_end = resolved_end
 
         rows = _load_daily_from_db(conn, history_start, history_end)
 
         if args.rebuild or not rows:
             fx_rates = get_fx_rates(history_end, db_path=args.db)
             manual = _fetch_manual_events(conn, history_start, history_end)
+            inventory_anchor_date = _inventory_anchor_date(conn)
+            if inventory_anchor_date:
+                anchor_key = inventory_anchor_date.isoformat()
+                manual = [
+                    e
+                    for e in manual
+                    if not (
+                        e.get("account") in INVENTORY_ACCOUNTS
+                        and str(e.get("event_date")) < anchor_key
+                    )
+                ]
             skip_sales = _has_order_modelled_events(conn, history_start, history_end)
             system = _build_system_events(
                 conn,
@@ -2593,6 +2626,7 @@ def main() -> int:
             if apply_daily:
                 if os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
                     raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
+                _ensure_daily_columns(conn)
                 conn.execute(
                     "DELETE FROM fact_cashflow_daily WHERE date BETWEEN ? AND ?",
                     (history_start.isoformat(), history_end.isoformat()),
@@ -2602,15 +2636,23 @@ def main() -> int:
                         """
                         INSERT OR REPLACE INTO fact_cashflow_daily (
                             date, cash_open, cash_close, receivables_open, receivables_close,
-                            inventory_cost_open, inventory_cost_close, capital_close,
+                            inventory_cost_open, inventory_cost_close,
+                            inventory_on_hand_open, inventory_on_hand_close,
+                            inventory_inbound_open, inventory_inbound_close,
+                            inventory_on_delivery_open, inventory_on_delivery_close,
+                            capital_close,
                             sales_accrued_kzt, payouts_received_kzt, refunds_kzt, po_payments_kzt,
                             expenses_kzt, cogs_kzt, cash_flow_kzt, receivables_flow_kzt,
                             inventory_cost_flow_kzt, profit_accrual_kzt, run_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             row["date"], row["cash_open"], row["cash_close"], row["receivables_open"], row["receivables_close"],
-                            row["inventory_cost_open"], row["inventory_cost_close"], row["capital_close"],
+                            row["inventory_cost_open"], row["inventory_cost_close"],
+                            row.get("inventory_on_hand_open", 0.0), row.get("inventory_on_hand_close", 0.0),
+                            row.get("inventory_inbound_open", 0.0), row.get("inventory_inbound_close", 0.0),
+                            row.get("inventory_on_delivery_open", 0.0), row.get("inventory_on_delivery_close", 0.0),
+                            row["capital_close"],
                             row["sales_accrued_kzt"], row["payouts_received_kzt"], row["refunds_kzt"], row["po_payments_kzt"],
                             row["expenses_kzt"], row["cogs_kzt"], row["cash_flow_kzt"], row["receivables_flow_kzt"],
                             row["inventory_cost_flow_kzt"], row["profit_accrual_kzt"], row["run_id"],

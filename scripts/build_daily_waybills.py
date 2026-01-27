@@ -260,6 +260,7 @@ def get_api_order_ids_for_date(
     since_days: int = 7,
     store_filter: Optional[str] = None,
     verbose: bool = False,
+    include_overdue: bool = False,
 ) -> tuple[dict[str, set[str]], set[str]]:
     """Fetch KASPI_DELIVERY orders from API and return order IDs for target_date."""
     orders_by_store: dict[str, set[str]] = {}
@@ -273,6 +274,7 @@ def get_api_order_ids_for_date(
 
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
+    min_date = target_date - timedelta(days=since_days)
     for store_code in stores:
         try:
             client = KaspiAPIClient(store_code=store_code)
@@ -296,10 +298,16 @@ def get_api_order_ids_for_date(
         ids: set[str] = set()
         for order in orders:
             planned_date = _planned_date_from_order(order)
-            if planned_date == target_date:
-                order_code = order.get('attributes', {}).get('code', '')
-                if order_code:
-                    ids.add(order_code)
+            if include_overdue:
+                if planned_date and min_date <= planned_date <= target_date:
+                    order_code = order.get('attributes', {}).get('code', '')
+                    if order_code:
+                        ids.add(order_code)
+            else:
+                if planned_date == target_date:
+                    order_code = order.get('attributes', {}).get('code', '')
+                    if order_code:
+                        ids.add(order_code)
 
         if ids:
             orders_by_store[store_code] = ids
@@ -1364,6 +1372,7 @@ def main(
     target_date: date = None,
     lookback_days: Optional[int] = 14,
     exact_date: bool = False,
+    include_overdue: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> dict:
@@ -1381,7 +1390,10 @@ def main(
     output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     sheet_name = sheet_name or DEFAULT_SHEET_NAME
     target_date = target_date or datetime.now(ALMATY_TZ).date()
-    if exact_date:
+    if include_overdue and exact_date:
+        logger.warning("Both include_overdue and exact_date set; using include_overdue.")
+        exact_date = False
+    if exact_date and not include_overdue:
         lookback_days = 0
 
     ensure_pdf_merger()
@@ -1420,6 +1432,7 @@ def main(
         target_date=target_date,
         since_days=api_since_days,
         verbose=verbose,
+        include_overdue=include_overdue,
     )
     if api_error_stores:
         logger.warning(
@@ -1638,6 +1651,11 @@ if __name__ == "__main__":
         help="Only include orders with planned date == target_date"
     )
     parser.add_argument(
+        "--include-overdue",
+        action="store_true",
+        help="Include orders with planned date <= target_date (bounded by lookback)"
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Don't create output files, just show what would be built"
@@ -1649,6 +1667,9 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    if args.include_overdue and args.exact_date:
+        logger.warning("Both --include-overdue and --exact-date set; using --include-overdue.")
+        args.exact_date = False
 
     # Parse target date
     target_date = None
@@ -1665,6 +1686,7 @@ if __name__ == "__main__":
         target_date=target_date,
         lookback_days=args.lookback_days,
         exact_date=args.exact_date,
+        include_overdue=args.include_overdue,
         dry_run=args.dry_run,
         verbose=args.verbose,
     )

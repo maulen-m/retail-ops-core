@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Import PO arrivals as INVENTORY_COST inflows (capitalized inventory).
+Import PO arrivals as inventory reclassification (inbound → on-hand).
 
 Default: DRY RUN. Apply requires ENABLE_CASHFLOW_WRITE=1 and --apply.
 """
@@ -57,7 +57,7 @@ def _latest_inventory_open_date(conn: sqlite3.Connection) -> str | None:
         """
         SELECT MAX(event_date) as latest
         FROM fact_cashflow_events
-        WHERE account = 'INVENTORY_COST'
+        WHERE account IN ('INVENTORY_ON_HAND_COST', 'INVENTORY_INBOUND_COST')
           AND event_type IN ('INVENTORY_OPEN', 'OPENING_BALANCE')
         """
     ).fetchone()
@@ -186,21 +186,36 @@ def import_po_arrivals(db_path: Path, since: str | None, until: str | None, appl
 
             unit_cost = _unit_cost_kzt(row, row, fx_rates, dim_costs)
             amount = round(unit_cost * qty, 2)
-            event = {
-                "event_date": arrival,
-                "event_type": "INVENTORY_IN",
-                "account": "INVENTORY_COST",
-                "amount_kzt": amount,
-                "sku_key": row["sku_key"],
-                "sku_id": row["sku_id"],
-                "ref_type": "PO_LINE",
-                "ref_id": f"{row['po_id']}:{row['sku_id']}",
-                "notes": f"po_id={row['po_id']} qty={qty}",
-                "source": "SYSTEM",
-                "run_id": run_id,
-            }
-            event["event_hash"] = _event_hash(event)
-            events.append((event, qty, unit_cost))
+            for event in (
+                {
+                    "event_date": arrival,
+                    "event_type": "INVENTORY_MOVE",
+                    "account": "INVENTORY_INBOUND_COST",
+                    "amount_kzt": -abs(amount),
+                    "sku_key": row["sku_key"],
+                    "sku_id": row["sku_id"],
+                    "ref_type": "PO_LINE",
+                    "ref_id": f"{row['po_id']}:{row['sku_id']}",
+                    "notes": f"po_id={row['po_id']} qty={qty} inbound->onhand",
+                    "source": "SYSTEM",
+                    "run_id": run_id,
+                },
+                {
+                    "event_date": arrival,
+                    "event_type": "INVENTORY_MOVE",
+                    "account": "INVENTORY_ON_HAND_COST",
+                    "amount_kzt": abs(amount),
+                    "sku_key": row["sku_key"],
+                    "sku_id": row["sku_id"],
+                    "ref_type": "PO_LINE",
+                    "ref_id": f"{row['po_id']}:{row['sku_id']}",
+                    "notes": f"po_id={row['po_id']} qty={qty} inbound->onhand",
+                    "source": "SYSTEM",
+                    "run_id": run_id,
+                },
+            ):
+                event["event_hash"] = _event_hash(event)
+                events.append((event, qty, unit_cost))
 
         existing_hashes = set()
         if events:
@@ -273,7 +288,7 @@ def import_po_arrivals(db_path: Path, since: str | None, until: str | None, appl
                     ),
                 )
             conn.commit()
-            summary_lines.append("APPLY: inserted INVENTORY_IN events.")
+            summary_lines.append("APPLY: inserted INVENTORY_MOVE events.")
         else:
             summary_lines.append("DRY RUN: no DB writes.")
 
@@ -284,7 +299,7 @@ def import_po_arrivals(db_path: Path, since: str | None, until: str | None, appl
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Import PO arrivals as INVENTORY_COST inflows")
+    parser = argparse.ArgumentParser(description="Import PO arrivals as inbound→on-hand inventory moves")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--since", type=str, default=None, help="Start date (YYYY-MM-DD). Defaults to latest inventory open.")
     parser.add_argument("--until", type=str, default=None, help="Optional end date (YYYY-MM-DD).")

@@ -162,6 +162,7 @@ def get_target_orders_from_api(
     since_days: int,
     exact_date: bool = True,
     all_dates: bool = False,
+    include_overdue: bool = False,
     verbose: bool = False,
 ) -> tuple[list[dict], bool]:
     """Fetch KASPI_DELIVERY orders from API and filter by planned date."""
@@ -190,12 +191,16 @@ def get_target_orders_from_api(
         print(f"    API returned {len(orders)} orders for {store_code}")
 
     filtered = []
+    min_date = target_date - timedelta(days=since_days)
     for order in orders:
         planned_date = _planned_date_from_order(order)
         if planned_date is None:
             continue
         if all_dates:
             if planned_date <= target_date:
+                filtered.append(order)
+        elif include_overdue:
+            if min_date <= planned_date <= target_date:
                 filtered.append(order)
         elif exact_date:
             if planned_date == target_date:
@@ -711,6 +716,7 @@ def download_all_waybills(
     verbose: bool = False,
     all_dates: bool = False,
     exact_date: bool = False,
+    include_overdue: bool = False,
     fallback_crm: bool = False,
 ) -> dict:
     """
@@ -754,8 +760,9 @@ def download_all_waybills(
             store_code,
             target_date,
             since_days=since_days,
-            exact_date=exact_date or not all_dates,
+            exact_date=exact_date or (not all_dates and not include_overdue),
             all_dates=all_dates,
+            include_overdue=include_overdue,
             verbose=verbose,
         )
         if had_error:
@@ -980,6 +987,11 @@ def main():
         help='Include all orders with planned_date <= today (no lookback floor)'
     )
     parser.add_argument(
+        '--include-overdue',
+        action='store_true',
+        help='Include orders with planned_date <= target_date (bounded by lookback days)'
+    )
+    parser.add_argument(
         '--exact-date',
         action='store_true',
         help='Only include orders with planned_date == target_date'
@@ -1003,6 +1015,12 @@ def main():
     if args.all_dates and args.exact_date:
         logger.warning("Both --all-dates and --exact-date set; using --all-dates.")
         args.exact_date = False
+    if args.all_dates and args.include_overdue:
+        logger.warning("Both --all-dates and --include-overdue set; using --all-dates.")
+        args.include_overdue = False
+    if args.include_overdue and args.exact_date:
+        logger.warning("Both --include-overdue and --exact-date set; using --include-overdue.")
+        args.exact_date = False
 
     # Parse target date
     if args.date:
@@ -1021,6 +1039,8 @@ def main():
     print(f"  Target date: {target_date}")
     if args.all_dates:
         date_mode_str = "all dates <= target"
+    elif args.include_overdue:
+        date_mode_str = "planned date <= target (overdue included)"
     elif args.exact_date:
         date_mode_str = "exact date only (today's batch)"
     else:
@@ -1047,6 +1067,7 @@ def main():
         verbose=args.verbose,
         all_dates=args.all_dates,
         exact_date=args.exact_date,
+        include_overdue=args.include_overdue,
         fallback_crm=args.fallback_crm,
     )
 

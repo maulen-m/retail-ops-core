@@ -21,6 +21,7 @@ Usage:
 import logging
 import yaml
 from dataclasses import dataclass, field
+import json
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any, Optional
@@ -443,7 +444,7 @@ class OrderSyncEngine:
         waybill_url = delivery.get('waybill')
         waybill_number = delivery.get('waybillNumber') or attrs.get('waybillNumber')
 
-        return {
+        order_data = {
             'order_id': attrs.get('code', api_order.get('id', '')),
             'store_code': store_code,
             'channel_code': 'KSP',
@@ -485,6 +486,13 @@ class OrderSyncEngine:
             'customer_phone': customer.get('cellPhone'),
             'source': 'API',
         }
+
+        def _sanitize_value(value):
+            if isinstance(value, (dict, list)):
+                return json.dumps(value, ensure_ascii=False)
+            return value
+
+        return {key: _sanitize_value(value) for key, value in order_data.items()}
 
     def _map_state_to_status(self, kaspi_state: str) -> str:
         """Map Kaspi state to internal status."""

@@ -42,7 +42,9 @@ def _init_db(db_path: Path) -> None:
             );
             CREATE TABLE dim_sku (
                 sku_key TEXT,
-                weight_kg REAL
+                weight_kg REAL,
+                cogs_kzt REAL,
+                base_cost_cny REAL
             );
             """
         )
@@ -57,8 +59,8 @@ def test_translate_orders_idempotent(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute(
-            "INSERT INTO dim_sku (sku_key, weight_kg) VALUES (?, ?)",
-            ("SKU1", 0.95),
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU1", 0.95, 5000, 0),
         )
         conn.execute(
             """
@@ -90,7 +92,7 @@ def test_translate_orders_idempotent(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(db_path))
     try:
         count = conn.execute("SELECT COUNT(*) FROM fact_cashflow_events").fetchone()[0]
-        assert count == 3  # sale accrued + payout expected (cash + receivables)
+        assert count == 2  # cash in + cogs recognized
     finally:
         conn.close()
 
@@ -102,8 +104,8 @@ def test_translate_orders_refund_requires_sale(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute(
-            "INSERT INTO dim_sku (sku_key, weight_kg) VALUES (?, ?)",
-            ("SKU2", 0.95),
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU2", 0.95, 5000, 0),
         )
         conn.execute(
             """
@@ -130,7 +132,7 @@ def test_translate_orders_refund_requires_sale(tmp_path, monkeypatch):
                 event_date, event_type, account, amount_kzt, ref_type, ref_id, source, event_hash
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("2026-01-20", "SALE_ACCRUED", "RECEIVABLES", 1000, "ORDER", "ORD2", "ORDER_MODELLED", "hash"),
+            ("2026-01-20", "CASH_IN", "KASPI_PAY_UNIVERSAL", 1000, "ORDER", "ORD2", "ORDER_MODELLED", "hash"),
         )
         conn.commit()
     finally:
@@ -142,7 +144,7 @@ def test_translate_orders_refund_requires_sale(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(db_path))
     try:
         refund_count = conn.execute(
-            "SELECT COUNT(*) FROM fact_cashflow_events WHERE event_type = 'REFUND'"
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE event_type = 'CASH_IN' AND amount_kzt < 0"
         ).fetchone()[0]
         assert refund_count == 1
     finally:

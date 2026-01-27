@@ -44,7 +44,7 @@ def _load_dim_sku_costs(conn: sqlite3.Connection) -> dict[str, dict]:
 def _compute_inventory_cost(conn: sqlite3.Connection, snapshot_date: str) -> float:
     rows = conn.execute(
         """
-        SELECT sku_key, SUM(current_stock) as stock
+        SELECT sku_key, SUM(current_stock) as stock, SUM(inbound_stock) as inbound_stock
         FROM fact_inventory_snapshot_size
         WHERE snapshot_date = ?
         GROUP BY sku_key
@@ -55,22 +55,27 @@ def _compute_inventory_cost(conn: sqlite3.Connection, snapshot_date: str) -> flo
     fx_rates = get_fx_rates(snapshot_date, db_path=DEFAULT_DB)
     dim_costs = _load_dim_sku_costs(conn)
     total = 0.0
-    for sku_key, stock in rows:
-        if stock is None or stock <= 0:
-            continue
+    for sku_key, stock, inbound_stock in rows:
         meta = dim_costs.get(sku_key, {})
+        base_cost = meta.get("base_cost_cny", 0.0)
         cogs_unit = meta.get("cogs_kzt") or 0.0
-        if cogs_unit <= 0:
-            base_cost = meta.get("base_cost_cny", 0.0)
+        if base_cost and base_cost > 0:
+            unit_cost = float(base_cost) * float(fx_rates.cny_kzt)
+        elif cogs_unit > 0:
+            unit_cost = float(cogs_unit)
+        else:
             weight = meta.get("weight_kg", 0.0)
-            cogs_unit = calc_cogs(
+            unit_cost = calc_cogs(
                 base_cost,
                 weight,
                 cny_kzt=fx_rates.cny_kzt,
                 volumetric_factor=fx_rates.dlv_rate_usd_kg,
                 freight_rate=fx_rates.usd_kzt,
             )
-        total += float(stock) * cogs_unit
+        if stock and stock > 0:
+            total += float(stock) * unit_cost
+        if inbound_stock and inbound_stock > 0:
+            total += float(inbound_stock) * unit_cost
     return round(total, 2)
 
 
@@ -113,7 +118,11 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
             return 0
 
         cashflow_row = conn.execute(
-            "SELECT inventory_cost_close FROM fact_cashflow_daily WHERE date = ?",
+            """
+            SELECT inventory_on_hand_close, inventory_inbound_close, inventory_cost_close
+            FROM fact_cashflow_daily
+            WHERE date = ?
+            """,
             (snapshot_date,),
         ).fetchone()
         if not cashflow_row:
@@ -121,7 +130,12 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
             return 0
 
         snapshot_cost = _compute_inventory_cost(conn, snapshot_date)
-        cashflow_cost = float(cashflow_row["inventory_cost_close"] or 0.0)
+        cashflow_cost = float(
+            (cashflow_row["inventory_on_hand_close"] or 0.0)
+            + (cashflow_row["inventory_inbound_close"] or 0.0)
+        )
+        if cashflow_cost == 0.0:
+            cashflow_cost = float(cashflow_row["inventory_cost_close"] or 0.0)
         diff = abs(snapshot_cost - cashflow_cost)
         allowed = max(tolerance_kzt, abs(snapshot_cost) * tolerance_pct)
 

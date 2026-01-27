@@ -21,12 +21,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db.queries import get_cutoff_date_almaty
-from core.cashflow.payout_model import load_payout_model
 from core.config.business_params import get_fx_rates
 from core.calc.economics import calc_cogs
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 
-AUTO_EVENT_TYPES = {"SALE_ACCRUED", "COGS_RECOGNIZED", "PAYOUT_EXPECTED"}
+AUTO_EVENT_TYPES = {"COGS_RECOGNIZED"}
 EXPENSE_EVENT_TYPES = {
     "EXPENSE",
     "KASPI_FEES",
@@ -37,7 +36,27 @@ EXPENSE_EVENT_TYPES = {
     "LOAN_PAYMENT",
     "UNKNOWN",
 }
-PAYOUT_EVENT_TYPES = {"PAYOUT_RECEIVED", "PAYOUT_EXPECTED"}
+PAYOUT_EVENT_TYPES = {"PAYOUT_RECEIVED"}
+INVENTORY_ACCOUNTS = {
+    "INVENTORY_COST",
+    "INVENTORY_ON_HAND_COST",
+    "INVENTORY_INBOUND_COST",
+    "INVENTORY_ON_DELIVERY_COST",
+}
+
+
+def _is_cash_account(account: str | None) -> bool:
+    if not account:
+        return False
+    if account == "CASH":
+        return True
+    if account.startswith("KASPI_PAY"):
+        return True
+    if account.startswith("KASPI_GOLD"):
+        return True
+    if account.startswith("KZ"):
+        return True
+    return False
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -49,6 +68,21 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 def _get_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _ensure_daily_columns(conn: sqlite3.Connection) -> None:
+    cols = _get_columns(conn, "fact_cashflow_daily")
+    required = {
+        "inventory_on_hand_open": "REAL NOT NULL DEFAULT 0",
+        "inventory_on_hand_close": "REAL NOT NULL DEFAULT 0",
+        "inventory_inbound_open": "REAL NOT NULL DEFAULT 0",
+        "inventory_inbound_close": "REAL NOT NULL DEFAULT 0",
+        "inventory_on_delivery_open": "REAL NOT NULL DEFAULT 0",
+        "inventory_on_delivery_close": "REAL NOT NULL DEFAULT 0",
+    }
+    for name, ddl in required.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE fact_cashflow_daily ADD COLUMN {name} {ddl}")
 
 
 def _normalize_date(value: str | date | datetime) -> str:
@@ -221,7 +255,7 @@ def _inventory_anchor_date(conn: sqlite3.Connection) -> date | None:
         """
         SELECT MAX(event_date) as max_date
         FROM fact_cashflow_events
-        WHERE account = 'INVENTORY_COST'
+        WHERE account IN ('INVENTORY_COST', 'INVENTORY_ON_HAND_COST', 'INVENTORY_INBOUND_COST', 'INVENTORY_ON_DELIVERY_COST')
           AND event_type IN ('INVENTORY_OPEN', 'OPENING_BALANCE')
         """
     ).fetchone()
@@ -243,7 +277,7 @@ def _has_order_modelled_events(
         FROM fact_cashflow_events
         WHERE event_date BETWEEN ? AND ?
           AND source = 'ORDER_MODELLED'
-          AND event_type IN ('SALE_ACCRUED', 'PAYOUT_EXPECTED', 'REFUND')
+          AND event_type IN ('CASH_IN', 'INVENTORY_MOVE', 'INVENTORY_RETURN')
         LIMIT 1
         """,
         (start_date.isoformat(), end_date.isoformat()),
@@ -260,59 +294,11 @@ def _build_system_events(
     *,
     skip_sales: bool = False,
 ) -> list[dict]:
+    if skip_sales:
+        return []
     sales_by_date, cogs_by_date = _build_sales_aggregates(conn, start_date, end_date, fx_rates)
-    payout_model = load_payout_model()
-    last_statement_date = None
-    if _table_exists(conn, "fact_cashflow_events"):
-        row = conn.execute(
-            """
-            SELECT MAX(event_date) as max_date
-            FROM fact_cashflow_events
-            WHERE source = 'STATEMENT_ACTUAL'
-            """
-        ).fetchone()
-        if row and row["max_date"]:
-            last_statement_date = date.fromisoformat(row["max_date"])
     inventory_anchor_date = _inventory_anchor_date(conn)
     events: list[dict] = []
-    if not skip_sales:
-        for sale_date, amount in sales_by_date.items():
-            if amount == 0:
-                continue
-            events.append(
-                {
-                    "event_date": sale_date,
-                    "event_type": "SALE_ACCRUED",
-                    "account": "RECEIVABLES",
-                    "amount_kzt": round(amount, 2),
-                    "source": "SYSTEM",
-                    "run_id": run_id,
-                }
-            )
-            sale_day = date.fromisoformat(sale_date)
-            if last_statement_date and sale_day <= last_statement_date:
-                continue
-            payout_date = sale_day + timedelta(days=payout_model.base_lag_days)
-            events.append(
-                {
-                    "event_date": payout_date.isoformat(),
-                    "event_type": "PAYOUT_EXPECTED",
-                    "account": "CASH",
-                    "amount_kzt": round(amount, 2),
-                    "source": "SYSTEM",
-                    "run_id": run_id,
-                }
-            )
-            events.append(
-                {
-                    "event_date": payout_date.isoformat(),
-                    "event_type": "PAYOUT_EXPECTED",
-                    "account": "RECEIVABLES",
-                    "amount_kzt": round(-abs(amount), 2),
-                    "source": "SYSTEM",
-                    "run_id": run_id,
-                }
-            )
     for sale_date, amount in cogs_by_date.items():
         if amount == 0:
             continue
@@ -322,7 +308,7 @@ def _build_system_events(
             {
                 "event_date": sale_date,
                 "event_type": "COGS_RECOGNIZED",
-                "account": "INVENTORY_COST",
+                "account": "INVENTORY_ON_DELIVERY_COST",
                 "amount_kzt": round(-abs(amount), 2),
                 "source": "SYSTEM",
                 "run_id": run_id,
@@ -344,7 +330,7 @@ def _fetch_manual_events(
                ref_type, ref_id, notes, source, run_id, event_hash
         FROM fact_cashflow_events
         WHERE event_date BETWEEN ? AND ?
-          AND NOT (source = 'SYSTEM' AND event_type IN ('SALE_ACCRUED', 'COGS_RECOGNIZED', 'PAYOUT_EXPECTED'))
+          AND NOT (source = 'SYSTEM' AND event_type IN ('COGS_RECOGNIZED'))
         """,
         (start_date.isoformat(), end_date.isoformat()),
     ).fetchall()
@@ -373,26 +359,70 @@ def compute_daily_rows(
         events_by_date.setdefault(key, []).append(event)
 
     daily_rows = []
-    cash_open = receivables_open = inventory_open = 0.0
+    cash_open = receivables_open = 0.0
+    inv_on_hand_open = inv_inbound_open = inv_on_delivery_open = 0.0
 
     for day in _date_range(start_date, end_date):
         day_key = day.isoformat()
         day_events = events_by_date.get(day_key, [])
-        cash_flow = sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("account") == "CASH")
-        recv_flow = sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("account") == "RECEIVABLES")
-        inv_flow = sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("account") == "INVENTORY_COST")
+        cash_flow = sum(
+            e.get("amount_kzt", 0.0)
+            for e in day_events
+            if _is_cash_account(e.get("account"))
+        )
+        recv_flow = sum(
+            e.get("amount_kzt", 0.0)
+            for e in day_events
+            if e.get("account") == "RECEIVABLES"
+        )
+        legacy_inv_flow = sum(
+            e.get("amount_kzt", 0.0)
+            for e in day_events
+            if e.get("account") == "INVENTORY_COST"
+        )
+        inv_on_hand_flow = sum(
+            e.get("amount_kzt", 0.0)
+            for e in day_events
+            if e.get("account") == "INVENTORY_ON_HAND_COST"
+        ) + legacy_inv_flow
+        inv_inbound_flow = sum(
+            e.get("amount_kzt", 0.0)
+            for e in day_events
+            if e.get("account") == "INVENTORY_INBOUND_COST"
+        )
+        inv_on_delivery_flow = sum(
+            e.get("amount_kzt", 0.0)
+            for e in day_events
+            if e.get("account") == "INVENTORY_ON_DELIVERY_COST"
+        )
+        inv_flow = inv_on_hand_flow + inv_inbound_flow + inv_on_delivery_flow
 
         cash_close = cash_open + cash_flow
         receivables_close = receivables_open + recv_flow
-        inventory_close = inventory_open + inv_flow
+        inv_on_hand_close = inv_on_hand_open + inv_on_hand_flow
+        inv_inbound_close = inv_inbound_open + inv_inbound_flow
+        inv_on_delivery_close = inv_on_delivery_open + inv_on_delivery_flow
+        inventory_open = inv_on_hand_open + inv_inbound_open + inv_on_delivery_open
+        inventory_close = inv_on_hand_close + inv_inbound_close + inv_on_delivery_close
 
-        sales_accrued = sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "SALE_ACCRUED")
+        sales_accrued = sum(
+            e.get("amount_kzt", 0.0)
+            for e in day_events
+            if e.get("event_type") == "CASH_IN"
+        )
         payouts_received = sum(
             e.get("amount_kzt", 0.0)
             for e in day_events
-            if e.get("event_type") in PAYOUT_EVENT_TYPES
+            if e.get("event_type") in PAYOUT_EVENT_TYPES or e.get("event_type") == "CASH_IN"
         )
-        refunds = abs(sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "REFUND"))
+        refunds = abs(
+            sum(
+                e.get("amount_kzt", 0.0)
+                for e in day_events
+                if e.get("event_type") == "REFUND"
+                or (e.get("event_type") == "CASH_IN" and (e.get("amount_kzt", 0.0) or 0.0) < 0)
+            )
+        )
         po_payments = abs(sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "PO_PAYMENT"))
         expenses = abs(
             sum(
@@ -415,6 +445,12 @@ def compute_daily_rows(
                 "receivables_close": round(receivables_close, 2),
                 "inventory_cost_open": round(inventory_open, 2),
                 "inventory_cost_close": round(inventory_close, 2),
+                "inventory_on_hand_open": round(inv_on_hand_open, 2),
+                "inventory_on_hand_close": round(inv_on_hand_close, 2),
+                "inventory_inbound_open": round(inv_inbound_open, 2),
+                "inventory_inbound_close": round(inv_inbound_close, 2),
+                "inventory_on_delivery_open": round(inv_on_delivery_open, 2),
+                "inventory_on_delivery_close": round(inv_on_delivery_close, 2),
                 "capital_close": round(capital_close, 2),
                 "sales_accrued_kzt": round(sales_accrued, 2),
                 "payouts_received_kzt": round(payouts_received, 2),
@@ -432,7 +468,9 @@ def compute_daily_rows(
 
         cash_open = cash_close
         receivables_open = receivables_close
-        inventory_open = inventory_close
+        inv_on_hand_open = inv_on_hand_close
+        inv_inbound_open = inv_inbound_close
+        inv_on_delivery_open = inv_on_delivery_close
 
     return daily_rows
 
@@ -453,6 +491,8 @@ def rebuild_cashflow_calendar(
     try:
         if not _table_exists(conn, "fact_cashflow_events"):
             raise RuntimeError("fact_cashflow_events missing; run migrate_018_cashflow_calendar.py")
+        if _table_exists(conn, "fact_cashflow_daily"):
+            _ensure_daily_columns(conn)
 
         skip_sales = _has_order_modelled_events(conn, start_date, end_date)
         system_events = _build_system_events(
@@ -471,7 +511,7 @@ def rebuild_cashflow_calendar(
                 e
                 for e in manual_events
                 if not (
-                    e.get("account") == "INVENTORY_COST"
+                    e.get("account") in INVENTORY_ACCOUNTS
                     and _normalize_date(e.get("event_date")) < anchor_key
                 )
             ]
@@ -486,7 +526,7 @@ def rebuild_cashflow_calendar(
                 DELETE FROM fact_cashflow_events
                 WHERE event_date BETWEEN ? AND ?
                   AND source = 'SYSTEM'
-                  AND event_type IN ('SALE_ACCRUED', 'COGS_RECOGNIZED', 'PAYOUT_EXPECTED')
+                  AND event_type IN ('COGS_RECOGNIZED')
                 """,
                 (start_date.isoformat(), end_date.isoformat()),
             )
@@ -529,10 +569,13 @@ def rebuild_cashflow_calendar(
                     INSERT OR REPLACE INTO fact_cashflow_daily (
                         date, cash_open, cash_close, receivables_open, receivables_close,
                         inventory_cost_open, inventory_cost_close, capital_close,
+                        inventory_on_hand_open, inventory_on_hand_close,
+                        inventory_inbound_open, inventory_inbound_close,
+                        inventory_on_delivery_open, inventory_on_delivery_close,
                         sales_accrued_kzt, payouts_received_kzt, refunds_kzt, po_payments_kzt,
                         expenses_kzt, cogs_kzt, cash_flow_kzt, receivables_flow_kzt,
                         inventory_cost_flow_kzt, profit_accrual_kzt, run_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row["date"],
@@ -543,6 +586,12 @@ def rebuild_cashflow_calendar(
                         row["inventory_cost_open"],
                         row["inventory_cost_close"],
                         row["capital_close"],
+                        row["inventory_on_hand_open"],
+                        row["inventory_on_hand_close"],
+                        row["inventory_inbound_open"],
+                        row["inventory_inbound_close"],
+                        row["inventory_on_delivery_open"],
+                        row["inventory_on_delivery_close"],
                         row["sales_accrued_kzt"],
                         row["payouts_received_kzt"],
                         row["refunds_kzt"],

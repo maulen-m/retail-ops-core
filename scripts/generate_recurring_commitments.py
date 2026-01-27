@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate recurring OPEX commitments (monthly) into fact_cashflow_commitments.
-
-Default: DRY RUN. Apply requires ENABLE_CASHFLOW_WRITE=1 and --apply.
+Deprecated: use scripts/import_opex_protocol.py (CSV converted from OPEX_protocol_26.01.2026.xlsx).
 """
 from __future__ import annotations
 
@@ -31,6 +29,10 @@ def _month_add(d: date, months: int) -> date:
 
 
 def main() -> int:
+    print("ERROR: generate_recurring_commitments is deprecated.")
+    print("Use scripts/import_opex_protocol.py with a CSV converted via excel-safe-ops.")
+    return 2
+
     parser = argparse.ArgumentParser(description="Generate recurring OPEX commitments")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--start-date", type=str, required=True)

@@ -2,3 +2,5 @@
 on_delivery_credit_rate: 0.6
 on_delivery_lookback_days: 14
 aggressive_enabled: true
+cash_in_mode: delivered
+payout_lag_days_override: 0

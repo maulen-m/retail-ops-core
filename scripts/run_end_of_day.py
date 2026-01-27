@@ -583,7 +583,11 @@ def _run_pipeline(args, start_time: datetime) -> int:
         PipelineStep(
             name="5a. Update Cashflow Dashboard",
             script="update_cashflow_dashboard.py",
-            args=["--rebuild"],
+            args=(
+                ["--rebuild", "--apply"]
+                if os.environ.get("ENABLE_CASHFLOW_WRITE") == "1" and not args.dry_run
+                else ["--rebuild"]
+            ),
             required=True
         ),
         PipelineStep(

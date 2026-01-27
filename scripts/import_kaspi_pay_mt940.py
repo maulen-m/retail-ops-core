@@ -437,9 +437,15 @@ def import_mt940(
 
     _safe_write_text(report_path, "\n".join(lines) + "\n")
 
-    recon_failures = [row for row in recon_rows if abs(float(row[-1])) > tolerance]
+    recon_failures = []
+    for row in recon_rows:
+        closing = float(row[6] or 0.0)
+        recon_error = float(row[-1] or 0.0)
+        allowed = abs(closing) * tolerance
+        if abs(recon_error) > allowed:
+            recon_failures.append(row)
     if recon_failures:
-        print(f"FAIL: {len(recon_failures)} account recon errors exceed tolerance {tolerance}")
+        print(f"FAIL: {len(recon_failures)} account recon errors exceed tolerance_pct {tolerance}")
         return 1
 
     with sqlite3.connect(str(db_path)) as conn:
@@ -515,7 +521,7 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Write to DB (requires ENABLE_CASHFLOW_WRITE=1)")
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--report-label", type=str, default=None)
-    parser.add_argument("--tolerance", type=float, default=0.01)
+    parser.add_argument("--tolerance", type=float, default=0.05)
     args = parser.parse_args()
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")

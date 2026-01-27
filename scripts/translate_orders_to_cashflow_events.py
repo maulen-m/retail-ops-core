@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Translate Kaspi order lifecycle into cashflow events (receivables + expected payouts).
+Translate Kaspi order lifecycle into cashflow events (cash-in at delivered + inventory moves).
 
 Default: DRY RUN. Apply requires ENABLE_CASHFLOW_WRITE=1 and --apply.
 """
@@ -19,10 +19,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db.queries import get_cutoff_date_almaty
-from core.cashflow.payout_model import load_payout_model
 from core.cashflow.order_status import normalize_order_status
-from core.config.business_params import get_vat_rate
-from core.calc.economics import calc_delivery_fee, calc_net_rev
+from core.config.business_params import get_vat_rate, get_fx_rates
+from core.calc.economics import calc_delivery_fee, calc_net_rev, calc_cogs
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "kaspi_column_map.yaml"
@@ -72,7 +71,50 @@ def _load_dim_sku_weights(conn: sqlite3.Connection) -> dict[str, float]:
     return {row[0]: float(row[1] or 0.0) for row in rows}
 
 
-def _load_existing_sales(conn: sqlite3.Connection) -> set[str]:
+def _load_dim_sku_costs(conn: sqlite3.Connection) -> dict[str, dict]:
+    if not _table_exists(conn, "dim_sku"):
+        return {}
+    rows = conn.execute(
+        "SELECT sku_key, cogs_kzt, base_cost_cny, weight_kg FROM dim_sku"
+    ).fetchall()
+    return {
+        row[0]: {
+            "cogs_kzt": row[1] or 0.0,
+            "base_cost_cny": row[2] or 0.0,
+            "weight_kg": row[3] or 0.0,
+        }
+        for row in rows
+    }
+
+
+def _unit_cost_kzt(row: sqlite3.Row, fx_rates, dim_costs: dict[str, dict]) -> float:
+    sku_key = row["sku_key"]
+    meta = dim_costs.get(sku_key or "", {})
+    base_cost = meta.get("base_cost_cny", 0.0)
+    if base_cost and base_cost > 0:
+        return float(base_cost) * float(fx_rates.cny_kzt)
+    cogs_unit = meta.get("cogs_kzt") or 0.0
+    if cogs_unit > 0:
+        return float(cogs_unit)
+    weight = meta.get("weight_kg", 0.0)
+    return float(
+        calc_cogs(
+            base_cost,
+            weight,
+            cny_kzt=fx_rates.cny_kzt,
+            volumetric_factor=fx_rates.dlv_rate_usd_kg,
+            freight_rate=fx_rates.usd_kzt,
+        )
+    )
+
+
+def _cash_account(store_code: str | None) -> str:
+    if not store_code:
+        return "KASPI_PAY_UNKNOWN"
+    return f"KASPI_PAY_{store_code}"
+
+
+def _load_existing_cash_in(conn: sqlite3.Connection) -> set[str]:
     if not _table_exists(conn, "fact_cashflow_events"):
         return set()
     rows = conn.execute(
@@ -80,7 +122,22 @@ def _load_existing_sales(conn: sqlite3.Connection) -> set[str]:
         SELECT DISTINCT ref_id
         FROM fact_cashflow_events
         WHERE ref_type = 'ORDER'
-          AND event_type = 'SALE_ACCRUED'
+          AND event_type = 'CASH_IN'
+        """
+    ).fetchall()
+    return {row[0] for row in rows if row[0]}
+
+
+def _load_existing_refunds(conn: sqlite3.Connection) -> set[str]:
+    if not _table_exists(conn, "fact_cashflow_events"):
+        return set()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT ref_id
+        FROM fact_cashflow_events
+        WHERE ref_type = 'ORDER'
+          AND event_type = 'CASH_IN'
+          AND amount_kzt < 0
         """
     ).fetchall()
     return {row[0] for row in rows if row[0]}
@@ -103,7 +160,10 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
             config = yaml.safe_load(DEFAULT_CONFIG.read_text(encoding="utf-8")) or {}
 
         weights = _load_dim_sku_weights(conn)
-        existing_sales = _load_existing_sales(conn)
+        dim_costs = _load_dim_sku_costs(conn)
+        existing_cash = _load_existing_cash_in(conn)
+        existing_refunds = _load_existing_refunds(conn)
+        fx_rates = get_fx_rates(until.isoformat(), db_path=db_path)
 
         rows = conn.execute(
             """
@@ -115,7 +175,6 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
             (since.isoformat(), until.isoformat()),
         ).fetchall()
 
-        payout_model = load_payout_model()
         events = []
         counts = {"completed": 0, "cancelled": 0, "on_delivery": 0, "ignored": 0}
 
@@ -148,7 +207,9 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                 as_of_date=date.fromisoformat(event_date),
             )
             net_rev_line = round(net_rev_unit * qty, 2)
-            delivery_fee_line = round(delivery_fee * (1 - vat_rate) * qty, 2)
+            delivery_fee_line = round(float(delivery_fee or 0.0) * qty, 2)
+            unit_cost = _unit_cost_kzt(row, fx_rates, dim_costs)
+            cost_line = round(unit_cost * qty, 2)
 
             base_fields = {
                 "store_code": row["store_code"],
@@ -165,77 +226,71 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                 events.append(
                     {
                         "event_date": event_date,
-                        "event_type": "SALE_ACCRUED",
-                        "account": "RECEIVABLES",
-                        "amount_kzt": net_rev_line,
-                        **base_fields,
-                    }
-                )
-                payout_date = date.fromisoformat(event_date) + timedelta(days=payout_model.base_lag_days)
-                events.append(
-                    {
-                        "event_date": payout_date.isoformat(),
-                        "event_type": "PAYOUT_EXPECTED",
-                        "account": "CASH",
+                        "event_type": "CASH_IN",
+                        "account": _cash_account(row["store_code"]),
                         "amount_kzt": net_rev_line,
                         **base_fields,
                     }
                 )
                 events.append(
                     {
-                        "event_date": payout_date.isoformat(),
-                        "event_type": "PAYOUT_EXPECTED",
-                        "account": "RECEIVABLES",
-                        "amount_kzt": -abs(net_rev_line),
+                        "event_date": event_date,
+                        "event_type": "COGS_RECOGNIZED",
+                        "account": "INVENTORY_ON_DELIVERY_COST",
+                        "amount_kzt": -abs(cost_line),
                         **base_fields,
                     }
                 )
             elif status == "CANCELLED":
-                # Only reverse if we previously accrued this order
-                if row["order_id"] not in existing_sales:
+                # Only reverse if we previously recorded cash for this order
+                if row["order_id"] not in existing_cash:
+                    counts["ignored"] += 1
+                    continue
+                if row["order_id"] in existing_refunds:
                     counts["ignored"] += 1
                     continue
                 counts["cancelled"] += 1
+                refund_cash = -abs(net_rev_line + delivery_fee_line)
                 events.append(
                     {
                         "event_date": event_date,
-                        "event_type": "REFUND",
-                        "account": "RECEIVABLES",
-                        "amount_kzt": -abs(net_rev_line),
+                        "event_type": "CASH_IN",
+                        "account": _cash_account(row["store_code"]),
+                        "amount_kzt": refund_cash,
                         **base_fields,
                     }
                 )
                 events.append(
                     {
                         "event_date": event_date,
-                        "event_type": "DELIVERY_FEES",
-                        "account": "RECEIVABLES",
-                        "amount_kzt": -abs(delivery_fee_line),
-                        **base_fields,
-                        "notes": "Delivery fee not refunded",
-                    }
-                )
-                # Reverse expected payout if previously scheduled
-                events.append(
-                    {
-                        "event_date": event_date,
-                        "event_type": "PAYOUT_EXPECTED",
-                        "account": "CASH",
-                        "amount_kzt": -abs(net_rev_line),
-                        **base_fields,
-                    }
-                )
-                events.append(
-                    {
-                        "event_date": event_date,
-                        "event_type": "PAYOUT_EXPECTED",
-                        "account": "RECEIVABLES",
-                        "amount_kzt": abs(net_rev_line),
+                        "event_type": "INVENTORY_RETURN",
+                        "account": "INVENTORY_ON_HAND_COST",
+                        "amount_kzt": abs(cost_line),
                         **base_fields,
                     }
                 )
             elif status == "ON_DELIVERY":
                 counts["on_delivery"] += 1
+                events.append(
+                    {
+                        "event_date": event_date,
+                        "event_type": "INVENTORY_MOVE",
+                        "account": "INVENTORY_ON_HAND_COST",
+                        "amount_kzt": -abs(cost_line),
+                        **base_fields,
+                        "notes": "Move to on-delivery",
+                    }
+                )
+                events.append(
+                    {
+                        "event_date": event_date,
+                        "event_type": "INVENTORY_MOVE",
+                        "account": "INVENTORY_ON_DELIVERY_COST",
+                        "amount_kzt": abs(cost_line),
+                        **base_fields,
+                        "notes": "On-delivery inventory",
+                    }
+                )
             else:
                 counts["ignored"] += 1
                 continue
