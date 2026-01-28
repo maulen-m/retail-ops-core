@@ -56,6 +56,8 @@ ALMATY_TZ = ZoneInfo("Asia/Almaty")
 ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
 READY_STATUS_RU = "Ожидает передачи курьеру"
 READY_STATUS_EN = "Awaiting courier"
+ACCEPTED_STATUS_RU = "Принят"
+ACCEPTED_STATUS_EN = "Accepted"
 
 # Project root
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -66,6 +68,7 @@ from core.paths import data_path, get_data_root
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
 from core.waybill.pdf_grouper import merge_pdfs
 from core.integrations.kaspi_api_client import KaspiAPIClient, STORE_TOKEN_MAP, KaspiAuthError
+from core.integrations.kaspi_order_stage import StageCode, classify_kaspi_order_stage
 from core.utils.kaspi_dates import planned_date_from_order
 
 # Default paths
@@ -106,9 +109,22 @@ def _is_ready_status(value: Any) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    if text.upper() == "READY":
+    if text.upper() in {"READY", "NEW"}:
         return True
-    return text in {READY_STATUS_RU, READY_STATUS_EN}
+    return text in {
+        READY_STATUS_RU,
+        READY_STATUS_EN,
+        ACCEPTED_STATUS_RU,
+        ACCEPTED_STATUS_EN,
+    }
+
+
+def _is_pending_handover_stage(order: dict) -> bool:
+    stage = classify_kaspi_order_stage(order)
+    return stage in {
+        StageCode.ACCEPTED_PENDING_ASSEMBLY,
+        StageCode.ASSEMBLED_PENDING_HANDOVER,
+    }
 
 # Reverse mapping for lookup
 STORE_NAME_TO_CODE = {v: k for k, v in STORE_MAP.items()}
@@ -338,6 +354,8 @@ def get_api_order_ids_for_date(
                 continue
             if _is_signature_required(attrs.get("signatureRequired")):
                 continue
+            if not _is_pending_handover_stage(order):
+                continue
             planned_date = _planned_date_from_order(order)
             if include_overdue:
                 if planned_date and min_date <= planned_date <= target_date:
@@ -488,7 +506,8 @@ def read_db_orders(
                 planned_shipment_date,
                 kaspi_status_detail,
                 internal_status,
-                signature_required
+                signature_required,
+                courier_transmission_date
             FROM fact_orders_kaspi
             WHERE (
                 (assigned_size IS NOT NULL AND assigned_size != '')
@@ -535,6 +554,9 @@ def read_db_orders(
 
         kaspi_status_detail = row["kaspi_status_detail"]
         internal_status = row["internal_status"]
+        courier_transmission_date = row["courier_transmission_date"]
+        if courier_transmission_date:
+            continue
         if not _is_accepted_by_merchant(kaspi_status_detail):
             if kaspi_status_detail and str(kaspi_status_detail).strip():
                 continue
@@ -617,11 +639,24 @@ def read_crm_orders(
         logger.info(f"Reading CRM from {crm_path}")
         df = pd.read_excel(crm_path, sheet_name=sheet_name)
 
+    status_col = None
+    for name in ("Статус", "STATUS", "Status"):
+        if name in df.columns:
+            status_col = name
+            break
+    signature_col = None
+    for name in ("Требуется подписание", "Signature Required"):
+        if name in df.columns:
+            signature_col = name
+            break
+
     orders = []
     skipped_no_size = 0
     skipped_date = 0
     skipped_no_date = 0
     skipped_not_target = 0
+    skipped_wrong_status = 0
+    skipped_signature_required = 0
 
     for _, row in df.iterrows():
         # Check MY_SIZE is filled
@@ -645,6 +680,14 @@ def read_crm_orders(
         if order_id_filter is not None and order_id not in order_id_filter:
             skipped_not_target += 1
             continue
+        if order_id_filter is None and status_col is not None:
+            if not _is_ready_status(row.get(status_col)):
+                skipped_wrong_status += 1
+                continue
+        if order_id_filter is None and signature_col is not None:
+            if _is_signature_required(row.get(signature_col)):
+                skipped_signature_required += 1
+                continue
 
         # Get planned date
         planned_date = parse_date(row.get('PLANNED_SHIPPING_DATE'))
@@ -711,6 +754,11 @@ def read_crm_orders(
         logger.info(f"Skipped {skipped_date} orders outside planned date window")
     if order_id_filter is not None:
         logger.info(f"Skipped {skipped_not_target} orders not in target set")
+    if order_id_filter is None:
+        if skipped_wrong_status:
+            logger.info(f"Skipped {skipped_wrong_status} orders with wrong status")
+        if skipped_signature_required:
+            logger.info(f"Skipped {skipped_signature_required} orders requiring signature")
 
     return orders
 

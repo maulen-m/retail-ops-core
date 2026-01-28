@@ -44,6 +44,8 @@ DEFAULT_ACTIVE = data_path("excel_ui", "ActiveOrders", "ActiveOrders.xlsx")
 ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
 READY_STATUS_RU = "Ожидает передачи курьеру"
 READY_STATUS_EN = "Awaiting courier"
+ACCEPTED_STATUS_RU = "Принят"
+ACCEPTED_STATUS_EN = "Accepted"
 
 
 def _is_signature_required(value) -> bool:
@@ -69,9 +71,14 @@ def _is_ready_status(value) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    if text.upper() == "READY":
+    if text.upper() in {"READY", "NEW"}:
         return True
-    return text in {READY_STATUS_RU, READY_STATUS_EN}
+    return text in {
+        READY_STATUS_RU,
+        READY_STATUS_EN,
+        ACCEPTED_STATUS_RU,
+        ACCEPTED_STATUS_EN,
+    }
 
 
 def _norm_status(value: str) -> str:
@@ -240,7 +247,7 @@ def read_db_pending(
 
         if include_overdue:
             query = """
-                SELECT order_id, kaspi_status, kaspi_status_detail, internal_status, signature_required
+                SELECT order_id, kaspi_status, kaspi_status_detail, internal_status, signature_required, courier_transmission_date
                 FROM fact_orders_kaspi
                 WHERE planned_shipment_date <= ?
             """
@@ -253,7 +260,7 @@ def read_db_pending(
         else:
             rows = conn.execute(
                 """
-                SELECT order_id, kaspi_status, kaspi_status_detail, internal_status, signature_required
+                SELECT order_id, kaspi_status, kaspi_status_detail, internal_status, signature_required, courier_transmission_date
                 FROM fact_orders_kaspi
                 WHERE planned_shipment_date = ?
                 """,
@@ -284,6 +291,9 @@ def read_db_pending(
         internal_norm = _norm_status(row["internal_status"])
         status_detail = row["kaspi_status_detail"]
         if _is_signature_required(row["signature_required"]):
+            continue
+        courier_transmission_date = row["courier_transmission_date"]
+        if courier_transmission_date:
             continue
 
         if status_norm in terminal or internal_norm in terminal:

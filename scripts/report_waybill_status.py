@@ -33,6 +33,10 @@ from core.integrations.kaspi_api_client import (  # noqa: E402
     KaspiAuthError,
     STORE_TOKEN_MAP,
 )
+from core.integrations.kaspi_order_stage import (  # noqa: E402
+    StageCode,
+    classify_kaspi_order_stage,
+)
 from core.utils.kaspi_dates import planned_date_from_order  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -60,6 +64,14 @@ def _is_signature_required(value: Any) -> bool:
 
 def _is_accepted_by_merchant(value: Any) -> bool:
     return str(value or "").strip().upper() == ACCEPTED_BY_MERCHANT
+
+
+def _is_pending_handover_stage(order: dict) -> bool:
+    stage = classify_kaspi_order_stage(order)
+    return stage in {
+        StageCode.ACCEPTED_PENDING_ASSEMBLY,
+        StageCode.ASSEMBLED_PENDING_HANDOVER,
+    }
 
 DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
 DEFAULT_WAYBILL_DIR = data_path("excel_ui", "ActiveOrders")
@@ -176,6 +188,8 @@ def get_api_orders_by_store(
             if not _is_accepted_by_merchant(attrs.get("status")):
                 continue
             if _is_signature_required(attrs.get("signatureRequired")):
+                continue
+            if not _is_pending_handover_stage(order):
                 continue
             planned = _planned_date_from_order(order)
             if include_overdue:

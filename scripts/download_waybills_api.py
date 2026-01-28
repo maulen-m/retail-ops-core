@@ -43,6 +43,10 @@ from core.integrations.kaspi_api_client import (
     KaspiAuthError,
     STORE_TOKEN_MAP,
 )
+from core.integrations.kaspi_order_stage import (
+    StageCode,
+    classify_kaspi_order_stage,
+)
 from core.paths import data_path, get_data_root
 from core.utils.kaspi_dates import planned_date_from_order
 
@@ -114,6 +118,8 @@ DB_STORE_TO_API = {
 ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
 READY_STATUS_RU = "Ожидает передачи курьеру"
 READY_STATUS_EN = "Awaiting courier"
+ACCEPTED_STATUS_RU = "Принят"
+ACCEPTED_STATUS_EN = "Accepted"
 
 
 def _is_signature_required(value: Any) -> bool:
@@ -139,9 +145,22 @@ def _is_ready_status(value: Any) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    if text.upper() == "READY":
+    if text.upper() in {"READY", "NEW"}:
         return True
-    return text in {READY_STATUS_RU, READY_STATUS_EN}
+    return text in {
+        READY_STATUS_RU,
+        READY_STATUS_EN,
+        ACCEPTED_STATUS_RU,
+        ACCEPTED_STATUS_EN,
+    }
+
+
+def _is_pending_handover_stage(order: dict) -> bool:
+    stage = classify_kaspi_order_stage(order)
+    return stage in {
+        StageCode.ACCEPTED_PENDING_ASSEMBLY,
+        StageCode.ASSEMBLED_PENDING_HANDOVER,
+    }
 
 
 def resolve_db_path(explicit: Optional[Path]) -> Optional[Path]:
@@ -233,6 +252,8 @@ def get_target_orders_from_api(
         if not _is_accepted_by_merchant(status):
             continue
         if _is_signature_required(attrs.get("signatureRequired")):
+            continue
+        if not _is_pending_handover_stage(order):
             continue
         planned_date = _planned_date_from_order(order)
         if planned_date is None:
@@ -369,7 +390,8 @@ def get_target_order_ids_from_db(
                 planned_shipment_date,
                 kaspi_status_detail,
                 internal_status,
-                signature_required
+                signature_required,
+                courier_transmission_date
             FROM fact_orders_kaspi
             WHERE (
                 (assigned_size IS NOT NULL AND assigned_size != '')
@@ -402,6 +424,9 @@ def get_target_order_ids_from_db(
 
         kaspi_status_detail = row["kaspi_status_detail"]
         internal_status = row["internal_status"]
+        courier_transmission_date = row["courier_transmission_date"]
+        if courier_transmission_date:
+            continue
         if not _is_accepted_by_merchant(kaspi_status_detail):
             if kaspi_status_detail and str(kaspi_status_detail).strip():
                 continue
@@ -904,9 +929,9 @@ def download_all_waybills(
     if source_label:
         print(f"  Using {source_label} for order selection")
 
-    # Merge API + fallback selections per store
-    fallback_used = bool(fallback_orders_by_store)
-    fallback_stores = sorted(fallback_orders_by_store.keys())
+    # Merge API + fallback selections per store (fallback only if API empty/failed)
+    fallback_used = False
+    fallback_stores: list[str] = []
 
     if fallback_orders_by_store:
         merged_orders_by_store: dict[str, set[str]] = {}
@@ -916,24 +941,19 @@ def download_all_waybills(
             fallback_ids = fallback_orders_by_store.get(store_code, set())
 
             if api_ids:
-                merged = set(api_ids)
-                extra = fallback_ids - api_ids
-                if extra:
-                    logger.warning(
-                        f"{store_code}: {len(extra)} fallback orders not in API selection; "
-                        "including due to --fallback-crm"
-                    )
-                    merged |= extra
-                merged_orders_by_store[store_code] = merged
+                merged_orders_by_store[store_code] = set(api_ids)
             else:
                 if fallback_ids:
                     merged_orders_by_store[store_code] = set(fallback_ids)
+                    fallback_used = True
+                    fallback_stores.append(store_code)
                     logger.warning(
                         f"{store_code}: API selection empty or failed; "
                         f"using fallback ({len(fallback_ids)} orders)"
                     )
         target_orders_by_store = merged_orders_by_store
-    elif api_errors:
+
+    if api_errors:
         logger.warning(
             "API selection failed for stores: " + ", ".join(sorted(api_errors))
         )
