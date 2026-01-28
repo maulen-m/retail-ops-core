@@ -148,6 +148,55 @@ def test_enrichment_respects_flag(tmp_path):
     assert count == 0
 
 
+def test_enrichment_flag_defaults_off(tmp_path):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(db_path)
+
+    config_path = tmp_path / "missing.yaml"
+
+    result = enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-19",
+        until="2026-01-21",
+        apply=False,
+        config_path=config_path,
+        client_factory=lambda store: FakeClient(store),
+    )
+
+    assert result.get("enabled") is False
+    assert result.get("inserted") == 0
+
+
+def test_enrichment_fail_open_does_not_break_sync(tmp_path):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(db_path)
+
+    class FailingClient(FakeClient):
+        def get_order_entries(self, order_code):
+            raise RuntimeError("boom")
+
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text("enabled: true\nfetch_entries: true\n", encoding="utf-8")
+
+    result = enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-19",
+        until="2026-01-21",
+        apply=False,
+        config_path=config_path,
+        client_factory=lambda store: FailingClient(store),
+    )
+
+    assert result.get("enabled") is True
+    assert result.get("inserted") == 0
+
+
 def test_enrichment_inserts_entries(tmp_path, monkeypatch):
     db_path = tmp_path / "enrich.db"
     sqlite3.connect(str(db_path)).close()
