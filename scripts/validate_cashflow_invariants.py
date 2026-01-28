@@ -52,6 +52,10 @@ def validate(db_path: Path, tolerance: float) -> int:
             if row["receivables_close"] < -tolerance:
                 failures += 1
                 print(f"FAIL {row['date']}: receivables_close negative {row['receivables_close']}")
+            for field in ("inventory_on_hand_close", "inventory_inbound_close", "inventory_on_delivery_close"):
+                if field in row.keys() and row[field] is not None and row[field] < -tolerance:
+                    failures += 1
+                    print(f"FAIL {row['date']}: {field} negative {row[field]}")
 
         if failures:
             print(f"FAIL: {failures} invariant violations")

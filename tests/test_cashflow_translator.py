@@ -92,7 +92,193 @@ def test_translate_orders_idempotent(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(db_path))
     try:
         count = conn.execute("SELECT COUNT(*) FROM fact_cashflow_events").fetchone()[0]
-        assert count == 2  # cash in + cogs recognized
+        assert count == 4  # cash in + cogs + on-hand move + on-delivery move
+    finally:
+        conn.close()
+
+
+def test_translate_orders_skips_duplicate_completed_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_DUP", 0.95, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_DUP",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                2,
+                12000,
+                "SKU_DUP",
+                "SKU_DUP_S",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_DUP",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-21",
+                2,
+                12000,
+                "SKU_DUP",
+                "SKU_DUP_S",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 22), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id = 'ORD_DUP'"
+        ).fetchone()[0]
+        assert count == 4  # cash in + cogs + on-hand move + on-delivery move
+    finally:
+        conn.close()
+
+
+def test_translate_orders_shifts_on_delivery_timing(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_SHIFT", 0.95, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_SHIFT",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-22",
+                1,
+                12000,
+                "SKU_SHIFT",
+                "SKU_SHIFT_S",
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO fact_cashflow_events (
+                event_date, event_type, account, amount_kzt,
+                store_code, sku_key, sku_id, ref_type, ref_id,
+                notes, source, run_id, event_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "2026-01-20",
+                    "CASH_IN",
+                    "KASPI_PAY_UNIVERSAL",
+                    1000,
+                    "UNIVERSAL",
+                    "SKU_SHIFT",
+                    "SKU_SHIFT_S",
+                    "ORDER",
+                    "ORD_SHIFT",
+                    "",
+                    "ORDER_MODELLED",
+                    "run1",
+                    "h1",
+                ),
+                (
+                    "2026-01-20",
+                    "COGS_RECOGNIZED",
+                    "INVENTORY_ON_DELIVERY_COST",
+                    -500,
+                    "UNIVERSAL",
+                    "SKU_SHIFT",
+                    "SKU_SHIFT_S",
+                    "ORDER",
+                    "ORD_SHIFT",
+                    "",
+                    "ORDER_MODELLED",
+                    "run1",
+                    "h2",
+                ),
+                (
+                    "2026-01-22",
+                    "INVENTORY_MOVE",
+                    "INVENTORY_ON_DELIVERY_COST",
+                    500,
+                    "UNIVERSAL",
+                    "SKU_SHIFT",
+                    "SKU_SHIFT_S",
+                    "ORDER",
+                    "ORD_SHIFT",
+                    "",
+                    "ORDER_MODELLED",
+                    "run1",
+                    "h3",
+                ),
+                (
+                    "2026-01-22",
+                    "INVENTORY_MOVE",
+                    "INVENTORY_ON_HAND_COST",
+                    -500,
+                    "UNIVERSAL",
+                    "SKU_SHIFT",
+                    "SKU_SHIFT_S",
+                    "ORDER",
+                    "ORD_SHIFT",
+                    "",
+                    "ORDER_MODELLED",
+                    "run1",
+                    "h4",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 23), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            """
+            SELECT COUNT(*) FROM fact_cashflow_events
+            WHERE ref_id = 'ORD_SHIFT'
+              AND notes LIKE 'Timing shift%'
+            """
+        ).fetchone()[0]
+        assert rows == 4
     finally:
         conn.close()
 
