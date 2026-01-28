@@ -517,6 +517,20 @@ def _run_pipeline(args, start_time: datetime) -> int:
         ),
     ]
 
+
+    if os.environ.get("ENABLE_TRANSFER_LEDGER_CASHFLOW") == "1":
+        transfer_step = PipelineStep(
+            name="2b3. Import Transfer Ledger to Cashflow",
+            script="import_transfer_ledger_cashflow.py",
+            args=["--since", api_since, "--until", cutoff_date.isoformat(), "--apply"],
+            required=True,
+            skip_on_dry_run=True,
+        )
+        for idx, step in enumerate(steps):
+            if step.script == "translate_orders_to_cashflow_events.py":
+                steps.insert(idx + 1, transfer_step)
+                break
+
     if args.auto_assign_sizes:
         size_args = ["--auto"]
         if args.size_store:
