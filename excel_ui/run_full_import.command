@@ -47,19 +47,7 @@ if [ -z "${AB_GDRIVE_KASPI_SALES_PATH:-}" ]; then
 fi
 
 DEFAULT_LOOKBACK_DAYS=5
-LONG_LOOKBACK_DAYS="${KASPI_LOOKBACK_DAYS_LONG:-14}"
-LOOKBACK_DAYS="${KASPI_LOOKBACK_DAYS:-}"
-if [ -z "${LOOKBACK_DAYS}" ]; then
-    CURRENT_HOUR=$(TZ=Asia/Almaty date +%H)
-    CURRENT_MIN=$(TZ=Asia/Almaty date +%M)
-    CURRENT_HOUR=$((10#${CURRENT_HOUR}))
-    CURRENT_MIN=$((10#${CURRENT_MIN}))
-    if [ "${CURRENT_HOUR}" -gt 20 ] || { [ "${CURRENT_HOUR}" -eq 20 ] && [ "${CURRENT_MIN}" -ge 30 ]; }; then
-        LOOKBACK_DAYS="${LONG_LOOKBACK_DAYS}"
-    else
-        LOOKBACK_DAYS="${DEFAULT_LOOKBACK_DAYS}"
-    fi
-fi
+LOOKBACK_DAYS="${KASPI_LOOKBACK_DAYS:-${DEFAULT_LOOKBACK_DAYS}}"
 
 INCLUDE_OVERDUE="${KASPI_INCLUDE_OVERDUE:-1}"
 DATE_FLAG=""
@@ -268,7 +256,11 @@ echo "----------------------------------------"
 if [ "${IMPORT_NOOP}" -eq 1 ]; then
     echo "NO-OP: skipping pending order validation (no CRM changes)."
 else
-    python scripts/validate_pending_orders.py
+    PENDING_ARGS=""
+    if [ "${INCLUDE_OVERDUE}" = "1" ]; then
+        PENDING_ARGS="--include-overdue --lookback-days ${LOOKBACK_DAYS}"
+    fi
+    python scripts/validate_pending_orders.py ${PENDING_ARGS}
     if [ $? -ne 0 ]; then
         echo "WARNING: Pending order validation reported mismatches (see above)"
         WARNINGS+=("Pending order validation mismatches. Fix: check ActiveOrders export + CRM planned date column.")

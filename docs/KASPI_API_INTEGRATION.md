@@ -78,6 +78,22 @@ python scripts/sync_kaspi_orders.py --store UNIVERSAL
 python scripts/sync_kaspi_orders.py --all
 ```
 
+### 4. Optional enrichment stage (entries + cached lookups)
+
+Enrichment is **disabled by default** and only runs when:
+- `config/kaspi_enrichment.yaml` → `enabled: true`
+- `ENABLE_KASPI_ENRICHMENT=1`
+- `--enrich` flag is provided
+
+Example:
+```bash
+ENABLE_KASPI_ENRICHMENT=1 python scripts/sync_kaspi_orders.py --all --enrich
+```
+
+This stage populates:
+- `fact_order_entries_kaspi` (line items)
+- `dim_point_of_service`, `dim_masterproduct`, `dim_merchantproduct` (cached lookups)
+
 ### 4. Download Waybills
 
 ```bash
@@ -127,19 +143,20 @@ orders = client.list_all_orders(
 )
 ```
 
-#### Order States
+#### Order state vs status (canonical)
 
-| Kaspi State | Internal Status | Description |
-|-------------|-----------------|-------------|
-| NEW | NEW | Order just placed |
-| ACCEPTED_BY_MERCHANT | ACCEPTED | Order accepted |
-| ASSEMBLY | READY | Order assembled, ready for shipment |
-| KASPI_DELIVERY | SHIPPED | Handed to Kaspi delivery |
-| DELIVERY | SHIPPED | In transit |
-| COMPLETED | COMPLETED | Delivered to customer |
-| CANCELLED | CANCELLED | Order cancelled |
-| RETURNING | RETURNING | Customer returning |
-| RETURNED | RETURNED | Returned to seller |
+Do not mix API **state** and API **status**. The full contract and Seller Cabinet mapping lives in:
+
+- `docs/KASPI_ORDER_LIFECYCLE_AND_STATUS_CONTRACT.md`
+
+Quick reference:
+
+- API `state`: NEW, SIGN_REQUIRED, PICKUP, DELIVERY, KASPI_DELIVERY, ARCHIVE
+- API `status`: APPROVED_BY_BANK, ACCEPTED_BY_MERCHANT, COMPLETED, CANCELLED, CANCELLING,
+  KASPI_DELIVERY_RETURN_REQUESTED, RETURNED
+
+Some Seller Cabinet stages are **composites** of state + status + flags (assembled, preOrder, signatureRequired, etc.).
+Always derive internal StageCode via `core/integrations/kaspi_order_stage.py`.
 
 #### Extended API fields captured (fact_orders_kaspi)
 

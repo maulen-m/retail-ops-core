@@ -30,6 +30,7 @@ Environment Variables:
 
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, date
 from pathlib import Path
@@ -41,6 +42,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.sync.order_sync_engine import OrderSyncEngine, SyncResult, MultiSyncResult
+from core.sync.kaspi_order_enrichment import enrich_orders, _load_config as _load_enrichment_config
 
 
 def setup_logging(verbose: bool = False):
@@ -75,6 +77,34 @@ def print_sync_result(result: SyncResult):
         print("\n  Errors:")
         for error in result.errors:
             print(f"    - {error}")
+
+
+
+
+
+def _run_enrichment(stores, since, until, dry_run):
+    if dry_run:
+        return
+    cfg_path = Path(__file__).parent.parent / "config" / "kaspi_enrichment.yaml"
+    cfg = _load_enrichment_config(cfg_path)
+    if not cfg.get("enabled"):
+        print("Enrichment disabled in config; skipping.")
+        return
+    if os.environ.get("ENABLE_KASPI_ENRICHMENT") != "1":
+        print("ENABLE_KASPI_ENRICHMENT not set; skipping enrichment.")
+        return
+    lookback_days = int(cfg.get("default_lookback_days") or 0) or 7
+    resolved_since = since or (date.today() - timedelta(days=lookback_days - 1)).isoformat()
+    resolved_until = until or date.today().isoformat()
+    for store in stores:
+        enrich_orders(
+            db_path=Path(__file__).parent.parent / "db" / "app.db",
+            store_code=store,
+            since=resolved_since,
+            until=resolved_until,
+            apply=True,
+            config_path=cfg_path,
+        )
 
 
 def print_multi_result(result: MultiSyncResult):
@@ -198,6 +228,11 @@ def main():
         '--dry-run',
         action='store_true',
         help='Fetch orders but do not save to database',
+    )
+    parser.add_argument(
+        '--enrich',
+        action='store_true',
+        help='Run optional enrichment stage (requires config enabled)',
     )
     parser.add_argument(
         '-v', '--verbose',

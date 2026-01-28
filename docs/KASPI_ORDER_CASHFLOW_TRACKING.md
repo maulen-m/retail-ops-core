@@ -35,13 +35,14 @@ system remains autonomous and deterministic.
 
 ---
 
-## 3) Status lifecycle (used for cashflow events)
+## 3) Lifecycle contract (used for cashflow events)
 
-From Kaspi API + internal mapping:
-- NEW → ACCEPTED_BY_MERCHANT → ASSEMBLY → KASPI_DELIVERY → DELIVERY → COMPLETED → ARCHIVE
-- Cancellations/returns: CANCELLED / CANCELLING / RETURNING / RETURNED
+Use the canonical lifecycle mapping in:
 
-**Important:** ARCHIVE is the final bucket for completed/cancelled/returned orders.
+- `docs/KASPI_ORDER_LIFECYCLE_AND_STATUS_CONTRACT.md`
+
+**Important:** API `state` and API `status` are distinct. Cashflow triggers must be derived from StageCode
+(state + status + flags), not from a mixed “state table”.
 
 ---
 

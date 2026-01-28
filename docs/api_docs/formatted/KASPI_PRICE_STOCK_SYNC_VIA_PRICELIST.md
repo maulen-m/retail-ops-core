@@ -348,8 +348,3 @@ Appendix B — XML example (city prices)
     <cityprice cityId="710000000">195000</cityprice>
   </cityprices>
 </offer>
-
-
-Next Actions:
-1. read ~/Docs/Autonomous_business/docs/api_docs/formatted/KASPI_PRICE_STOCK_SYNC_VIA_PRICELIST.md (or similar) and link it from `/docs/KASPI_API_INTEGRATION.md`.
-2. Agent task framing: implement generator + validators + tests **first**, then add safe publishing workflow (dry-run → diff → enable flag).

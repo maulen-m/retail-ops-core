@@ -1,0 +1,139 @@
+"""Kaspi order stage classification (API state/status -> internal StageCode)."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Mapping
+
+
+class StageCode(str, Enum):
+    SIGN_REQUIRED = "SIGN_REQUIRED"
+    NEW_APPROVED = "NEW_APPROVED"
+    PREORDER_IN_TRANSIT = "PREORDER_IN_TRANSIT"
+    ACCEPTED_PENDING_ASSEMBLY = "ACCEPTED_PENDING_ASSEMBLY"
+    ASSEMBLED_PENDING_HANDOVER = "ASSEMBLED_PENDING_HANDOVER"
+    IN_DELIVERY = "IN_DELIVERY"
+    ISSUED_COMPLETED = "ISSUED_COMPLETED"
+    CANCELLING = "CANCELLING"
+    CANCELLED = "CANCELLED"
+    RETURN_REQUESTED = "RETURN_REQUESTED"
+    RETURNED = "RETURNED"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class KaspiStageInputs:
+    state: str
+    status: str
+    signature_required: bool
+    pre_order: bool
+    assembled: bool
+    courier_transmission_date: bool
+    delivery_mode: str
+    is_kaspi_delivery: bool
+    returned_to_warehouse: bool
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y", "t"}
+
+
+def _norm(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _get_attrs(order: Mapping[str, Any]) -> Mapping[str, Any]:
+    attrs = order.get("attributes")
+    if isinstance(attrs, Mapping):
+        return attrs
+    return order
+
+
+def _extract_stage_inputs(order: Mapping[str, Any]) -> KaspiStageInputs:
+    attrs = _get_attrs(order)
+    state = _norm(attrs.get("state"))
+    status = _norm(attrs.get("status"))
+    signature_required = _as_bool(
+        attrs.get("signatureRequired")
+        or attrs.get("signature_required")
+        or attrs.get("signature")
+    )
+    pre_order = _as_bool(attrs.get("preOrder") or attrs.get("pre_order"))
+    assembled = _as_bool(attrs.get("assembled"))
+    delivery = attrs.get("kaspiDelivery") or attrs.get("delivery") or {}
+    if isinstance(delivery, Mapping):
+        courier_transmission_date = delivery.get("courierTransmissionDate")
+    else:
+        courier_transmission_date = None
+    courier_transmission_date = (
+        courier_transmission_date
+        or attrs.get("courierTransmissionDate")
+        or attrs.get("actualShipmentDate")
+    )
+    courier_transmission_date = _as_bool(courier_transmission_date)
+    delivery_mode = _norm(attrs.get("deliveryMode") or attrs.get("delivery_mode"))
+    is_kaspi_delivery = delivery_mode == "DELIVERY"
+    returned_to_warehouse = _as_bool(
+        attrs.get("returnedToWarehouse") or attrs.get("returned_to_warehouse")
+    )
+    return KaspiStageInputs(
+        state=state,
+        status=status,
+        signature_required=signature_required,
+        pre_order=pre_order,
+        assembled=assembled,
+        courier_transmission_date=courier_transmission_date,
+        delivery_mode=delivery_mode,
+        is_kaspi_delivery=is_kaspi_delivery,
+        returned_to_warehouse=returned_to_warehouse,
+    )
+
+
+def classify_kaspi_order_stage(order: Mapping[str, Any]) -> StageCode:
+    """Return StageCode based on Kaspi API payload fields."""
+    inputs = _extract_stage_inputs(order)
+
+    if inputs.status == "RETURNED":
+        return StageCode.RETURNED
+    if inputs.status == "KASPI_DELIVERY_RETURN_REQUESTED":
+        return StageCode.RETURN_REQUESTED
+    if inputs.status == "CANCELLED":
+        return StageCode.CANCELLED
+    if inputs.status == "CANCELLING":
+        return StageCode.CANCELLING
+    if inputs.status == "COMPLETED":
+        return StageCode.ISSUED_COMPLETED
+
+    if inputs.signature_required or inputs.state == "SIGN_REQUIRED":
+        return StageCode.SIGN_REQUIRED
+
+    if inputs.pre_order:
+        return StageCode.PREORDER_IN_TRANSIT
+
+    if inputs.state == "NEW" and inputs.status == "APPROVED_BY_BANK":
+        return StageCode.NEW_APPROVED
+
+    if inputs.state == "KASPI_DELIVERY":
+        if inputs.courier_transmission_date:
+            return StageCode.IN_DELIVERY
+        if inputs.assembled:
+            return StageCode.ASSEMBLED_PENDING_HANDOVER
+        return StageCode.ACCEPTED_PENDING_ASSEMBLY
+
+    if inputs.state in {"DELIVERY", "PICKUP"}:
+        return StageCode.IN_DELIVERY
+
+    if inputs.state == "ARCHIVE":
+        return StageCode.ISSUED_COMPLETED
+
+    if inputs.status == "ACCEPTED_BY_MERCHANT":
+        return StageCode.ACCEPTED_PENDING_ASSEMBLY
+
+    return StageCode.UNKNOWN

@@ -141,7 +141,7 @@ echo ""
 # Sync DB from API + ActiveOrders (order lifecycle + line items)
 echo "Sync: API -> DB (order lifecycle)..."
 echo "----------------------------------------"
-LOOKBACK_DAYS="${KASPI_LOOKBACK_DAYS:-4}"
+LOOKBACK_DAYS="${KASPI_LOOKBACK_DAYS:-3}"
 SINCE_DATE=$(date -v-"${LOOKBACK_DAYS}"d +%Y-%m-%d)
 python scripts/sync_kaspi_orders.py --all --since "$SINCE_DATE"
 if [ $? -ne 0 ]; then
@@ -168,7 +168,12 @@ echo ""
 # Validate pending orders alignment (CRM vs DB/ActiveOrders)
 echo "Preflight: validating pending orders..."
 echo "----------------------------------------"
-python scripts/validate_pending_orders.py
+INCLUDE_OVERDUE="${KASPI_INCLUDE_OVERDUE:-1}"
+PENDING_ARGS=""
+if [ "${INCLUDE_OVERDUE}" = "1" ]; then
+    PENDING_ARGS="--include-overdue --lookback-days ${LOOKBACK_DAYS}"
+fi
+python scripts/validate_pending_orders.py ${PENDING_ARGS}
 if [ $? -ne 0 ]; then
     echo ""
     echo "WARNING: Pending order validation reported mismatches (see above)."
@@ -238,7 +243,6 @@ fi
 # Step 2: Download waybills
 echo "Step 2: Downloading waybills via API..."
 echo "----------------------------------------"
-INCLUDE_OVERDUE="${KASPI_INCLUDE_OVERDUE:-1}"
 DATE_FLAG="--exact-date"
 if [ "${INCLUDE_OVERDUE}" = "1" ]; then
     DATE_FLAG="--include-overdue"
@@ -282,6 +286,7 @@ if [ -d "${DATA_ROOT}/excel_ui/Kaspi_orders/Today" ]; then
     cp -p "${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"*.pdf "${EXTERNAL_PDFS_DIR}/" 2>/dev/null || true
     cp -p "${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"*/*.pdf "${EXTERNAL_PDFS_DIR}/" 2>/dev/null || true
     cp -p "${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"*/*/*.pdf "${EXTERNAL_PDFS_DIR}/" 2>/dev/null || true
+    cp -p "${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"*/*/*/*.pdf "${EXTERNAL_PDFS_DIR}/" 2>/dev/null || true
 fi
 echo "Archived inputs to: ${ARCHIVE_DIR}"
 echo "Archived inputs to: ${EXTERNAL_ARCHIVE_DIR}"
@@ -314,7 +319,11 @@ echo "Output folder (resolved): ${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"
 echo ""
 echo "Final Report: waybill health"
 echo "----------------------------------------"
-python scripts/report_waybill_status.py --since-days "${LOOKBACK_DAYS}"
+if [ "${INCLUDE_OVERDUE}" = "1" ]; then
+    python scripts/report_waybill_status.py --since-days "${LOOKBACK_DAYS}" --include-overdue
+else
+    python scripts/report_waybill_status.py --since-days "${LOOKBACK_DAYS}"
+fi
 echo ""
 echo "Press Enter to close..."
 read

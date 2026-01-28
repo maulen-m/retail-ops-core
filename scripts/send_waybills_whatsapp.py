@@ -89,12 +89,23 @@ def find_store_folders(today_folder: Path) -> List[Path]:
     if not today_folder.exists():
         return []
 
-    folders = []
-    for item in today_folder.iterdir():
-        if item.is_dir() and not item.name.startswith('.'):
-            # Check if it looks like a store folder (has manifest files)
-            if any(item.glob("manifest_*.csv")):
-                folders.append(item)
+    def collect_from(base: Path) -> List[Path]:
+        found: List[Path] = []
+        for item in base.iterdir():
+            if item.is_dir() and not item.name.startswith('.'):
+                # Check if it looks like a store folder (has manifest files)
+                if any(item.glob("manifest_*.csv")):
+                    found.append(item)
+        return found
+
+    partitions = [today_folder / "TODAY", today_folder / "OVERDUE"]
+    if any(p.exists() for p in partitions):
+        folders = []
+        for partition in partitions:
+            if partition.exists():
+                folders.extend(collect_from(partition))
+    else:
+        folders = collect_from(today_folder)
 
     # Sort by name (date_store format)
     return sorted(folders, key=lambda x: x.name)

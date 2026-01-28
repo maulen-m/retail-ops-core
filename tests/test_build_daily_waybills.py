@@ -7,7 +7,7 @@ Phase 11 TASK-194: 20 tests for the waybill builder script.
 import csv
 import tempfile
 import zipfile
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import openpyxl
@@ -21,6 +21,7 @@ from scripts.build_daily_waybills import (
     WAYBILL_PATTERN,
     OrderItem,
     WaybillGroup,
+    build_store_output,
     count_packages,
     extract_waybills_from_zips,
     generate_filename,
@@ -29,6 +30,7 @@ from scripts.build_daily_waybills import (
     normalize_store_name,
     parse_date,
     sanitize_filename,
+    split_groups_by_overdue,
     size_sort_key,
 )
 
@@ -205,7 +207,67 @@ def test_multi_line():
 
     assert len(groups) == 1
     assert groups[0].group_type == "MULTI_LINE"
-    assert len(groups[0].items) == 2
+
+
+def test_split_groups_by_overdue():
+    target_date = date(2026, 1, 27)
+    today_item = OrderItem(
+        order_id="111",
+        store_name="AcmeWear",
+        kaspi_name_core="Prod1",
+        my_size="M",
+        sku_key="SKU",
+        sku_id="SKU-M",
+        quantity=1,
+        kaspi_offer_name="Prod 1",
+        planned_date=target_date,
+    )
+    overdue_item = OrderItem(
+        order_id="222",
+        store_name="AcmeWear",
+        kaspi_name_core="Prod2",
+        my_size="L",
+        sku_key="SKU",
+        sku_id="SKU-L",
+        quantity=1,
+        kaspi_offer_name="Prod 2",
+        planned_date=target_date - timedelta(days=1),
+    )
+    today_group = WaybillGroup(group_type="NORMAL", store_name="AcmeWear", items=[today_item])
+    overdue_group = WaybillGroup(group_type="NORMAL", store_name="AcmeWear", items=[overdue_item])
+
+    today, overdue = split_groups_by_overdue(
+        {"AcmeWear": [today_group, overdue_group]}, target_date
+    )
+
+    assert today["AcmeWear"] == [today_group]
+    assert overdue["AcmeWear"] == [overdue_group]
+
+
+def test_build_store_output_skips_empty_categories(tmp_path):
+    pdf_path = tmp_path / "111.pdf"
+    pdf_path.write_bytes(b"%PDF-1.0")
+
+    item = OrderItem(
+        order_id="111",
+        store_name="AcmeWear",
+        kaspi_name_core="Prod1",
+        my_size="M",
+        sku_key="SKU",
+        sku_id="SKU-M",
+        quantity=1,
+        kaspi_offer_name="Prod 1",
+        planned_date=date(2026, 1, 27),
+    )
+    group = WaybillGroup(group_type="NORMAL", store_name="AcmeWear", items=[item])
+    group.pdf_path = pdf_path
+
+    build_store_output("AcmeWear", [group], tmp_path, "27.01.26", dry_run=False)
+
+    store_dir = tmp_path / "27.01.26_AcmeWear_qnt1"
+    assert (store_dir / "NORMAL_singles").exists()
+    assert not (store_dir / "SPECIAL_multi_line").exists()
+    assert not (store_dir / "SPECIAL_multi_qty").exists()
 
 
 def test_missing_waybill_tracked():

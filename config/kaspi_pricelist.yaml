@@ -9,20 +9,26 @@ defaults:
 stores:
   UNIVERSAL:
     company: "UNIVERSAL"
-    warehouses: []
+    warehouses:
+      - "30000001_PP1"
 
   ACMEWEAR:
     company: "ACMEWEAR"
-    warehouses: []
+    warehouses:
+      - "30137883_PP1"
 
   11KZ:
     company: "11KZ"
-    warehouses: []
+    warehouses:
+      - "30290083_PP1"
 
   MELVIS:
     company: "MELVIS"
-    warehouses: []
+    warehouses:
+      - "30362323_PP1"
 
   STOREB:
     company: "STOREB"
-    warehouses: []
+    warehouses:
+      - "30000002_PP1"
+      - "30000002_PP2"
