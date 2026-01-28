@@ -1,4 +1,5 @@
 # Kaspi Order Lifecycle and Status Contract (Seller Cabinet ↔ API ↔ Internal Stages)
+REPO CANONICAL (use in code; derived from official doc)
 
 Version: 2026-01-28  
 Purpose: Single, unambiguous “truth contract” for how Kaspi orders progress through lifecycle stages, and how we map Seller Cabinet semantics to Kaspi API fields and our internal stage codes.

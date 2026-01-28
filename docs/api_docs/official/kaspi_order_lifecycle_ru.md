@@ -1,3 +1,8 @@
+SOURCE-OF-TRUTH (Kaspi official, do not edit; contract derives from this)
+Contract: docs/KASPI_ORDER_LIFECYCLE_AND_STATUS_CONTRACT.md.
+
+---
+
 Руководство
 по обработке Заказа и выдаче Товара
 

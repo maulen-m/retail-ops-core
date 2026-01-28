@@ -12,6 +12,7 @@ from typing import Callable, Iterable
 import yaml
 
 from core.integrations.kaspi_api_client import KaspiAPIClient
+from core.integrations.kaspi_order_stage import StageCode, classify_kaspi_order_stage
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,17 @@ def _select_orders(
 ) -> list[tuple[str, str]]:
     rows = conn.execute(
         """
-        SELECT order_id, store_code
+        SELECT
+            order_id,
+            store_code,
+            kaspi_status,
+            kaspi_status_detail,
+            signature_required,
+            pre_order,
+            courier_transmission_date,
+            actual_shipment_date,
+            delivery_mode,
+            returned_to_warehouse
         FROM fact_orders_kaspi
         WHERE store_code = ?
           AND date(COALESCE(status_updated_at, actual_shipment_date, planned_shipment_date, created_at))
@@ -66,7 +77,22 @@ def _select_orders(
         """,
         (store_code, since, until, max_orders),
     ).fetchall()
-    return [(row[0], row[1]) for row in rows]
+    selected: list[tuple[str, str]] = []
+    for row in rows:
+        order = {
+            "state": row["kaspi_status"],
+            "status": row["kaspi_status_detail"],
+            "signatureRequired": row["signature_required"],
+            "preOrder": row["pre_order"],
+            "courierTransmissionDate": row["courier_transmission_date"] or row["actual_shipment_date"],
+            "deliveryMode": row["delivery_mode"],
+            "returnedToWarehouse": row["returned_to_warehouse"],
+        }
+        stage = classify_kaspi_order_stage(order)
+        if stage in {StageCode.SIGN_REQUIRED, StageCode.UNKNOWN}:
+            continue
+        selected.append((row["order_id"], row["store_code"]))
+    return selected
 
 
 def _parse_entry(entry: dict, fallback_order_id: str, store_code: str) -> dict:

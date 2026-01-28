@@ -53,3 +53,23 @@ def test_return_mapping():
     returned = _make_order(state="ARCHIVE", status="RETURNED")
     assert classify_kaspi_order_stage(requested) == StageCode.RETURN_REQUESTED
     assert classify_kaspi_order_stage(returned) == StageCode.RETURNED
+
+
+def test_preorder_mapping():
+    order = _make_order(state="NEW", status="ACCEPTED_BY_MERCHANT", preOrder=True)
+    assert classify_kaspi_order_stage(order) == StageCode.PREORDER_IN_TRANSIT
+
+
+def test_accepted_pending_assembly_mapping():
+    order = _make_order(state="KASPI_DELIVERY", status="ACCEPTED_BY_MERCHANT", assembled=False)
+    assert classify_kaspi_order_stage(order) == StageCode.ACCEPTED_PENDING_ASSEMBLY
+
+
+def test_assembled_pending_handover_mapping():
+    order = _make_order(state="KASPI_DELIVERY", status="ACCEPTED_BY_MERCHANT", assembled=True)
+    assert classify_kaspi_order_stage(order) == StageCode.ASSEMBLED_PENDING_HANDOVER
+
+
+def test_delivery_state_mapping():
+    order = _make_order(state="DELIVERY", status="ACCEPTED_BY_MERCHANT")
+    assert classify_kaspi_order_stage(order) == StageCode.IN_DELIVERY

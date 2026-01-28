@@ -146,10 +146,42 @@ Tests required:
 - `test_transfer_import_idempotent()`
 - `test_no_double_count_statement_vs_transfer_ledger()`
 
+### Phase D.5 — Cash/balance anchor verification (manual balance checks)
+**Why now:** We chose A1 (anchor = EOD statement close). Manual snapshots must be imported as BALANCE-CHECKS
+so we can objectively verify whether cash is aligned and stop “anchor suspicion”.
+
+**Inputs**
+- `config/bank_accounts_history.yaml` (append-only)
+- `config/bank_accounts.yaml` (latest snapshot generated from history)
+
+**Deliverables**
+- Importer: `config/bank_accounts.yaml` → balance-check records/events (per store/account/currency).
+- Trust report includes:
+  - `last_statement_date`
+  - `last_balance_check_at`
+  - drift vs latest balance check (total + per store).
+- Dashboard trust banner reflects both statement boundary and balance-check boundary.
+
+**Phase gates**
+- `pytest -q`
+- `scripts/lint_docs.sh`
+- `scripts/check_no_db_tracked.sh`
+- `python3 scripts/validate_cashflow_invariants.py`
+- `python3 scripts/validate_inventory_cost_drift.py`
+- `ENABLE_CASHFLOW_WRITE=1 python3 scripts/run_end_of_day.py --verbose`
+
 ---
 
 ### Phase E — Kaspi API enrichment (line-item truth) behind a feature flag (default OFF)
 **Goal:** add line-item and product metadata without destabilizing base sync.
+
+**New non-negotiable:** All business logic must use StageCode (derived from state+status) per:
+`/docs/KASPI_ORDER_LIFECYCLE_AND_STATUS_CONTRACT.md`. Do not add new ad-hoc status logic.
+
+**Additions**
+- Enrichment selection uses StageCode, not raw status checks.
+- Tests cover StageCode derivation + selection filters.
+- Feature flag remains default OFF; failures are fail-open for enrichment, not for core sync.
 
 Deliverables:
 - New read-only client endpoints:
@@ -162,6 +194,8 @@ Deliverables:
   - only enrich new/changed orders (or last N days)
   - fail-open (log warning, continue)
   - rate-limited + cached
+- Selection and downstream interpretation must use StageCode (derived via `kaspi_order_stage`),
+  not raw state/status checks sprinkled across scripts.
 
 Acceptance gates:
 - Core sync unaffected when enrichment fails
@@ -218,4 +252,3 @@ Not required for 80–90% completion:
 - Cashflow calendar is decision-grade from last statement day forward
 - Multi-line order correctness is fixed (entries table)
 - All tests + gates pass and are runnable in CI-like fashion
-

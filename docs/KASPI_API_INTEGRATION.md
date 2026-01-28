@@ -7,6 +7,11 @@ Phase 9.5 — Kaspi Order Automation
 This document describes the integration with Kaspi Shop API for automated order management, waybill downloads, and order status tracking.
 Price/stock sync via price list is documented separately: `docs/api_docs/formatted/KASPI_PRICE_STOCK_SYNC_VIA_PRICELIST.md`.
 
+IMPORTANT: Lifecycle contract (single source of truth) lives at
+`docs/KASPI_ORDER_LIFECYCLE_AND_STATUS_CONTRACT.md`.
+Do not mix raw API state/status in logic. Always derive StageCode via
+`core/integrations/kaspi_order_stage.py` and use StageCode for selection/interpretation.
+
 Agent task framing for price/stock sync:
 - Implement generator + validators + tests first.
 - Add safe publishing workflow only after tests: dry‑run → diff → enable flag.
