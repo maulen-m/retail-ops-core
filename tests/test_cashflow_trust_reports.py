@@ -102,3 +102,37 @@ def test_drift_report_respects_api_window(tmp_path, monkeypatch):
 
     content = out_path.read_text(encoding="utf-8")
     assert "coverage_status: OK" in content
+
+
+def test_trust_report_includes_balance_check_currency(tmp_path):
+    trust_path = tmp_path / "trust.md"
+    rows = [{"date": "2026-01-10", "is_forecast": False}]
+    manual_dates = {"2026-01-10"}
+    balance_check_drift = {
+        "actual_total_kzt": 1000.0,
+        "model_total_kzt": 900.0,
+        "drift_total_kzt": 100.0,
+        "by_store": {"TEST": {"actual_kzt": 1000.0, "model_kzt": 900.0, "drift_kzt": 100.0}},
+    }
+    balance_check_currency = {
+        "as_of_date": "2026-01-10",
+        "total_kzt": 1000.0,
+        "by_currency": {
+            "KZT": {"amount": 1000.0, "kzt_equiv": 1000.0},
+            "USD": {"amount": 2.0, "kzt_equiv": 1060.0},
+        },
+    }
+    dashboard._write_trust_report(
+        trust_path,
+        "2026-01-10",
+        {},
+        rows,
+        manual_dates,
+        "2026-01-10",
+        balance_check_drift,
+        balance_check_currency,
+        {},
+    )
+    content = trust_path.read_text(encoding="utf-8")
+    assert "balance_check_by_currency" in content
+    assert "USD" in content

@@ -39,6 +39,7 @@ from core.cashflow.refund_reserve import compute_refund_reserve_series, apply_re
 from core.calc.economics import calc_delivery_fee, calc_net_rev
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 EXPORT_DIR = PROJECT_ROOT / "exports"
+BANK_ACCOUNTS_PATH = PROJECT_ROOT / "config" / "bank_accounts.yaml"
 CSV_PATH = EXPORT_DIR / "cashflow_calendar.csv"
 HTML_PATH = EXPORT_DIR / "cashflow_dashboard.html"
 MIN_CASH_PATH = EXPORT_DIR / "min_cash_summary.txt"
@@ -167,6 +168,132 @@ def _load_last_balance_check_date(conn: sqlite3.Connection) -> str | None:
         """
     ).fetchone()
     return row[0] if row and row[0] else None
+
+
+def _load_balance_check_currency_totals(
+    config_path: Path,
+    db_path: Path,
+) -> dict:
+    if not config_path.exists():
+        return {"as_of_date": None, "total_kzt": 0.0, "by_currency": {}}
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    as_of_raw = config.get("as_of")
+    if not as_of_raw:
+        return {"as_of_date": None, "total_kzt": 0.0, "by_currency": {}}
+    cleaned = str(as_of_raw).replace("GMT+5", "").strip()
+    as_of_date = None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            as_of_date = datetime.strptime(cleaned, fmt).date()
+            break
+        except ValueError:
+            continue
+    if as_of_date is None:
+        try:
+            as_of_date = datetime.fromisoformat(cleaned).date()
+        except ValueError:
+            return {"as_of_date": None, "total_kzt": 0.0, "by_currency": {}}
+
+    fx_rates = get_fx_rates(as_of_date, db_path=db_path)
+
+    totals = {}
+    stores = config.get("stores", {})
+    for store_meta in (stores or {}).values():
+        accounts = (store_meta or {}).get("accounts", {})
+        for data in accounts.values():
+            if data is None:
+                continue
+            if data.get("balance_kzt") is not None:
+                totals.setdefault("KZT", 0.0)
+                totals["KZT"] += float(data.get("balance_kzt") or 0.0)
+            if data.get("balance_usd") is not None:
+                totals.setdefault("USD", 0.0)
+                totals["USD"] += float(data.get("balance_usd") or 0.0)
+            if data.get("balance_usdt") is not None:
+                totals.setdefault("USDT", 0.0)
+                totals["USDT"] += float(data.get("balance_usdt") or 0.0)
+            if data.get("balance_rub") is not None:
+                totals.setdefault("RUB", 0.0)
+                totals["RUB"] += float(data.get("balance_rub") or 0.0)
+
+    by_currency = {}
+    total_kzt = 0.0
+    for currency, amount in totals.items():
+        kzt_equiv = 0.0
+        if currency in {"USD", "USDT"}:
+            kzt_equiv = float(amount) * float(fx_rates.usd_kzt)
+        elif currency == "KZT":
+            kzt_equiv = float(amount)
+        by_currency[currency] = {
+            "amount": round(float(amount), 2),
+            "kzt_equiv": round(float(kzt_equiv), 2),
+        }
+        total_kzt += kzt_equiv
+
+    return {
+        "as_of_date": as_of_date.isoformat(),
+        "total_kzt": round(total_kzt, 2),
+        "by_currency": by_currency,
+    }
+
+
+def _load_balance_check_drift(
+    conn: sqlite3.Connection,
+    balance_check_date: str | None,
+) -> dict:
+    if not balance_check_date or not _table_exists(conn, "fact_cashflow_events"):
+        return {
+            "actual_total_kzt": 0.0,
+            "model_total_kzt": 0.0,
+            "drift_total_kzt": 0.0,
+            "by_store": {},
+        }
+
+    actual_rows = conn.execute(
+        """
+        SELECT store_code, SUM(amount_kzt) as amount
+        FROM fact_cashflow_events
+        WHERE event_date = ?
+          AND event_type IN ('BALANCE_CHECK', 'OPENING_BALANCE')
+        GROUP BY store_code
+        """,
+        (balance_check_date,),
+    ).fetchall()
+
+    model_rows = conn.execute(
+        """
+        SELECT store_code, SUM(amount_kzt) as amount
+        FROM fact_cashflow_events
+        WHERE event_date <= ?
+          AND account = 'CASH'
+          AND event_type NOT IN ('BALANCE_CHECK', 'OPENING_BALANCE')
+        GROUP BY store_code
+        """,
+        (balance_check_date,),
+    ).fetchall()
+
+    actual_by_store = {row[0] or "UNKNOWN": float(row[1] or 0.0) for row in actual_rows}
+    model_by_store = {row[0] or "UNKNOWN": float(row[1] or 0.0) for row in model_rows}
+
+    stores = sorted(set(actual_by_store.keys()) | set(model_by_store.keys()))
+    by_store = {}
+    for store in stores:
+        actual = actual_by_store.get(store, 0.0)
+        model = model_by_store.get(store, 0.0)
+        by_store[store] = {
+            "actual_kzt": round(actual, 2),
+            "model_kzt": round(model, 2),
+            "drift_kzt": round(actual - model, 2),
+        }
+
+    actual_total = sum(actual_by_store.values())
+    model_total = sum(model_by_store.values())
+    return {
+        "actual_total_kzt": round(actual_total, 2),
+        "model_total_kzt": round(model_total, 2),
+        "drift_total_kzt": round(actual_total - model_total, 2),
+        "by_store": by_store,
+    }
 
 
 def _load_dim_sku_weights(conn: sqlite3.Connection) -> dict[str, float]:
@@ -427,10 +554,16 @@ def _write_trust_report(
     rows: list[dict],
     manual_dates: set[str],
     last_balance_check: str | None,
+    balance_check_drift: dict,
+    balance_check_currency: dict,
     on_delivery_summary: dict,
 ) -> dict[str, int]:
     counts = _compute_trust_counts(rows, last_statement_date, manual_dates)
     sync_age_hours = _max_sync_age(sync_ages)
+    drift = balance_check_drift or {}
+    drift_by_store = drift.get("by_store") or {}
+    currency = balance_check_currency or {}
+    currency_by = currency.get("by_currency") or {}
     lines = [
         "# Cashflow Trust Report",
         "",
@@ -440,9 +573,32 @@ def _write_trust_report(
         f"- modelled_days: {counts['modelled_days']}",
         f"- forecast_days: {counts['forecast_days']}",
         f"- last_balance_check_date: {last_balance_check or 'NONE'}",
+        f"- balance_check_actual_total_kzt: {drift.get('actual_total_kzt', 0.0)}",
+        f"- balance_check_model_total_kzt: {drift.get('model_total_kzt', 0.0)}",
+        f"- balance_check_drift_total_kzt: {drift.get('drift_total_kzt', 0.0)}",
+        "- balance_check_drift_by_store:",
+        f"- balance_check_by_currency_total_kzt: {currency.get('total_kzt', 0.0)}",
+        "- balance_check_by_currency:",
         f"- order_sync_age_hours_max: {sync_age_hours if sync_age_hours is not None else 'UNKNOWN'}",
         "- order_sync_age_hours_by_store:",
     ]
+    if drift_by_store:
+        for store_code, metrics in sorted(drift_by_store.items()):
+            lines.append(
+                f"  - {store_code}: actual={metrics.get('actual_kzt', 0.0):.2f} "
+                f"model={metrics.get('model_kzt', 0.0):.2f} "
+                f"drift={metrics.get('drift_kzt', 0.0):.2f}"
+            )
+    else:
+        lines.append("  - NONE")
+    if currency_by:
+        for cur, metrics in sorted(currency_by.items()):
+            lines.append(
+                f"  - {cur}: amount={metrics.get('amount', 0.0):.2f} "
+                f"kzt_equiv={metrics.get('kzt_equiv', 0.0):.2f}"
+            )
+    else:
+        lines.append("  - NONE")
     if sync_ages:
         for store_code, age in sorted(sync_ages.items()):
             lines.append(f"  - {store_code}: {age:.2f}h")
@@ -1641,6 +1797,17 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
       const onDelivery = meta.on_delivery_summary || {{}};
       const reserve = meta.refund_reserve_conservative || {{}};
       const trustCounts = meta.trust_counts || {{}};
+      const balanceDrift = meta.balance_check_drift || {{}};
+      const balanceCurrency = meta.balance_check_currency || {{}};
+      const currencyTotals = balanceCurrency.by_currency || {{}};
+      const currencySummary = Object.entries(currencyTotals).map(([code, info]) => {{
+        const amount = Number(info.amount || 0);
+        const kztEquiv = info.kzt_equiv;
+        if (kztEquiv === null || kztEquiv === undefined) {{
+          return `${{code}} ${{amount}}`;
+        }}
+        return `${{code}} ${{amount}} (${{formatKzt(kztEquiv)}} KZT)`;
+      }}).join(' | ');
       const reserveLabel = reserve.rate && reserve.days
         ? `(${{(reserve.rate * 100).toFixed(0)}}% / ${{reserve.days}}d)`
         : '';
@@ -1656,6 +1823,12 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
         <div class="trust-card">
           <div class="trust-label pixel-font">LAST BALANCE CHECK</div>
           <div class="trust-value monospace-font">${{manualDate}}<span class="badge">MANUAL</span></div>
+        </div>
+        <div class="trust-card">
+          <div class="trust-label pixel-font">BALANCE DRIFT</div>
+          <div class="trust-value monospace-font">${{formatKzt(balanceDrift.drift_total_kzt || 0)}} KZT
+            <div class="subnote monospace-font">${{currencySummary || 'NO BALANCE CHECK'}}</div>
+          </div>
         </div>
         <div class="trust-card">
           <div class="trust-label pixel-font">MIN CASH (BASE)</div>
@@ -2760,6 +2933,8 @@ def main() -> int:
         sync_age_hours = _max_sync_age(sync_ages)
         manual_dates = _load_manual_balance_dates(conn)
         last_balance_check = _load_last_balance_check_date(conn)
+        balance_check_drift = _load_balance_check_drift(conn, last_balance_check)
+        balance_check_currency = _load_balance_check_currency_totals(BANK_ACCOUNTS_PATH, args.db)
         resolved_start, resolved_end = _resolve_start_end(conn)
         history_end = cutoff
         if _table_exists(conn, "fact_cashflow_events"):
@@ -2931,6 +3106,8 @@ def main() -> int:
         all_rows,
         manual_dates,
         last_balance_check,
+        balance_check_drift,
+        balance_check_currency,
         on_delivery_summary,
     )
     drift_path = Path(str(DRIFT_REPORT_PATH).format(label=cutoff.isoformat()))
@@ -2948,6 +3125,8 @@ def main() -> int:
                 "last_statement_date": last_statement_date,
                 "last_manual_balance_date": last_manual,
                 "last_balance_check_date": last_balance_check,
+                "balance_check_drift": balance_check_drift,
+                "balance_check_currency": balance_check_currency,
                 "order_sync_age_hours": sync_age_hours,
                 "order_sync_ages": sync_ages,
                 "trust_counts": trust_counts,
