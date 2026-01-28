@@ -210,7 +210,7 @@ Tests required:
 ---
 
 ### Phase F — Generate Fact_Sales (V16) from API order entries (remove Excel dependency)
-**Goal:** produce decision-grade sales table at correct grain: OrderID × SKU × Store.
+**Goal:** produce decision-grade sales table at correct grain: OrderID × SKU_ID × Store.
 
 Deliverables:
 - deterministic builder producing Fact_Sales V16 from:
