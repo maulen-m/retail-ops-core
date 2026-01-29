@@ -133,6 +133,26 @@ def list_entries(
     return entries
 
 
+def has_entry(
+    reference_type: str,
+    reference_id: str,
+    db_path: Optional[Path] = None,
+) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM transfer_ledger
+            WHERE reference_type = ? AND reference_id = ?
+            LIMIT 1
+            """,
+            (reference_type, reference_id),
+        ).fetchone()
+    return row is not None
+
+
 def get_balance(
     currency: str = "KZT",
     as_of_date: Optional[date | datetime] = None,

@@ -62,3 +62,62 @@ def test_withdraw_import_creates_ledger(tmp_path):
 
     entries = repository.list_entries(db_path=db_path)
     assert len(entries) >= 1
+
+
+def test_withdraw_import_idempotent_ledger(tmp_path):
+    db_path = tmp_path / "app.db"
+    db_path.touch()
+    seed_fx(db_path)
+
+    raw = {
+        "id": "wd-999",
+        "coin": "USDT",
+        "network": "TRX",
+        "amount": "50",
+        "transactionFee": "0.5",
+        "address": "Taddr1",
+        "applyTime": int(datetime(2026, 1, 3, tzinfo=timezone.utc).timestamp() * 1000),
+        "status": 6,
+    }
+
+    result = import_binance_withdrawals([raw], db_path=db_path, write_ledger=True, auto_allocate=False)
+    assert result["inserted"] == 1
+    assert result["ledger_entries"] == 1
+
+    # Re-import should not create duplicate ledger entries
+    result = import_binance_withdrawals([raw], db_path=db_path, write_ledger=True, auto_allocate=False)
+    assert result["inserted"] == 0
+    assert result["ledger_entries"] == 0
+
+    entries = repository.list_entries(db_path=db_path)
+    assert len([e for e in entries if e.reference_type == "BINANCE_WITHDRAWAL"]) == 1
+
+
+def test_withdraw_import_backfills_missing_ledger(tmp_path):
+    db_path = tmp_path / "app.db"
+    db_path.touch()
+    seed_fx(db_path)
+
+    raw = {
+        "id": "wd-1000",
+        "coin": "USDT",
+        "network": "TRX",
+        "amount": "75",
+        "transactionFee": "0",
+        "address": "Taddr2",
+        "applyTime": int(datetime(2026, 1, 4, tzinfo=timezone.utc).timestamp() * 1000),
+        "status": 6,
+    }
+
+    # First import without ledger
+    result = import_binance_withdrawals([raw], db_path=db_path, write_ledger=False, auto_allocate=False)
+    assert result["inserted"] == 1
+    assert result["ledger_entries"] == 0
+
+    # Re-import with ledger should backfill it
+    result = import_binance_withdrawals([raw], db_path=db_path, write_ledger=True, auto_allocate=False)
+    assert result["inserted"] == 0
+    assert result["ledger_entries"] == 1
+
+    entries = repository.list_entries(db_path=db_path)
+    assert len([e for e in entries if e.reference_type == "BINANCE_WITHDRAWAL"]) == 1

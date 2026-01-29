@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from .repository import upsert_binance_c2c_order
+from .repository import upsert_binance_c2c_order, has_entry
 from .service import post_binance_p2p_trade
 
 
@@ -99,20 +99,21 @@ def import_binance_orders(
             if write_ledger:
                 if completed_only and str(order.get("order_status", "")).upper() != "COMPLETED":
                     continue
-                entry_ids = post_binance_p2p_trade(
-                    order_number=order["order_number"],
-                    trade_type=order["trade_type"],
-                    asset=order["asset"],
-                    fiat=order["fiat"],
-                    crypto_amount=order["crypto_amount"],
-                    fiat_amount=order["fiat_amount"],
-                    unit_price=order["unit_price"],
-                    paid_at=order["create_time"],
-                    source=order.get("source", "BINANCE_P2P"),
-                    counterparty=order.get("counterparty") or "",
-                    db_path=db_path,
-                )
-                ledger_entries += len(entry_ids)
+                if not has_entry("BINANCE_P2P", order["order_number"], db_path=db_path):
+                    entry_ids = post_binance_p2p_trade(
+                        order_number=order["order_number"],
+                        trade_type=order["trade_type"],
+                        asset=order["asset"],
+                        fiat=order["fiat"],
+                        crypto_amount=order["crypto_amount"],
+                        fiat_amount=order["fiat_amount"],
+                        unit_price=order["unit_price"],
+                        paid_at=order["create_time"],
+                        source=order.get("source", "BINANCE_P2P"),
+                        counterparty=order.get("counterparty") or "",
+                        db_path=db_path,
+                    )
+                    ledger_entries += len(entry_ids)
         except Exception as exc:
             errors.append(str(exc))
 
