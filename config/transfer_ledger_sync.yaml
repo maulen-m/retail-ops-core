@@ -1,6 +1,4 @@
 settings:
   max_age_hours: 25
   required_sources:
-    - binance_p2p
-    - binance_withdrawals
     - exchanger_emails
