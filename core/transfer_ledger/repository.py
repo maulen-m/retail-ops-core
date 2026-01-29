@@ -43,6 +43,14 @@ def ensure_schema(db_path: Optional[Path] = None) -> None:
             {
                 "counterparty_label": "TEXT",
                 "exchanger_order_id": "TEXT",
+                "account_label": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "binance_c2c_orders",
+            {
+                "account_label": "TEXT",
             },
         )
 
@@ -196,6 +204,159 @@ def record_sync_log(
         )
 
 
+def update_withdrawal_metadata(
+    withdraw_id: str,
+    address: Optional[str] = None,
+    tx_id: Optional[str] = None,
+    success_time: Optional[str] = None,
+    status: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    fields: list[str] = []
+    params: list = []
+    if address:
+        fields.append("address = ?")
+        params.append(address)
+    if tx_id:
+        fields.append("tx_id = ?")
+        params.append(tx_id)
+    if success_time:
+        fields.append("success_time = ?")
+        params.append(success_time)
+    if status:
+        fields.append("status = ?")
+        params.append(status)
+    if not fields:
+        return False
+    fields.append("updated_at = datetime('now')")
+    params.append(withdraw_id)
+    sql = f"UPDATE binance_withdrawals SET {', '.join(fields)} WHERE withdraw_id = ?"
+    with get_db(path) as conn:
+        cur = conn.execute(sql, params)
+        return cur.rowcount > 0
+
+
+def upsert_binance_deposit(deposit: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM binance_deposits WHERE deposit_id = ? LIMIT 1",
+            (deposit["deposit_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO binance_deposits (
+                deposit_id, coin, amount, address, address_tag, tx_id,
+                insert_time, complete_time, status, network, transfer_type,
+                wallet_type, account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                deposit["deposit_id"],
+                deposit.get("coin"),
+                deposit.get("amount"),
+                deposit.get("address"),
+                deposit.get("address_tag"),
+                deposit.get("tx_id"),
+                deposit.get("insert_time"),
+                deposit.get("complete_time"),
+                deposit.get("status"),
+                deposit.get("network"),
+                deposit.get("transfer_type"),
+                deposit.get("wallet_type"),
+                deposit.get("account_label"),
+                deposit.get("raw_json"),
+                deposit.get("source", "BINANCE_DEPOSIT"),
+            ),
+        )
+    return existing is None
+
+
+def upsert_binance_transfer(transfer: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM binance_transfers WHERE transfer_id = ? LIMIT 1",
+            (transfer["transfer_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO binance_transfers (
+                transfer_id, asset, amount, transfer_type, status, timestamp,
+                account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                transfer["transfer_id"],
+                transfer.get("asset"),
+                transfer.get("amount"),
+                transfer.get("transfer_type"),
+                transfer.get("status"),
+                transfer.get("timestamp"),
+                transfer.get("account_label"),
+                transfer.get("raw_json"),
+                transfer.get("source", "BINANCE_TRANSFER"),
+            ),
+        )
+    return existing is None
+
+
+def upsert_binance_account_snapshot(snapshot: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM binance_account_snapshots WHERE snapshot_id = ? LIMIT 1",
+            (snapshot["snapshot_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO binance_account_snapshots (
+                snapshot_id, account_type, snapshot_time, total_asset_btc,
+                account_label, data_json, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                snapshot["snapshot_id"],
+                snapshot.get("account_type"),
+                snapshot.get("snapshot_time"),
+                snapshot.get("total_asset_btc"),
+                snapshot.get("account_label"),
+                snapshot.get("data_json"),
+                snapshot.get("raw_json"),
+                snapshot.get("source", "BINANCE_SNAPSHOT"),
+            ),
+        )
+    return existing is None
+
+
+def insert_funding_balance_snapshot(snapshot: dict, db_path: Optional[Path] = None) -> None:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO binance_funding_balances (
+                snapshot_time, asset, free, locked, total, account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                snapshot.get("snapshot_time"),
+                snapshot.get("asset"),
+                snapshot.get("free"),
+                snapshot.get("locked"),
+                snapshot.get("total"),
+                snapshot.get("account_label"),
+                snapshot.get("raw_json"),
+                snapshot.get("source", "BINANCE_FUNDING_BAL"),
+            ),
+        )
+
+
 def get_balance(
     currency: str = "KZT",
     as_of_date: Optional[date | datetime] = None,
@@ -292,8 +453,8 @@ def upsert_binance_c2c_order(order: dict, db_path: Optional[Path] = None) -> boo
             INSERT OR REPLACE INTO binance_c2c_orders (
                 order_number, adv_no, trade_type, asset, fiat, fiat_amount, crypto_amount,
                 unit_price, order_status, create_time, commission, counterparty,
-                advertisement_role, raw_json, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                advertisement_role, account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 order["order_number"],
@@ -309,6 +470,7 @@ def upsert_binance_c2c_order(order: dict, db_path: Optional[Path] = None) -> boo
                 order.get("commission"),
                 order.get("counterparty"),
                 order.get("advertisement_role"),
+                order.get("account_label"),
                 order.get("raw_json"),
                 order.get("source", "BINANCE_P2P"),
             ),
@@ -329,8 +491,8 @@ def upsert_binance_withdrawal(withdraw: dict, db_path: Optional[Path] = None) ->
             INSERT OR REPLACE INTO binance_withdrawals (
                 withdraw_id, tx_id, coin, network, amount, transaction_fee, address,
                 address_tag, apply_time, success_time, status, wallet_type,
-                counterparty_label, exchanger_order_id, raw_json, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                counterparty_label, exchanger_order_id, account_label, raw_json, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 withdraw["withdraw_id"],
@@ -347,6 +509,7 @@ def upsert_binance_withdrawal(withdraw: dict, db_path: Optional[Path] = None) ->
                 withdraw.get("wallet_type"),
                 withdraw.get("counterparty_label"),
                 withdraw.get("exchanger_order_id"),
+                withdraw.get("account_label"),
                 withdraw.get("raw_json"),
                 withdraw.get("source", "BINANCE_WITHDRAW"),
             ),
@@ -389,6 +552,40 @@ def upsert_exchanger_order(order: dict, db_path: Optional[Path] = None) -> bool:
                 order.get("source", "GMAIL"),
             ),
         )
+    return existing is None
+
+
+def insert_exchanger_event(event: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    message_id = event.get("message_id") or ""
+    with get_db(path) as conn:
+        existing = None
+        if message_id:
+            existing = conn.execute(
+                "SELECT 1 FROM exchanger_order_events WHERE message_id = ? LIMIT 1",
+                (message_id,),
+            ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO exchanger_order_events (
+                    exchanger_order_id, exchanger, order_id, status,
+                    message_id, message_date, subject, raw_json, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    event.get("exchanger_order_id"),
+                    event.get("exchanger"),
+                    event.get("order_id"),
+                    event.get("status"),
+                    message_id,
+                    event.get("message_date"),
+                    event.get("subject"),
+                    event.get("raw_json"),
+                    event.get("source", "GMAIL"),
+                ),
+            )
     return existing is None
 
 
@@ -461,13 +658,95 @@ def list_withdrawals(
         SELECT
             withdraw_id, tx_id, coin, network, amount, transaction_fee, address,
             address_tag, apply_time, success_time, status, wallet_type,
-            counterparty_label, exchanger_order_id
+            counterparty_label, exchanger_order_id, account_label
         FROM binance_withdrawals
         {where}
         ORDER BY apply_time DESC
     """
     with get_db(path) as conn:
         rows = conn.execute(sql).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_deposits(
+    db_path: Optional[Path] = None,
+    start_time: Optional[str] = None,
+    coin: Optional[str] = None,
+) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    clauses: list[str] = []
+    params: list = []
+    if start_time:
+        clauses.append("insert_time >= ?")
+        params.append(start_time)
+    if coin:
+        clauses.append("coin = ?")
+        params.append(coin.upper())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""
+        SELECT
+            deposit_id, coin, amount, address, address_tag, tx_id,
+            insert_time, complete_time, status, network, transfer_type,
+            wallet_type, account_label
+        FROM binance_deposits
+        {where}
+        ORDER BY insert_time DESC
+    """
+    with get_db(path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_transfers(
+    db_path: Optional[Path] = None,
+    start_time: Optional[str] = None,
+    asset: Optional[str] = None,
+) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    clauses: list[str] = []
+    params: list = []
+    if start_time:
+        clauses.append("timestamp >= ?")
+        params.append(start_time)
+    if asset:
+        clauses.append("asset = ?")
+        params.append(asset.upper())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""
+        SELECT
+            transfer_id, asset, amount, transfer_type, status, timestamp, account_label
+        FROM binance_transfers
+        {where}
+        ORDER BY timestamp DESC
+    """
+    with get_db(path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_funding_balance_snapshots(
+    db_path: Optional[Path] = None,
+    asset: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    params: list = []
+    where = ""
+    if asset:
+        where = "WHERE asset = ?"
+        params.append(asset.upper())
+    sql = f"""
+        SELECT snapshot_time, asset, free, locked, total
+        FROM binance_funding_balances
+        {where}
+        ORDER BY snapshot_time DESC
+        LIMIT {int(limit)}
+    """
+    with get_db(path) as conn:
+        rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -569,6 +848,108 @@ def list_po_funding_allocations(
     sql = f"""
         SELECT allocation_id, po_id, entry_id, amount, currency, amount_kzt, notes, created_at
         FROM po_funding_allocations
+        {where}
+        ORDER BY allocation_id DESC
+    """
+    with get_db(path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_po_funding_plan(plan: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM po_funding_plan WHERE po_id = ? LIMIT 1",
+            (plan["po_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO po_funding_plan (po_id, message_date, total_cny, total_usdt, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(po_id) DO UPDATE SET
+                message_date = COALESCE(excluded.message_date, po_funding_plan.message_date),
+                total_cny = COALESCE(excluded.total_cny, po_funding_plan.total_cny),
+                total_usdt = COALESCE(excluded.total_usdt, po_funding_plan.total_usdt),
+                source = COALESCE(excluded.source, po_funding_plan.source),
+                updated_at = datetime('now')
+            """,
+            (
+                plan["po_id"],
+                plan.get("message_date"),
+                plan.get("total_cny"),
+                plan.get("total_usdt"),
+                plan.get("source"),
+            ),
+        )
+    return existing is None
+
+
+def list_po_funding_plan(db_path: Optional[Path] = None) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='po_funding_plan'"
+        ).fetchone()
+        if not table:
+            return []
+        rows = conn.execute(
+            """
+            SELECT po_id, message_date, total_cny, total_usdt, source, updated_at
+            FROM po_funding_plan
+            WHERE po_id IS NOT NULL
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_po_exchanger_allocation(allocation: dict, db_path: Optional[Path] = None) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM po_exchanger_allocations WHERE exchanger_order_id = ? LIMIT 1",
+            (allocation["exchanger_order_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO po_exchanger_allocations (
+                po_id, exchanger_order_id, amount_usdt, amount_cny, source, created_at
+            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(exchanger_order_id) DO UPDATE SET
+                po_id = excluded.po_id,
+                amount_usdt = COALESCE(excluded.amount_usdt, po_exchanger_allocations.amount_usdt),
+                amount_cny = COALESCE(excluded.amount_cny, po_exchanger_allocations.amount_cny),
+                source = COALESCE(excluded.source, po_exchanger_allocations.source),
+                created_at = po_exchanger_allocations.created_at
+            """,
+            (
+                allocation["po_id"],
+                allocation["exchanger_order_id"],
+                allocation.get("amount_usdt"),
+                allocation.get("amount_cny"),
+                allocation.get("source"),
+            ),
+        )
+    return existing is None
+
+
+def list_po_exchanger_allocations(
+    db_path: Optional[Path] = None,
+    po_id: Optional[str] = None,
+) -> list[dict]:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    params: list = []
+    where = ""
+    if po_id:
+        where = "WHERE po_id = ?"
+        params.append(po_id)
+    sql = f"""
+        SELECT allocation_id, po_id, exchanger_order_id, amount_usdt, amount_cny, source, created_at
+        FROM po_exchanger_allocations
         {where}
         ORDER BY allocation_id DESC
     """

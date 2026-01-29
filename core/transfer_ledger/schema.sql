@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS binance_c2c_orders (
     commission TEXT,
     counterparty TEXT,
     advertisement_role TEXT,
+    account_label TEXT,
     raw_json TEXT,
     source TEXT DEFAULT 'BINANCE_P2P',
     updated_at TEXT DEFAULT (datetime('now'))
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS binance_withdrawals (
     wallet_type TEXT,
     counterparty_label TEXT,
     exchanger_order_id TEXT,
+    account_label TEXT,
     raw_json TEXT,
     source TEXT DEFAULT 'BINANCE_WITHDRAW',
     updated_at TEXT DEFAULT (datetime('now'))
@@ -67,6 +69,79 @@ CREATE TABLE IF NOT EXISTS binance_withdrawals (
 
 CREATE INDEX IF NOT EXISTS idx_binance_withdrawals_time
     ON binance_withdrawals(apply_time DESC);
+
+-- Binance deposits (on-chain inflows)
+CREATE TABLE IF NOT EXISTS binance_deposits (
+    deposit_id TEXT PRIMARY KEY,
+    coin TEXT NOT NULL,
+    amount REAL NOT NULL,
+    address TEXT,
+    address_tag TEXT,
+    tx_id TEXT,
+    insert_time TEXT,
+    complete_time TEXT,
+    status TEXT,
+    network TEXT,
+    transfer_type TEXT,
+    wallet_type TEXT,
+    account_label TEXT,
+    raw_json TEXT,
+    source TEXT DEFAULT 'BINANCE_DEPOSIT',
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_deposits_time
+    ON binance_deposits(insert_time DESC);
+
+-- Binance universal transfer history (funding ↔ main/etc)
+CREATE TABLE IF NOT EXISTS binance_transfers (
+    transfer_id TEXT PRIMARY KEY,
+    asset TEXT NOT NULL,
+    amount REAL NOT NULL,
+    transfer_type TEXT NOT NULL,
+    status TEXT,
+    timestamp TEXT,
+    account_label TEXT,
+    raw_json TEXT,
+    source TEXT DEFAULT 'BINANCE_TRANSFER',
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_transfers_time
+    ON binance_transfers(timestamp DESC);
+
+-- Binance account snapshots (spot/margin/futures)
+CREATE TABLE IF NOT EXISTS binance_account_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    account_type TEXT NOT NULL,
+    snapshot_time TEXT NOT NULL,
+    total_asset_btc REAL,
+    account_label TEXT,
+    data_json TEXT,
+    raw_json TEXT,
+    source TEXT DEFAULT 'BINANCE_SNAPSHOT',
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_snapshots_time
+    ON binance_account_snapshots(snapshot_time DESC);
+
+-- Funding wallet balance snapshots
+CREATE TABLE IF NOT EXISTS binance_funding_balances (
+    snapshot_time TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    free REAL,
+    locked REAL,
+    total REAL,
+    account_label TEXT,
+    raw_json TEXT,
+    source TEXT DEFAULT 'BINANCE_FUNDING_BAL',
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_time, asset)
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_funding_bal_time
+    ON binance_funding_balances(snapshot_time DESC);
 
 -- Exchanger orders parsed from email (Gmail)
 CREATE TABLE IF NOT EXISTS exchanger_orders (
@@ -91,6 +166,27 @@ CREATE TABLE IF NOT EXISTS exchanger_orders (
 CREATE INDEX IF NOT EXISTS idx_exchanger_orders_date
     ON exchanger_orders(message_date DESC);
 
+-- Exchanger order email events (one row per email)
+CREATE TABLE IF NOT EXISTS exchanger_order_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exchanger_order_id TEXT NOT NULL,
+    exchanger TEXT NOT NULL,
+    order_id TEXT,
+    status TEXT,
+    message_id TEXT,
+    message_date TEXT,
+    subject TEXT,
+    raw_json TEXT,
+    source TEXT DEFAULT 'GMAIL',
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exchanger_order_events_msg
+    ON exchanger_order_events(message_id);
+
+CREATE INDEX IF NOT EXISTS idx_exchanger_order_events_order
+    ON exchanger_order_events(exchanger_order_id);
+
 -- Allocation of funding entries to internal PO IDs (many-to-many)
 CREATE TABLE IF NOT EXISTS po_funding_allocations (
     allocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +201,41 @@ CREATE TABLE IF NOT EXISTS po_funding_allocations (
 
 CREATE INDEX IF NOT EXISTS idx_po_funding_po ON po_funding_allocations(po_id);
 CREATE INDEX IF NOT EXISTS idx_po_funding_entry ON po_funding_allocations(entry_id);
+
+-- PO funding plan totals (from Excel or manual sources)
+CREATE TABLE IF NOT EXISTS po_funding_plan (
+    po_id TEXT PRIMARY KEY,
+    message_date TEXT,
+    total_cny REAL,
+    total_usdt REAL,
+    source TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_po_funding_plan_date
+    ON po_funding_plan(message_date DESC);
+
+-- Mapping between exchanger orders and PO IDs (legacy or manual)
+CREATE TABLE IF NOT EXISTS po_exchanger_allocations (
+    allocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    po_id TEXT NOT NULL,
+    exchanger_order_id TEXT NOT NULL,
+    amount_usdt REAL,
+    amount_cny REAL,
+    source TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE (exchanger_order_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_po_exchanger_po ON po_exchanger_allocations(po_id);
+
+-- Gmail sync state for push history
+CREATE TABLE IF NOT EXISTS gmail_sync_state (
+    email_address TEXT PRIMARY KEY,
+    history_id TEXT,
+    labels TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
 
 -- Sync log for external imports (gmail/binance) feeding transfer ledger
 CREATE TABLE IF NOT EXISTS transfer_ledger_sync_log (
