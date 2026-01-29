@@ -1,0 +1,7 @@
+# Kaspi pricelist allowlist template
+# One SKU_ID per line (matches XML <offer sku="SKU_ID">)
+# Lines starting with # are ignored.
+#
+# Example:
+# CL_OC_MEN_LINE52_BLACK_S
+# CL_OC_MEN_LINE52_BLACK_M
