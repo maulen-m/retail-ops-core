@@ -76,14 +76,50 @@ def _write_config(path: Path) -> None:
     path.write_text(config_text, encoding="utf-8")
 
 
+def _write_allowlist(path: Path) -> None:
+    path.write_text("CL_TEST_SKU_S\n", encoding="utf-8")
+
+
 def test_publish_requires_env_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / "app.db"
+    _setup_db(db_path)
+    cfg_path = tmp_path / "kaspi_pricelist.yaml"
+    _write_config(cfg_path)
+    allowlist_path = tmp_path / "allowlist.txt"
+    _write_allowlist(allowlist_path)
+    publish_path = tmp_path / "publish.xml"
+
+    monkeypatch.delenv("ENABLE_KASPI_PRICELIST_PUBLISH", raising=False)
+    args = [
+        "generate_kaspi_pricelist_xml.py",
+        "--store",
+        "UNIVERSAL",
+        "--db",
+        str(db_path),
+        "--config",
+        str(cfg_path),
+        "--output-dir",
+        str(tmp_path / "exports"),
+        "--publish",
+        "--publish-path",
+        str(publish_path),
+        "--allowlist",
+        str(allowlist_path),
+    ]
+    monkeypatch.setattr(sys, "argv", args)
+
+    with pytest.raises(RuntimeError):
+        pricelist_main()
+
+
+def test_publish_requires_allowlist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "app.db"
     _setup_db(db_path)
     cfg_path = tmp_path / "kaspi_pricelist.yaml"
     _write_config(cfg_path)
     publish_path = tmp_path / "publish.xml"
 
-    monkeypatch.delenv("ENABLE_KASPI_PRICELIST_PUBLISH", raising=False)
+    monkeypatch.setenv("ENABLE_KASPI_PRICELIST_PUBLISH", "1")
     args = [
         "generate_kaspi_pricelist_xml.py",
         "--store",
@@ -109,6 +145,8 @@ def test_publish_writes_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyP
     _setup_db(db_path)
     cfg_path = tmp_path / "kaspi_pricelist.yaml"
     _write_config(cfg_path)
+    allowlist_path = tmp_path / "allowlist.txt"
+    _write_allowlist(allowlist_path)
     publish_path = tmp_path / "publish.xml"
 
     monkeypatch.setenv("ENABLE_KASPI_PRICELIST_PUBLISH", "1")
@@ -125,6 +163,8 @@ def test_publish_writes_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "--publish",
         "--publish-path",
         str(publish_path),
+        "--allowlist",
+        str(allowlist_path),
     ]
     monkeypatch.setattr(sys, "argv", args)
 

@@ -31,6 +31,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Publish target file path (required with --publish)",
     )
+    parser.add_argument(
+        "--allowlist",
+        default=None,
+        help="Path to SKU allowlist (one SKU per line). Required with --publish.",
+    )
 
     return parser.parse_args()
 
@@ -40,12 +45,15 @@ def main() -> int:
 
     dry_run = args.dry_run or not args.publish
     publish_path = Path(args.publish_path) if args.publish_path else None
+    allowlist_path = Path(args.allowlist) if args.allowlist else None
 
     if args.publish:
         if os.environ.get("ENABLE_KASPI_PRICELIST_PUBLISH") != "1":
             raise RuntimeError("ENABLE_KASPI_PRICELIST_PUBLISH=1 is required to publish")
         if publish_path is None:
             raise RuntimeError("--publish-path is required when --publish is set")
+        if allowlist_path is None:
+            raise RuntimeError("--allowlist is required when --publish is set")
 
     result = generate_pricelist(
         db_path=Path(args.db),
@@ -54,6 +62,7 @@ def main() -> int:
         output_dir=Path(args.output_dir),
         dry_run=dry_run,
         publish_path=publish_path,
+        allowlist_path=allowlist_path,
     )
 
     print(f"Generated XML: {result.catalog_path}")
