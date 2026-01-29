@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Import exchanger order emails from Gmail (IMAP) into DB and label withdrawals."""
+"""Import Binance withdrawal emails from Gmail (IMAP) and update DB rows."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import re
-from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 
@@ -14,18 +13,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.gmail_imap_client import fetch_messages
-from core.transfer_ledger.exchanger_email_import import parse_exchanger_email
-from core.transfer_ledger.repository import (
-    upsert_exchanger_order,
-    record_sync_log,
-    insert_exchanger_event,
-)
-from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order
-from core.transfer_ledger.telegram_ledger_alerts import send_exchanger_update_alert
-
-
-def _parse_date(value: str) -> datetime:
-    return datetime.fromisoformat(value)
+from core.transfer_ledger.binance_withdrawal_email_import import parse_binance_withdrawal_email
+from core.transfer_ledger.matching import address_match, amount_close, date_close, parse_dt
+from core.transfer_ledger.repository import list_withdrawals, update_withdrawal_metadata
 
 
 def _load_env_file(path: Path) -> None:
@@ -51,19 +41,54 @@ def _get_env(*keys: str) -> str | None:
 
 
 def _normalize_query(query: str) -> str:
-    # Allow semicolon-separated lists in .env, e.g., from:(a; b; c)
     return re.sub(r"\s*;\s*", " OR ", query)
 
 
+def _best_match(email_row: dict, withdrawals: list[dict]) -> dict | None:
+    coin = (email_row.get("coin") or "").upper()
+    amount = email_row.get("amount")
+    address = email_row.get("address") or ""
+    tx_id = email_row.get("tx_id") or ""
+    email_dt = parse_dt(email_row.get("success_time") or email_row.get("message_date"))
+
+    candidates = [w for w in withdrawals if (w.get("coin") or "").upper() == coin]
+    if amount is not None:
+        candidates = [w for w in candidates if amount_close(w.get("amount"), amount)]
+
+    if tx_id:
+        tx_match = [w for w in candidates if (w.get("tx_id") or "") == tx_id]
+        if tx_match:
+            return tx_match[0]
+
+    if address:
+        addr_match = [w for w in candidates if address_match(address, w.get("address") or "")]
+        if addr_match:
+            candidates = addr_match
+
+    if not candidates:
+        return None
+
+    best = None
+    best_delta = float("inf")
+    for w in candidates:
+        wd_dt = parse_dt(w.get("apply_time") or w.get("success_time"))
+        if not date_close(email_dt, wd_dt):
+            continue
+        delta = abs((wd_dt - email_dt).total_seconds()) if email_dt and wd_dt else 0
+        if delta < best_delta:
+            best = w
+            best_delta = delta
+    return best
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Import exchanger order emails from Gmail")
+    parser = argparse.ArgumentParser(description="Import Binance withdrawal emails from Gmail")
     parser.add_argument("--db", type=Path, default=None, help="Path to SQLite DB")
     parser.add_argument("--mailbox", default=None, help="Gmail label/mailbox (default INBOX)")
     parser.add_argument("--query", default=None, help="Gmail search query (X-GM-RAW)")
     parser.add_argument("--since-days", type=int, default=None, help="Shortcut for query: newer_than:Xd")
     parser.add_argument("--limit", type=int, default=200, help="Max messages to scan")
     parser.add_argument("--dry-run", action="store_true", help="Parse only; do not write to DB")
-    parser.add_argument("--no-label", action="store_true", help="Do not label withdrawals")
     args = parser.parse_args()
 
     _load_env_file(PROJECT_ROOT / ".env")
@@ -73,19 +98,10 @@ def main() -> int:
     if not username or not app_password:
         print("Missing GMAIL_USER or GMAIL_APP_PASSWORD in environment")
         return 1
-    # App passwords are displayed with spaces; IMAP expects no spaces
     app_password = app_password.replace(" ", "")
 
-    mailbox = args.mailbox or _get_env(
-        "GMAIL_MAILBOX",
-        "GMAIL_MAILBOX_Exchengers",
-        "GMAIL_MAILBOX_Exchangers",
-    ) or "INBOX"
-    query = args.query or _get_env(
-        "GMAIL_QUERY",
-        "GMAIL_QUERY_Exchengers",
-        "GMAIL_QUERY_Exchangers",
-    )
+    mailbox = args.mailbox or _get_env("GMAIL_MAILBOX_Binance", "GMAIL_MAILBOX_BINANCE") or "INBOX"
+    query = args.query or _get_env("GMAIL_QUERY_Binance", "GMAIL_QUERY_BINANCE")
     if args.since_days and not query:
         query = f"newer_than:{args.since_days}d"
     if query:
@@ -99,64 +115,45 @@ def main() -> int:
         limit=args.limit,
     )
 
+    withdrawals = list_withdrawals(db_path=args.db)
+
     parsed = 0
-    inserted = 0
-    events = 0
-    labeled = 0
+    updated = 0
     errors: list[str] = []
-    min_seen: str | None = None
-    max_seen: str | None = None
 
     for msg in messages:
         try:
-            order = parse_exchanger_email(msg)
-            if not order:
+            row = parse_binance_withdrawal_email(msg)
+            if not row:
                 continue
             parsed += 1
-            order_date = order.get("message_date")
-            if order_date:
-                if not min_seen or order_date < min_seen:
-                    min_seen = order_date
-                if not max_seen or order_date > max_seen:
-                    max_seen = order_date
             if args.dry_run:
                 continue
-            is_new = upsert_exchanger_order(order, db_path=args.db)
-            if is_new:
-                inserted += 1
-            if insert_exchanger_event(order, db_path=args.db):
-                events += 1
-                send_exchanger_update_alert(order, db_path=args.db)
-            if not args.no_label:
-                labeled += label_withdrawals_for_order(order, db_path=args.db)
+            match = _best_match(row, withdrawals)
+            if not match:
+                continue
+            updated_any = update_withdrawal_metadata(
+                match["withdraw_id"],
+                address=row.get("address"),
+                tx_id=row.get("tx_id"),
+                success_time=row.get("success_time"),
+                db_path=args.db,
+            )
+            if updated_any:
+                updated += 1
         except Exception as exc:
             errors.append(str(exc))
 
     print(f"Messages scanned: {len(messages)}")
-    print(f"Exchanger orders parsed: {parsed}")
+    print(f"Binance withdrawal emails parsed: {parsed}")
     if not args.dry_run:
-        print(f"Inserted/updated orders: {inserted}")
-        print(f"Email events stored: {events}")
-        if not args.no_label:
-            print(f"Withdrawals labeled: {labeled}")
+        print(f"Withdrawals updated: {updated}")
     if errors:
         print("Errors:")
         for e in errors[:10]:
             print(f"  - {e}")
         if len(errors) > 10:
             print(f"  ... {len(errors) - 10} more")
-
-    if not args.dry_run:
-        record_sync_log(
-            "exchanger_emails",
-            success=not errors,
-            min_date_seen=min_seen,
-            max_date_seen=max_seen,
-            rows_total=len(messages),
-            rows_inserted=inserted,
-            errors_count=len(errors),
-            db_path=args.db,
-        )
 
     return 0 if not errors else 1
 
