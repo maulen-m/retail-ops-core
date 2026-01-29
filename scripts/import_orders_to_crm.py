@@ -71,6 +71,7 @@ WAREHOUSE_STORE_MAP = {
     '30290083_PP1': '11KZ',
     '30000002_PP1': 'STOREB',
     '30000002_PP1 ': 'STOREB',
+    '30362323_PP1': 'MELVIS',
 }
 
 from core.paths import data_path, get_data_root
@@ -118,6 +119,7 @@ STORE_MAP = {
     '30000001_PP1': 'Universal',
     '30290083_PP1': '11KZ',
     '30000002_PP1': 'STORE-B',
+    '30362323_PP1': 'Store-C',
 }
 
 DEFAULT_STATUS = 'Ожидает передачи курьеру'

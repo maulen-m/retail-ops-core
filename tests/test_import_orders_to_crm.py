@@ -18,6 +18,8 @@ from scripts.import_orders_to_crm import (
     READY_STATUS,
     NO_SIGNATURE,
     RAW_KASPI_COLUMNS,
+    STORE_MAP,
+    WAREHOUSE_STORE_MAP,
     clean_order_id,
     clean_value,
     deduplicate_orders,
@@ -33,6 +35,11 @@ from scripts.import_orders_to_crm import (
 # ============================================================================
 # Test: find_active_orders_files
 # ============================================================================
+
+def test_store_maps_include_store-c():
+    assert WAREHOUSE_STORE_MAP["30362323_PP1"] == "MELVIS"
+    assert STORE_MAP["30362323_PP1"] == "Store-C"
+
 
 def test_find_active_orders_files_finds_xlsx():
     """Test that find_active_orders_files finds xlsx files."""
