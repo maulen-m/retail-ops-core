@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from .repository import upsert_binance_c2c_order, has_entry
+from .repository import upsert_binance_c2c_order
 from .service import post_binance_p2p_trade
 
 
@@ -60,6 +61,7 @@ def normalize_binance_order(raw: dict) -> dict:
     if crypto_amount is None or fiat_amount is None or unit_price is None:
         raise ValueError(f"Invalid numeric fields in order {order_number}")
 
+    account_label = raw.get("account_label") or os.getenv("BINANCE_ACCOUNT_LABEL") or ""
     return {
         "order_number": str(order_number),
         "adv_no": raw.get("advNo"),
@@ -74,6 +76,7 @@ def normalize_binance_order(raw: dict) -> dict:
         "commission": raw.get("commission"),
         "counterparty": raw.get("counterPartNickName") or raw.get("counterparty"),
         "advertisement_role": raw.get("advertisementRole"),
+        "account_label": account_label,
         "raw_json": json.dumps(raw, ensure_ascii=False),
         "source": "BINANCE_P2P",
     }
@@ -99,21 +102,21 @@ def import_binance_orders(
             if write_ledger:
                 if completed_only and str(order.get("order_status", "")).upper() != "COMPLETED":
                     continue
-                if not has_entry("BINANCE_P2P", order["order_number"], db_path=db_path):
-                    entry_ids = post_binance_p2p_trade(
-                        order_number=order["order_number"],
-                        trade_type=order["trade_type"],
-                        asset=order["asset"],
-                        fiat=order["fiat"],
-                        crypto_amount=order["crypto_amount"],
-                        fiat_amount=order["fiat_amount"],
-                        unit_price=order["unit_price"],
-                        paid_at=order["create_time"],
-                        source=order.get("source", "BINANCE_P2P"),
-                        counterparty=order.get("counterparty") or "",
-                        db_path=db_path,
-                    )
-                    ledger_entries += len(entry_ids)
+                entry_ids = post_binance_p2p_trade(
+                    order_number=order["order_number"],
+                    trade_type=order["trade_type"],
+                    asset=order["asset"],
+                    fiat=order["fiat"],
+                    crypto_amount=order["crypto_amount"],
+                    fiat_amount=order["fiat_amount"],
+                    unit_price=order["unit_price"],
+                    paid_at=order["create_time"],
+                    source=order.get("source", "BINANCE_P2P"),
+                    counterparty=order.get("counterparty") or "",
+                    account_label=order.get("account_label") or "",
+                    db_path=db_path,
+                )
+                ledger_entries += len(entry_ids)
         except Exception as exc:
             errors.append(str(exc))
 

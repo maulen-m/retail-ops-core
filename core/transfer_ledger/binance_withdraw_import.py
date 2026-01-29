@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from .repository import upsert_binance_withdrawal, has_entry
+from .repository import upsert_binance_withdrawal, ledger_entry_exists
 from .service import post_binance_withdrawal, auto_allocate_entry_to_active_po
 from .exchanger_matching import match_exchanger_order_for_withdrawal
 
@@ -55,6 +56,7 @@ def normalize_binance_withdrawal(raw: dict) -> dict:
     if amount is None:
         raise ValueError(f"Invalid withdrawal amount for {withdraw_id}")
 
+    account_label = raw.get("account_label") or os.getenv("BINANCE_ACCOUNT_LABEL") or ""
     return {
         "withdraw_id": str(withdraw_id),
         "tx_id": raw.get("txId"),
@@ -70,6 +72,7 @@ def normalize_binance_withdrawal(raw: dict) -> dict:
         "wallet_type": str(raw.get("walletType")) if raw.get("walletType") is not None else None,
         "counterparty_label": raw.get("counterparty_label"),
         "exchanger_order_id": raw.get("exchanger_order_id"),
+        "account_label": account_label,
         "raw_json": json.dumps(raw, ensure_ascii=False),
         "source": "BINANCE_WITHDRAW",
     }
@@ -101,7 +104,10 @@ def import_binance_withdrawals(
                 inserted += 1
 
             if write_ledger and wd["coin"] == ledger_coin:
-                if not has_entry("BINANCE_WITHDRAWAL", wd["withdraw_id"], db_path=db_path):
+                ref_id = wd["withdraw_id"]
+                if not ledger_entry_exists(
+                    "BINANCE_WITHDRAWAL", ref_id, currency=ledger_coin, db_path=db_path
+                ):
                     entry_id = post_binance_withdrawal(
                         withdraw_id=wd["withdraw_id"],
                         amount_usdt=wd["amount"],
@@ -112,6 +118,7 @@ def import_binance_withdrawals(
                         source=wd.get("source", "BINANCE_WITHDRAW"),
                         counterparty_label=wd.get("counterparty_label") or "",
                         exchanger_order_id=wd.get("exchanger_order_id") or "",
+                        account_label=wd.get("account_label") or "",
                         db_path=db_path,
                     )
                     ledger_entries += 1
@@ -119,6 +126,9 @@ def import_binance_withdrawals(
                         try:
                             auto_allocate_entry_to_active_po(entry_id, db_path=db_path)
                         except Exception as exc:
+                            if "No PO dates available" in str(exc):
+                                # Skip noisy errors when PO data is not present yet.
+                                continue
                             errors.append(f"auto-allocate failed for {wd['withdraw_id']}: {exc}")
         except Exception as exc:
             errors.append(str(exc))
