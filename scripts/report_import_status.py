@@ -44,6 +44,7 @@ STORE_MAP = {
     "30000001_PP1": "Universal",
     "30290083_PP1": "11KZ",
     "30000002_PP1": "STORE-B",
+    "30362323_PP1": "Store-C",
 }
 
 API_TO_DISPLAY = {
@@ -67,6 +68,8 @@ def normalize_store_name(value: Any) -> str:
     store_str = str(value).strip()
     if store_str in STORE_MAP:
         return STORE_MAP[store_str]
+    if store_str.upper() in API_TO_DISPLAY:
+        return API_TO_DISPLAY[store_str.upper()]
     if store_str in API_TO_DISPLAY.values():
         return store_str
     for code, name in STORE_MAP.items():
