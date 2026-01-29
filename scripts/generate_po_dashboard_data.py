@@ -42,6 +42,7 @@ from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
 from core.calc.size_allocation import calc_deficit_capped_order_qty, round_qty_to_5_up
 from core.po.blackout import adjust_po_dates, CNY_2026
 from core.utils.sku_normalize import normalize_size
+from core.capital.guardrails import check_roic_gate
 
 # Constants
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
@@ -58,6 +59,89 @@ ROIC_THRESHOLD = 0.15  # 15% - for display only, not filtering
 VALID_SIZES = {'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', 'XS',
                '26', '28', '30', '32', '34', '36', '38', '40', '42',
                'ONE_SIZE', 'ONESIZE', 'OS'}
+
+
+def apply_po_capital_gates(sku_lines: list[dict], preflight: Optional[dict] = None) -> dict:
+    """Attach capital protection fields to SKU lines and return summary fields."""
+    total_capital = 0.0
+    capital_by_sku: dict[str, float] = {}
+
+    for line in sku_lines:
+        unit_cogs = float(line.get("unit_cogs") or 0.0)
+        stock = float(line.get("stock") or 0.0)
+        po_qty = float(line.get("po_qty_total") or 0.0)
+        capital = (stock + po_qty) * unit_cogs
+        capital_by_sku[line.get("sku_key", "")] = capital
+        total_capital += capital
+
+    for line in sku_lines:
+        sku_key = line.get("sku_key", "")
+        capital = capital_by_sku.get(sku_key, 0.0)
+        share_pct = (capital / total_capital * 100.0) if total_capital > 0 else 0.0
+        line["capital_share_pct"] = round(share_pct, 2)
+        if total_capital > 0 and share_pct > 20.0:
+            line["concentration_blocked"] = True
+            line["concentration_reason"] = (
+                f"SKU {sku_key} would be {share_pct:.1f}% of portfolio (max 20%)"
+            )
+        else:
+            line["concentration_blocked"] = False
+            line["concentration_reason"] = ""
+
+        roic_pct = float(line.get("roic_pct") or 0.0)
+        roic_action, roic_reason = check_roic_gate(roic_pct / 100.0, int(line.get("po_qty_total") or 0))
+        line["roic_action"] = roic_action.name
+        line["roic_reason"] = roic_reason
+
+    summary = {
+        "cashflow_preflight_ok": None,
+        "cashflow_preflight_reason": None,
+    }
+    if preflight is not None:
+        summary["cashflow_preflight_ok"] = preflight.get("ok")
+        summary["cashflow_preflight_reason"] = preflight.get("reason")
+
+    return summary
+
+
+def _compute_cashflow_preflight_summary(db_path: Path) -> dict:
+    """Run a lightweight cashflow preflight evaluation for dashboard summary."""
+    try:
+        from scripts import cashflow_preflight_po as preflight
+
+        cutoff = get_cutoff_date_almaty()
+        with sqlite3.connect(str(db_path)) as conn:
+            opex_monthly = preflight._load_monthly_opex(conn, cutoff)
+        if opex_monthly <= 0:
+            return {"ok": False, "reason": "OPEX commitments missing"}
+
+        scenarios_cfg = preflight._load_scenarios_config()
+        abs_floor = float(scenarios_cfg.get("cash_floor_abs_kzt", 500_000.0))
+        base_mult = float(scenarios_cfg.get("cash_floor_base_mult", 1.0))
+        cons_mult = float(scenarios_cfg.get("cash_floor_cons_mult", 1.5))
+        refund_rate = float(scenarios_cfg.get("refund_reserve_rate", 0.0))
+        refund_days = int(scenarios_cfg.get("refund_reserve_days", 14))
+
+        base_floor = max(abs_floor, opex_monthly * base_mult)
+        cons_floor = (opex_monthly * cons_mult) + abs_floor
+
+        base_result = preflight.evaluate_preflight(db_path, 60, "base", base_floor)
+        cons_result = preflight.evaluate_preflight(
+            db_path,
+            60,
+            "conservative",
+            cons_floor,
+            refund_rate=refund_rate,
+            refund_days=refund_days,
+            apply_reserve=True,
+        )
+
+        return {
+            "ok": cons_result.ok,
+            "reason": cons_result.reason,
+        }
+    except Exception as exc:
+        return {"ok": None, "reason": f"preflight_error: {exc}"}
 
 
 def _canonicalize_size_for_sku(sku_key: str, size: str | None) -> str | None:
@@ -966,6 +1050,8 @@ def generate_po_data(
     fixture_cutoff_date: Optional[str] = None,
     fixture_stock_date: Optional[str] = None,
     fixture_generated_at: Optional[str] = None,
+    fixture_preflight_ok: Optional[bool] = None,
+    fixture_preflight_reason: Optional[str] = None,
 ) -> dict:
     """Main function to generate PO dashboard data using DemandEstimator."""
 
@@ -1658,6 +1744,14 @@ def generate_po_data(
     skus_without_orders = len(sku_lines) - skus_with_orders
     total_units = sum(s['po_qty_total'] for s in sku_lines)
 
+    preflight_summary = None
+    if use_fixture:
+        preflight_summary = {"ok": fixture_preflight_ok, "reason": fixture_preflight_reason}
+    else:
+        preflight_summary = _compute_cashflow_preflight_summary(DB_PATH)
+
+    gate_summary = apply_po_capital_gates(sku_lines, preflight_summary)
+
     readiness_report = None
     day_complete_env = os.environ.get("AB_DAY_COMPLETE", "1").strip().lower()
     day_complete_ok = day_complete_env not in {"0", "false", "no"}
@@ -1773,7 +1867,9 @@ def generate_po_data(
             "priority_skus": priority_skus,
             "no_demand_estimate": skipped_no_demand,
             "no_stock_snapshot": skipped_no_stock,
-            "no_order_needed": skipped_no_order
+            "no_order_needed": skipped_no_order,
+            "cashflow_preflight_ok": gate_summary.get("cashflow_preflight_ok"),
+            "cashflow_preflight_reason": gate_summary.get("cashflow_preflight_reason"),
         },
         "sku_level": sku_lines,
         "size_level": size_lines,
