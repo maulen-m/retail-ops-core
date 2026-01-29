@@ -153,6 +153,49 @@ def has_entry(
     return row is not None
 
 
+def record_sync_log(
+    source: str,
+    *,
+    success: bool,
+    last_run_ts: Optional[str] = None,
+    min_date_seen: Optional[str] = None,
+    max_date_seen: Optional[str] = None,
+    rows_total: int = 0,
+    rows_inserted: int = 0,
+    errors_count: int = 0,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Upsert a sync log entry for transfer-ledger imports."""
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    now = datetime.now().isoformat()
+    last_run = last_run_ts or now
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT last_success_ts FROM transfer_ledger_sync_log WHERE source = ?",
+            (source,),
+        ).fetchone()
+        last_success = now if success else (existing["last_success_ts"] if existing else None)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO transfer_ledger_sync_log (
+                source, last_run_ts, last_success_ts, min_date_seen, max_date_seen,
+                rows_total, rows_inserted, errors_count, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                source,
+                last_run,
+                last_success,
+                min_date_seen,
+                max_date_seen,
+                int(rows_total),
+                int(rows_inserted),
+                int(errors_count),
+            ),
+        )
+
+
 def get_balance(
     currency: str = "KZT",
     as_of_date: Optional[date | datetime] = None,

@@ -105,3 +105,16 @@ CREATE TABLE IF NOT EXISTS po_funding_allocations (
 
 CREATE INDEX IF NOT EXISTS idx_po_funding_po ON po_funding_allocations(po_id);
 CREATE INDEX IF NOT EXISTS idx_po_funding_entry ON po_funding_allocations(entry_id);
+
+-- Sync log for external imports (gmail/binance) feeding transfer ledger
+CREATE TABLE IF NOT EXISTS transfer_ledger_sync_log (
+    source TEXT PRIMARY KEY,
+    last_run_ts TEXT NOT NULL,
+    last_success_ts TEXT,
+    min_date_seen TEXT,
+    max_date_seen TEXT,
+    rows_total INTEGER DEFAULT 0,
+    rows_inserted INTEGER DEFAULT 0,
+    errors_count INTEGER DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now'))
+);

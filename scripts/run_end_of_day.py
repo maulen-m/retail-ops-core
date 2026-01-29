@@ -471,6 +471,11 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=True,
         ),
         PipelineStep(
+            name="2a2b. Validate Exchange Import Sync Freshness",
+            script="validate_transfer_ledger_sync_freshness.py",
+            required=True,
+        ),
+        PipelineStep(
             name="2a3. Export On-Delivery Orders (econ)",
             script="export_on_delivery_with_econ.py",
             args=[

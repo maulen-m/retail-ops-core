@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.gmail_imap_client import fetch_messages
 from core.transfer_ledger.exchanger_email_import import parse_exchanger_email
-from core.transfer_ledger.repository import upsert_exchanger_order
+from core.transfer_ledger.repository import upsert_exchanger_order, record_sync_log
 from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order
 
 
@@ -98,6 +98,8 @@ def main() -> int:
     inserted = 0
     labeled = 0
     errors: list[str] = []
+    min_seen: str | None = None
+    max_seen: str | None = None
 
     for msg in messages:
         try:
@@ -105,6 +107,12 @@ def main() -> int:
             if not order:
                 continue
             parsed += 1
+            order_date = order.get("message_date")
+            if order_date:
+                if not min_seen or order_date < min_seen:
+                    min_seen = order_date
+                if not max_seen or order_date > max_seen:
+                    max_seen = order_date
             if args.dry_run:
                 continue
             is_new = upsert_exchanger_order(order, db_path=args.db)
@@ -127,6 +135,18 @@ def main() -> int:
             print(f"  - {e}")
         if len(errors) > 10:
             print(f"  ... {len(errors) - 10} more")
+
+    if not args.dry_run:
+        record_sync_log(
+            "exchanger_emails",
+            success=not errors,
+            min_date_seen=min_seen,
+            max_date_seen=max_seen,
+            rows_total=len(messages),
+            rows_inserted=inserted,
+            errors_count=len(errors),
+            db_path=args.db,
+        )
 
     return 0 if not errors else 1
 

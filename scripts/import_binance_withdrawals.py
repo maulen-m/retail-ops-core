@@ -15,6 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.binance_wallet_client import BinanceWalletClient, BinanceWalletError
 from core.transfer_ledger.binance_withdraw_import import import_binance_withdrawals
+from core.transfer_ledger import repository
 
 
 def _parse_date(value: str) -> date:
@@ -43,6 +44,18 @@ def _date_bounds(d: date, tz: ZoneInfo, end: bool) -> datetime:
 
 def _to_ms(dt: datetime) -> int:
     return int(dt.astimezone(timezone.utc).timestamp() * 1000)
+
+
+def _to_iso_safe(value, tz: ZoneInfo) -> str | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value) / 1000, tz=timezone.utc).astimezone(tz).isoformat()
+    except Exception:
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(tz).isoformat()
+        except Exception:
+            return None
 
 
 def _window_ranges(start_dt: datetime, end_dt: datetime, max_days: int) -> list[tuple[datetime, datetime]]:
@@ -90,6 +103,8 @@ def main() -> int:
     total_inserted = 0
     total_ledger = 0
     errors: list[str] = []
+    min_seen: Optional[str] = None
+    max_seen: Optional[str] = None
 
     windows = _window_ranges(start_dt, end_dt, max_days=30)
 
@@ -105,6 +120,14 @@ def main() -> int:
             continue
 
         total_rows += len(raw_withdrawals)
+        for raw in raw_withdrawals:
+            seen = _to_iso_safe(raw.get("applyTime") or raw.get("applyTimeStamp"), tz)
+            if not seen:
+                continue
+            if not min_seen or seen < min_seen:
+                min_seen = seen
+            if not max_seen or seen > max_seen:
+                max_seen = seen
 
         if args.dry_run:
             continue
@@ -131,6 +154,18 @@ def main() -> int:
             print(f"  - {e}")
         if len(errors) > 10:
             print(f"  ... {len(errors) - 10} more")
+
+    if not args.dry_run:
+        repository.record_sync_log(
+            "binance_withdrawals",
+            success=not errors,
+            min_date_seen=min_seen,
+            max_date_seen=max_seen,
+            rows_total=total_rows,
+            rows_inserted=total_inserted,
+            errors_count=len(errors),
+            db_path=args.db,
+        )
 
     return 0 if not errors else 1
 

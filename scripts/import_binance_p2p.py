@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.binance_c2c_client import BinanceC2CClient, BinanceC2CError
 from core.transfer_ledger.binance_import import import_binance_orders
+from core.transfer_ledger import repository
 
 
 def _parse_date(value: str) -> date:
@@ -46,6 +47,18 @@ def _to_ms(dt: datetime) -> int:
     return int(dt.astimezone(timezone.utc).timestamp() * 1000)
 
 
+def _to_iso_safe(value, tz: ZoneInfo) -> str | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value) / 1000, tz=timezone.utc).astimezone(tz).isoformat()
+    except Exception:
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(tz).isoformat()
+        except Exception:
+            return None
+
+
 def _window_ranges(start_dt: datetime, end_dt: datetime, max_days: int) -> list[tuple[datetime, datetime]]:
     windows = []
     cur = start_dt
@@ -61,6 +74,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Import Binance C2C/P2P orders")
     parser.add_argument("--db", type=Path, default=None, help="Path to SQLite DB")
     parser.add_argument("--trade-type", default="BUY", help="BUY, SELL, or comma-separated list")
+    parser.add_argument("--asset", default="USDT", help="Filter asset symbol (default USDT, use ALL to disable)")
     parser.add_argument("--start-date", type=_parse_date, help="YYYY-MM-DD")
     parser.add_argument("--end-date", type=_parse_date, help="YYYY-MM-DD")
     parser.add_argument("--days", type=int, default=30, help="Lookback days if no start/end")
@@ -91,6 +105,7 @@ def main() -> int:
         print("Warning: Binance C2C API may only return ~6 months of history.")
 
     trade_types = [t.strip().upper() for t in args.trade_type.split(",") if t.strip()]
+    asset_filter = (args.asset or "").upper()
 
     client = BinanceC2CClient()
 
@@ -98,6 +113,8 @@ def main() -> int:
     total_inserted = 0
     total_ledger = 0
     errors: list[str] = []
+    min_seen: Optional[str] = None
+    max_seen: Optional[str] = None
 
     windows = _window_ranges(start_dt, end_dt, max_days=30)
 
@@ -116,8 +133,21 @@ def main() -> int:
             except BinanceC2CError as exc:
                 errors.append(str(exc))
                 continue
+            if asset_filter and asset_filter != "ALL":
+                raw_orders = [
+                    o for o in raw_orders
+                    if (o.get("asset") or "").upper() == asset_filter
+                ]
 
             total_orders += len(raw_orders)
+            for raw in raw_orders:
+                seen = _to_iso_safe(raw.get("createTime") or raw.get("createTimeStamp"), tz)
+                if not seen:
+                    continue
+                if not min_seen or seen < min_seen:
+                    min_seen = seen
+                if not max_seen or seen > max_seen:
+                    max_seen = seen
 
             if args.dry_run:
                 continue
@@ -142,6 +172,18 @@ def main() -> int:
             print(f"  - {e}")
         if len(errors) > 10:
             print(f"  ... {len(errors) - 10} more")
+
+    if not args.dry_run:
+        repository.record_sync_log(
+            "binance_p2p",
+            success=not errors,
+            min_date_seen=min_seen,
+            max_date_seen=max_seen,
+            rows_total=total_orders,
+            rows_inserted=total_inserted,
+            errors_count=len(errors),
+            db_path=args.db,
+        )
 
     return 0 if not errors else 1
 
