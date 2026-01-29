@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import dataclass
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,20 @@ class GenerationResult:
 def _load_yaml(path: Path) -> dict:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     return data or {}
+
+
+def _load_allowlist(path: Path) -> set[str]:
+    if not path.exists():
+        raise ValueError(f"Allowlist file not found: {path}")
+    entries: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        cleaned = line.strip()
+        if not cleaned or cleaned.startswith("#"):
+            continue
+        entries.add(cleaned)
+    if not entries:
+        raise ValueError("Allowlist is empty")
+    return entries
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -76,6 +91,7 @@ def _build_offers(
     snapshot_date: str,
     store_code: str,
     cfg: dict,
+    allowlist: set[str] | None,
 ) -> list[Offer]:
     sku_cols = _table_columns(conn, "dim_sku")
     size_cols = _table_columns(conn, "dim_sku_size")
@@ -124,6 +140,8 @@ def _build_offers(
 
     for row in rows:
         sku_id, sku_key, my_size, model, brand, kaspi_price, avg_price, sku_active, size_active, current_stock, inbound_stock = row
+        if allowlist is not None and str(sku_id) not in allowlist:
+            continue
         if int(sku_active) == 0 or int(size_active) == 0:
             continue
 
@@ -284,6 +302,7 @@ def generate_pricelist(
     output_dir: Path,
     dry_run: bool = True,
     publish_path: Path | None = None,
+    allowlist_path: Path | None = None,
 ) -> GenerationResult:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -300,7 +319,10 @@ def generate_pricelist(
             raise ValueError(f"merchant_id missing for {store_code}")
 
         snapshot_date = _get_latest_snapshot_date(conn)
-        offers = _build_offers(conn, snapshot_date, store_code, cfg)
+        allowlist = _load_allowlist(allowlist_path) if allowlist_path else None
+        offers = _build_offers(conn, snapshot_date, store_code, cfg, allowlist)
+        if allowlist is not None and not offers:
+            raise ValueError("Allowlist produced empty catalog")
         catalog = Catalog(company=cfg["company"], merchant_id=str(cfg["merchant_id"]), offers=offers)
         validate_catalog(catalog)
 
@@ -321,6 +343,11 @@ def generate_pricelist(
             if dry_run:
                 raise ValueError("dry_run=True cannot publish")
             publish_path.parent.mkdir(parents=True, exist_ok=True)
+            backup_path = publish_path.with_name(
+                f"{publish_path.stem}_last_good{publish_path.suffix}"
+            )
+            if publish_path.exists():
+                shutil.copy2(publish_path, backup_path)
             publish_path.write_text(xml, encoding="utf-8")
 
         return GenerationResult(catalog_path=catalog_path, diff_report_path=diff_path, offer_count=len(offers))
