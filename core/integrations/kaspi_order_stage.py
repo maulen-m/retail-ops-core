@@ -42,7 +42,12 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     text = str(value).strip().lower()
-    return text in {"1", "true", "yes", "y", "t"}
+    if text in {"", "0", "false", "no", "n", "f"}:
+        return False
+    if text in {"1", "true", "yes", "y", "t"}:
+        return True
+    # Treat any other non-empty string (e.g., date) as truthy.
+    return True
 
 
 def _norm(value: Any) -> str:
@@ -68,10 +73,16 @@ def _extract_stage_inputs(order: Mapping[str, Any]) -> KaspiStageInputs:
     pre_order = _as_bool(attrs.get("preOrder") or attrs.get("pre_order"))
     assembled = _as_bool(attrs.get("assembled"))
     delivery = attrs.get("kaspiDelivery") or attrs.get("delivery") or {}
+    waybill = None
     if isinstance(delivery, Mapping):
         courier_transmission_date = delivery.get("courierTransmissionDate")
+        waybill = delivery.get("waybill") or delivery.get("waybillNumber")
     else:
         courier_transmission_date = None
+    if not assembled and waybill:
+        assembled = True
+    if not assembled and attrs.get("waybill"):
+        assembled = True
     courier_transmission_date = (
         courier_transmission_date
         or attrs.get("courierTransmissionDate")
@@ -137,3 +148,58 @@ def classify_kaspi_order_stage(order: Mapping[str, Any]) -> StageCode:
         return StageCode.ACCEPTED_PENDING_ASSEMBLY
 
     return StageCode.UNKNOWN
+
+
+STAGE_INTERNAL_STATUS = {
+    StageCode.SIGN_REQUIRED: "NEW",
+    StageCode.NEW_APPROVED: "NEW",
+    StageCode.PREORDER_IN_TRANSIT: "NEW",
+    StageCode.ACCEPTED_PENDING_ASSEMBLY: "ACCEPTED",
+    StageCode.ASSEMBLED_PENDING_HANDOVER: "READY",
+    StageCode.IN_DELIVERY: "SHIPPED",
+    StageCode.ISSUED_COMPLETED: "COMPLETED",
+    StageCode.CANCELLING: "CANCELLED",
+    StageCode.CANCELLED: "CANCELLED",
+    StageCode.RETURN_REQUESTED: "RETURNING",
+    StageCode.RETURNED: "RETURNED",
+    StageCode.UNKNOWN: "NEW",
+}
+
+
+def stage_to_internal_status(stage: StageCode) -> str:
+    return STAGE_INTERNAL_STATUS.get(stage, "NEW")
+
+
+def classify_kaspi_stage_from_db_row(row: Mapping[str, Any]) -> StageCode:
+    if not hasattr(row, "get"):
+        row = dict(row)
+    attrs = {
+        "state": row.get("kaspi_status") or row.get("state"),
+        "status": row.get("kaspi_status_detail") or row.get("status"),
+        "signatureRequired": row.get("signature_required") or row.get("signatureRequired"),
+        "preOrder": row.get("pre_order") or row.get("preOrder"),
+        "assembled": bool(row.get("waybill_url")),
+        "deliveryMode": row.get("delivery_mode") or row.get("deliveryMode"),
+        "returnedToWarehouse": row.get("returned_to_warehouse") or row.get("returnedToWarehouse"),
+        "courierTransmissionDate": row.get("courier_transmission_date")
+        or row.get("actual_shipment_date")
+        or row.get("courier_transmission_planning_date"),
+    }
+    return classify_kaspi_order_stage({"attributes": attrs})
+
+
+KASPI_DELIVERY_STATE = "KASPI_DELIVERY"
+
+
+def api_state_filter_for_stage(stage: StageCode) -> str | None:
+    if stage in {
+        StageCode.ACCEPTED_PENDING_ASSEMBLY,
+        StageCode.ASSEMBLED_PENDING_HANDOVER,
+        StageCode.IN_DELIVERY,
+    }:
+        return KASPI_DELIVERY_STATE
+    if stage == StageCode.SIGN_REQUIRED:
+        return "SIGN_REQUIRED"
+    if stage == StageCode.NEW_APPROVED:
+        return "NEW"
+    return None

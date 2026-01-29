@@ -29,6 +29,7 @@ from core.sync.order_sync_engine import (
     MultiSyncResult,
 )
 from core.integrations.kaspi_api_client import APIResponse
+from core.integrations.kaspi_order_stage import StageCode, stage_to_internal_status
 
 
 # =============================================================================
@@ -328,7 +329,7 @@ class TestOrderParsing:
         parsed = engine._parse_api_order(order, 'UNIVERSAL')
 
         assert parsed['kaspi_status'] == 'KASPI_DELIVERY'
-        assert parsed['internal_status'] == 'SHIPPED'
+        assert parsed['internal_status'] == 'READY'
 
     def test_parse_dates(self, engine, sample_api_orders):
         """Test date parsing."""
@@ -343,43 +344,29 @@ class TestOrderParsing:
 # STATE MAPPING TESTS
 # =============================================================================
 
-class TestStateMapping:
-    """Tests for Kaspi state to internal status mapping."""
+class TestStageMapping:
+    """Tests for StageCode to internal status mapping."""
 
-    def test_map_new_state(self, engine):
-        """Test mapping NEW state."""
-        status = engine._map_state_to_status('NEW')
-        assert status == 'NEW'
+    def test_stage_new_mapping(self):
+        assert stage_to_internal_status(StageCode.NEW_APPROVED) == 'NEW'
 
-    def test_map_accepted_state(self, engine):
-        """Test mapping ACCEPTED_BY_MERCHANT state."""
-        status = engine._map_state_to_status('ACCEPTED_BY_MERCHANT')
-        assert status == 'ACCEPTED'
+    def test_stage_accepted_mapping(self):
+        assert stage_to_internal_status(StageCode.ACCEPTED_PENDING_ASSEMBLY) == 'ACCEPTED'
 
-    def test_map_assembly_state(self, engine):
-        """Test mapping ASSEMBLY state."""
-        status = engine._map_state_to_status('ASSEMBLY')
-        assert status == 'READY'
+    def test_stage_ready_mapping(self):
+        assert stage_to_internal_status(StageCode.ASSEMBLED_PENDING_HANDOVER) == 'READY'
 
-    def test_map_delivery_state(self, engine):
-        """Test mapping KASPI_DELIVERY state."""
-        status = engine._map_state_to_status('KASPI_DELIVERY')
-        assert status == 'SHIPPED'
+    def test_stage_shipped_mapping(self):
+        assert stage_to_internal_status(StageCode.IN_DELIVERY) == 'SHIPPED'
 
-    def test_map_completed_state(self, engine):
-        """Test mapping COMPLETED state."""
-        status = engine._map_state_to_status('COMPLETED')
-        assert status == 'COMPLETED'
+    def test_stage_completed_mapping(self):
+        assert stage_to_internal_status(StageCode.ISSUED_COMPLETED) == 'COMPLETED'
 
-    def test_map_cancelled_state(self, engine):
-        """Test mapping CANCELLED state."""
-        status = engine._map_state_to_status('CANCELLED')
-        assert status == 'CANCELLED'
+    def test_stage_cancelled_mapping(self):
+        assert stage_to_internal_status(StageCode.CANCELLED) == 'CANCELLED'
 
-    def test_map_unknown_state(self, engine):
-        """Test mapping unknown state defaults to NEW."""
-        status = engine._map_state_to_status('UNKNOWN_STATE')
-        assert status == 'NEW'
+    def test_stage_unknown_mapping(self):
+        assert stage_to_internal_status(StageCode.UNKNOWN) == 'NEW'
 
 
 # =============================================================================
@@ -423,8 +410,11 @@ class TestDatabaseOperations:
         engine._save_order(conn, 'UNIVERSAL', order)
         conn.commit()
 
-        # Update with new state
-        order['attributes']['state'] = 'ACCEPTED_BY_MERCHANT'
+        # Update with new state/status
+        order['attributes']['state'] = 'KASPI_DELIVERY'
+        order['attributes']['status'] = 'ACCEPTED_BY_MERCHANT'
+        order['attributes'].setdefault('kaspiDelivery', {})['courierTransmissionDate'] = None
+        order['attributes'].setdefault('kaspiDelivery', {})['waybillNumber'] = None
         result = engine._save_order(conn, 'UNIVERSAL', order)
 
         assert result['inserted'] is False
@@ -506,8 +496,11 @@ class TestSyncStore:
         # First sync
         engine.sync_store(store_code='UNIVERSAL', dry_run=False)
 
-        # Update order state
-        sample_api_orders[0]['attributes']['state'] = 'ACCEPTED_BY_MERCHANT'
+        # Update order state/status
+        sample_api_orders[0]['attributes']['state'] = 'KASPI_DELIVERY'
+        sample_api_orders[0]['attributes']['status'] = 'ACCEPTED_BY_MERCHANT'
+        sample_api_orders[0]['attributes'].setdefault('kaspiDelivery', {})['courierTransmissionDate'] = None
+        sample_api_orders[0]['attributes'].setdefault('kaspiDelivery', {})['waybillNumber'] = None
         mock_client.list_all_orders.return_value = sample_api_orders
 
         # Second sync
@@ -631,7 +624,8 @@ class TestUtilityMethods:
         mock_client = MagicMock()
 
         # Make one order READY with waybill
-        sample_api_orders[1]['attributes']['state'] = 'ASSEMBLY'
+        sample_api_orders[1]['attributes']['state'] = 'KASPI_DELIVERY'
+        sample_api_orders[1]['attributes']['assembled'] = True
         mock_client.list_all_orders.return_value = sample_api_orders
         mock_get_client.return_value = mock_client
 
@@ -639,9 +633,8 @@ class TestUtilityMethods:
 
         orders = engine.get_ready_for_shipment(store_code='UNIVERSAL')
 
-        # Order 222222 should be READY with waybill
-        assert len(orders) == 1
-        assert orders[0]['order_id'] == '222222'
+        # Orders with waybills should be returned
+        assert {order['order_id'] for order in orders} == {'222222', '333333'}
 
     @patch.object(OrderSyncEngine, '_get_client')
     def test_get_sync_stats(self, mock_get_client, engine, sample_api_orders):

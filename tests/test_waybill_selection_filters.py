@@ -152,9 +152,9 @@ def test_get_target_orders_from_api_filters_status_signature_and_date(monkeypatc
     )
 
     assert errored is False
-    assert captured["status"] == "ACCEPTED_BY_MERCHANT"
     assert captured["signature_required"] is False
-    assert {o["attributes"]["code"] for o in filtered} == {"1001", "1002", "1003"}
+    assert "status" not in captured
+    assert {o["attributes"]["code"] for o in filtered} == {"1001", "1002", "1003", "1005"}
 
 
 def test_build_daily_waybills_api_filters_pending_handover(monkeypatch):
@@ -210,7 +210,7 @@ def test_get_target_order_ids_from_db_filters_status_signature(tmp_path):
         ("2002", "UNIVERSAL", "Item", "SKU", "SKU-2", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 1, None),
         ("2003", "UNIVERSAL", "Item", "SKU", "SKU-3", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", None, "READY", 0, None),
         ("2004", "UNIVERSAL", "Item", "SKU", "SKU-4", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", "KASPI_DELIVERY", "READY", 0, None),
-        ("2005", "UNIVERSAL", "Item", "SKU", "SKU-5", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", None, "SHIPPED", 0, None),
+        ("2005", "UNIVERSAL", "Item", "SKU", "SKU-5", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", None, "SHIPPED", 0, target_date.isoformat()),
         ("2006", "UNIVERSAL", "Item", "SKU", "SKU-6", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", None, "NEW", 0, None),
         ("2007", "UNIVERSAL", "Item", "SKU", "SKU-7", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 0, target_date.isoformat()),
     ]
@@ -222,7 +222,7 @@ def test_get_target_order_ids_from_db_filters_status_signature(tmp_path):
         exact_date=True,
     )
 
-    assert result == {"UNIVERSAL": {"2001", "2003", "2006"}}
+    assert result == {"UNIVERSAL": {"2001", "2003", "2004", "2006"}}
 
 
 def test_get_target_order_ids_from_crm_filters_status_signature(tmp_path):
@@ -306,7 +306,7 @@ def test_build_daily_waybills_read_db_orders_filters_status_signature(tmp_path):
     )
 
     order_ids = {o.order_id for o in orders}
-    assert order_ids == {"4001", "4003", "4005"}
+    assert order_ids == {"4001", "4003", "4004", "4005"}
 
 
 def test_validate_pending_orders_db_filters_status_signature(tmp_path):
@@ -318,7 +318,7 @@ def test_validate_pending_orders_db_filters_status_signature(tmp_path):
         ("5001", "UNIVERSAL", "Item", "SKU", "SKU-1", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 0, None),
         ("5002", "UNIVERSAL", "Item", "SKU", "SKU-2", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", None, "READY", 0, None),
         ("5003", "UNIVERSAL", "Item", "SKU", "SKU-3", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", "KASPI_DELIVERY", "READY", 0, None),
-        ("5004", "UNIVERSAL", "Item", "SKU", "SKU-4", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", None, "SHIPPED", 0, None),
+        ("5004", "UNIVERSAL", "Item", "SKU", "SKU-4", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", None, "SHIPPED", 0, target_date.isoformat()),
         ("5005", "UNIVERSAL", "Item", "SKU", "SKU-5", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 1, None),
         ("5006", "UNIVERSAL", "Item", "SKU", "SKU-6", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", None, "NEW", 0, None),
         ("5007", "UNIVERSAL", "Item", "SKU", "SKU-7", 1, "L", "", target_date.isoformat(), "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 0, target_date.isoformat()),
@@ -333,4 +333,4 @@ def test_validate_pending_orders_db_filters_status_signature(tmp_path):
     )
 
     assert total == 7
-    assert pending == {"5001", "5002", "5006"}
+    assert pending == {"5001", "5002", "5003", "5006"}

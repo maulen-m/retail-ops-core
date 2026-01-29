@@ -35,6 +35,7 @@ from core.integrations.kaspi_api_client import (  # noqa: E402
 )
 from core.integrations.kaspi_order_stage import (  # noqa: E402
     StageCode,
+    api_state_filter_for_stage,
     classify_kaspi_order_stage,
 )
 from core.utils.kaspi_dates import planned_date_from_order  # noqa: E402
@@ -44,28 +45,6 @@ logger = logging.getLogger(__name__)
 
 # Kaspi dates are in Asia/Almaty timezone
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
-ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
-
-
-def _is_signature_required(value: Any) -> bool:
-    if value is None or pd.isna(value):
-        return False
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(int(value))
-    text = str(value).strip().lower()
-    if text in {"true", "1", "yes", "да", "требуется", "required"}:
-        return True
-    if text in {"false", "0", "no", "нет", "не требуется", "not required"}:
-        return False
-    return False
-
-
-def _is_accepted_by_merchant(value: Any) -> bool:
-    return str(value or "").strip().upper() == ACCEPTED_BY_MERCHANT
-
-
 def _is_pending_handover_stage(order: dict) -> bool:
     stage = classify_kaspi_order_stage(order)
     return stage in {
@@ -163,9 +142,9 @@ def get_api_orders_by_store(
     for store_code in stores:
         try:
             client = KaspiAPIClient(store_code=store_code)
+            state_filter = api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY)
             orders = client.list_all_orders(
-                state="KASPI_DELIVERY",
-                status=ACCEPTED_BY_MERCHANT,
+                state=state_filter,
                 since=since,
                 signature_required=False,
                 include_orders="user",
@@ -185,10 +164,6 @@ def get_api_orders_by_store(
         ids = set()
         for order in orders:
             attrs = order.get("attributes", {}) or {}
-            if not _is_accepted_by_merchant(attrs.get("status")):
-                continue
-            if _is_signature_required(attrs.get("signatureRequired")):
-                continue
             if not _is_pending_handover_stage(order):
                 continue
             planned = _planned_date_from_order(order)

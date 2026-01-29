@@ -7,7 +7,7 @@ Phase 12: Automated waybill download - aligned with CRM order selection.
 IMPORTANT: Only downloads waybills for orders that:
 1. Exist in CRM with MY_SIZE filled
 2. Have planned_date within the target lookback window (default 14 days)
-3. Are in KASPI_DELIVERY state (shipped via API)
+3. Are in pending-handover StageCode (pre-courier handoff)
 
 This ensures we download only pending waybills, not all historical ones.
 
@@ -45,7 +45,9 @@ from core.integrations.kaspi_api_client import (
 )
 from core.integrations.kaspi_order_stage import (
     StageCode,
+    api_state_filter_for_stage,
     classify_kaspi_order_stage,
+    classify_kaspi_stage_from_db_row,
 )
 from core.paths import data_path, get_data_root
 from core.utils.kaspi_dates import planned_date_from_order
@@ -115,7 +117,6 @@ DB_STORE_TO_API = {
     'PP2': 'ACMEWEAR',
 }
 
-ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
 READY_STATUS_RU = "Ожидает передачи курьеру"
 READY_STATUS_EN = "Awaiting courier"
 ACCEPTED_STATUS_RU = "Принят"
@@ -135,10 +136,6 @@ def _is_signature_required(value: Any) -> bool:
     if text in {"false", "0", "no", "нет", "не требуется", "not required"}:
         return False
     return False
-
-
-def _is_accepted_by_merchant(value: Any) -> bool:
-    return str(value or "").strip().upper() == ACCEPTED_BY_MERCHANT
 
 
 def _is_ready_status(value: Any) -> bool:
@@ -217,7 +214,7 @@ def get_target_orders_from_api(
     include_overdue: bool = False,
     verbose: bool = False,
 ) -> tuple[list[dict], bool]:
-    """Fetch KASPI_DELIVERY orders from API and filter by planned date."""
+    """Fetch pending-handover orders from API and filter by planned date."""
     try:
         client = KaspiAPIClient(store_code=store_code)
     except KaspiAuthError as exc:
@@ -230,12 +227,12 @@ def get_target_orders_from_api(
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
     try:
+        state_filter = api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY)
         orders = client.list_all_orders(
-            state='KASPI_DELIVERY',
-            status=ACCEPTED_BY_MERCHANT,
+            state=state_filter,
             since=since,
-            include_orders='user',
             signature_required=False,
+            include_orders='user',
         )
     except Exception as exc:
         logger.warning(f"{store_code}: API list error - {exc}")
@@ -248,11 +245,6 @@ def get_target_orders_from_api(
     min_date = target_date - timedelta(days=since_days)
     for order in orders:
         attrs = order.get("attributes", {}) or {}
-        status = attrs.get("status")
-        if not _is_accepted_by_merchant(status):
-            continue
-        if _is_signature_required(attrs.get("signatureRequired")):
-            continue
         if not _is_pending_handover_stage(order):
             continue
         planned_date = _planned_date_from_order(order)
@@ -388,6 +380,7 @@ def get_target_order_ids_from_db(
                 assigned_size,
                 my_size,
                 planned_shipment_date,
+                kaspi_status,
                 kaspi_status_detail,
                 internal_status,
                 signature_required,
@@ -422,18 +415,11 @@ def get_target_order_ids_from_db(
         if not order_id:
             continue
 
-        kaspi_status_detail = row["kaspi_status_detail"]
-        internal_status = row["internal_status"]
-        courier_transmission_date = row["courier_transmission_date"]
-        if courier_transmission_date:
-            continue
-        if not _is_accepted_by_merchant(kaspi_status_detail):
-            if kaspi_status_detail and str(kaspi_status_detail).strip():
-                continue
-            if not _is_ready_status(internal_status):
-                continue
-
-        if _is_signature_required(row["signature_required"]):
+        stage = classify_kaspi_stage_from_db_row(row)
+        if stage not in {
+            StageCode.ACCEPTED_PENDING_ASSEMBLY,
+            StageCode.ASSEMBLED_PENDING_HANDOVER,
+        }:
             continue
 
         api_store = normalize_api_store_code(row["store_code"])
@@ -654,14 +640,14 @@ def download_waybills_for_store(
         if verbose:
             print(f"    Using {len(orders)} pre-filtered API orders for {store_code}")
     else:
-        # Fetch orders in KASPI_DELIVERY state
+        # Fetch orders in pending-handover states
         since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
         if verbose:
-            print(f"    Fetching KASPI_DELIVERY orders from {store_code}...")
+            print(f"    Fetching pending-handover orders from {store_code}...")
 
         orders = client.list_all_orders(
-            state='KASPI_DELIVERY',
+            state=api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY),
             since=since,
             include_orders='user',
         )

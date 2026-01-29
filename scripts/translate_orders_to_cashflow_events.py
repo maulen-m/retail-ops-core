@@ -22,6 +22,10 @@ from core.db.queries import get_cutoff_date_almaty
 from core.cashflow.order_status import normalize_order_status
 from core.config.business_params import get_vat_rate, get_fx_rates
 from core.calc.economics import calc_delivery_fee, calc_net_rev, calc_cogs
+from core.integrations.kaspi_order_stage import (
+    classify_kaspi_stage_from_db_row,
+    stage_to_internal_status,
+)
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "kaspi_column_map.yaml"
@@ -254,7 +258,8 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
         counts = {"completed": 0, "cancelled": 0, "on_delivery": 0, "ignored": 0}
 
         for row in rows:
-            status = normalize_order_status(row["internal_status"], row["kaspi_status"], config)
+            stage = classify_kaspi_stage_from_db_row(row)
+            status = normalize_order_status(stage_to_internal_status(stage), row["kaspi_status"], config)
             event_date = (
                 _parse_date(row["status_updated_at"])
                 or _parse_date(row["actual_shipment_date"])

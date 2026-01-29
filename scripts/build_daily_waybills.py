@@ -53,7 +53,6 @@ logger = logging.getLogger(__name__)
 
 # Kaspi dates are in Asia/Almaty timezone
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
-ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
 READY_STATUS_RU = "Ожидает передачи курьеру"
 READY_STATUS_EN = "Awaiting courier"
 ACCEPTED_STATUS_RU = "Принят"
@@ -68,7 +67,12 @@ from core.paths import data_path, get_data_root
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
 from core.waybill.pdf_grouper import merge_pdfs
 from core.integrations.kaspi_api_client import KaspiAPIClient, STORE_TOKEN_MAP, KaspiAuthError
-from core.integrations.kaspi_order_stage import StageCode, classify_kaspi_order_stage
+from core.integrations.kaspi_order_stage import (
+    StageCode,
+    api_state_filter_for_stage,
+    classify_kaspi_order_stage,
+    classify_kaspi_stage_from_db_row,
+)
 from core.utils.kaspi_dates import planned_date_from_order
 
 # Default paths
@@ -99,10 +103,6 @@ def _is_signature_required(value: Any) -> bool:
     if text in {"false", "0", "no", "нет", "не требуется", "not required"}:
         return False
     return False
-
-
-def _is_accepted_by_merchant(value: Any) -> bool:
-    return str(value or "").strip().upper() == ACCEPTED_BY_MERCHANT
 
 
 def _is_ready_status(value: Any) -> bool:
@@ -312,7 +312,7 @@ def get_api_order_ids_for_date(
     verbose: bool = False,
     include_overdue: bool = False,
 ) -> tuple[dict[str, set[str]], set[str]]:
-    """Fetch KASPI_DELIVERY orders from API and return order IDs for target_date."""
+    """Fetch pending-handover orders from API and return order IDs for target_date."""
     orders_by_store: dict[str, set[str]] = {}
     error_stores: set[str] = set()
 
@@ -329,10 +329,8 @@ def get_api_order_ids_for_date(
         try:
             client = KaspiAPIClient(store_code=store_code)
             orders = client.list_all_orders(
-                state='KASPI_DELIVERY',
-                status=ACCEPTED_BY_MERCHANT,
+                state=api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY),
                 since=since,
-                signature_required=False,
                 include_orders='user',
             )
         except KaspiAuthError as exc:
@@ -350,10 +348,6 @@ def get_api_order_ids_for_date(
         ids: set[str] = set()
         for order in orders:
             attrs = order.get("attributes", {}) or {}
-            if not _is_accepted_by_merchant(attrs.get("status")):
-                continue
-            if _is_signature_required(attrs.get("signatureRequired")):
-                continue
             if not _is_pending_handover_stage(order):
                 continue
             planned_date = _planned_date_from_order(order)
@@ -504,6 +498,7 @@ def read_db_orders(
                 assigned_size,
                 my_size,
                 planned_shipment_date,
+                kaspi_status,
                 kaspi_status_detail,
                 internal_status,
                 signature_required,
@@ -552,17 +547,11 @@ def read_db_orders(
             skipped_no_date += 1
             continue
 
-        kaspi_status_detail = row["kaspi_status_detail"]
-        internal_status = row["internal_status"]
-        courier_transmission_date = row["courier_transmission_date"]
-        if courier_transmission_date:
-            continue
-        if not _is_accepted_by_merchant(kaspi_status_detail):
-            if kaspi_status_detail and str(kaspi_status_detail).strip():
-                continue
-            if not _is_ready_status(internal_status):
-                continue
-        if _is_signature_required(row["signature_required"]):
+        stage = classify_kaspi_stage_from_db_row(row)
+        if stage not in {
+            StageCode.ACCEPTED_PENDING_ASSEMBLY,
+            StageCode.ASSEMBLED_PENDING_HANDOVER,
+        }:
             continue
 
         kaspi_offer_name = _coerce_str(row["kaspi_offer_name"])

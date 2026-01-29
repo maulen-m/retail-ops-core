@@ -34,6 +34,12 @@ from core.integrations.kaspi_api_client import (
     get_client,
     STORE_TOKEN_MAP,
 )
+from core.integrations.kaspi_order_stage import (
+    classify_kaspi_order_stage,
+    classify_kaspi_stage_from_db_row,
+    StageCode,
+    stage_to_internal_status,
+)
 from core.utils.kaspi_dates import planned_date_from_order
 
 
@@ -436,9 +442,10 @@ class OrderSyncEngine:
             or attrs.get('deliveryAddress')
         )
 
-        # Map Kaspi state to internal status
+        # Map Kaspi lifecycle to internal status via StageCode
         kaspi_state = attrs.get('state', 'NEW')
-        internal_status = self._map_state_to_status(kaspi_state)
+        stage = classify_kaspi_order_stage(api_order)
+        internal_status = stage_to_internal_status(stage)
 
         # Extract waybill URL
         waybill_url = delivery.get('waybill')
@@ -493,27 +500,6 @@ class OrderSyncEngine:
             return value
 
         return {key: _sanitize_value(value) for key, value in order_data.items()}
-
-    def _map_state_to_status(self, kaspi_state: str) -> str:
-        """Map Kaspi state to internal status."""
-        state_map = self.config.get('order_states', {})
-
-        if kaspi_state in state_map:
-            return state_map[kaspi_state].get('internal_status', 'NEW')
-
-        # Default mapping
-        default_map = {
-            'NEW': 'NEW',
-            'ACCEPTED_BY_MERCHANT': 'ACCEPTED',
-            'ASSEMBLY': 'READY',
-            'KASPI_DELIVERY': 'SHIPPED',
-            'DELIVERY': 'SHIPPED',
-            'COMPLETED': 'COMPLETED',
-            'CANCELLED': 'CANCELLED',
-            'RETURNING': 'RETURNING',
-            'RETURNED': 'RETURNED',
-        }
-        return default_map.get(kaspi_state, 'NEW')
 
     def _insert_order(self, conn, order_data: dict):
         """Insert new order into database."""
@@ -801,9 +787,9 @@ class OrderSyncEngine:
         with get_db(self.db_path) as conn:
             query = """
                 SELECT * FROM fact_orders_kaspi
-                WHERE internal_status = ?
+                WHERE 1=1
             """
-            params = [status]
+            params = []
 
             if store_code:
                 query += " AND store_code = ?"
@@ -812,7 +798,16 @@ class OrderSyncEngine:
             query += " ORDER BY created_at ASC"
 
             rows = conn.execute(query, params).fetchall()
-            return [dict(row) for row in rows]
+            results = []
+            for row in rows:
+                stage = classify_kaspi_stage_from_db_row(row)
+                if stage in {
+                    StageCode.NEW_APPROVED,
+                    StageCode.SIGN_REQUIRED,
+                    StageCode.PREORDER_IN_TRANSIT,
+                }:
+                    results.append(dict(row))
+            return results
 
     def get_ready_for_shipment(
         self,
@@ -830,8 +825,7 @@ class OrderSyncEngine:
         with get_db(self.db_path) as conn:
             query = """
                 SELECT * FROM fact_orders_kaspi
-                WHERE internal_status = 'READY'
-                  AND waybill_url IS NOT NULL
+                WHERE 1=1
             """
             params = []
 
@@ -842,7 +836,14 @@ class OrderSyncEngine:
             query += " ORDER BY planned_shipment_date ASC"
 
             rows = conn.execute(query, params).fetchall()
-            return [dict(row) for row in rows]
+            results = []
+            for row in rows:
+                if not row["waybill_url"]:
+                    continue
+                stage = classify_kaspi_stage_from_db_row(row)
+                if stage == StageCode.ASSEMBLED_PENDING_HANDOVER:
+                    results.append(dict(row))
+            return results
 
     def get_sync_stats(self) -> dict:
         """

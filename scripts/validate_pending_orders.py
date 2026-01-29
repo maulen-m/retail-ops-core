@@ -34,6 +34,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.paths import data_path
 from core.db import get_db, DEFAULT_DB_PATH
+from core.integrations.kaspi_order_stage import (
+    StageCode,
+    classify_kaspi_stage_from_db_row,
+)
 
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
@@ -41,11 +45,24 @@ ALMATY_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_CRM = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
 DEFAULT_SHEET = "SALES_KSP_CRM_1"
 DEFAULT_ACTIVE = data_path("excel_ui", "ActiveOrders", "ActiveOrders.xlsx")
-ACCEPTED_BY_MERCHANT = "ACCEPTED_BY_MERCHANT"
 READY_STATUS_RU = "Ожидает передачи курьеру"
 READY_STATUS_EN = "Awaiting courier"
 ACCEPTED_STATUS_RU = "Принят"
 ACCEPTED_STATUS_EN = "Accepted"
+
+DB_STAGE_COLUMNS = [
+    "order_id",
+    "kaspi_status",
+    "kaspi_status_detail",
+    "signature_required",
+    "pre_order",
+    "waybill_url",
+    "delivery_mode",
+    "returned_to_warehouse",
+    "courier_transmission_date",
+    "actual_shipment_date",
+    "courier_transmission_planning_date",
+]
 
 
 def _is_signature_required(value) -> bool:
@@ -63,10 +80,6 @@ def _is_signature_required(value) -> bool:
     return False
 
 
-def _is_accepted_by_merchant(value) -> bool:
-    return str(value or "").strip().upper() == ACCEPTED_BY_MERCHANT
-
-
 def _is_ready_status(value) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -79,13 +92,6 @@ def _is_ready_status(value) -> bool:
         ACCEPTED_STATUS_RU,
         ACCEPTED_STATUS_EN,
     }
-
-
-def _norm_status(value: str) -> str:
-    s = str(value or "").strip().lower()
-    s = s.replace("ё", "е")
-    s = s.replace(" ", "")
-    return s
 
 
 def _parse_date(value) -> Optional[date]:
@@ -245,9 +251,16 @@ def read_db_pending(
         if not table:
             return 0, set()
 
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(fact_orders_kaspi)").fetchall()
+        }
+        select_cols = [col for col in DB_STAGE_COLUMNS if col in cols]
+        select_cols_sql = ",\n                    ".join(select_cols) if select_cols else "order_id"
+
         if include_overdue:
-            query = """
-                SELECT order_id, kaspi_status, kaspi_status_detail, internal_status, signature_required, courier_transmission_date
+            query = f"""
+                SELECT
+                    {select_cols_sql}
                 FROM fact_orders_kaspi
                 WHERE planned_shipment_date <= ?
             """
@@ -259,8 +272,9 @@ def read_db_pending(
             rows = conn.execute(query, params).fetchall()
         else:
             rows = conn.execute(
-                """
-                SELECT order_id, kaspi_status, kaspi_status_detail, internal_status, signature_required, courier_transmission_date
+                f"""
+                SELECT
+                    {select_cols_sql}
                 FROM fact_orders_kaspi
                 WHERE planned_shipment_date = ?
                 """,
@@ -271,37 +285,23 @@ def read_db_pending(
     pending = set()
 
     terminal = {
-        "cancelled",
-        "cancelling",
-        "completed",
-        "returned",
-        "returning",
-        "archive",
-        "отменен",
-        "отменяется",
-        "завершен",
-        "возвращен",
-        "возвращается",
+        StageCode.CANCELLED,
+        StageCode.CANCELLING,
+        StageCode.RETURNED,
+        StageCode.RETURN_REQUESTED,
+        StageCode.ISSUED_COMPLETED,
     }
     for row in rows:
         order_id = _clean_order_id(row["order_id"])
         if not order_id:
             continue
-        status_norm = _norm_status(row["kaspi_status"])
-        internal_norm = _norm_status(row["internal_status"])
-        status_detail = row["kaspi_status_detail"]
-        if _is_signature_required(row["signature_required"]):
+        stage = classify_kaspi_stage_from_db_row(row)
+        if stage in terminal:
             continue
-        courier_transmission_date = row["courier_transmission_date"]
-        if courier_transmission_date:
-            continue
-
-        if status_norm in terminal or internal_norm in terminal:
-            continue
-        if _is_accepted_by_merchant(status_detail):
-            pending.add(order_id)
-            continue
-        if (status_detail is None or str(status_detail).strip() == "") and _is_ready_status(row["internal_status"]):
+        if stage in {
+            StageCode.ACCEPTED_PENDING_ASSEMBLY,
+            StageCode.ASSEMBLED_PENDING_HANDOVER,
+        }:
             pending.add(order_id)
 
     return total, pending
