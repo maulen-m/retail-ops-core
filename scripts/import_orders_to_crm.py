@@ -43,26 +43,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.kaspi_api_client import KaspiAPIClient, KaspiAuthError, STORE_TOKEN_MAP
+from core.integrations.kaspi_order_stage import (
+    classify_kaspi_order_stage,
+    kaspi_order_to_russian_status,
+    stage_to_crm_indicators,
+)
 from core.utils.kaspi_dates import planned_date_from_order
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
-
-# API state → Russian status mapping (matches export_api_orders)
-STATUS_MAP = {
-    'NEW': 'Новый',
-    'APPROVED_BY_BANK': 'Одобрен банком',
-    'ACCEPTED_BY_MERCHANT': 'Принят продавцом',
-    'ASSEMBLY': 'Собирается',
-    'KASPI_DELIVERY': 'Ожидает передачи курьеру',
-    'DELIVERY': 'Доставляется',
-    'PICKUP': 'Готов к выдаче',
-    'COMPLETED': 'Завершен',
-    'CANCELLED': 'Отменен',
-    'CANCELLING': 'Отменяется',
-    'RETURNING': 'Возвращается',
-    'RETURNED': 'Возвращен',
-    'ARCHIVE': 'Завершен',
-}
 
 # Warehouse → Store code (for API lookup)
 WAREHOUSE_STORE_MAP = {
@@ -404,20 +392,6 @@ def _timestamp_to_ddmmyyyy(ts_ms: Optional[int]) -> Optional[str]:
         return None
 
 
-def _get_state_indicators(api_state: str) -> Dict[str, str]:
-    accepted_states = {
-        'ACCEPTED_BY_MERCHANT', 'ASSEMBLY', 'KASPI_DELIVERY',
-        'DELIVERY', 'PICKUP', 'COMPLETED', 'ARCHIVE'
-    }
-    issued_states = {'KASPI_DELIVERY', 'DELIVERY', 'PICKUP', 'COMPLETED', 'ARCHIVE'}
-    cancelled_states = {'CANCELLED', 'CANCELLING', 'RETURNING', 'RETURNED'}
-    return {
-        'Принял': 'Да' if api_state in accepted_states else '',
-        'Выдал': 'Да' if api_state in issued_states else '',
-        'Отменил': 'Да' if api_state in cancelled_states else '',
-    }
-
-
 def _extract_delivery_costs(order: dict) -> tuple[Optional[float], Optional[float]]:
     attrs = order.get('attributes', {}) if isinstance(order, dict) else {}
     delivery = attrs.get('kaspiDelivery', {}) if isinstance(attrs.get('kaspiDelivery', {}), dict) else {}
@@ -433,15 +407,9 @@ def _extract_delivery_costs(order: dict) -> tuple[Optional[float], Optional[floa
 def _order_to_update_fields(order: dict) -> Dict[str, object]:
     attrs = order.get('attributes', {})
     delivery = attrs.get('kaspiDelivery', {})
-    api_state = attrs.get('state', '')
-    api_status = attrs.get('status', '')
-
-    if api_state == 'KASPI_DELIVERY':
-        russian_status = 'Ожидает передачи курьеру'
-    else:
-        russian_status = STATUS_MAP.get(api_status, STATUS_MAP.get(api_state, api_status))
-
-    indicators = _get_state_indicators(api_state)
+    stage = classify_kaspi_order_stage(order)
+    russian_status = kaspi_order_to_russian_status(order)
+    indicators = stage_to_crm_indicators(stage)
     planned_date_obj = planned_date_from_order(order)
     planned_date = planned_date_obj.strftime('%d.%m.%Y') if planned_date_obj else None
     status_change_date = _timestamp_to_ddmmyyyy(attrs.get('statusChangeDate'))

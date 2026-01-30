@@ -21,6 +21,8 @@ DEFAULT_TARGETS = [
     "core/sync/order_sync_engine.py",
     "scripts/build_daily_waybills.py",
     "scripts/download_waybills_api.py",
+    "scripts/import_orders_to_crm.py",
+    "scripts/report_import_status.py",
     "scripts/report_waybill_status.py",
     "scripts/translate_orders_to_cashflow_events.py",
     "scripts/validate_pending_orders.py",

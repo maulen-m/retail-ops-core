@@ -73,3 +73,23 @@ def test_assembled_pending_handover_mapping():
 def test_delivery_state_mapping():
     order = _make_order(state="DELIVERY", status="ACCEPTED_BY_MERCHANT")
     assert classify_kaspi_order_stage(order) == StageCode.IN_DELIVERY
+
+
+def test_courier_transmission_date_string_marks_in_delivery():
+    order = _make_order(
+        state="KASPI_DELIVERY",
+        status="ACCEPTED_BY_MERCHANT",
+        assembled=False,
+        kaspiDelivery={"courierTransmissionDate": "2026-01-01"},
+    )
+    assert classify_kaspi_order_stage(order) == StageCode.IN_DELIVERY
+
+
+def test_waybill_presence_marks_assembled():
+    order = _make_order(
+        state="KASPI_DELIVERY",
+        status="ACCEPTED_BY_MERCHANT",
+        assembled=False,
+        kaspiDelivery={"waybill": "WB-123"},
+    )
+    assert classify_kaspi_order_stage(order) == StageCode.ASSEMBLED_PENDING_HANDOVER

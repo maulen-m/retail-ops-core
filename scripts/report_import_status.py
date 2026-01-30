@@ -28,6 +28,7 @@ from core.integrations.kaspi_api_client import (  # noqa: E402
     KaspiAuthError,
     STORE_TOKEN_MAP,
 )
+from core.integrations.kaspi_order_stage import StageCode, api_state_filter_for_stage  # noqa: E402
 from core.utils.kaspi_dates import planned_date_from_order  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -125,7 +126,7 @@ def get_api_orders_by_store(
         try:
             client = KaspiAPIClient(store_code=store_code)
             orders = client.list_all_orders(
-                state="KASPI_DELIVERY",
+                state=api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY),
                 since=since,
                 include_orders="user",
             )

@@ -165,6 +165,49 @@ STAGE_INTERNAL_STATUS = {
     StageCode.UNKNOWN: "NEW",
 }
 
+KASPI_STATUS_RU = {
+    "NEW": "Новый",
+    "APPROVED_BY_BANK": "Одобрен банком",
+    "ACCEPTED_BY_MERCHANT": "Принят продавцом",
+    "ASSEMBLY": "Собирается",
+    "KASPI_DELIVERY": "Ожидает передачи курьеру",
+    "DELIVERY": "Доставляется",
+    "PICKUP": "Готов к выдаче",
+    "COMPLETED": "Завершен",
+    "CANCELLED": "Отменен",
+    "CANCELLING": "Отменяется",
+    "RETURNING": "Возвращается",
+    "RETURNED": "Возвращен",
+    "ARCHIVE": "Завершен",
+}
+
+
+def kaspi_order_to_russian_status(order: Mapping[str, Any]) -> str:
+    """Return CRM status string using Kaspi state/status (legacy-compatible)."""
+    attrs = _get_attrs(order)
+    state = _norm(attrs.get("state"))
+    status = _norm(attrs.get("status"))
+    if state == "KASPI_DELIVERY":
+        return "Ожидает передачи курьеру"
+    return KASPI_STATUS_RU.get(status) or KASPI_STATUS_RU.get(state) or status or state
+
+
+def stage_to_crm_indicators(stage: StageCode) -> dict[str, str]:
+    """Return CRM indicator flags (Принял/Выдал/Отменил) from StageCode."""
+    accepted = {
+        StageCode.ACCEPTED_PENDING_ASSEMBLY,
+        StageCode.ASSEMBLED_PENDING_HANDOVER,
+        StageCode.IN_DELIVERY,
+        StageCode.ISSUED_COMPLETED,
+    }
+    issued = {StageCode.IN_DELIVERY, StageCode.ISSUED_COMPLETED}
+    cancelled = {StageCode.CANCELLED, StageCode.CANCELLING, StageCode.RETURN_REQUESTED, StageCode.RETURNED}
+    return {
+        "Принял": "Да" if stage in accepted else "",
+        "Выдал": "Да" if stage in issued else "",
+        "Отменил": "Да" if stage in cancelled else "",
+    }
+
 
 def stage_to_internal_status(stage: StageCode) -> str:
     return STAGE_INTERNAL_STATUS.get(stage, "NEW")
