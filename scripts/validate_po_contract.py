@@ -12,8 +12,28 @@ from core.validation.tolerances import parse_po_contract_tolerances
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DEFAULT_CONTRACT = PROJECT_ROOT / "docs" / "validation" / "PO_CONTRACT.md"
-DEFAULT_CASES = PROJECT_ROOT / "tests" / "fixtures" / "po_golden" / "po_contract_cases.json"
-DEFAULT_EXPECTED = PROJECT_ROOT / "tests" / "fixtures" / "po_golden" / "po_contract_expected.json"
+FIXTURE_BASE = PROJECT_ROOT / "tests" / "fixtures" / "po_golden"
+DEFAULT_CASES = FIXTURE_BASE / "po_contract_cases.json"
+DEFAULT_EXPECTED = FIXTURE_BASE / "po_contract_expected.json"
+
+
+def resolve_fixture_paths(
+    fixture: str | None,
+    cases_path: Path | None = None,
+    expected_path: Path | None = None,
+) -> tuple[Path, Path]:
+    if cases_path is not None or expected_path is not None:
+        return (cases_path or DEFAULT_CASES, expected_path or DEFAULT_EXPECTED)
+
+    if fixture in (None, "", "small"):
+        return DEFAULT_CASES, DEFAULT_EXPECTED
+
+    fixture_dir = FIXTURE_BASE / fixture
+    cases = fixture_dir / "po_contract_cases.json"
+    expected = fixture_dir / "po_contract_expected.json"
+    if not cases.exists() or not expected.exists():
+        raise FileNotFoundError(f"Fixture not found: {fixture_dir}")
+    return cases, expected
 
 
 def _canonicalize(draft) -> dict:
@@ -152,14 +172,21 @@ def run_contract(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate PO contract fixtures")
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
-    parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
-    parser.add_argument("--expected", type=Path, default=DEFAULT_EXPECTED)
+    parser.add_argument("--fixture", type=str, default="small", help="Fixture set name")
+    parser.add_argument("--cases", type=Path, default=None)
+    parser.add_argument("--expected", type=Path, default=None)
     args = parser.parse_args()
+
+    cases_path, expected_path = resolve_fixture_paths(
+        args.fixture,
+        args.cases,
+        args.expected,
+    )
 
     result = run_contract(
         contract_path=args.contract,
-        cases_path=args.cases,
-        expected_path=args.expected,
+        cases_path=cases_path,
+        expected_path=expected_path,
     )
 
     if result["ok"]:

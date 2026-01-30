@@ -17,3 +17,17 @@ def test_po_contract_runner_passes_fixture():
 
     assert result["ok"] is True
     assert result["failures"] == []
+
+
+def test_po_contract_resolve_fixture_small():
+    cases_path, expected_path = validate_po_contract.resolve_fixture_paths("small")
+
+    assert cases_path.name == "po_contract_cases.json"
+    assert expected_path.name == "po_contract_expected.json"
+
+
+def test_po_contract_resolve_fixture_small():
+    cases_path, expected_path = validate_po_contract.resolve_fixture_paths("small")
+
+    assert cases_path.name == "po_contract_cases.json"
+    assert expected_path.name == "po_contract_expected.json"
