@@ -62,6 +62,7 @@ STORE_MAP = {
     "30000001_PP1": "Universal",
     "30290083_PP1": "11KZ",
     "30000002_PP1": "STORE-B",
+    "30362323_PP1": "Store-C",
 }
 
 API_TO_DISPLAY = {
@@ -87,9 +88,14 @@ def normalize_store_name(value: Any) -> str:
     store_str = str(value).strip()
     if store_str in STORE_MAP:
         return STORE_MAP[store_str]
+    if store_str in API_TO_DISPLAY:
+        return API_TO_DISPLAY[store_str]
     if store_str in API_TO_DISPLAY.values():
         return store_str
     for code, name in STORE_MAP.items():
+        if code.lower() == store_str.lower() or name.lower() == store_str.lower():
+            return name
+    for code, name in API_TO_DISPLAY.items():
         if code.lower() == store_str.lower() or name.lower() == store_str.lower():
             return name
     return store_str
@@ -348,7 +354,7 @@ def load_output_assigned(output_dir: Path) -> tuple[dict[str, set[str]], dict[st
             for row in reader:
                 if row.get("type") == "MISSING":
                     continue
-                store = row.get("store", "UNKNOWN")
+                store = normalize_store_name(row.get("store", "UNKNOWN"))
                 order_ids = _coerce_str(row.get("order_id")).split(";")
                 for oid in order_ids:
                     if oid:
@@ -363,7 +369,7 @@ def load_output_assigned(output_dir: Path) -> tuple[dict[str, set[str]], dict[st
             if not row or row[0] in ("Сегодня", "Магазин", "Итого"):
                 continue
             if len(row) >= 3:
-                store = row[0]
+                store = normalize_store_name(row[0])
                 try:
                     packages[store] = int(float(row[2]))
                 except ValueError:

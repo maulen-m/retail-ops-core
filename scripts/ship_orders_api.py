@@ -4,7 +4,7 @@ Ship Kaspi orders via API - Set package count and move to "Передача ку
 
 Phase 12: Automated Kaspi shipping workflow.
 
-For orders in CRM with MY_SIZE filled and planned_date <= today:
+For orders pending assembly (Упаковка) with planned_date <= today:
 1. Calculate package count using heavy item logic
 2. Call assemble_order(order_code, parcel_count) to set "Количество мест"
 3. This moves orders from "Упаковка" to "Передача курьеру"
@@ -352,13 +352,12 @@ def read_crm_orders(
     target_order_ids: Optional[set[str]] = None,
     db_order_info: Optional[dict[str, dict[str, Any]]] = None,
     apply_date_filter: bool = True,
-    allow_missing_size: bool = False,
+    allow_missing_size: bool = True,
 ) -> dict[str, list[OrderItem]]:
     """
     Read orders from CRM Excel file, grouped by order_id.
 
     Filters for orders where:
-    - MY_SIZE is filled
     - planned_date <= target_date
     - Optionally filtered by store
 
@@ -372,7 +371,7 @@ def read_crm_orders(
 
     orders_by_id: dict[str, list[OrderItem]] = defaultdict(list)
     skipped_no_size = 0
-    missing_size_allowed = 0
+    missing_size_included = 0
     skipped_date = 0
     skipped_store = 0
     skipped_not_pending = 0
@@ -408,11 +407,11 @@ def read_crm_orders(
             if not allow_missing_size:
                 skipped_no_size += 1
                 continue
-            missing_size_allowed += 1
+            missing_size_included += 1
             final_size = ""
         if db_size:
             used_db_size += 1
-        else:
+        elif my_size:
             used_crm_size += 1
 
         # Get planned date
@@ -467,12 +466,14 @@ def read_crm_orders(
 
     if allow_missing_size:
         logger.info(
-            f"Read {len(orders_by_id)} unique orders (missing size allowed: {missing_size_allowed})"
+            f"Read {len(orders_by_id)} unique orders (size optional)"
         )
+        if missing_size_included:
+            logger.info(f"Included {missing_size_included} rows without MY_SIZE")
     else:
         logger.info(f"Read {len(orders_by_id)} unique orders with MY_SIZE filled")
     if skipped_no_size:
-        logger.info(f"Skipped {skipped_no_size} rows without MY_SIZE")
+        logger.info(f"Skipped {skipped_no_size} rows without MY_SIZE (require-size)")
     if apply_date_filter:
         logger.info(f"Skipped {skipped_date} rows with future planned date")
     logger.info(f"Used DB sizes: {used_db_size}")
@@ -891,8 +892,16 @@ def main():
     )
     parser.add_argument(
         '--allow-missing-size',
+        dest='allow_missing_size',
         action='store_true',
-        help='Allow assembling pending orders even if size is missing'
+        default=True,
+        help='Allow assembling pending orders even if size is missing (default)'
+    )
+    parser.add_argument(
+        '--require-size',
+        dest='allow_missing_size',
+        action='store_false',
+        help='Require size in CRM/DB before assembling'
     )
 
     args = parser.parse_args()
@@ -945,7 +954,7 @@ def main():
             pending_store_for_order[order_id] = store_code
 
     # Step 2: Read orders from CRM
-    print("\nStep 2: Reading CRM for MY_SIZE data (DB-first)...")
+    print("\nStep 2: Reading CRM (DB-first, size optional)...")
     resolved_db_path = resolve_db_path(None)
     if resolved_db_path:
         print(f"  DB: {resolved_db_path}")
@@ -966,7 +975,7 @@ def main():
     added_db_only = 0
     skipped_db_no_size = 0
     skipped_db_store = 0
-    missing_db_size_allowed = 0
+    missing_db_size_included = 0
     added_api_only = 0
     if missing_in_crm and db_order_info:
         for order_id in missing_in_crm:
@@ -999,7 +1008,7 @@ def main():
                 if not args.allow_missing_size:
                     skipped_db_no_size += 1
                     continue
-                missing_db_size_allowed += 1
+                missing_db_size_included += 1
                 size = ""
             store_name = normalize_store_name(info.get("store_code"))
             if args.store and store_name != args.store:
@@ -1031,8 +1040,8 @@ def main():
         print(f"  Skipped {skipped_db_no_size} pending orders (no size in DB/CRM)")
     if skipped_db_store:
         print(f"  Skipped {skipped_db_store} pending orders (store filter)")
-    if missing_db_size_allowed:
-        print(f"  Included {missing_db_size_allowed} pending orders without size (allow-missing-size)")
+    if missing_db_size_included:
+        print(f"  Included {missing_db_size_included} pending orders without size")
 
     if not orders_by_id and not missing_in_crm:
         print("No eligible orders in CRM/DB.")
@@ -1043,16 +1052,16 @@ def main():
         print(f"  Found {len(orders_by_id)} orders with MY_SIZE (CRM+DB)")
 
     # Quick per-store sanity: pending vs sized
-    sized_by_store = defaultdict(int)
+    matched_by_store = defaultdict(int)
     for oid, items in orders_by_id.items():
         if not items:
             continue
         api_store = STORE_NAME_TO_API_CODE.get(items[0].store_name, items[0].store_name)
-        sized_by_store[api_store] += 1
+        matched_by_store[api_store] += 1
     for store_code, ids in pending_orders.items():
-        sized = sized_by_store.get(store_code, 0)
-        if sized < len(ids):
-            print(f"  WARNING: {store_code} pending={len(ids)} sized={sized} (missing sizes?)")
+        matched = matched_by_store.get(store_code, 0)
+        if matched < len(ids):
+            print(f"  WARNING: {store_code} pending={len(ids)} matched={matched} (missing CRM/DB rows?)")
 
     # Step 3: Ship orders
     print("\nStep 3: Shipping orders...")
