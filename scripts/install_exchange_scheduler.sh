@@ -2,21 +2,35 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLIST_NAME="com.example.exchange-import.plist"
-PLIST_SRC="$ROOT_DIR/config/$PLIST_NAME"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
-PLIST_DST="$LAUNCH_AGENTS_DIR/$PLIST_NAME"
+PLISTS=(
+  "com.example.exchange-import.plist"
+  "com.example.gmail-pubsub.plist"
+  "com.example.gmail-watch-refresh.plist"
+)
 
 mkdir -p "$LAUNCH_AGENTS_DIR"
 
-if launchctl list | grep -q "com.example.exchange-import"; then
-  launchctl unload "$PLIST_DST" 2>/dev/null || true
-fi
+for plist in "${PLISTS[@]}"; do
+  if launchctl list | grep -q "${plist%.plist}"; then
+    launchctl unload "$LAUNCH_AGENTS_DIR/$plist" 2>/dev/null || true
+  fi
+done
 
-cp "$PLIST_SRC" "$PLIST_DST"
-launchctl load "$PLIST_DST"
+for plist in "${PLISTS[@]}"; do
+  src="$ROOT_DIR/config/$plist"
+  dst="$LAUNCH_AGENTS_DIR/$plist"
+  if [[ ! -f "$src" ]]; then
+    echo "Skip missing: $src"
+    continue
+  fi
+  cp "$src" "$dst"
+  launchctl load "$dst"
+done
 
-echo "Installed exchange import scheduler:"
-echo "  $PLIST_DST"
+echo "Installed exchange + gmail schedulers:"
+for plist in "${PLISTS[@]}"; do
+  echo "  $LAUNCH_AGENTS_DIR/$plist"
+done
 echo "Verify:"
 echo "  launchctl list | grep exchange-import"
