@@ -18,6 +18,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(
+        row[1] == column
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    )
+
+
 def migrate(db_path: Path) -> None:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
@@ -33,11 +40,37 @@ def migrate(db_path: Path) -> None:
                 quantity REAL,
                 unit_price_kzt REAL,
                 total_price_kzt REAL,
+                unit_type TEXT,
+                min_allowed_weight REAL,
+                weight_kg REAL,
+                entry_number INTEGER,
+                category_code TEXT,
+                category_title TEXT,
+                delivery_cost_kzt REAL,
+                base_price_kzt REAL,
+                point_of_service_id TEXT,
+                delivery_point_of_service_id TEXT,
                 raw_json TEXT,
                 updated_at TEXT DEFAULT (datetime('now'))
             )
             """
         )
+        for column, col_type in (
+            ("unit_type", "TEXT"),
+            ("min_allowed_weight", "REAL"),
+            ("weight_kg", "REAL"),
+            ("entry_number", "INTEGER"),
+            ("category_code", "TEXT"),
+            ("category_title", "TEXT"),
+            ("delivery_cost_kzt", "REAL"),
+            ("base_price_kzt", "REAL"),
+            ("point_of_service_id", "TEXT"),
+            ("delivery_point_of_service_id", "TEXT"),
+        ):
+            if not _column_exists(conn, "fact_order_entries_kaspi", column):
+                conn.execute(
+                    f"ALTER TABLE fact_order_entries_kaspi ADD COLUMN {column} {col_type}"
+                )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_order_entries_order ON fact_order_entries_kaspi(order_id)"
         )

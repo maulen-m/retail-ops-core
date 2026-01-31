@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -14,27 +15,84 @@ class FakeResponse:
 
 
 class FakeClient:
-    def __init__(self, store_code):
+    def __init__(self, store_code, entries=None, entry_detail=None):
         self.store_code = store_code
         self.calls = []
+        self.entries = entries
+        self.entry_detail = entry_detail or {
+            "id": "ENTRY1",
+            "attributes": {
+                "unitType": "PCS",
+                "minAllowedWeight": 1.2,
+                "weight": 0.7,
+                "entryNumber": 5,
+                "basePrice": 900,
+                "deliveryCost": 120,
+                "category": {"code": "CAT1", "title": "Category 1"},
+            },
+            "relationships": {"deliveryPointOfService": {"data": {"id": "POS_DEL"}}},
+        }
+        self.entry_product = {"id": "PROD1", "attributes": {"name": "MP"}}
+        self.masterproduct = {"id": "PROD1", "attributes": {"name": "MP"}}
+        self.merchantproduct = {"id": "MERCH1", "attributes": {"code": "SKU1"}}
+        self.point_of_service = {"id": "POS1", "attributes": {"displayName": "POS1"}}
+
+    def _clone_entries(self, order_code):
+        entries = self.entries or [
+            {
+                "id": "ENTRY1",
+                "attributes": {
+                    "quantity": 2,
+                    "price": 1000,
+                    "totalPrice": 2000,
+                    "offerId": "SKU1",
+                },
+                "relationships": {
+                    "order": {"data": {"id": order_code}},
+                    "product": {"data": {"id": "PROD1"}},
+                    "pointOfService": {"data": {"id": "POS1"}},
+                },
+            }
+        ]
+        cloned = json.loads(json.dumps(entries))
+        for entry in cloned:
+            rel = entry.setdefault("relationships", {})
+            rel.setdefault("order", {"data": {"id": order_code}})
+        return cloned
 
     def get_order_entries(self, order_code):
         self.calls.append(("entries", order_code))
-        return FakeResponse(
-            True,
-            {
-                "data": [
-                    {
-                        "id": "ENTRY1",
-                        "attributes": {"quantity": 2, "price": 1000, "totalPrice": 2000},
-                        "relationships": {
-                            "order": {"data": {"id": order_code}},
-                            "product": {"data": {"id": "PROD1"}},
-                        },
-                    }
-                ]
-            },
-        )
+        return FakeResponse(True, {"data": self._clone_entries(order_code)})
+
+    def get_order_entry(self, entry_id):
+        self.calls.append(("entry_detail", entry_id))
+        payload = json.loads(json.dumps(self.entry_detail))
+        payload["id"] = entry_id
+        return FakeResponse(True, {"data": payload})
+
+    def get_order_entry_product(self, entry_id):
+        self.calls.append(("entry_product", entry_id))
+        payload = json.loads(json.dumps(self.entry_product))
+        payload["id"] = self.entry_product.get("id")
+        return FakeResponse(True, {"data": payload})
+
+    def get_masterproduct(self, masterproduct_id):
+        self.calls.append(("masterproduct", masterproduct_id))
+        payload = json.loads(json.dumps(self.masterproduct))
+        payload["id"] = masterproduct_id
+        return FakeResponse(True, {"data": payload})
+
+    def get_merchantproduct(self, masterproduct_id):
+        self.calls.append(("merchantproduct", masterproduct_id))
+        payload = json.loads(json.dumps(self.merchantproduct))
+        payload["id"] = self.merchantproduct.get("id")
+        return FakeResponse(True, {"data": payload})
+
+    def get_point_of_service(self, pos_id):
+        self.calls.append(("point_of_service", pos_id))
+        payload = json.loads(json.dumps(self.point_of_service))
+        payload["id"] = pos_id
+        return FakeResponse(True, {"data": payload})
 
     def _request(self, method, path, params=None):
         self.calls.append((method, path))
@@ -330,3 +388,197 @@ def test_enrichment_selection_filters_by_stage(tmp_path):
 
     entry_calls = [call for call in client.calls if call[0] == "entries"]
     assert sorted(entry_calls) == [("entries", "IN_APPROVED"), ("entries", "IN_CANCELLED")]
+
+
+def test_enrichment_entry_detail_fields(tmp_path, monkeypatch):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(db_path)
+
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text(
+        "enabled: true\nfetch_entries: true\nfetch_entry_detail: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ENABLE_KASPI_ENRICHMENT", "1")
+
+    enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-19",
+        until="2026-01-21",
+        apply=True,
+        config_path=config_path,
+        client_factory=lambda store: FakeClient(store),
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            """
+            SELECT
+                unit_type,
+                min_allowed_weight,
+                weight_kg,
+                entry_number,
+                category_code,
+                category_title,
+                delivery_cost_kzt,
+                base_price_kzt,
+                point_of_service_id,
+                delivery_point_of_service_id
+            FROM fact_order_entries_kaspi
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row == (
+        "PCS",
+        1.2,
+        0.7,
+        5,
+        "CAT1",
+        "Category 1",
+        120.0,
+        900.0,
+        "POS1",
+        "POS_DEL",
+    )
+
+
+def test_enrichment_cache_hits(tmp_path, monkeypatch):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(db_path)
+
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "enabled: true",
+                "fetch_entries: true",
+                "fetch_masterproduct: true",
+                "fetch_merchantproduct: true",
+                "fetch_point_of_service: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entries = [
+        {
+            "id": "ENTRY1",
+            "attributes": {"quantity": 1, "price": 1000, "totalPrice": 1000, "offerId": "SKU1"},
+            "relationships": {
+                "order": {"data": {"id": "ORD1"}},
+                "product": {"data": {"id": "PROD1"}},
+                "pointOfService": {"data": {"id": "POS1"}},
+            },
+        },
+        {
+            "id": "ENTRY2",
+            "attributes": {"quantity": 1, "price": 1200, "totalPrice": 1200, "offerId": "SKU1"},
+            "relationships": {
+                "order": {"data": {"id": "ORD1"}},
+                "product": {"data": {"id": "PROD1"}},
+                "pointOfService": {"data": {"id": "POS1"}},
+            },
+        },
+    ]
+
+    monkeypatch.setenv("ENABLE_KASPI_ENRICHMENT", "1")
+    client = FakeClient("UNIVERSAL", entries=entries)
+
+    enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-19",
+        until="2026-01-21",
+        apply=True,
+        config_path=config_path,
+        client_factory=lambda store: client,
+    )
+
+    master_calls = [call for call in client.calls if call[0] == "masterproduct"]
+    merchant_calls = [call for call in client.calls if call[0] == "merchantproduct"]
+    pos_calls = [call for call in client.calls if call[0] == "point_of_service"]
+
+    assert master_calls == [("masterproduct", "PROD1")]
+    assert merchant_calls == [("merchantproduct", "PROD1")]
+    assert pos_calls == [("point_of_service", "POS1")]
+
+
+def test_enrichment_idempotent_inserts(tmp_path, monkeypatch):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(db_path)
+
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text("enabled: true\nfetch_entries: true\n", encoding="utf-8")
+
+    monkeypatch.setenv("ENABLE_KASPI_ENRICHMENT", "1")
+
+    enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-19",
+        until="2026-01-21",
+        apply=True,
+        config_path=config_path,
+        client_factory=lambda store: FakeClient(store),
+    )
+    enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-19",
+        until="2026-01-21",
+        apply=True,
+        config_path=config_path,
+        client_factory=lambda store: FakeClient(store),
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM fact_order_entries_kaspi").fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+
+
+def test_enrichment_allowlist_skips_store(tmp_path):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(db_path)
+
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text(
+        "enabled: true\nstores_allowlist:\n  - ACMEWEAR\n",
+        encoding="utf-8",
+    )
+
+    created = {"count": 0}
+
+    def _factory(store):
+        created["count"] += 1
+        return FakeClient(store)
+
+    result = enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-19",
+        until="2026-01-21",
+        apply=False,
+        config_path=config_path,
+        client_factory=_factory,
+    )
+
+    assert result.get("enabled") is True
+    assert result.get("inserted") == 0
+    assert created["count"] == 0

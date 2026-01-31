@@ -1,5 +1,7 @@
 enabled: false
+stores_allowlist: []
 fetch_entries: true
+fetch_entry_detail: false
 fetch_entry_product: false
 fetch_masterproduct: false
 fetch_merchantproduct: false

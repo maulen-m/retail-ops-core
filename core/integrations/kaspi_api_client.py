@@ -627,6 +627,30 @@ class KaspiAPIClient:
         base64_id = self._get_order_base64_id(order_code)
         return self._request('GET', f'orders/{base64_id}/entries')
 
+    def get_order_entry(self, entry_id: str) -> APIResponse:
+        """
+        Get order entry detail (line item detail).
+
+        Args:
+            entry_id: Order entry ID
+
+        Returns:
+            APIResponse with entry detail data
+        """
+        return self._request('GET', f'orderentries/{entry_id}')
+
+    def get_order_entry_product(self, entry_id: str) -> APIResponse:
+        """
+        Get order entry product details.
+
+        Args:
+            entry_id: Order entry ID
+
+        Returns:
+            APIResponse with product data
+        """
+        return self._request('GET', f'orderentries/{entry_id}/product')
+
     def get_masterproduct(self, masterproduct_id: str) -> APIResponse:
         """
         Get masterproduct details (Kaspi's official product info).
@@ -641,6 +665,30 @@ class KaspiAPIClient:
             APIResponse with masterproduct data including 'name' (Kaspi public name)
         """
         return self._request('GET', f'masterproducts/{masterproduct_id}')
+
+    def get_merchantproduct(self, masterproduct_id: str) -> APIResponse:
+        """
+        Get merchant product details for a masterproduct.
+
+        Args:
+            masterproduct_id: Masterproduct ID
+
+        Returns:
+            APIResponse with merchant product data
+        """
+        return self._request('GET', f'masterproducts/{masterproduct_id}/merchantProduct')
+
+    def get_point_of_service(self, pos_id: str) -> APIResponse:
+        """
+        Get point of service details (warehouse/pos metadata).
+
+        Args:
+            pos_id: Point of service ID
+
+        Returns:
+            APIResponse with POS data
+        """
+        return self._request('GET', f'pointofservices/{pos_id}')
 
     def get_waybill_url(self, order: dict) -> Optional[str]:
         """

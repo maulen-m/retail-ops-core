@@ -31,7 +31,9 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 def _load_config(path: Path) -> dict:
     defaults = {
         "enabled": False,
+        "stores_allowlist": [],
         "fetch_entries": True,
+        "fetch_entry_detail": False,
         "fetch_entry_product": False,
         "fetch_masterproduct": False,
         "fetch_merchantproduct": False,
@@ -100,6 +102,7 @@ def _parse_entry(entry: dict, fallback_order_id: str, store_code: str) -> dict:
     relationships = entry.get("relationships") or {}
     order_rel = (relationships.get("order") or {}).get("data") or {}
     product_rel = (relationships.get("product") or {}).get("data") or {}
+    pos_rel = (relationships.get("pointOfService") or {}).get("data") or {}
     entry_id = entry.get("id") or ""
     return {
         "entry_id": entry_id,
@@ -110,7 +113,44 @@ def _parse_entry(entry: dict, fallback_order_id: str, store_code: str) -> dict:
         "quantity": float(attributes.get("quantity") or 0.0),
         "unit_price_kzt": float(attributes.get("price") or 0.0),
         "total_price_kzt": float(attributes.get("totalPrice") or 0.0),
+        "point_of_service_id": pos_rel.get("id"),
         "raw_json": json.dumps(entry, ensure_ascii=False),
+    }
+
+
+def _coerce_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_entry_detail(entry_detail: dict) -> dict:
+    attributes = entry_detail.get("attributes") or {}
+    relationships = entry_detail.get("relationships") or {}
+    category = attributes.get("category") or {}
+    delivery_pos_rel = (relationships.get("deliveryPointOfService") or {}).get("data") or {}
+    return {
+        "unit_type": attributes.get("unitType"),
+        "min_allowed_weight": _coerce_float(attributes.get("minAllowedWeight")),
+        "weight_kg": _coerce_float(attributes.get("weight")),
+        "entry_number": _coerce_int(attributes.get("entryNumber")),
+        "category_code": category.get("code"),
+        "category_title": category.get("title"),
+        "delivery_cost_kzt": _coerce_float(attributes.get("deliveryCost")),
+        "base_price_kzt": _coerce_float(attributes.get("basePrice")),
+        "delivery_point_of_service_id": delivery_pos_rel.get("id"),
     }
 
 
@@ -162,6 +202,15 @@ def enrich_orders(
         logger.info("Kaspi enrichment disabled in config.")
         return {"enabled": False, "inserted": 0, "skipped": 0}
 
+    allowlist = [
+        str(store).upper()
+        for store in (config.get("stores_allowlist") or [])
+        if str(store).strip()
+    ]
+    if allowlist and store_code.upper() not in allowlist:
+        logger.info("Kaspi enrichment skipped for %s (not in allowlist).", store_code)
+        return {"enabled": True, "inserted": 0, "skipped": 0}
+
     if apply and os.environ.get("ENABLE_KASPI_ENRICHMENT") != "1":
         raise RuntimeError("ENABLE_KASPI_ENRICHMENT=1 is required to apply enrichment writes.")
 
@@ -188,6 +237,9 @@ def enrich_orders(
             return {"enabled": True, "inserted": 0, "skipped": 0}
 
         client = client_factory(store_code)
+        seen_masterproduct_ids: set[str] = set()
+        seen_merchantproduct_ids: set[str] = set()
+        seen_pos_ids: set[str] = set()
         inserted = 0
         skipped = 0
         for order_id, order_store in orders:
@@ -208,13 +260,26 @@ def enrich_orders(
                 if not parsed.get("entry_id"):
                     skipped += 1
                     continue
+
+                if config.get("fetch_entry_detail") and parsed.get("entry_id"):
+                    try:
+                        resp = client.get_order_entry(parsed["entry_id"])
+                        if getattr(resp, "success", False):
+                            data = (resp.data or {}).get("data") or {}
+                            parsed.update(_parse_entry_detail(data))
+                    except Exception as exc:
+                        logger.warning("orderentry detail fetch failed: %s", exc)
                 if apply:
                     cur = conn.execute(
                         """
                         INSERT OR IGNORE INTO fact_order_entries_kaspi (
                             entry_id, order_id, store_code, product_id, offer_id,
-                            quantity, unit_price_kzt, total_price_kzt, raw_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            quantity, unit_price_kzt, total_price_kzt,
+                            unit_type, min_allowed_weight, weight_kg, entry_number,
+                            category_code, category_title, delivery_cost_kzt, base_price_kzt,
+                            point_of_service_id, delivery_point_of_service_id,
+                            raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             parsed["entry_id"],
@@ -225,6 +290,16 @@ def enrich_orders(
                             parsed["quantity"],
                             parsed["unit_price_kzt"],
                             parsed["total_price_kzt"],
+                            parsed.get("unit_type"),
+                            parsed.get("min_allowed_weight"),
+                            parsed.get("weight_kg"),
+                            parsed.get("entry_number"),
+                            parsed.get("category_code"),
+                            parsed.get("category_title"),
+                            parsed.get("delivery_cost_kzt"),
+                            parsed.get("base_price_kzt"),
+                            parsed.get("point_of_service_id"),
+                            parsed.get("delivery_point_of_service_id"),
                             parsed["raw_json"],
                         ),
                     )
@@ -240,7 +315,7 @@ def enrich_orders(
 
                 if config.get("fetch_entry_product") and parsed.get("entry_id"):
                     try:
-                        resp = client._request("GET", f"/orderentries/{parsed['entry_id']}/product")
+                        resp = client.get_order_entry_product(parsed["entry_id"])
                         if getattr(resp, "success", False):
                             data = (resp.data or {}).get("data") or {}
                             master_id = data.get("id")
@@ -250,40 +325,49 @@ def enrich_orders(
                         logger.warning("orderentry product fetch failed: %s", exc)
 
                 if config.get("fetch_masterproduct") and parsed.get("product_id"):
-                    try:
-                        resp = client._request("GET", f"/masterproducts/{parsed['product_id']}")
-                        if getattr(resp, "success", False):
-                            data = (resp.data or {}).get("data") or {}
-                            master_id = data.get("id")
-                            if master_id:
-                                _upsert_dim(conn, "dim_masterproduct", master_id, None, data)
-                    except Exception as exc:
-                        logger.warning("masterproduct fetch failed: %s", exc)
-
-                if config.get("fetch_merchantproduct") and parsed.get("product_id"):
-                    try:
-                        resp = client._request("GET", f"/masterproducts/{parsed['product_id']}/merchantProduct")
-                        if getattr(resp, "success", False):
-                            data = (resp.data or {}).get("data") or {}
-                            merchant_id = data.get("id")
-                            if merchant_id:
-                                payload = dict(data)
-                                payload["masterproduct_id"] = parsed.get("product_id")
-                                _upsert_dim(conn, "dim_merchantproduct", merchant_id, None, payload)
-                    except Exception as exc:
-                        logger.warning("merchantproduct fetch failed: %s", exc)
-
-                if config.get("fetch_point_of_service"):
-                    pos_rel = (entry.get("relationships") or {}).get("pointOfService")
-                    pos_id = (pos_rel or {}).get("data", {}).get("id")
-                    if pos_id:
+                    master_id = parsed["product_id"]
+                    if master_id and master_id not in seen_masterproduct_ids:
                         try:
-                            resp = client._request("GET", f"/pointofservices/{pos_id}")
+                            resp = client.get_masterproduct(master_id)
                             if getattr(resp, "success", False):
                                 data = (resp.data or {}).get("data") or {}
-                                _upsert_dim(conn, "dim_point_of_service", pos_id, order_store, data)
+                                master_id = data.get("id")
+                                if master_id:
+                                    _upsert_dim(conn, "dim_masterproduct", master_id, None, data)
+                                    seen_masterproduct_ids.add(master_id)
                         except Exception as exc:
-                            logger.warning("point of service fetch failed: %s", exc)
+                            logger.warning("masterproduct fetch failed: %s", exc)
+
+                if config.get("fetch_merchantproduct") and parsed.get("product_id"):
+                    master_id = parsed.get("product_id")
+                    if master_id and master_id not in seen_merchantproduct_ids:
+                        try:
+                            resp = client.get_merchantproduct(master_id)
+                            if getattr(resp, "success", False):
+                                data = (resp.data or {}).get("data") or {}
+                                merchant_id = data.get("id")
+                                if merchant_id:
+                                    payload = dict(data)
+                                    payload["masterproduct_id"] = master_id
+                                    _upsert_dim(conn, "dim_merchantproduct", merchant_id, None, payload)
+                                    seen_merchantproduct_ids.add(master_id)
+                        except Exception as exc:
+                            logger.warning("merchantproduct fetch failed: %s", exc)
+
+                if config.get("fetch_point_of_service"):
+                    for pos_id in (
+                        parsed.get("point_of_service_id"),
+                        parsed.get("delivery_point_of_service_id"),
+                    ):
+                        if pos_id and pos_id not in seen_pos_ids:
+                            try:
+                                resp = client.get_point_of_service(pos_id)
+                                if getattr(resp, "success", False):
+                                    data = (resp.data or {}).get("data") or {}
+                                    _upsert_dim(conn, "dim_point_of_service", pos_id, order_store, data)
+                                    seen_pos_ids.add(pos_id)
+                            except Exception as exc:
+                                logger.warning("point of service fetch failed: %s", exc)
 
         if apply:
             conn.commit()
