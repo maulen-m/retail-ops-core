@@ -21,10 +21,14 @@ Required fields (thermal):
 - `Clothes*General.clothes*size`
 
 ## V1 filled values
-The V1 reference now fills required thermal-only fields:
 - `model` = `комплект`
 - `gender` = `мужской`
-- `notice1` = value copied from `additional information`
+- `clasp` = `спереди`
+- `notice1` values moved into `additional information` (notice1 cleared)
+
+## Risk
+`notice1` is required by the template; it is currently empty after relocation.
+If Kaspi enforces required fields, this will fail unless we re‑fill notice1.
 
 ## Next input needed
 If Kaspi rejects, inspect cell comments in the result XLSM for exact errors.
