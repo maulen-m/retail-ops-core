@@ -20,10 +20,11 @@ Required fields (thermal):
 - `Thermal underwear*...*notice1`
 - `Clothes*General.clothes*size`
 
-Line61 reference covers only overlapping fields. The following **required** fields are still empty in V1 and must be provided:
-- `Thermal underwear*...*model`
-- `Thermal underwear*...*gender`
-- `Thermal underwear*...*notice1`
+## V1 filled values
+The V1 reference now fills required thermal-only fields:
+- `model` = `комплект`
+- `gender` = `мужской`
+- `notice1` = value copied from `additional information`
 
 ## Next input needed
-Please provide values for those three fields; after that, V1 can be made upload‑ready.
+If Kaspi rejects, inspect cell comments in the result XLSM for exact errors.
