@@ -90,3 +90,15 @@ Kaspi’s validation report often embeds **error messages as cell comments** ins
 - `docs/offer_creation/ACMEWEAR_LINE61_V10_REFERENCE.xlsm` (V10)
 
 Use this as a baseline for future offer creation.
+
+---
+
+## Thermal category (men thermal underwear)
+
+Thermal templates have **different required fields** than men sport suits.
+See:
+- `docs/offer_creation/templates/Men-thermal-underwear-import-template.xlsm`
+- `docs/offer_creation/THERMAL_V1_NOTES.md`
+
+The V1 thermal reference is prefilled with shared values:
+- `docs/offer_creation/ACMEWEAR_LINE61_THERMAL_V1_REFERENCE.xlsm`

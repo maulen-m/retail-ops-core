@@ -85,6 +85,8 @@ excel/Inventory_Core_V18.1_V2.xlsx
 # Kaspi offer creation references (track only the canonical reference)
 docs/offer_creation/*.xlsm
 !docs/offer_creation/ACMEWEAR_LINE61_V10_REFERENCE.xlsm
+!docs/offer_creation/ACMEWEAR_LINE61_THERMAL_V1_REFERENCE.xlsm
+!docs/offer_creation/templates/Men-thermal-underwear-import-template.xlsm
 
 # Waybill inputs + archives (keep untracked)
 excel_ui/ActiveOrders/waybills/
