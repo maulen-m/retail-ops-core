@@ -122,7 +122,7 @@ def get_daily_executed_spend(db_path: Path, execution_date: date = None) -> floa
 
     # Check if table exists
     tables = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_executions'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_execution'"
     ).fetchall()
 
     if not tables:
@@ -131,7 +131,7 @@ def get_daily_executed_spend(db_path: Path, execution_date: date = None) -> floa
 
     row = conn.execute("""
         SELECT COALESCE(SUM(total_value_kzt), 0)
-        FROM fact_po_executions
+        FROM fact_po_execution
         WHERE date(executed_at) = ?
           AND status = 'SUCCESS'
     """, (date_str,)).fetchone()
@@ -383,17 +383,13 @@ def get_draft_with_lines(db_path: Path, draft_id: int) -> Optional[dict]:
     conn.row_factory = sqlite3.Row
 
     # Get header
-    row = conn.execute("""
-        SELECT * FROM fact_po_drafts
+    row = conn.execute(
+        """
+        SELECT * FROM fact_po_draft
         WHERE draft_id = ?
-    """, (draft_id,)).fetchone()
-
-    if not row:
-        # Try alternate table name
-        row = conn.execute("""
-            SELECT * FROM fact_po_draft
-            WHERE draft_id = ?
-        """, (draft_id,)).fetchone()
+        """,
+        (draft_id,),
+    ).fetchone()
 
     if not row:
         conn.close()
@@ -435,9 +431,9 @@ def check_already_executed(db_path: Path, draft_id: int) -> bool:
     """Check if draft has already been executed."""
     conn = sqlite3.connect(str(db_path))
 
-    # Check fact_po_executions table
+    # Check fact_po_execution table
     tables = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_executions'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_execution'"
     ).fetchall()
 
     if not tables:
@@ -445,7 +441,7 @@ def check_already_executed(db_path: Path, draft_id: int) -> bool:
         return False
 
     row = conn.execute("""
-        SELECT execution_id FROM fact_po_executions
+        SELECT execution_id FROM fact_po_execution
         WHERE draft_id = ?
           AND status = 'SUCCESS'
         LIMIT 1
@@ -671,34 +667,32 @@ def create_execution_record(
     draft_id: int,
     approval_id: int,
     status: str,
+    planned_units: int,
     executed_lines: int,
     total_value_kzt: float,
     notes: str,
 ) -> int:
-    """Create execution record in fact_po_executions."""
+    """Create execution record in fact_po_execution."""
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
-    # Ensure table exists
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS fact_po_executions (
-            execution_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            draft_id INTEGER NOT NULL,
-            approval_id INTEGER,
-            executed_at TEXT DEFAULT (datetime('now')),
-            status TEXT NOT NULL,
-            executed_lines INTEGER DEFAULT 0,
-            total_value_kzt REAL DEFAULT 0,
-            notes TEXT,
-            executed_by TEXT DEFAULT 'SYSTEM'
+    table = cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_execution'"
+    ).fetchone()
+    if not table:
+        conn.close()
+        raise RuntimeError(
+            "Missing fact_po_execution table. Run scripts/migrate_022_po_execution_tables.py"
         )
-    """)
 
-    cursor.execute("""
-        INSERT INTO fact_po_executions (
-            draft_id, approval_id, status, executed_lines, total_value_kzt, notes
-        ) VALUES (?, ?, ?, ?, ?, ?)
-    """, (draft_id, approval_id, status, executed_lines, total_value_kzt, notes))
+    cursor.execute(
+        """
+        INSERT INTO fact_po_execution (
+            draft_id, approval_id, status, planned_units, executed_lines, total_value_kzt, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (draft_id, approval_id, status, planned_units, executed_lines, total_value_kzt, notes),
+    )
 
     execution_id = cursor.lastrowid
     conn.commit()
@@ -712,19 +706,14 @@ def update_draft_status(db_path: Path, draft_id: int, status: str):
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
-    # Try both table names
-    cursor.execute("""
-        UPDATE fact_po_drafts
+    cursor.execute(
+        """
+        UPDATE fact_po_draft
         SET status = ?, updated_at = ?
         WHERE draft_id = ?
-    """, (status, datetime.now().isoformat(), draft_id))
-
-    if cursor.rowcount == 0:
-        cursor.execute("""
-            UPDATE fact_po_draft
-            SET status = ?
-            WHERE draft_id = ?
-        """, (status, draft_id))
+        """,
+        (status, datetime.now().isoformat(), draft_id),
+    )
 
     conn.commit()
     conn.close()
@@ -964,6 +953,19 @@ def execute_po_draft(
         result.notes.append("Execution disabled by env var gates")
         return result
 
+    schema_errors = []
+    try:
+        from scripts.validate_schema import validate_schema
+        schema_errors = validate_schema(db_path)
+    except Exception as exc:
+        schema_errors = [f"schema validation error: {exc}"]
+
+    if schema_errors:
+        result.status = "ERROR"
+        result.blockers.extend([f"Schema: {err}" for err in schema_errors])
+        result.notes.append("Run scripts/migrate_022_po_execution_tables.py")
+        return result
+
     # SAFETY GATE 2: Check idempotency (already executed?)
     if not force and check_already_executed(db_path, draft_id):
         result.status = "IDEMPOTENT"
@@ -1041,13 +1043,15 @@ def execute_po_draft(
 
         # Record the blocked attempt
         if not dry_run:
+            planned_units = sum(int(line.get("quantity", 0) or 0) for line in order_full_lines)
             execution_id = create_execution_record(
                 db_path, draft_id, approval_id, "BLOCKED",
-                0, 0, f"Guardrails blocked: {'; '.join(result.blockers[:3])} (corr={result.correlation_id})"
+                planned_units, 0, 0,
+                f"Guardrails blocked: {'; '.join(result.blockers[:3])} (corr={result.correlation_id})"
             )
             result.execution_id = execution_id
             rollback_steps = [
-                f"DELETE FROM fact_po_executions WHERE execution_id = {execution_id};"
+                f"DELETE FROM fact_po_execution WHERE execution_id = {execution_id};"
             ]
             result.rollback_steps.extend(rollback_steps)
             record_write_audit(
@@ -1115,13 +1119,15 @@ def execute_po_draft(
         result.notes.append("Blocked by capital safety preflight (Part 4)")
 
         if not dry_run:
+            planned_units = sum(int(line.get("quantity", 0) or 0) for line in order_full_lines)
             execution_id = create_execution_record(
                 db_path, draft_id, approval_id, "BLOCKED",
-                0, 0, f"Capital preflight blocked: {'; '.join(preflight_blockers[:3])} (corr={result.correlation_id})"
+                planned_units, 0, 0,
+                f"Capital preflight blocked: {'; '.join(preflight_blockers[:3])} (corr={result.correlation_id})"
             )
             result.execution_id = execution_id
             rollback_steps = [
-                f"DELETE FROM fact_po_executions WHERE execution_id = {execution_id};"
+                f"DELETE FROM fact_po_execution WHERE execution_id = {execution_id};"
             ]
             result.rollback_steps.extend(rollback_steps)
             record_write_audit(
@@ -1143,13 +1149,15 @@ def execute_po_draft(
 
         # Record the cap-blocked attempt
         if not dry_run:
+            planned_units = sum(int(line.get("quantity", 0) or 0) for line in order_full_lines)
             execution_id = create_execution_record(
                 db_path, draft_id, approval_id, "BLOCKED",
-                0, 0, f"Rollout caps exceeded: {'; '.join(cap_blockers[:2])} (corr={result.correlation_id})"
+                planned_units, 0, 0,
+                f"Rollout caps exceeded: {'; '.join(cap_blockers[:2])} (corr={result.correlation_id})"
             )
             result.execution_id = execution_id
             rollback_steps = [
-                f"DELETE FROM fact_po_executions WHERE execution_id = {execution_id};"
+                f"DELETE FROM fact_po_execution WHERE execution_id = {execution_id};"
             ]
             result.rollback_steps.extend(rollback_steps)
             record_write_audit(
@@ -1174,9 +1182,10 @@ def execute_po_draft(
     # In production, this is where we would call Kaspi API or supplier API
     # For now, we just record the execution intent
 
+    planned_units = sum(int(line.get("quantity", 0) or 0) for line in order_full_lines)
     execution_id = create_execution_record(
         db_path, draft_id, approval_id, "SUCCESS",
-        result.executed_lines, result.total_value_kzt,
+        planned_units, result.executed_lines, result.total_value_kzt,
         f"Executed {result.executed_lines} ORDER_FULL lines, skipped {result.skipped_lines} (corr={result.correlation_id})"
     )
 
@@ -1185,7 +1194,7 @@ def execute_po_draft(
     result.notes.append(f"Execution recorded (execution_id={execution_id})")
 
     rollback_steps_exec = [
-        f"DELETE FROM fact_po_executions WHERE execution_id = {execution_id};"
+        f"DELETE FROM fact_po_execution WHERE execution_id = {execution_id};"
     ]
     result.rollback_steps.extend(rollback_steps_exec)
     record_write_audit(
@@ -1201,7 +1210,7 @@ def execute_po_draft(
     result.notes.append(f"Draft status updated to EXECUTED")
     rollback_status = draft_status_before or "PENDING"
     rollback_steps_status = [
-        f"UPDATE fact_po_drafts SET status = '{rollback_status}' WHERE draft_id = {draft_id};",
+        f"UPDATE fact_po_draft SET status = '{rollback_status}' WHERE draft_id = {draft_id};",
         f"UPDATE fact_po_draft SET status = '{rollback_status}' WHERE draft_id = {draft_id};",
     ]
     result.rollback_steps.extend(rollback_steps_status)

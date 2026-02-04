@@ -36,13 +36,21 @@ def get_pending_drafts(db_path: Path) -> list[dict]:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
-    # Check if fact_po_drafts exists
+    # Check if fact_po_draft exists
     tables = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_drafts'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_draft'"
     ).fetchall()
 
     if not tables:
-        print("Warning: fact_po_drafts table not found. No drafts to show.")
+        print("Warning: fact_po_draft table not found. Run migrate_022_po_execution_tables.py.")
+        conn.close()
+        return []
+
+    approvals = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_approvals'"
+    ).fetchall()
+    if not approvals:
+        print("Warning: fact_po_approvals table not found. Run migrate_022_po_execution_tables.py.")
         conn.close()
         return []
 
@@ -56,7 +64,7 @@ def get_pending_drafts(db_path: Path) -> list[dict]:
             d.skus_count,
             d.roic_action_summary,
             d.guardrail_status
-        FROM fact_po_drafts d
+        FROM fact_po_draft d
         LEFT JOIN fact_po_approvals a ON d.draft_id = a.draft_id
         WHERE d.status = 'PENDING'
           AND a.approval_id IS NULL
@@ -72,18 +80,18 @@ def get_draft_details(db_path: Path, draft_id: int) -> dict:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
-    # Check if fact_po_drafts exists
+    # Check if fact_po_draft exists
     tables = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_drafts'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_draft'"
     ).fetchall()
 
     if not tables:
-        print("Warning: fact_po_drafts table not found.")
+        print("Warning: fact_po_draft table not found. Run migrate_022_po_execution_tables.py.")
         conn.close()
         return {}
 
     row = conn.execute("""
-        SELECT * FROM fact_po_drafts WHERE draft_id = ?
+        SELECT * FROM fact_po_draft WHERE draft_id = ?
     """, (draft_id,)).fetchone()
 
     if not row:
@@ -121,6 +129,14 @@ def record_approval(
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
+    approvals = cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_approvals'"
+    ).fetchone()
+    if not approvals:
+        print("Error: fact_po_approvals table not found. Run migrate_022_po_execution_tables.py.")
+        conn.close()
+        return 0
+
     # Get draft info for recording
     draft = get_draft_details(db_path, draft_id)
 
@@ -146,15 +162,15 @@ def record_approval(
         draft.get("total_order_qty", 0)
     ))
 
-    # Update draft status if fact_po_drafts exists
+    # Update draft status if fact_po_draft exists
     tables = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_drafts'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_po_draft'"
     ).fetchall()
 
     if tables:
         new_status = "APPROVED" if decision == "APPROVE" else "REJECTED"
         cursor.execute("""
-            UPDATE fact_po_drafts
+            UPDATE fact_po_draft
             SET status = ?, updated_at = ?
             WHERE draft_id = ?
         """, (new_status, datetime.now().isoformat(), draft_id))

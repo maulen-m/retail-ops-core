@@ -41,16 +41,21 @@ def test_db(tmp_path):
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
-    # Create fact_po_drafts table
+    # Create fact_po_draft table
     cursor.execute("""
-        CREATE TABLE fact_po_drafts (
+        CREATE TABLE fact_po_draft (
             draft_id INTEGER PRIMARY KEY,
             status TEXT DEFAULT 'PENDING',
+            supplier_code TEXT DEFAULT 'DEFAULT',
+            total_units INTEGER NOT NULL DEFAULT 0,
+            total_cost_cny REAL NOT NULL DEFAULT 0,
+            total_cost_kzt REAL NOT NULL DEFAULT 0,
             total_po_value_kzt REAL DEFAULT 0,
             total_order_qty INTEGER DEFAULT 0,
             skus_count INTEGER DEFAULT 0,
             roic_action_summary TEXT,
             guardrail_status TEXT,
+            notes TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT
         )
@@ -86,6 +91,23 @@ def test_db(tmp_path):
             notes TEXT,
             po_value_kzt REAL,
             order_qty INTEGER
+        )
+    """)
+
+    # Create fact_po_execution table
+    cursor.execute("""
+        CREATE TABLE fact_po_execution (
+            execution_id INTEGER PRIMARY KEY,
+            draft_id INTEGER,
+            po_id TEXT,
+            approval_id INTEGER,
+            executed_lines INTEGER DEFAULT 0,
+            total_value_kzt REAL DEFAULT 0,
+            notes TEXT,
+            executed_by TEXT DEFAULT 'SYSTEM',
+            executed_at TEXT DEFAULT (datetime('now')),
+            planned_units INTEGER NOT NULL DEFAULT 0,
+            status TEXT
         )
     """)
 
@@ -145,7 +167,7 @@ def draft_with_high_roic(test_db):
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT INTO fact_po_drafts (draft_id, status, total_po_value_kzt)
+        INSERT INTO fact_po_draft (draft_id, status, total_po_value_kzt)
         VALUES (1, 'PENDING', 500000)
     """)
 
@@ -169,7 +191,7 @@ def draft_with_low_roic(test_db):
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT INTO fact_po_drafts (draft_id, status, total_po_value_kzt)
+        INSERT INTO fact_po_draft (draft_id, status, total_po_value_kzt)
         VALUES (2, 'PENDING', 500000)
     """)
 
@@ -193,7 +215,7 @@ def draft_mixed_roic(test_db):
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT INTO fact_po_drafts (draft_id, status, total_po_value_kzt)
+        INSERT INTO fact_po_draft (draft_id, status, total_po_value_kzt)
         VALUES (3, 'PENDING', 1000000)
     """)
 
@@ -399,14 +421,14 @@ class TestIdempotency:
         conn = sqlite3.connect(str(test_db))
         cursor = conn.cursor()
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS fact_po_executions (
+            CREATE TABLE IF NOT EXISTS fact_po_execution (
                 execution_id INTEGER PRIMARY KEY,
                 draft_id INTEGER,
                 status TEXT
             )
         """)
         cursor.execute("""
-            INSERT INTO fact_po_executions (draft_id, status)
+            INSERT INTO fact_po_execution (draft_id, status)
             VALUES (?, 'SUCCESS')
         """, (draft_with_high_roic,))
         conn.commit()
@@ -459,7 +481,7 @@ class TestDryRun:
         # Get initial draft status
         conn = sqlite3.connect(str(test_db))
         cursor = conn.cursor()
-        cursor.execute("SELECT status FROM fact_po_drafts WHERE draft_id = ?",
+        cursor.execute("SELECT status FROM fact_po_draft WHERE draft_id = ?",
                       (draft_with_high_roic,))
         initial_status = cursor.fetchone()[0]
         conn.close()
@@ -476,7 +498,7 @@ class TestDryRun:
         # Verify draft status unchanged
         conn = sqlite3.connect(str(test_db))
         cursor = conn.cursor()
-        cursor.execute("SELECT status FROM fact_po_drafts WHERE draft_id = ?",
+        cursor.execute("SELECT status FROM fact_po_draft WHERE draft_id = ?",
                       (draft_with_high_roic,))
         final_status = cursor.fetchone()[0]
         conn.close()
@@ -653,7 +675,7 @@ class TestPart7RolloutCaps:
 
         # Create executions table and add data
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS fact_po_executions (
+            CREATE TABLE IF NOT EXISTS fact_po_execution (
                 execution_id INTEGER PRIMARY KEY,
                 draft_id INTEGER,
                 executed_at TEXT,
@@ -664,16 +686,16 @@ class TestPart7RolloutCaps:
 
         today = date.today().isoformat()
         cursor.execute("""
-            INSERT INTO fact_po_executions (draft_id, executed_at, status, total_value_kzt)
+            INSERT INTO fact_po_execution (draft_id, executed_at, status, total_value_kzt)
             VALUES (1, ?, 'SUCCESS', 500000)
         """, (today + " 10:00:00",))
         cursor.execute("""
-            INSERT INTO fact_po_executions (draft_id, executed_at, status, total_value_kzt)
+            INSERT INTO fact_po_execution (draft_id, executed_at, status, total_value_kzt)
             VALUES (2, ?, 'SUCCESS', 300000)
         """, (today + " 12:00:00",))
         # Add a BLOCKED execution (should not count)
         cursor.execute("""
-            INSERT INTO fact_po_executions (draft_id, executed_at, status, total_value_kzt)
+            INSERT INTO fact_po_execution (draft_id, executed_at, status, total_value_kzt)
             VALUES (3, ?, 'BLOCKED', 200000)
         """, (today + " 14:00:00",))
 
@@ -720,7 +742,7 @@ class TestPart7RolloutCaps:
         conn = sqlite3.connect(str(test_db))
         cursor = conn.cursor()
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS fact_po_executions (
+            CREATE TABLE IF NOT EXISTS fact_po_execution (
                 execution_id INTEGER PRIMARY KEY,
                 draft_id INTEGER,
                 executed_at TEXT,
@@ -730,7 +752,7 @@ class TestPart7RolloutCaps:
         """)
         today = date.today().isoformat()
         cursor.execute("""
-            INSERT INTO fact_po_executions (draft_id, executed_at, status, total_value_kzt)
+            INSERT INTO fact_po_execution (draft_id, executed_at, status, total_value_kzt)
             VALUES (1, ?, 'SUCCESS', 800000)
         """, (today + " 10:00:00",))
         conn.commit()
