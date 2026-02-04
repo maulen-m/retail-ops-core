@@ -151,6 +151,18 @@ def normalize_campaign_name(value: Any) -> str:
     return " ".join(name.split())
 
 
+def is_enabled_state(state: Any) -> bool:
+    return _coerce_str(state).lower() == "enabled"
+
+
+def should_skip_inactive(prev_state: Any, current_state: Any) -> bool:
+    if is_enabled_state(current_state):
+        return False
+    if not _coerce_str(prev_state):
+        return False
+    return not is_enabled_state(prev_state)
+
+
 def build_kaspi_headers(cookies: list[dict[str, Any]], referer: str) -> dict[str, str]:
     token = ""
     for cookie in cookies or []:
@@ -189,6 +201,17 @@ def login_required(page) -> bool:
     except Exception:
         pass
     return False
+
+
+def fetch_previous_states(db_path: Path, prev_date: str, merchant_id: str) -> dict[str, str]:
+    if not db_path.exists():
+        return {}
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT campaign_id, state FROM campaign_daily_history WHERE date = ? AND merchant_id = ?",
+            (prev_date, merchant_id),
+        ).fetchall()
+    return {str(cid): _coerce_str(state) for cid, state in rows if cid}
 
 
 def wait_for_login(
@@ -1244,6 +1267,8 @@ def main() -> int:
     }
     run_log["notes"].append("bid_cpc is current API snapshot; no historical bid data available.")
 
+    last_state_by_campaign: dict[str, str] = {}
+
     with sqlite3.connect(db_path) as conn:
         ensure_db_schema(conn)
 
@@ -1281,6 +1306,7 @@ def main() -> int:
 
         for idx, day in enumerate(days, start=1):
             target_date = day.isoformat()
+            prev_date = (day - timedelta(days=1)).isoformat()
             day_raw = raw_root / target_date / run_id
             day_details = details_root / target_date / run_id
             ensure_dirs(day_raw, day_details)
@@ -1288,6 +1314,30 @@ def main() -> int:
 
             # Campaign list
             campaigns = fetch_campaigns(context, args.merchant_id, target_date)
+            prev_states = fetch_previous_states(db_path, prev_date, args.merchant_id)
+            inactive_skipped: list[dict[str, Any]] = []
+            filtered_campaigns: list[dict[str, Any]] = []
+            for campaign in campaigns:
+                cid = _coerce_str(campaign.get("id") or campaign.get("campaignId"))
+                state = _coerce_str(campaign.get("state"))
+                prev_state = last_state_by_campaign.get(cid) or prev_states.get(cid)
+                skip = should_skip_inactive(prev_state, state)
+                if skip:
+                    inactive_skipped.append(
+                        {
+                            "campaign_id": cid,
+                            "campaign_name": _coerce_str(campaign.get("name")),
+                            "state": state,
+                            "prev_state": prev_state,
+                        }
+                    )
+                else:
+                    filtered_campaigns.append(campaign)
+                if cid:
+                    last_state_by_campaign[cid] = state or prev_state or ""
+            if inactive_skipped:
+                run_log.setdefault("inactive_skipped", {})[target_date] = inactive_skipped
+            campaigns = filtered_campaigns
             run_log.setdefault("campaign_counts", {})[target_date] = len(campaigns)
 
             campaigns_json_path = day_raw / f"campaigns_{target_date}.json"

@@ -211,6 +211,10 @@ Optional export view:
   - The main app DB (`~/Docs/Autonomous_business/db/app.db`) only receives **current** snapshots:
     - `ads_campaign_daily_current`, `ads_campaign_product_daily_current`
 
+## Inactive campaign handling
+- To avoid bloating history, **inactive campaigns (Paused/Finished) are only scraped for one consecutive day**.
+- If a campaign remains inactive the next day, it is skipped until it becomes **Enabled** again.
+
 ## Bookkeeper workbook (Excel-safe-ops)
 Use **two sheets** (`campaign_daily`, `campaign_product_daily`) with **cost-increase upserts**:
 - Record every run in history (db); workbook keeps latest per key **only if cost increases**.

@@ -17,6 +17,7 @@ from scripts.kaspi_marketing_scrape import (
     maybe_pause_after_login,
     wait_for_login,
     login_required,
+    should_skip_inactive,
 )
 
 
@@ -262,6 +263,15 @@ def test_login_required_checks_url_and_password_input() -> None:
     assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 0)) is False
     assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 0, cta_count=1)) is True
     assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 0, login_link_count=1)) is True
+
+
+def test_should_skip_inactive_only_after_consecutive_inactive() -> None:
+    assert should_skip_inactive("", "Paused") is False
+    assert should_skip_inactive(None, "Finished") is False
+    assert should_skip_inactive("Enabled", "Paused") is False
+    assert should_skip_inactive("Paused", "Paused") is True
+    assert should_skip_inactive("Finished", "Finished") is True
+    assert should_skip_inactive("Paused", "Enabled") is False
 
 
 def test_merge_product_rows_sets_bid_cpc_source_from_api() -> None:
