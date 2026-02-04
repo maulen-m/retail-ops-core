@@ -28,4 +28,5 @@ def test_contract_suite_deterministic(tmp_path: Path) -> None:
 
     assert run1["ok"] is True
     assert run2["ok"] is True
+    assert run1["summary"]["po_dashboard_invariants"]["ok"] is True
     assert run1["suite_hash"] == run2["suite_hash"]

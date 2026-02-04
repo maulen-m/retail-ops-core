@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import validate_po_contract
+from scripts import validate_po_dashboard_invariants
 from scripts import download_waybills_api
 from scripts import build_daily_waybills
 from scripts import validate_transfer_ledger
@@ -27,6 +28,7 @@ STAGECODE_TARGET_DATE = date(2026, 1, 27)
 
 FIXTURE_TABLES: dict[str, set[str]] = {
     "po_contract": {"dim_store", "dim_sku", "dim_sku_size"},
+    "po_dashboard_invariants": {"portfolio_active"},
     "stagecode_waybill": {"fact_orders_kaspi"},
     "transfer_ledger": {
         "transfer_ledger",
@@ -238,6 +240,24 @@ def _init_stagecode_waybill_db(path: Path) -> None:
         conn.commit()
 
 
+def _init_po_dashboard_invariants_db(path: Path) -> None:
+    _reset_db(path)
+    with sqlite3.connect(str(path)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE portfolio_active (
+                sku_key TEXT PRIMARY KEY,
+                active_flag INTEGER DEFAULT 1
+            );
+            """
+        )
+        conn.executemany(
+            "INSERT INTO portfolio_active (sku_key, active_flag) VALUES (?, 1)",
+            [("SKU_FIX",), ("SKU_FIX_2",)],
+        )
+        conn.commit()
+
+
 def _init_transfer_ledger_db(path: Path) -> None:
     _reset_db(path)
     repository.ensure_schema(path)
@@ -351,10 +371,12 @@ def build_fixture_dbs(fixture: str, base_dir: Path) -> dict[str, Path]:
     base_dir.mkdir(parents=True, exist_ok=True)
     paths = {
         "po_contract": base_dir / f"po_contract_{fixture}.db",
+        "po_dashboard_invariants": base_dir / f"po_dashboard_invariants_{fixture}.db",
         "stagecode_waybill": base_dir / f"stagecode_waybill_{fixture}.db",
         "transfer_ledger": base_dir / f"transfer_ledger_{fixture}.db",
     }
     _init_po_contract_db(paths["po_contract"])
+    _init_po_dashboard_invariants_db(paths["po_dashboard_invariants"])
     _init_stagecode_waybill_db(paths["stagecode_waybill"])
     _init_transfer_ledger_db(paths["transfer_ledger"])
     return paths
@@ -369,6 +391,55 @@ def _run_po_contract(fixture: str) -> dict:
     return {
         "ok": bool(result.get("ok")),
         "failures": result.get("failures", []),
+    }
+
+
+def _build_dashboard_invariants_payload(db_path: Path) -> dict:
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT sku_key FROM portfolio_active WHERE active_flag = 1"
+        ).fetchall()
+    skus = [row[0] for row in rows]
+    sku_level = [{"sku_key": sku, "notes": ""} for sku in skus]
+    summary = {
+        "total_skus": len(sku_level),
+        "skus_with_orders": 0,
+        "total_units": 0,
+    }
+    return {
+        "generated_at": "2026-01-15T00:00:00",
+        "base_stock_date": "2026-01-14",
+        "cutoff_date": "2026-01-14",
+        "day_complete_ok": True,
+        "summary": summary,
+        "pos": {
+            "PLAN-0": {
+                "po_name": "PLAN-0",
+                "po_kind": "PLAN",
+                "summary": {
+                    "total_skus": len(sku_level),
+                    "total_units": 0,
+                },
+                "sku_level": sku_level,
+                "size_level": [],
+            }
+        },
+        "active_pos": ["PLAN-0"],
+        "archived_pos": [],
+        "real_pos": [],
+    }
+
+
+def _run_po_dashboard_invariants(db_path: Path) -> dict:
+    payload = _build_dashboard_invariants_payload(db_path)
+    errors = validate_po_dashboard_invariants.validate_payload(
+        payload,
+        db_path=db_path,
+        strict_portfolio=True,
+    )
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
     }
 
 
@@ -431,15 +502,25 @@ def run_contract_suite(fixture: str = "small", work_dir: Path | None = None) -> 
     fixture_paths = build_fixture_dbs(fixture, work_dir)
 
     po_result = _run_po_contract(fixture)
+    dashboard_result = _run_po_dashboard_invariants(fixture_paths["po_dashboard_invariants"])
     stage_result = _run_stagecode_waybill(fixture_paths["stagecode_waybill"])
     transfer_result = _run_transfer_ledger(fixture_paths["transfer_ledger"])
 
-    ok = po_result["ok"] and stage_result["ok"] and transfer_result["ok"]
+    ok = (
+        po_result["ok"]
+        and dashboard_result["ok"]
+        and stage_result["ok"]
+        and transfer_result["ok"]
+    )
     summary = {
         "fixture": fixture,
         "po_contract": {
             "ok": po_result["ok"],
             "failure_count": len(po_result["failures"]),
+        },
+        "po_dashboard_invariants": {
+            "ok": dashboard_result["ok"],
+            "error_count": len(dashboard_result["errors"]),
         },
         "stagecode_waybill": {
             "ok": stage_result["ok"],
@@ -474,6 +555,10 @@ def main() -> int:
     print("CONTRACT SUITE")
     print(f"  fixture: {summary['fixture']}")
     print(f"  po_contract: {'OK' if summary['po_contract']['ok'] else 'FAIL'}")
+    print(
+        "  po_dashboard_invariants: "
+        + ("OK" if summary["po_dashboard_invariants"]["ok"] else "FAIL")
+    )
     print(
         "  stagecode_waybill: "
         + ("OK" if summary["stagecode_waybill"]["ok"] else "FAIL")
