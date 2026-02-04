@@ -80,6 +80,20 @@ ID_COLUMNS = {
 }
 DATE_COLUMNS = {"date"}
 
+CAMPAIGN_REPORT_MAP = {
+    "Текущий статус": "report_state",
+    "Просмотры": "report_views",
+    "Клики": "report_clicks",
+    "CTR": "report_ctr",
+    "Ср. стоим. клика": "report_avg_cpc",
+    "Расходы на рекламу": "report_cost",
+    "Сумма заказов": "report_gmv",
+    "Все заказы": "report_transactions",
+    "В избранное": "report_favorites",
+    "В корзину": "report_carts",
+    "Доля рекламных расходов": "report_crr",
+}
+
 
 def _coerce_str(value: Any) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -130,6 +144,11 @@ def read_csv_semicolon(path: Path) -> pd.DataFrame:
         except Exception:
             continue
     return pd.read_csv(path, sep=";")
+
+
+def normalize_campaign_name(value: Any) -> str:
+    name = _coerce_str(value).lower()
+    return " ".join(name.split())
 
 
 def download_to_path(context, url: str, dest: Path) -> bool:
@@ -250,6 +269,71 @@ def parse_campaign_products_csv(path: Path, campaign_id: str) -> list[dict[str, 
         )
     return rows
 
+
+def parse_campaigns_report_csv(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    df = read_csv_semicolon(path)
+    rows = []
+    for _, row in df.iterrows():
+        campaign_name = _coerce_str(row.get("Наименование"))
+        extra: dict[str, Any] = {}
+        report_row: dict[str, Any] = {
+            "campaign_name": campaign_name,
+        }
+        for col in df.columns:
+            if col == "Наименование":
+                continue
+            target = CAMPAIGN_REPORT_MAP.get(col)
+            value = row.get(col)
+            if target:
+                if target in {"report_views", "report_clicks", "report_transactions", "report_favorites", "report_carts"}:
+                    report_row[target] = parse_int(value)
+                elif target in {"report_ctr", "report_avg_cpc", "report_cost", "report_gmv", "report_crr"}:
+                    report_row[target] = parse_number(value)
+                else:
+                    report_row[target] = _coerce_str(value)
+            else:
+                extra[col] = _coerce_str(value)
+        report_row["report_extra"] = json.dumps(extra, ensure_ascii=False) if extra else ""
+        rows.append(report_row)
+    return rows
+
+
+def merge_campaign_report(
+    campaign_rows: list[dict[str, Any]],
+    report_rows: list[dict[str, Any]],
+    run_log: dict[str, Any],
+    target_date: str,
+) -> None:
+    if not report_rows:
+        return
+    report_by_name: dict[str, list[dict[str, Any]]] = {}
+    for row in report_rows:
+        key = normalize_campaign_name(row.get("campaign_name"))
+        if not key:
+            continue
+        report_by_name.setdefault(key, []).append(row)
+
+    duplicates = {k: v for k, v in report_by_name.items() if len(v) > 1}
+    if duplicates:
+        run_log.setdefault("report_duplicates", {})[target_date] = list(duplicates.keys())
+
+    for campaign in campaign_rows:
+        name_key = normalize_campaign_name(campaign.get("campaign_name"))
+        matches = report_by_name.get(name_key, [])
+        if not matches:
+            run_log.setdefault("report_missing", {}).setdefault(target_date, []).append(
+                campaign.get("campaign_name")
+            )
+            continue
+        match = max(matches, key=lambda r: parse_number(r.get("report_cost")) or 0)
+        for key, val in match.items():
+            if key == "campaign_name":
+                continue
+            if val is None or val == "":
+                continue
+            campaign.setdefault(key, val)
 
 def normalize_campaign_daily(
     target_date: str,
@@ -406,6 +490,18 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
             transactions INTEGER,
             cost REAL,
             crr REAL,
+            report_state TEXT,
+            report_views INTEGER,
+            report_clicks INTEGER,
+            report_ctr REAL,
+            report_avg_cpc REAL,
+            report_cost REAL,
+            report_gmv REAL,
+            report_transactions INTEGER,
+            report_favorites INTEGER,
+            report_carts INTEGER,
+            report_crr REAL,
+            report_extra TEXT,
             record_timestamp TEXT
         )
         """
@@ -465,6 +561,18 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
             transactions INTEGER,
             cost REAL,
             crr REAL,
+            report_state TEXT,
+            report_views INTEGER,
+            report_clicks INTEGER,
+            report_ctr REAL,
+            report_avg_cpc REAL,
+            report_cost REAL,
+            report_gmv REAL,
+            report_transactions INTEGER,
+            report_favorites INTEGER,
+            report_carts INTEGER,
+            report_crr REAL,
+            report_extra TEXT,
             record_timestamp TEXT,
             ingested_at TEXT,
             PRIMARY KEY (date, merchant_id, campaign_id)
@@ -526,6 +634,40 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
         [
             ("ad_score", "TEXT"),
             ("bid_cpc", "REAL"),
+        ],
+    )
+    ensure_columns(
+        "campaign_daily_history",
+        [
+            ("report_state", "TEXT"),
+            ("report_views", "INTEGER"),
+            ("report_clicks", "INTEGER"),
+            ("report_ctr", "REAL"),
+            ("report_avg_cpc", "REAL"),
+            ("report_cost", "REAL"),
+            ("report_gmv", "REAL"),
+            ("report_transactions", "INTEGER"),
+            ("report_favorites", "INTEGER"),
+            ("report_carts", "INTEGER"),
+            ("report_crr", "REAL"),
+            ("report_extra", "TEXT"),
+        ],
+    )
+    ensure_columns(
+        "campaign_daily_current",
+        [
+            ("report_state", "TEXT"),
+            ("report_views", "INTEGER"),
+            ("report_clicks", "INTEGER"),
+            ("report_ctr", "REAL"),
+            ("report_avg_cpc", "REAL"),
+            ("report_cost", "REAL"),
+            ("report_gmv", "REAL"),
+            ("report_transactions", "INTEGER"),
+            ("report_favorites", "INTEGER"),
+            ("report_carts", "INTEGER"),
+            ("report_crr", "REAL"),
+            ("report_extra", "TEXT"),
         ],
     )
     conn.commit()
@@ -593,6 +735,17 @@ def normalize_excel_df(df: pd.DataFrame, id_cols: set[str], date_cols: set[str])
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
     return df
+
+
+def normalize_row_keys(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    all_keys: set[str] = set()
+    for row in rows:
+        all_keys.update(row.keys())
+    for row in rows:
+        for key in all_keys:
+            row.setdefault(key, None)
 
 
 def update_bookkeeper(
@@ -690,20 +843,14 @@ def export_to_app_db(app_db: Path, source_db: Path) -> None:
     if not app_db.exists() or not source_db.exists():
         return
     with sqlite3.connect(source_db) as src, sqlite3.connect(app_db) as dest:
+        dest.execute("DROP TABLE IF EXISTS ads_campaign_daily_current")
+        dest.execute("DROP TABLE IF EXISTS ads_campaign_product_daily_current")
         dest.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ads_campaign_daily_current AS
-            SELECT * FROM campaign_daily_current WHERE 0=1
-            """
+            "CREATE TABLE ads_campaign_daily_current AS SELECT * FROM campaign_daily_current WHERE 0=1"
         )
         dest.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ads_campaign_product_daily_current AS
-            SELECT * FROM campaign_product_daily_current WHERE 0=1
-            """
+            "CREATE TABLE ads_campaign_product_daily_current AS SELECT * FROM campaign_product_daily_current WHERE 0=1"
         )
-        dest.execute("DELETE FROM ads_campaign_daily_current")
-        dest.execute("DELETE FROM ads_campaign_product_daily_current")
         for row in src.execute("SELECT * FROM campaign_daily_current"):
             dest.execute(
                 "INSERT INTO ads_campaign_daily_current VALUES (" + ",".join(["?"] * len(row)) + ")",
@@ -727,6 +874,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Kaspi marketing ads scraper (API-first)")
     parser.add_argument("--date", help="Target date YYYY-MM-DD (default: yesterday)")
     parser.add_argument("--days-back", type=int, default=3, help="Number of days to re-run (default: 3)")
+    parser.add_argument("--start-date", help="Start date YYYY-MM-DD (inclusive)")
+    parser.add_argument("--end-date", help="End date YYYY-MM-DD (inclusive, default: target date)")
     parser.add_argument("--profile-dir", default=env_profile_dir)
     parser.add_argument("--merchant-id", default=env_merchant_id)
     parser.add_argument("--store-code", default=env_store_code)
@@ -743,13 +892,23 @@ def main() -> int:
     login_value = os.environ.get("Kaspi_marketing_login") or os.environ.get("KASPI_MARKETING_LOGIN")
     password_value = os.environ.get("Kaspi_marketing_Password") or os.environ.get("KASPI_MARKETING_PASSWORD")
 
+    if args.start_date and args.date:
+        raise SystemExit("Use either --date or --start-date, not both.")
+
     if args.date:
         target = datetime.strptime(args.date, "%Y-%m-%d").date()
     else:
         target = datetime.now(ALMATY_TZ).date() - timedelta(days=1)
 
-    days = [target - timedelta(days=i) for i in range(max(args.days_back, 1))]
-    days.sort()
+    if args.start_date:
+        start = datetime.strptime(args.start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else target
+        if end < start:
+            raise SystemExit("--end-date cannot be before --start-date")
+        days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    else:
+        days = [target - timedelta(days=i) for i in range(max(args.days_back, 1))]
+        days.sort()
     now = datetime.now(ALMATY_TZ)
     run_id = now.strftime("%Y%m%d_%H%M%S")
     ingested_at = now.isoformat()
@@ -815,12 +974,17 @@ def main() -> int:
                 run_log["download_failures"].append(
                     {"date": target_date, "type": "campaigns_report", "url": report_url}
                 )
+            report_rows = parse_campaigns_report_csv(report_path)
+            if report_rows:
+                run_log.setdefault("campaign_report_counts", {})[target_date] = len(report_rows)
 
             # Normalize campaign daily
             campaign_daily_rows = normalize_campaign_daily(target_date, args.merchant_id, args.store_code, campaigns)
+            merge_campaign_report(campaign_daily_rows, report_rows, run_log, target_date)
             for row in campaign_daily_rows:
                 row["run_id"] = run_id
                 row["ingested_at"] = ingested_at
+            normalize_row_keys(campaign_daily_rows)
 
             # Per-campaign details
             product_rows: list[dict[str, Any]] = []
@@ -896,6 +1060,8 @@ def main() -> int:
                 product_rows.extend(merged)
 
                 time.sleep(0.2)
+
+            normalize_row_keys(product_rows)
 
             # Save normalized CSVs
             pd.DataFrame(campaign_daily_rows).to_csv(

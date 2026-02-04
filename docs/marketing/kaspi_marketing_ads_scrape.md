@@ -61,6 +61,7 @@ When clicking **“Скачать отчет”**, the UI triggers a download re
 https://marketing.kaspi.kz/advertising/products/api/v3/merchant/759051/reports/campaigns/csv?dateFrom=2026-02-02&dateTo=2026-02-02
 ```
 **Action:** capture the **actual endpoint + format** (csv/xlsx) by inspecting network logs when the button is pressed.
+The scraper parses this campaigns CSV and adds any **extra columns** into `report_*` fields (plus a fallback `report_extra` JSON blob).
 
 ### Campaign list API (all states)
 Use the campaigns API to fetch **Enabled + Paused + Finished** in one run:
@@ -238,6 +239,13 @@ Repo files:
 6. Loop campaigns → call **per-campaign products CSV** (SKU‑level) + JSON endpoints.
 7. Persist results: raw file + details + db + append to bookkeeper (upsert last 3 days).
 8. Close browser cleanly.
+
+## Backfill (from 2025-01-01)
+Use the scraper in **API-only** mode with an explicit date range:
+```
+python3 scripts/kaspi_marketing_scrape.py --start-date 2025-01-01 --end-date 2026-02-03 --export-app-db
+```
+If the API denies some days, re-run with `--headful` to refresh session cookies and continue.
 
 ## Login notes (observed)
 - Login page title: **“Войти в кабинет – Маркетинг”**
