@@ -1,0 +1,139 @@
+{
+  "timestamp": "2026-02-03T23:50:13.395078",
+  "url": "https://marketing.kaspi.kz/advertising/campaigns/2545773?startDate=2026-02-02&endDate=2026-02-02",
+  "responses": [
+    {
+      "url": "https://marketing.kaspi.kz/advertising/campaigns/2545773?startDate=2026-02-02&endDate=2026-02-02",
+      "status": 200,
+      "content_type": "text/html"
+    },
+    {
+      "url": "https://marketing.kaspi.kz/accounts/api/User/getdata",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "result",
+        "data"
+      ]
+    },
+    {
+      "url": "https://mc.yandex.ru/watch/85862256?wmode=7&page-url=https%3A%2F%2Fmarketing.kaspi.kz%2Fadvertising%2Fcampaigns%2F2545773%3FstartDate%3D2026-02-02%26endDate%3D2026-02-02&nohit=1&charset=utf-8&uah=chu%0A%22Not(A%3ABrand%22%3Bv%3D%228%22%2C%22Chromium%22%3Bv%3D%22144%22%2C%22Google%20Chrome%22%3Bv%3D%22144%22%0Acha%0Aarm%0Achb%0A64%0Achf%0A144.0.7559.110%0Achl%0A%22Not(A%3ABrand%22%3Bv%3D%228.0.0.0%22%2C%22Chromium%22%3Bv%3D%22144.0.7559.110%22%2C%22Google%20Chrome%22%3Bv%3D%22144.0.7559.110%22%0Achm%0A%3F0%0Achp%0AmacOS%0Achv%0A14.7.5&browser-info=pv%3A1%3Avf%3A6g20vg83qd0dsowtsm7bazjiu9mn3%3Afu%3A0%3Aen%3Autf-8%3Ala%3Aen-US%3Av%3A2360%3Acn%3A1%3Adp%3A0%3Als%3A1049901688336%3Ahid%3A312189589%3Az%3A300%3Ai%3A20260203235003%3Aet%3A1770144603%3Ac%3A1%3Arn%3A481170396%3Au%3A1770144140676377944%3Aw%3A1280x720%3As%3A1280x720x24%3Ask%3A1%3Awv%3A2%3Aco%3A0%3Ahdl%3A1%3Acpf%3A1%3Ans%3A1770144602819%3Aadb%3A2%3Arqnl%3A1%3Ast%3A1770144603%3At%3A%D0%9C%D0%B0%D1%80%D0%BA%D0%B5%D1%82%D0%B8%D0%BD%D0%B3&t=gdpr(14)clc(0-0-0)aw(1)rcm(0)cdl(na)eco(92340740)ti(1)",
+      "status": 302,
+      "content_type": ""
+    },
+    {
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v3/merchant/759051/overview/daily/2545773/views",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "result",
+        "data"
+      ]
+    },
+    {
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v2/merchant/759051/catalog/categories?ExcludeEmptyCategories=false",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "result",
+        "data"
+      ]
+    },
+    {
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v2/merchant/759051/catalog/categories?ExcludeEmptyCategories=true",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "result",
+        "data"
+      ]
+    },
+    {
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v4/merchant/759051/Overview/2545773",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "result",
+        "data"
+      ]
+    },
+    {
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v4/merchant/759051/campaign/2545773/products-categories?StartDate=2026-02-02&EndDate=2026-02-02",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "result",
+        "data"
+      ]
+    },
+    {
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v5/merchant/759051/campaign/2545773/products?StartDate=2026-02-02&EndDate=2026-02-02",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "result",
+        "data"
+      ]
+    },
+    {
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v1/merchant/759051/Campaign/2545773",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "result",
+        "data"
+      ]
+    },
+    {
+      "url": "https://mc.yandex.ru/watch/85862256/1?wmode=7&page-url=https%3A%2F%2Fmarketing.kaspi.kz%2Fadvertising%2Fcampaigns%2F2545773%3FstartDate%3D2026-02-02%26endDate%3D2026-02-02&nohit=1&charset=utf-8&uah=chu%0A%22Not%28A%3ABrand%22%3Bv%3D%228%22%2C%22Chromium%22%3Bv%3D%22144%22%2C%22Google%20Chrome%22%3Bv%3D%22144%22%0Acha%0Aarm%0Achb%0A64%0Achf%0A144.0.7559.110%0Achl%0A%22Not%28A%3ABrand%22%3Bv%3D%228.0.0.0%22%2C%22Chromium%22%3Bv%3D%22144.0.7559.110%22%2C%22Google%20Chrome%22%3Bv%3D%22144.0.7559.110%22%0Achm%0A%3F0%0Achp%0AmacOS%0Achv%0A14.7.5&browser-info=pv%3A1%3Avf%3A6g20vg83qd0dsowtsm7bazjiu9mn3%3Afu%3A0%3Aen%3Autf-8%3Ala%3Aen-US%3Av%3A2360%3Acn%3A1%3Adp%3A0%3Als%3A1049901688336%3Ahid%3A312189589%3Az%3A300%3Ai%3A20260203235003%3Aet%3A1770144603%3Ac%3A1%3Arn%3A481170396%3Au%3A1770144140676377944%3Aw%3A1280x720%3As%3A1280x720x24%3Ask%3A1%3Awv%3A2%3Aco%3A0%3Ahdl%3A1%3Acpf%3A1%3Ans%3A1770144602819%3Aadb%3A2%3Arqnl%3A1%3Ast%3A1770144603%3At%3A%D0%9C%D0%B0%D1%80%D0%BA%D0%B5%D1%82%D0%B8%D0%BD%D0%B3&t=gdpr%2814%29clc%280-0-0%29aw%281%29rcm%280%29cdl%28na%29eco%2892340740%29ti%281%29",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "settings",
+        "userData"
+      ]
+    },
+    {
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v3/merchant/759051/Categories/average-bid",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "result",
+        "data"
+      ]
+    },
+    {
+      "url": "https://mc.yandex.ru/watch/85862256?wmode=7&page-url=https%3A%2F%2Fmarketing.kaspi.kz%2Fadvertising%2Fcampaigns%2F2545773%3FstartDate%3D2026-02-02%26endDate%3D2026-02-02&charset=utf-8&uah=chu%0A%22Not(A%3ABrand%22%3Bv%3D%228%22%2C%22Chromium%22%3Bv%3D%22144%22%2C%22Google%20Chrome%22%3Bv%3D%22144%22%0Acha%0Aarm%0Achb%0A64%0Achf%0A144.0.7559.110%0Achl%0A%22Not(A%3ABrand%22%3Bv%3D%228.0.0.0%22%2C%22Chromium%22%3Bv%3D%22144.0.7559.110%22%2C%22Google%20Chrome%22%3Bv%3D%22144.0.7559.110%22%0Achm%0A%3F0%0Achp%0AmacOS%0Achv%0A14.7.5&hittoken=1770144603_9287ba4375b6beaf9a38ebc4b74fe1774e8c49796a047f52973ec931880c46a5&browser-info=pv%3A1%3Aar%3A1%3Avf%3A6g20vg83qd0dsowtsm7bazjiu9mn3%3Afu%3A0%3Aen%3Autf-8%3Ala%3Aen-US%3Av%3A2360%3Acn%3A1%3Adp%3A1%3Als%3A1049901688336%3Ahid%3A312189589%3Az%3A300%3Ai%3A20260203235003%3Aet%3A1770144604%3Ac%3A1%3Arn%3A171975658%3Arqn%3A55%3Au%3A1770144140676377944%3Aw%3A1270x720%3As%3A1280x720x24%3Ask%3A1%3Awv%3A2%3Aco%3A0%3Ahdl%3A1%3Acpf%3A1%3Ans%3A1770144602819%3Aadb%3A2%3Arqnl%3A1%3Ast%3A1770144604%3At%3AACMEWEAR_LINE61&t=gdpr(14)mc(p-3-ui-1-up-1-h-2)clc(0-0-0)rqnt(5)aw(1)rcm(0)cdl(na)eco(92340740)ti(1)",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "settings",
+        "userData"
+      ]
+    },
+    {
+      "url": "https://mc.yandex.ru/watch/85862256?wmode=7&page-url=https%3A%2F%2Fmarketing.kaspi.kz%2Fadvertising%2Fcampaigns%2F2545773%3FstartDate%3D2026-02-02%26endDate%3D2026-02-02&charset=utf-8&uah=chu%0A%22Not(A%3ABrand%22%3Bv%3D%228%22%2C%22Chromium%22%3Bv%3D%22144%22%2C%22Google%20Chrome%22%3Bv%3D%22144%22%0Acha%0Aarm%0Achb%0A64%0Achf%0A144.0.7559.110%0Achl%0A%22Not(A%3ABrand%22%3Bv%3D%228.0.0.0%22%2C%22Chromium%22%3Bv%3D%22144.0.7559.110%22%2C%22Google%20Chrome%22%3Bv%3D%22144.0.7559.110%22%0Achm%0A%3F0%0Achp%0AmacOS%0Achv%0A14.7.5&hittoken=1770144603_9287ba4375b6beaf9a38ebc4b74fe1774e8c49796a047f52973ec931880c46a5&browser-info=pv%3A1%3Aar%3A1%3Avf%3A6g20vg83qd0dsowtsm7bazjiu9mn3%3Afu%3A0%3Aen%3Autf-8%3Ala%3Aen-US%3Av%3A2360%3Acn%3A1%3Adp%3A1%3Als%3A1049901688336%3Ahid%3A312189589%3Az%3A300%3Ai%3A20260203235003%3Aet%3A1770144604%3Ac%3A1%3Arn%3A465009524%3Arqn%3A54%3Au%3A1770144140676377944%3Aw%3A1270x720%3As%3A1280x720x24%3Ask%3A1%3Awv%3A2%3Aco%3A0%3Ahdl%3A1%3Acpf%3A1%3Ans%3A1770144602819%3Aadb%3A2%3Arqnl%3A1%3Ast%3A1770144604%3At%3AACMEWEAR_LINE61%20%E2%80%93%20%D0%9C%D0%B0%D1%80%D0%BA%D0%B5%D1%82%D0%B8%D0%BD%D0%B3&t=gdpr(14)mc(p-3-ui-1-up-1-h-2)clc(0-0-0)rqnt(4)aw(1)rcm(0)cdl(na)eco(92340740)ti(1)",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "json_keys": [
+        "settings",
+        "userData"
+      ]
+    },
+    {
+      "url": "https://mc.yandex.ru/watch/85862256/1?page-url=https%3A%2F%2Fmarketing.kaspi.kz%2Fadvertising%2Fcampaigns%2F2545773%3FstartDate%3D2026-02-02%26endDate%3D2026-02-02&charset=utf-8&uah=chu%0A%22Not(A%3ABrand%22%3Bv%3D%228%22%2C%22Chromium%22%3Bv%3D%22144%22%2C%22Google%20Chrome%22%3Bv%3D%22144%22%0Acha%0Aarm%0Achb%0A64%0Achf%0A144.0.7559.110%0Achl%0A%22Not(A%3ABrand%22%3Bv%3D%228.0.0.0%22%2C%22Chromium%22%3Bv%3D%22144.0.7559.110%22%2C%22Google%20Chrome%22%3Bv%3D%22144.0.7559.110%22%0Achm%0A%3F0%0Achp%0AmacOS%0Achv%0A14.7.5&hidv2=334863780821074138&hittoken=1770144603_9287ba4375b6beaf9a38ebc4b74fe1774e8c49796a047f52973ec931880c46a5&browser-info=pa%3A1%3Aar%3A1%3Avf%3A6g20vg83qd0dsowtsm7bazjiu9mn3%3Afu%3A0%3Aen%3Autf-8%3Ala%3Aen-US%3Av%3A2360%3Acn%3A1%3Adp%3A1%3Als%3A1049901688336%3Ahid%3A312189589%3Az%3A300%3Ai%3A20260203235003%3Aet%3A1770144604%3Ac%3A1%3Arn%3A621390671%3Arqn%3A51%3Au%3A1770144140676377944%3Aw%3A1270x720%3As%3A1280x720x24%3Ask%3A1%3Afp%3A540%3Awv%3A2%3Ads%3A52%2C74%2C28%2C1%2C3%2C0%2C%2C12%2C1%2C333%2C333%2C0%2C324%3Aco%3A0%3Ahdl%3A1%3Acpf%3A1%3Ans%3A1770144602819%3Aadb%3A2%3Arqnl%3A1%3Ast%3A1770144604&t=gdpr(14)mc(p-3-ui-1-up-1-h-2)clc(0-0-0)rqnt(1)aw(1)rcm(0)cdl(na)eco(92340740)ti(0)&force-urlencoded=1&site-info=%7B%22__ym%22%3A%7B%22user_id%22%3A%22721013450175%22%7D%7D",
+      "status": 200,
+      "content_type": "image/gif"
+    },
+    {
+      "url": "https://mc.yandex.ru/watch/85862256/1?page-url=https%3A%2F%2Fmarketing.kaspi.kz%2Fadvertising%2Fcampaigns%2F2545773%3FstartDate%3D2026-02-02%26endDate%3D2026-02-02&charset=utf-8&uah=chu%0A%22Not(A%3ABrand%22%3Bv%3D%228%22%2C%22Chromium%22%3Bv%3D%22144%22%2C%22Google%20Chrome%22%3Bv%3D%22144%22%0Acha%0Aarm%0Achb%0A64%0Achf%0A144.0.7559.110%0Achl%0A%22Not(A%3ABrand%22%3Bv%3D%228.0.0.0%22%2C%22Chromium%22%3Bv%3D%22144.0.7559.110%22%2C%22Google%20Chrome%22%3Bv%3D%22144.0.7559.110%22%0Achm%0A%3F0%0Achp%0AmacOS%0Achv%0A14.7.5&hidv2=334863780821074138&hittoken=1770144603_9287ba4375b6beaf9a38ebc4b74fe1774e8c49796a047f52973ec931880c46a5&browser-info=pa%3A1%3Aar%3A1%3Avf%3A6g20vg83qd0dsowtsm7bazjiu9mn3%3Afu%3A0%3Aen%3Autf-8%3Ala%3Aen-US%3Av%3A2360%3Acn%3A1%3Adp%3A1%3Als%3A1049901688336%3Ahid%3A312189589%3Az%3A300%3Ai%3A20260203235003%3Aet%3A1770144604%3Ac%3A1%3Arn%3A236611009%3Arqn%3A52%3Au%3A1770144140676377944%3Aw%3A1270x720%3As%3A1280x720x24%3Ask%3A1%3Awv%3A2%3Aco%3A0%3Ahdl%3A1%3Acpf%3A1%3Ans%3A1770144602819%3Aadb%3A2%3Arqnl%3A1%3Ast%3A1770144604&t=gdpr(14)mc(p-3-ui-1-up-1-h-2)clc(0-0-0)rqnt(2)aw(1)rcm(0)cdl(na)eco(92340740)ti(0)&force-urlencoded=1&site-info=%7B%22__ymu%22%3A%7B%22UserID%22%3A%22721013450175%22%7D%7D",
+      "status": 200,
+      "content_type": "image/gif"
+    },
+    {
+      "url": "https://mc.yandex.ru/watch/85862256/1?page-url=https%3A%2F%2Fmarketing.kaspi.kz%2Fadvertising%2Fcampaigns%2F2545773%3FstartDate%3D2026-02-02%26endDate%3D2026-02-02&charset=utf-8&uah=chu%0A%22Not(A%3ABrand%22%3Bv%3D%228%22%2C%22Chromium%22%3Bv%3D%22144%22%2C%22Google%20Chrome%22%3Bv%3D%22144%22%0Acha%0Aarm%0Achb%0A64%0Achf%0A144.0.7559.110%0Achl%0A%22Not(A%3ABrand%22%3Bv%3D%228.0.0.0%22%2C%22Chromium%22%3Bv%3D%22144.0.7559.110%22%2C%22Google%20Chrome%22%3Bv%3D%22144.0.7559.110%22%0Achm%0A%3F0%0Achp%0AmacOS%0Achv%0A14.7.5&hidv2=334863780821074138&hittoken=1770144603_9287ba4375b6beaf9a38ebc4b74fe1774e8c49796a047f52973ec931880c46a5&browser-info=pa%3A1%3Aar%3A1%3Avf%3A6g20vg83qd0dsowtsm7bazjiu9mn3%3Afu%3A0%3Aen%3Autf-8%3Ala%3Aen-US%3Av%3A2360%3Acn%3A1%3Adp%3A1%3Als%3A1049901688336%3Ahid%3A312189589%3Az%3A300%3Ai%3A20260203235003%3Aet%3A1770144604%3Ac%3A1%3Arn%3A901319879%3Arqn%3A53%3Au%3A1770144140676377944%3Aw%3A1270x720%3As%3A1280x720x24%3Ask%3A1%3Awv%3A2%3Aco%3A0%3Ahdl%3A1%3Acpf%3A1%3Ans%3A1770144602819%3Aadb%3A2%3Arqnl%3A1%3Ast%3A1770144604&t=gdpr(14)mc(p-3-ui-1-up-1-h-2)clc(0-0-0)rqnt(3)aw(1)rcm(0)cdl(na)eco(92340740)ti(0)&force-urlencoded=1&site-info=%7B%22UserID%22%3A%22721013450175%22%7D",
+      "status": 200,
+      "content_type": "image/gif"
+    }
+  ]
+}
