@@ -21,7 +21,6 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
@@ -151,12 +150,99 @@ def normalize_campaign_name(value: Any) -> str:
     return " ".join(name.split())
 
 
-def download_to_path(context, url: str, dest: Path) -> bool:
-    resp = context.request.get(url)
-    if resp.status != 200:
-        return False
-    dest.write_bytes(resp.body())
-    return True
+def build_kaspi_headers(cookies: list[dict[str, Any]], referer: str) -> dict[str, str]:
+    token = ""
+    for cookie in cookies or []:
+        if cookie.get("name") == "XSRF-TOKEN":
+            token = _coerce_str(cookie.get("value"))
+            break
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "referer": referer,
+        "x-requested-with": "XMLHttpRequest",
+    }
+    if token:
+        headers["x-xsrf-token"] = token
+    return headers
+
+
+def download_with_details(
+    context,
+    url: str,
+    dest: Path,
+    max_body: int = 2048,
+    max_attempts: int = 3,
+    retry_statuses: tuple[int, ...] = (429, 500, 502, 503),
+    sleep_seconds: float = 1.5,
+    sleep_fn=time.sleep,
+    headers: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    last_details = {"ok": False, "status": None, "body": "", "content_type": "", "attempts": 0}
+    for attempt in range(1, max_attempts + 1):
+        resp = context.request.get(url, headers=headers) if headers else context.request.get(url)
+        status = getattr(resp, "status", None)
+        body_bytes = b""
+        try:
+            body_bytes = resp.body()
+        except Exception:
+            body_bytes = b""
+        content_type = ""
+        try:
+            content_type = resp.headers.get("content-type", "")
+        except Exception:
+            content_type = ""
+
+        if status == 200:
+            dest.write_bytes(body_bytes)
+            return {
+                "ok": True,
+                "status": status,
+                "body": "",
+                "content_type": content_type,
+                "attempts": attempt,
+            }
+
+        body_text = ""
+        if body_bytes:
+            try:
+                body_text = body_bytes[:max_body].decode("utf-8", "replace")
+            except Exception:
+                body_text = str(body_bytes[:max_body])
+
+        last_details = {
+            "ok": False,
+            "status": status,
+            "body": body_text,
+            "content_type": content_type,
+            "attempts": attempt,
+        }
+
+        if status in retry_statuses and attempt < max_attempts:
+            sleep_fn(sleep_seconds * attempt)
+            continue
+        break
+
+    return last_details
+
+
+def log_day_progress(
+    logger: logging.Logger,
+    target_day: date,
+    index: int,
+    total: int,
+    campaigns_count: int,
+    products_count: int,
+    failure_count: int,
+) -> None:
+    logger.info(
+        "Kaspi marketing %s (%s/%s): campaigns=%s products=%s failures=%s",
+        target_day.isoformat(),
+        index,
+        total,
+        campaigns_count,
+        products_count,
+        failure_count,
+    )
 
 
 def ensure_login(page, login_value: str, password_value: str) -> bool:
@@ -904,6 +990,11 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     logger = logging.getLogger(__name__)
 
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise SystemExit("Playwright is required. Install via: pip install playwright") from exc
+
     login_value = os.environ.get("Kaspi_marketing_login") or os.environ.get("KASPI_MARKETING_LOGIN")
     password_value = os.environ.get("Kaspi_marketing_Password") or os.environ.get("KASPI_MARKETING_PASSWORD")
 
@@ -967,11 +1058,17 @@ def main() -> int:
             )
             return 1
 
-        for day in days:
+        kaspi_headers = build_kaspi_headers(
+            context.cookies(),
+            "https://marketing.kaspi.kz/advertising/campaigns",
+        )
+
+        for idx, day in enumerate(days, start=1):
             target_date = day.isoformat()
             day_raw = raw_root / target_date / run_id
             day_details = details_root / target_date / run_id
             ensure_dirs(day_raw, day_details)
+            day_failures = 0
 
             # Campaign list
             campaigns = fetch_campaigns(context, args.merchant_id, target_date)
@@ -985,10 +1082,25 @@ def main() -> int:
             # Global campaigns report
             report_url = REPORT_CAMPAIGNS_URL.format(merchant_id=args.merchant_id, date=target_date)
             report_path = day_raw / f"campaigns_report_{target_date}_{run_id}.csv"
-            if not download_to_path(context, report_url, report_path):
+            report_result = download_with_details(
+                context,
+                report_url,
+                report_path,
+                headers=kaspi_headers,
+            )
+            if not report_result["ok"]:
                 run_log["download_failures"].append(
-                    {"date": target_date, "type": "campaigns_report", "url": report_url}
+                    {
+                        "date": target_date,
+                        "type": "campaigns_report",
+                        "url": report_url,
+                        "status": report_result.get("status"),
+                        "content_type": report_result.get("content_type"),
+                        "body": report_result.get("body"),
+                        "attempts": report_result.get("attempts"),
+                    }
                 )
+                day_failures += 1
             report_rows = parse_campaigns_report_csv(report_path)
             if report_rows:
                 run_log.setdefault("campaign_report_counts", {})[target_date] = len(report_rows)
@@ -1015,15 +1127,26 @@ def main() -> int:
                     date=target_date,
                 )
                 products_report_path = day_raw / f"campaign_{cid}_products_{target_date}_{run_id}.csv"
-                if not download_to_path(context, products_report_url, products_report_path):
+                products_result = download_with_details(
+                    context,
+                    products_report_url,
+                    products_report_path,
+                    headers=kaspi_headers,
+                )
+                if not products_result["ok"]:
                     run_log["download_failures"].append(
                         {
                             "date": target_date,
                             "campaign_id": cid,
                             "type": "campaign_products_report",
                             "url": products_report_url,
+                            "status": products_result.get("status"),
+                            "content_type": products_result.get("content_type"),
+                            "body": products_result.get("body"),
+                            "attempts": products_result.get("attempts"),
                         }
                     )
+                    day_failures += 1
                 csv_rows = parse_campaign_products_csv(products_report_path, cid)
 
                 # JSON endpoints
@@ -1140,6 +1263,16 @@ def main() -> int:
                 "cost",
                 anomalies,
                 backup_dir,
+            )
+
+            log_day_progress(
+                logger,
+                day,
+                idx,
+                len(days),
+                len(campaigns),
+                len(product_rows),
+                day_failures,
             )
 
         context.close()

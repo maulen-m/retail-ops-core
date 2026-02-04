@@ -1,0 +1,169 @@
+"""Tests for kaspi_marketing_scrape helpers."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from scripts.kaspi_marketing_scrape import (
+    parse_campaigns_report_csv,
+    merge_campaign_report,
+    log_day_progress,
+    download_with_details,
+    build_kaspi_headers,
+)
+
+
+def test_parse_campaigns_report_csv_maps_and_extras(tmp_path: Path) -> None:
+    csv_path = tmp_path / "report.csv"
+    csv_path.write_text(
+        "Наименование;Текущий статус;Просмотры;Клики;CTR;Ср. стоим. клика;Расходы на рекламу;Сумма заказов;Все заказы;В избранное;В корзину;Доля рекламных расходов;Неизвестно\n"
+        "Acmewear_16k;Активная;100;10;0,5;12,3;45,6;78,9;2;3;4;25,0;extra\n",
+        encoding="utf-8",
+    )
+
+    rows = parse_campaigns_report_csv(csv_path)
+    assert len(rows) == 1
+    row = rows[0]
+
+    assert row["campaign_name"] == "Acmewear_16k"
+    assert row["report_state"] == "Активная"
+    assert row["report_views"] == 100
+    assert row["report_clicks"] == 10
+    assert row["report_ctr"] == pytest.approx(0.5)
+    assert row["report_avg_cpc"] == pytest.approx(12.3)
+    assert row["report_cost"] == pytest.approx(45.6)
+    assert row["report_gmv"] == pytest.approx(78.9)
+    assert row["report_transactions"] == 2
+    assert row["report_favorites"] == 3
+    assert row["report_carts"] == 4
+    assert row["report_crr"] == pytest.approx(25.0)
+
+    extra = json.loads(row["report_extra"])
+    assert extra == {"Неизвестно": "extra"}
+
+
+def test_merge_campaign_report_prefers_highest_cost() -> None:
+    campaign_rows = [
+        {
+            "campaign_name": "Acmewear_16k",
+            "campaign_id": "1",
+        }
+    ]
+    report_rows = [
+        {"campaign_name": "Acmewear_16k", "report_cost": 10},
+        {"campaign_name": "Acmewear_16k", "report_cost": 50, "report_ctr": 0.1},
+    ]
+    run_log: dict[str, object] = {}
+
+    merge_campaign_report(campaign_rows, report_rows, run_log, "2025-01-01")
+
+    row = campaign_rows[0]
+    assert row["report_cost"] == 50
+    assert row["report_ctr"] == 0.1
+    assert "report_duplicates" in run_log
+
+
+def test_download_with_details_failure(tmp_path: Path) -> None:
+    class FakeResponse:
+        def __init__(self, status: int, body: bytes) -> None:
+            self.status = status
+            self._body = body
+            self.headers = {"content-type": "text/plain"}
+
+        def body(self) -> bytes:
+            return self._body
+
+    class FakeRequest:
+        def __init__(self, response: FakeResponse) -> None:
+            self._response = response
+
+        def get(self, url: str):
+            return self._response
+
+    class FakeContext:
+        def __init__(self, response: FakeResponse) -> None:
+            self.request = FakeRequest(response)
+
+    dest = tmp_path / "out.csv"
+    response = FakeResponse(403, b"forbidden")
+    details = download_with_details(FakeContext(response), "https://example.com", dest)
+
+    assert details["ok"] is False
+    assert details["status"] == 403
+    assert "forbidden" in details["body"]
+    assert not dest.exists()
+
+
+def test_log_day_progress_emits_info(caplog) -> None:
+    from datetime import date
+    import logging
+
+    logger = logging.getLogger("kaspi_marketing_test")
+    with caplog.at_level(logging.INFO):
+        log_day_progress(logger, date(2025, 1, 1), 1, 3, 2, 10, 1)
+
+    assert any("2025-01-01" in rec.message for rec in caplog.records)
+    assert any("campaigns=2" in rec.message for rec in caplog.records)
+    assert any("products=10" in rec.message for rec in caplog.records)
+
+def test_download_with_details_retries_until_success(tmp_path: Path) -> None:
+    calls = {"sleep": []}
+
+    class FakeResponse:
+        def __init__(self, status: int, body: bytes) -> None:
+            self.status = status
+            self._body = body
+            self.headers = {"content-type": "text/plain"}
+
+        def body(self) -> bytes:
+            return self._body
+
+    class FakeRequest:
+        def __init__(self, responses):
+            self._responses = responses
+            self._idx = 0
+
+        def get(self, url: str, headers=None):
+            resp = self._responses[self._idx]
+            self._idx = min(self._idx + 1, len(self._responses) - 1)
+            return resp
+
+    class FakeContext:
+        def __init__(self, responses) -> None:
+            self.request = FakeRequest(responses)
+
+    def fake_sleep(seconds: float) -> None:
+        calls["sleep"].append(seconds)
+
+    dest = tmp_path / "report.csv"
+    responses = [
+        FakeResponse(429, b"rate"),
+        FakeResponse(200, b"ok"),
+    ]
+
+    details = download_with_details(
+        FakeContext(responses),
+        "https://example.com",
+        dest,
+        max_attempts=3,
+        retry_statuses=(429,),
+        sleep_fn=fake_sleep,
+        sleep_seconds=0.1,
+    )
+
+    assert details["ok"] is True
+    assert details["attempts"] == 2
+    assert dest.read_bytes() == b"ok"
+    assert calls["sleep"] == [0.1]
+
+
+def test_build_kaspi_headers_includes_xsrf() -> None:
+    cookies = [
+        {"name": "XSRF-TOKEN", "value": "abc"},
+        {"name": "other", "value": "x"},
+    ]
+    headers = build_kaspi_headers(cookies, "https://marketing.kaspi.kz/advertising/campaigns")
+    assert headers["x-xsrf-token"] == "abc"
+    assert headers["x-requested-with"] == "XMLHttpRequest"
+    assert headers["referer"].startswith("https://marketing.kaspi.kz/")
