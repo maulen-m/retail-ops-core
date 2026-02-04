@@ -31,7 +31,7 @@ Usage:
   python scripts/po_cli.py receive PO-2025-001
   python scripts/po_cli.py show PO-2025-001
   python scripts/po_cli.py list --status IN_TRANSIT
-  python scripts/po_cli.py materialize-plan --plan PLAN-0 --name PO-5 --supplier SUPP_A
+  PO_WRITE_ENABLED=true python scripts/po_cli.py materialize-plan --plan PLAN-0 --name PO-5 --supplier SUPP_A --apply
   python scripts/po_cli.py adjust LINE52_XL --qty 5 --reason "Found in warehouse"
   python scripts/po_cli.py adjust LINE52_XL --qty -3 --reason "Damaged items write-off"
   python scripts/po_cli.py stock LINE52_XL
@@ -41,8 +41,6 @@ Usage:
 
 import argparse
 import csv
-import hashlib
-import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -65,6 +63,7 @@ from core.po.lifecycle import (
 )
 from core.po.eta import update_po_eta, calc_eta
 from core.calc.landed_cost import calc_supplier_costs, calc_cargo_costs, calc_landed_costs
+from core.po.materialize import materialize_plan_po
 from core.db.ledger import (
     add_ledger_event,
     get_stock_balance,
@@ -78,14 +77,6 @@ from core.db.ledger import (
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DEFAULT_DASHBOARD_PATH = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
-
-
-def _table_columns(conn, table_name: str) -> set[str]:
-    return {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
-
-
-def _table_exists(conn, table_name: str) -> bool:
-    return bool(_table_columns(conn, table_name))
 
 
 def cmd_create(args):
@@ -117,115 +108,36 @@ def cmd_create(args):
 def cmd_materialize_plan(args):
     """Materialize a plan from dashboard JSON into a real PO draft."""
     dashboard_path = Path(args.dashboard) if args.dashboard else DEFAULT_DASHBOARD_PATH
-    if not dashboard_path.exists():
-        print(f"Dashboard JSON not found: {dashboard_path}")
-        sys.exit(2)
-
     try:
-        dashboard = json.loads(dashboard_path.read_text())
-    except Exception as exc:
-        print(f"Failed to parse dashboard JSON: {exc}")
-        sys.exit(2)
-
-    pos = dashboard.get("pos", {})
-    plan = pos.get(args.plan)
-    if not isinstance(plan, dict):
-        print(f"Plan not found: {args.plan}")
-        sys.exit(2)
-
-    po_id = args.name
-    with get_db(DEFAULT_DB_PATH) as conn:
-        if _table_exists(conn, "po_header"):
-            exists = conn.execute(
-                "SELECT 1 FROM po_header WHERE po_id = ?",
-                (po_id,),
-            ).fetchone()
-            if exists:
-                print(f"PO already exists: {po_id}")
-                sys.exit(2)
-
-    plan_hash = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()[:12]
-    plan_msg = plan.get("po_message_date") or ""
-    notes_parts = [f"PLAN={args.plan}", f"PLAN_HASH={plan_hash}"]
-    if plan_msg:
-        notes_parts.append(f"PLAN_MSG_DATE={plan_msg}")
-    if args.notes:
-        notes_parts.append(args.notes)
-    notes = "; ".join(notes_parts)
-
-    create_po(
-        supplier_code=args.supplier,
-        po_id=po_id,
-        order_date=None,
-        notes=notes,
-        created_by=args.user or "cli",
-        db_path=DEFAULT_DB_PATH,
-    )
-
-    sku_cost_map = {}
-    sku_weight_map = {}
-    for sku in plan.get("sku_level", []):
-        sku_key = sku.get("sku_key")
-        if not sku_key:
-            continue
-        sku_cost_map[sku_key] = float(sku.get("base_cost_cny") or 0)
-        sku_weight_map[sku_key] = float(sku.get("weight_per_unit_kg") or 0)
-
-    units_total = 0
-    total_cost_cny = 0.0
-    weight_nom_kg = 0.0
-
-    size_lines = plan.get("size_level", [])
-    if not size_lines:
-        print("Plan has no size_level data; cannot materialize.")
-        sys.exit(2)
-
-    for line in size_lines:
-        order_qty = int(line.get("order_qty") or 0)
-        if order_qty <= 0:
-            continue
-        sku_key = line.get("sku_key") or ""
-        size = line.get("size") or ""
-        sku_id = line.get("sku_id") or (f"{sku_key}_{size}" if sku_key and size else sku_key)
-        unit_cost_cny = sku_cost_map.get(sku_key, 0.0)
-        add_po_line(
-            po_id=po_id,
-            sku_id=sku_id,
-            order_qty=order_qty,
-            unit_cost_cny=unit_cost_cny,
-            sku_key=sku_key or None,
-            my_size=size or None,
+        result = materialize_plan_po(
+            dashboard_path=dashboard_path,
+            plan_name=args.plan,
+            po_id=args.name,
+            supplier=args.supplier,
+            notes=args.notes,
+            user=args.user or "cli",
             db_path=DEFAULT_DB_PATH,
+            apply=args.apply,
         )
-        units_total += order_qty
-        total_cost_cny += unit_cost_cny * order_qty
-        if line.get("weight_kg") is not None:
-            weight_nom_kg += float(line.get("weight_kg") or 0)
-        else:
-            weight_nom_kg += sku_weight_map.get(sku_key, 0.0) * order_qty
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(2)
 
-    with get_db(DEFAULT_DB_PATH) as conn:
-        columns = _table_columns(conn, "po_header")
-        updates = []
-        values = []
-        if "units_total" in columns:
-            updates.append("units_total = ?")
-            values.append(units_total)
-        if "total_cost_cny" in columns:
-            updates.append("total_cost_cny = ?")
-            values.append(round(total_cost_cny, 2))
-        if "weight_nom_kg" in columns:
-            updates.append("weight_nom_kg = ?")
-            values.append(round(weight_nom_kg, 2))
-        if updates:
-            values.append(po_id)
-            conn.execute(
-                f"UPDATE po_header SET {', '.join(updates)} WHERE po_id = ?",
-                values,
-            )
+    status = result.get("status")
+    if status == "DRY_RUN":
+        print(f"DRY RUN: would materialize {args.plan} → {args.name}")
+        print(f"  PLAN_HASH: {result.get('plan_hash')}")
+        return
+    if status == "IDEMPOTENT":
+        print(f"OK: {args.name} already materialized (PLAN_HASH match).")
+        return
 
-    print(f"Materialized plan {args.plan} → {po_id}")
-    print(f"  Units: {units_total}, Weight: {weight_nom_kg:.2f} kg, Cost: ¥{total_cost_cny:.0f}")
+    print(f"Materialized plan {args.plan} → {args.name}")
+    print(
+        f"  Units: {result.get('units_total', 0)}, "
+        f"Weight: {result.get('weight_nom_kg', 0.0):.2f} kg, "
+        f"Cost: ¥{result.get('total_cost_cny', 0.0):.0f}"
+    )
 
 
 def cmd_arrive_csv(args):
@@ -821,6 +733,11 @@ def main():
     p_materialize.add_argument("--dashboard", help="Path to po_dashboard_data.json")
     p_materialize.add_argument("--notes", help="Extra notes to append")
     p_materialize.add_argument("--user", help="User creating the PO")
+    p_materialize.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply writes (requires PO_WRITE_ENABLED=true)",
+    )
 
     # arrive-csv
     p_arrive_csv = subparsers.add_parser("arrive-csv", help="Bulk confirm PO arrivals from CSV")
