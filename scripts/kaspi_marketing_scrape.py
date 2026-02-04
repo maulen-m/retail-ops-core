@@ -167,6 +167,44 @@ def build_kaspi_headers(cookies: list[dict[str, Any]], referer: str) -> dict[str
     return headers
 
 
+def login_required(page) -> bool:
+    try:
+        if "sign-in" in page.url:
+            return True
+    except Exception:
+        return True
+    try:
+        if page.locator("input[type='password']").count() > 0:
+            return True
+    except Exception:
+        return False
+    try:
+        if page.locator("text=Начать рекламировать товары").count() > 0:
+            return True
+    except Exception:
+        pass
+    try:
+        if page.locator("a:has-text('Вход')").count() > 0 or page.locator("button:has-text('Вход')").count() > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def wait_for_login(
+    login_check,
+    timeout_seconds: float,
+    poll_seconds: float = 1.0,
+    sleep_fn=time.sleep,
+) -> bool:
+    start = time.time()
+    while time.time() - start < timeout_seconds:
+        if not login_check():
+            return True
+        sleep_fn(poll_seconds)
+    return not login_check()
+
+
 def build_days_list(
     target: date,
     days_back: int,
@@ -200,6 +238,13 @@ def compute_day_sleep(
     backoff = base_seconds * (2 ** min(failures, 4))
     sleep_val = backoff + rng.uniform(0, jitter_seconds)
     return min(sleep_val, max_seconds)
+
+
+def maybe_pause_after_login(seconds: float, sleep_fn=time.sleep) -> bool:
+    if seconds and seconds > 0:
+        sleep_fn(seconds)
+        return True
+    return False
 
 
 def download_with_details(
@@ -281,34 +326,95 @@ def log_day_progress(
     )
 
 
-def ensure_login(page, login_value: str, password_value: str) -> bool:
-    def login_required() -> bool:
-        if "sign-in" in page.url:
-            return True
-        try:
-            if page.locator("input[type='password']").count() > 0:
-                return True
-        except Exception:
-            return False
-        return False
+def ensure_login(
+    page,
+    login_value: str,
+    password_value: str,
+    manual_login: bool = False,
+    login_timeout: float = 300.0,
+) -> bool:
+    login_value = _coerce_str(login_value)
+    password_value = _coerce_str(password_value)
+    login_compact = "".join(ch for ch in login_value if ch.isdigit() or ch == "+")
+
+    def navigate_to_login() -> None:
+        for selector in (
+            "text=Начать рекламировать товары",
+            "a:has-text('Вход')",
+            "button:has-text('Вход')",
+            "a[href*='sign-in']",
+        ):
+            try:
+                loc = page.locator(selector).first
+                if loc and loc.is_visible():
+                    loc.click(timeout=5000)
+                    page.wait_for_timeout(1500)
+                    return
+            except Exception:
+                continue
+        page.goto("https://marketing.kaspi.kz/sign-in", wait_until="domcontentloaded")
+        page.wait_for_timeout(1500)
 
     page.goto("https://marketing.kaspi.kz/advertising/", wait_until="domcontentloaded")
     page.wait_for_timeout(1500)
-    if not login_required():
+    if not login_required(page):
         return True
+
+    navigate_to_login()
+
+    if manual_login:
+        logged_in = wait_for_login(lambda: login_required(page), login_timeout)
+        if not logged_in:
+            return False
+        page.goto(
+            "https://marketing.kaspi.kz/advertising/campaigns?tab=campaigns&activeTab=Enabled",
+            wait_until="domcontentloaded",
+        )
+        return True
+
     if not login_value or not password_value:
         return False
 
-    inputs = page.locator("input:not([type='password'])")
-    for i in range(min(inputs.count(), 10)):
-        inp = inputs.nth(i)
-        if not inp.is_visible():
-            continue
-        try:
-            inp.fill(login_value)
+    login_selectors = [
+        "input[type='tel']",
+        "input[name='login']",
+        "input[name='phone']",
+        "input[autocomplete='username']",
+        "input[placeholder*='Телефон']",
+        "input[placeholder*='телефон']",
+        "input[placeholder*='phone']",
+        "input[type='text']",
+    ]
+    login_filled = False
+    for selector in login_selectors:
+        inputs = page.locator(selector)
+        for i in range(min(inputs.count(), 5)):
+            inp = inputs.nth(i)
+            if not inp.is_visible():
+                continue
+            try:
+                inp.fill(login_value)
+                login_filled = True
+                break
+            except Exception:
+                continue
+        if login_filled:
             break
-        except Exception:
-            continue
+    if not login_filled and login_compact and login_compact != login_value:
+        for selector in login_selectors:
+            inputs = page.locator(selector)
+            for i in range(min(inputs.count(), 5)):
+                inp = inputs.nth(i)
+                if not inp.is_visible():
+                    continue
+                try:
+                    inp.fill(login_compact)
+                    login_filled = True
+                    break
+                except Exception:
+                    continue
+            if login_filled:
+                break
 
     # Some flows are two-step (login -> continue -> password)
     if page.locator("input[type='password']").count() == 0:
@@ -325,15 +431,21 @@ def ensure_login(page, login_value: str, password_value: str) -> bool:
     except Exception:
         return False
 
-    for label in ("Войти", "Продолжить", "Далее"):
+    submit_selectors = [
+        "button[type='submit']",
+        "button:has-text('Войти')",
+        "button:has-text('Продолжить')",
+        "button:has-text('Далее')",
+    ]
+    for selector in submit_selectors:
         try:
-            page.locator(f"button:has-text('{label}')").first.click(timeout=5000)
+            page.locator(selector).first.click(timeout=5000)
             break
         except Exception:
             continue
 
     page.wait_for_timeout(4000)
-    return not login_required()
+    return not login_required(page)
 
 
 def fetch_campaigns(context, merchant_id: str, target_date: str) -> list[dict[str, Any]]:
@@ -557,6 +669,9 @@ def merge_product_rows(
                 else row.get("product_status"),
                 "ad_score": row.get("ad_score") or (pick_score(match) if match else ""),
                 "bid_cpc": pick(row.get("bid_cpc"), parse_number(match.get("bid")) if match else None),
+                "bid_cpc_source": "csv"
+                if row.get("bid_cpc") is not None
+                else ("api_current" if match and match.get("bid") is not None else ""),
                 "avg_cpc": pick(row.get("avg_cpc"), parse_number(match.get("avgCpc")) if match else None),
                 "views": pick(row.get("views"), parse_int(match.get("views")) if match else None),
                 "clicks": pick(row.get("clicks"), parse_int(match.get("clicks")) if match else None),
@@ -643,6 +758,7 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
             product_status TEXT,
             ad_score TEXT,
             bid_cpc REAL,
+            bid_cpc_source TEXT,
             avg_cpc REAL,
             views INTEGER,
             clicks INTEGER,
@@ -714,6 +830,7 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
             product_status TEXT,
             ad_score TEXT,
             bid_cpc REAL,
+            bid_cpc_source TEXT,
             avg_cpc REAL,
             views INTEGER,
             clicks INTEGER,
@@ -749,6 +866,7 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
         [
             ("ad_score", "TEXT"),
             ("bid_cpc", "REAL"),
+            ("bid_cpc_source", "TEXT"),
         ],
     )
     ensure_columns(
@@ -756,6 +874,7 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
         [
             ("ad_score", "TEXT"),
             ("bid_cpc", "REAL"),
+            ("bid_cpc_source", "TEXT"),
         ],
     )
     ensure_columns(
@@ -1041,6 +1160,29 @@ def main() -> int:
         default=20.0,
         help="Max sleep seconds between days",
     )
+    parser.add_argument(
+        "--pause-after-login",
+        type=float,
+        default=0.0,
+        help="Pause seconds after login (headful visibility/debug)",
+    )
+    parser.add_argument(
+        "--pause-on-start",
+        type=float,
+        default=0.0,
+        help="Pause seconds right after browser launch (headful visibility/debug)",
+    )
+    parser.add_argument(
+        "--manual-login",
+        action="store_true",
+        help="Wait for manual login in headful mode",
+    )
+    parser.add_argument(
+        "--login-timeout",
+        type=float,
+        default=300.0,
+        help="Seconds to wait for manual login",
+    )
     parser.add_argument("--profile-dir", default=env_profile_dir)
     parser.add_argument("--merchant-id", default=env_merchant_id)
     parser.add_argument("--store-code", default=env_store_code)
@@ -1100,6 +1242,7 @@ def main() -> int:
         "report_skipped": [],
         "notes": [],
     }
+    run_log["notes"].append("bid_cpc is current API snapshot; no historical bid data available.")
 
     with sqlite3.connect(db_path) as conn:
         ensure_db_schema(conn)
@@ -1112,8 +1255,17 @@ def main() -> int:
         )
         page = context.new_page()
 
-        if not ensure_login(page, login_value or "", password_value or ""):
-            run_log["notes"].append("Login failed; aborting.")
+        if maybe_pause_after_login(args.pause_on_start):
+            logger.info("Paused %.1fs after browser start for visibility.", args.pause_on_start)
+
+        if not ensure_login(
+            page,
+            login_value or "",
+            password_value or "",
+            manual_login=args.manual_login,
+            login_timeout=args.login_timeout,
+        ):
+            run_log["notes"].append("Login failed or timed out; aborting.")
             context.close()
             (log_root / f"scrape_{run_id}.json").write_text(
                 json.dumps(run_log, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1124,6 +1276,8 @@ def main() -> int:
             context.cookies(),
             "https://marketing.kaspi.kz/advertising/campaigns",
         )
+        if maybe_pause_after_login(args.pause_after_login):
+            logger.info("Paused %.1fs after login for visibility.", args.pause_after_login)
 
         for idx, day in enumerate(days, start=1):
             target_date = day.isoformat()
@@ -1323,6 +1477,7 @@ def main() -> int:
                 "campaign_product_daily",
                 [
                     {k: v for k, v in row.items() if k not in {"run_id"}}
+                    | {"bid_cpc_note": "bid_cpc is current API snapshot; no historical bid data available."}
                     for row in product_rows
                 ],
                 ["date", "merchant_id", "campaign_id", "sku_key"],

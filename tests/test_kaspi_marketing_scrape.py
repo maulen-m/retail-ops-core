@@ -8,11 +8,15 @@ import pytest
 from scripts.kaspi_marketing_scrape import (
     parse_campaigns_report_csv,
     merge_campaign_report,
+    merge_product_rows,
     log_day_progress,
     download_with_details,
     build_kaspi_headers,
     build_days_list,
     compute_day_sleep,
+    maybe_pause_after_login,
+    wait_for_login,
+    login_required,
 )
 
 
@@ -192,3 +196,127 @@ def test_compute_day_sleep_with_backoff() -> None:
     sleep_val = compute_day_sleep(2, base_seconds=2.5, jitter_seconds=1.0, max_seconds=20.0, rng=rng)
     assert sleep_val > 0
     assert sleep_val <= 20.0
+
+
+def test_maybe_pause_after_login_calls_sleep() -> None:
+    calls = {"count": 0, "seconds": []}
+
+    def fake_sleep(seconds: float) -> None:
+        calls["count"] += 1
+        calls["seconds"].append(seconds)
+
+    assert maybe_pause_after_login(2.5, sleep_fn=fake_sleep) is True
+    assert calls["count"] == 1
+    assert calls["seconds"] == [2.5]
+
+    assert maybe_pause_after_login(0, sleep_fn=fake_sleep) is False
+
+
+def test_wait_for_login_times_out() -> None:
+    calls = {"count": 0}
+
+    def login_check() -> bool:
+        calls["count"] += 1
+        return True
+
+    assert wait_for_login(login_check, timeout_seconds=0.01, poll_seconds=0.0, sleep_fn=lambda _: None) is False
+    assert calls["count"] >= 1
+
+
+def test_wait_for_login_succeeds() -> None:
+    calls = {"count": 0}
+
+    def login_check() -> bool:
+        calls["count"] += 1
+        return calls["count"] < 3
+
+    assert wait_for_login(login_check, timeout_seconds=1.0, poll_seconds=0.0, sleep_fn=lambda _: None) is True
+
+
+def test_login_required_checks_url_and_password_input() -> None:
+    class FakeLocator:
+        def __init__(self, count: int) -> None:
+            self._count = count
+
+        def count(self) -> int:
+            return self._count
+
+    class FakePage:
+        def __init__(self, url: str, pwd_count: int, cta_count: int = 0, login_link_count: int = 0) -> None:
+            self.url = url
+            self._pwd_count = pwd_count
+            self._cta_count = cta_count
+            self._login_link_count = login_link_count
+
+        def locator(self, selector: str) -> FakeLocator:
+            if selector == "input[type='password']":
+                return FakeLocator(self._pwd_count)
+            if selector == "text=Начать рекламировать товары":
+                return FakeLocator(self._cta_count)
+            if selector in ("a:has-text('Вход')", "button:has-text('Вход')"):
+                return FakeLocator(self._login_link_count)
+            return FakeLocator(0)
+
+    assert login_required(FakePage("https://marketing.kaspi.kz/sign-in", 0)) is True
+    assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 1)) is True
+    assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 0)) is False
+    assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 0, cta_count=1)) is True
+    assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 0, login_link_count=1)) is True
+
+
+def test_merge_product_rows_sets_bid_cpc_source_from_api() -> None:
+    csv_rows = [
+        {
+            "campaign_id": "1",
+            "sku_key": "sku-1",
+            "product_name": "Item 1",
+            "bid_cpc": None,
+        }
+    ]
+    json_rows = [
+        {
+            "sku": "sku-1",
+            "bid": 150.0,
+        }
+    ]
+
+    merged = merge_product_rows(
+        csv_rows,
+        json_rows,
+        "Campaign",
+        "2025-01-01",
+        "759051",
+        "30137883",
+    )
+
+    assert merged[0]["bid_cpc"] == 150.0
+    assert merged[0]["bid_cpc_source"] == "api_current"
+
+
+def test_merge_product_rows_sets_bid_cpc_source_from_csv() -> None:
+    csv_rows = [
+        {
+            "campaign_id": "1",
+            "sku_key": "sku-1",
+            "product_name": "Item 1",
+            "bid_cpc": 200.0,
+        }
+    ]
+    json_rows = [
+        {
+            "sku": "sku-1",
+            "bid": 150.0,
+        }
+    ]
+
+    merged = merge_product_rows(
+        csv_rows,
+        json_rows,
+        "Campaign",
+        "2025-01-01",
+        "759051",
+        "30137883",
+    )
+
+    assert merged[0]["bid_cpc"] == 200.0
+    assert merged[0]["bid_cpc_source"] == "csv"
