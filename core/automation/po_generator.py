@@ -186,6 +186,33 @@ def calc_confidence_score(sku_key: str, db_path: str) -> float:
     return get_confidence_score(sku_key, db_path)
 
 
+def _summarize_roic_action(lines: list[dict]) -> str:
+    actions = set()
+    for line in lines:
+        action = line.get("roic_action")
+        if action:
+            actions.add(str(action))
+            continue
+        pct = line.get("roic_pct")
+        if pct is None:
+            continue
+        try:
+            pct_val = float(pct)
+        except (TypeError, ValueError):
+            continue
+        if pct_val >= 20:
+            actions.add("ORDER_FULL")
+        elif pct_val >= 10:
+            actions.add("ORDER_WITH_FLAG")
+        else:
+            actions.add("REVIEW_REQUIRED")
+    if not actions:
+        return "UNKNOWN"
+    if len(actions) == 1:
+        return next(iter(actions))
+    return "MIXED"
+
+
 def generate_po_draft(
     db_path: str,
     trigger: str = 'ROP',
@@ -297,17 +324,28 @@ def generate_po_draft(
 
     # Create draft header
     expires_at = (datetime.now() + timedelta(hours=48)).isoformat()
+    total_po_value_kzt = total_cost_kzt
+    total_order_qty = total_units
+    skus_count = len({line["sku_key"] for line in lines})
+    roic_action_summary = _summarize_roic_action(lines)
+    guardrail_status = "PENDING"
 
     cursor.execute("""
         INSERT INTO fact_po_draft (
             status, supplier_code, total_units, total_cost_cny, total_cost_kzt,
+            total_po_value_kzt, total_order_qty, skus_count, roic_action_summary, guardrail_status,
             expires_at, generation_reason, confidence_score
-        ) VALUES (?, 'DEFAULT', ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, 'DEFAULT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         'PENDING',
         total_units,
         round(total_cost_cny, 2),
         round(total_cost_kzt, 2),
+        round(total_po_value_kzt, 2),
+        total_order_qty,
+        skus_count,
+        roic_action_summary,
+        guardrail_status,
         expires_at,
         f'{trigger} trigger',
         round(avg_confidence, 2)
@@ -492,10 +530,14 @@ def generate_po_draft_with_validation(
         cursor.execute("""
             UPDATE fact_po_draft
             SET total_units = (SELECT SUM(quantity) FROM fact_po_draft_lines WHERE draft_id = ?),
+                total_order_qty = (SELECT SUM(quantity) FROM fact_po_draft_lines WHERE draft_id = ?),
                 total_cost_cny = (SELECT SUM(quantity * unit_cost_cny) FROM fact_po_draft_lines WHERE draft_id = ?),
+                total_cost_kzt = (SELECT SUM(quantity * unit_cost_cny) FROM fact_po_draft_lines WHERE draft_id = ?) * 78,
+                total_po_value_kzt = (SELECT SUM(quantity * unit_cost_cny) FROM fact_po_draft_lines WHERE draft_id = ?) * 78,
+                skus_count = (SELECT COUNT(DISTINCT sku_key) FROM fact_po_draft_lines WHERE draft_id = ?),
                 notes = COALESCE(notes, '') || ' | Adjusted for 20% concentration rule'
             WHERE draft_id = ?
-        """, (draft_id, draft_id, draft_id))
+        """, (draft_id, draft_id, draft_id, draft_id, draft_id, draft_id, draft_id))
 
         conn.commit()
         conn.close()
@@ -720,17 +762,28 @@ def generate_batch_po_drafts_size_aware(
     # Create draft header
     expires_at = (datetime.now() + timedelta(hours=48)).isoformat()
     total_cost_kzt = total_cost_cny * 78
+    total_po_value_kzt = total_cost_kzt
+    total_order_qty = total_units
+    skus_count = len({line["sku_key"] for line in all_lines})
+    roic_action_summary = _summarize_roic_action(all_lines)
+    guardrail_status = "PENDING"
 
     cursor.execute("""
         INSERT INTO fact_po_draft (
             status, supplier_code, total_units, total_cost_cny, total_cost_kzt,
+            total_po_value_kzt, total_order_qty, skus_count, roic_action_summary, guardrail_status,
             expires_at, generation_reason, confidence_score, notes
-        ) VALUES (?, 'DEFAULT', ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, 'DEFAULT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         'PENDING',
         total_units,
         round(total_cost_cny, 2),
         round(total_cost_kzt, 2),
+        round(total_po_value_kzt, 2),
+        total_order_qty,
+        skus_count,
+        roic_action_summary,
+        guardrail_status,
         expires_at,
         f'{trigger} trigger (Phase 9.6 Size-Aware)',
         0.8,  # Default confidence
