@@ -15,6 +15,7 @@ import os
 import sqlite3
 import time
 from datetime import date, datetime, timedelta
+import random
 from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -164,6 +165,41 @@ def build_kaspi_headers(cookies: list[dict[str, Any]], referer: str) -> dict[str
     if token:
         headers["x-xsrf-token"] = token
     return headers
+
+
+def build_days_list(
+    target: date,
+    days_back: int,
+    start_date: Optional[date],
+    end_date: Optional[date],
+    max_days: Optional[int],
+) -> list[date]:
+    if start_date:
+        end = end_date or target
+        if end < start_date:
+            raise ValueError("--end-date cannot be before --start-date")
+        days = [start_date + timedelta(days=i) for i in range((end - start_date).days + 1)]
+    else:
+        days = [target - timedelta(days=i) for i in range(max(days_back, 1))]
+        days.sort()
+
+    if max_days is not None:
+        days = days[:max_days]
+    return days
+
+
+def compute_day_sleep(
+    failures: int,
+    base_seconds: float,
+    jitter_seconds: float,
+    max_seconds: float,
+    rng: random.Random = random,
+) -> float:
+    if failures <= 0:
+        return 0.0
+    backoff = base_seconds * (2 ** min(failures, 4))
+    sleep_val = backoff + rng.uniform(0, jitter_seconds)
+    return min(sleep_val, max_seconds)
 
 
 def download_with_details(
@@ -977,6 +1013,34 @@ def main() -> int:
     parser.add_argument("--days-back", type=int, default=3, help="Number of days to re-run (default: 3)")
     parser.add_argument("--start-date", help="Start date YYYY-MM-DD (inclusive)")
     parser.add_argument("--end-date", help="End date YYYY-MM-DD (inclusive, default: target date)")
+    parser.add_argument(
+        "--max-days-per-run",
+        type=int,
+        help="Limit number of days processed per run (for backfills)",
+    )
+    parser.add_argument(
+        "--skip-global-report",
+        action="store_true",
+        help="Skip global campaigns report CSV download",
+    )
+    parser.add_argument(
+        "--day-sleep-base",
+        type=float,
+        default=2.5,
+        help="Base sleep seconds between days when failures occur",
+    )
+    parser.add_argument(
+        "--day-sleep-jitter",
+        type=float,
+        default=1.0,
+        help="Max jitter seconds added to day sleep",
+    )
+    parser.add_argument(
+        "--day-sleep-max",
+        type=float,
+        default=20.0,
+        help="Max sleep seconds between days",
+    )
     parser.add_argument("--profile-dir", default=env_profile_dir)
     parser.add_argument("--merchant-id", default=env_merchant_id)
     parser.add_argument("--store-code", default=env_store_code)
@@ -1006,15 +1070,12 @@ def main() -> int:
     else:
         target = datetime.now(ALMATY_TZ).date() - timedelta(days=1)
 
-    if args.start_date:
-        start = datetime.strptime(args.start_date, "%Y-%m-%d").date()
-        end = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else target
-        if end < start:
-            raise SystemExit("--end-date cannot be before --start-date")
-        days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
-    else:
-        days = [target - timedelta(days=i) for i in range(max(args.days_back, 1))]
-        days.sort()
+    start = datetime.strptime(args.start_date, "%Y-%m-%d").date() if args.start_date else None
+    end = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else None
+    try:
+        days = build_days_list(target, args.days_back, start, end, args.max_days_per_run)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     now = datetime.now(ALMATY_TZ)
     run_id = now.strftime("%Y%m%d_%H%M%S")
     ingested_at = now.isoformat()
@@ -1036,6 +1097,7 @@ def main() -> int:
         "store_code": args.store_code,
         "anomalies": anomalies,
         "download_failures": [],
+        "report_skipped": [],
         "notes": [],
     }
 
@@ -1079,31 +1141,35 @@ def main() -> int:
                 json.dumps(campaigns, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            # Global campaigns report
-            report_url = REPORT_CAMPAIGNS_URL.format(merchant_id=args.merchant_id, date=target_date)
-            report_path = day_raw / f"campaigns_report_{target_date}_{run_id}.csv"
-            report_result = download_with_details(
-                context,
-                report_url,
-                report_path,
-                headers=kaspi_headers,
-            )
-            if not report_result["ok"]:
-                run_log["download_failures"].append(
-                    {
-                        "date": target_date,
-                        "type": "campaigns_report",
-                        "url": report_url,
-                        "status": report_result.get("status"),
-                        "content_type": report_result.get("content_type"),
-                        "body": report_result.get("body"),
-                        "attempts": report_result.get("attempts"),
-                    }
+            report_rows: list[dict[str, Any]] = []
+            if not args.skip_global_report:
+                report_url = REPORT_CAMPAIGNS_URL.format(merchant_id=args.merchant_id, date=target_date)
+                report_path = day_raw / f"campaigns_report_{target_date}_{run_id}.csv"
+                report_result = download_with_details(
+                    context,
+                    report_url,
+                    report_path,
+                    headers=kaspi_headers,
                 )
-                day_failures += 1
-            report_rows = parse_campaigns_report_csv(report_path)
-            if report_rows:
-                run_log.setdefault("campaign_report_counts", {})[target_date] = len(report_rows)
+                if not report_result["ok"]:
+                    run_log["download_failures"].append(
+                        {
+                            "date": target_date,
+                            "type": "campaigns_report",
+                            "url": report_url,
+                            "status": report_result.get("status"),
+                            "content_type": report_result.get("content_type"),
+                            "body": report_result.get("body"),
+                            "attempts": report_result.get("attempts"),
+                        }
+                    )
+                    day_failures += 1
+                    if report_result.get("status") == 429:
+                        run_log["report_skipped"].append(target_date)
+                else:
+                    report_rows = parse_campaigns_report_csv(report_path)
+                    if report_rows:
+                        run_log.setdefault("campaign_report_counts", {})[target_date] = len(report_rows)
 
             # Normalize campaign daily
             campaign_daily_rows = normalize_campaign_daily(target_date, args.merchant_id, args.store_code, campaigns)
@@ -1274,6 +1340,16 @@ def main() -> int:
                 len(product_rows),
                 day_failures,
             )
+
+            day_sleep = compute_day_sleep(
+                day_failures,
+                args.day_sleep_base,
+                args.day_sleep_jitter,
+                args.day_sleep_max,
+            )
+            if day_sleep > 0:
+                logger.info("Kaspi marketing sleep %.2fs before next day", day_sleep)
+                time.sleep(day_sleep)
 
         context.close()
 

@@ -11,6 +11,8 @@ from scripts.kaspi_marketing_scrape import (
     log_day_progress,
     download_with_details,
     build_kaspi_headers,
+    build_days_list,
+    compute_day_sleep,
 )
 
 
@@ -167,3 +169,26 @@ def test_build_kaspi_headers_includes_xsrf() -> None:
     assert headers["x-xsrf-token"] == "abc"
     assert headers["x-requested-with"] == "XMLHttpRequest"
     assert headers["referer"].startswith("https://marketing.kaspi.kz/")
+
+
+def test_build_days_list_applies_max_days() -> None:
+    from datetime import date
+
+    days = build_days_list(
+        target=date(2025, 1, 10),
+        days_back=5,
+        start_date=None,
+        end_date=None,
+        max_days=2,
+    )
+    assert len(days) == 2
+    assert days == [date(2025, 1, 6), date(2025, 1, 7)]
+
+
+def test_compute_day_sleep_with_backoff() -> None:
+    import random
+
+    rng = random.Random(0)
+    sleep_val = compute_day_sleep(2, base_seconds=2.5, jitter_seconds=1.0, max_seconds=20.0, rng=rng)
+    assert sleep_val > 0
+    assert sleep_val <= 20.0
