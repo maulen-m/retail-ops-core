@@ -203,6 +203,14 @@ Optional export view:
   - `ads_campaign_daily_current`
   - `ads_campaign_product_daily_current`
 
+## Unfinished tasks
+- **Backfill full ads history** (from 2025-01-01 onward) into the ads history tables.
+  - History lives in the **dedicated ads DB**:
+    - `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Kaspi_marketing/db/kaspi_marketing.db`
+    - Tables: `campaign_daily_history`, `campaign_product_daily_history`
+  - The main app DB (`~/Docs/Autonomous_business/db/app.db`) only receives **current** snapshots:
+    - `ads_campaign_daily_current`, `ads_campaign_product_daily_current`
+
 ## Bookkeeper workbook (Excel-safe-ops)
 Use **two sheets** (`campaign_daily`, `campaign_product_daily`) with **cost-increase upserts**:
 - Record every run in history (db); workbook keeps latest per key **only if cost increases**.
