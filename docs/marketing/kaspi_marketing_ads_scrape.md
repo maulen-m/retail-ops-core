@@ -145,6 +145,12 @@ Use cookies from the authenticated browser context to call them via `context.req
 - Расходы на рекламу
 - Доля рекламных расходов
 
+**Note on bid_cpc (Ставка за клик):**
+- The per-campaign CSV does **not** include bid_cpc.
+- The `/campaign/<id>/products` API returns **current bid only** (no historical series).
+- We therefore **snapshot** bid_cpc at scrape time and mark provenance via `bid_cpc_source=api_current`.
+- The bookkeeper adds a `bid_cpc_note` column to flag this limitation.
+
 ### Recommended scrape schema
 ```
 date                (YYYY-MM-DD, date)
@@ -157,6 +163,7 @@ product_name        (text)
 product_status      (text)
 ad_score            (text)
 bid_cpc             (float, CPC input)
+bid_cpc_source      (text, csv|api_current)
 avg_cpc             (float)
 views               (int)
 clicks              (int)
