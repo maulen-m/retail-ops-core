@@ -31,7 +31,7 @@ import json
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.db import init_db
+from scripts.validate_schema import validate_schema
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
@@ -303,21 +303,10 @@ def main():
             print(f"Error: Database not found at {db_path}")
         sys.exit(1)
 
-    try:
-        # Apply schema to prevent drift (idempotent; CREATE IF NOT EXISTS only)
-        init_db(db_path=db_path)
-        # Apply dim_sku column migration (idempotent)
-        try:
-            from scripts.migrate_013 import migrate as migrate_dim_sku
-            migrate_dim_sku(db_path=db_path)
-        except Exception as exc:
-            print(f"Error: Failed to apply dim_sku migration: {exc}")
-            sys.exit(1)
-    except Exception as exc:
-        print(f"Error: Failed to apply schema.sql to {db_path}: {exc}")
-        sys.exit(1)
-
     result = ValidationResult()
+    schema_errors = validate_schema(db_path)
+    for err in schema_errors:
+        result.add_error(f"schema: {err}")
 
     conn = sqlite3.connect(str(db_path))
     try:
