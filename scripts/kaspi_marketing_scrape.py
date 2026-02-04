@@ -843,14 +843,29 @@ def export_to_app_db(app_db: Path, source_db: Path) -> None:
     if not app_db.exists() or not source_db.exists():
         return
     with sqlite3.connect(source_db) as src, sqlite3.connect(app_db) as dest:
-        dest.execute("DROP TABLE IF EXISTS ads_campaign_daily_current")
-        dest.execute("DROP TABLE IF EXISTS ads_campaign_product_daily_current")
-        dest.execute(
-            "CREATE TABLE ads_campaign_daily_current AS SELECT * FROM campaign_daily_current WHERE 0=1"
-        )
-        dest.execute(
-            "CREATE TABLE ads_campaign_product_daily_current AS SELECT * FROM campaign_product_daily_current WHERE 0=1"
-        )
+        def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            )
+            return cur.fetchone() is not None
+
+        def clone_schema(src_conn: sqlite3.Connection, dest_conn: sqlite3.Connection, source: str, target: str) -> None:
+            cols = src_conn.execute(f"PRAGMA table_info({source})").fetchall()
+            if not cols:
+                return
+            col_defs = ", ".join([f"{c[1]} {c[2]}" for c in cols])
+            dest_conn.execute(f"DROP TABLE IF EXISTS {target}")
+            dest_conn.execute(f"CREATE TABLE {target} ({col_defs})")
+
+        if not table_exists(src, "campaign_daily_current") or not table_exists(
+            src, "campaign_product_daily_current"
+        ):
+            return
+
+        clone_schema(src, dest, "campaign_daily_current", "ads_campaign_daily_current")
+        clone_schema(src, dest, "campaign_product_daily_current", "ads_campaign_product_daily_current")
+
         for row in src.execute("SELECT * FROM campaign_daily_current"):
             dest.execute(
                 "INSERT INTO ads_campaign_daily_current VALUES (" + ",".join(["?"] * len(row)) + ")",
