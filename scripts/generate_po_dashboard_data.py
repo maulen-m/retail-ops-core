@@ -3169,6 +3169,16 @@ if __name__ == "__main__":
         all_pos[po_id] = archive_data
         archived_pos.append(po_id)
 
+    for po_name, po_data in all_pos.items():
+        if po_name.startswith("PLAN-"):
+            po_data["po_kind"] = "PLAN"
+        else:
+            po_data["po_kind"] = "REAL_ARCHIVE"
+            if po_name not in archived_pos:
+                archived_pos.append(po_name)
+
+    archived_pos = list(dict.fromkeys(archived_pos))
+
     active_pos = [name for name in all_pos.keys() if name.startswith("PLAN-")]
     active_pos.sort(key=plan_index_from_name)
     real_pos = load_real_pos()

@@ -17,6 +17,7 @@ Top-level keys:
 - `cutoff_date` (YYYY-MM-DD string)
 - `summary` (object)
 - `pos` (object)
+- `archived_pos` (list of non-PLAN entries in `pos`)
 - `real_pos` (list; may be empty)
 
 `summary` required fields:
@@ -28,8 +29,13 @@ Top-level keys:
 - Must include key `PLAN-0` (fixture plan bucket)
 - `PLAN-0` must include:
   - `po_name` (string, value "PLAN-0")
+  - `po_kind` (string, value `PLAN`)
   - `summary` (object with `total_skus`, `total_units`)
   - `sku_level` (list)
+
+Each non-PLAN entry in `pos` must include:
+- `po_kind` = `REAL_ARCHIVE`
+- must be listed in `archived_pos`
 
 Each `sku_level` entry must include:
 - `sku_key` (string)
