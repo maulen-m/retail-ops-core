@@ -212,3 +212,190 @@ entries:
   # ─────────────────────────────────────────────────────────────────────────────
   # APPEND NEW ENTRIES BELOW THIS LINE
   # ─────────────────────────────────────────────────────────────────────────────
+  # ────────────────────────────────────────────────────────────────────────────────────────────
+  # TOTALS (2026-02-05) - FX: binance_p2p 2026-02-03 + dim_fx_rates 2026-01-03, RUB/KZT 6.6 (default)
+  #   | Currency | Amount    | Rate | KZT Equivalent |
+  #   |----------|-----------|------|----------------|
+  #   | KZT      | 2,475,364 |    1 |      2,475,364 |
+  #   | RUB      |    10,000 |  6.6 |         66,000 |
+  #   | USD      |       100 |  514 |         51,400 |
+  #   | USDT     |  1,405.19 |  501 |        704,000 |
+  #   | Total    |           |      |  3,296,764 KZT |
+  #
+  #   By Store:
+  #   - UNIVERSAL: 1,976,664 KZT + 10,000 RUB + 100 USD + 948.19 USDT
+  #   - 11KZ: 3,000 KZT + 457 USDT
+  #   - STOREB: 13,000 KZT
+  #   - ACMEWEAR: 482,000 KZT
+  #   - MELVIS: 700 KZT
+  # ────────────────────────────────────────────────────────────────────────────────────────────
+  - as_of: "2026-02-05 14:00:52 GMT+5"
+    source: "manual snapshot"
+    balances:
+      # UNIVERSAL
+      - store: UNIVERSAL
+        account: kaspi_gold
+        amount: 1589573
+        currency: KZT
+      - store: UNIVERSAL
+        account: kaspi_pay
+        amount: 7000
+        currency: KZT
+      - store: UNIVERSAL
+        account: bcc
+        amount: 243091
+        currency: KZT
+      - store: UNIVERSAL
+        account: freedom
+        amount: 27000
+        currency: KZT
+      - store: UNIVERSAL
+        account: cash_kzt
+        amount: 110000
+        currency: KZT
+      - store: UNIVERSAL
+        account: cash_usd
+        amount: 100
+        currency: USD
+      - store: UNIVERSAL
+        account: cash_rub
+        amount: 10000
+        currency: RUB
+      - store: UNIVERSAL
+        account: binance_usdt
+        amount: 948.19
+        currency: USDT
+      # 11KZ
+      - store: 11KZ
+        account: kaspi_gold
+        amount: 3000
+        currency: KZT
+      - store: 11KZ
+        account: kaspi_pay
+        amount: 0
+        currency: KZT
+      - store: 11KZ
+        account: binance_usdt
+        amount: 457
+        currency: USDT
+      # STOREB
+      - store: STOREB
+        account: kaspi_gold
+        amount: 10000
+        currency: KZT
+      - store: STOREB
+        account: kaspi_pay
+        amount: 3000
+        currency: KZT
+      # ACMEWEAR
+      - store: ACMEWEAR
+        account: kaspi_gold
+        amount: 350000
+        currency: KZT
+      - store: ACMEWEAR
+        account: kaspi_pay
+        amount: 132000
+        currency: KZT
+      # MELVIS
+      - store: MELVIS
+        account: kaspi_gold
+        amount: 0
+        currency: KZT
+      - store: MELVIS
+        account: kaspi_pay
+        amount: 700
+        currency: KZT
+
+  # --------------------------------------------------------------------------------------------
+  # TOTALS (2026-02-05) - FX: binance_p2p 2026-02-03 + dim_fx_rates 2026-01-03
+  #   | Currency | Amount    | Rate | KZT Equivalent |
+  #   |----------|-----------|------|----------------|
+  #   | KZT      | 2,475,364 |    1 |      2,475,364 |
+  #   | RUB      |    10,000 |  6.6 |         66,000 |
+  #   | USD      |       100 |  514 |         51,400 |
+  #   | USDT     |  1,405.19 |  501 |        704,000 |
+  #   | Total    |           |      |  3,296,764 KZT |
+  #
+  # By Store:
+  #   - UNIVERSAL: 1,976,664 KZT + 10,000 RUB + 100 USD + 948.19 USDT
+  #   - 11KZ: 3,000 KZT + 457 USDT
+  #   - STOREB: 13,000 KZT
+  #   - ACMEWEAR: 482,000 KZT
+  #   - MELVIS: 700 KZT
+  # --------------------------------------------------------------------------------------------
+  - as_of: "2026-02-05 18:19:13 GMT+5"
+    source: "manual snapshot"
+    balances:
+      # UNIVERSAL
+      - store: UNIVERSAL
+        account: kaspi_gold
+        amount: 1589573
+        currency: KZT
+      - store: UNIVERSAL
+        account: kaspi_pay
+        amount: 7000
+        currency: KZT
+      - store: UNIVERSAL
+        account: bcc
+        amount: 243091
+        currency: KZT
+      - store: UNIVERSAL
+        account: freedom
+        amount: 27000
+        currency: KZT
+      - store: UNIVERSAL
+        account: cash_kzt
+        amount: 110000
+        currency: KZT
+      - store: UNIVERSAL
+        account: cash_usd
+        amount: 100
+        currency: USD
+      - store: UNIVERSAL
+        account: cash_rub
+        amount: 10000
+        currency: RUB
+      - store: UNIVERSAL
+        account: binance_usdt
+        amount: 948.19
+        currency: USDT
+      # 11KZ
+      - store: 11KZ
+        account: kaspi_gold
+        amount: 3000
+        currency: KZT
+      - store: 11KZ
+        account: kaspi_pay
+        amount: 0
+        currency: KZT
+      - store: 11KZ
+        account: binance_usdt
+        amount: 457
+        currency: USDT
+      # STOREB
+      - store: STOREB
+        account: kaspi_gold
+        amount: 10000
+        currency: KZT
+      - store: STOREB
+        account: kaspi_pay
+        amount: 3000
+        currency: KZT
+      # ACMEWEAR
+      - store: ACMEWEAR
+        account: kaspi_gold
+        amount: 350000
+        currency: KZT
+      - store: ACMEWEAR
+        account: kaspi_pay
+        amount: 132000
+        currency: KZT
+      # MELVIS
+      - store: MELVIS
+        account: kaspi_gold
+        amount: 0
+        currency: KZT
+      - store: MELVIS
+        account: kaspi_pay
+        amount: 700
+        currency: KZT

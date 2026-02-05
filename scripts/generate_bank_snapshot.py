@@ -43,6 +43,8 @@ DEFAULT_FX_RATES = {
     "CNY_KZT": 75.0,
 }
 
+# NOTE: Avoid ANSI escape codes in YAML comments; they break YAML parsing.
+
 
 def setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
@@ -279,6 +281,7 @@ def generate_snapshot(
     lines.append("## Store codes mirror config/kaspi_pay_accounts.yaml.")
     lines.append("## Amounts are raw balances in account currency.")
     lines.append("")
+    # Totals header block (plain comments to keep YAML parseable).
     lines.append("# " + "=" * 78)
     lines.append(f"# TOTALS (as of {as_of_date})")
     lines.append("# " + "=" * 78)

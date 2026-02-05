@@ -812,6 +812,7 @@ def download_all_waybills(
     exact_date: bool = False,
     include_overdue: bool = False,
     fallback_crm: bool = False,
+    fallback_on_empty: bool = False,
 ) -> dict:
     """
     Download waybills for pending orders from CRM.
@@ -827,6 +828,7 @@ def download_all_waybills(
         verbose: Print progress
     all_dates: If True, include all orders with planned_date <= target_date (no lookback floor).
     exact_date: If True, include only orders with planned_date == target_date.
+    fallback_on_empty: If True, allow fallback when API selection is empty (not just on errors).
 
     Returns:
         Combined summary dict
@@ -841,6 +843,7 @@ def download_all_waybills(
     target_orders_by_store: dict[str, set[str]] = {}
     orders_by_store: dict[str, list[dict]] = {}
     api_errors: set[str] = set()
+    api_empty_stores: set[str] = set()
     source_label = None
 
     stores = list(STORE_TOKEN_MAP.keys())
@@ -869,11 +872,10 @@ def download_all_waybills(
                 for o in orders
                 if o.get('attributes', {}).get('code', '')
             }
+        elif not had_error:
+            api_empty_stores.add(store_code)
 
-    if target_orders_by_store:
-        source_label = "Kaspi API (planned date)"
-
-    # Optional fallback to DB/CRM per store if API failed or returned no orders
+    # Optional fallback to DB/CRM per store if API failed (or empty if enabled)
     fallback_orders_by_store: dict[str, set[str]] = {}
     if fallback_crm:
         resolved_db_path = resolve_db_path(db_path)
@@ -885,8 +887,6 @@ def download_all_waybills(
                 exact_date=exact_date,
                 lookback_days=None if all_dates or exact_date else since_days,
             )
-            if fallback_orders_by_store:
-                source_label = f"Kaspi API (planned date) + DB fallback"
 
         if crm_path:
             crm_orders = get_target_order_ids_from_crm(
@@ -898,28 +898,17 @@ def download_all_waybills(
                 lookback_days=None if all_dates or exact_date else since_days,
             )
             if crm_orders:
-                source_label = "Kaspi API (planned date) + CRM/DB fallback"
                 for store_code, ids in crm_orders.items():
                     fallback_orders_by_store.setdefault(store_code, set()).update(ids)
-
-    if not target_orders_by_store and not fallback_orders_by_store:
-        print("  No orders found for the target date.")
-        return {
-            'downloaded': 0,
-            'skipped_not_target': 0,
-            'missing_waybill': 0,
-            'already_exists': 0,
-            'invalid_pdf': 0,
-            'errors': [],
-        }
-    if source_label:
-        print(f"  Using {source_label} for order selection")
 
     # Merge API + fallback selections per store (fallback only if API empty/failed)
     fallback_used = False
     fallback_stores: list[str] = []
 
     if fallback_orders_by_store:
+        fallback_allowed = set(api_errors)
+        if fallback_on_empty:
+            fallback_allowed |= api_empty_stores
         merged_orders_by_store: dict[str, set[str]] = {}
         store_union = set(target_orders_by_store) | set(fallback_orders_by_store)
         for store_code in store_union:
@@ -929,15 +918,42 @@ def download_all_waybills(
             if api_ids:
                 merged_orders_by_store[store_code] = set(api_ids)
             else:
-                if fallback_ids:
+                if fallback_ids and store_code in fallback_allowed:
                     merged_orders_by_store[store_code] = set(fallback_ids)
                     fallback_used = True
                     fallback_stores.append(store_code)
+                    reason = "API error"
+                    if store_code in api_empty_stores and store_code not in api_errors:
+                        reason = "API selection empty (fallback-on-empty enabled)"
                     logger.warning(
-                        f"{store_code}: API selection empty or failed; "
-                        f"using fallback ({len(fallback_ids)} orders)"
+                        f"{store_code}: {reason}; using fallback "
+                        f"({len(fallback_ids)} orders)"
+                    )
+                elif fallback_ids and store_code not in fallback_allowed:
+                    logger.warning(
+                        f"{store_code}: API selection empty; skipping fallback "
+                        f"({len(fallback_ids)} orders). "
+                        f"Use --fallback-on-empty to enable."
                     )
         target_orders_by_store = merged_orders_by_store
+
+    if not target_orders_by_store:
+        print("  No orders found for the target date.")
+        return {
+            'downloaded': 0,
+            'skipped_not_target': 0,
+            'missing_waybill': 0,
+            'already_exists': 0,
+            'invalid_pdf': 0,
+            'errors': [],
+        }
+
+    if fallback_used:
+        source_label = "Kaspi API (planned date) + CRM/DB fallback"
+    elif target_orders_by_store:
+        source_label = "Kaspi API (planned date)"
+    if source_label:
+        print(f"  Using {source_label} for order selection")
 
     if api_errors:
         logger.warning(
@@ -1108,7 +1124,12 @@ def main():
     parser.add_argument(
         '--fallback-crm',
         action='store_true',
-        help='Fallback to DB/CRM selection if API returns no orders'
+        help='Fallback to DB/CRM selection if API errors (use --fallback-on-empty for empty selection)'
+    )
+    parser.add_argument(
+        '--fallback-on-empty',
+        action='store_true',
+        help='Allow fallback when API selection is empty (not just on API errors)'
     )
     parser.add_argument(
         '--verbose', '-v',
@@ -1178,6 +1199,7 @@ def main():
         exact_date=args.exact_date,
         include_overdue=args.include_overdue,
         fallback_crm=args.fallback_crm,
+        fallback_on_empty=args.fallback_on_empty,
     )
 
     # Summary
