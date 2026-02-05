@@ -32,6 +32,7 @@ Top-level keys:
   - `po_kind` (string, value `PLAN`)
   - `summary` (object with `total_skus`, `total_units`)
   - `sku_level` (list)
+- `PLAN-0` represents the **next planned PO after the latest real PO** (latest real POs appear only in `archived_pos`/`real_pos`)
 
 Each non-PLAN entry in `pos` must include:
 - `po_kind` = `REAL_ARCHIVE`

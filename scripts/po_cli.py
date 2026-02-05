@@ -31,7 +31,7 @@ Usage:
   python scripts/po_cli.py receive PO-2025-001
   python scripts/po_cli.py show PO-2025-001
   python scripts/po_cli.py list --status IN_TRANSIT
-  PO_WRITE_ENABLED=true python scripts/po_cli.py materialize-plan --plan PLAN-0 --name PO-5 --supplier SUPP_A --apply
+  PO_WRITE_ENABLED=true python scripts/po_cli.py materialize-plan --plan PLAN-0 --name PO-<next> --supplier SUPP_A --apply
   python scripts/po_cli.py adjust LINE52_XL --qty 5 --reason "Found in warehouse"
   python scripts/po_cli.py adjust LINE52_XL --qty -3 --reason "Damaged items write-off"
   python scripts/po_cli.py stock LINE52_XL

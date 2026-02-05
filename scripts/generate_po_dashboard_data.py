@@ -2135,6 +2135,10 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
                 pass
         if prep_days_override is not None:
             sku_line["prep_days"] = prep_days_override
+        d_sku = float(sku_line.get("d_sku", 0) or 0)
+        if d_sku > 0:
+            pre_arrival = float(sku_line.get("pre_arrival", 0) or 0)
+            sku_line["post_arr_doc"] = round((pre_arrival + total_qty) / d_sku, 1)
         total_units += total_qty
         if total_qty > 0:
             skus_with_orders += 1
@@ -2163,6 +2167,12 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
                 pass
         if prep_days_override is not None:
             size_line["prep_days"] = prep_days_override
+        d_size = float(size_line.get("d_size", 0) or 0)
+        if d_size > 0:
+            pre_arrival = float(size_line.get("pre_arrival", 0) or 0)
+            size_line["post_arr_doc"] = round(
+                (pre_arrival + size_line["order_qty"]) / d_size, 1
+            )
         size_rows.append(size_line)
 
     for sku_key, size_map in orders_by_sku.items():
@@ -2394,19 +2404,18 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
     R = params.R  # Reorder cycle (typically 10 days)
     L = params.L  # Lead time
 
-    base_po_id, base_po_num, _ = resolve_last_real_po()
+    base_po_id, last_real_po_num, _ = resolve_last_real_po()
+    plan_base_num = last_real_po_num + 1
     global PLAN_BASE_PO_NUM
-    PLAN_BASE_PO_NUM = base_po_num
+    PLAN_BASE_PO_NUM = plan_base_num
 
     base_template = generate_po_data()
     base_data = copy.deepcopy(base_template)
     base_po_actual = load_po_orders(base_po_id)
     if base_po_actual:
         base_data = apply_po_overrides(base_data, base_po_actual, params, fx_rates)
-    base_data["po_name"] = plan_name_from_po_num(base_po_num)
-
-    # Store all plans (PLAN-0 is the most recent real PO)
-    all_pos = {plan_name_from_po_num(base_po_num): base_data}
+    # PLAN-0 is the next planned PO after the latest real PO (not the real PO itself).
+    all_pos: dict[str, dict] = {}
 
     # Build cumulative orders per SKU for projection
     # Format: sku_key -> list of (arrival_date, order_qty_by_size)
@@ -2455,7 +2464,7 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
             existing_inbound_by_sku[sku_key] = sum(size_orders.values())
             existing_inbound_by_size[sku_key] = dict(size_orders)
 
-    max_po_num = base_po_num + num_pos - 1
+    max_po_num = plan_base_num + num_pos - 1
     po_schedule, po5_msg_gap_days = _build_po_schedule(
         TODAY, params, base_data.get("prep_days_clothes", 1), max_po_num=max_po_num
     )
@@ -2467,21 +2476,21 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
         po5_prep_days = max(0, (PO5_SEND_DATE_OVERRIDE - po5_message_date).days)
     po6_message_date = po_schedule.get("PO-6", TODAY + timedelta(days=2 * R))
 
-    # Generate PLAN-1 through PLAN-6 (PO-5 through PO-10 internally)
-    for po_num in range(base_po_num + 1, base_po_num + num_pos):
+    # Generate PLAN-0 through PLAN-(num_pos-1) (PO-(last_real+1) onward)
+    for po_num in range(plan_base_num, plan_base_num + num_pos):
         po_name = plan_name_from_po_num(po_num)
         po_message_date = po_schedule.get(
             f"PO-{po_num}",
-            TODAY + timedelta(days=(po_num - base_po_num) * R),
+            TODAY + timedelta(days=(po_num - last_real_po_num) * R),
         )
         days_offset = (po_message_date - TODAY).days
         next_po_num = po_num + 1
         next_message_date = None
         if next_po_num <= max_po_num:
-            next_message_date = po_schedule.get(
-                f"PO-{next_po_num}",
-                TODAY + timedelta(days=(next_po_num - base_po_num) * R),
-            )
+                next_message_date = po_schedule.get(
+                    f"PO-{next_po_num}",
+                    TODAY + timedelta(days=(next_po_num - last_real_po_num) * R),
+                )
 
         if next_message_date:
             curr_prep_cl = po5_prep_days if po_num == 5 else prep_days_clothes

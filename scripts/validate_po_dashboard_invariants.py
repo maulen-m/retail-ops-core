@@ -134,8 +134,9 @@ def validate_payload(
             continue
         is_cl = str(sku_key).startswith("CL_")
         size_rows = size_by_sku.get(sku_key, [])
+        sku_total = int(sku.get("po_qty_total", 0) or 0)
 
-        if int(sku.get("po_qty_total", 0) or 0) < 0:
+        if sku_total < 0:
             errors.append(f"{sku_key}: negative po_qty_total")
 
         if not size_rows:
@@ -152,7 +153,6 @@ def validate_payload(
             seen.add(size)
 
         size_order_sum = sum(int(r.get("order_qty", 0) or 0) for r in size_rows)
-        sku_total = int(sku.get("po_qty_total", 0) or 0)
         if size_order_sum != sku_total:
             errors.append(
                 f"{sku_key}: size_order_sum={size_order_sum} != po_qty_total={sku_total}"
@@ -162,6 +162,18 @@ def validate_payload(
             if int(row.get("order_qty", 0) or 0) < 0:
                 errors.append(f"{sku_key}: negative size order_qty for {row.get('size')}")
                 break
+            if int(row.get("order_qty", 0) or 0) > 0:
+                try:
+                    d_size = float(row.get("d_size", 0) or 0)
+                    pre_doc = float(row.get("pre_arr_doc", 0) or 0)
+                    post_doc = float(row.get("post_arr_doc", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if d_size > 0 and post_doc <= pre_doc:
+                    errors.append(
+                        f"{sku_key}: size {row.get('size')} post_arr_doc must exceed pre_arr_doc"
+                    )
+                    break
 
         if is_cl:
             for row in size_rows:
@@ -196,6 +208,16 @@ def validate_payload(
             if abs(d_size_sum - d_sku) > tolerance:
                 errors.append(
                     f"{sku_key}: sum(d_size)={d_size_sum:.4f} vs d_sku={d_sku:.4f}"
+                )
+            try:
+                pre_doc = float(sku.get("pre_arr_doc", 0) or 0)
+                post_doc = float(sku.get("post_arr_doc", 0) or 0)
+            except (TypeError, ValueError):
+                pre_doc = 0.0
+                post_doc = 0.0
+            if sku_total > 0 and post_doc <= pre_doc:
+                errors.append(
+                    f"{sku_key}: post_arr_doc must exceed pre_arr_doc when order_qty > 0"
                 )
 
     archived_pos = set(payload.get("archived_pos") or [])

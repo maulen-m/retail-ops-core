@@ -132,3 +132,41 @@ def test_real_pos_min_fields_enforced(tmp_path: Path) -> None:
 
     errors = validate_payload(payload, db_path=db_path, strict_portfolio=True)
     assert any("real_pos" in err for err in errors)
+
+
+def test_post_doc_monotonicity_enforced() -> None:
+    payload = {
+        "pos": {
+            "PLAN-0": {
+                "po_name": "PLAN-0",
+                "po_kind": "PLAN",
+                "sku_level": [
+                    {
+                        "sku_key": "CL_TEST",
+                        "po_qty_total": 10,
+                        "d_sku": 2.0,
+                        "pre_arr_doc": 5.0,
+                        "post_arr_doc": 5.0,
+                    }
+                ],
+                "size_level": [
+                    {
+                        "sku_key": "CL_TEST",
+                        "size": "M",
+                        "order_qty": 10,
+                        "d_size": 2.0,
+                        "pre_arr_doc": 5.0,
+                        "post_arr_doc": 5.0,
+                        "pre_arrival": 5,
+                        "target": 20,
+                        "deficit_size": 10,
+                    }
+                ],
+            }
+        },
+        "archived_pos": [],
+        "real_pos": [],
+    }
+
+    errors = validate_payload(payload, db_path=None, strict_portfolio=False)
+    assert any("post_arr_doc" in err for err in errors)
