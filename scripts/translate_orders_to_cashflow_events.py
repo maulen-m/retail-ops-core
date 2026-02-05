@@ -318,6 +318,9 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
             if not event_date:
                 counts["ignored"] += 1
                 continue
+            if status not in {"COMPLETED", "CANCELLED", "RETURNED", "ON_DELIVERY"}:
+                counts["ignored"] += 1
+                continue
             order_id = str(row["order_id"]) if row["order_id"] is not None else ""
             store_code = row["store_code"]
             order_lines = []

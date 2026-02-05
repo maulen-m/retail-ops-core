@@ -172,6 +172,46 @@ def test_translate_orders_errors_when_sku_unresolved(tmp_path, monkeypatch):
         assert "dim_kaspi_article_map" in msg
 
 
+def test_translate_orders_allows_missing_sku_for_new_status(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_NEW",
+                "UNIVERSAL",
+                "Новый",
+                "NEW",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM fact_cashflow_events").fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+
+
 def test_translate_orders_backfills_zero_cost_events(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     _init_db(db_path)
