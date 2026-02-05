@@ -91,8 +91,47 @@ def _load_dim_sku_costs(conn: sqlite3.Connection) -> dict[str, dict]:
     }
 
 
-def _unit_cost_kzt(row: sqlite3.Row, fx_rates, dim_costs: dict[str, dict]) -> float:
-    sku_key = row["sku_key"]
+def _load_order_entries(conn: sqlite3.Connection) -> dict[tuple[str, str], list[dict]]:
+    if not _table_exists(conn, "fact_order_entries_kaspi"):
+        return {}
+    if not _table_exists(conn, "dim_kaspi_article_map"):
+        return {}
+    rows = conn.execute(
+        """
+        SELECT
+            e.order_id,
+            e.store_code,
+            e.offer_id,
+            e.quantity,
+            e.unit_price_kzt,
+            e.total_price_kzt,
+            m.sku_key,
+            m.sku_id
+        FROM fact_order_entries_kaspi e
+        LEFT JOIN dim_kaspi_article_map m
+          ON m.store_code = e.store_code
+         AND m.kaspi_article = e.offer_id
+        """
+    ).fetchall()
+    entries_by_order: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        order_id = str(row["order_id"]) if row["order_id"] is not None else ""
+        store_code = str(row["store_code"]) if row["store_code"] is not None else ""
+        if not order_id or not store_code:
+            continue
+        entries_by_order.setdefault((order_id, store_code), []).append(
+            {
+                "sku_key": row["sku_key"],
+                "sku_id": row["sku_id"],
+                "quantity": float(row["quantity"] or 0.0),
+                "unit_price_kzt": row["unit_price_kzt"],
+                "total_price_kzt": row["total_price_kzt"],
+            }
+        )
+    return entries_by_order
+
+
+def _unit_cost_kzt_for_sku(sku_key: str | None, fx_rates, dim_costs: dict[str, dict]) -> float:
     meta = dim_costs.get(sku_key or "", {})
     base_cost = meta.get("base_cost_cny", 0.0)
     if base_cost and base_cost > 0:
@@ -110,6 +149,10 @@ def _unit_cost_kzt(row: sqlite3.Row, fx_rates, dim_costs: dict[str, dict]) -> fl
             freight_rate=fx_rates.usd_kzt,
         )
     )
+
+
+def _unit_cost_kzt(row: sqlite3.Row, fx_rates, dim_costs: dict[str, dict]) -> float:
+    return _unit_cost_kzt_for_sku(row["sku_key"], fx_rates, dim_costs)
 
 
 def _cash_account(store_code: str | None) -> str:
@@ -165,6 +208,7 @@ def _load_existing_on_delivery(conn: sqlite3.Connection) -> set[tuple[str, str]]
         WHERE ref_type = 'ORDER'
           AND event_type = 'INVENTORY_MOVE'
           AND account = 'INVENTORY_ON_DELIVERY_COST'
+          AND ABS(amount_kzt) > 0
         """
     ).fetchall()
     return {
@@ -183,6 +227,7 @@ def _load_existing_cogs_dates(conn: sqlite3.Connection) -> dict[tuple[str, str],
         FROM fact_cashflow_events
         WHERE ref_type = 'ORDER'
           AND event_type = 'COGS_RECOGNIZED'
+          AND ABS(amount_kzt) > 0
         GROUP BY ref_id, sku_id
         """
     ).fetchall()
@@ -203,6 +248,7 @@ def _load_existing_move_dates(conn: sqlite3.Connection) -> dict[tuple[str, str],
         WHERE ref_type = 'ORDER'
           AND event_type = 'INVENTORY_MOVE'
           AND account = 'INVENTORY_ON_DELIVERY_COST'
+          AND ABS(amount_kzt) > 0
         GROUP BY ref_id, sku_id
         """
     ).fetchall()
@@ -237,6 +283,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
 
         weights = _load_dim_sku_weights(conn)
         dim_costs = _load_dim_sku_costs(conn)
+        entries_by_order = _load_order_entries(conn)
         existing_cash = _load_existing_cash_in(conn)
         existing_refunds = _load_existing_refunds(conn)
         existing_on_delivery = _load_existing_on_delivery(conn)
@@ -255,6 +302,8 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
         ).fetchall()
 
         events = []
+        missing_sku = []
+        missing_cost = []
         counts = {"completed": 0, "cancelled": 0, "on_delivery": 0, "ignored": 0}
 
         for row in rows:
@@ -269,44 +318,148 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
             if not event_date:
                 counts["ignored"] += 1
                 continue
-
-            qty = float(row["quantity"] or 0.0)
-            if qty <= 0:
-                counts["ignored"] += 1
-                continue
-
-            sell_price = float(row["unit_price_kzt"] or 0.0)
-            sku_key = row["sku_key"]
-            weight = weights.get(sku_key or "", 0.0)
-            vat_rate = get_vat_rate(date.fromisoformat(event_date))
-            delivery_fee = calc_delivery_fee(sell_price, weight_kg=weight, delivery_type="city")
-            net_rev_unit = calc_net_rev(
-                sell_price,
-                delivery_fee=delivery_fee,
-                weight_kg=weight,
-                as_of_date=date.fromisoformat(event_date),
-            )
-            net_rev_line = round(net_rev_unit * qty, 2)
-            delivery_fee_line = round(float(delivery_fee or 0.0) * qty, 2)
-            unit_cost = _unit_cost_kzt(row, fx_rates, dim_costs)
-            cost_line = round(unit_cost * qty, 2)
-
             order_id = str(row["order_id"]) if row["order_id"] is not None else ""
-            order_sku_id = str(row["sku_id"]) if row["sku_id"] is not None else ""
-            order_key = (order_id, order_sku_id)
-            base_fields = {
-                "store_code": row["store_code"],
-                "sku_key": row["sku_key"],
-                "sku_id": order_sku_id,
-                "ref_type": "ORDER",
-                "ref_id": order_id,
-                "source": "ORDER_MODELLED",
-                "run_id": run_id,
-            }
+            store_code = row["store_code"]
+            order_lines = []
+            if row["sku_key"] and row["sku_id"]:
+                order_lines.append(
+                    {
+                        "sku_key": row["sku_key"],
+                        "sku_id": row["sku_id"],
+                        "quantity": float(row["quantity"] or 0.0),
+                        "unit_price_kzt": row["unit_price_kzt"],
+                        "total_price_kzt": None,
+                    }
+                )
+            else:
+                order_lines = entries_by_order.get((order_id, str(store_code)), [])
+                if not order_lines:
+                    missing_sku.append(f"{order_id}:{store_code}")
+                    counts["ignored"] += 1
+                    continue
 
-            if status == "COMPLETED":
-                if _has_existing(existing_cash, order_id, order_sku_id):
-                    # Cash/COGS already recorded; only backfill on-delivery if missing.
+            for line in order_lines:
+                qty = float(line.get("quantity") or 0.0)
+                if qty <= 0:
+                    counts["ignored"] += 1
+                    continue
+
+                sku_key = line.get("sku_key")
+                sku_id = line.get("sku_id")
+                if not sku_key or not sku_id:
+                    missing_sku.append(f"{order_id}:{store_code}")
+                    counts["ignored"] += 1
+                    continue
+
+                sell_price = line.get("unit_price_kzt")
+                if not sell_price and line.get("total_price_kzt") and qty > 0:
+                    sell_price = float(line.get("total_price_kzt") or 0.0) / qty
+                sell_price = float(sell_price or 0.0)
+
+                weight = weights.get(sku_key or "", 0.0)
+                vat_rate = get_vat_rate(date.fromisoformat(event_date))
+                delivery_fee = calc_delivery_fee(sell_price, weight_kg=weight, delivery_type="city")
+                net_rev_unit = calc_net_rev(
+                    sell_price,
+                    delivery_fee=delivery_fee,
+                    weight_kg=weight,
+                    as_of_date=date.fromisoformat(event_date),
+                )
+                net_rev_line = round(net_rev_unit * qty, 2)
+                delivery_fee_line = round(float(delivery_fee or 0.0) * qty, 2)
+                unit_cost = _unit_cost_kzt_for_sku(sku_key, fx_rates, dim_costs)
+                if unit_cost <= 0:
+                    missing_cost.append(f"{order_id}:{sku_key}")
+                    counts["ignored"] += 1
+                    continue
+                cost_line = round(unit_cost * qty, 2)
+
+                order_sku_id = str(sku_id)
+                order_key = (order_id, order_sku_id)
+                base_fields = {
+                    "store_code": store_code,
+                    "sku_key": sku_key,
+                    "sku_id": order_sku_id,
+                    "ref_type": "ORDER",
+                    "ref_id": order_id,
+                    "source": "ORDER_MODELLED",
+                    "run_id": run_id,
+                }
+
+                if status == "COMPLETED":
+                    if _has_existing(existing_cash, order_id, order_sku_id):
+                        # Cash/COGS already recorded; only backfill on-delivery if missing.
+                        if not _has_existing(existing_on_delivery, order_id, order_sku_id):
+                            backfill_date = existing_cogs_dates.get(order_key) or event_date
+                            events.append(
+                                {
+                                    "event_date": backfill_date,
+                                    "event_type": "INVENTORY_MOVE",
+                                    "account": "INVENTORY_ON_HAND_COST",
+                                    "amount_kzt": -abs(cost_line),
+                                    **base_fields,
+                                    "notes": "Backfill on-delivery at completion",
+                                }
+                            )
+                            events.append(
+                                {
+                                    "event_date": backfill_date,
+                                    "event_type": "INVENTORY_MOVE",
+                                    "account": "INVENTORY_ON_DELIVERY_COST",
+                                    "amount_kzt": abs(cost_line),
+                                    **base_fields,
+                                    "notes": "Backfill on-delivery at completion",
+                                }
+                            )
+                            existing_on_delivery.add(order_key)
+                        else:
+                            cogs_date = existing_cogs_dates.get(order_key)
+                            move_date = existing_move_dates.get(order_key)
+                            if cogs_date and move_date and move_date > cogs_date:
+                                # Shift on-delivery timing earlier to avoid negative balance on cogs date.
+                                events.append(
+                                    {
+                                        "event_date": cogs_date,
+                                        "event_type": "INVENTORY_MOVE",
+                                        "account": "INVENTORY_ON_HAND_COST",
+                                        "amount_kzt": -abs(cost_line),
+                                        **base_fields,
+                                        "notes": "Timing shift (earlier on-delivery)",
+                                    }
+                                )
+                                events.append(
+                                    {
+                                        "event_date": cogs_date,
+                                        "event_type": "INVENTORY_MOVE",
+                                        "account": "INVENTORY_ON_DELIVERY_COST",
+                                        "amount_kzt": abs(cost_line),
+                                        **base_fields,
+                                        "notes": "Timing shift (earlier on-delivery)",
+                                    }
+                                )
+                                events.append(
+                                    {
+                                        "event_date": move_date,
+                                        "event_type": "INVENTORY_MOVE",
+                                        "account": "INVENTORY_ON_HAND_COST",
+                                        "amount_kzt": abs(cost_line),
+                                        **base_fields,
+                                        "notes": "Timing shift (reverse later move)",
+                                    }
+                                )
+                                events.append(
+                                    {
+                                        "event_date": move_date,
+                                        "event_type": "INVENTORY_MOVE",
+                                        "account": "INVENTORY_ON_DELIVERY_COST",
+                                        "amount_kzt": -abs(cost_line),
+                                        **base_fields,
+                                        "notes": "Timing shift (reverse later move)",
+                                    }
+                                )
+                        counts["ignored"] += 1
+                        continue
+                    counts["completed"] += 1
                     if not _has_existing(existing_on_delivery, order_id, order_sku_id):
                         backfill_date = existing_cogs_dates.get(order_key) or event_date
                         events.append(
@@ -327,156 +480,104 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                                 "amount_kzt": abs(cost_line),
                                 **base_fields,
                                 "notes": "Backfill on-delivery at completion",
-                            }
-                        )
+                                }
+                            )
                         existing_on_delivery.add(order_key)
-                    else:
-                        cogs_date = existing_cogs_dates.get(order_key)
-                        move_date = existing_move_dates.get(order_key)
-                        if cogs_date and move_date and move_date > cogs_date:
-                            # Shift on-delivery timing earlier to avoid negative balance on cogs date.
-                            events.append(
-                                {
-                                    "event_date": cogs_date,
-                                    "event_type": "INVENTORY_MOVE",
-                                    "account": "INVENTORY_ON_HAND_COST",
-                                    "amount_kzt": -abs(cost_line),
-                                    **base_fields,
-                                    "notes": "Timing shift (earlier on-delivery)",
-                                }
-                            )
-                            events.append(
-                                {
-                                    "event_date": cogs_date,
-                                    "event_type": "INVENTORY_MOVE",
-                                    "account": "INVENTORY_ON_DELIVERY_COST",
-                                    "amount_kzt": abs(cost_line),
-                                    **base_fields,
-                                    "notes": "Timing shift (earlier on-delivery)",
-                                }
-                            )
-                            events.append(
-                                {
-                                    "event_date": move_date,
-                                    "event_type": "INVENTORY_MOVE",
-                                    "account": "INVENTORY_ON_HAND_COST",
-                                    "amount_kzt": abs(cost_line),
-                                    **base_fields,
-                                    "notes": "Timing shift (reverse later move)",
-                                }
-                            )
-                            events.append(
-                                {
-                                    "event_date": move_date,
-                                    "event_type": "INVENTORY_MOVE",
-                                    "account": "INVENTORY_ON_DELIVERY_COST",
-                                    "amount_kzt": -abs(cost_line),
-                                    **base_fields,
-                                    "notes": "Timing shift (reverse later move)",
-                                }
-                            )
-                    counts["ignored"] += 1
-                    continue
-                counts["completed"] += 1
-                if not _has_existing(existing_on_delivery, order_id, order_sku_id):
-                    backfill_date = existing_cogs_dates.get(order_key) or event_date
                     events.append(
                         {
-                            "event_date": backfill_date,
-                            "event_type": "INVENTORY_MOVE",
-                            "account": "INVENTORY_ON_HAND_COST",
-                            "amount_kzt": -abs(cost_line),
+                            "event_date": event_date,
+                            "event_type": "CASH_IN",
+                            "account": _cash_account(store_code),
+                            "amount_kzt": net_rev_line,
                             **base_fields,
-                            "notes": "Backfill on-delivery at completion",
                         }
                     )
                     events.append(
                         {
-                            "event_date": backfill_date,
+                            "event_date": event_date,
+                            "event_type": "COGS_RECOGNIZED",
+                            "account": "INVENTORY_ON_DELIVERY_COST",
+                            "amount_kzt": -abs(cost_line),
+                            **base_fields,
+                        }
+                    )
+                    existing_cash.add(order_key)
+                elif status == "CANCELLED":
+                    # Only reverse if we previously recorded cash for this order
+                    if not _has_existing(existing_cash, order_id, order_sku_id):
+                        counts["ignored"] += 1
+                        continue
+                    if _has_existing(existing_refunds, order_id, order_sku_id):
+                        counts["ignored"] += 1
+                        continue
+                    counts["cancelled"] += 1
+                    refund_cash = -abs(net_rev_line + delivery_fee_line)
+                    events.append(
+                        {
+                            "event_date": event_date,
+                            "event_type": "CASH_IN",
+                            "account": _cash_account(store_code),
+                            "amount_kzt": refund_cash,
+                            **base_fields,
+                        }
+                    )
+                    events.append(
+                        {
+                            "event_date": event_date,
+                            "event_type": "INVENTORY_RETURN",
+                            "account": "INVENTORY_ON_HAND_COST",
+                            "amount_kzt": abs(cost_line),
+                            **base_fields,
+                        }
+                    )
+                elif status == "ON_DELIVERY":
+                    if _has_existing(existing_on_delivery, order_id, order_sku_id):
+                        counts["ignored"] += 1
+                        continue
+                    counts["on_delivery"] += 1
+                    events.append(
+                        {
+                            "event_date": event_date,
+                            "event_type": "INVENTORY_MOVE",
+                            "account": "INVENTORY_ON_HAND_COST",
+                            "amount_kzt": -abs(cost_line),
+                            **base_fields,
+                            "notes": "Move to on-delivery",
+                        }
+                    )
+                    events.append(
+                        {
+                            "event_date": event_date,
                             "event_type": "INVENTORY_MOVE",
                             "account": "INVENTORY_ON_DELIVERY_COST",
                             "amount_kzt": abs(cost_line),
                             **base_fields,
-                            "notes": "Backfill on-delivery at completion",
-                            }
-                        )
+                            "notes": "On-delivery inventory",
+                        }
+                    )
                     existing_on_delivery.add(order_key)
-                events.append(
-                    {
-                        "event_date": event_date,
-                        "event_type": "CASH_IN",
-                        "account": _cash_account(row["store_code"]),
-                        "amount_kzt": net_rev_line,
-                        **base_fields,
-                    }
-                )
-                events.append(
-                    {
-                        "event_date": event_date,
-                        "event_type": "COGS_RECOGNIZED",
-                        "account": "INVENTORY_ON_DELIVERY_COST",
-                        "amount_kzt": -abs(cost_line),
-                        **base_fields,
-                    }
-                )
-                existing_cash.add(order_key)
-            elif status == "CANCELLED":
-                # Only reverse if we previously recorded cash for this order
-                if not _has_existing(existing_cash, order_id, order_sku_id):
+                else:
                     counts["ignored"] += 1
                     continue
-                if _has_existing(existing_refunds, order_id, order_sku_id):
-                    counts["ignored"] += 1
-                    continue
-                counts["cancelled"] += 1
-                refund_cash = -abs(net_rev_line + delivery_fee_line)
-                events.append(
-                    {
-                        "event_date": event_date,
-                        "event_type": "CASH_IN",
-                        "account": _cash_account(row["store_code"]),
-                        "amount_kzt": refund_cash,
-                        **base_fields,
-                    }
+
+        if missing_sku or missing_cost:
+            messages = []
+            if missing_sku:
+                sample = ", ".join(missing_sku[:5])
+                messages.append(
+                    "Missing SKU resolution for "
+                    f"{len(missing_sku)} order lines (sample: {sample}). "
+                    "Run order enrichment to populate fact_order_entries_kaspi "
+                    "and ensure dim_kaspi_article_map covers offer_id."
                 )
-                events.append(
-                    {
-                        "event_date": event_date,
-                        "event_type": "INVENTORY_RETURN",
-                        "account": "INVENTORY_ON_HAND_COST",
-                        "amount_kzt": abs(cost_line),
-                        **base_fields,
-                    }
+            if missing_cost:
+                sample = ", ".join(missing_cost[:5])
+                messages.append(
+                    "Missing unit cost for "
+                    f"{len(missing_cost)} order lines (sample: {sample}). "
+                    "Ensure dim_sku has base_cost_cny or cogs_kzt (or weight for calc_cogs)."
                 )
-            elif status == "ON_DELIVERY":
-                if _has_existing(existing_on_delivery, order_id, order_sku_id):
-                    counts["ignored"] += 1
-                    continue
-                counts["on_delivery"] += 1
-                events.append(
-                    {
-                        "event_date": event_date,
-                        "event_type": "INVENTORY_MOVE",
-                        "account": "INVENTORY_ON_HAND_COST",
-                        "amount_kzt": -abs(cost_line),
-                        **base_fields,
-                        "notes": "Move to on-delivery",
-                    }
-                )
-                events.append(
-                    {
-                        "event_date": event_date,
-                        "event_type": "INVENTORY_MOVE",
-                        "account": "INVENTORY_ON_DELIVERY_COST",
-                        "amount_kzt": abs(cost_line),
-                        **base_fields,
-                        "notes": "On-delivery inventory",
-                    }
-                )
-                existing_on_delivery.add(order_key)
-            else:
-                counts["ignored"] += 1
-                continue
+            raise RuntimeError(" ".join(messages))
 
         new_events = []
         if events:
