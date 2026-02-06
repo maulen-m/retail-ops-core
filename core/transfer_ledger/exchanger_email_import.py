@@ -13,9 +13,36 @@ EXCHANGER_KEYWORDS = {
 }
 
 STATUS_MAP = {
-    "NEW": ["new exchange", "order for exchange"],
-    "IN_PROCESS": ["in payout processing", "waiting for confirmation"],
-    "COMPLETED": ["success done", "completed order"],
+    "NEW": ["new exchange", "order for exchange", "order created"],
+    "IN_PROCESS": ["in payout processing", "waiting for confirmation", "in payout", "processing"],
+    "COMPLETED": ["success done", "completed order", "successfully completed", "successfully completed."],
+    "PAID": ["paid order", "payment sent"],
+    "CANCELLED": [
+        "order deleted",
+        "cancelled order",
+        "canceled order",
+        "order cancelled",
+        "order canceled",
+        "cancelled by user",
+        "canceled by user",
+        "request cancelled",
+        "request canceled",
+    ],
+}
+
+NON_ORDER_PATTERNS = {
+    "UAChanger": [
+        r"user registration",
+        r"двухфакторной аутентификации",
+        r"двухфактор",
+        r"two[- ]factor",
+        r"2fa",
+        r"verification code",
+        r"auth code",
+        r"подтверждение email",
+        r"email confirmation",
+        r"confirm(?:ation)? email",
+    ],
 }
 
 
@@ -35,12 +62,20 @@ def _detect_exchanger(subject: str, from_addr: str, body: str) -> Optional[str]:
     return None
 
 
-def _detect_status(subject: str) -> Optional[str]:
-    lower = subject.lower()
+def _detect_status(text: str) -> Optional[str]:
+    lower = text.lower()
     for status, keys in STATUS_MAP.items():
         if any(k in lower for k in keys):
             return status
     return None
+
+
+def _is_non_order_notice(exchanger: str, text: str) -> bool:
+    patterns = NON_ORDER_PATTERNS.get(exchanger, [])
+    if not patterns:
+        return False
+    lower = text.lower()
+    return any(re.search(pattern, lower) for pattern in patterns)
 
 
 def _extract_order_id(subject: str) -> Optional[str]:
@@ -48,6 +83,12 @@ def _extract_order_id(subject: str) -> Optional[str]:
     if m:
         return m.group(1)
     m = re.search(r"order\s*(?:for\s*exchange\s*)?(\d{3,})", subject, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"(?:merchant|exchange)\s*(\d{3,})", subject, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"(\d{3,})\s*$", subject)
     if m:
         return m.group(1)
     return None
@@ -84,6 +125,7 @@ def _extract_rate(text: str) -> Optional[float]:
 
 
 def _extract_amounts(text: str) -> tuple[Optional[float], Optional[float]]:
+    max_cny = 10_000_000
     usdt_vals = []
     for m in re.finditer(r"([0-9][0-9,\.]+)\s*(USDT|Tether(?:\s+TRC20)?)", text, re.I):
         try:
@@ -91,14 +133,15 @@ def _extract_amounts(text: str) -> tuple[Optional[float], Optional[float]]:
         except ValueError:
             continue
     cny_vals = []
-    for m in re.finditer(r"([0-9][0-9,\.]+)\s*CNY", text, re.I):
+    for m in re.finditer(r"([0-9][0-9,\.]+)\s*(CNY|WeChat)", text, re.I):
         try:
             cny_vals.append(float(m.group(1).replace(",", "")))
         except ValueError:
             continue
 
     usdt_vals = [v for v in usdt_vals if v > 1.0]
-    cny_vals = [v for v in cny_vals if v > 1.0]
+    # Filter out WeChat IDs or other large numeric strings captured as CNY.
+    cny_vals = [v for v in cny_vals if 1.0 < v <= max_cny]
 
     amount_usdt = max(usdt_vals) if usdt_vals else None
     amount_cny = max(cny_vals) if cny_vals else None
@@ -130,13 +173,20 @@ def parse_exchanger_email(msg: dict) -> Optional[dict]:
     if not exchanger:
         return None
 
-    status = _detect_status(subject)
+    if _is_non_order_notice(exchanger, body):
+        return None
+
+    status = _detect_status(body)
     order_id = _extract_order_id(subject) or _extract_order_id_from_body(body)
     direction = _extract_direction(subject, body)
     rate = _extract_rate(body)
     amount_usdt, amount_cny = _extract_amounts(body)
     deposit_address = _extract_address(body)
     receiver_account = _extract_receiver(body)
+
+    # Ignore non-order emails (e.g., OTP, registration) that lack core fields.
+    if not order_id and not amount_usdt and not amount_cny and not deposit_address and not direction:
+        return None
 
     message_id = msg.get("message_id") or ""
     message_date = msg.get("date")
@@ -146,6 +196,12 @@ def parse_exchanger_email(msg: dict) -> Optional[dict]:
     exchanger_order_id = f"{exchanger.upper()}:{order_key}"
     if not order_id:
         order_id = order_key
+
+    derived_rate = None
+    if amount_usdt and amount_cny and amount_usdt > 0:
+        derived_rate = amount_cny / amount_usdt
+    if derived_rate:
+        rate = derived_rate
 
     return {
         "exchanger_order_id": exchanger_order_id,

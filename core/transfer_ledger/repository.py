@@ -520,11 +520,63 @@ def upsert_binance_withdrawal(withdraw: dict, db_path: Optional[Path] = None) ->
 def upsert_exchanger_order(order: dict, db_path: Optional[Path] = None) -> bool:
     path = db_path or DEFAULT_DB_PATH
     ensure_schema(path)
+    def _parse_dt(value: object) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def _choose_latest(existing_value: object, new_value: object, prefer_new: bool) -> object:
+        if prefer_new and new_value not in (None, ""):
+            return new_value
+        if existing_value not in (None, ""):
+            return existing_value
+        return new_value
+
     with get_db(path) as conn:
         existing = conn.execute(
-            "SELECT 1 FROM exchanger_orders WHERE exchanger_order_id = ? LIMIT 1",
+            """
+            SELECT
+                exchanger_order_id, exchanger, order_id, status, direction,
+                amount_usdt, amount_cny, rate_usdt_cny, deposit_address,
+                receiver_account, message_id, message_date, subject, raw_json, source
+            FROM exchanger_orders
+            WHERE exchanger_order_id = ?
+            LIMIT 1
+            """,
             (order["exchanger_order_id"],),
         ).fetchone()
+        payload = dict(order)
+        if existing is not None:
+            current = dict(existing)
+            new_dt = _parse_dt(order.get("message_date"))
+            cur_dt = _parse_dt(current.get("message_date"))
+            prefer_new = False
+            if new_dt and cur_dt:
+                prefer_new = new_dt >= cur_dt
+            elif new_dt and not cur_dt:
+                prefer_new = True
+
+            payload = {
+                "exchanger_order_id": order["exchanger_order_id"],
+                "exchanger": order.get("exchanger") or current.get("exchanger"),
+                "order_id": order.get("order_id") or current.get("order_id"),
+                "status": _choose_latest(current.get("status"), order.get("status"), prefer_new),
+                "direction": order.get("direction") or current.get("direction"),
+                "amount_usdt": order.get("amount_usdt") if order.get("amount_usdt") is not None else current.get("amount_usdt"),
+                "amount_cny": order.get("amount_cny") if order.get("amount_cny") is not None else current.get("amount_cny"),
+                "rate_usdt_cny": order.get("rate_usdt_cny") if order.get("rate_usdt_cny") is not None else current.get("rate_usdt_cny"),
+                "deposit_address": order.get("deposit_address") or current.get("deposit_address"),
+                "receiver_account": order.get("receiver_account") or current.get("receiver_account"),
+                "message_id": _choose_latest(current.get("message_id"), order.get("message_id"), prefer_new),
+                "message_date": _choose_latest(current.get("message_date"), order.get("message_date"), prefer_new),
+                "subject": _choose_latest(current.get("subject"), order.get("subject"), prefer_new),
+                "raw_json": _choose_latest(current.get("raw_json"), order.get("raw_json"), prefer_new),
+                "source": _choose_latest(current.get("source"), order.get("source", "GMAIL"), prefer_new),
+            }
+
         conn.execute(
             """
             INSERT OR REPLACE INTO exchanger_orders (
@@ -535,21 +587,21 @@ def upsert_exchanger_order(order: dict, db_path: Optional[Path] = None) -> bool:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
-                order["exchanger_order_id"],
-                order.get("exchanger"),
-                order.get("order_id"),
-                order.get("status"),
-                order.get("direction"),
-                order.get("amount_usdt"),
-                order.get("amount_cny"),
-                order.get("rate_usdt_cny"),
-                order.get("deposit_address"),
-                order.get("receiver_account"),
-                order.get("message_id"),
-                order.get("message_date"),
-                order.get("subject"),
-                order.get("raw_json"),
-                order.get("source", "GMAIL"),
+                payload["exchanger_order_id"],
+                payload.get("exchanger"),
+                payload.get("order_id"),
+                payload.get("status"),
+                payload.get("direction"),
+                payload.get("amount_usdt"),
+                payload.get("amount_cny"),
+                payload.get("rate_usdt_cny"),
+                payload.get("deposit_address"),
+                payload.get("receiver_account"),
+                payload.get("message_id"),
+                payload.get("message_date"),
+                payload.get("subject"),
+                payload.get("raw_json"),
+                payload.get("source", "GMAIL"),
             ),
         )
     return existing is None

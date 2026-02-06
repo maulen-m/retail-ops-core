@@ -20,7 +20,10 @@ from core.transfer_ledger.repository import (
     record_sync_log,
     insert_exchanger_event,
 )
-from core.transfer_ledger.exchanger_matching import label_withdrawals_for_order
+from core.transfer_ledger.exchanger_matching import (
+    label_withdrawals_for_order,
+    repair_withdrawal_labels,
+)
 from core.transfer_ledger.telegram_ledger_alerts import send_exchanger_update_alert
 
 
@@ -103,6 +106,7 @@ def main() -> int:
     inserted = 0
     events = 0
     labeled = 0
+    repaired = 0
     errors: list[str] = []
     min_seen: str | None = None
     max_seen: str | None = None
@@ -135,10 +139,13 @@ def main() -> int:
     print(f"Messages scanned: {len(messages)}")
     print(f"Exchanger orders parsed: {parsed}")
     if not args.dry_run:
+        repair_res = repair_withdrawal_labels(db_path=args.db)
+        repaired = int(repair_res.get("cleared") or 0)
         print(f"Inserted/updated orders: {inserted}")
         print(f"Email events stored: {events}")
         if not args.no_label:
             print(f"Withdrawals labeled: {labeled}")
+            print(f"Withdrawals relinked/cleared: {repaired}")
     if errors:
         print("Errors:")
         for e in errors[:10]:
