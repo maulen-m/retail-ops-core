@@ -170,3 +170,74 @@ def test_post_doc_monotonicity_enforced() -> None:
 
     errors = validate_payload(payload, db_path=None, strict_portfolio=False)
     assert any("post_arr_doc" in err for err in errors)
+
+
+def test_real_archive_post_doc_formula_mismatch_fails() -> None:
+    payload = {
+        "pos": {
+            "PO-5": {
+                "po_name": "PO-5",
+                "po_kind": "REAL_ARCHIVE",
+                "po_message_date": "2026-01-21",
+                "sku_level": [
+                    {
+                        "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+                        "po_qty_total": 1215,
+                        "d_sku": 20.0,
+                        "pre_arrival": 0,
+                        "pre_arr_doc": 0.0,
+                        "post_arr_doc": 99.2,
+                        "consumption_until_arrival": 700.0,
+                        "consumption_until_arrival_capped": 115.0,
+                    }
+                ],
+                "size_level": [
+                    {
+                        "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+                        "size": "M",
+                        "order_qty": 110,
+                        "d_size": 1.8,
+                        "pre_arr_doc": 0.0,
+                        "post_arr_doc": 61.1,
+                        "pre_arrival": 0,
+                        "target": 0,
+                        "deficit_size": 0,
+                    }
+                ],
+            }
+        },
+        "archived_pos": ["PO-5"],
+        "real_pos": [],
+    }
+
+    errors = validate_payload(payload, db_path=None, strict_portfolio=False)
+    assert any("formula" in err and "post_arr_doc" in err for err in errors)
+
+
+def test_real_archive_requires_capped_consumption_field() -> None:
+    payload = {
+        "pos": {
+            "PO-5": {
+                "po_name": "PO-5",
+                "po_kind": "REAL_ARCHIVE",
+                "po_message_date": "2026-01-21",
+                "sku_level": [
+                    {
+                        "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+                        "po_qty_total": 1215,
+                        "d_sku": 20.0,
+                        "pre_arrival": 0,
+                        "pre_arr_doc": 0.0,
+                        "post_arr_doc": 60.8,
+                        "consumption_until_arrival": 700.0,
+                    }
+                ],
+                "size_level": [],
+            }
+        },
+        "archived_pos": ["PO-5"],
+        "real_pos": [],
+    }
+
+    errors = validate_payload(payload, db_path=None, strict_portfolio=False)
+    assert any("consumption_until_arrival_capped" in err for err in errors)

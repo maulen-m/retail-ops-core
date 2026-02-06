@@ -37,6 +37,7 @@ Top-level keys:
 Each non-PLAN entry in `pos` must include:
 - `po_kind` = `REAL_ARCHIVE`
 - must be listed in `archived_pos`
+- must be recomputed from message-date state (`MAX(snapshot_date <= po_message_date)`), not cloned from PLAN rows
 
 Each `sku_level` entry must include:
 - `sku_key` (string)
@@ -44,6 +45,10 @@ Each `sku_level` entry must include:
 - `po_qty_total` (int)
 - `size_orders` (object {size: qty})
 - `roic_pct` (float, percentage)
+- `stock_at_msg` (numeric; stock baseline at row message date)
+- `consumption_until_arrival` (numeric; theoretical `d_sku * effective_L`)
+- `consumption_until_arrival_capped` (numeric; `min(consumption_until_arrival, stock_at_msg + active_inbound)`)
+- `baseline_snapshot_date` (YYYY-MM-DD; snapshot used for baseline)
 
 `real_pos` entry minimal fields:
 - `po_id` (string)
@@ -59,6 +64,9 @@ For each SKU in the fixture:
 3) `size_orders` == PO engine `PODraft.allocations` (exact, per-size quantities).
 4) `roic_pct` matches `PODraft.roic_monthly * 100` within PO_CONTRACT `ROIC_pct_points` tolerance.
 5) `sum(size_orders) == po_qty_total`.
+6) DOC display rounding is half-up to 1 decimal (e.g., `29.95 -> 30.0`, `60.75 -> 60.8`) for both PLAN and REAL_ARCHIVE rows.
+7) For positive order quantity and positive demand, `post_arr_doc > pre_arr_doc`.
+8) REAL_ARCHIVE per-row `pre_arr_doc` / `post_arr_doc` must match recomputed formula from baseline pre-arrival and actual order quantities.
 
 Summary invariants:
 - `summary.total_skus == len(sku_level)`

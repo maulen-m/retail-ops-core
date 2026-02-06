@@ -10,6 +10,20 @@
 
 This system automates inventory management for a **Kaspi-only** retail operation (CL/ELS/FUR). It provides demand forecasting, safety stock calculation, automatic PO generation, portfolio analytics, and PO lifecycle management.
 
+## Single-Truth Path (PO, Inventory, Cashflow)
+
+The operational truth chain is enforced as:
+
+1. `fact_inventory_snapshot_size` message-date baseline (latest snapshot on or before row message date).
+2. PO dashboard generation (`scripts/generate_po_dashboard_data.py`) computes PLAN and REAL_ARCHIVE rows from canonical math and DB facts.
+3. Dashboard validators (`scripts/validate_po_dashboard_invariants.py`, `scripts/validate_single_truth_alignment.py`) assert PLAN/REAL separation, qty identity vs `po_line`, and formula consistency.
+4. Cashflow and inventory gates (`scripts/validate_cashflow_invariants.py`, `scripts/validate_inventory_cost_drift.py`) must remain aligned with the same underlying facts.
+
+Rules:
+- `PLAN-*` rows are recommendations only.
+- Non-PLAN rows in dashboard `pos` are `po_kind="REAL_ARCHIVE"` and are recomputed from real PO timeline state.
+- DOC presentation uses half-up rounding to 1 decimal across PLAN and REAL_ARCHIVE output.
+
 ---
 
 ## Architecture Diagram

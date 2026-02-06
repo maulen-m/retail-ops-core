@@ -595,6 +595,12 @@ def _run_pipeline(args, start_time: datetime) -> int:
             required=True
         ),
         PipelineStep(
+            name="4b. Validate Single Truth Alignment",
+            script="validate_single_truth_alignment.py",
+            args=["--skip-cashflow", "--skip-drift"],
+            required=True,
+        ),
+        PipelineStep(
             name="5. Update PO Dashboard",
             script="update_po_dashboard.py",
             required=True

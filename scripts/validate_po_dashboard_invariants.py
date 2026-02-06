@@ -18,6 +18,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +45,10 @@ def _normalize_size(size: str | None) -> str:
     if not size:
         return ""
     return str(size).upper().replace(" ", "").replace("-", "")
+
+
+def _round_half_up_1dp(value: float) -> float:
+    return float(Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 
 def _is_kid_sku(sku_key: str) -> bool:
@@ -120,6 +125,7 @@ def validate_payload(
 
     sku_level = plan.get("sku_level", [])
     size_level = plan.get("size_level", [])
+    plan_po_kind = plan.get("po_kind")
 
     size_by_sku: dict[str, list[dict]] = {}
     for row in size_level:
@@ -220,6 +226,38 @@ def validate_payload(
                     f"{sku_key}: post_arr_doc must exceed pre_arr_doc when order_qty > 0"
                 )
 
+            try:
+                pre_arrival = float(sku.get("pre_arrival", 0) or 0)
+            except (TypeError, ValueError):
+                pre_arrival = 0.0
+            expected_pre = _round_half_up_1dp(pre_arrival / d_sku)
+            expected_post = _round_half_up_1dp((pre_arrival + sku_total) / d_sku)
+            if abs(pre_doc - expected_pre) > tolerance or abs(post_doc - expected_post) > tolerance:
+                errors.append(
+                    f"{sku_key}: post_arr_doc formula mismatch (expected {expected_post}, got {post_doc})"
+                )
+
+        if plan_po_kind == "REAL_ARCHIVE":
+            if "consumption_until_arrival_capped" not in sku:
+                errors.append(f"{sku_key}: missing consumption_until_arrival_capped")
+            else:
+                try:
+                    capped = float(sku.get("consumption_until_arrival_capped", 0) or 0)
+                    full = float(sku.get("consumption_until_arrival", 0) or 0)
+                except (TypeError, ValueError):
+                    capped = 0.0
+                    full = 0.0
+                if capped < -tolerance or capped - full > tolerance:
+                    errors.append(
+                        f"{sku_key}: invalid consumption_until_arrival_capped={capped} vs consumption_until_arrival={full}"
+                    )
+            base_dt = sku.get("baseline_snapshot_date")
+            msg_dt = sku.get("po_message_date") or plan.get("po_message_date")
+            if base_dt and msg_dt and str(base_dt) > str(msg_dt):
+                errors.append(
+                    f"{sku_key}: baseline_snapshot_date {base_dt} must be <= po_message_date {msg_dt}"
+                )
+
     archived_pos = set(payload.get("archived_pos") or [])
     for po_name, po_data in pos.items():
         if not isinstance(po_data, dict):
@@ -233,6 +271,12 @@ def validate_payload(
                 errors.append(f"{po_name}: po_kind must be REAL_ARCHIVE for non-PLAN entry")
             if po_name not in archived_pos:
                 errors.append(f"{po_name}: non-PLAN entry missing from archived_pos")
+            for sku in po_data.get("sku_level", []) or []:
+                sku_key = sku.get("sku_key")
+                if not sku_key:
+                    continue
+                if "consumption_until_arrival_capped" not in sku:
+                    errors.append(f"{po_name}/{sku_key}: missing consumption_until_arrival_capped")
 
     for idx, row in enumerate(payload.get("real_pos") or []):
         if not isinstance(row, dict):

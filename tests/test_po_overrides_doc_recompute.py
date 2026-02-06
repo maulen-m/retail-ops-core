@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from core.po.dashboard_math import round_half_up_1dp
 from scripts.generate_po_dashboard_data import apply_po_overrides
 
 
@@ -63,7 +64,7 @@ def test_apply_po_overrides_recomputes_post_doc() -> None:
     sku_line = result["sku_level"][0]
     size_line = result["size_level"][0]
 
-    expected_sku_doc = round((770 + 1215) / 20.0, 1)
-    expected_size_doc = round((100 + 1215) / 2.0, 1)
+    expected_sku_doc = round_half_up_1dp((770 + 1215) / 20.0)
+    expected_size_doc = round_half_up_1dp((100 + 1215) / 2.0)
     assert sku_line["post_arr_doc"] == expected_sku_doc
     assert size_line["post_arr_doc"] == expected_size_doc

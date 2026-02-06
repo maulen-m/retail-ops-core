@@ -41,6 +41,7 @@ from core.calc.stock_timeline import StockTimelineBuilder
 from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
 from core.calc.size_allocation import calc_deficit_capped_order_qty, round_qty_to_5_up
 from core.po.blackout import adjust_po_dates, CNY_2026
+from core.po.dashboard_math import round_half_up_1dp, compute_doc_values
 from core.utils.sku_normalize import normalize_size
 from core.capital.guardrails import check_roic_gate
 
@@ -325,6 +326,8 @@ class SizePOLine:
     post_arr_doc: float  # Days of coverage after order arrives
     roic_pct: float
     notes: str
+    consumption_until_arrival_capped: float = 0.0
+    baseline_snapshot_date: str = ""
 
 
 @dataclass
@@ -379,6 +382,8 @@ class SkuPOLine:
     oos_type: str  # NONE, EXTENDED, INTERMITTENT, PARTIAL
     partial_oos_sizes: str  # Comma-separated list of OOS sizes
     notes: str
+    consumption_until_arrival_capped: float = 0.0
+    baseline_snapshot_date: str = ""
 
 
 def calc_prep_days(po_weight_kg: float, product_type: str) -> int:
@@ -1501,12 +1506,8 @@ def generate_po_data(
         est_arr = po_send + timedelta(days=params.L)
 
         # Calculate days of coverage (DOC)
-        if d_sku > 0:
-            pre_arr_doc = pre_arrival / d_sku  # Days of coverage before arrival
-            post_arr_doc = (pre_arrival + total_qty) / d_sku  # Days of coverage after order arrives
-        else:
-            pre_arr_doc = 999.0 if pre_arrival > 0 else 0.0
-            post_arr_doc = 999.0 if (pre_arrival + total_qty) > 0 else 0.0
+        pre_arr_doc, post_arr_doc = compute_doc_values(pre_arrival, total_qty, d_sku)
+        capped_consumption = min(float(consumption_until_arr), float(total_stock + inbound_stock))
 
         # Calculate deficit (ROP - stock - inbound)
         deficit_total = max(0, int(rop_sku - total_stock - inbound_stock))
@@ -1580,6 +1581,8 @@ def generate_po_data(
             inbound_total=0,  # PO-4: no previous POs
             days_until_arrival=effective_L,  # Lead time including prep
             consumption_until_arrival=round(consumption_until_arr, 2),
+            consumption_until_arrival_capped=round(capped_consumption, 2),
+            baseline_snapshot_date=STOCK_DATE,
             pre_arrival=pre_arrival,  # Projected stock at arrival
             d_sku=round(d_final, 3),  # Blended demand
             t_post_days=round(t_post_days, 1),  # Target coverage days
@@ -1593,8 +1596,8 @@ def generate_po_data(
             po_send_date=po_send.isoformat(),
             po_message_date=po_message.isoformat(),
             est_arr_date=est_arr.isoformat(),  # Estimated arrival date
-            pre_arr_doc=round(pre_arr_doc, 1),  # Days of coverage before arrival
-            post_arr_doc=round(post_arr_doc, 1),  # Days of coverage after arrival
+            pre_arr_doc=pre_arr_doc,  # Days of coverage before arrival
+            post_arr_doc=post_arr_doc,  # Days of coverage after arrival
             monthly_profit=round(monthly_profit, 2),
             k_avg=round(k_avg, 2),
             roic_pct=round(roic_monthly * 100, 1),
@@ -1655,12 +1658,10 @@ def generate_po_data(
             size_weight = weight_kg * order_qty
 
             # Size-level DOC
-            if d_size_val > 0:
-                size_pre_arr_doc = pre_arrival_size / d_size_val
-                size_post_arr_doc = (pre_arrival_size + order_qty) / d_size_val
-            else:
-                size_pre_arr_doc = 999.0 if pre_arrival_size > 0 else 0.0
-                size_post_arr_doc = 999.0 if (pre_arrival_size + order_qty) > 0 else 0.0
+            size_pre_arr_doc, size_post_arr_doc = compute_doc_values(
+                pre_arrival_size, order_qty, d_size_val
+            )
+            size_capped_consumption = min(float(size_consumption), float(size_stock + size_inb))
 
             size_line = SizePOLine(
                 sku_key=sku_key,
@@ -1672,6 +1673,8 @@ def generate_po_data(
                 inbound_total=0,  # PO-4: no previous POs
                 days_until_arrival=effective_L,
                 consumption_until_arrival=round(size_consumption, 2),
+                consumption_until_arrival_capped=round(size_capped_consumption, 2),
+                baseline_snapshot_date=STOCK_DATE,
                 pre_arrival=pre_arrival_size,
                 d_size=round(d_size_val, 4),
                 t_post_days=round(size_t_post, 1),
@@ -1684,8 +1687,8 @@ def generate_po_data(
                 po_send_date=po_send.isoformat(),
                 po_message_date=po_message.isoformat(),
                 est_arr_date=est_arr.isoformat(),
-                pre_arr_doc=round(size_pre_arr_doc, 1),
-                post_arr_doc=round(size_post_arr_doc, 1),
+                pre_arr_doc=size_pre_arr_doc,
+                post_arr_doc=size_post_arr_doc,
                 roic_pct=round(roic_monthly * 100, 1),
                 notes=""
             )
@@ -2136,9 +2139,17 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
         if prep_days_override is not None:
             sku_line["prep_days"] = prep_days_override
         d_sku = float(sku_line.get("d_sku", 0) or 0)
-        if d_sku > 0:
-            pre_arrival = float(sku_line.get("pre_arrival", 0) or 0)
-            sku_line["post_arr_doc"] = round((pre_arrival + total_qty) / d_sku, 1)
+        pre_arrival = float(sku_line.get("pre_arrival", 0) or 0)
+        _pre_doc, post_doc = compute_doc_values(pre_arrival, total_qty, d_sku)
+        sku_line["post_arr_doc"] = post_doc
+        if "consumption_until_arrival" in sku_line:
+            consumption = float(sku_line.get("consumption_until_arrival", 0.0) or 0.0)
+            stock_at_msg = float(sku_line.get("stock_at_msg", 0.0) or 0.0)
+            active_inbound = float(sku_line.get("active_inbound", 0.0) or 0.0)
+            sku_line["consumption_until_arrival_capped"] = round(
+                min(consumption, stock_at_msg + active_inbound),
+                2,
+            )
         total_units += total_qty
         if total_qty > 0:
             skus_with_orders += 1
@@ -2168,10 +2179,18 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
         if prep_days_override is not None:
             size_line["prep_days"] = prep_days_override
         d_size = float(size_line.get("d_size", 0) or 0)
-        if d_size > 0:
-            pre_arrival = float(size_line.get("pre_arrival", 0) or 0)
-            size_line["post_arr_doc"] = round(
-                (pre_arrival + size_line["order_qty"]) / d_size, 1
+        pre_arrival = float(size_line.get("pre_arrival", 0) or 0)
+        _size_pre_doc, size_post_doc = compute_doc_values(
+            pre_arrival, float(size_line.get("order_qty", 0) or 0), d_size
+        )
+        size_line["post_arr_doc"] = size_post_doc
+        if "consumption_until_arrival" in size_line:
+            consumption = float(size_line.get("consumption_until_arrival", 0.0) or 0.0)
+            stock_at_msg = float(size_line.get("stock_at_msg", 0.0) or 0.0)
+            active_inbound = float(size_line.get("active_inbound", 0.0) or 0.0)
+            size_line["consumption_until_arrival_capped"] = round(
+                min(consumption, stock_at_msg + active_inbound),
+                2,
             )
         size_rows.append(size_line)
 
@@ -2189,9 +2208,11 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
                 "inbound_total": 0,
                 "days_until_arrival": params.L,
                 "consumption_until_arrival": 0.0,
+                "consumption_until_arrival_capped": 0.0,
+                "baseline_snapshot_date": "",
                 "pre_arrival": 0,
                 "d_size": 0.0,
-                "t_post_days": params.R,
+                "t_post_days": getattr(params, "R", 0),
                 "target": 0.0,
                 "rop_size": 0.0,
                 "deficit_size": 0,
@@ -2204,7 +2225,7 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
                 "pre_arr_doc": 0.0,
                 "post_arr_doc": 0.0,
                 "roic_pct": 0.0,
-                "notes": ""
+                "notes": "",
             })
 
     base_data["size_level"] = size_rows
@@ -2280,6 +2301,215 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
     base_data["prep_days_clothes"] = calc_prep_days(total_cl_weight, "CL") if total_cl_weight > 0 else 1
 
     return base_data
+
+
+def _normalized_orders_by_sku(orders_by_sku: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    normalized: dict[str, dict[str, int]] = {}
+    for sku_key, size_map in (orders_by_sku or {}).items():
+        sku_norm = str(sku_key or "").strip()
+        if not sku_norm:
+            continue
+        normalized.setdefault(sku_norm, {})
+        for raw_size, qty in (size_map or {}).items():
+            size_norm = _canonicalize_size_for_sku(sku_norm, raw_size) or str(raw_size or "").strip()
+            if not size_norm:
+                continue
+            qty_int = int(qty or 0)
+            normalized[sku_norm][size_norm] = normalized[sku_norm].get(size_norm, 0) + qty_int
+    return normalized
+
+
+def _load_snapshot_as_of(
+    db_path: Path,
+    message_date: Optional[str],
+) -> tuple[Optional[str], dict[str, float], dict[str, float], dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+    """Load stock/inbound maps from latest snapshot <= message_date."""
+    stock_by_sku: dict[str, float] = {}
+    inbound_by_sku: dict[str, float] = {}
+    stock_by_size: dict[str, dict[str, float]] = {}
+    inbound_by_size: dict[str, dict[str, float]] = {}
+
+    if not db_path.exists():
+        return (None, stock_by_sku, inbound_by_sku, stock_by_size, inbound_by_size)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if not _table_exists(conn, "fact_inventory_snapshot_size"):
+            return (None, stock_by_sku, inbound_by_sku, stock_by_size, inbound_by_size)
+
+        snapshot_date = None
+        if message_date:
+            row = conn.execute(
+                """
+                SELECT MAX(snapshot_date) AS snapshot_date
+                FROM fact_inventory_snapshot_size
+                WHERE snapshot_date <= ?
+                """,
+                (message_date,),
+            ).fetchone()
+            snapshot_date = row["snapshot_date"] if row else None
+        if not snapshot_date:
+            row = conn.execute(
+                "SELECT MAX(snapshot_date) AS snapshot_date FROM fact_inventory_snapshot_size"
+            ).fetchone()
+            snapshot_date = row["snapshot_date"] if row else None
+        if not snapshot_date:
+            return (None, stock_by_sku, inbound_by_sku, stock_by_size, inbound_by_size)
+
+        rows = conn.execute(
+            """
+            SELECT sku_key, my_size,
+                   SUM(current_stock) AS stock,
+                   SUM(inbound_stock) AS inbound
+            FROM fact_inventory_snapshot_size
+            WHERE snapshot_date = ?
+            GROUP BY sku_key, my_size
+            """,
+            (snapshot_date,),
+        ).fetchall()
+
+        for row in rows:
+            sku_key = str(row["sku_key"] or "").strip()
+            if not sku_key:
+                continue
+            raw_size = row["my_size"]
+            size = _canonicalize_size_for_sku(sku_key, raw_size) or str(raw_size or "").strip()
+            stock_val = float(row["stock"] or 0.0)
+            inbound_val = float(row["inbound"] or 0.0)
+
+            stock_by_sku[sku_key] = stock_by_sku.get(sku_key, 0.0) + stock_val
+            inbound_by_sku[sku_key] = inbound_by_sku.get(sku_key, 0.0) + inbound_val
+
+            stock_by_size.setdefault(sku_key, {})
+            inbound_by_size.setdefault(sku_key, {})
+            stock_by_size[sku_key][size] = stock_by_size[sku_key].get(size, 0.0) + stock_val
+            inbound_by_size[sku_key][size] = inbound_by_size[sku_key].get(size, 0.0) + inbound_val
+
+        return (snapshot_date, stock_by_sku, inbound_by_sku, stock_by_size, inbound_by_size)
+    finally:
+        conn.close()
+
+
+def build_real_archive_data(
+    base_template: dict,
+    po_data: dict,
+    params,
+    fx_rates,
+    db_path: Path = DB_PATH,
+) -> dict:
+    """
+    Build REAL_ARCHIVE payload from timeline recompute.
+
+    This avoids stale PLAN-derived pre-arrival/DOC values.
+    """
+    normalized_orders = _normalized_orders_by_sku(po_data.get("orders_by_sku", {}))
+    po_payload = dict(po_data)
+    po_payload["orders_by_sku"] = normalized_orders
+
+    archive_data = apply_po_overrides(copy.deepcopy(base_template), po_payload, params, fx_rates)
+
+    message_date = po_payload.get("message_date") or archive_data.get("po_message_date")
+    ship_date = (
+        po_payload.get("ship_date_seller")
+        or po_payload.get("ship_date_cargo")
+        or po_payload.get("ship_date")
+    )
+    msg_dt = _parse_iso_date(message_date)
+    ship_dt = _parse_iso_date(ship_date)
+    arr_dt = ship_dt + timedelta(days=params.L) if ship_dt else None
+
+    if msg_dt and arr_dt:
+        effective_L = max(0, (arr_dt - msg_dt).days)
+    else:
+        sample = (archive_data.get("sku_level") or [{}])[0]
+        effective_L = int(sample.get("days_until_arrival") or params.L)
+
+    (
+        snapshot_date,
+        stock_by_sku,
+        inbound_by_sku,
+        stock_by_size,
+        inbound_by_size,
+    ) = _load_snapshot_as_of(db_path=db_path, message_date=message_date)
+    baseline_snapshot_date = snapshot_date or ""
+
+    orders_by_sku = normalized_orders
+
+    for sku_line in archive_data.get("sku_level", []):
+        sku_key = sku_line.get("sku_key")
+        if not sku_key:
+            continue
+        size_map = orders_by_sku.get(sku_key, {})
+        total_qty = int(sum(size_map.values()))
+
+        stock_snapshot = float(stock_by_sku.get(sku_key, sku_line.get("stock", 0.0) or 0.0))
+        inbound_snapshot = float(inbound_by_sku.get(sku_key, sku_line.get("inbound", 0.0) or 0.0))
+        self_inbound = float(total_qty)
+        inbound_without_self = max(0.0, inbound_snapshot - self_inbound)
+        stock_at_msg = stock_snapshot + inbound_without_self
+
+        d_sku = float(sku_line.get("d_sku", 0.0) or 0.0)
+        consumption = d_sku * effective_L
+        capped_consumption = min(consumption, stock_at_msg)
+        pre_arrival = max(0.0, stock_at_msg - consumption)
+        pre_doc, post_doc = compute_doc_values(pre_arrival, total_qty, d_sku)
+
+        sku_line["stock"] = int(round(stock_snapshot))
+        sku_line["inbound"] = int(round(inbound_without_self))
+        sku_line["active_inbound"] = 0
+        sku_line["inbound_total"] = int(round(inbound_without_self))
+        sku_line["stock_at_msg"] = round(stock_at_msg, 2)
+        sku_line["days_until_arrival"] = effective_L
+        sku_line["effective_L"] = effective_L
+        sku_line["consumption_until_arrival"] = round(consumption, 2)
+        sku_line["consumption_until_arrival_capped"] = round(capped_consumption, 2)
+        sku_line["pre_arrival"] = int(pre_arrival)
+        sku_line["pre_arr_doc"] = pre_doc
+        sku_line["post_arr_doc"] = post_doc
+        sku_line["baseline_snapshot_date"] = baseline_snapshot_date
+
+    for size_line in archive_data.get("size_level", []):
+        sku_key = size_line.get("sku_key")
+        if not sku_key:
+            continue
+        raw_size = size_line.get("size")
+        size = _canonicalize_size_for_sku(sku_key, raw_size) or str(raw_size or "").strip()
+        size_line["size"] = size
+        size_map = orders_by_sku.get(sku_key, {})
+        order_qty = int(size_line.get("order_qty", 0) or 0)
+
+        stock_snapshot = float(
+            stock_by_size.get(sku_key, {}).get(size, size_line.get("stock", 0.0) or 0.0)
+        )
+        inbound_snapshot = float(
+            inbound_by_size.get(sku_key, {}).get(size, size_line.get("inbound", 0.0) or 0.0)
+        )
+        self_inbound = float(size_map.get(size, order_qty))
+        inbound_without_self = max(0.0, inbound_snapshot - self_inbound)
+        stock_at_msg = stock_snapshot + inbound_without_self
+
+        d_size = float(size_line.get("d_size", 0.0) or 0.0)
+        consumption = d_size * effective_L
+        capped_consumption = min(consumption, stock_at_msg)
+        pre_arrival = max(0.0, stock_at_msg - consumption)
+        pre_doc, post_doc = compute_doc_values(pre_arrival, order_qty, d_size)
+
+        size_line["stock"] = int(round(stock_snapshot))
+        size_line["inbound"] = int(round(inbound_without_self))
+        size_line["active_inbound"] = 0
+        size_line["inbound_total"] = int(round(inbound_without_self))
+        size_line["stock_at_msg"] = round(stock_at_msg, 2)
+        size_line["days_until_arrival"] = effective_L
+        size_line["effective_L"] = effective_L
+        size_line["consumption_until_arrival"] = round(consumption, 2)
+        size_line["consumption_until_arrival_capped"] = round(capped_consumption, 2)
+        size_line["pre_arrival"] = int(pre_arrival)
+        size_line["pre_arr_doc"] = pre_doc
+        size_line["post_arr_doc"] = post_doc
+        size_line["baseline_snapshot_date"] = baseline_snapshot_date
+
+    return archive_data
 
 
 def apply_po4_overrides(base_data: dict, po4_data: dict, params, fx_rates) -> dict:
@@ -2849,6 +3079,11 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                         'days_until_arrival': effective_L,
                         'effective_L': effective_L,
                         'consumption_until_arrival': round(meta["consumption_msg_to_arr"], 2),  # msg→arr only
+                        'consumption_until_arrival_capped': round(
+                            min(float(meta["consumption_msg_to_arr"]), float(meta["stock_at_msg"] + meta["active_inbound"])),
+                            2,
+                        ),
+                        'baseline_snapshot_date': STOCK_DATE,
                         'pre_arrival': int(meta["pre_arrival"]),
                         'd_size': d_size,
                         't_post_days': round(t_post_size, 1),
@@ -2861,8 +3096,8 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                         'po_send_date': po_send_date.isoformat(),
                         'po_message_date': po_message_date.isoformat(),
                         'est_arr_date': po_arr_date.isoformat(),
-                        'pre_arr_doc': round(size_pre_doc, 1),
-                        'post_arr_doc': round(size_post_doc, 1),
+                        'pre_arr_doc': round_half_up_1dp(size_pre_doc),
+                        'post_arr_doc': round_half_up_1dp(size_post_doc),
                         'ss_total': round(meta.get("ss_total_size", 0.0), 2),
                         'ss_days': round(ss_days_size, 2),
                         'arrival_gap_days': arrival_gap_days,
@@ -2965,6 +3200,11 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                         'days_until_arrival': effective_L,
                         'effective_L': effective_L,
                         'consumption_until_arrival': round(size_consumption_msg_to_arr, 2),  # msg→arr only
+                        'consumption_until_arrival_capped': round(
+                            min(float(size_consumption_msg_to_arr), float(size_stock_at_msg + size_active_inbound)),
+                            2,
+                        ),
+                        'baseline_snapshot_date': STOCK_DATE,
                         'pre_arrival': int(size_pre_arrival),
                         'd_size': d_size,
                         't_post_days': round(t_post_size, 1),
@@ -2977,8 +3217,8 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                         'po_send_date': po_send_date.isoformat(),
                         'po_message_date': po_message_date.isoformat(),
                         'est_arr_date': po_arr_date.isoformat(),
-                        'pre_arr_doc': round(size_pre_doc, 1),
-                        'post_arr_doc': round(size_post_doc, 1),
+                        'pre_arr_doc': round_half_up_1dp(size_pre_doc),
+                        'post_arr_doc': round_half_up_1dp(size_post_doc),
                         'ss_total': round(max(0.0, target_size - (d_size * R)), 2),
                         'ss_days': round((max(0.0, target_size - (d_size * R)) / d_size) if d_size > 0 else 0.0, 2),
                         'arrival_gap_days': arrival_gap_days,
@@ -3031,6 +3271,11 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                 'days_until_arrival': effective_L,
                 'effective_L': effective_L,
                 'consumption_until_arrival': round(consumption_msg_to_arr, 2),  # msg→arr only
+                'consumption_until_arrival_capped': round(
+                    min(float(consumption_msg_to_arr), float(stock_at_msg + active_inbound)),
+                    2,
+                ),
+                'baseline_snapshot_date': STOCK_DATE,
                 'pre_arrival': int(pre_arrival),
                 'd_sku': d_sku,
                 't_post_days': round(t_post_days, 1),
@@ -3044,8 +3289,8 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                 'po_send_date': po_send_date.isoformat(),
                 'po_message_date': po_message_date.isoformat(),
                 'est_arr_date': po_arr_date.isoformat(),
-                'pre_arr_doc': round(pre_arr_doc, 1),
-                'post_arr_doc': round(post_arr_doc, 1),
+                'pre_arr_doc': round_half_up_1dp(pre_arr_doc),
+                'post_arr_doc': round_half_up_1dp(post_arr_doc),
                 'ss_total': round(ss_total, 2),
                 'ss_days': round((ss_total / d_sku) if d_sku > 0 else 0.0, 2),
                 'arrival_gap_days': arrival_gap_days,
@@ -3173,7 +3418,13 @@ if __name__ == "__main__":
         po_actual = load_po_orders(po_id)
         if not po_actual:
             continue
-        archive_data = apply_po_overrides(copy.deepcopy(base_template), po_actual, params, fx_rates)
+        archive_data = build_real_archive_data(
+            base_template,
+            po_actual,
+            params=params,
+            fx_rates=fx_rates,
+            db_path=DB_PATH,
+        )
         archive_data["po_name"] = po_id
         all_pos[po_id] = archive_data
         archived_pos.append(po_id)
