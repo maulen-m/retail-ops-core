@@ -88,3 +88,29 @@ def test_split_required_detection() -> None:
     ]
     result = validate_matching_invariants(orders, withdrawals, now)
     assert any("split required" in err for err in result.errors)
+
+
+def test_validator_skips_non_actionable_unmatched_noise() -> None:
+    now = datetime(2026, 1, 14, tzinfo=UTC)
+    old_dt = (now - timedelta(days=UNMATCHED_AGE_DAYS + 2)).isoformat()
+    orders = [
+        {
+            "exchanger_order_id": "UACHANGER:legacy-msg-id",
+            "status": "IN_PROCESS",
+            "amount_usdt": 733.08387,
+            "deposit_address": None,
+            "message_date": old_dt,
+        }
+    ]
+    withdrawals = [
+        {
+            "withdraw_id": "wd_old_unmatched",
+            "amount": 733.08387,
+            "address": "TVyWstV5RpadRd85Bfpn4Q1WBLb1a3PW1J",
+            "apply_time": old_dt,
+            "exchanger_order_id": "",
+        }
+    ]
+    result = validate_matching_invariants(orders, withdrawals, now)
+    assert not any("Unmatched withdrawal" in w for w in result.warnings)
+    assert not any("Unmatched exchanger order" in w for w in result.warnings)

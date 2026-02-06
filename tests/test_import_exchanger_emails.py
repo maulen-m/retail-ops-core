@@ -62,3 +62,51 @@ def test_import_exchanger_emails_labels_withdrawal(tmp_path, monkeypatch):
     withdrawals = repository.list_withdrawals(db_path=db_path)
     assert withdrawals[0]["counterparty_label"] == "UAChanger"
     assert withdrawals[0]["exchanger_order_id"] == orders[0]["exchanger_order_id"]
+
+
+def test_import_exchanger_emails_keeps_latest_order_state(tmp_path, monkeypatch):
+    db_path = tmp_path / "app.db"
+    db_path.touch()
+
+    address = "T" + "B" * 33
+    completed = {
+        "subject": "BTCChange24 - Success done #555001 [Tether TRC20 -> WeChat]",
+        "from": "no-reply@btcchange24.com",
+        "body_text": (
+            "Order ID 555001\n"
+            "Exchange amount: 500.00 USDT\n"
+            "You get: 3400 CNY\n"
+            f"Deposit to wallet: {address}\n"
+        ),
+        "body_html": "",
+        "date": "2026-01-08T12:10:00+05:00",
+        "message_id": "<msg-completed>",
+    }
+    older_new = {
+        "subject": "BTCChange24 - New exchange #555001 [Tether TRC20 -> WeChat]",
+        "from": "no-reply@btcchange24.com",
+        "body_text": "Exchange amount: 500.00 USDT\nYou get: 3400 CNY\n",
+        "body_html": "",
+        "date": "2026-01-08T11:00:00+05:00",
+        "message_id": "<msg-new-older>",
+    }
+
+    def fake_fetch_messages(**_kwargs):
+        # Completed first, then older NEW message (out-of-order fetch).
+        return [completed, older_new]
+
+    monkeypatch.setenv("GMAIL_USER", "test@example.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "app-pass")
+    monkeypatch.setattr("scripts.import_exchanger_emails.fetch_messages", fake_fetch_messages)
+    monkeypatch.setattr(sys, "argv", ["import_exchanger_emails.py", "--db", str(db_path), "--limit", "10"])
+
+    from scripts import import_exchanger_emails
+
+    assert import_exchanger_emails.main() == 0
+
+    orders = repository.list_exchanger_orders(db_path=db_path, limit=10)
+    assert len(orders) == 1
+    order = orders[0]
+    assert order["order_id"] == "555001"
+    assert order["status"] == "COMPLETED"
+    assert order["deposit_address"] == address

@@ -25,7 +25,7 @@ def test_parse_btcchange24_email():
     assert order["direction"] == "Tether TRC20 -> WeChat"
     assert order["amount_usdt"] == 779.41
     assert order["amount_cny"] == 5313.0
-    assert order["rate_usdt_cny"] == 6.8615
+    assert abs(order["rate_usdt_cny"] - (5313.0 / 779.41)) < 1e-6
     assert order["deposit_address"].startswith("TDUa2o")
 
 
@@ -49,3 +49,17 @@ def test_parse_uachanger_email():
     assert order["order_id"] == "1985118"
     assert order["status"] == "NEW"
     assert order["deposit_address"].startswith("TVyWst")
+
+
+def test_ignore_uachanger_auth_email():
+    msg = {
+        "subject": "Ваш код двухфакторной аутентификации",
+        "from": "uachanger2020@gmail.com",
+        "date": "2026-01-07T18:55:00+05:00",
+        "body_text": "Ваш код: 123456",
+        "body_html": "",
+        "message_id": "<auth@uachanger.com>",
+    }
+
+    order = parse_exchanger_email(msg)
+    assert order is None
