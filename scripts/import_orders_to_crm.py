@@ -1906,15 +1906,32 @@ def apply_fixed_values_backfill_xlwings(
             "Product_Type",
         ]
 
+        n_rows = row_end - row_start + 1
+        date_values = _coerce_column_values(
+            sh.range((row_start, date_col), (row_end, date_col)).value,
+            n_rows,
+        )
+
+        raw_col_values: Dict[str, List[Any]] = {}
+        for key in raw_headers:
+            col_num = header_to_col.get(key)
+            if not col_num:
+                raw_col_values[key] = [None] * n_rows
+                continue
+            raw_col_values[key] = _coerce_column_values(
+                sh.range((row_start, col_num), (row_end, col_num)).value,
+                n_rows,
+            )
+
         target_rows: List[Tuple[int, Dict[str, Any]]] = []
-        for row_num in range(row_start, row_end + 1):
-            row_date = parse_date(sh.cells(row_num, date_col).value)
+        for offset in range(n_rows):
+            row_num = row_start + offset
+            row_date = parse_date(date_values[offset])
             if not row_date or row_date < cutoff:
                 continue
             raw_row = {}
             for key in raw_headers:
-                col_num = header_to_col.get(key)
-                raw_row[key] = sh.cells(row_num, col_num).value if col_num else None
+                raw_row[key] = raw_col_values[key][offset]
             target_rows.append((row_num, raw_row))
 
         if not target_rows:
@@ -1928,16 +1945,33 @@ def apply_fixed_values_backfill_xlwings(
                 sku_keys.append(str(identity["sku_key"]))
         sku_meta, kaspi_core = _load_sku_meta_for_keys(sku_keys)
 
+        fixed_by_row: Dict[int, Dict[str, Any]] = {}
         for row_num, raw in target_rows:
-            fixed = compute_fixed_value_columns(raw, sku_meta, kaspi_core)
+            fixed_by_row[row_num] = compute_fixed_value_columns(raw, sku_meta, kaspi_core)
+            updated += 1
+
+        if not dry_run:
+            original_calc = app.calculation
+            try:
+                app.calculation = "manual"
+            except Exception:
+                original_calc = None
+
+            row_numbers = sorted(fixed_by_row.keys())
+            row_ranges = _iter_consecutive_ranges(row_numbers)
             for col_name in FIXED_VALUE_COLUMNS:
                 col_num = header_to_col.get(col_name)
                 if not col_num:
                     continue
-                value = fixed.get(col_name)
-                if not dry_run:
-                    sh.cells(row_num, col_num).value = value if value is not None else ""
-            updated += 1
+                for start_row, end_row in row_ranges:
+                    values = []
+                    for row_num in range(start_row, end_row + 1):
+                        value = fixed_by_row[row_num].get(col_name)
+                        values.append([value if value is not None else ""])
+                    sh.range((start_row, col_num), (end_row, col_num)).value = values
+
+            if original_calc is not None:
+                app.calculation = original_calc
 
         if not dry_run:
             wb.save()
@@ -1949,6 +1983,35 @@ def apply_fixed_values_backfill_xlwings(
         app.quit()
 
     return updated
+
+
+def _coerce_column_values(values: Any, n_rows: int) -> List[Any]:
+    """Normalize xlwings single-column reads to a list of exactly n_rows."""
+    if isinstance(values, list):
+        out = list(values)
+    else:
+        out = [values]
+    if len(out) < n_rows:
+        out.extend([None] * (n_rows - len(out)))
+    return out[:n_rows]
+
+
+def _iter_consecutive_ranges(rows: List[int]) -> List[Tuple[int, int]]:
+    """Return inclusive (start, end) ranges for sorted row numbers."""
+    if not rows:
+        return []
+    ranges: List[Tuple[int, int]] = []
+    start = rows[0]
+    end = rows[0]
+    for value in rows[1:]:
+        if value == end + 1:
+            end = value
+            continue
+        ranges.append((start, end))
+        start = value
+        end = value
+    ranges.append((start, end))
+    return ranges
 
 
 # ---------- Archive Source Files ----------
@@ -2211,14 +2274,22 @@ def main(
         if args.skip_fixed_backfill:
             return 0
         ensure_backup()
-        return apply_fixed_values_backfill_xlwings(
-            crm_path=args.crm_file,
-            sheet_name=args.sheet,
-            table_name=args.table,
-            days=max(int(args.backfill_fixed_days or 0), 0),
-            dry_run=args.dry_run,
-            verbose=args.verbose,
-        )
+        try:
+            return apply_fixed_values_backfill_xlwings(
+                crm_path=args.crm_file,
+                sheet_name=args.sheet,
+                table_name=args.table,
+                days=max(int(args.backfill_fixed_days or 0), 0),
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
+        except Exception as exc:
+            print(f"  WARNING: fixed-value backfill skipped due to error: {exc}")
+            if args.verbose:
+                import traceback
+
+                traceback.print_exc()
+            return 0
     
     # Parse dates
     if args.date_end.lower() == "today":

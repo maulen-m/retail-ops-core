@@ -20,6 +20,8 @@ from scripts.import_orders_to_crm import (
     RAW_KASPI_COLUMNS,
     STORE_MAP,
     WAREHOUSE_STORE_MAP,
+    _coerce_column_values,
+    _iter_consecutive_ranges,
     build_staging,
     clean_order_id,
     clean_value,
@@ -401,3 +403,14 @@ def test_compute_fixed_value_columns_for_acmewear_suit_row():
     assert values["Kaspi_name_core"] == "LINE61__BLACK"
     assert values["SKU_ID_KSP"] == "OF_SUIT-61_BLK_3XL"
     assert values["Kaspi_name_source"] == "ACMEWEAR line61"
+
+
+def test_iter_consecutive_ranges_groups_sorted_rows():
+    rows = [8010, 8011, 8012, 8015, 8017, 8018]
+    assert _iter_consecutive_ranges(rows) == [(8010, 8012), (8015, 8015), (8017, 8018)]
+
+
+def test_coerce_column_values_pads_and_truncates():
+    assert _coerce_column_values([1, 2], 4) == [1, 2, None, None]
+    assert _coerce_column_values("x", 2) == ["x", None]
+    assert _coerce_column_values([1, 2, 3], 2) == [1, 2]
