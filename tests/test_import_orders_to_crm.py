@@ -20,8 +20,10 @@ from scripts.import_orders_to_crm import (
     RAW_KASPI_COLUMNS,
     STORE_MAP,
     WAREHOUSE_STORE_MAP,
+    build_staging,
     clean_order_id,
     clean_value,
+    compute_fixed_value_columns,
     deduplicate_orders,
     filter_orders_for_shipment,
     find_active_orders_files,
@@ -337,3 +339,65 @@ def test_clean_order_id():
     assert clean_order_id("1234567890123") is None  # Too long
     assert clean_order_id("abc") is None  # Not numeric
     assert clean_order_id(None) is None
+
+
+def test_build_staging_derives_sku_key_and_size_from_acmewear_article():
+    """When SKU_key/MY_SIZE are absent in source file, staging should derive them."""
+    df = pd.DataFrame(
+        {
+            "Артикул": ["OF_SUIT-61_BLK_3XL"],
+            "Название товара в Kaspi Магазине": [
+                "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL черный 3XL"
+            ],
+            "Количество": [1],
+            "Склад передачи КД": ["30137883_PP1"],
+            "Сумма": [12990],
+            "Стоимость доставки для продавца": [0],
+            "Плановая дата передачи курьеру": ["21.02.2026"],
+            "Название в системе продавца": ["ACMEWEAR line61"],
+            "Телефон": ["77771234567"],
+        }
+    )
+    stage, phone_values = build_staging(df, ["SKU_key", "MY_SIZE", "Артикул"])
+    assert len(stage) == 1
+    assert stage[0][0] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+    assert stage[0][1] == "3XL"
+    assert stage[0][2] == "OF_SUIT-61_BLK_3XL"
+    assert phone_values == ["+77771234567"]
+
+
+def test_compute_fixed_value_columns_for_acmewear_suit_row():
+    """Fixed-value columns should match workbook formula semantics for trivial columns."""
+    raw_row = {
+        "Склад передачи КД": "30137883_PP1",
+        "Артикул": "OF_SUIT-61_BLK_3XL",
+        "Название товара в Kaspi Магазине": "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL черный 3XL",
+        "Название в системе продавца": "ACMEWEAR line61",
+        "Количество": 2,
+        "Сумма": 25980,
+        "Стоимость доставки для продавца": 1000,
+        "Плановая дата передачи курьеру": "21.02.2026",
+    }
+    sku_meta = {
+        "CL_NEW-CLO2_MEN_SUIT-61_BLACK": {
+            "model": "LINE61",
+            "product_type": "CL",
+            "weight_kg": 1.5,
+        }
+    }
+    kaspi_core = {"CL_NEW-CLO2_MEN_SUIT-61_BLACK": "LINE61__BLACK"}
+
+    values = compute_fixed_value_columns(raw_row, sku_meta, kaspi_core)
+    assert values["STORE_NAME"] == "AcmeWear"
+    assert values["SKU_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+    assert values["MY_SIZE"] == "3XL"
+    assert values["Quantity"] == 2
+    assert values["Total_price"] == 25980.0
+    assert values["Sell_price_kzt"] == 12990.0
+    assert values["Delivery_fee_kzt"] == 1000.0
+    assert values["Total_net_rev"] == pytest.approx(((25980.0 * (1 - 0.125)) - 1000.0) * (1 - 0.03))
+    assert values["Product_Type"] == "CL"
+    assert values["MODEL"] == "LINE61"
+    assert values["Kaspi_name_core"] == "LINE61__BLACK"
+    assert values["SKU_ID_KSP"] == "OF_SUIT-61_BLK_3XL"
+    assert values["Kaspi_name_source"] == "ACMEWEAR line61"

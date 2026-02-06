@@ -19,6 +19,11 @@ _OFFER_OVERRIDES = [
         "sku_key": "CL_OC_MEN_LINE52_BLACK",
         "my_size": None,
     },
+    {
+        "pattern": "cl_new-clo2_men_suit-61_black",
+        "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+        "my_size": None,
+    },
 ]
 
 

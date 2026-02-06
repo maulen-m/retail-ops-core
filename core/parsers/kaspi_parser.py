@@ -87,6 +87,31 @@ SIZE_TOKENS = {
     "ONE_SIZE", "ONESIZE", "OS",
 }
 
+ACMEWEAR_LINE61_ARTICLE_RE = re.compile(r"^OF_SUIT-?61_BLK(?:_(.+))?$", re.IGNORECASE)
+
+
+def _map_acmewear_line61_size(size_tokens: list[str]) -> Optional[str]:
+    """Map ACMEWEAR line61 article suffix tokens to canonical MY_SIZE."""
+    if not size_tokens:
+        return None
+    first = str(size_tokens[0] or "").strip().upper()
+    if not first:
+        return None
+    if first in {"S", "M", "L", "XL", "2XL", "3XL", "4XL"}:
+        return first
+    # Numeric suffixes may appear without explicit token; map common cases.
+    if first in {"42", "44", "46"}:
+        return "S" if first == "42" else ("M" if first == "44" else "L")
+    if first in {"48", "50"}:
+        return "XL"
+    if first in {"52", "54"}:
+        return "2XL"
+    if first == "56":
+        return "3XL"
+    if first in {"58", "60"}:
+        return "4XL"
+    return None
+
 
 def _strip_article_prefix(value: str) -> str:
     text = str(value or "").strip()
@@ -156,6 +181,23 @@ def extract_sku_from_article(
     article_raw = _strip_article_prefix(kaspi_article)
     article = article_raw.upper()
     offer_text = str(kaspi_offer or "").upper()
+
+    # Special-case: ACMEWEAR line61 merchant article aliases.
+    # Keep canonical sku_key stable while allowing new Kaspi offer ids.
+    acmewear_match = ACMEWEAR_LINE61_ARTICLE_RE.match(article)
+    if acmewear_match:
+        suffix = acmewear_match.group(1) or ""
+        tokens = [t for t in suffix.split("_") if t]
+        size = _map_acmewear_line61_size(tokens)
+        if not size:
+            # Fallback to offer text if suffix is ambiguous.
+            size = normalize_size(_extract_size(offer_text), product_type="CL")
+        result["product_type"] = "CL"
+        result["sku_key"] = "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+        result["my_size"] = size
+        if size:
+            result["sku_id"] = f"{result['sku_key']}_{size}"
+        return result
 
     # Try to detect product type from article patterns
     if "CL" in article or "КОМПЛЕКТ" in offer_text or "PRINT" in article:

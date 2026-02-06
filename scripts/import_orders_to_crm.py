@@ -22,7 +22,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -48,7 +48,10 @@ from core.integrations.kaspi_order_stage import (
     kaspi_order_to_russian_status,
     stage_to_crm_indicators,
 )
+from core.parsers.kaspi_parser import extract_sku_from_article
+from core.utils.sku_map import extract_kaspi_name_core
 from core.utils.kaspi_dates import planned_date_from_order
+from core.db import get_db
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
@@ -149,6 +152,25 @@ RAW_KASPI_COLUMNS = {
     "Internal_Status": "AZ",
 }
 
+FIXED_VALUE_COLUMNS = [
+    "STORE_NAME",
+    "Quantity",
+    "Kaspi_name_core",
+    "KASPI_OFFER_NAME",
+    "SKU_key",
+    "MY_SIZE",
+    "Sell_price_kzt",
+    "Total_price",
+    "Total_net_rev",
+    "MODEL",
+    "PLANNED_SHIPPING_DATE",
+    "Product_Type",
+    "Delivery_fee_kzt",
+    "Total_weight",
+    "SKU_ID_KSP",
+    "Kaspi_name_source",
+]
+
 # Canonical header mapping
 CANON = {
     "order_id": ["№заказа", "номерзаказа", "orderid", "заказа"],  # заказа is normalized from "№ заказа"
@@ -197,6 +219,174 @@ def map_headers(df: pd.DataFrame) -> Dict[str, str]:
                 colmap[k] = cols_norm[v_norm]
                 break
     return colmap
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        raw = value.strip().replace(" ", "")
+        if not raw:
+            return default
+        raw = raw.replace(",", ".")
+    else:
+        raw = value
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(round(_to_float(value, float(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _derive_identity_from_raw_row(raw_row: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    article = str(
+        raw_row.get("Артикул")
+        or raw_row.get("SKU_ID_KSP")
+        or raw_row.get("Kaspi_article")
+        or ""
+    ).strip()
+    offer_name = str(
+        raw_row.get("Название товара в Kaspi Магазине")
+        or raw_row.get("KASPI_OFFER_NAME")
+        or raw_row.get("Kaspi_offer")
+        or ""
+    ).strip()
+    sku_key = str(raw_row.get("SKU_key") or "").strip() or None
+    my_size = str(raw_row.get("MY_SIZE") or "").strip() or None
+    product_type = str(raw_row.get("Product_Type") or "").strip() or None
+    if sku_key and my_size:
+        return {"sku_key": sku_key, "my_size": my_size, "product_type": product_type}
+
+    parsed = extract_sku_from_article(article, offer_name)
+    if not sku_key:
+        sku_key = parsed.get("sku_key")
+    if not my_size:
+        my_size = parsed.get("my_size")
+    if not product_type:
+        product_type = parsed.get("product_type")
+    if not product_type and sku_key and "_" in sku_key:
+        product_type = sku_key.split("_", 1)[0]
+    return {"sku_key": sku_key, "my_size": my_size, "product_type": product_type}
+
+
+def _load_sku_meta_for_keys(sku_keys: List[str]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+    clean_keys = sorted({str(k).strip() for k in sku_keys if str(k).strip()})
+    if not clean_keys:
+        return {}, {}
+
+    placeholders = ",".join("?" for _ in clean_keys)
+    sku_meta: Dict[str, Dict[str, Any]] = {}
+    kaspi_core: Dict[str, str] = {}
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT sku_key, model, product_type, weight_kg
+            FROM dim_sku
+            WHERE sku_key IN ({placeholders})
+            """,
+            clean_keys,
+        ).fetchall()
+        for row in rows:
+            sku_meta[row["sku_key"]] = {
+                "model": row["model"],
+                "product_type": row["product_type"],
+                "weight_kg": row["weight_kg"],
+            }
+
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dim_kaspi_article_map'"
+        ).fetchone():
+            core_rows = conn.execute(
+                f"""
+                SELECT sku_key, kaspi_name_core
+                FROM dim_kaspi_article_map
+                WHERE active_flag = 1
+                  AND kaspi_name_core IS NOT NULL
+                  AND TRIM(kaspi_name_core) <> ''
+                  AND sku_key IN ({placeholders})
+                ORDER BY updated_at DESC
+                """,
+                clean_keys,
+            ).fetchall()
+            for row in core_rows:
+                if row["sku_key"] not in kaspi_core:
+                    kaspi_core[row["sku_key"]] = str(row["kaspi_name_core"]).strip()
+
+    return sku_meta, kaspi_core
+
+
+def compute_fixed_value_columns(
+    raw_row: Dict[str, Any],
+    sku_meta_by_key: Optional[Dict[str, Dict[str, Any]]] = None,
+    kaspi_core_by_key: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """
+    Compute trivial formula columns as fixed values.
+
+    SKU_ID is intentionally excluded; it stays formula-driven in workbook.
+    """
+    sku_meta_by_key = sku_meta_by_key or {}
+    kaspi_core_by_key = kaspi_core_by_key or {}
+    identity = _derive_identity_from_raw_row(raw_row)
+    sku_key = identity.get("sku_key") or ""
+    my_size = identity.get("my_size") or ""
+    sku_meta = sku_meta_by_key.get(sku_key, {})
+
+    quantity = _to_int(raw_row.get("Количество", raw_row.get("Quantity", 0)), 0)
+    total_price = _to_float(raw_row.get("Сумма", raw_row.get("Total_price", 0.0)), 0.0)
+    sell_price = (total_price / quantity) if quantity else 0.0
+
+    delivery_fee = _to_float(raw_row.get("Стоимость доставки для продавца"), 0.0)
+    # Mirror current workbook formula semantics: fixed 12.5% commission and 3% VAT.
+    total_net_rev = ((total_price * (1 - 0.125)) - delivery_fee) * (1 - 0.03)
+
+    warehouse = str(raw_row.get("Склад передачи КД") or "").strip()
+    store_name = STORE_MAP.get(warehouse, "")
+
+    model = str(sku_meta.get("model") or "").strip()
+    product_type = str(identity.get("product_type") or sku_meta.get("product_type") or "").strip()
+    weight_kg = _to_float(sku_meta.get("weight_kg"), 0.0)
+    total_weight = weight_kg * quantity
+
+    offer_name = str(
+        raw_row.get("Название товара в Kaspi Магазине")
+        or raw_row.get("KASPI_OFFER_NAME")
+        or ""
+    ).strip()
+    kaspi_name_core = kaspi_core_by_key.get(sku_key) or extract_kaspi_name_core(offer_name)
+
+    return {
+        "STORE_NAME": store_name,
+        "Quantity": quantity,
+        "Kaspi_name_core": kaspi_name_core,
+        "KASPI_OFFER_NAME": offer_name,
+        "SKU_key": sku_key,
+        "MY_SIZE": my_size,
+        "Sell_price_kzt": sell_price,
+        "Total_price": total_price,
+        "Total_net_rev": total_net_rev,
+        "MODEL": model,
+        "PLANNED_SHIPPING_DATE": raw_row.get("Плановая дата передачи курьеру"),
+        "Product_Type": product_type,
+        "Delivery_fee_kzt": delivery_fee,
+        "Total_weight": total_weight,
+        "SKU_ID_KSP": str(raw_row.get("Артикул") or "").strip(),
+        "Kaspi_name_source": str(raw_row.get("Название в системе продавца") or "").strip(),
+    }
+
+
+def build_fixed_value_payload(df_filt: pd.DataFrame) -> List[Dict[str, Any]]:
+    rows = df_filt.to_dict(orient="records")
+    identities = [_derive_identity_from_raw_row(r) for r in rows]
+    sku_keys = [x.get("sku_key") for x in identities if x.get("sku_key")]
+    sku_meta, kaspi_core = _load_sku_meta_for_keys([str(k) for k in sku_keys])
+    return [compute_fixed_value_columns(row, sku_meta, kaspi_core) for row in rows]
 
 
 def parse_kz_date(v) -> Optional[date]:
@@ -1416,6 +1606,11 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
     cols_norm_map = {norm(col): df_filt[col].astype(object) for col in df_filt.columns}
 
     n = len(df_filt)
+    derived_identity = []
+    for _, row in df_filt.iterrows():
+        derived_identity.append(_derive_identity_from_raw_row(row.to_dict()))
+    derived_sku_key = pd.Series([d.get("sku_key") or "" for d in derived_identity], index=df_filt.index, dtype=object)
+    derived_my_size = pd.Series([d.get("my_size") or "" for d in derived_identity], index=df_filt.index, dtype=object)
 
     def col_for(header_text: str) -> pd.Series:
         h = norm(header_text)
@@ -1440,6 +1635,16 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
 
         if h in {"складпередачикд", "складпередачикурьерскойдоставки"} and "warehouse" in S:
             return S["warehouse"]
+
+        if h in {"skukey", "sku_key"}:
+            if h in cols_norm_map:
+                return cols_norm_map[h]
+            return derived_sku_key
+
+        if h in {"mysize", "my_size"}:
+            if h in cols_norm_map:
+                return cols_norm_map[h]
+            return derived_my_size
 
         if h in {"датаизменениястатуса"} and "status_change_date" in S:
             return S["status_change_date"]
@@ -1503,7 +1708,8 @@ def excel_append_xlwings(
     stage_block: List[List],
     phone_values: List[str],
     set_date: date,
-    slice_headers: List[str]
+    slice_headers: List[str],
+    fixed_values: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[int, int]:
     """
     Append rows to CRM using xlwings (preserves formulas & external links).
@@ -1596,6 +1802,28 @@ def excel_append_xlwings(
             target = sh.range((top_row, start_col_abs + offset), (bottom_row, start_col_abs + offset))
             target.value = [[v] for v in col_values]
 
+        # Write fixed-value columns for appended rows (excluding SKU_ID).
+        if fixed_values:
+            table_header = sh.range(
+                (header_row, tbl_start_col),
+                (header_row, tbl_end_col),
+            ).value
+            header_to_col = {
+                str(name).strip(): tbl_start_col + i
+                for i, name in enumerate(table_header or [])
+                if str(name or "").strip()
+            }
+            for col_name in FIXED_VALUE_COLUMNS:
+                col_abs = header_to_col.get(col_name)
+                if not col_abs:
+                    continue
+                col_vals = []
+                for row_vals in fixed_values:
+                    value = row_vals.get(col_name)
+                    col_vals.append([value if value is not None else ""])
+                target = sh.range((top_row, col_abs), (bottom_row, col_abs))
+                target.value = col_vals
+
         wb.save()
         wb.close()
         print(f"  ✅ Saved {out_wb.name}")
@@ -1606,6 +1834,121 @@ def excel_append_xlwings(
         app.quit()
 
     return (0, 0)  # If we get here somehow
+
+
+def apply_fixed_values_backfill_xlwings(
+    crm_path: Path,
+    sheet_name: str,
+    table_name: str,
+    days: int,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> int:
+    """
+    Backfill fixed-value columns for recent rows to reduce formula churn.
+    """
+    if days <= 0:
+        return 0
+
+    _require_xlwings()
+    cutoff = today_local() - timedelta(days=max(days - 1, 0))
+
+    app = xw.App(visible=False, add_book=False)
+    app.display_alerts = False
+    app.screen_updating = False
+    updated = 0
+    try:
+        wb = app.books.open(str(crm_path))
+        sh = wb.sheets[sheet_name]
+        try:
+            tbl = sh.tables[table_name]
+        except KeyError:
+            tables = list(sh.tables)
+            if not tables:
+                raise RuntimeError(f"No table found on sheet {sheet_name}")
+            tbl = tables[0]
+
+        table_range = tbl.range
+        header_row = table_range.row
+        start_col = table_range.column
+        width = table_range.columns.count
+        total_rows = table_range.rows.count
+        if total_rows <= 1:
+            wb.close()
+            return 0
+
+        headers = sh.range((header_row, start_col), (header_row, start_col + width - 1)).value
+        header_to_col = {
+            str(name).strip(): start_col + i
+            for i, name in enumerate(headers or [])
+            if str(name or "").strip()
+        }
+        row_start = header_row + 1
+        row_end = header_row + total_rows - 1
+
+        date_col = header_to_col.get("Date")
+        if not date_col:
+            wb.close()
+            return 0
+
+        raw_headers = [
+            "Склад передачи КД",
+            "Артикул",
+            "Название товара в Kaspi Магазине",
+            "Название в системе продавца",
+            "Количество",
+            "Сумма",
+            "Стоимость доставки для продавца",
+            "Плановая дата передачи курьеру",
+            "KASPI_OFFER_NAME",
+            "SKU_key",
+            "MY_SIZE",
+            "Product_Type",
+        ]
+
+        target_rows: List[Tuple[int, Dict[str, Any]]] = []
+        for row_num in range(row_start, row_end + 1):
+            row_date = parse_date(sh.cells(row_num, date_col).value)
+            if not row_date or row_date < cutoff:
+                continue
+            raw_row = {}
+            for key in raw_headers:
+                col_num = header_to_col.get(key)
+                raw_row[key] = sh.cells(row_num, col_num).value if col_num else None
+            target_rows.append((row_num, raw_row))
+
+        if not target_rows:
+            wb.close()
+            return 0
+
+        sku_keys: List[str] = []
+        for _, raw in target_rows:
+            identity = _derive_identity_from_raw_row(raw)
+            if identity.get("sku_key"):
+                sku_keys.append(str(identity["sku_key"]))
+        sku_meta, kaspi_core = _load_sku_meta_for_keys(sku_keys)
+
+        for row_num, raw in target_rows:
+            fixed = compute_fixed_value_columns(raw, sku_meta, kaspi_core)
+            for col_name in FIXED_VALUE_COLUMNS:
+                col_num = header_to_col.get(col_name)
+                if not col_num:
+                    continue
+                value = fixed.get(col_name)
+                if not dry_run:
+                    sh.cells(row_num, col_num).value = value if value is not None else ""
+            updated += 1
+
+        if not dry_run:
+            wb.save()
+        wb.close()
+        if verbose:
+            mode = "DRY RUN" if dry_run else "APPLY"
+            print(f"  Fixed-value backfill ({mode}): {updated} rows (cutoff >= {cutoff})")
+    finally:
+        app.quit()
+
+    return updated
 
 
 # ---------- Archive Source Files ----------
@@ -1700,6 +2043,9 @@ def main(
     verbose=_UNSET,
     update_existing=_UNSET,
     no_update=_UNSET,
+    fixed_values=_UNSET,
+    backfill_fixed_days=_UNSET,
+    skip_fixed_backfill=_UNSET,
     summary_file=_UNSET,
 ):
     parser = argparse.ArgumentParser(
@@ -1764,6 +2110,23 @@ def main(
         help="Skip updating existing orders (only append new)"
     )
     parser.add_argument(
+        "--fixed-values",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write fixed values for trivial formula columns on appended rows (default: on)",
+    )
+    parser.add_argument(
+        "--backfill-fixed-days",
+        type=int,
+        default=14,
+        help="Recompute fixed values for recent rows (default: 14 days)",
+    )
+    parser.add_argument(
+        "--skip-fixed-backfill",
+        action="store_true",
+        help="Skip recent fixed-value backfill pass",
+    )
+    parser.add_argument(
         "--refresh-delivery-fees",
         action="store_true",
         help="Backfill seller delivery fee from Delivery_fee_kzt for a date range"
@@ -1797,6 +2160,9 @@ def main(
         and verbose is _UNSET
         and update_existing is _UNSET
         and no_update is _UNSET
+        and fixed_values is _UNSET
+        and backfill_fixed_days is _UNSET
+        and skip_fixed_backfill is _UNSET
     ):
         args = parser.parse_args()
     else:
@@ -1812,6 +2178,9 @@ def main(
             verbose=bool(verbose) if verbose is not _UNSET else False,
             update_existing=bool(update_existing) if update_existing is not _UNSET else True,
             no_update=bool(no_update) if no_update is not _UNSET else False,
+            fixed_values=bool(fixed_values) if fixed_values is not _UNSET else True,
+            backfill_fixed_days=int(backfill_fixed_days) if backfill_fixed_days is not _UNSET else 14,
+            skip_fixed_backfill=bool(skip_fixed_backfill) if skip_fixed_backfill is not _UNSET else False,
             summary_file=Path(summary_file) if summary_file is not _UNSET else data_path("logs", "import_orders_to_crm_latest.json"),
         )
 
@@ -1820,12 +2189,36 @@ def main(
         "orders_updated": 0,
         "orders_filtered": 0,
     }
+    backup_done = False
     summary_path = Path(args.summary_file) if getattr(args, "summary_file", None) else None
 
     def finalize(outcome: dict) -> dict:
         if summary_path:
             write_import_summary(outcome, summary_path)
         return outcome
+
+    def ensure_backup() -> None:
+        nonlocal backup_done
+        if args.dry_run or backup_done:
+            return
+        backup_path = backup_crm(args.crm_file)
+        print(f"  Backup created: {backup_path.name}")
+        backup_done = True
+
+    def maybe_run_fixed_backfill() -> int:
+        if not args.fixed_values:
+            return 0
+        if args.skip_fixed_backfill:
+            return 0
+        ensure_backup()
+        return apply_fixed_values_backfill_xlwings(
+            crm_path=args.crm_file,
+            sheet_name=args.sheet,
+            table_name=args.table,
+            days=max(int(args.backfill_fixed_days or 0), 0),
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+        )
     
     # Parse dates
     if args.date_end.lower() == "today":
@@ -1965,6 +2358,7 @@ def main(
 
     # Build staging data (returns tuple: stage_block, phone_values)
     stage, phone_values = build_staging(df_filt, slice_headers)
+    fixed_values_payload = build_fixed_value_payload(df_filt)
 
     # Dedup against existing
     colmap = map_headers(df_filt)
@@ -1995,6 +2389,7 @@ def main(
         indices_to_keep = df_filt[new_mask].index.tolist()
         stage_filtered = [stage[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
         phone_filtered = [phone_values[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
+        fixed_filtered = [fixed_values_payload[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
 
         dup_count = len(stage) - len(stage_filtered)
         if dup_count > 0:
@@ -2002,6 +2397,7 @@ def main(
 
         stage = stage_filtered
         phone_values = phone_filtered
+        fixed_values_payload = fixed_filtered
 
     print(f"\n4. Appending new orders...")
     new_rows_added = len(stage)
@@ -2024,12 +2420,18 @@ def main(
                     snapshot=snapshot,
                 )
                 print(f"   Delivery fee backfill rows updated: {backfilled}")
+            fixed_backfilled = maybe_run_fixed_backfill()
+            if fixed_backfilled:
+                print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
             sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
             print(f"\n✅ Import complete! Updated {updated_count} orders, appended 0 new.")
             return finalize(result)
         else:
             print("   All orders already in CRM. Nothing to import or update.")
             print("   NO-OP: skipping Google Drive sync.")
+            fixed_backfilled = maybe_run_fixed_backfill()
+            if fixed_backfilled:
+                print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
             return finalize(result)
 
     if args.dry_run:
@@ -2037,9 +2439,8 @@ def main(
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return finalize(result)
 
-    # Create backup before writing (Phase 12)
-    backup_path = backup_crm(args.crm_file)
-    print(f"  Backup created: {backup_path.name}")
+    # Create backup before writing (Phase 12 / Excel safe ops)
+    ensure_backup()
 
     # Append via xlwings - returns (start_row, end_row) for sync
     append_start_row, append_end_row = excel_append_xlwings(
@@ -2053,8 +2454,12 @@ def main(
         stage,
         phone_values,
         append_date,
-        slice_headers
+        slice_headers,
+        fixed_values_payload if args.fixed_values else None,
     )
+    fixed_backfilled = maybe_run_fixed_backfill()
+    if fixed_backfilled:
+        print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
 
     # Archive source files
     archive_path = archive_run(args.orders_dir, source_files, df_filt)
