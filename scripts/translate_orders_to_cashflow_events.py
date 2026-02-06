@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -23,6 +24,8 @@ from core.cashflow.order_status import normalize_order_status
 from core.config.business_params import get_vat_rate, get_fx_rates
 from core.calc.economics import calc_delivery_fee, calc_net_rev, calc_cogs
 from core.integrations.kaspi_order_stage import (
+    StageCode,
+    api_state_filter_for_stage,
     classify_kaspi_stage_from_db_row,
     stage_to_internal_status,
 )
@@ -30,6 +33,7 @@ from core.integrations.kaspi_order_stage import (
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "kaspi_column_map.yaml"
 EXPORT_PATH = PROJECT_ROOT / "exports" / "orders_to_cashflow_report.txt"
+_DELIVERY_STATE = api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY) or ""
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return conn.execute(
@@ -96,33 +100,115 @@ def _load_order_entries(conn: sqlite3.Connection) -> dict[tuple[str, str], list[
         return {}
     if not _table_exists(conn, "dim_kaspi_article_map"):
         return {}
+    map_rows = conn.execute(
+        """
+        SELECT store_code, kaspi_article, kaspi_offer_name, sku_key, sku_id
+        FROM dim_kaspi_article_map
+        WHERE sku_key IS NOT NULL
+          AND trim(sku_key) <> ''
+          AND sku_id IS NOT NULL
+          AND trim(sku_id) <> ''
+        """
+    ).fetchall()
+
+    article_map: dict[tuple[str, str], tuple[str, str]] = {}
+    name_map: dict[tuple[str, str], tuple[str, str]] = {}
+    ambiguous_article: set[tuple[str, str]] = set()
+    ambiguous_name: set[tuple[str, str]] = set()
+    for row in map_rows:
+        store = str(row["store_code"] or "").strip()
+        article = str(row["kaspi_article"] or "").strip()
+        offer_name = str(row["kaspi_offer_name"] or "").strip()
+        value = (str(row["sku_key"]), str(row["sku_id"]))
+        if store and article:
+            key = (store, article)
+            if key in ambiguous_article:
+                pass
+            elif key in article_map and article_map[key] != value:
+                ambiguous_article.add(key)
+                article_map.pop(key, None)
+            else:
+                article_map[key] = value
+        if store and offer_name:
+            key = (store, offer_name)
+            if key in ambiguous_name:
+                pass
+            elif key in name_map and name_map[key] != value:
+                ambiguous_name.add(key)
+                name_map.pop(key, None)
+            else:
+                name_map[key] = value
+
     rows = conn.execute(
         """
         SELECT
-            e.order_id,
-            e.store_code,
-            e.offer_id,
-            e.quantity,
-            e.unit_price_kzt,
-            e.total_price_kzt,
-            m.sku_key,
-            m.sku_id
-        FROM fact_order_entries_kaspi e
-        LEFT JOIN dim_kaspi_article_map m
-          ON m.store_code = e.store_code
-         AND m.kaspi_article = e.offer_id
+            order_id,
+            store_code,
+            offer_id,
+            quantity,
+            unit_price_kzt,
+            total_price_kzt,
+            raw_json
+        FROM fact_order_entries_kaspi
         """
     ).fetchall()
+
+    def _offer_candidates(offer_id: str | None) -> list[str]:
+        raw = str(offer_id or "").strip()
+        if not raw:
+            return []
+        candidates = [raw]
+        if "\t" in raw:
+            candidates.extend(part.strip() for part in raw.split("\t") if part.strip())
+        if " " in raw:
+            candidates.extend(part.strip() for part in raw.split(" ") if part.strip())
+        for marker in ("CL_", "ELS_"):
+            idx = raw.find(marker)
+            if idx > 0:
+                candidates.append(raw[idx:].strip())
+        out = []
+        seen = set()
+        for item in candidates:
+            if item and item not in seen:
+                out.append(item)
+                seen.add(item)
+        return out
+
+    def _offer_name_from_raw(raw_json: str | None) -> str | None:
+        if not raw_json:
+            return None
+        try:
+            payload = json.loads(raw_json)
+        except Exception:
+            return None
+        attrs = payload.get("attributes") or {}
+        offer = attrs.get("offer") or {}
+        name = str(offer.get("name") or "").strip()
+        return name or None
+
     entries_by_order: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
         order_id = str(row["order_id"]) if row["order_id"] is not None else ""
         store_code = str(row["store_code"]) if row["store_code"] is not None else ""
         if not order_id or not store_code:
             continue
+        sku_key = None
+        sku_id = None
+        for candidate in _offer_candidates(row["offer_id"]):
+            mapped = article_map.get((store_code, candidate))
+            if mapped:
+                sku_key, sku_id = mapped
+                break
+        if (not sku_key or not sku_id) and row["raw_json"]:
+            offer_name = _offer_name_from_raw(row["raw_json"])
+            if offer_name:
+                mapped = name_map.get((store_code, offer_name))
+                if mapped:
+                    sku_key, sku_id = mapped
         entries_by_order.setdefault((order_id, store_code), []).append(
             {
-                "sku_key": row["sku_key"],
-                "sku_id": row["sku_id"],
+                "sku_key": sku_key,
+                "sku_id": sku_id,
                 "quantity": float(row["quantity"] or 0.0),
                 "unit_price_kzt": row["unit_price_kzt"],
                 "total_price_kzt": row["total_price_kzt"],
@@ -289,6 +375,10 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
         existing_on_delivery = _load_existing_on_delivery(conn)
         existing_cogs_dates = _load_existing_cogs_dates(conn)
         existing_move_dates = _load_existing_move_dates(conn)
+        existing_cash_order_ids = {order_id for order_id, _ in existing_cash}
+        existing_refund_order_ids = {order_id for order_id, _ in existing_refunds}
+        existing_cogs_order_ids = {order_id for order_id, _ in existing_cogs_dates}
+        existing_on_delivery_order_ids = {order_id for order_id, _ in existing_on_delivery}
         fx_rates = get_fx_rates(until.isoformat(), db_path=db_path)
 
         rows = conn.execute(
@@ -300,6 +390,30 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
             """,
             (since.isoformat(), until.isoformat()),
         ).fetchall()
+        # Some orders have duplicate history rows where one row already has SKU identity,
+        # but the resolved sibling can be outside this date window.
+        # Build resolved keys from the whole table and use them only as a missing-SKU guard.
+        resolved_order_keys = {
+            (str(r[0]), str(r[1]))
+            for r in conn.execute(
+                """
+                SELECT DISTINCT order_id, store_code
+                FROM fact_orders_kaspi
+                WHERE order_id IS NOT NULL
+                  AND store_code IS NOT NULL
+                  AND sku_key IS NOT NULL
+                  AND trim(sku_key) <> ''
+                  AND sku_id IS NOT NULL
+                  AND trim(sku_id) <> ''
+                """
+            ).fetchall()
+        }
+        resolved_order_ids = {order_id for order_id, _ in resolved_order_keys}
+        resolved_order_ids_from_entries = {
+            order_id
+            for (order_id, _store), lines in entries_by_order.items()
+            if any(line.get("sku_key") and line.get("sku_id") for line in lines)
+        }
 
         events = []
         missing_sku = []
@@ -323,6 +437,16 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                 continue
             order_id = str(row["order_id"]) if row["order_id"] is not None else ""
             store_code = row["store_code"]
+            raw_kaspi_status = str(row["kaspi_status"] or "").strip().upper()
+            # Guard against premature stage inflation from API fields:
+            # if DB still marks order as ACCEPTED/READY, do not model on-delivery moves yet.
+            raw_internal_status = str(row["internal_status"] or "").strip().upper()
+            if status == "ON_DELIVERY" and raw_internal_status in {"NEW", "ACCEPTED", "READY"}:
+                counts["ignored"] += 1
+                continue
+            if status == "ON_DELIVERY" and raw_kaspi_status == _DELIVERY_STATE:
+                counts["ignored"] += 1
+                continue
             order_lines = []
             if row["sku_key"] and row["sku_id"]:
                 order_lines.append(
@@ -337,6 +461,30 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
             else:
                 order_lines = entries_by_order.get((order_id, str(store_code)), [])
                 if not order_lines:
+                    if (order_id, str(store_code)) in resolved_order_keys:
+                        counts["ignored"] += 1
+                        continue
+                    if order_id in resolved_order_ids:
+                        counts["ignored"] += 1
+                        continue
+                    if order_id in resolved_order_ids_from_entries:
+                        counts["ignored"] += 1
+                        continue
+                    if status in {"COMPLETED", "ON_DELIVERY"}:
+                        if order_id in existing_cash_order_ids and order_id in existing_cogs_order_ids:
+                            counts["ignored"] += 1
+                            continue
+                    if status in {"CANCELLED", "RETURNED"}:
+                        if order_id in existing_refund_order_ids:
+                            counts["ignored"] += 1
+                            continue
+                        if (
+                            order_id not in existing_cash_order_ids
+                            and order_id not in existing_on_delivery_order_ids
+                            and order_id not in existing_cogs_order_ids
+                        ):
+                            counts["ignored"] += 1
+                            continue
                     missing_sku.append(f"{order_id}:{store_code}")
                     counts["ignored"] += 1
                     continue
@@ -350,6 +498,30 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                 sku_key = line.get("sku_key")
                 sku_id = line.get("sku_id")
                 if not sku_key or not sku_id:
+                    if (order_id, str(store_code)) in resolved_order_keys:
+                        counts["ignored"] += 1
+                        continue
+                    if order_id in resolved_order_ids:
+                        counts["ignored"] += 1
+                        continue
+                    if order_id in resolved_order_ids_from_entries:
+                        counts["ignored"] += 1
+                        continue
+                    if status in {"COMPLETED", "ON_DELIVERY"}:
+                        if order_id in existing_cash_order_ids and order_id in existing_cogs_order_ids:
+                            counts["ignored"] += 1
+                            continue
+                    if status in {"CANCELLED", "RETURNED"}:
+                        if order_id in existing_refund_order_ids:
+                            counts["ignored"] += 1
+                            continue
+                        if (
+                            order_id not in existing_cash_order_ids
+                            and order_id not in existing_on_delivery_order_ids
+                            and order_id not in existing_cogs_order_ids
+                        ):
+                            counts["ignored"] += 1
+                            continue
                     missing_sku.append(f"{order_id}:{store_code}")
                     counts["ignored"] += 1
                     continue

@@ -53,11 +53,13 @@ def _init_db(db_path: Path) -> None:
                 offer_id TEXT,
                 quantity REAL,
                 unit_price_kzt REAL,
-                total_price_kzt REAL
+                total_price_kzt REAL,
+                raw_json TEXT
             );
             CREATE TABLE dim_kaspi_article_map (
                 store_code TEXT,
                 kaspi_article TEXT,
+                kaspi_offer_name TEXT,
                 sku_key TEXT,
                 sku_id TEXT
             );
@@ -99,10 +101,10 @@ def test_translate_orders_resolves_entries_when_sku_missing(tmp_path, monkeypatc
         conn.execute(
             """
             INSERT INTO fact_order_entries_kaspi (
-                entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("E1", "ORD_ENTRY", "UNIVERSAL", "OFFER1", 2, 12000, 24000),
+            ("E1", "ORD_ENTRY", "UNIVERSAL", "OFFER1", 2, 12000, 24000, None),
         )
         conn.execute(
             """
@@ -212,6 +214,347 @@ def test_translate_orders_allows_missing_sku_for_new_status(tmp_path, monkeypatc
         conn.close()
 
 
+def test_translate_orders_ignores_cancelled_missing_sku_without_sale(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_CANCEL_NO_SALE",
+                "UNIVERSAL",
+                "Отменен",
+                "CANCELLED",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM fact_cashflow_events").fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+
+
+def test_translate_orders_ignores_accepted_kaspi_delivery_missing_sku(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                actual_shipment_date, quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_ACCEPTED_NO_SKU",
+                "UNIVERSAL",
+                "KASPI_DELIVERY",
+                "ACCEPTED",
+                "2026-01-20",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM fact_cashflow_events").fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+
+
+def test_translate_orders_ignores_shadow_missing_sku_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_SHADOW", 1.0, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_SHADOW",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                1,
+                12000,
+                "SKU_SHADOW",
+                "SKU_SHADOW_S",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_SHADOW",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id='ORD_SHADOW'"
+        ).fetchone()[0]
+        assert count == 4
+    finally:
+        conn.close()
+
+
+def test_translate_orders_ignores_shadow_missing_sku_outside_window(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_SHADOW_OLD", 1.0, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_SHADOW_OLD",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2025-12-20",
+                1,
+                12000,
+                "SKU_SHADOW_OLD",
+                "SKU_SHADOW_OLD_S",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_SHADOW_OLD",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id='ORD_SHADOW_OLD'"
+        ).fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+
+
+def test_translate_orders_allows_missing_sku_when_order_already_recorded(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_DONE",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO fact_cashflow_events (
+                event_date, event_type, account, amount_kzt,
+                store_code, sku_key, sku_id, ref_type, ref_id,
+                notes, source, run_id, event_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "2026-01-20",
+                    "CASH_IN",
+                    "KASPI_PAY_UNIVERSAL",
+                    1000.0,
+                    "UNIVERSAL",
+                    "SKU_DONE",
+                    "SKU_DONE_S",
+                    "ORDER",
+                    "ORD_DONE",
+                    "",
+                    "ORDER_MODELLED",
+                    "seed",
+                    "done_cash",
+                ),
+                (
+                    "2026-01-20",
+                    "COGS_RECOGNIZED",
+                    "INVENTORY_ON_DELIVERY_COST",
+                    -500.0,
+                    "UNIVERSAL",
+                    "SKU_DONE",
+                    "SKU_DONE_S",
+                    "ORDER",
+                    "ORD_DONE",
+                    "",
+                    "ORDER_MODELLED",
+                    "seed",
+                    "done_cogs",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+
+def test_translate_orders_ignores_missing_sku_when_resolved_in_other_store(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_XSTORE", 1.0, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_XSTORE",
+                "UNKNOWN",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                1,
+                12000,
+                "SKU_XSTORE",
+                "SKU_XSTORE_S",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_XSTORE",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+
 def test_translate_orders_backfills_zero_cost_events(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     _init_db(db_path)
@@ -244,10 +587,10 @@ def test_translate_orders_backfills_zero_cost_events(tmp_path, monkeypatch):
         conn.execute(
             """
             INSERT INTO fact_order_entries_kaspi (
-                entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("E2", "ORD_BACKFILL", "UNIVERSAL", "OFFER2", 1, 12000, 12000),
+            ("E2", "ORD_BACKFILL", "UNIVERSAL", "OFFER2", 1, 12000, 12000, None),
         )
         conn.execute(
             """
@@ -296,6 +639,141 @@ def test_translate_orders_backfills_zero_cost_events(tmp_path, monkeypatch):
         assert nonzero == 3
     finally:
         conn.close()
+
+
+def test_translate_orders_resolves_normalized_offer_id(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_NORM", 1.0, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_NORM",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_order_entries_kaspi (
+                entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "E3",
+                "ORD_NORM",
+                "UNIVERSAL",
+                "102529963\tCL_OC_MEN_LINE52_BLACK_2XL_102529963",
+                1,
+                12000,
+                12000,
+                None,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO dim_kaspi_article_map (
+                store_code, kaspi_article, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                "UNIVERSAL",
+                "CL_OC_MEN_LINE52_BLACK_2XL_102529963",
+                "SKU_NORM",
+                "SKU_NORM_2XL",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+
+def test_translate_orders_resolves_by_offer_name_fallback(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_NAME", 1.0, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_NAME",
+                "ACMEWEAR",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_order_entries_kaspi (
+                entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "E4",
+                "ORD_NAME",
+                "ACMEWEAR",
+                "108381956_888082755",
+                1,
+                12000,
+                12000,
+                '{"attributes":{"offer":{"name":"Комплект Podium RASH-32 комплект 5в1 черный 44"}}}',
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO dim_kaspi_article_map (
+                store_code, kaspi_article, kaspi_offer_name, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "ACMEWEAR",
+                "CL_OC_MEN_LINE52_BLACK_M_105133583",
+                "Комплект Podium RASH-32 комплект 5в1 черный 44",
+                "SKU_NAME",
+                "SKU_NAME_M",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
 
 
 def test_translate_orders_idempotent(tmp_path, monkeypatch):
@@ -637,3 +1115,48 @@ def test_translate_orders_on_delivery_moves_inventory(tmp_path, monkeypatch):
     assert event_types == {"INVENTORY_MOVE"}
     assert "INVENTORY_ON_HAND_COST" in accounts
     assert "INVENTORY_ON_DELIVERY_COST" in accounts
+
+
+def test_translate_orders_ignores_kaspi_delivery_state_even_if_shipped(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU4", 1.0, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                actual_shipment_date, quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD4",
+                "UNIVERSAL",
+                "KASPI_DELIVERY",
+                "SHIPPED",
+                "2026-01-20",
+                "2026-01-20",
+                1,
+                12000,
+                "SKU4",
+                "SKU4_S",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id='ORD4'").fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
