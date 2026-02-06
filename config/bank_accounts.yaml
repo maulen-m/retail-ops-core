@@ -1,0 +1,26 @@
+## Cash balances by store/account (manual snapshot).
+## Store codes mirror config/kaspi_pay_accounts.yaml.
+## Amounts are raw balances in account currency.
+
+# ==============================================================================
+# TOTALS (as of 2026-02-06)
+# ==============================================================================
+#
+# By Currency (FX rates from binance_p2p 2026-02-06):
+#   | Currency | Amount    | Rate | KZT Equivalent |
+#   |----------|-----------|------|----------------|
+#   | KZT      |         0 |    1 |              0 |
+#   | USDT     |    160.36 |  502 |         80,502 |
+#   | Total    |           |      |     80,502 KZT |
+#
+# By Store:
+#   - UNIVERSAL: 160.36 USDT
+#
+# ==============================================================================
+
+as_of: 2026-02-06 16:59:03 GMT+5
+stores:
+  UNIVERSAL:
+    accounts:
+      binance_usdt:
+        balance_usdt: 160.362615
