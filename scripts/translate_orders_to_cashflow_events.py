@@ -351,6 +351,12 @@ def _has_existing(existing: set[tuple[str, str]], order_id: str, order_sku_id: s
     return (order_id, "") in existing
 
 
+def _get_existing_date(
+    existing: dict[tuple[str, str], str], order_id: str, order_sku_id: str
+) -> str | None:
+    return existing.get((order_id, order_sku_id)) or existing.get((order_id, ""))
+
+
 def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_id: str) -> int:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
@@ -563,9 +569,51 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
 
                 if status == "COMPLETED":
                     if _has_existing(existing_cash, order_id, order_sku_id):
+                        # Legacy rows may have cash recorded but only zero-cost inventory events.
+                        # Backfill missing non-zero COGS while preserving cash idempotency.
+                        cogs_date = _get_existing_date(existing_cogs_dates, order_id, order_sku_id)
+                        if not cogs_date:
+                            move_date = _get_existing_date(existing_move_dates, order_id, order_sku_id)
+                            cogs_date = move_date or event_date
+                            if not _has_existing(existing_on_delivery, order_id, order_sku_id):
+                                events.append(
+                                    {
+                                        "event_date": cogs_date,
+                                        "event_type": "INVENTORY_MOVE",
+                                        "account": "INVENTORY_ON_HAND_COST",
+                                        "amount_kzt": -abs(cost_line),
+                                        **base_fields,
+                                        "notes": "Backfill on-delivery at completion",
+                                    }
+                                )
+                                events.append(
+                                    {
+                                        "event_date": cogs_date,
+                                        "event_type": "INVENTORY_MOVE",
+                                        "account": "INVENTORY_ON_DELIVERY_COST",
+                                        "amount_kzt": abs(cost_line),
+                                        **base_fields,
+                                        "notes": "Backfill on-delivery at completion",
+                                    }
+                                )
+                                existing_on_delivery.add(order_key)
+                            events.append(
+                                {
+                                    "event_date": cogs_date,
+                                    "event_type": "COGS_RECOGNIZED",
+                                    "account": "INVENTORY_ON_DELIVERY_COST",
+                                    "amount_kzt": -abs(cost_line),
+                                    **base_fields,
+                                    "notes": "Backfill missing COGS",
+                                }
+                            )
+                            existing_cogs_dates[order_key] = cogs_date
+                            counts["completed"] += 1
+                            continue
+
                         # Cash/COGS already recorded; only backfill on-delivery if missing.
                         if not _has_existing(existing_on_delivery, order_id, order_sku_id):
-                            backfill_date = existing_cogs_dates.get(order_key) or event_date
+                            backfill_date = cogs_date or event_date
                             events.append(
                                 {
                                     "event_date": backfill_date,
@@ -588,8 +636,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                             )
                             existing_on_delivery.add(order_key)
                         else:
-                            cogs_date = existing_cogs_dates.get(order_key)
-                            move_date = existing_move_dates.get(order_key)
+                            move_date = _get_existing_date(existing_move_dates, order_id, order_sku_id)
                             if cogs_date and move_date and move_date > cogs_date:
                                 # Shift on-delivery timing earlier to avoid negative balance on cogs date.
                                 events.append(
@@ -636,7 +683,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                         continue
                     counts["completed"] += 1
                     if not _has_existing(existing_on_delivery, order_id, order_sku_id):
-                        backfill_date = existing_cogs_dates.get(order_key) or event_date
+                        backfill_date = _get_existing_date(existing_cogs_dates, order_id, order_sku_id) or event_date
                         events.append(
                             {
                                 "event_date": backfill_date,
@@ -676,6 +723,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                             **base_fields,
                         }
                     )
+                    existing_cogs_dates[order_key] = event_date
                     existing_cash.add(order_key)
                 elif status == "CANCELLED":
                     # Only reverse if we previously recorded cash for this order

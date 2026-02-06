@@ -641,6 +641,137 @@ def test_translate_orders_backfills_zero_cost_events(tmp_path, monkeypatch):
         conn.close()
 
 
+def test_translate_orders_backfills_cogs_when_cash_exists_with_zero_inventory(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_CASH_BACKFILL", 1.0, 5000, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_CASH_BACKFILL",
+                "UNIVERSAL",
+                "Завершен",
+                "COMPLETED",
+                "2026-01-20",
+                1,
+                12000,
+                "SKU_CASH_BACKFILL",
+                "SKU_CASH_BACKFILL_S",
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO fact_cashflow_events (
+                event_date, event_type, account, amount_kzt,
+                store_code, sku_key, sku_id, ref_type, ref_id,
+                notes, source, run_id, event_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "2026-01-20",
+                    "CASH_IN",
+                    "KASPI_PAY_UNIVERSAL",
+                    10000.0,
+                    "UNIVERSAL",
+                    "SKU_CASH_BACKFILL",
+                    "",
+                    "ORDER",
+                    "ORD_CASH_BACKFILL",
+                    "seed cash",
+                    "ORDER_MODELLED",
+                    "seed",
+                    "cash_hash",
+                ),
+                (
+                    "2026-01-20",
+                    "COGS_RECOGNIZED",
+                    "INVENTORY_ON_DELIVERY_COST",
+                    0.0,
+                    "UNIVERSAL",
+                    "SKU_CASH_BACKFILL",
+                    "",
+                    "ORDER",
+                    "ORD_CASH_BACKFILL",
+                    "seed zero",
+                    "ORDER_MODELLED",
+                    "seed",
+                    "zero_cogs_hash",
+                ),
+                (
+                    "2026-01-20",
+                    "INVENTORY_MOVE",
+                    "INVENTORY_ON_HAND_COST",
+                    0.0,
+                    "UNIVERSAL",
+                    "SKU_CASH_BACKFILL",
+                    "",
+                    "ORDER",
+                    "ORD_CASH_BACKFILL",
+                    "seed zero",
+                    "ORDER_MODELLED",
+                    "seed",
+                    "zero_move_h_hash",
+                ),
+                (
+                    "2026-01-20",
+                    "INVENTORY_MOVE",
+                    "INVENTORY_ON_DELIVERY_COST",
+                    0.0,
+                    "UNIVERSAL",
+                    "SKU_CASH_BACKFILL",
+                    "",
+                    "ORDER",
+                    "ORD_CASH_BACKFILL",
+                    "seed zero",
+                    "ORDER_MODELLED",
+                    "seed",
+                    "zero_move_d_hash",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        nonzero_cogs = conn.execute(
+            """
+            SELECT COUNT(*) FROM fact_cashflow_events
+            WHERE ref_id='ORD_CASH_BACKFILL'
+              AND event_type='COGS_RECOGNIZED'
+              AND amount_kzt != 0
+            """
+        ).fetchone()[0]
+        nonzero_moves = conn.execute(
+            """
+            SELECT COUNT(*) FROM fact_cashflow_events
+            WHERE ref_id='ORD_CASH_BACKFILL'
+              AND event_type='INVENTORY_MOVE'
+              AND amount_kzt != 0
+            """
+        ).fetchone()[0]
+        assert nonzero_cogs >= 1
+        assert nonzero_moves >= 2
+    finally:
+        conn.close()
+
+
 def test_translate_orders_resolves_normalized_offer_id(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     _init_db(db_path)
