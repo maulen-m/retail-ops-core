@@ -118,6 +118,57 @@ def find_unmatched_orders(
     return stale
 
 
+def _is_real_order(order: dict) -> bool:
+    order_id = str(order.get("order_id") or "")
+    if order_id.isdigit():
+        return True
+    return bool(order.get("deposit_address")) and order.get("amount_usdt") is not None
+
+
+def _has_candidate_order(withdrawal: dict, orders: list[dict]) -> bool:
+    wd_addr = (withdrawal.get("address") or "").strip()
+    if not wd_addr:
+        return False
+    wd_dt = _parse_dt_utc(withdrawal.get("apply_time") or withdrawal.get("success_time"))
+    for order in orders:
+        if not _is_real_order(order):
+            continue
+        if "CANCEL" in str(order.get("status") or "").upper():
+            continue
+        order_addr = (order.get("deposit_address") or "").strip()
+        if not order_addr or not address_match(order_addr, wd_addr):
+            continue
+        if order.get("amount_usdt") is not None and withdrawal.get("amount") is not None:
+            if not amount_close(withdrawal.get("amount"), order.get("amount_usdt")):
+                continue
+        if not date_close(_parse_dt_utc(order.get("message_date")), wd_dt):
+            continue
+        return True
+    return False
+
+
+def _has_candidate_withdrawal(order: dict, withdrawals: list[dict]) -> bool:
+    if not _is_real_order(order):
+        return False
+    order_addr = (order.get("deposit_address") or "").strip()
+    if not order_addr:
+        return False
+    order_dt = _parse_dt_utc(order.get("message_date"))
+    for wd in withdrawals:
+        if wd.get("exchanger_order_id"):
+            continue
+        wd_addr = (wd.get("address") or "").strip()
+        if not wd_addr or not address_match(order_addr, wd_addr):
+            continue
+        if order.get("amount_usdt") is not None and wd.get("amount") is not None:
+            if not amount_close(wd.get("amount"), order.get("amount_usdt")):
+                continue
+        if not date_close(order_dt, _parse_dt_utc(wd.get("apply_time") or wd.get("success_time"))):
+            continue
+        return True
+    return False
+
+
 def validate_matching_invariants(
     orders: list[dict],
     withdrawals: list[dict],
@@ -156,11 +207,13 @@ def validate_matching_invariants(
 
     stale_withdrawals = find_unmatched_withdrawals(withdrawals, now)
     for wd in stale_withdrawals:
-        warnings.append(f"Unmatched withdrawal {wd.get('withdraw_id')} older than {UNMATCHED_AGE_DAYS}d")
+        if _has_candidate_order(wd, orders):
+            warnings.append(f"Unmatched withdrawal {wd.get('withdraw_id')} older than {UNMATCHED_AGE_DAYS}d")
 
     stale_orders = find_unmatched_orders(orders, withdrawals, now)
     for order in stale_orders:
-        warnings.append(f"Unmatched exchanger order {order.get('exchanger_order_id')} older than {UNMATCHED_AGE_DAYS}d")
+        if _has_candidate_withdrawal(order, withdrawals):
+            warnings.append(f"Unmatched exchanger order {order.get('exchanger_order_id')} older than {UNMATCHED_AGE_DAYS}d")
 
     return CheckResult(
         name="matching_invariants",
