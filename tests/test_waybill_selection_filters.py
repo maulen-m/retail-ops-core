@@ -1,4 +1,5 @@
 import sqlite3
+import zipfile
 from datetime import date, datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -334,3 +335,35 @@ def test_validate_pending_orders_db_filters_status_signature(tmp_path):
 
     assert total == 7
     assert pending == {"5001", "5002", "5003", "5006"}
+
+
+def test_build_waybill_loader_respects_order_id_filter(tmp_path):
+    waybill_dir = tmp_path / "waybills"
+    waybill_dir.mkdir(parents=True, exist_ok=True)
+    (waybill_dir / "1001.pdf").write_bytes(b"%PDF-1.4")
+    (waybill_dir / "1002.pdf").write_bytes(b"%PDF-1.4")
+
+    selected = {"1002"}
+    loaded = build_daily_waybills.load_waybills_from_folder(
+        waybill_dir, order_id_filter=selected
+    )
+
+    assert set(loaded.keys()) == {"1002"}
+
+
+def test_build_zip_loader_respects_order_id_filter(tmp_path):
+    zip_dir = tmp_path / "active"
+    temp_dir = tmp_path / "temp"
+    zip_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = zip_dir / "waybill_test.zip"
+
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("KASPI_SHOP-2001.pdf", b"%PDF-1.4")
+        zf.writestr("KASPI_SHOP-2002.pdf", b"%PDF-1.4")
+
+    loaded = build_daily_waybills.extract_waybills_from_zips(
+        zip_dir, temp_dir, order_id_filter={"2001"}
+    )
+
+    assert set(loaded.keys()) == {"2001"}

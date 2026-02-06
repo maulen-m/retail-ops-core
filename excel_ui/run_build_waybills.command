@@ -266,22 +266,31 @@ echo ""
 # Archive inputs (CRM + waybill PDFs) for backup
 echo "Archiving inputs (CRM + waybill PDFs)..."
 echo "----------------------------------------"
-TS=$(date "+%Y-%m-%d_%H%M%S")
-ARCHIVE_DIR="${DATA_ROOT}/excel_ui/Archive/input_${TS}"
 EXTERNAL_BACKUP_ROOT="~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business"
-EXTERNAL_ARCHIVE_DIR="${EXTERNAL_BACKUP_ROOT}/Kaspi_waybills/input_${TS}"
-mkdir -p "${ARCHIVE_DIR}/waybills"
-mkdir -p "${EXTERNAL_ARCHIVE_DIR}"
-cp -p "${DATA_ROOT}/excel_ui/SALES_KSP_CRM_V3.xlsx" "${ARCHIVE_DIR}/" 2>/dev/null || true
-cp -p "${DATA_ROOT}/excel_ui/SALES_KSP_CRM_V3.xlsx" "${EXTERNAL_ARCHIVE_DIR}/" 2>/dev/null || true
-if [ -d "${DATA_ROOT}/excel_ui/ActiveOrders/waybills" ]; then
-    cp -p "${DATA_ROOT}/excel_ui/ActiveOrders/waybills/"*.pdf "${ARCHIVE_DIR}/waybills/" 2>/dev/null || true
+EXTERNAL_GDRIVE_KASPI_ROOT="${EXTERNAL_BACKUP_ROOT}/Kaspi_waybills"
+EXTERNAL_DB_ROOT="${KASPI_EXTERNAL_DB_ROOT:-~/Documents/useful tables/Main crm spreadsheets/main tables/External_database}"
+EXTERNAL_DB_REPO_LABEL="${KASPI_EXTERNAL_DB_REPO_LABEL:-Autonomous_business}"
+CACHE_RETENTION_DAYS="${KASPI_WAYBILL_CACHE_RETENTION_DAYS:-30}"
+ARCHIVE_RETENTION_DAYS="${KASPI_ARCHIVE_RETENTION_DAYS:-14}"
+
+python scripts/archive_waybill_inputs.py \
+    --data-root "${DATA_ROOT}" \
+    --selection-cache "${DATA_ROOT}/excel_ui/ActiveOrders/waybills/_waybill_selection_orders.json" \
+    --crm-file "${DATA_ROOT}/excel_ui/SALES_KSP_CRM_V3.xlsx" \
+    --waybill-dir "${DATA_ROOT}/excel_ui/ActiveOrders/waybills" \
+    --active-orders-dir "${DATA_ROOT}/excel_ui/ActiveOrders" \
+    --archive-root "${DATA_ROOT}/excel_ui/Archive" \
+    --gdrive-archive-root "${EXTERNAL_GDRIVE_KASPI_ROOT}" \
+    --external-db-root "${EXTERNAL_DB_ROOT}" \
+    --repo-label "${EXTERNAL_DB_REPO_LABEL}" \
+    --cache-retention-days "${CACHE_RETENTION_DAYS}" \
+    --archive-retention-days "${ARCHIVE_RETENTION_DAYS}" \
+    --verbose
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "WARNING: Input archiving encountered errors (see above)."
+    echo "Continuing workflow..."
 fi
-if [ -d "${DATA_ROOT}/excel_ui/ActiveOrders" ]; then
-    cp -p "${DATA_ROOT}/excel_ui/ActiveOrders/"waybill*.zip "${ARCHIVE_DIR}/" 2>/dev/null || true
-fi
-echo "Archived inputs to: ${ARCHIVE_DIR}"
-echo "Archived inputs to: ${EXTERNAL_ARCHIVE_DIR}"
 
 echo ""
 STATUS_FILE="${DATA_ROOT}/excel_ui/ActiveOrders/waybills/_waybill_selection_status.txt"

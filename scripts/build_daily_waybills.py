@@ -884,7 +884,10 @@ def get_crm_missing_info(
     return missing_in_crm, missing_size
 
 
-def load_waybills_from_folder(waybill_folder: Path) -> dict[str, Path]:
+def load_waybills_from_folder(
+    waybill_folder: Path,
+    order_id_filter: Optional[set[str]] = None,
+) -> dict[str, Path]:
     """
     Load waybill PDFs from a folder (downloaded via API).
 
@@ -908,6 +911,8 @@ def load_waybills_from_folder(waybill_folder: Path) -> dict[str, Path]:
         match = re.search(WAYBILL_PATTERN, basename)
         if match:
             order_id = match.group(1)
+            if order_id_filter is not None and order_id not in order_id_filter:
+                continue
             waybill_map[order_id] = pdf_path
             continue
 
@@ -915,6 +920,11 @@ def load_waybills_from_folder(waybill_folder: Path) -> dict[str, Path]:
         if basename.endswith('.pdf'):
             potential_order_id = basename[:-4]  # Remove .pdf
             if potential_order_id.isdigit():
+                if (
+                    order_id_filter is not None
+                    and potential_order_id not in order_id_filter
+                ):
+                    continue
                 waybill_map[potential_order_id] = pdf_path
 
     logger.info(f"Loaded {len(waybill_map)} waybills from folder")
@@ -924,7 +934,8 @@ def load_waybills_from_folder(waybill_folder: Path) -> dict[str, Path]:
 def extract_waybills_from_zips(
     zip_dir: Path,
     temp_dir: Path,
-    pattern: str = "waybill*.zip"
+    pattern: str = "waybill*.zip",
+    order_id_filter: Optional[set[str]] = None,
 ) -> dict[str, Path]:
     """
     Extract waybill PDFs from all ZIP files in directory.
@@ -948,6 +959,8 @@ def extract_waybills_from_zips(
 
                     if match:
                         order_id = match.group(1)
+                        if order_id_filter is not None and order_id not in order_id_filter:
+                            continue
                         extracted_path = temp_dir / basename
 
                         # Only extract if not already extracted
@@ -968,6 +981,7 @@ def load_all_waybills(
     waybill_dir: Path,
     temp_dir: Path,
     waybill_folder_name: str = "waybills",
+    order_id_filter: Optional[set[str]] = None,
 ) -> dict[str, Path]:
     """
     Load waybills from both folder (API downloads) and ZIP files.
@@ -979,11 +993,20 @@ def load_all_waybills(
     waybill_map = {}
 
     # 1. First, extract from ZIP files
-    waybill_map.update(extract_waybills_from_zips(waybill_dir, temp_dir))
+    waybill_map.update(
+        extract_waybills_from_zips(
+            waybill_dir,
+            temp_dir,
+            order_id_filter=order_id_filter,
+        )
+    )
 
     # 2. Then, load from waybills folder (overrides ZIP if exists)
     waybill_folder = waybill_dir / waybill_folder_name
-    folder_waybills = load_waybills_from_folder(waybill_folder)
+    folder_waybills = load_waybills_from_folder(
+        waybill_folder,
+        order_id_filter=order_id_filter,
+    )
     waybill_map.update(folder_waybills)
 
     logger.info(f"Total waybills available: {len(waybill_map)}")
@@ -1700,7 +1723,12 @@ def main(
     # Load waybills from folder (API downloads) and ZIP files
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        waybill_map = load_all_waybills(waybill_dir, temp_path)
+        target_order_ids = {o.order_id for o in orders if o.order_id}
+        waybill_map = load_all_waybills(
+            waybill_dir,
+            temp_path,
+            order_id_filter=target_order_ids,
+        )
 
         # Group orders
         groups, missing = group_orders(orders, waybill_map)

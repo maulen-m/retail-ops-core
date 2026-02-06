@@ -306,7 +306,10 @@ def get_db_sizes(db_path: Path, order_ids: set[str]) -> set[str]:
     return sized
 
 
-def load_waybills(waybill_dir: Path) -> set[str]:
+def load_waybills(
+    waybill_dir: Path,
+    order_id_filter: Optional[set[str]] = None,
+) -> set[str]:
     """Load available waybill PDFs from folder + zips."""
     order_ids: set[str] = set()
 
@@ -315,10 +318,15 @@ def load_waybills(waybill_dir: Path) -> set[str]:
         for pdf in waybill_folder.glob("*.pdf"):
             m = WAYBILL_PATTERN.search(pdf.name)
             if m:
-                order_ids.add(m.group(1))
+                oid = m.group(1)
+                if order_id_filter is not None and oid not in order_id_filter:
+                    continue
+                order_ids.add(oid)
             else:
                 stem = pdf.stem
                 if stem.isdigit():
+                    if order_id_filter is not None and stem not in order_id_filter:
+                        continue
                     order_ids.add(stem)
 
     zip_files = list(waybill_dir.glob("waybill*.zip"))
@@ -334,7 +342,13 @@ def load_waybills(waybill_dir: Path) -> set[str]:
                             base = Path(name).name
                             m = WAYBILL_PATTERN.search(base)
                             if m:
-                                order_ids.add(m.group(1))
+                                oid = m.group(1)
+                                if (
+                                    order_id_filter is not None
+                                    and oid not in order_id_filter
+                                ):
+                                    continue
+                                order_ids.add(oid)
                 except Exception as exc:
                     logger.warning(f"Failed to read {z}: {exc}")
 
@@ -448,6 +462,10 @@ def main() -> int:
             include_overdue=args.include_overdue,
         )
 
+    # Precompute API ID set and use it to constrain heavy file scans.
+    api_all_ids = set()
+    for ids in api_by_store.values():
+        api_all_ids.update(ids)
     crm_all, crm_size = get_crm_orders(
         args.crm_file,
         args.sheet,
@@ -455,7 +473,7 @@ def main() -> int:
         include_overdue=args.include_overdue,
         lookback_days=args.since_days if args.include_overdue else None,
     )
-    waybills = load_waybills(args.waybill_dir)
+    waybills = load_waybills(args.waybill_dir, order_id_filter=api_all_ids or None)
     assigned, bundles, packages = load_output_assigned(args.output_dir)
 
     all_stores = set()
@@ -475,10 +493,6 @@ def main() -> int:
     rows = []
     totals = defaultdict(int)
 
-    # Precompute DB sizes for API orders
-    api_all_ids = set()
-    for ids in api_by_store.values():
-        api_all_ids.update(ids)
     db_sized = get_db_sizes(db_path, api_all_ids)
 
     # Per-store breakdown

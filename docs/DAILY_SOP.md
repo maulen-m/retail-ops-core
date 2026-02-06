@@ -962,6 +962,37 @@ python scripts/build_daily_waybills.py --verbose
 1. API downloads: `excel_ui/ActiveOrders/waybills/*.pdf`
 2. ZIP files: `excel_ui/ActiveOrders/waybill*.zip`
 
+### Step 4: Archive and Retention Rules (Current Policy)
+
+`excel_ui/run_build_waybills.command` now calls `scripts/archive_waybill_inputs.py` after build.
+
+**Archive scope:**
+- Local run archive (`excel_ui/Archive/input_*`) includes:
+- CRM workbook snapshot
+- only selected-order waybill PDFs from the current selection cache
+- optional `waybill*.zip` inputs
+- It does **not** copy the full historical `ActiveOrders/waybills` cache each run.
+
+**Retention:**
+- Local waybill cache retention: 30 days
+- Local run archive retention: 14 days
+
+**Cold storage (External_database):**
+- Old local cache PDFs are migrated to:
+- `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Autonomous_business/kaspi_waybills/by_order/{order_id}.pdf`
+- Deduplication is by order ID filename, so shipped waybill PDFs are never duplicated.
+
+**Workbook backups:**
+- Google Drive backup remains workbook-only per run.
+- External_database also receives workbook snapshots under:
+- `.../Autonomous_business/kaspi_waybills/workbooks/`
+
+**Config env vars:**
+- `KASPI_WAYBILL_CACHE_RETENTION_DAYS` (default `30`)
+- `KASPI_ARCHIVE_RETENTION_DAYS` (default `14`)
+- `KASPI_EXTERNAL_DB_ROOT`
+- `KASPI_EXTERNAL_DB_REPO_LABEL` (default `Autonomous_business`)
+
 ### Full Workflow Example
 
 ```bash

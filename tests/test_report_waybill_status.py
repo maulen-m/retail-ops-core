@@ -1,6 +1,11 @@
 import csv
+import zipfile
 
-from scripts.report_waybill_status import load_output_assigned, normalize_store_name
+from scripts.report_waybill_status import (
+    load_output_assigned,
+    load_waybills,
+    normalize_store_name,
+)
 
 
 def test_normalize_store_name_maps_api_codes():
@@ -26,3 +31,19 @@ def test_load_output_assigned_normalizes_store_names(tmp_path):
     assert assigned == {"Store-C": {"123", "456"}}
     assert bundles == {"Store-C": 1}
     assert packages == {"Store-C": 5}
+
+
+def test_load_waybills_respects_order_id_filter(tmp_path):
+    waybill_dir = tmp_path / "ActiveOrders"
+    folder = waybill_dir / "waybills"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "111.pdf").write_bytes(b"%PDF-1.4")
+    (folder / "222.pdf").write_bytes(b"%PDF-1.4")
+
+    zip_path = waybill_dir / "waybill_a.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("KASPI_SHOP-333.pdf", b"%PDF-1.4")
+        zf.writestr("KASPI_SHOP-444.pdf", b"%PDF-1.4")
+
+    ids = load_waybills(waybill_dir, order_id_filter={"222", "333"})
+    assert ids == {"222", "333"}
