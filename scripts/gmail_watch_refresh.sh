@@ -10,4 +10,7 @@ if [[ ! -x "$PY" ]]; then
 fi
 
 cd "$ROOT"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/load_dotenv.sh"
+load_dotenv "$ROOT/.env"
 "$PY" "$ROOT/scripts/gmail_watch_setup.py"
