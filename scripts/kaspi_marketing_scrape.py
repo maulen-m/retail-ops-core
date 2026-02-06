@@ -31,6 +31,18 @@ DEFAULT_OUTPUT_ROOT = Path(
 DEFAULT_BOOKKEEPER = Path(
     "~/Docs/Autonomous_business/excel/marketing/Kaspi_marketing_bookkeeper.xlsx"
 )
+DEFAULT_OWNER_WORKBOOK = Path(
+    "~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Kaspi_marketing/Kaspi_marketing_owner.xlsx"
+)
+DEFAULT_OWNER_CSV_DIR = Path(
+    "~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Kaspi_marketing"
+)
+DEFAULT_EXTERNAL_DB_ROOT = Path(
+    "~/Documents/useful tables/Main crm spreadsheets/main tables/External_database"
+)
+DEFAULT_EXTERNAL_DB_BACKUP_ROOT = Path(
+    "~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/repo_backups_G/External_database"
+)
 DEFAULT_PROFILE_DIR = "~/Library/Application Support/ChromePlaywrightProfile4"
 DEFAULT_MERCHANT_ID = "759051"
 DEFAULT_STORE_CODE = "30137883"  # AcmeWear
@@ -1211,6 +1223,39 @@ def main() -> int:
     parser.add_argument("--store-code", default=env_store_code)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--bookkeeper", type=Path, default=DEFAULT_BOOKKEEPER)
+    parser.add_argument("--owner-workbook-path", type=Path, default=DEFAULT_OWNER_WORKBOOK)
+    parser.add_argument("--owner-csv-dir", type=Path, default=DEFAULT_OWNER_CSV_DIR)
+    parser.add_argument("--history-start-date", default="2025-01-01")
+    parser.add_argument(
+        "--future-cutover-date",
+        default=datetime.now(ALMATY_TZ).date().isoformat(),
+    )
+    parser.add_argument(
+        "--strict-models",
+        default="line51,line61,suit-61",
+        help="Comma-separated canonical models used by historical strict filter",
+    )
+    parser.add_argument(
+        "--owner-store-code",
+        default="ACMEWEAR",
+        help="Store code used for fact_sales join in owner workbook",
+    )
+    parser.add_argument(
+        "--skip-owner-workbook",
+        action="store_true",
+        help="Skip owner workbook + csv generation",
+    )
+    parser.add_argument("--external-db-root", type=Path, default=DEFAULT_EXTERNAL_DB_ROOT)
+    parser.add_argument(
+        "--external-db-backup-root",
+        type=Path,
+        default=DEFAULT_EXTERNAL_DB_BACKUP_ROOT,
+    )
+    parser.add_argument(
+        "--disable-external-restore",
+        action="store_true",
+        help="Disable preflight restore from External_database snapshots",
+    )
     parser.add_argument("--headful", action="store_true", help="Run with browser UI (default: headless)")
     parser.add_argument("--export-app-db", action="store_true", help="Export current tables into app.db")
     parser.add_argument("--app-db", type=Path, default=Path("~/Docs/Autonomous_business/db/app.db"))
@@ -1218,6 +1263,32 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     logger = logging.getLogger(__name__)
+
+    restore_result: dict[str, Any] = {
+        "restored": False,
+        "reason": "disabled",
+        "snapshot": "",
+        "actions": [],
+    }
+    if not args.disable_external_restore:
+        try:
+            from scripts.external_database_restore import ensure_external_database_available
+        except ModuleNotFoundError:
+            from external_database_restore import ensure_external_database_available
+
+        restore_result = ensure_external_database_available(
+            source_root=args.external_db_root,
+            backup_root=args.external_db_backup_root,
+            required_subdirs=[args.output_root.name],
+        )
+        if restore_result.get("reason") == "no_valid_snapshot" and not args.external_db_root.exists():
+            logger.error(
+                "External_database missing and no valid snapshot found at %s",
+                args.external_db_backup_root,
+            )
+            return 1
+        if restore_result.get("restored"):
+            logger.info("External_database restore actions: %s", restore_result.get("actions"))
 
     try:
         from playwright.sync_api import sync_playwright
@@ -1264,6 +1335,7 @@ def main() -> int:
         "download_failures": [],
         "report_skipped": [],
         "notes": [],
+        "external_restore": restore_result,
     }
     run_log["notes"].append("bid_cpc is current API snapshot; no historical bid data available.")
 
@@ -1561,6 +1633,44 @@ def main() -> int:
     # Export to app.db if requested
     if args.export_app_db:
         export_to_app_db(args.app_db, db_path)
+
+    if not args.skip_owner_workbook:
+        try:
+            from scripts.build_kaspi_marketing_owner_workbook import (
+                build_owner_workbook,
+                parse_models_csv,
+            )
+        except ModuleNotFoundError:
+            from build_kaspi_marketing_owner_workbook import (
+                build_owner_workbook,
+                parse_models_csv,
+            )
+
+        try:
+            owner_summary = build_owner_workbook(
+                ads_db=db_path,
+                app_db=args.app_db,
+                workbook_path=args.owner_workbook_path,
+                csv_dir=args.owner_csv_dir,
+                history_start_date=args.history_start_date,
+                future_cutover_date=args.future_cutover_date,
+                strict_models=parse_models_csv(args.strict_models),
+                store_code=args.owner_store_code,
+            )
+            run_log["owner_workbook"] = {
+                **owner_summary,
+                "workbook_path": str(args.owner_workbook_path),
+                "csv_dir": str(args.owner_csv_dir),
+                "history_start_date": args.history_start_date,
+                "future_cutover_date": args.future_cutover_date,
+                "strict_models": args.strict_models,
+            }
+        except Exception as exc:
+            run_log["notes"].append(f"owner_workbook_failed: {exc}")
+            log_path = log_root / f"scrape_{run_id}.json"
+            log_path.write_text(json.dumps(run_log, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.exception("Owner workbook generation failed")
+            return 1
 
     log_path = log_root / f"scrape_{run_id}.json"
     log_path.write_text(json.dumps(run_log, ensure_ascii=False, indent=2), encoding="utf-8")

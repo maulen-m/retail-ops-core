@@ -6,6 +6,7 @@ Outputs:
 - Raw report files (CSV) in **timestamped subfolders** (per run).
 - Per-campaign + per-product (SKU) detail tables from **per-campaign CSV + JSON endpoints**.
 - One **bookkeeper** workbook with **two sheets** (`campaign_daily`, `campaign_product_daily`), updated only when cost increases.
+- One **owner workbook + CSV mirrors** in External_database with ads-vs-DB deltas.
 - Dedicated SQLite “db doc” + optional export view to `app.db` for downstream use.
 
 All raw/detail outputs live under:
@@ -196,6 +197,10 @@ Kaspi_marketing/
 |-- db/kaspi_marketing.db           # sqlite history/current
 |-- logs/scrape_<run_id>.json       # run log + anomalies
 |-- backups/                        # workbook backups (timestamped)
+|-- Kaspi_marketing_owner.xlsx      # owner workbook (campaign + product sheets)
+|-- campaign_daily_owner.csv
+|-- campaign_product_daily_owner.csv
+|-- README.md
 ```
 
 Optional export view:
@@ -211,9 +216,46 @@ Optional export view:
   - The main app DB (`~/Docs/Autonomous_business/db/app.db`) only receives **current** snapshots:
     - `ads_campaign_daily_current`, `ads_campaign_product_daily_current`
 
+## External_database resilience
+- Scraper preflight now validates:
+  - `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database`
+  - `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Kaspi_marketing`
+- If missing, it restores from latest valid snapshot in:
+  - `~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/repo_backups_G/External_database`
+- Backup layout:
+```
+.../External_database/
+|-- snapshots/YYYYMMDD_HHMMSS/External_database/...
+|-- snapshots/YYYYMMDD_HHMMSS/backup_manifest.json
+|-- latest_snapshot.txt
+```
+- Retention policy: **30 days** (daily snapshots).
+
 ## Inactive campaign handling
 - To avoid bloating history, **inactive campaigns (Paused/Finished) are only scraped for one consecutive day**.
 - If a campaign remains inactive the next day, it is skipped until it becomes **Enabled** again.
+
+## Owner workbook (single owner-facing artifact)
+- Generated automatically after scrape:
+  - `Kaspi_marketing_owner.xlsx`
+  - `campaign_daily_owner.csv`
+  - `campaign_product_daily_owner.csv`
+- Sheets:
+  - `campaign_daily`
+  - `campaign_product_daily`
+- Added DB delta columns:
+  - `db_orders_count`, `db_sales_gmv_kzt`
+  - `delta_orders_db_minus_ads`, `delta_gmv_db_minus_ads`
+- Added mapping traceability:
+  - `mapped_sku_id`, `mapped_sku_key`, `mapped_model`, `mapping_status`
+- Orders source for deltas: `fact_sales` (`store_code='ACMEWEAR'`).
+
+### Historical vs future filter policy
+- Historical backfill zone (`date < future_cutover_date`):
+  - Include only `mapping_status='mapped'` rows where model is `line51` or `line61` (canonicalized).
+- Future zone (`date >= future_cutover_date`):
+  - **No sku_key filter**; include all ingested ads rows.
+  - Mapping columns remain populated when possible.
 
 ## Bookkeeper workbook (Excel-safe-ops)
 Use **two sheets** (`campaign_daily`, `campaign_product_daily`) with **cost-increase upserts**:
@@ -226,11 +268,15 @@ Use **two sheets** (`campaign_daily`, `campaign_product_daily`) with **cost-incr
 - Write to temp file, then **atomic replace**.
 - Validate by re-open.
 
-## Scheduler (20:30 GMT+5)
+## Scheduler (20:30 + 21:10 GMT+5)
 Use **launchd** on macOS (preferred) or cron. Launchd uses **system local time**, so ensure system TZ is GMT+5.
 The scraper itself uses `Asia/Almaty` to compute **yesterday**, so date boundaries remain GMT+5 even if the Mac timezone drifts.
 
-### Launchd plist template (example)
+### Launchd jobs
+1. Ads scrape: **20:30**
+2. Full External_database backup: **21:10** (after scrape; avoids half-written snapshots)
+
+### Launchd plist templates
 ```
 Label: com.example.kaspi-marketing
 ProgramArguments:
@@ -242,22 +288,38 @@ StartCalendarInterval:
 WorkingDirectory: ~/Docs/Autonomous_business
 StandardOutPath: ~/Docs/Autonomous_business/logs/marketing_stdout.log
 StandardErrorPath: ~/Docs/Autonomous_business/logs/marketing_stderr.log
+
+Label: com.example.external-database-backup
+ProgramArguments:
+  - /bin/bash
+  - ~/Docs/Autonomous_business/scripts/run_external_database_backup.command
+StartCalendarInterval:
+  Hour: 21
+  Minute: 10
+WorkingDirectory: ~/Docs/Autonomous_business
+StandardOutPath: ~/Docs/Autonomous_business/logs/external_db_backup_stdout.log
+StandardErrorPath: ~/Docs/Autonomous_business/logs/external_db_backup_stderr.log
 ```
 
 Repo files:
 - `config/com.example.kaspi-marketing-ads.plist`
+- `config/com.example.external-database-backup.plist`
 - `scripts/run_kaspi_marketing_scrape.command`
+- `scripts/run_external_database_backup.command`
 - `scripts/install_kaspi_marketing_scheduler.sh`
+- `scripts/install_external_database_backup_scheduler.sh`
 
 ## Execution flow (headless)
-1. Compute **target_date window**: вчера, позавчера, и 3‑й день назад (re-run last 3 days).
-2. Launch persistent browser context with profile/session.
-3. Detect login state; if logged out, auto-login.
-4. Call **Campaigns API** for each date + state (Enabled/Paused/Finished).
-5. Call **campaigns report CSV** endpoint; save raw file untouched.
-6. Loop campaigns → call **per-campaign products CSV** (SKU‑level) + JSON endpoints.
-7. Persist results: raw file + details + db + append to bookkeeper (upsert last 3 days).
-8. Close browser cleanly.
+1. Preflight restore of missing External_database/Kaspi_marketing from latest snapshot.
+2. Compute **target_date window**: вчера, позавчера, и 3‑й день назад (re-run last 3 days).
+3. Launch persistent browser context with profile/session.
+4. Detect login state; if logged out, auto-login.
+5. Call **Campaigns API** for each date + state (Enabled/Paused/Finished).
+6. Call **campaigns report CSV** endpoint; save raw file untouched.
+7. Loop campaigns → call **per-campaign products CSV** (SKU‑level) + JSON endpoints.
+8. Persist results: raw file + details + dedicated ads db + app.db export + bookkeeper.
+9. Build owner workbook + owner csv mirrors.
+10. Close browser cleanly.
 
 ## Backfill (from 2025-01-01)
 Use the scraper in **API-only** mode with an explicit date range:
