@@ -9,12 +9,22 @@ PLISTS=(
   "com.example.gmail-watch-refresh.plist"
 )
 
+LEGACY_LABELS=(
+  "com.transferledger.autopilot"
+  "com.example.gmail-pubsub-listener"
+)
+
 mkdir -p "$LAUNCH_AGENTS_DIR"
 
 for plist in "${PLISTS[@]}"; do
   if launchctl list | grep -q "${plist%.plist}"; then
     launchctl unload "$LAUNCH_AGENTS_DIR/$plist" 2>/dev/null || true
   fi
+done
+
+for label in "${LEGACY_LABELS[@]}"; do
+  launchctl remove "$label" 2>/dev/null || true
+  rm -f "$LAUNCH_AGENTS_DIR/$label.plist"
 done
 
 for plist in "${PLISTS[@]}"; do
