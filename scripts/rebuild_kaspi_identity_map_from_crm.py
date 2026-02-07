@@ -27,7 +27,7 @@ DEFAULT_WORKBOOK = Path("excel_ui/SALES_KSP_CRM_V3.xlsx")
 DEFAULT_SHEET = "SALES_KSP_CRM_1"
 LINE61_PREFIX = "OF_SUIT-61_BLK_"
 LINE61_SKU_KEY = "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
-LINE61_CORE = "6в1_Черный"
+LINE61_CORE = "6в1_Черный_+Сумка"
 
 
 def _clean(value: Any) -> str:

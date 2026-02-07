@@ -52,7 +52,7 @@ def compute_identity_patch(
     if article.startswith("OF_SUIT-61_BLK_"):
         return {
             "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
-            "kaspi_name_core": "6в1_Черный",
+            "kaspi_name_core": "6в1_Черный_+Сумка",
         }
 
     identity = _derive_identity_from_raw_row(

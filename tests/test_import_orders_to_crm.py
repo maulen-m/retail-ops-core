@@ -401,7 +401,7 @@ def test_compute_fixed_value_columns_for_acmewear_suit_row():
     assert values["Total_net_rev"] == pytest.approx(((25980.0 * (1 - 0.125)) - 1000.0) * (1 - 0.03))
     assert values["Product_Type"] == "CL"
     assert values["MODEL"] == "LINE61"
-    assert values["Kaspi_name_core"] == "6в1_Черный"
+    assert values["Kaspi_name_core"] == "6в1_Черный_+Сумка"
     assert values["SKU_ID_KSP"] == "OF_SUIT-61_BLK_3XL"
     assert values["Kaspi_name_source"] == "ACMEWEAR line61"
 
@@ -472,7 +472,7 @@ def test_compute_fixed_values_forces_line61_core():
     }
     values = compute_fixed_value_columns(raw_row, {}, {})
     assert values["SKU_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
-    assert values["Kaspi_name_core"] == "6в1_Черный"
+    assert values["Kaspi_name_core"] == "6в1_Черный_+Сумка"
 
 
 def test_iter_consecutive_ranges_groups_sorted_rows():

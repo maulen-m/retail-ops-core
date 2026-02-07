@@ -10,5 +10,4 @@ def test_compute_identity_patch_forces_line61_core_and_sku():
     }
     out = compute_identity_patch(row, article_identity_by_article={})
     assert out["sku_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
-    assert out["kaspi_name_core"] == "6в1_Черный"
-
+    assert out["kaspi_name_core"] == "6в1_Черный_+Сумка"

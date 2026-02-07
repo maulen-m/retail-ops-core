@@ -12,7 +12,7 @@ def test_choose_best_identity_forces_line61():
     ]
     chosen = choose_best_identity("OF_SUIT-61_BLK_XL_48", rows)
     assert chosen["sku_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
-    assert chosen["kaspi_name_core"] == "6в1_Черный"
+    assert chosen["kaspi_name_core"] == "6в1_Черный_+Сумка"
 
 
 def test_choose_best_identity_prefers_majority_sku_key():
