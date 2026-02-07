@@ -118,12 +118,6 @@ def patch_workbook(
         map_hit = article in article_identity
         line61 = article.startswith("OF_SUIT-61_BLK_")
         valid_current_sku = bool(old_sku and (not valid_sku_keys or old_sku in valid_sku_keys))
-        if only_line61:
-            should_patch = line61
-        else:
-            should_patch = line61 or (map_hit and bool(old_sku)) or (old_sku and (not valid_current_sku)) or (map_hit and not old_core)
-        if not should_patch:
-            continue
 
         patch = compute_identity_patch(
             raw,
@@ -134,6 +128,19 @@ def patch_workbook(
         )
         new_sku = str(patch.get("sku_key") or "").strip()
         new_core = str(patch.get("kaspi_name_core") or "").strip()
+        if only_line61 and not line61:
+            continue
+        if not only_line61:
+            should_patch = (
+                line61
+                or map_hit
+                or (old_sku and (not valid_current_sku))
+                or (not old_core)
+                or (new_sku and new_sku != old_sku)
+                or (new_core and new_core != old_core and new_sku == old_sku)
+            )
+            if not should_patch:
+                continue
         if (new_sku and new_sku != old_sku) or (new_core and new_core != old_core):
             updates.append(
                 {

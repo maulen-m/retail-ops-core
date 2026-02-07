@@ -1,4 +1,7 @@
-from scripts.rebuild_kaspi_identity_map_from_crm import choose_best_identity
+from scripts.rebuild_kaspi_identity_map_from_crm import (
+    build_core_majority_map,
+    choose_best_identity,
+)
 
 
 def test_choose_best_identity_forces_line61():
@@ -24,3 +27,13 @@ def test_choose_best_identity_prefers_majority_sku_key():
     chosen = choose_best_identity("ART-1", rows)
     assert chosen["sku_key"] == "A"
     assert chosen["kaspi_name_core"] == "CoreA"
+
+
+def test_build_core_majority_map_prefers_dominant_sku_per_store_core():
+    rows = [
+        {"store_code": "ACMEWEAR", "kaspi_name_core": "Принт_5в1_черный", "sku_key": "CL_OC_MEN_LINE52_BLACK"},
+        {"store_code": "ACMEWEAR", "kaspi_name_core": "Принт_5в1_черный", "sku_key": "CL_OC_MEN_LINE52_BLACK"},
+        {"store_code": "ACMEWEAR", "kaspi_name_core": "Принт_5в1_черный", "sku_key": "CL_OC_MEN_LINE51_WHITE"},
+    ]
+    out = build_core_majority_map(rows)
+    assert out[("ACMEWEAR", "Принт_5в1_черный")] == "CL_OC_MEN_LINE52_BLACK"

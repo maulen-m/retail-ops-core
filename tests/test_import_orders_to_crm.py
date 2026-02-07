@@ -20,9 +20,12 @@ from scripts.import_orders_to_crm import (
     RAW_KASPI_COLUMNS,
     STORE_MAP,
     WAREHOUSE_STORE_MAP,
+    _derive_identity_from_raw_row,
     _build_line_dedupe_key,
     _coerce_column_values,
     _iter_consecutive_ranges,
+    _row_in_backfill_window,
+    apply_fixed_values_backfill_openpyxl,
     build_staging,
     clean_order_id,
     clean_value,
@@ -473,6 +476,111 @@ def test_compute_fixed_values_forces_line61_core():
     values = compute_fixed_value_columns(raw_row, {}, {})
     assert values["SKU_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
     assert values["Kaspi_name_core"] == "6в1_Черный_+Сумка"
+
+
+def test_derive_identity_uses_normalized_article_map_key():
+    raw_row = {
+        "Артикул": "135277314CL_NEW-CLO_MEN_RUSH-PRO_BLACK_L_135277314",
+        "Название товара в Kaspi Магазине": "Рашгард PRO COMBAT однотонный 245 черный L",
+        "SKU_key": "",
+        "MY_SIZE": "",
+    }
+    article_identity = {
+        "CL_NEW-CLO_MEN_RUSH-PRO_BLACK_L_135277314": {
+            "sku_key": "CL_NEW-CLO_MEN_RUSH-PRO_BLACK",
+            "sku_id": "CL_NEW-CLO_MEN_RUSH-PRO_BLACK_L",
+            "kaspi_name_core": "Раш_про_черный",
+        }
+    }
+    derived = _derive_identity_from_raw_row(raw_row, article_identity_by_article=article_identity)
+    assert derived["sku_key"] == "CL_NEW-CLO_MEN_RUSH-PRO_BLACK"
+    assert derived["my_size"] == "L"
+
+
+def test_row_in_backfill_window_respects_explicit_bounds():
+    assert _row_in_backfill_window(date(2026, 2, 7), date(2026, 1, 25), date(2026, 2, 7))
+    assert not _row_in_backfill_window(date(2026, 1, 24), date(2026, 1, 25), date(2026, 2, 7))
+    assert not _row_in_backfill_window(date(2026, 2, 8), date(2026, 1, 25), date(2026, 2, 7))
+
+
+def test_apply_fixed_values_backfill_openpyxl_updates_recent_rows_and_keeps_my_size():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        crm_path = tmppath / "crm.xlsx"
+
+        headers = [
+            "Date",
+            "Склад передачи КД",
+            "Артикул",
+            "Название товара в Kaspi Магазине",
+            "Название в системе продавца",
+            "Количество",
+            "Сумма",
+            "Стоимость доставки для продавца",
+            "Плановая дата передачи курьеру",
+            "SKU_key",
+            "MY_SIZE",
+            "Product_Type",
+            "STORE_NAME",
+            "Quantity",
+            "Kaspi_name_core",
+            "KASPI_OFFER_NAME",
+            "Sell_price_kzt",
+            "Total_price",
+            "Total_net_rev",
+            "MODEL",
+            "PLANNED_SHIPPING_DATE",
+            "Delivery_fee_kzt",
+            "Total_weight",
+            "SKU_ID_KSP",
+            "Kaspi_name_source",
+        ]
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "SALES_KSP_CRM_1"
+        for i, h in enumerate(headers, start=1):
+            ws.cell(row=1, column=i, value=h)
+        ws.cell(row=2, column=1, value=date.today())
+        ws.cell(row=2, column=2, value="30137883_PP1")
+        ws.cell(row=2, column=3, value="OF_SUIT-61_BLK_3XL")
+        ws.cell(row=2, column=4, value="Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL черный 3XL")
+        ws.cell(row=2, column=5, value="ACMEWEAR line61")
+        ws.cell(row=2, column=6, value=1)
+        ws.cell(row=2, column=7, value=12990)
+        ws.cell(row=2, column=8, value=0)
+        ws.cell(row=2, column=9, value="07.02.2026")
+        ws.cell(row=2, column=10, value="")
+        ws.cell(row=2, column=11, value="L")
+        ws.cell(row=2, column=12, value="")
+        ws.cell(row=2, column=13, value="=A2")
+        table = Table(displayName="tb_SalesRaw", ref=f"A1:{openpyxl.utils.get_column_letter(len(headers))}2")
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium9",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        ws.add_table(table)
+        wb.save(crm_path)
+        wb.close()
+
+        updated = apply_fixed_values_backfill_openpyxl(
+            crm_path=crm_path,
+            sheet_name="SALES_KSP_CRM_1",
+            table_name="tb_SalesRaw",
+            days=14,
+            dry_run=False,
+            verbose=True,
+        )
+        assert updated == 1
+
+        wb2 = openpyxl.load_workbook(crm_path)
+        ws2 = wb2["SALES_KSP_CRM_1"]
+        assert ws2.cell(row=2, column=11).value == "L"  # MY_SIZE unchanged
+        assert ws2.cell(row=2, column=15).value == "6в1_Черный_+Сумка"
+        wb2.close()
 
 
 def test_iter_consecutive_ranges_groups_sorted_rows():

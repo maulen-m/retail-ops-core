@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
@@ -35,7 +36,26 @@ def _clean(value: Any) -> str:
 
 
 def _norm_article(value: Any) -> str:
-    return _clean(value).upper()
+    article = _clean(value)
+    article = re.sub(r"^[\d\s]+", "", article).strip()
+    return article.upper()
+
+
+def build_core_majority_map(rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str], str]:
+    counts: Dict[Tuple[str, str], Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for row in rows:
+        store = _clean(row.get("store_code"))
+        core = _clean(row.get("kaspi_name_core"))
+        sku = _clean(row.get("sku_key"))
+        if not core or not sku:
+            continue
+        counts[(store, core)][sku] += 1
+
+    out: Dict[Tuple[str, str], str] = {}
+    for key, sku_counts in counts.items():
+        chosen = sorted(sku_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        out[key] = chosen
+    return out
 
 
 def choose_best_identity(article: str, rows: List[Dict[str, Any]]) -> Dict[str, str]:
@@ -93,7 +113,7 @@ def rebuild_identity_map(
     if not article_col or not sku_key_col:
         raise RuntimeError("Required columns missing: Артикул, SKU_key")
 
-    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    normalized_rows: List[Dict[str, Any]] = []
     for _, row in df.iterrows():
         article = _norm_article(row.get(article_col))
         if not article:
@@ -104,12 +124,26 @@ def rebuild_identity_map(
         core = _clean(row.get(core_col)) if core_col else ""
         if not core and offer_col:
             core = extract_kaspi_name_core(_clean(row.get(offer_col)))
-        grouped[(store_code, article)].append(
+        normalized_rows.append(
             {
+                "store_code": store_code,
                 "kaspi_article": article,
                 "sku_key": sku_key,
                 "kaspi_name_core": core,
                 "weight": 1.0,
+            }
+        )
+
+    core_majority = build_core_majority_map(normalized_rows)
+    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for row in normalized_rows:
+        sku_key = row["sku_key"] or core_majority.get((row["store_code"], row["kaspi_name_core"])) or ""
+        grouped[(row["store_code"], row["kaspi_article"])].append(
+            {
+                "kaspi_article": row["kaspi_article"],
+                "sku_key": sku_key,
+                "kaspi_name_core": row["kaspi_name_core"],
+                "weight": row["weight"],
             }
         )
 

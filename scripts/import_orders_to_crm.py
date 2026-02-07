@@ -214,7 +214,7 @@ def normalize_article_code(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return text
-    return re.sub(r"^[\\d\\s]+", "", text).strip()
+    return re.sub(r"^[\d\s]+", "", text).strip()
 
 
 def map_headers(df: pd.DataFrame) -> Dict[str, str]:
@@ -275,7 +275,14 @@ def _build_line_dedupe_key(
 
 
 def _load_article_identity_for_articles(articles: List[str]) -> Dict[str, Dict[str, str]]:
-    clean_articles = sorted({str(a).strip() for a in articles if str(a).strip()})
+    clean_articles = sorted(
+        {
+            str(a).strip()
+            for a in articles
+            for a in (a, normalize_article_code(a))
+            if str(a).strip()
+        }
+    )
     if not clean_articles:
         return {}
     mapped: Dict[str, Dict[str, str]] = {}
@@ -315,12 +322,13 @@ def _derive_identity_from_raw_row(
     article_identity_by_article: Optional[Dict[str, Dict[str, str]]] = None,
     valid_sku_keys: Optional[set[str]] = None,
 ) -> Dict[str, Optional[str]]:
-    article = str(
+    article_raw = str(
         raw_row.get("Артикул")
         or raw_row.get("SKU_ID_KSP")
         or raw_row.get("Kaspi_article")
         or ""
     ).strip()
+    article = normalize_article_code(article_raw) or article_raw
     offer_name = str(
         raw_row.get("Название товара в Kaspi Магазине")
         or raw_row.get("KASPI_OFFER_NAME")
@@ -331,7 +339,12 @@ def _derive_identity_from_raw_row(
     my_size = str(raw_row.get("MY_SIZE") or "").strip() or None
     product_type = str(raw_row.get("Product_Type") or "").strip() or None
 
-    article_identity = (article_identity_by_article or {}).get(article) or {}
+    article_identity = (
+        (article_identity_by_article or {}).get(article_raw)
+        or (article_identity_by_article or {}).get(article)
+        or (article_identity_by_article or {}).get(article.upper())
+        or {}
+    )
     if valid_sku_keys and sku_key and sku_key not in valid_sku_keys:
         sku_key = None
         my_size = None
@@ -501,6 +514,37 @@ def compute_fixed_value_columns(
         "SKU_ID_KSP": str(raw_row.get("Артикул") or "").strip(),
         "Kaspi_name_source": str(raw_row.get("Название в системе продавца") or "").strip(),
     }
+
+
+def _row_in_backfill_window(
+    row_date: Optional[date],
+    date_from: Optional[date],
+    date_to: Optional[date],
+) -> bool:
+    if not row_date or not date_from or not date_to:
+        return False
+    return date_from <= row_date <= date_to
+
+
+def _resolve_backfill_window(
+    days: int,
+    date_from: Optional[date],
+    date_to: Optional[date],
+) -> Tuple[Optional[date], Optional[date]]:
+    if days <= 0 and not date_from and not date_to:
+        return (None, None)
+    if not date_from and not date_to:
+        date_to = today_local()
+        date_from = date_to - timedelta(days=max(days - 1, 0))
+    elif date_from and not date_to:
+        date_to = date_from
+    elif date_to and not date_from:
+        date_from = date_to
+    if not date_from or not date_to:
+        return (None, None)
+    if date_from > date_to:
+        raise ValueError(f"fixed-value backfill date range invalid: {date_from} > {date_to}")
+    return (date_from, date_to)
 
 
 def build_fixed_value_payload(df_filt: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -1982,6 +2026,8 @@ def excel_append_xlwings(
                 if str(name or "").strip()
             }
             for col_name in FIXED_APPEND_COLUMNS:
+                if col_name in PROTECTED_HUMAN_COLUMNS:
+                    continue
                 col_abs = header_to_col.get(col_name)
                 if not col_abs:
                     continue
@@ -2025,17 +2071,18 @@ def apply_fixed_values_backfill_xlwings(
     sheet_name: str,
     table_name: str,
     days: int,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
     """
     Backfill fixed-value columns for recent rows to reduce formula churn.
     """
-    if days <= 0:
+    date_from, date_to = _resolve_backfill_window(days, date_from, date_to)
+    if not date_from or not date_to:
         return 0
-
     _require_xlwings()
-    cutoff = today_local() - timedelta(days=max(days - 1, 0))
 
     app = xw.App(visible=False, add_book=False)
     app.display_alerts = False
@@ -2111,7 +2158,7 @@ def apply_fixed_values_backfill_xlwings(
         for offset in range(n_rows):
             row_num = row_start + offset
             row_date = parse_date(date_values[offset])
-            if not row_date or row_date < cutoff:
+            if not _row_in_backfill_window(row_date, date_from, date_to):
                 continue
             raw_row = {}
             for key in raw_headers:
@@ -2156,6 +2203,8 @@ def apply_fixed_values_backfill_xlwings(
             row_numbers = sorted(fixed_by_row.keys())
             row_ranges = _iter_consecutive_ranges(row_numbers)
             for col_name in FIXED_BACKFILL_COLUMNS:
+                if col_name in PROTECTED_HUMAN_COLUMNS:
+                    continue
                 col_num = header_to_col.get(col_name)
                 if not col_num:
                     continue
@@ -2174,11 +2223,122 @@ def apply_fixed_values_backfill_xlwings(
         wb.close()
         if verbose:
             mode = "DRY RUN" if dry_run else "APPLY"
-            print(f"  Fixed-value backfill ({mode}): {updated} rows (cutoff >= {cutoff})")
+            print(f"  Fixed-value backfill ({mode}): {updated} rows ({date_from}..{date_to})")
     finally:
         app.quit()
 
     return updated
+
+
+def apply_fixed_values_backfill_openpyxl(
+    crm_path: Path,
+    sheet_name: str,
+    table_name: str,
+    days: int,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> int:
+    """
+    Openpyxl fallback for fixed-value backfill when xlwings/Excel automation is unavailable.
+    """
+    date_from, date_to = _resolve_backfill_window(days, date_from, date_to)
+    if not date_from or not date_to:
+        return 0
+
+    wb = load_workbook(filename=str(crm_path), read_only=False, data_only=False)
+    updated = 0
+    try:
+        ws = wb[sheet_name]
+        table = _resolve_table(ws, table_name)
+        start_col, start_row, end_col, end_row = _table_bounds(table)
+        if end_row <= start_row:
+            return 0
+
+        headers = [
+            ws.cell(row=start_row, column=c).value
+            for c in range(start_col, end_col + 1)
+        ]
+        header_to_col = {
+            str(name).strip(): start_col + i
+            for i, name in enumerate(headers or [])
+            if str(name or "").strip()
+        }
+        date_col = header_to_col.get("Date")
+        if not date_col:
+            return 0
+
+        raw_headers = [
+            "Склад передачи КД",
+            "Артикул",
+            "Название товара в Kaspi Магазине",
+            "Название в системе продавца",
+            "Количество",
+            "Сумма",
+            "Стоимость доставки для продавца",
+            "Плановая дата передачи курьеру",
+            "KASPI_OFFER_NAME",
+            "SKU_key",
+            "MY_SIZE",
+            "Product_Type",
+        ]
+
+        target_rows: List[Tuple[int, Dict[str, Any]]] = []
+        for row_num in range(start_row + 1, end_row + 1):
+            row_date = parse_date(ws.cell(row=row_num, column=date_col).value)
+            if not _row_in_backfill_window(row_date, date_from, date_to):
+                continue
+            raw_row: Dict[str, Any] = {}
+            for key in raw_headers:
+                col_num = header_to_col.get(key)
+                raw_row[key] = ws.cell(row=row_num, column=col_num).value if col_num else None
+            target_rows.append((row_num, raw_row))
+
+        if not target_rows:
+            return 0
+
+        articles = [str(raw.get("Артикул") or raw.get("SKU_ID_KSP") or "").strip() for _, raw in target_rows]
+        article_identity = _load_article_identity_for_articles(articles)
+
+        sku_keys: List[str] = []
+        for _, raw in target_rows:
+            identity = _derive_identity_from_raw_row(
+                raw,
+                article_identity_by_article=article_identity,
+            )
+            if identity.get("sku_key"):
+                sku_keys.append(str(identity["sku_key"]))
+        sku_meta, kaspi_core, valid_sku_keys = _load_sku_meta_for_keys(sku_keys)
+
+        fixed_by_row: Dict[int, Dict[str, Any]] = {}
+        for row_num, raw in target_rows:
+            fixed_by_row[row_num] = compute_fixed_value_columns(
+                raw,
+                sku_meta,
+                kaspi_core,
+                article_identity_by_article=article_identity,
+                valid_sku_keys=valid_sku_keys,
+            )
+            updated += 1
+
+        if not dry_run:
+            for row_num, fixed in fixed_by_row.items():
+                for col_name in FIXED_BACKFILL_COLUMNS:
+                    if col_name in PROTECTED_HUMAN_COLUMNS:
+                        continue
+                    col_num = header_to_col.get(col_name)
+                    if not col_num:
+                        continue
+                    value = fixed.get(col_name)
+                    ws.cell(row=row_num, column=col_num).value = value if value is not None else ""
+            wb.save(str(crm_path))
+        if verbose:
+            mode = "DRY RUN" if dry_run else "APPLY"
+            print(f"  Fixed-value backfill ({mode}, openpyxl): {updated} rows ({date_from}..{date_to})")
+        return updated
+    finally:
+        wb.close()
 
 
 def _coerce_column_values(values: Any, n_rows: int) -> List[Any]:
@@ -2381,6 +2541,16 @@ def main(
         help="Recompute fixed values for recent rows (default: 14 days)",
     )
     parser.add_argument(
+        "--fixed-backfill-from",
+        default=None,
+        help="Explicit backfill window start date (YYYY-MM-DD, today, yesterday)",
+    )
+    parser.add_argument(
+        "--fixed-backfill-to",
+        default=None,
+        help="Explicit backfill window end date (YYYY-MM-DD, today, yesterday)",
+    )
+    parser.add_argument(
         "--skip-fixed-backfill",
         action="store_true",
         help="Skip recent fixed-value backfill pass",
@@ -2445,6 +2615,8 @@ def main(
             no_update=bool(no_update) if no_update is not _UNSET else False,
             fixed_values=bool(fixed_values) if fixed_values is not _UNSET else True,
             backfill_fixed_days=int(backfill_fixed_days) if backfill_fixed_days is not _UNSET else 14,
+            fixed_backfill_from=None,
+            fixed_backfill_to=None,
             skip_fixed_backfill=bool(skip_fixed_backfill) if skip_fixed_backfill is not _UNSET else False,
             fixed_values_scope="window",
             summary_file=Path(summary_file) if summary_file is not _UNSET else data_path("logs", "import_orders_to_crm_latest.json"),
@@ -2478,7 +2650,9 @@ def main(
             return 0
         if str(getattr(args, "fixed_values_scope", "window")) == "new-only":
             return 0
-        if int(args.backfill_fixed_days or 0) <= 0:
+        explicit_from = _resolve_refresh_date(getattr(args, "fixed_backfill_from", None), today_local()) if getattr(args, "fixed_backfill_from", None) else None
+        explicit_to = _resolve_refresh_date(getattr(args, "fixed_backfill_to", None), today_local()) if getattr(args, "fixed_backfill_to", None) else None
+        if int(args.backfill_fixed_days or 0) <= 0 and not (explicit_from or explicit_to):
             return 0
         ensure_backup()
         try:
@@ -2487,16 +2661,27 @@ def main(
                 sheet_name=args.sheet,
                 table_name=args.table,
                 days=max(int(args.backfill_fixed_days or 0), 0),
+                date_from=explicit_from,
+                date_to=explicit_to,
                 dry_run=args.dry_run,
                 verbose=args.verbose,
             )
         except Exception as exc:
-            print(f"  WARNING: fixed-value backfill skipped due to error: {exc}")
+            print(f"  WARNING: xlwings fixed-value backfill failed ({exc}); using openpyxl fallback")
             if args.verbose:
                 import traceback
 
                 traceback.print_exc()
-            return 0
+            return apply_fixed_values_backfill_openpyxl(
+                crm_path=args.crm_file,
+                sheet_name=args.sheet,
+                table_name=args.table,
+                days=max(int(args.backfill_fixed_days or 0), 0),
+                date_from=explicit_from,
+                date_to=explicit_to,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
     
     # Parse dates
     if args.date_end.lower() == "today":
