@@ -166,9 +166,9 @@ def main() -> int:
         as_of=as_of,
     )
 
-    # Regenerate snapshot from latest history entry.
+    # Regenerate snapshot from effective latest state (full snapshot + sparse autosync override).
     entries = generate_bank_snapshot.load_history(args.history)
-    latest_entry = generate_bank_snapshot.get_latest_entry(entries)
+    latest_entry = generate_bank_snapshot.get_effective_latest_entry(entries)
     fx_rates = generate_bank_snapshot.get_fx_rates(args.db)
     snapshot_text = generate_bank_snapshot.generate_snapshot(latest_entry, fx_rates)
     args.snapshot.write_text(snapshot_text, encoding="utf-8")

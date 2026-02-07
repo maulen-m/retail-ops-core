@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import logging
 import sys
 from collections import defaultdict
@@ -44,6 +45,10 @@ DEFAULT_FX_RATES = {
 }
 
 # NOTE: Avoid ANSI escape codes in YAML comments; they break YAML parsing.
+SPARSE_AUTO_SOURCE = "binance api autosync"
+SPARSE_STORE = "UNIVERSAL"
+SPARSE_ACCOUNT = "binance_usdt"
+SPARSE_CURRENCY = "USDT"
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -131,22 +136,94 @@ def load_history(path: Path = HISTORY_PATH) -> list[dict]:
     return entries
 
 
+def _parse_as_of(as_of: str) -> datetime:
+    """Parse history timestamp into comparable datetime."""
+    try:
+        clean = str(as_of).replace(" GMT+5", "").replace(" GMT+0", "")
+        return datetime.strptime(clean, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        try:
+            return datetime.strptime(str(as_of)[:10], "%Y-%m-%d")
+        except ValueError:
+            return datetime.min
+
+
 def get_latest_entry(entries: list[dict]) -> dict:
     """Get the most recent entry by as_of timestamp."""
-    def parse_as_of(entry: dict) -> datetime:
-        as_of = entry.get("as_of", "")
-        # Parse formats like "2026-01-24 13:49:00 GMT+5"
-        try:
-            # Strip timezone suffix for parsing
-            clean = as_of.replace(" GMT+5", "").replace(" GMT+0", "")
-            return datetime.strptime(clean, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            try:
-                return datetime.strptime(as_of[:10], "%Y-%m-%d")
-            except ValueError:
-                return datetime.min
+    return max(entries, key=lambda entry: _parse_as_of(entry.get("as_of", "")))
 
-    return max(entries, key=parse_as_of)
+
+def _is_sparse_auto_usdt_entry(entry: dict) -> bool:
+    """True when entry is autosync-only UNIVERSAL/binance_usdt balance."""
+    if str(entry.get("source") or "").strip() != SPARSE_AUTO_SOURCE:
+        return False
+    balances = entry.get("balances")
+    if not isinstance(balances, list) or len(balances) != 1:
+        return False
+    row = balances[0] or {}
+    return (
+        str(row.get("store")) == SPARSE_STORE
+        and str(row.get("account")) == SPARSE_ACCOUNT
+        and str(row.get("currency", "")).upper() == SPARSE_CURRENCY
+    )
+
+
+def _upsert_universal_usdt_balance(balances: list[dict], amount: float) -> None:
+    for row in balances:
+        if (
+            str(row.get("store")) == SPARSE_STORE
+            and str(row.get("account")) == SPARSE_ACCOUNT
+            and str(row.get("currency", "")).upper() == SPARSE_CURRENCY
+        ):
+            row["amount"] = float(amount)
+            return
+    balances.append(
+        {
+            "store": SPARSE_STORE,
+            "account": SPARSE_ACCOUNT,
+            "amount": float(amount),
+            "currency": SPARSE_CURRENCY,
+        }
+    )
+
+
+def get_effective_latest_entry(entries: list[dict]) -> dict:
+    """
+    Return latest snapshot state while preserving full manual balances.
+
+    If latest entry is sparse autosync-only USDT, compose it over the latest
+    prior non-sparse entry so non-USDT accounts remain intact.
+    """
+    latest = get_latest_entry(entries)
+    if not _is_sparse_auto_usdt_entry(latest):
+        return latest
+
+    latest_balances = latest.get("balances") or []
+    latest_amount = latest_balances[0].get("amount") if latest_balances else None
+    if latest_amount is None:
+        return latest
+
+    ordered = sorted(entries, key=lambda e: _parse_as_of(e.get("as_of", "")), reverse=True)
+    base = next((entry for entry in ordered if entry is not latest and not _is_sparse_auto_usdt_entry(entry)), None)
+    if base is None:
+        return latest
+
+    composed = deepcopy(base)
+    composed["as_of"] = latest.get("as_of", base.get("as_of"))
+
+    base_source = str(base.get("source") or "").strip()
+    latest_source = str(latest.get("source") or "").strip()
+    if base_source and latest_source:
+        composed["source"] = f"{base_source} + {latest_source}"
+    elif latest_source:
+        composed["source"] = latest_source
+
+    balances = composed.get("balances")
+    if not isinstance(balances, list):
+        balances = []
+        composed["balances"] = balances
+    _upsert_universal_usdt_balance(balances, float(latest_amount))
+    return composed
 
 
 def compute_totals(
@@ -358,10 +435,10 @@ def main() -> int:
         return 0
 
     try:
-        # Load history and get latest entry
+        # Load history and compose effective latest snapshot
         entries = load_history(args.history)
-        latest = get_latest_entry(entries)
-        logging.info(f"Latest entry: {latest['as_of']}")
+        latest = get_effective_latest_entry(entries)
+        logging.info(f"Latest effective snapshot: {latest['as_of']}")
 
         # Get FX rates
         fx_rates = get_fx_rates(args.db)
