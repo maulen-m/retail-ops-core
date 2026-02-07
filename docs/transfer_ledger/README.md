@@ -24,6 +24,7 @@ What it does end-to-end:
 4. Syncs `UNIVERSAL/binance_usdt` into bank config:
    - apply mode only if `ENABLE_BANK_ACCOUNTS_WRITE=1`
    - otherwise dry-run
+   - in apply mode, also regenerates bank history totals table from history YAML
 
 Defaults used by wrapper:
 - `EXCHANGE_LOOKBACK_DAYS=30`
@@ -64,6 +65,7 @@ Main generated reports:
 - `docs/transfer_ledger/EXCHANGER_BUY_FULL_HISTORY.md`
 - `docs/transfer_ledger/PO_PAYMENTS_CHRONO_FULL_HISTORY.md`
 - `docs/transfer_ledger/PO_PAYMENT_STATUS.md`
+- `config/bank_accounts_history_totals.md` (newest->oldest bank balances with first columns as cross-store totals and per-store/account asset columns)
 
 ## Validation
 

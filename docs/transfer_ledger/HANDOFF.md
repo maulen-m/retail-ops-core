@@ -34,6 +34,7 @@ Repo scope:
    - IMAP fallback sweep for exchanger emails (`import_exchanger_emails.py`)
    - `transfer_ledger_autopilot.py --skip-emails --reports --report-days 0`
    - `sync_universal_usdt_balance.py` in apply mode only when `ENABLE_BANK_ACCOUNTS_WRITE=1`
+   - apply mode also regenerates `config/bank_accounts_history_totals.md` from `config/bank_accounts_history.yaml`
 
 ## What autopilot imports
 
@@ -53,6 +54,7 @@ Inside `transfer_ledger_autopilot.py`, the pipeline covers:
 - `docs/transfer_ledger/EXCHANGER_BUY_FULL_HISTORY.md`
 - `docs/transfer_ledger/PO_PAYMENTS_CHRONO_FULL_HISTORY.md`
 - `docs/transfer_ledger/PO_PAYMENT_STATUS.md`
+- `config/bank_accounts_history_totals.md` (bank history totals timeline, newest->oldest)
 
 ## Required env and controls
 
