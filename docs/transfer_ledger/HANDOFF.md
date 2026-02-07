@@ -1,72 +1,94 @@
-# Transfer Ledger Handoff (Worktree: ledger)
+# Transfer Ledger Handoff (Current Live Method)
 
-Purpose
-- This worktree isolates transfer-ledger changes from other agents.
-- It lives inside the same repo as ~/Docs/Autonomous_business, but on its own branch.
+Repo scope:
+- canonical runtime path is this repo instance:
+  - `~/Docs/Autonomous_business`
 
-Worktree + Branch
-- Worktree path: ~/.claude-worktrees/Autonomous_business/ledger
-- Branch: ledger (tracks origin/ledger)
+## Source of truth
 
-Source of Truth
-- Database: db/app.db (all ledger, PO allocation, FX data)
-- Reports: docs/transfer_ledger/*.md (generated outputs only)
+- Operational truth: `db/app.db`
+- Generated outputs only: `docs/transfer_ledger/*.md`
 
-Key Flows (data in)
-1) Binance P2P (KZT -> USDT)
-   - scripts/import_binance_p2p.py
-2) Binance withdrawals (USDT -> TRC20)
-   - scripts/import_binance_withdrawals.py
-3) Exchanger emails (USDT -> CNY)
-   - scripts/import_exchanger_emails.py
-4) Gmail push/IMAP sync
-   - scripts/gmail_sync_history.py (email labels)
-5) Autopilot (runs the full chain + reports)
-   - scripts/transfer_ledger_autopilot.py
+## Live control points
 
-Notifications
-- Telegram bot for exchanger updates + /Pay_PO summary
-  - scripts/telegram_ledger_bot.py
-  - core/transfer_ledger/telegram_ledger_alerts.py
+- Wrapper entrypoint:
+  - `scripts/run_exchange_imports.sh`
+- Autonomous pipeline:
+  - `scripts/transfer_ledger_autopilot.py`
+- Scheduler installer:
+  - `scripts/install_exchange_scheduler.sh`
+- LaunchAgent configs:
+  - `config/com.example.exchange-import.plist`
+  - `config/com.example.gmail-pubsub.plist`
+  - `config/com.example.gmail-watch-refresh.plist`
 
-Important Reports
-- docs/transfer_ledger/TRANSFER_LEDGER_FULL_HISTORY.md
-- docs/transfer_ledger/P2P_BUY_FULL_HISTORY.md
-- docs/transfer_ledger/EXCHANGER_BUY_FULL_HISTORY.md
-- docs/transfer_ledger/PO_PAYMENTS_CHRONO_FULL_HISTORY.md
-- docs/transfer_ledger/PO_PAYMENT_STATUS.md
+## End-to-end flow (as running now)
 
-Env Controls (examples)
-- Ledger balance override used in reports:
-  - LEDGER_CURRENT_USDT=690.330471
-  - REPORT_CURRENT_USDT=690.330471
-  - CURRENT_USDT_BALANCE=690.330471
-- Appendix length:
-  - LEDGER_BALANCE_ROWS=80
-- Telegram:
-  - TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_ALLOWED_CHAT_IDS (optional)
-- Gmail:
-  - GMAIL_USER, GMAIL_APP_PASSWORD, mailbox/query vars
-- Binance:
-  - BINANCE_TOKEN, BINANCE_SECRET_KEY
+1. Gmail real-time listener receives push notifications:
+   - `com.example.gmail-pubsub` -> `scripts/gmail_pubsub_listener.sh`
+2. Daily Gmail watch refresh keeps watch alive:
+   - `com.example.gmail-watch-refresh` -> `scripts/gmail_watch_refresh.sh` at 02:15 local time
+3. Every 6 hours, exchange wrapper runs:
+   - `com.example.exchange-import` -> `scripts/run_exchange_imports.sh`
+4. `run_exchange_imports.sh` executes:
+   - IMAP fallback sweep for exchanger emails (`import_exchanger_emails.py`)
+   - `transfer_ledger_autopilot.py --skip-emails --reports --report-days 0`
+   - `sync_universal_usdt_balance.py` in apply mode only when `ENABLE_BANK_ACCOUNTS_WRITE=1`
 
-Runbook (typical refresh)
-1) Pull emails + match withdrawals:
-   - python3 scripts/gmail_sync_history.py
-2) Import P2P and withdrawals:
-   - python3 scripts/import_binance_p2p.py --days 120 --trade-type BUY
-   - python3 scripts/import_binance_withdrawals.py --days 120 --coin USDT
-3) Derive FX + reports:
-   - python3 scripts/derive_fx_rates.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD
-   - python3 scripts/generate_transfer_ledger_reports.py
+## What autopilot imports
 
-Cherry-pick to main repo
-- From main repo:
-  - git fetch origin
-  - git log --oneline origin/ledger
-  - git cherry-pick <commit1> <commit2> ...
+Inside `transfer_ledger_autopilot.py`, the pipeline covers:
+- Binance P2P BUY orders (`binance_c2c_orders` + ledger legs)
+- FX derivation and upsert (`dim_fx_rates`)
+- Binance withdrawals (`binance_withdrawals` + withdrawal/fee ledger entries)
+- Binance deposits
+- Binance universal transfers
+- Funding/account snapshots
+- report generation (full history when `--report-days 0`)
 
-Guardrails
-- No destructive git ops (no reset --hard, no force push).
-- Avoid concurrent DB writes from multiple worktrees.
-- Keep .claude/*.md edits in a single "scribe" worktree to prevent conflicts.
+## Important reports to monitor
+
+- `docs/transfer_ledger/TRANSFER_LEDGER_FULL_HISTORY.md`
+- `docs/transfer_ledger/P2P_BUY_FULL_HISTORY.md`
+- `docs/transfer_ledger/EXCHANGER_BUY_FULL_HISTORY.md`
+- `docs/transfer_ledger/PO_PAYMENTS_CHRONO_FULL_HISTORY.md`
+- `docs/transfer_ledger/PO_PAYMENT_STATUS.md`
+
+## Required env and controls
+
+Required:
+- Gmail: `GMAIL_USER`, `GMAIL_APP_PASSWORD`
+- Binance: `BINANCE_TOKEN`, `BINANCE_SECRET_KEY`
+
+Optional runtime controls:
+- `EXCHANGE_LOOKBACK_DAYS` (default `30`)
+- `EXCHANGE_EMAIL_LOOKBACK_DAYS` (default `7`)
+- `ENABLE_BANK_ACCOUNTS_WRITE` (`1` to apply bank_accounts update; otherwise dry-run)
+
+Optional report controls:
+- `LEDGER_CURRENT_USDT`, `REPORT_CURRENT_USDT`, `CURRENT_USDT_BALANCE`
+- `LEDGER_BALANCE_ROWS`
+
+## Manual ops runbook
+
+Full refresh now:
+```bash
+bash scripts/run_exchange_imports.sh
+```
+
+Strict ledger validation:
+```bash
+python3 scripts/validate_transfer_ledger.py --strict
+```
+
+Install/update schedulers:
+```bash
+bash scripts/install_exchange_scheduler.sh
+launchctl list | grep exchange-import
+```
+
+## Guardrails
+
+- No destructive git operations.
+- Treat DB as truth; do not hand-edit generated markdown reports.
+- For parallel agents, isolate DB writers by worktree/data-dir strategy to avoid race conditions.
