@@ -4,6 +4,7 @@ Tests for import_orders_to_crm.py
 Phase 11 TASK-194: 12 tests for the order import script.
 """
 
+import os
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
@@ -602,6 +603,35 @@ def test_excel_automation_preflight_fails_when_lock_file_exists(tmp_path):
     lock.write_text("lock", encoding="utf-8")
     with pytest.raises(RuntimeError, match="Excel lock file detected"):
         _excel_automation_preflight(crm, strict_excel=True)
+
+
+def test_excel_automation_preflight_ignores_stale_lock_file(tmp_path, monkeypatch):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+    lock = tmp_path / "~$SALES_KSP_CRM_V3.xlsx"
+    lock.write_text("lock", encoding="utf-8")
+    stale_ts = datetime.now().timestamp() - 2 * 24 * 60 * 60
+    os.utime(lock, (stale_ts, stale_ts))
+
+    class DummyBook:
+        def close(self):
+            return None
+
+    class DummyBooks:
+        def open(self, *args, **kwargs):
+            return DummyBook()
+
+    class DummyApp:
+        def __init__(self, *args, **kwargs):
+            self.books = DummyBooks()
+            self.display_alerts = False
+            self.screen_updating = False
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.xw", type("DummyXW", (), {"App": DummyApp}))
+    _excel_automation_preflight(crm, strict_excel=True, verbose=True)
 
 
 def test_excel_automation_preflight_skips_when_not_strict(tmp_path):

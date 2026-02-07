@@ -177,9 +177,16 @@ def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbo
         raise RuntimeError("xlwings is required for strict Excel mode.")
     lock_file = crm_path.parent / f"~${crm_path.name}"
     if lock_file.exists():
-        raise RuntimeError(
-            f"Excel lock file detected ({lock_file.name}). Close workbook and retry."
-        )
+        age_seconds = datetime.now().timestamp() - lock_file.stat().st_mtime
+        if age_seconds < 30 * 60:
+            raise RuntimeError(
+                f"Excel lock file detected ({lock_file.name}). Close workbook and retry."
+            )
+        if verbose:
+            print(
+                "  WARNING: stale Excel lock file detected; ignoring "
+                f"({lock_file.name}, age={int(age_seconds)}s)"
+            )
 
     app = xw.App(visible=False, add_book=False)
     app.display_alerts = False
