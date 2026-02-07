@@ -156,6 +156,16 @@ PROTECTED_HUMAN_COLUMNS = {
     "MY_SIZE",
 }
 
+
+def _allow_openpyxl_backfill_fallback() -> bool:
+    """
+    Openpyxl saves can rewrite workbook package internals on complex files.
+    Keep this fallback disabled unless explicitly enabled via env.
+    """
+    raw = os.getenv("CRM_FIXED_BACKFILL_OPENPYXL_FALLBACK", "")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 LINE61_CANONICAL_SKU_KEY = "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
 LINE61_CANONICAL_CORE = "6в1_Черный_+Сумка"
 
@@ -2667,11 +2677,19 @@ def main(
                 verbose=args.verbose,
             )
         except Exception as exc:
-            print(f"  WARNING: xlwings fixed-value backfill failed ({exc}); using openpyxl fallback")
+            print(f"  WARNING: xlwings fixed-value backfill failed ({exc})")
             if args.verbose:
                 import traceback
 
                 traceback.print_exc()
+            if not _allow_openpyxl_backfill_fallback():
+                print(
+                    "  WARNING: openpyxl fallback is disabled "
+                    "(set CRM_FIXED_BACKFILL_OPENPYXL_FALLBACK=1 to enable)."
+                )
+                print("  WARNING: skipping fixed-value backfill to protect workbook structure.")
+                return 0
+            print("  WARNING: using openpyxl fallback for fixed-value backfill.")
             return apply_fixed_values_backfill_openpyxl(
                 crm_path=args.crm_file,
                 sheet_name=args.sheet,

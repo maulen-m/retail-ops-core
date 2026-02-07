@@ -25,6 +25,7 @@ from scripts.import_orders_to_crm import (
     _coerce_column_values,
     _iter_consecutive_ranges,
     _row_in_backfill_window,
+    _allow_openpyxl_backfill_fallback,
     apply_fixed_values_backfill_openpyxl,
     build_staging,
     clean_order_id,
@@ -581,6 +582,16 @@ def test_apply_fixed_values_backfill_openpyxl_updates_recent_rows_and_keeps_my_s
         assert ws2.cell(row=2, column=11).value == "L"  # MY_SIZE unchanged
         assert ws2.cell(row=2, column=15).value == "6в1_Черный_+Сумка"
         wb2.close()
+
+
+def test_openpyxl_backfill_fallback_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("CRM_FIXED_BACKFILL_OPENPYXL_FALLBACK", raising=False)
+    assert _allow_openpyxl_backfill_fallback() is False
+
+
+def test_openpyxl_backfill_fallback_can_be_enabled(monkeypatch):
+    monkeypatch.setenv("CRM_FIXED_BACKFILL_OPENPYXL_FALLBACK", "1")
+    assert _allow_openpyxl_backfill_fallback() is True
 
 
 def test_iter_consecutive_ranges_groups_sorted_rows():
