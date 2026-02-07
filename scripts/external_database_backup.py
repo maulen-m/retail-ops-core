@@ -22,6 +22,8 @@ DEFAULT_SOURCE_ROOT = Path(
 DEFAULT_BACKUP_ROOT = Path(
     "~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/repo_backups_G/External_database"
 )
+DEFAULT_EXCLUDE_DIRS = ["kaspi_offer_uploads"]
+DEFAULT_EXCLUDE_FILES = ["沪锦大客户报价表 （不含邮与税）.xlsx"]
 
 
 @dataclass(frozen=True)
@@ -84,16 +86,53 @@ def cleanup_old_snapshots(backup_root: Path, keep_days: int) -> list[str]:
     return deleted
 
 
+def _build_ignore(
+    source_root: Path,
+    exclude_dirs: list[str],
+    exclude_files: list[str],
+    excluded_items: list[str],
+):
+    exclude_dirs_set = set(exclude_dirs)
+    exclude_files_set = set(exclude_files)
+
+    def _ignore(current_dir: str, names: list[str]) -> set[str]:
+        ignored: set[str] = set()
+        current_path = Path(current_dir)
+        for name in names:
+            full_path = current_path / name
+            rel_path = full_path.relative_to(source_root)
+            rel_posix = rel_path.as_posix()
+            parts = set(rel_path.parts)
+
+            if parts & exclude_dirs_set:
+                ignored.add(name)
+                excluded_items.append(rel_posix)
+                continue
+
+            if full_path.is_file() and name in exclude_files_set:
+                ignored.add(name)
+                excluded_items.append(rel_posix)
+                continue
+
+        return ignored
+
+    return _ignore
+
+
 def create_snapshot(
     source_root: Path,
     backup_root: Path,
     keep_days: int = 30,
     critical_subdirs: list[str] | None = None,
+    exclude_dirs: list[str] | None = None,
+    exclude_files: list[str] | None = None,
 ) -> dict[str, Any]:
     if not source_root.exists():
         raise FileNotFoundError(f"Source root does not exist: {source_root}")
 
     critical_subdirs = critical_subdirs or ["Kaspi_marketing"]
+    exclude_dirs = exclude_dirs or DEFAULT_EXCLUDE_DIRS
+    exclude_files = exclude_files or DEFAULT_EXCLUDE_FILES
     started_at = datetime.now(ALMATY_TZ)
     timestamp = started_at.strftime("%Y%m%d_%H%M%S")
     paths = build_snapshot_paths(backup_root, timestamp)
@@ -102,7 +141,18 @@ def create_snapshot(
     if paths.snapshot_dir.exists():
         raise RuntimeError(f"Snapshot already exists: {paths.snapshot_dir}")
 
-    shutil.copytree(source_root, paths.snapshot_data_dir, copy_function=shutil.copy2)
+    excluded_items: list[str] = []
+    shutil.copytree(
+        source_root,
+        paths.snapshot_data_dir,
+        copy_function=shutil.copy2,
+        ignore=_build_ignore(
+            source_root=source_root,
+            exclude_dirs=exclude_dirs,
+            exclude_files=exclude_files,
+            excluded_items=excluded_items,
+        ),
+    )
     file_count, bytes_total = dir_stats(paths.snapshot_data_dir)
 
     critical_missing: list[str] = []
@@ -128,6 +178,9 @@ def create_snapshot(
         "keep_days": keep_days,
         "critical_subdirs": critical_subdirs,
         "critical_missing": critical_missing,
+        "exclude_dirs": exclude_dirs,
+        "exclude_files": exclude_files,
+        "excluded_items": sorted(set(excluded_items)),
     }
 
     paths.manifest_path.write_text(
@@ -156,6 +209,18 @@ def parse_args() -> argparse.Namespace:
         dest="critical_subdirs",
         help="Critical subdir that must exist in snapshot (repeatable)",
     )
+    parser.add_argument(
+        "--exclude-dir",
+        action="append",
+        dest="exclude_dirs",
+        help="Directory name to exclude from snapshot (repeatable)",
+    )
+    parser.add_argument(
+        "--exclude-file",
+        action="append",
+        dest="exclude_files",
+        help="File basename to exclude from snapshot (repeatable)",
+    )
     return parser.parse_args()
 
 
@@ -166,6 +231,8 @@ def main() -> int:
         backup_root=args.backup_root,
         keep_days=args.keep_days,
         critical_subdirs=args.critical_subdirs,
+        exclude_dirs=args.exclude_dirs,
+        exclude_files=args.exclude_files,
     )
     print(
         json.dumps(
