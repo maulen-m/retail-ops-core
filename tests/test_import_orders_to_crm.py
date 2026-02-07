@@ -26,6 +26,7 @@ from scripts.import_orders_to_crm import (
     _iter_consecutive_ranges,
     _row_in_backfill_window,
     _allow_openpyxl_backfill_fallback,
+    _excel_automation_preflight,
     apply_fixed_values_backfill_openpyxl,
     build_staging,
     clean_order_id,
@@ -592,6 +593,23 @@ def test_openpyxl_backfill_fallback_disabled_by_default(monkeypatch):
 def test_openpyxl_backfill_fallback_can_be_enabled(monkeypatch):
     monkeypatch.setenv("CRM_FIXED_BACKFILL_OPENPYXL_FALLBACK", "1")
     assert _allow_openpyxl_backfill_fallback() is True
+
+
+def test_excel_automation_preflight_fails_when_lock_file_exists(tmp_path):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+    lock = tmp_path / "~$SALES_KSP_CRM_V3.xlsx"
+    lock.write_text("lock", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Excel lock file detected"):
+        _excel_automation_preflight(crm, strict_excel=True)
+
+
+def test_excel_automation_preflight_skips_when_not_strict(tmp_path):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+    lock = tmp_path / "~$SALES_KSP_CRM_V3.xlsx"
+    lock.write_text("lock", encoding="utf-8")
+    _excel_automation_preflight(crm, strict_excel=False)
 
 
 def test_iter_consecutive_ranges_groups_sorted_rows():

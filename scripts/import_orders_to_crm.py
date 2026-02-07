@@ -166,6 +166,38 @@ def _allow_openpyxl_backfill_fallback() -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbose: bool = False) -> None:
+    """
+    Validate that Excel automation can safely control the workbook before writes.
+    In strict mode this aborts early instead of attempting risky fallbacks.
+    """
+    if not strict_excel:
+        return
+    if xw is None:
+        raise RuntimeError("xlwings is required for strict Excel mode.")
+    lock_file = crm_path.parent / f"~${crm_path.name}"
+    if lock_file.exists():
+        raise RuntimeError(
+            f"Excel lock file detected ({lock_file.name}). Close workbook and retry."
+        )
+
+    app = xw.App(visible=False, add_book=False)
+    app.display_alerts = False
+    app.screen_updating = False
+    try:
+        wb = app.books.open(str(crm_path), update_links=False, read_only=True)
+        wb.close()
+        if verbose:
+            print("  Strict Excel preflight OK")
+    except Exception as exc:
+        raise RuntimeError(
+            "Excel automation preflight failed (macOS Automation/Excel state issue). "
+            "Grant python automation access to Excel and close all open workbook sessions."
+        ) from exc
+    finally:
+        app.quit()
+
+
 LINE61_CANONICAL_SKU_KEY = "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
 LINE61_CANONICAL_CORE = "6в1_Черный_+Сумка"
 
@@ -2475,6 +2507,7 @@ def main(
     fixed_values=_UNSET,
     backfill_fixed_days=_UNSET,
     skip_fixed_backfill=_UNSET,
+    strict_excel=_UNSET,
     summary_file=_UNSET,
 ):
     parser = argparse.ArgumentParser(
@@ -2592,6 +2625,12 @@ def main(
         default=data_path("logs", "import_orders_to_crm_latest.json"),
         help="Write JSON summary to this path (default: logs/import_orders_to_crm_latest.json)",
     )
+    parser.add_argument(
+        "--strict-excel",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run strict Excel automation preflight and abort if unavailable (default: on).",
+    )
 
     if (
         orders_dir is _UNSET
@@ -2608,6 +2647,7 @@ def main(
         and fixed_values is _UNSET
         and backfill_fixed_days is _UNSET
         and skip_fixed_backfill is _UNSET
+        and strict_excel is _UNSET
     ):
         args = parser.parse_args()
     else:
@@ -2629,6 +2669,7 @@ def main(
             fixed_backfill_to=None,
             skip_fixed_backfill=bool(skip_fixed_backfill) if skip_fixed_backfill is not _UNSET else False,
             fixed_values_scope="window",
+            strict_excel=bool(strict_excel) if strict_excel is not _UNSET else True,
             summary_file=Path(summary_file) if summary_file is not _UNSET else data_path("logs", "import_orders_to_crm_latest.json"),
         )
 
@@ -2767,6 +2808,13 @@ def main(
     # Get existing order IDs for dedup
     existing_ids = snapshot.order_ids
     print(f"Existing orders in CRM: {len(existing_ids)}")
+
+    if not args.dry_run:
+        _excel_automation_preflight(
+            crm_path=args.crm_file,
+            strict_excel=bool(getattr(args, "strict_excel", True)),
+            verbose=bool(args.verbose),
+        )
 
     # Update existing orders' status columns (Phase 12 Part 7)
     update_existing = args.update_existing and not args.no_update
