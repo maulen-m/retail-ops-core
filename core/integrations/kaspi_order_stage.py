@@ -226,7 +226,6 @@ def classify_kaspi_stage_from_db_row(row: Mapping[str, Any]) -> StageCode:
         "returnedToWarehouse": row.get("returned_to_warehouse") or row.get("returnedToWarehouse"),
         "courierTransmissionDate": row.get("courier_transmission_date")
         or row.get("actual_shipment_date")
-        or row.get("courier_transmission_planning_date"),
     }
     return classify_kaspi_order_stage({"attributes": attrs})
 

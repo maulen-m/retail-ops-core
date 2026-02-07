@@ -182,6 +182,16 @@ class TestExtractSkuFromArticle:
         assert result["my_size"] == "XL"
         assert result["sku_id"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL"
 
+    def test_line52_article_with_range_suffix_strips_to_canonical_key(self):
+        """Legacy malformed Kaspi article suffixes must not pollute sku_key."""
+        result = extract_sku_from_article(
+            "CL_OC_MEN_LINE52_BLACK_103217238_56-58/56, 58_(4XL)",
+            "Комплект Antec RASH-921 Рашгард 5 в 1 черный 56, 58",
+        )
+        assert result["sku_key"] == "CL_OC_MEN_LINE52_BLACK"
+        assert result["my_size"] == "4XL"
+        assert result["sku_id"] == "CL_OC_MEN_LINE52_BLACK_4XL"
+
 
 class TestParseActiveOrders:
     """Tests for full file parsing."""

@@ -133,6 +133,8 @@ def _looks_like_size_token(token: str) -> bool:
     if "/" in t_upper:
         if any(size in t_upper for size in SIZE_TOKENS):
             return True
+        if re.fullmatch(r"[0-9\s,./()-]+", t_upper):
+            return True
         if any(ch.isdigit() for ch in t_upper) and any(ch.isalpha() for ch in t_upper):
             return True
     if t_upper.isdigit() and len(t_upper) in (2, 3):

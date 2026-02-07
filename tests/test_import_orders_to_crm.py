@@ -20,6 +20,7 @@ from scripts.import_orders_to_crm import (
     RAW_KASPI_COLUMNS,
     STORE_MAP,
     WAREHOUSE_STORE_MAP,
+    _build_line_dedupe_key,
     _coerce_column_values,
     _iter_consecutive_ranges,
     build_staging,
@@ -344,7 +345,7 @@ def test_clean_order_id():
 
 
 def test_build_staging_derives_sku_key_and_size_from_acmewear_article():
-    """When SKU_key/MY_SIZE are absent in source file, staging should derive them."""
+    """When SKU_key/MY_SIZE are absent, staging derives SKU_key but keeps MY_SIZE blank."""
     df = pd.DataFrame(
         {
             "Артикул": ["OF_SUIT-61_BLK_3XL"],
@@ -363,7 +364,7 @@ def test_build_staging_derives_sku_key_and_size_from_acmewear_article():
     stage, phone_values = build_staging(df, ["SKU_key", "MY_SIZE", "Артикул"])
     assert len(stage) == 1
     assert stage[0][0] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
-    assert stage[0][1] == "3XL"
+    assert stage[0][1] == ""
     assert stage[0][2] == "OF_SUIT-61_BLK_3XL"
     assert phone_values == ["+77771234567"]
 
@@ -405,6 +406,60 @@ def test_compute_fixed_value_columns_for_acmewear_suit_row():
     assert values["Kaspi_name_source"] == "ACMEWEAR line61"
 
 
+def test_build_staging_never_autofills_my_size_from_article():
+    """MY_SIZE is human-owned in CRM and must stay blank on import."""
+    df = pd.DataFrame(
+        {
+            "Артикул": ["OF_SUIT-61_BLK_3XL"],
+            "Название товара в Kaspi Магазине": [
+                "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL черный 3XL"
+            ],
+            "Количество": [1],
+            "Склад передачи КД": ["30137883_PP1"],
+            "Сумма": [12990],
+            "Стоимость доставки для продавца": [0],
+            "Плановая дата передачи курьеру": ["21.02.2026"],
+            "Название в системе продавца": ["ACMEWEAR line61"],
+        }
+    )
+    stage, _ = build_staging(df, ["MY_SIZE", "SKU_key", "Артикул"])
+    assert stage[0][0] == ""
+    assert stage[0][1] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+
+
+def test_build_staging_prefers_parser_when_article_map_conflicts():
+    """OF_* article parser output should win over stale article-map rows."""
+    df = pd.DataFrame(
+        {
+            "Артикул": ["OF_SUIT-61_BLK_3XL"],
+            "Название товара в Kaspi Магазине": [
+                "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL черный 3XL"
+            ],
+            "Количество": [1],
+            "Склад передачи КД": ["30137883_PP1"],
+            "Сумма": [12990],
+            "Стоимость доставки для продавца": [0],
+            "Плановая дата передачи курьеру": ["21.02.2026"],
+            "Название в системе продавца": ["ACMEWEAR line61"],
+        }
+    )
+
+    stale_map = {
+        "OF_SUIT-61_BLK_3XL": {
+            "sku_key": "CL_OC_MEN_LINE51_WHITE",
+            "sku_id": "CL_OC_MEN_LINE51_WHITE_3XL",
+            "kaspi_name_core": "Принт_5в1_черный",
+        }
+    }
+    valid_keys = {"CL_NEW-CLO2_MEN_SUIT-61_BLACK", "CL_OC_MEN_LINE51_WHITE"}
+    with patch("scripts.import_orders_to_crm._load_article_identity_for_articles", return_value=stale_map):
+        with patch("scripts.import_orders_to_crm._load_sku_meta_for_keys", return_value=({}, {}, valid_keys)):
+            stage, _ = build_staging(df, ["SKU_key", "Артикул"])
+
+    assert stage[0][0] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+    assert stage[0][1] == "OF_SUIT-61_BLK_3XL"
+
+
 def test_iter_consecutive_ranges_groups_sorted_rows():
     rows = [8010, 8011, 8012, 8015, 8017, 8018]
     assert _iter_consecutive_ranges(rows) == [(8010, 8012), (8015, 8015), (8017, 8018)]
@@ -414,3 +469,21 @@ def test_coerce_column_values_pads_and_truncates():
     assert _coerce_column_values([1, 2], 4) == [1, 2, None, None]
     assert _coerce_column_values("x", 2) == ["x", None]
     assert _coerce_column_values([1, 2, 3], 2) == [1, 2]
+
+
+def test_build_line_dedupe_key_differentiates_multiline_items():
+    k1 = _build_line_dedupe_key(
+        "812315649",
+        date(2026, 2, 7),
+        "Комплект Antec RASH-921 Рашгард 5 в 1 черный 56, 58",
+        "CL_OC_MEN_LINE52_BLACK_103217238_56-58/56, 58_(4XL)",
+        1,
+    )
+    k2 = _build_line_dedupe_key(
+        "812315649",
+        date(2026, 2, 7),
+        "Спортивный костюм PRO COMBAT 528742263 черный M",
+        "CL_OC_MEN_LINE52_BLACK_L_116515378",
+        1,
+    )
+    assert k1 != k2

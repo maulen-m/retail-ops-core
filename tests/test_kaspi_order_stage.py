@@ -1,4 +1,8 @@
-from core.integrations.kaspi_order_stage import StageCode, classify_kaspi_order_stage
+from core.integrations.kaspi_order_stage import (
+    StageCode,
+    classify_kaspi_order_stage,
+    classify_kaspi_stage_from_db_row,
+)
 
 
 def _make_order(state=None, status=None, **extra):
@@ -93,3 +97,19 @@ def test_waybill_presence_marks_assembled():
         kaspiDelivery={"waybill": "WB-123"},
     )
     assert classify_kaspi_order_stage(order) == StageCode.ASSEMBLED_PENDING_HANDOVER
+
+
+def test_db_row_planning_date_does_not_mark_in_delivery():
+    row = {
+        "kaspi_status": "KASPI_DELIVERY",
+        "kaspi_status_detail": "ACCEPTED_BY_MERCHANT",
+        "signature_required": 0,
+        "pre_order": 0,
+        "waybill_url": None,
+        "delivery_mode": "DELIVERY",
+        "returned_to_warehouse": 0,
+        "courier_transmission_date": None,
+        "actual_shipment_date": None,
+        "courier_transmission_planning_date": "2026-02-07",
+    }
+    assert classify_kaspi_stage_from_db_row(row) == StageCode.ACCEPTED_PENDING_ASSEMBLY

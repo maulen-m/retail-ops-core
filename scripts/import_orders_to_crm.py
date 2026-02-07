@@ -152,13 +152,16 @@ RAW_KASPI_COLUMNS = {
     "Internal_Status": "AZ",
 }
 
-FIXED_VALUE_COLUMNS = [
+PROTECTED_HUMAN_COLUMNS = {
+    "MY_SIZE",
+}
+
+FIXED_APPEND_COLUMNS = [
     "STORE_NAME",
     "Quantity",
     "Kaspi_name_core",
     "KASPI_OFFER_NAME",
     "SKU_key",
-    "MY_SIZE",
     "Sell_price_kzt",
     "Total_price",
     "Total_net_rev",
@@ -170,6 +173,9 @@ FIXED_VALUE_COLUMNS = [
     "SKU_ID_KSP",
     "Kaspi_name_source",
 ]
+
+# For recent backfill we use the same set and still avoid human-owned columns.
+FIXED_BACKFILL_COLUMNS = list(FIXED_APPEND_COLUMNS)
 
 # Canonical header mapping
 CANON = {
@@ -244,7 +250,65 @@ def _to_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _derive_identity_from_raw_row(raw_row: Dict[str, Any]) -> Dict[str, Optional[str]]:
+def _norm_key_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _build_line_dedupe_key(
+    order_id: Optional[str],
+    planned_date: Optional[date],
+    offer_name: Any,
+    article: Any,
+    quantity: Any,
+) -> str:
+    clean_order = clean_order_id(order_id) or ""
+    planned_iso = planned_date.isoformat() if planned_date else ""
+    offer_key = _norm_key_text(offer_name)
+    article_key = _norm_key_text(article)
+    quantity_key = str(_to_int(quantity, 0))
+    return f"{clean_order}|{planned_iso}|{article_key}|{offer_key}|{quantity_key}"
+
+
+def _load_article_identity_for_articles(articles: List[str]) -> Dict[str, Dict[str, str]]:
+    clean_articles = sorted({str(a).strip() for a in articles if str(a).strip()})
+    if not clean_articles:
+        return {}
+    placeholders = ",".join("?" for _ in clean_articles)
+    mapped: Dict[str, Dict[str, str]] = {}
+    with get_db() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dim_kaspi_article_map'"
+        ).fetchone():
+            return {}
+        rows = conn.execute(
+            f"""
+            SELECT kaspi_article, sku_key, sku_id, kaspi_name_core
+            FROM dim_kaspi_article_map
+            WHERE active_flag = 1
+              AND kaspi_article IN ({placeholders})
+            ORDER BY updated_at DESC
+            """,
+            clean_articles,
+        ).fetchall()
+        for row in rows:
+            article = str(row["kaspi_article"] or "").strip()
+            if not article or article in mapped:
+                continue
+            mapped[article] = {
+                "sku_key": str(row["sku_key"] or "").strip(),
+                "sku_id": str(row["sku_id"] or "").strip(),
+                "kaspi_name_core": str(row["kaspi_name_core"] or "").strip(),
+            }
+    return mapped
+
+
+def _derive_identity_from_raw_row(
+    raw_row: Dict[str, Any],
+    article_identity_by_article: Optional[Dict[str, Dict[str, str]]] = None,
+    valid_sku_keys: Optional[set[str]] = None,
+) -> Dict[str, Optional[str]]:
     article = str(
         raw_row.get("Артикул")
         or raw_row.get("SKU_ID_KSP")
@@ -260,48 +324,84 @@ def _derive_identity_from_raw_row(raw_row: Dict[str, Any]) -> Dict[str, Optional
     sku_key = str(raw_row.get("SKU_key") or "").strip() or None
     my_size = str(raw_row.get("MY_SIZE") or "").strip() or None
     product_type = str(raw_row.get("Product_Type") or "").strip() or None
-    if sku_key and my_size:
-        return {"sku_key": sku_key, "my_size": my_size, "product_type": product_type}
+
+    article_identity = (article_identity_by_article or {}).get(article) or {}
+    if valid_sku_keys and sku_key and sku_key not in valid_sku_keys:
+        sku_key = None
+        my_size = None
 
     parsed = extract_sku_from_article(article, offer_name)
+    parsed_sku_key = parsed.get("sku_key")
+    parsed_my_size = parsed.get("my_size")
+    parsed_product_type = parsed.get("product_type")
+    if valid_sku_keys and parsed_sku_key and parsed_sku_key not in valid_sku_keys:
+        parsed_sku_key = None
+        parsed_my_size = None
+
+    # Prefer deterministic article parser output first; DB article map is fallback
+    # for legacy/unparseable article strings.
+    if not sku_key and parsed_sku_key:
+        sku_key = parsed_sku_key
+    if not my_size and parsed_my_size:
+        my_size = parsed_my_size
+    if not product_type and parsed_product_type:
+        product_type = parsed_product_type
+
+    mapped_sku_key = str(article_identity.get("sku_key") or "").strip() or None
+    mapped_sku_id = str(article_identity.get("sku_id") or "").strip() or None
+    if mapped_sku_key and (not valid_sku_keys or mapped_sku_key in valid_sku_keys):
+        if not sku_key:
+            sku_key = mapped_sku_key
+        if not my_size and mapped_sku_id and "_" in mapped_sku_id:
+            my_size = mapped_sku_id.rsplit("_", 1)[-1]
+
+    if sku_key and my_size:
+        if not product_type and "_" in sku_key:
+            product_type = sku_key.split("_", 1)[0]
+        return {"sku_key": sku_key, "my_size": my_size, "product_type": product_type}
+
     if not sku_key:
-        sku_key = parsed.get("sku_key")
+        sku_key = parsed_sku_key
     if not my_size:
-        my_size = parsed.get("my_size")
+        my_size = parsed_my_size
     if not product_type:
-        product_type = parsed.get("product_type")
+        product_type = parsed_product_type
     if not product_type and sku_key and "_" in sku_key:
         product_type = sku_key.split("_", 1)[0]
     return {"sku_key": sku_key, "my_size": my_size, "product_type": product_type}
 
 
-def _load_sku_meta_for_keys(sku_keys: List[str]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+def _load_sku_meta_for_keys(sku_keys: List[str]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str], set[str]]:
     clean_keys = sorted({str(k).strip() for k in sku_keys if str(k).strip()})
-    if not clean_keys:
-        return {}, {}
-
-    placeholders = ",".join("?" for _ in clean_keys)
     sku_meta: Dict[str, Dict[str, Any]] = {}
     kaspi_core: Dict[str, str] = {}
+    valid_sku_keys: set[str] = set()
+
     with get_db() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT sku_key, model, product_type, weight_kg
-            FROM dim_sku
-            WHERE sku_key IN ({placeholders})
-            """,
-            clean_keys,
-        ).fetchall()
+        if clean_keys:
+            placeholders = ",".join("?" for _ in clean_keys)
+            rows = conn.execute(
+                f"""
+                SELECT sku_key, model, product_type, weight_kg
+                FROM dim_sku
+                WHERE sku_key IN ({placeholders})
+                """,
+                clean_keys,
+            ).fetchall()
+        else:
+            rows = []
         for row in rows:
             sku_meta[row["sku_key"]] = {
                 "model": row["model"],
                 "product_type": row["product_type"],
                 "weight_kg": row["weight_kg"],
             }
+            valid_sku_keys.add(row["sku_key"])
 
         if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dim_kaspi_article_map'"
-        ).fetchone():
+        ).fetchone() and clean_keys:
+            placeholders = ",".join("?" for _ in clean_keys)
             core_rows = conn.execute(
                 f"""
                 SELECT sku_key, kaspi_name_core
@@ -318,13 +418,15 @@ def _load_sku_meta_for_keys(sku_keys: List[str]) -> Tuple[Dict[str, Dict[str, An
                 if row["sku_key"] not in kaspi_core:
                     kaspi_core[row["sku_key"]] = str(row["kaspi_name_core"]).strip()
 
-    return sku_meta, kaspi_core
+    return sku_meta, kaspi_core, valid_sku_keys
 
 
 def compute_fixed_value_columns(
     raw_row: Dict[str, Any],
     sku_meta_by_key: Optional[Dict[str, Dict[str, Any]]] = None,
     kaspi_core_by_key: Optional[Dict[str, str]] = None,
+    article_identity_by_article: Optional[Dict[str, Dict[str, str]]] = None,
+    valid_sku_keys: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
     """
     Compute trivial formula columns as fixed values.
@@ -333,7 +435,11 @@ def compute_fixed_value_columns(
     """
     sku_meta_by_key = sku_meta_by_key or {}
     kaspi_core_by_key = kaspi_core_by_key or {}
-    identity = _derive_identity_from_raw_row(raw_row)
+    identity = _derive_identity_from_raw_row(
+        raw_row,
+        article_identity_by_article=article_identity_by_article,
+        valid_sku_keys=valid_sku_keys,
+    )
     sku_key = identity.get("sku_key") or ""
     my_size = identity.get("my_size") or ""
     sku_meta = sku_meta_by_key.get(sku_key, {})
@@ -359,7 +465,15 @@ def compute_fixed_value_columns(
         or raw_row.get("KASPI_OFFER_NAME")
         or ""
     ).strip()
-    kaspi_name_core = kaspi_core_by_key.get(sku_key) or extract_kaspi_name_core(offer_name)
+    article = str(
+        raw_row.get("Артикул")
+        or raw_row.get("SKU_ID_KSP")
+        or raw_row.get("Kaspi_article")
+        or ""
+    ).strip()
+    article_identity = (article_identity_by_article or {}).get(article) or {}
+    mapped_core = str(article_identity.get("kaspi_name_core") or "").strip()
+    kaspi_name_core = mapped_core or kaspi_core_by_key.get(sku_key) or extract_kaspi_name_core(offer_name)
 
     return {
         "STORE_NAME": store_name,
@@ -383,10 +497,27 @@ def compute_fixed_value_columns(
 
 def build_fixed_value_payload(df_filt: pd.DataFrame) -> List[Dict[str, Any]]:
     rows = df_filt.to_dict(orient="records")
-    identities = [_derive_identity_from_raw_row(r) for r in rows]
+    articles = [str(r.get("Артикул") or r.get("SKU_ID_KSP") or "").strip() for r in rows]
+    article_identity = _load_article_identity_for_articles(articles)
+    identities = [
+        _derive_identity_from_raw_row(
+            r,
+            article_identity_by_article=article_identity,
+        )
+        for r in rows
+    ]
     sku_keys = [x.get("sku_key") for x in identities if x.get("sku_key")]
-    sku_meta, kaspi_core = _load_sku_meta_for_keys([str(k) for k in sku_keys])
-    return [compute_fixed_value_columns(row, sku_meta, kaspi_core) for row in rows]
+    sku_meta, kaspi_core, valid_sku_keys = _load_sku_meta_for_keys([str(k) for k in sku_keys])
+    return [
+        compute_fixed_value_columns(
+            row,
+            sku_meta,
+            kaspi_core,
+            article_identity_by_article=article_identity,
+            valid_sku_keys=valid_sku_keys,
+        )
+        for row in rows
+    ]
 
 
 def parse_kz_date(v) -> Optional[date]:
@@ -1142,6 +1273,9 @@ def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSn
         table_date_col = table_map.get("Date") or table_map.get("Дата поступления заказа")
         delivery_fee_col = table_map.get("Delivery_fee_kzt") or table_map.get("Delivery_fee")
         seller_fee_col = table_map.get("Стоимость доставки для продавца")
+        offer_col_abs = table_map.get("Название товара в Kaspi Магазине")
+        article_col_abs = table_map.get("Артикул")
+        quantity_col_abs = table_map.get("Количество")
 
         for row_num in range(start_row + 1, end_row + 1):
             order_val = ws.cell(row=row_num, column=idx_start).value
@@ -1166,10 +1300,16 @@ def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSn
                 planned_val = ws.cell(row=row_num, column=planned_col_abs).value
                 planned_date = parse_date(planned_val)
 
-            if planned_date:
-                key = f"{cleaned}|{planned_date.isoformat()}"
-            else:
-                key = f"{cleaned}|"
+            offer_val = ws.cell(row=row_num, column=offer_col_abs).value if offer_col_abs else ""
+            article_val = ws.cell(row=row_num, column=article_col_abs).value if article_col_abs else ""
+            qty_val = ws.cell(row=row_num, column=quantity_col_abs).value if quantity_col_abs else 0
+            key = _build_line_dedupe_key(
+                cleaned,
+                planned_date,
+                offer_val,
+                article_val,
+                qty_val,
+            )
             existing_keys.add(key)
 
             if table_date_col and delivery_fee_col and seller_fee_col:
@@ -1606,11 +1746,25 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
     cols_norm_map = {norm(col): df_filt[col].astype(object) for col in df_filt.columns}
 
     n = len(df_filt)
+    records = df_filt.to_dict(orient="records")
+    articles = [str(r.get("Артикул") or r.get("SKU_ID_KSP") or "").strip() for r in records]
+    article_identity = _load_article_identity_for_articles(articles)
+    seed_sku_keys = []
+    for r in records:
+        maybe_key = str(r.get("SKU_key") or "").strip()
+        if maybe_key:
+            seed_sku_keys.append(maybe_key)
+    _, _, valid_sku_keys = _load_sku_meta_for_keys(seed_sku_keys)
     derived_identity = []
-    for _, row in df_filt.iterrows():
-        derived_identity.append(_derive_identity_from_raw_row(row.to_dict()))
+    for row in records:
+        derived_identity.append(
+            _derive_identity_from_raw_row(
+                row,
+                article_identity_by_article=article_identity,
+                valid_sku_keys=valid_sku_keys,
+            )
+        )
     derived_sku_key = pd.Series([d.get("sku_key") or "" for d in derived_identity], index=df_filt.index, dtype=object)
-    derived_my_size = pd.Series([d.get("my_size") or "" for d in derived_identity], index=df_filt.index, dtype=object)
 
     def col_for(header_text: str) -> pd.Series:
         h = norm(header_text)
@@ -1638,13 +1792,19 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
 
         if h in {"skukey", "sku_key"}:
             if h in cols_norm_map:
-                return cols_norm_map[h]
+                source_series = cols_norm_map[h].astype(object)
+                if valid_sku_keys:
+                    merged = []
+                    for idx in source_series.index:
+                        src = str(source_series.loc[idx] or "").strip()
+                        merged.append(src if src in valid_sku_keys else str(derived_sku_key.loc[idx] or "").strip())
+                    return pd.Series(merged, index=df_filt.index, dtype=object)
+                return source_series
             return derived_sku_key
 
         if h in {"mysize", "my_size"}:
-            if h in cols_norm_map:
-                return cols_norm_map[h]
-            return derived_my_size
+            # Human-owned column: must remain blank for manual assignment.
+            return pd.Series([""] * n, index=df_filt.index, dtype=object)
 
         if h in {"датаизменениястатуса"} and "status_change_date" in S:
             return S["status_change_date"]
@@ -1802,7 +1962,7 @@ def excel_append_xlwings(
             target = sh.range((top_row, start_col_abs + offset), (bottom_row, start_col_abs + offset))
             target.value = [[v] for v in col_values]
 
-        # Write fixed-value columns for appended rows (excluding SKU_ID).
+        # Write fixed-value columns for appended rows (excluding human-owned fields).
         if fixed_values:
             table_header = sh.range(
                 (header_row, tbl_start_col),
@@ -1813,7 +1973,7 @@ def excel_append_xlwings(
                 for i, name in enumerate(table_header or [])
                 if str(name or "").strip()
             }
-            for col_name in FIXED_VALUE_COLUMNS:
+            for col_name in FIXED_APPEND_COLUMNS:
                 col_abs = header_to_col.get(col_name)
                 if not col_abs:
                     continue
@@ -1938,16 +2098,28 @@ def apply_fixed_values_backfill_xlwings(
             wb.close()
             return 0
 
+        articles = [str(raw.get("Артикул") or raw.get("SKU_ID_KSP") or "").strip() for _, raw in target_rows]
+        article_identity = _load_article_identity_for_articles(articles)
+
         sku_keys: List[str] = []
         for _, raw in target_rows:
-            identity = _derive_identity_from_raw_row(raw)
+            identity = _derive_identity_from_raw_row(
+                raw,
+                article_identity_by_article=article_identity,
+            )
             if identity.get("sku_key"):
                 sku_keys.append(str(identity["sku_key"]))
-        sku_meta, kaspi_core = _load_sku_meta_for_keys(sku_keys)
+        sku_meta, kaspi_core, valid_sku_keys = _load_sku_meta_for_keys(sku_keys)
 
         fixed_by_row: Dict[int, Dict[str, Any]] = {}
         for row_num, raw in target_rows:
-            fixed_by_row[row_num] = compute_fixed_value_columns(raw, sku_meta, kaspi_core)
+            fixed_by_row[row_num] = compute_fixed_value_columns(
+                raw,
+                sku_meta,
+                kaspi_core,
+                article_identity_by_article=article_identity,
+                valid_sku_keys=valid_sku_keys,
+            )
             updated += 1
 
         if not dry_run:
@@ -1959,7 +2131,7 @@ def apply_fixed_values_backfill_xlwings(
 
             row_numbers = sorted(fixed_by_row.keys())
             row_ranges = _iter_consecutive_ranges(row_numbers)
-            for col_name in FIXED_VALUE_COLUMNS:
+            for col_name in FIXED_BACKFILL_COLUMNS:
                 col_num = header_to_col.get(col_name)
                 if not col_num:
                     continue
@@ -2312,6 +2484,10 @@ def main(
     print(f"  CRM file: {args.crm_file}")
     print(f"  Date filter: == {end_date} (TODAY only)")
     print(f"  Append date: {append_date}")
+    if args.verbose and args.fixed_values:
+        print(f"  Fixed append columns: {', '.join(FIXED_APPEND_COLUMNS)}")
+        print(f"  Fixed backfill columns: {', '.join(FIXED_BACKFILL_COLUMNS)}")
+        print(f"  Protected columns (never overwritten): {', '.join(sorted(PROTECTED_HUMAN_COLUMNS))}")
     print()
     
     # Read and filter
@@ -2450,9 +2626,18 @@ def main(
         else:
             df_filt["_pdate"] = None
 
+        offer_col = colmap.get("offer_name")
+        sku_col = colmap.get("sku")
+        qty_col = colmap.get("quantity")
         df_filt["_okey"] = [
-            f"{oid}|{p.isoformat()}" if oid and p else (f"{oid}|" if oid else "")
-            for oid, p in zip(df_filt["_oid"], df_filt["_pdate"])
+            _build_line_dedupe_key(
+                oid,
+                p,
+                row.get(offer_col) if offer_col else "",
+                row.get(sku_col) if sku_col else "",
+                row.get(qty_col) if qty_col else 0,
+            )
+            for (_, row), oid, p in zip(df_filt.iterrows(), df_filt["_oid"], df_filt["_pdate"])
         ]
         new_mask = ~df_filt["_okey"].isin(existing_keys)
 
