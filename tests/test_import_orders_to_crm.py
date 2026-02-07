@@ -401,7 +401,7 @@ def test_compute_fixed_value_columns_for_acmewear_suit_row():
     assert values["Total_net_rev"] == pytest.approx(((25980.0 * (1 - 0.125)) - 1000.0) * (1 - 0.03))
     assert values["Product_Type"] == "CL"
     assert values["MODEL"] == "LINE61"
-    assert values["Kaspi_name_core"] == "LINE61__BLACK"
+    assert values["Kaspi_name_core"] == "6в1_Черный"
     assert values["SKU_ID_KSP"] == "OF_SUIT-61_BLK_3XL"
     assert values["Kaspi_name_source"] == "ACMEWEAR line61"
 
@@ -458,6 +458,21 @@ def test_build_staging_prefers_parser_when_article_map_conflicts():
 
     assert stage[0][0] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
     assert stage[0][1] == "OF_SUIT-61_BLK_3XL"
+
+
+def test_compute_fixed_values_forces_line61_core():
+    raw_row = {
+        "Склад передачи КД": "30137883_PP1",
+        "Артикул": "OF_SUIT-61_BLK_XL_48",
+        "Название товара в Kaspi Магазине": "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL черный 48",
+        "Название в системе продавца": "ACMEWEAR line61",
+        "Количество": 1,
+        "Сумма": 12990,
+        "Стоимость доставки для продавца": 500,
+    }
+    values = compute_fixed_value_columns(raw_row, {}, {})
+    assert values["SKU_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+    assert values["Kaspi_name_core"] == "6в1_Черный"
 
 
 def test_iter_consecutive_ranges_groups_sorted_rows():

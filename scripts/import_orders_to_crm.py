@@ -156,6 +156,9 @@ PROTECTED_HUMAN_COLUMNS = {
     "MY_SIZE",
 }
 
+LINE61_CANONICAL_SKU_KEY = "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+LINE61_CANONICAL_CORE = "6в1_Черный"
+
 FIXED_APPEND_COLUMNS = [
     "STORE_NAME",
     "Quantity",
@@ -275,32 +278,35 @@ def _load_article_identity_for_articles(articles: List[str]) -> Dict[str, Dict[s
     clean_articles = sorted({str(a).strip() for a in articles if str(a).strip()})
     if not clean_articles:
         return {}
-    placeholders = ",".join("?" for _ in clean_articles)
     mapped: Dict[str, Dict[str, str]] = {}
+    chunk_size = 800
     with get_db() as conn:
         if not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dim_kaspi_article_map'"
         ).fetchone():
             return {}
-        rows = conn.execute(
-            f"""
-            SELECT kaspi_article, sku_key, sku_id, kaspi_name_core
-            FROM dim_kaspi_article_map
-            WHERE active_flag = 1
-              AND kaspi_article IN ({placeholders})
-            ORDER BY updated_at DESC
-            """,
-            clean_articles,
-        ).fetchall()
-        for row in rows:
-            article = str(row["kaspi_article"] or "").strip()
-            if not article or article in mapped:
-                continue
-            mapped[article] = {
-                "sku_key": str(row["sku_key"] or "").strip(),
-                "sku_id": str(row["sku_id"] or "").strip(),
-                "kaspi_name_core": str(row["kaspi_name_core"] or "").strip(),
-            }
+        for i in range(0, len(clean_articles), chunk_size):
+            batch = clean_articles[i : i + chunk_size]
+            placeholders = ",".join("?" for _ in batch)
+            rows = conn.execute(
+                f"""
+                SELECT kaspi_article, sku_key, sku_id, kaspi_name_core
+                FROM dim_kaspi_article_map
+                WHERE active_flag = 1
+                  AND kaspi_article IN ({placeholders})
+                ORDER BY updated_at DESC
+                """,
+                batch,
+            ).fetchall()
+            for row in rows:
+                article = str(row["kaspi_article"] or "").strip()
+                if not article or article in mapped:
+                    continue
+                mapped[article] = {
+                    "sku_key": str(row["sku_key"] or "").strip(),
+                    "sku_id": str(row["sku_id"] or "").strip(),
+                    "kaspi_name_core": str(row["kaspi_name_core"] or "").strip(),
+                }
     return mapped
 
 
@@ -474,6 +480,8 @@ def compute_fixed_value_columns(
     article_identity = (article_identity_by_article or {}).get(article) or {}
     mapped_core = str(article_identity.get("kaspi_name_core") or "").strip()
     kaspi_name_core = mapped_core or kaspi_core_by_key.get(sku_key) or extract_kaspi_name_core(offer_name)
+    if sku_key == LINE61_CANONICAL_SKU_KEY or article.upper().startswith("OF_SUIT-61_BLK_"):
+        kaspi_name_core = LINE61_CANONICAL_CORE
 
     return {
         "STORE_NAME": store_name,
@@ -1984,6 +1992,22 @@ def excel_append_xlwings(
                 target = sh.range((top_row, col_abs), (bottom_row, col_abs))
                 target.value = col_vals
 
+        # MY_SIZE is human-owned; always clear for newly appended rows to
+        # prevent Excel table formula autofill from writing pseudo sizes.
+        my_size_col_abs = None
+        table_header = sh.range(
+            (header_row, tbl_start_col),
+            (header_row, tbl_end_col),
+        ).value
+        header_to_col = {
+            str(name).strip(): tbl_start_col + i
+            for i, name in enumerate(table_header or [])
+            if str(name or "").strip()
+        }
+        my_size_col_abs = header_to_col.get("MY_SIZE")
+        if my_size_col_abs:
+            sh.range((top_row, my_size_col_abs), (bottom_row, my_size_col_abs)).value = [[""] for _ in range(n)]
+
         wb.save()
         wb.close()
         print(f"  ✅ Saved {out_wb.name}")
@@ -2362,6 +2386,12 @@ def main(
         help="Skip recent fixed-value backfill pass",
     )
     parser.add_argument(
+        "--fixed-values-scope",
+        choices=["window", "new-only"],
+        default="window",
+        help="window: append + recent backfill, new-only: append only (default: window)",
+    )
+    parser.add_argument(
         "--refresh-delivery-fees",
         action="store_true",
         help="Backfill seller delivery fee from Delivery_fee_kzt for a date range"
@@ -2416,6 +2446,7 @@ def main(
             fixed_values=bool(fixed_values) if fixed_values is not _UNSET else True,
             backfill_fixed_days=int(backfill_fixed_days) if backfill_fixed_days is not _UNSET else 14,
             skip_fixed_backfill=bool(skip_fixed_backfill) if skip_fixed_backfill is not _UNSET else False,
+            fixed_values_scope="window",
             summary_file=Path(summary_file) if summary_file is not _UNSET else data_path("logs", "import_orders_to_crm_latest.json"),
         )
 
@@ -2444,6 +2475,10 @@ def main(
         if not args.fixed_values:
             return 0
         if args.skip_fixed_backfill:
+            return 0
+        if str(getattr(args, "fixed_values_scope", "window")) == "new-only":
+            return 0
+        if int(args.backfill_fixed_days or 0) <= 0:
             return 0
         ensure_backup()
         try:
@@ -2488,6 +2523,7 @@ def main(
         print(f"  Fixed append columns: {', '.join(FIXED_APPEND_COLUMNS)}")
         print(f"  Fixed backfill columns: {', '.join(FIXED_BACKFILL_COLUMNS)}")
         print(f"  Protected columns (never overwritten): {', '.join(sorted(PROTECTED_HUMAN_COLUMNS))}")
+        print(f"  Fixed values scope: {args.fixed_values_scope}")
     print()
     
     # Read and filter
