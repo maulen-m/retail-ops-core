@@ -217,6 +217,39 @@ def _load_order_entries(conn: sqlite3.Connection) -> dict[tuple[str, str], list[
     return entries_by_order
 
 
+def _load_sales_fact_fallback(conn: sqlite3.Connection) -> dict[tuple[str, str], list[dict]]:
+    if not _table_exists(conn, "sales_fact_v2"):
+        return {}
+    rows = conn.execute(
+        """
+        SELECT order_id, store_code, sku_key, sku_id, quantity, sell_price_kzt
+        FROM sales_fact_v2
+        WHERE order_id IS NOT NULL
+          AND trim(order_id) <> ''
+          AND store_code IS NOT NULL
+          AND trim(store_code) <> ''
+          AND sku_key IS NOT NULL
+          AND trim(sku_key) <> ''
+          AND sku_id IS NOT NULL
+          AND trim(sku_id) <> ''
+        """
+    ).fetchall()
+    lines_by_order: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        order_id = str(row["order_id"]).strip()
+        store_code = str(row["store_code"]).strip()
+        lines_by_order.setdefault((order_id, store_code), []).append(
+            {
+                "sku_key": str(row["sku_key"]).strip(),
+                "sku_id": str(row["sku_id"]).strip(),
+                "quantity": float(row["quantity"] or 0.0),
+                "unit_price_kzt": row["sell_price_kzt"],
+                "total_price_kzt": None,
+            }
+        )
+    return lines_by_order
+
+
 def _unit_cost_kzt_for_sku(sku_key: str | None, fx_rates, dim_costs: dict[str, dict]) -> float:
     meta = dim_costs.get(sku_key or "", {})
     base_cost = meta.get("base_cost_cny", 0.0)
@@ -345,6 +378,26 @@ def _load_existing_move_dates(conn: sqlite3.Connection) -> dict[tuple[str, str],
     }
 
 
+def _load_on_delivery_balances(conn: sqlite3.Connection) -> dict[tuple[str, str], float]:
+    if not _table_exists(conn, "fact_cashflow_events"):
+        return {}
+    rows = conn.execute(
+        """
+        SELECT ref_id, sku_id, SUM(amount_kzt) AS balance_kzt
+        FROM fact_cashflow_events
+        WHERE ref_type = 'ORDER'
+          AND account = 'INVENTORY_ON_DELIVERY_COST'
+          AND ABS(amount_kzt) > 0
+        GROUP BY ref_id, sku_id
+        """
+    ).fetchall()
+    return {
+        (str(row[0]), str(row[1]) if row[1] is not None else ""): float(row[2] or 0.0)
+        for row in rows
+        if row[0] is not None
+    }
+
+
 def _has_existing(existing: set[tuple[str, str]], order_id: str, order_sku_id: str) -> bool:
     if (order_id, order_sku_id) in existing:
         return True
@@ -355,6 +408,21 @@ def _get_existing_date(
     existing: dict[tuple[str, str], str], order_id: str, order_sku_id: str
 ) -> str | None:
     return existing.get((order_id, order_sku_id)) or existing.get((order_id, ""))
+
+
+def _get_existing_balance(
+    balances: dict[tuple[str, str], float], order_id: str, order_sku_id: str
+) -> float:
+    return float(balances.get((order_id, order_sku_id), balances.get((order_id, ""), 0.0)) or 0.0)
+
+
+def _apply_balance_delta(
+    balances: dict[tuple[str, str], float], order_id: str, order_sku_id: str, delta: float
+) -> None:
+    key = (order_id, order_sku_id)
+    fallback = (order_id, "")
+    target = key if key in balances or fallback not in balances else fallback
+    balances[target] = float(balances.get(target, 0.0)) + float(delta)
 
 
 def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_id: str) -> int:
@@ -376,11 +444,13 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
         weights = _load_dim_sku_weights(conn)
         dim_costs = _load_dim_sku_costs(conn)
         entries_by_order = _load_order_entries(conn)
+        sales_fact_fallback = _load_sales_fact_fallback(conn)
         existing_cash = _load_existing_cash_in(conn)
         existing_refunds = _load_existing_refunds(conn)
         existing_on_delivery = _load_existing_on_delivery(conn)
         existing_cogs_dates = _load_existing_cogs_dates(conn)
         existing_move_dates = _load_existing_move_dates(conn)
+        on_delivery_balances = _load_on_delivery_balances(conn)
         existing_cash_order_ids = {order_id for order_id, _ in existing_cash}
         existing_refund_order_ids = {order_id for order_id, _ in existing_refunds}
         existing_cogs_order_ids = {order_id for order_id, _ in existing_cogs_dates}
@@ -420,11 +490,105 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
             for (order_id, _store), lines in entries_by_order.items()
             if any(line.get("sku_key") and line.get("sku_id") for line in lines)
         }
+        resolved_order_ids_from_sales = {
+            order_id
+            for (order_id, _store), lines in sales_fact_fallback.items()
+            if any(line.get("sku_key") and line.get("sku_id") for line in lines)
+        }
+        # Some legacy CRM exports persist as UNKNOWN-store shadow rows, even when a
+        # resolved non-UNKNOWN row exists for the same order/SKU outside the active window.
+        # Skip those shadows to avoid duplicate COGS/backfill events.
+        non_unknown_row_tokens: set[tuple[str, str]] = set()
+        for row_order_id, row_sku_id, row_sku_key in conn.execute(
+            """
+            SELECT order_id, sku_id, sku_key
+            FROM fact_orders_kaspi
+            WHERE order_id IS NOT NULL
+              AND trim(order_id) <> ''
+              AND store_code IS NOT NULL
+              AND UPPER(trim(store_code)) <> 'UNKNOWN'
+              AND (
+                    (sku_id IS NOT NULL AND trim(sku_id) <> '')
+                 OR (sku_key IS NOT NULL AND trim(sku_key) <> '')
+              )
+            """
+        ).fetchall():
+            oid = str(row_order_id).strip()
+            sid = str(row_sku_id or "").strip()
+            skey = str(row_sku_key or "").strip()
+            if sid:
+                non_unknown_row_tokens.add((oid, sid))
+            if skey:
+                non_unknown_row_tokens.add((oid, skey))
+        non_unknown_order_ids = {order_id for order_id, _ in non_unknown_row_tokens}
+        resolved_completed_rows_by_key: dict[tuple[str, str], dict[str, str]] = {}
+        for row_order_id, row_store_code, row_sku_key, row_sku_id in conn.execute(
+            """
+            SELECT order_id, store_code, sku_key, sku_id
+            FROM fact_orders_kaspi
+            WHERE order_id IS NOT NULL
+              AND trim(order_id) <> ''
+              AND store_code IS NOT NULL
+              AND UPPER(trim(store_code)) <> 'UNKNOWN'
+              AND internal_status = 'COMPLETED'
+              AND sku_key IS NOT NULL
+              AND trim(sku_key) <> ''
+              AND sku_id IS NOT NULL
+              AND trim(sku_id) <> ''
+            """
+        ).fetchall():
+            key = (str(row_order_id), str(row_sku_id))
+            resolved_completed_rows_by_key.setdefault(
+                key,
+                {
+                    "order_id": str(row_order_id),
+                    "store_code": str(row_store_code),
+                    "sku_key": str(row_sku_key),
+                    "sku_id": str(row_sku_id),
+                },
+            )
 
         events = []
         missing_sku = []
         missing_cost = []
         counts = {"completed": 0, "cancelled": 0, "on_delivery": 0, "ignored": 0}
+
+        # Global corrective pass: if completed orders already have cash/cogs but their
+        # INVENTORY_ON_DELIVERY_COST balance is non-zero, add a balancing COGS entry.
+        # Restrict corrections to cogs dates inside the requested window.
+        for (order_id, order_sku_id), row_meta in resolved_completed_rows_by_key.items():
+            if not _has_existing(existing_cash, order_id, order_sku_id):
+                continue
+            cogs_date = _get_existing_date(existing_cogs_dates, order_id, order_sku_id)
+            if not cogs_date:
+                continue
+            try:
+                cogs_date_obj = date.fromisoformat(str(cogs_date))
+            except ValueError:
+                continue
+            if cogs_date_obj < since or cogs_date_obj > until:
+                continue
+            imbalance = _get_existing_balance(on_delivery_balances, order_id, order_sku_id)
+            if abs(imbalance) <= 0.01:
+                continue
+            correction = round(-imbalance, 2)
+            events.append(
+                {
+                    "event_date": cogs_date_obj.isoformat(),
+                    "event_type": "COGS_RECOGNIZED",
+                    "account": "INVENTORY_ON_DELIVERY_COST",
+                    "amount_kzt": correction,
+                    "store_code": row_meta["store_code"],
+                    "sku_key": row_meta["sku_key"],
+                    "sku_id": row_meta["sku_id"],
+                    "ref_type": "ORDER",
+                    "ref_id": row_meta["order_id"],
+                    "source": "ORDER_MODELLED",
+                    "run_id": run_id,
+                    "notes": "Backfill on-delivery balance correction",
+                }
+            )
+            _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, correction)
 
         for row in rows:
             stage = classify_kaspi_stage_from_db_row(row)
@@ -443,6 +607,17 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                 continue
             order_id = str(row["order_id"]) if row["order_id"] is not None else ""
             store_code = row["store_code"]
+            store_code_norm = str(store_code or "").strip().upper()
+            row_sku_id = str(row["sku_id"] or "").strip()
+            row_sku_key = str(row["sku_key"] or "").strip()
+            if store_code_norm == "UNKNOWN":
+                if (
+                    (row_sku_id and (order_id, row_sku_id) in non_unknown_row_tokens)
+                    or (row_sku_key and (order_id, row_sku_key) in non_unknown_row_tokens)
+                    or (not row_sku_id and not row_sku_key and order_id in non_unknown_order_ids)
+                ):
+                    counts["ignored"] += 1
+                    continue
             raw_kaspi_status = str(row["kaspi_status"] or "").strip().upper()
             # Guard against premature stage inflation from API fields:
             # if DB still marks order as ACCEPTED/READY, do not model on-delivery moves yet.
@@ -467,6 +642,8 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
             else:
                 order_lines = entries_by_order.get((order_id, str(store_code)), [])
                 if not order_lines:
+                    order_lines = sales_fact_fallback.get((order_id, str(store_code)), [])
+                if not order_lines:
                     if (order_id, str(store_code)) in resolved_order_keys:
                         counts["ignored"] += 1
                         continue
@@ -474,6 +651,9 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                         counts["ignored"] += 1
                         continue
                     if order_id in resolved_order_ids_from_entries:
+                        counts["ignored"] += 1
+                        continue
+                    if order_id in resolved_order_ids_from_sales:
                         counts["ignored"] += 1
                         continue
                     if status in {"COMPLETED", "ON_DELIVERY"}:
@@ -511,6 +691,9 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                         counts["ignored"] += 1
                         continue
                     if order_id in resolved_order_ids_from_entries:
+                        counts["ignored"] += 1
+                        continue
+                    if order_id in resolved_order_ids_from_sales:
                         counts["ignored"] += 1
                         continue
                     if status in {"COMPLETED", "ON_DELIVERY"}:
@@ -596,6 +779,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                                         "notes": "Backfill on-delivery at completion",
                                     }
                                 )
+                                _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, abs(cost_line))
                                 existing_on_delivery.add(order_key)
                             events.append(
                                 {
@@ -607,6 +791,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                                     "notes": "Backfill missing COGS",
                                 }
                             )
+                            _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, -abs(cost_line))
                             existing_cogs_dates[order_key] = cogs_date
                             counts["completed"] += 1
                             continue
@@ -634,6 +819,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                                     "notes": "Backfill on-delivery at completion",
                                 }
                             )
+                            _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, abs(cost_line))
                             existing_on_delivery.add(order_key)
                         else:
                             move_date = _get_existing_date(existing_move_dates, order_id, order_sku_id)
@@ -659,6 +845,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                                         "notes": "Timing shift (earlier on-delivery)",
                                     }
                                 )
+                                _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, abs(cost_line))
                                 events.append(
                                     {
                                         "event_date": move_date,
@@ -679,6 +866,21 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                                         "notes": "Timing shift (reverse later move)",
                                     }
                                 )
+                                _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, -abs(cost_line))
+                        imbalance = _get_existing_balance(on_delivery_balances, order_id, order_sku_id)
+                        if abs(imbalance) > 0.01:
+                            correction = round(-imbalance, 2)
+                            events.append(
+                                {
+                                    "event_date": cogs_date or event_date,
+                                    "event_type": "COGS_RECOGNIZED",
+                                    "account": "INVENTORY_ON_DELIVERY_COST",
+                                    "amount_kzt": correction,
+                                    **base_fields,
+                                    "notes": "Backfill on-delivery balance correction",
+                                }
+                            )
+                            _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, correction)
                         counts["ignored"] += 1
                         continue
                     counts["completed"] += 1

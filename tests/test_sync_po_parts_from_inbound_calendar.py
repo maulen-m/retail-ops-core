@@ -1,0 +1,276 @@
+import sqlite3
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from scripts.sync_po_parts_from_inbound_calendar import sync_po_parts_from_workbook
+
+
+def _create_test_db(db_path: Path) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE po_header (
+            po_id TEXT PRIMARY KEY,
+            supplier_code TEXT DEFAULT 'SHR',
+            message_date TEXT,
+            ship_date_cargo TEXT,
+            ast_arrival_nom TEXT,
+            ast_arrival_real TEXT,
+            status TEXT DEFAULT 'DRAFT',
+            units_total INTEGER DEFAULT 0,
+            total_cost_cny REAL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE po_part (
+            po_part_id TEXT PRIMARY KEY,
+            po_id TEXT NOT NULL,
+            supplier_id TEXT,
+            message_date TEXT,
+            cargo_send_date TEXT,
+            estimated_arrival_date TEXT,
+            actual_arrival_date TEXT,
+            status TEXT,
+            total_units INTEGER DEFAULT 0,
+            base_cost_cny REAL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE po_line (
+            po_line_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            po_id TEXT NOT NULL,
+            po_part_id TEXT,
+            sku_key TEXT NOT NULL,
+            sku_id TEXT NOT NULL,
+            my_size TEXT NOT NULL,
+            order_qty INTEGER NOT NULL,
+            received_qty INTEGER DEFAULT 0,
+            unit_cost_cny REAL NOT NULL,
+            status TEXT DEFAULT 'PENDING'
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE dim_sku (
+            sku_key TEXT PRIMARY KEY,
+            model TEXT NOT NULL,
+            product_type TEXT NOT NULL,
+            base_cost_cny REAL NOT NULL,
+            weight_kg REAL NOT NULL,
+            avg_sell_price_kzt_used REAL,
+            avg_sell_price_source TEXT,
+            active_flag INTEGER DEFAULT 1
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE dim_sku_size (
+            sku_id TEXT PRIMARY KEY,
+            sku_key TEXT NOT NULL,
+            my_size TEXT NOT NULL,
+            active_flag INTEGER DEFAULT 1
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _write_workbook(path: Path, *, suit_qty: int = 200) -> None:
+    inbounds = pd.DataFrame(
+        [
+            {
+                "SKU Key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+                "Size": "M",
+                "message_date": "2026-01-21",
+                "Order Qty_Approved": suit_qty,
+                "PO_id": "PO-5",
+                "PO_part_id": "PO-5.1",
+                "cargo_send_date": "2026-02-04",
+                "Estimated_Arrival_date": "2026-02-25",
+                "Actual_Arrival_date": None,
+                "Status": "Transit",
+                "Last_update": "2026-02-07",
+                "base_cost": 74,
+                "PO Base (CNY)": suit_qty * 74,
+                "Actual_qty": 0,
+                "actual_PO_Base_(CNY)": 0,
+                "supplier_id": "SHR",
+            },
+            {
+                "SKU Key": "CL_OF_ARC_LINE31_SET_DARK",
+                "Size": "S",
+                "message_date": "2026-02-01",
+                "Order Qty_Approved": 20,
+                "PO_id": "PO_ARC-1",
+                "PO_part_id": "ARC-1.0",
+                "cargo_send_date": "2026-02-05",
+                "Estimated_Arrival_date": "2026-02-20",
+                "Actual_Arrival_date": "2026-02-19",
+                "Status": "Arrived",
+                "Last_update": "2026-02-07",
+                "base_cost": 110,
+                "PO Base (CNY)": 2200,
+                "Actual_qty": 20,
+                "actual_PO_Base_(CNY)": 2200,
+                "supplier_id": "ARC",
+            },
+        ]
+    )
+    part_totals = pd.DataFrame(
+        [
+            {
+                "PO_part_id": "PO-5.1",
+                "PO_id": "PO-5",
+                "supplier_id": "SHR",
+                "message_date": "2026-01-21",
+                "cargo_send_date": "2026-02-04",
+                "Estimated_Arrival_date": "2026-02-25",
+                "Actual_Arrival_date": None,
+                "Status": "Transit",
+                "Total SKU Keys": 1,
+                "Total Units": suit_qty,
+                "Base_cost_CNY": suit_qty * 74,
+            },
+            {
+                "PO_part_id": "ARC-1.0",
+                "PO_id": "PO_ARC-1",
+                "supplier_id": "ARC",
+                "message_date": "2026-02-01",
+                "cargo_send_date": "2026-02-05",
+                "Estimated_Arrival_date": "2026-02-20",
+                "Actual_Arrival_date": "2026-02-19",
+                "Status": "Arrived",
+                "Total SKU Keys": 1,
+                "Total Units": 20,
+                "Base_cost_CNY": 2200,
+            },
+        ]
+    )
+    dim_sku_light = pd.DataFrame(
+        [
+            {"SKU_key": "CL_OF_ARC_LINE31_SET_DARK", "Type": "CL", "Wt (kg)": 0.9, "CNY": 110, "AvgPrc": 26990},
+            {"SKU_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK", "Type": "CL", "Wt (kg)": 1.0, "CNY": 74, "AvgPrc": 25990},
+        ]
+    )
+
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        inbounds.to_excel(writer, sheet_name="Inbounds_sheet", index=False)
+        part_totals.to_excel(writer, sheet_name="PO_part_id_Totals", index=False)
+        dim_sku_light.to_excel(writer, sheet_name="DIM_SKU_light_v5", index=False)
+
+
+def _count(conn: sqlite3.Connection, table: str) -> int:
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def test_dry_run_no_writes_without_apply(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path)
+
+    summary = sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=False)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        assert summary["apply"] is False
+        assert _count(conn, "po_header") == 0
+        assert _count(conn, "po_part") == 0
+        assert _count(conn, "po_line") == 0
+    finally:
+        conn.close()
+
+
+def test_apply_requires_env_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path)
+    monkeypatch.delenv("ENABLE_PO_PART_SYNC_WRITE", raising=False)
+
+    with pytest.raises(RuntimeError, match="ENABLE_PO_PART_SYNC_WRITE=1"):
+        sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+
+
+def test_apply_upserts_po_header_po_part_po_line_with_part_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path, suit_qty=215)
+    monkeypatch.setenv("ENABLE_PO_PART_SYNC_WRITE", "1")
+
+    summary = sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        assert summary["apply"] is True
+        assert _count(conn, "po_header") == 2
+        assert _count(conn, "po_part") == 2
+        assert _count(conn, "po_line") == 2
+        row = conn.execute(
+            "SELECT order_qty, po_part_id, status FROM po_line WHERE po_id='PO-5' AND sku_key='CL_NEW-CLO2_MEN_SUIT-61_BLACK'"
+        ).fetchone()
+        assert row is not None
+        assert row["order_qty"] == 215
+        assert row["po_part_id"] == "PO-5.1"
+        assert row["status"] == "IN_TRANSIT"
+    finally:
+        conn.close()
+
+
+def test_existing_rows_update_not_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path, suit_qty=200)
+    monkeypatch.setenv("ENABLE_PO_PART_SYNC_WRITE", "1")
+
+    sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+    _write_workbook(xlsx_path, suit_qty=240)
+    sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        assert _count(conn, "po_line") == 2
+        qty = conn.execute(
+            "SELECT order_qty FROM po_line WHERE po_id='PO-5' AND sku_key='CL_NEW-CLO2_MEN_SUIT-61_BLACK' AND my_size='M'"
+        ).fetchone()[0]
+        assert qty == 240
+    finally:
+        conn.close()
+
+
+def test_arc_skus_upsert_with_target_price_from_dim_sheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path)
+    monkeypatch.setenv("ENABLE_PO_PART_SYNC_WRITE", "1")
+
+    sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT avg_sell_price_kzt_used, avg_sell_price_source FROM dim_sku WHERE sku_key='CL_OF_ARC_LINE31_SET_DARK'"
+        ).fetchone()
+        assert row is not None
+        assert row["avg_sell_price_kzt_used"] == 26990
+        assert row["avg_sell_price_source"] == "INBOUND_CALENDAR_V10.002"
+    finally:
+        conn.close()

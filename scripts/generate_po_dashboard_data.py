@@ -213,18 +213,24 @@ def resolve_last_real_po(db_path: Path = DB_PATH) -> tuple[str, int, Optional[st
         if not rows:
             return ("PO-4", 4, None)
 
-        def row_key(row):
+        candidates: list[tuple[date, str, int, Optional[str]]] = []
+        for row in rows:
+            po_id = row["po_id"]
+            po_num = _parse_po_num(po_id)
+            if po_num is None:
+                continue
             msg = _parse_iso_date(row["message_date"])
             if msg:
-                return (msg, row["po_id"])
+                candidates.append((msg, po_id, po_num, row["message_date"]))
+                continue
             created = _parse_iso_date(row["created_at"])
-            return (created or date(1970, 1, 1), row["po_id"])
+            candidates.append((created or date(1970, 1, 1), po_id, po_num, row["message_date"]))
 
-        rows_sorted = sorted(rows, key=row_key, reverse=True)
-        best = rows_sorted[0]
-        po_id = best["po_id"]
-        po_num = _parse_po_num(po_id) or 4
-        return (po_id, po_num, best["message_date"])
+        if not candidates:
+            return ("PO-4", 4, None)
+
+        best = sorted(candidates, key=lambda item: (item[0], item[1]), reverse=True)[0]
+        return (best[1], best[2], best[3])
     finally:
         conn.close()
 
@@ -3348,6 +3354,43 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                 if sku_key not in cumulative_orders:
                     cumulative_orders[sku_key] = []
                 cumulative_orders[sku_key].append((po_arr_date, order_qty, size_orders_this_po))
+
+        # Prep Model B: recalculate per-plan clothes prep from projected plan weight.
+        plan_total_cl_weight = sum(
+            s.get("po_weight_kg", 0.0)
+            for s in po_data["sku_level"]
+            if s.get("po_qty_total", 0) > 0 and not s.get("sku_key", "").startswith("ELS_")
+        )
+        plan_prep_days_clothes = calc_prep_days(plan_total_cl_weight, "CL") if plan_total_cl_weight > 0 else 1
+        po_data["prep_days_clothes"] = plan_prep_days_clothes
+
+        for sku_line in po_data["sku_level"]:
+            sku_key = sku_line.get("sku_key", "")
+            new_prep = 1 if sku_key.startswith("ELS_") else plan_prep_days_clothes
+            if sku_line.get("prep_days") != new_prep:
+                sku_line["prep_days"] = new_prep
+                sku_line["days_until_arrival"] = new_prep + params.L
+                sku_line["consumption_until_arrival"] = round(
+                    sku_line.get("d_sku", 0.0) * sku_line["days_until_arrival"], 2
+                )
+                msg_date = date.fromisoformat(sku_line["po_message_date"])
+                send_date = msg_date + timedelta(days=new_prep)
+                sku_line["po_send_date"] = send_date.isoformat()
+                sku_line["est_arr_date"] = (send_date + timedelta(days=params.L)).isoformat()
+
+        for size_line in po_data["size_level"]:
+            sku_key = size_line.get("sku_key", "")
+            new_prep = 1 if sku_key.startswith("ELS_") else plan_prep_days_clothes
+            if size_line.get("prep_days") != new_prep:
+                size_line["prep_days"] = new_prep
+                size_line["days_until_arrival"] = new_prep + params.L
+                size_line["consumption_until_arrival"] = round(
+                    size_line.get("d_size", 0.0) * size_line["days_until_arrival"], 2
+                )
+                msg_date = date.fromisoformat(size_line["po_message_date"])
+                send_date = msg_date + timedelta(days=new_prep)
+                size_line["po_send_date"] = send_date.isoformat()
+                size_line["est_arr_date"] = (send_date + timedelta(days=params.L)).isoformat()
 
         # Round summary weight
         po_data['summary']['total_weight_kg'] = round(po_data['summary']['total_weight_kg'], 1)

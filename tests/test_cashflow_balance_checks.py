@@ -2,6 +2,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from scripts import import_cashflow_balance_checks as importer
 from scripts import update_cashflow_dashboard as dashboard
 
@@ -150,5 +152,6 @@ def test_balance_check_currency_totals(tmp_path):
     assert summary["by_currency"]["USD"]["amount"] == 2.0
     assert summary["by_currency"]["USDT"]["amount"] == 3.0
     assert summary["by_currency"]["RUB"]["amount"] == 10.0
-    assert summary["by_currency"]["USD"]["kzt_equiv"] == 1060.0
-    assert summary["by_currency"]["USDT"]["kzt_equiv"] == 1590.0
+    fx = dashboard.get_fx_rates(db_path=tmp_path / "db.db")
+    assert summary["by_currency"]["USD"]["kzt_equiv"] == pytest.approx(2.0 * fx.usd_kzt)
+    assert summary["by_currency"]["USDT"]["kzt_equiv"] == pytest.approx(3.0 * fx.usd_kzt)

@@ -272,7 +272,7 @@ def get_sku_base_recommendation(
                 COALESCE(m.rop, 0) as rop,
                 COALESCE(m.suggested_order, 0) as recommended_qty,
                 COALESCE(m.status, 'OK') as status,
-                COALESCE(s.cogs_kzt, s.base_cost_cny * 78, 0) as unit_cost_kzt,
+                COALESCE(s.cogs_kzt, s.base_cost_cny * 75, 0) as unit_cost_kzt,
                 COALESCE(m.roic_pct, 0) as roic_pct
             FROM dim_sku s
             LEFT JOIN fact_sku_metrics m ON s.sku_key = m.sku_key
@@ -408,7 +408,7 @@ def calculate_pilot_kpis(
 
             # Get COGS
             cogs_row = conn.execute("""
-                SELECT COALESCE(cogs_kzt, base_cost_cny * 78, 0) as unit_cogs
+                SELECT COALESCE(cogs_kzt, base_cost_cny * 75, 0) as unit_cogs
                 FROM dim_sku WHERE sku_key = ?
             """, (pilot.sku_key,)).fetchone()
             unit_cogs = cogs_row["unit_cogs"] if cogs_row else 0

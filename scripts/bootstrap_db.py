@@ -34,8 +34,8 @@ PARAMS = [
     ("TV_mix_floor", None, 0.23, "Size-mix volatility floor"),
     ("VAT_rate", None, 0.03, "VAT rate (3%)"),
     ("commission", None, 0.125, "Platform commission (Kaspi)"),
-    ("CNY_KZT", None, 78, "CNY to KZT exchange rate"),
-    ("USD_KZT", None, 530, "USD to KZT exchange rate"),
+    ("CNY_KZT", None, 75, "CNY to KZT exchange rate"),
+    ("USD_KZT", None, 520, "USD to KZT exchange rate"),
     ("cargo_rate_cl", None, 2.66, "Cargo rate USD/kg for CL"),
 
     # Product_Type overrides

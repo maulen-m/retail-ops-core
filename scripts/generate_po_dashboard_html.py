@@ -1264,7 +1264,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
       const [lockedSkuOrder, setLockedSkuOrder] = useState([]);
 
       // FX rates state (editable, persisted in localStorage)
-      const defaultFxRates = DATA.fx_rates || { cny_kzt: 78.0, usd_kzt: 530.0, usdt_cny: null };
+      const defaultFxRates = DATA.fx_rates || { cny_kzt: 75.0, usd_kzt: 520.0, usdt_cny: null };
       const [fxRates, setFxRates] = useState(() => loadFromStorage('po_fx_rates', defaultFxRates));
 
       // Multipliers state (per SKU, persisted in localStorage)

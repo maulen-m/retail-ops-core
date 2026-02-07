@@ -8,6 +8,7 @@ import argparse
 import sqlite3
 from pathlib import Path
 import sys
+from datetime import date as _date, timedelta
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -109,14 +110,29 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
                 (as_of,),
             ).fetchone()
         else:
+            # Default to last settled day (max cashflow date - 1), because the latest day
+            # can be partial while upstream snapshot/translator steps are still reconciling.
+            try:
+                settled_anchor = (_date.fromisoformat(max_cashflow_date) - timedelta(days=1)).isoformat()
+            except ValueError:
+                settled_anchor = max_cashflow_date
             snapshot_row = conn.execute(
                 """
                 SELECT MAX(snapshot_date) as snap_date
                 FROM fact_inventory_snapshot_size
                 WHERE snapshot_date <= ?
                 """,
-                (max_cashflow_date,),
+                (settled_anchor,),
             ).fetchone()
+            if not snapshot_row or not snapshot_row["snap_date"]:
+                snapshot_row = conn.execute(
+                    """
+                    SELECT MAX(snapshot_date) as snap_date
+                    FROM fact_inventory_snapshot_size
+                    WHERE snapshot_date <= ?
+                    """,
+                    (max_cashflow_date,),
+                ).fetchone()
         snapshot_date = snapshot_row["snap_date"] if snapshot_row and snapshot_row["snap_date"] else None
         if not snapshot_date:
             print("SKIP: no snapshot available to compare")

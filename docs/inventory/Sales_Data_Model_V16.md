@@ -96,4 +96,40 @@ used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in
 | C | notes | TEXT | Optional context |
 | D | updated_at | DATETIME | Auto-updated timestamp |
 
+---
+
+## 7. PO Part Tracking (DB)
+
+**Tables:** `po_header`, `po_part`, `po_line`  
+**Purpose:** Preserve split-shipment truth (`po_part_id`) while keeping PO-level lifecycle aggregates.
+
+### 7.1 `po_part`
+
+| Col | Type | Notes |
+|---|---|---|
+| `po_part_id` | TEXT (PK) | Split shipment identity (for example `PO-5.1`, `ARC-1.0`) |
+| `po_id` | TEXT | Parent PO (`PO-5`, `PO_ARC-1`) |
+| `supplier_id` | TEXT | Supplier code from inbound calendar |
+| `message_date` | TEXT | Part-level message date |
+| `cargo_send_date` | TEXT | Part-level cargo send date |
+| `estimated_arrival_date` | TEXT | Part-level ETA |
+| `actual_arrival_date` | TEXT | Part-level actual arrival date |
+| `status` | TEXT | `IN_TRANSIT` / `RECEIVED` / other normalized lifecycle states |
+| `total_units` | INTEGER | Total units in this part |
+| `base_cost_cny` | REAL | Part-level base cost in CNY |
+
+### 7.2 `po_line` addition
+
+| Col | Type | Notes |
+|---|---|---|
+| `po_part_id` | TEXT | New linkage to `po_part.po_part_id`; required for split inbound truth |
+
+### 7.3 Inbound workbook sync source
+
+- Workbook: `Inbound_calendar_V10.002.xlsx`
+- Sheets:
+  - `Inbounds_sheet` (size-grain line truth)
+  - `PO_part_id_Totals` (part-level totals and status)
+  - `DIM_SKU_light_v5` (ARC target sell price source via `AvgPrc`)
+
 *Kaspi-only until further notice.*

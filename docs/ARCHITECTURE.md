@@ -226,7 +226,8 @@ Autonomous_business/
 | `stock_ledger` | Event-sourced stock changes | event_date, event_type, sku_id, qty_change, running_balance |
 | `sales_fact_v2` | Deduplicated sales records | order_id, sku_id, store_code, kaspi_offer_name, quantity |
 | `po_header` | PO header records | po_id, supplier_code, status, arrival dates, fx rates, costs |
-| `po_line` | PO line items | po_id, sku_id, order_qty, received_qty, unit_cost_cny |
+| `po_part` | Split-shipment PO parts | po_part_id, po_id, supplier_id, cargo_send_date, status, totals |
+| `po_line` | PO line items | po_id, po_part_id, sku_id, order_qty, received_qty, unit_cost_cny |
 
 **stock_ledger Event Types:**
 - `INITIAL` - Bootstrap/opening balance

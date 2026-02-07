@@ -205,3 +205,67 @@ def test_drift_handles_missing_on_delivery_column_with_safe_fallback(
     )
 
     assert rc == 0
+
+
+def test_drift_default_compares_last_settled_day_not_latest_partial(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE fact_inventory_snapshot_size (
+            snapshot_date TEXT,
+            sku_key TEXT,
+            current_stock REAL,
+            inbound_stock REAL
+        );
+        CREATE TABLE dim_sku (
+            sku_key TEXT PRIMARY KEY,
+            cogs_kzt REAL,
+            base_cost_cny REAL,
+            weight_kg REAL
+        );
+        CREATE TABLE fact_cashflow_daily (
+            date TEXT PRIMARY KEY,
+            inventory_on_hand_close REAL,
+            inventory_inbound_close REAL,
+            inventory_on_delivery_close REAL,
+            inventory_cost_close REAL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO dim_sku (sku_key, cogs_kzt, base_cost_cny, weight_kg) VALUES ('SKU_1', 100.0, 0.0, 0.0)"
+    )
+    conn.executemany(
+        """
+        INSERT INTO fact_inventory_snapshot_size (snapshot_date, sku_key, current_stock, inbound_stock)
+        VALUES (?, 'SKU_1', 10, 20)
+        """,
+        [("2026-02-05",), ("2026-02-06",)],
+    )
+    # Settled day matches snapshot (3000), latest day is partial/mismatched (5000).
+    conn.executemany(
+        """
+        INSERT INTO fact_cashflow_daily (
+            date, inventory_on_hand_close, inventory_inbound_close, inventory_on_delivery_close, inventory_cost_close
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            ("2026-02-05", 1000.0, 2000.0, 0.0, 3000.0),
+            ("2026-02-06", 2000.0, 3000.0, 0.0, 5000.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    _patch_fx(monkeypatch)
+
+    rc = validate_inventory_cost_drift.validate_drift(
+        db_path=db_path,
+        as_of=None,
+        tolerance_pct=0.0,
+        tolerance_kzt=0.0,
+    )
+
+    assert rc == 0

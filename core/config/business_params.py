@@ -78,10 +78,10 @@ VAT_RATE_CURRENT = get_vat_rate()
 # =============================================================================
 
 # Default FX rates (fallback when no DB data available)
-# These match the historical values used in the codebase
+# Active planning defaults (reconciled 2026-02-08)
 DEFAULT_FX_RATES = {
-    "cny_kzt": 78.0,        # CNY to KZT exchange rate
-    "usd_kzt": 530.0,       # USD to KZT exchange rate
+    "cny_kzt": 75.0,        # CNY to KZT exchange rate
+    "usd_kzt": 520.0,       # USD to KZT exchange rate
     "dlv_rate_usd_kg": 2.66  # Delivery rate in USD per kg (volumetric factor)
 }
 
@@ -136,9 +136,9 @@ def get_fx_rates(
     Examples:
         >>> rates = get_fx_rates()
         >>> rates.cny_kzt
-        78.0
+        75.0
         >>> rates.to_dict()
-        {'cny_kzt': 78.0, 'usd_kzt': 530.0, 'dlv_rate_usd_kg': 2.66}
+        {'cny_kzt': 75.0, 'usd_kzt': 520.0, 'dlv_rate_usd_kg': 2.66}
     """
     if as_of_date is None:
         as_of_date = date.today()

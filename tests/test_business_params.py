@@ -89,6 +89,11 @@ class TestFXRatesDataclass:
 class TestGetFXRates:
     """Tests for get_fx_rates function."""
 
+    def test_default_fx_rates_match_reconciled_policy(self):
+        """Fallback defaults must match reconciled Master_Inventory_Rules policy."""
+        assert DEFAULT_FX_RATES["cny_kzt"] == 75.0
+        assert DEFAULT_FX_RATES["usd_kzt"] == 520.0
+
     def test_get_fx_rates_returns_defaults_when_no_db(self):
         """When DB doesn't exist, return fallback defaults."""
         rates = get_fx_rates(db_path="/nonexistent/path/app.db")

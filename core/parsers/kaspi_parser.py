@@ -213,7 +213,7 @@ def extract_sku_from_article(
 
     # Try to extract size from article or offer, then normalize
     my_size_raw = _extract_size(article) or _extract_size(offer_text)
-    my_size = normalize_size(my_size_raw, product_type=result["product_type"])
+    my_size = normalize_size(my_size_raw, product_type=result["product_type"]) or my_size_raw
     result["my_size"] = my_size
 
     # SKU_key is embedded at the beginning of Артикул

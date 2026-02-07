@@ -21,8 +21,8 @@ from typing import Optional
 
 # Default FX rates (can be overridden)
 DEFAULT_FX_RUB_KZT = 6.6
-DEFAULT_FX_USD_KZT = 530
-DEFAULT_FX_CNY_KZT = 78
+DEFAULT_FX_USD_KZT = 520
+DEFAULT_FX_CNY_KZT = 75
 
 # WB fee structure
 WB_COMMISSION_PCT = 24.5

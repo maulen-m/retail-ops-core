@@ -51,8 +51,8 @@ Exception: if the Excel workbook is treated as validation target, then update Ex
 
 | Parameter | Value | Notes |
 |---|---:|---|
-| `FX_USD_KZT` | 530 | Cargo payments |
-| `FX_CNY_KZT` | 78 | Supplier payments |
+| `FX_USD_KZT` | 520 | Cargo payments |
+| `FX_CNY_KZT` | 75 | Supplier payments |
 
 ### 2.1 Cargo rates (China → Astana)
 

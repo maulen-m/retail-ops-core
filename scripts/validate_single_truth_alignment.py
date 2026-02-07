@@ -56,9 +56,22 @@ def _load_active_skus(conn: sqlite3.Connection) -> set[str]:
     if not _table_exists(conn, "dim_sku"):
         return set()
     rows = conn.execute(
-        "SELECT sku_key FROM dim_sku WHERE COALESCE(active_flag, 1) = 1"
+        """
+        SELECT sku_key, COALESCE(product_type, '') AS product_type
+        FROM dim_sku
+        WHERE COALESCE(active_flag, 1) = 1
+        """
     ).fetchall()
-    return {str(row["sku_key"]) for row in rows if row["sku_key"]}
+    active: set[str] = set()
+    for row in rows:
+        sku_key = str(row["sku_key"] or "").strip()
+        if not sku_key:
+            continue
+        product_type = str(row["product_type"] or "").strip().upper()
+        if product_type == "BAG":
+            continue
+        active.add(sku_key)
+    return active
 
 
 def validate_alignment_payload(
@@ -79,6 +92,7 @@ def validate_alignment_payload(
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
+        has_dim_sku = _table_exists(conn, "dim_sku")
         active_skus = _load_active_skus(conn)
         if not _table_exists(conn, "po_line"):
             errors.append("po_line table missing (cannot verify REAL_ARCHIVE quantities)")
@@ -105,7 +119,7 @@ def validate_alignment_payload(
                 for sku_key, qty_db in sku_totals_db.items():
                     qty_payload = sku_totals_payload.get(sku_key)
                     if qty_payload is None:
-                        if not active_skus or sku_key in active_skus:
+                        if (not has_dim_sku) or (sku_key in active_skus):
                             errors.append(f"{po_id}/{sku_key}: missing from dashboard sku_level")
                     elif qty_payload != qty_db:
                         errors.append(
@@ -124,15 +138,23 @@ def validate_alignment_payload(
                 for key, qty_db in size_totals_db.items():
                     qty_payload = size_totals_payload.get(key)
                     if qty_payload is None:
-                        if not active_skus or key[0] in active_skus:
+                        if (not has_dim_sku) or (key[0] in active_skus):
                             errors.append(f"{po_id}/{key[0]}/{key[1]}: missing from dashboard size_level")
                     elif qty_payload != qty_db:
                         errors.append(
                             f"{po_id}/{key[0]}/{key[1]}: po_line qty={qty_db} != dashboard qty={qty_payload}"
                         )
 
+            # Baseline date monotonicity applies to PLAN rows (future projections),
+            # not REAL_ARCHIVE rows whose baseline snapshot can intentionally be newer.
+            for po_name, po_data in pos.items():
+                if not isinstance(po_data, dict):
+                    continue
+                if po_data.get("po_kind") == "REAL_ARCHIVE":
+                    continue
+                po_id = str(po_data.get("po_name") or po_name)
                 po_message_date = po_data.get("po_message_date")
-                for row in sku_rows:
+                for row in (po_data.get("sku_level") or []):
                     sku_key = row.get("sku_key")
                     if not sku_key:
                         continue

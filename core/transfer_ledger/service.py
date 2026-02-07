@@ -335,11 +335,11 @@ def _po_target_kzt(po_row: dict, db_path=None) -> Optional[float]:
     if total_cny is None or float(total_cny) <= 0:
         return None
 
-    fx_rate = po_row.get("fx_rate_cny_plan") or 78.0
+    fx_rate = po_row.get("fx_rate_cny_plan") or 75.0
     try:
         fx_rate = float(fx_rate)
     except (TypeError, ValueError):
-        fx_rate = 78.0
+        fx_rate = 75.0
 
     return float(total_cny) * fx_rate
 
