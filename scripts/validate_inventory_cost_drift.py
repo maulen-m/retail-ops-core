@@ -25,6 +25,11 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(row[1]) for row in rows if len(row) > 1}
+
+
 def _load_dim_sku_costs(conn: sqlite3.Connection) -> dict[str, dict]:
     if not _table_exists(conn, "dim_sku"):
         return {}
@@ -117,12 +122,15 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
             print("SKIP: no snapshot available to compare")
             return 0
 
+        cashflow_columns = _table_columns(conn, "fact_cashflow_daily")
+        select_cols = ["inventory_on_hand_close", "inventory_inbound_close"]
+        has_on_delivery = "inventory_on_delivery_close" in cashflow_columns
+        if has_on_delivery:
+            select_cols.append("inventory_on_delivery_close")
+        select_cols.append("inventory_cost_close")
+
         cashflow_row = conn.execute(
-            """
-            SELECT inventory_on_hand_close, inventory_inbound_close, inventory_cost_close
-            FROM fact_cashflow_daily
-            WHERE date = ?
-            """,
+            f"SELECT {', '.join(select_cols)} FROM fact_cashflow_daily WHERE date = ?",
             (snapshot_date,),
         ).fetchone()
         if not cashflow_row:
@@ -130,17 +138,29 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
             return 0
 
         snapshot_cost = _compute_inventory_cost(conn, snapshot_date)
-        cashflow_cost = float(
-            (cashflow_row["inventory_on_hand_close"] or 0.0)
-            + (cashflow_row["inventory_inbound_close"] or 0.0)
+        on_hand_close = float(cashflow_row["inventory_on_hand_close"] or 0.0)
+        inbound_close = float(cashflow_row["inventory_inbound_close"] or 0.0)
+        on_delivery_close = (
+            float(cashflow_row["inventory_on_delivery_close"] or 0.0)
+            if has_on_delivery and "inventory_on_delivery_close" in cashflow_row.keys()
+            else 0.0
         )
-        if cashflow_cost == 0.0:
-            cashflow_cost = float(cashflow_row["inventory_cost_close"] or 0.0)
+        inventory_cost_close = float(cashflow_row["inventory_cost_close"] or 0.0)
+
+        component_sum = on_hand_close + inbound_close + on_delivery_close
+        cashflow_cost = component_sum if component_sum != 0.0 else inventory_cost_close
         diff = abs(snapshot_cost - cashflow_cost)
         allowed = max(tolerance_kzt, abs(snapshot_cost) * tolerance_pct)
 
         print(f"snapshot_date={snapshot_date}")
         print(f"snapshot_cost_kzt={snapshot_cost:,.2f}")
+        print(
+            "components_kzt="
+            f"on_hand:{on_hand_close:,.2f}, "
+            f"inbound:{inbound_close:,.2f}, "
+            f"on_delivery:{on_delivery_close:,.2f}, "
+            f"inventory_cost_close:{inventory_cost_close:,.2f}"
+        )
         print(f"cashflow_cost_kzt={cashflow_cost:,.2f}")
         print(f"diff_kzt={diff:,.2f}")
         print(f"allowed_kzt={allowed:,.2f}")
