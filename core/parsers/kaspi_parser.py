@@ -107,7 +107,7 @@ def _map_acmewear_line61_size(size_tokens: list[str]) -> Optional[str]:
     if first in {"52", "54"}:
         return "2XL"
     if first == "56":
-        return "3XL"
+        return "4XL"
     if first in {"58", "60"}:
         return "4XL"
     return None
