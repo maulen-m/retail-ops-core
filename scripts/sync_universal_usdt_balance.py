@@ -21,10 +21,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.binance_wallet_client import BinanceWalletClient, BinanceWalletError
+from scripts import generate_bank_accounts_history_totals
 from scripts import generate_bank_snapshot
 
 DEFAULT_HISTORY = PROJECT_ROOT / "config" / "bank_accounts_history.yaml"
 DEFAULT_SNAPSHOT = PROJECT_ROOT / "config" / "bank_accounts.yaml"
+DEFAULT_HISTORY_TOTALS = PROJECT_ROOT / "config" / "bank_accounts_history_totals.md"
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 
 STORE_CODE = "UNIVERSAL"
@@ -134,6 +136,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Sync UNIVERSAL/binance_usdt to bank_accounts files")
     parser.add_argument("--history", type=Path, default=DEFAULT_HISTORY, help="bank_accounts_history.yaml path")
     parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT, help="bank_accounts.yaml path")
+    parser.add_argument(
+        "--history-totals",
+        type=Path,
+        default=DEFAULT_HISTORY_TOTALS,
+        help="bank_accounts_history_totals.md path",
+    )
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="DB path for FX in snapshot generation")
     parser.add_argument("--balance-usdt", type=float, default=None, help="Manual override for USDT balance")
     parser.add_argument("--as-of", default=None, help='Timestamp like "YYYY-MM-DD HH:MM:SS GMT+5"')
@@ -172,10 +180,17 @@ def main() -> int:
     fx_rates = generate_bank_snapshot.get_fx_rates(args.db)
     snapshot_text = generate_bank_snapshot.generate_snapshot(latest_entry, fx_rates)
     args.snapshot.write_text(snapshot_text, encoding="utf-8")
+    history_totals_text = generate_bank_accounts_history_totals.generate_history_totals_markdown(
+        entries=entries,
+        fx_rates=fx_rates,
+        history_label=str(args.history),
+    )
+    args.history_totals.write_text(history_totals_text, encoding="utf-8")
 
     print(f"Applied: {'yes' if changed else 'no (unchanged latest auto snapshot)'}")
     print(f"History: {args.history}")
     print(f"Snapshot: {args.snapshot}")
+    print(f"History totals: {args.history_totals}")
     print(f"Balance USDT: {balance:.6f}")
     return 0
 

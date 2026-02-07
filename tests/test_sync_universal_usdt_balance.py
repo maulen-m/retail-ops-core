@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 from scripts import generate_bank_snapshot
 from scripts import sync_universal_usdt_balance as syncer
@@ -166,3 +167,39 @@ def test_generate_snapshot_from_effective_entry_contains_all_stores(tmp_path):
     assert "        balance_kzt: 3000" in content
     assert "      binance_usdt:" in content
     assert "        balance_usdt: 160.362615" in content
+
+
+def test_apply_generates_history_totals_file(monkeypatch, tmp_path):
+    history = tmp_path / "bank_accounts_history.yaml"
+    _write_history(history)
+    snapshot = tmp_path / "bank_accounts.yaml"
+    history_totals = tmp_path / "bank_accounts_history_totals.md"
+
+    monkeypatch.setenv("ENABLE_BANK_ACCOUNTS_WRITE", "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "sync_universal_usdt_balance.py",
+            "--apply",
+            "--history",
+            str(history),
+            "--snapshot",
+            str(snapshot),
+            "--history-totals",
+            str(history_totals),
+            "--balance-usdt",
+            "222.222",
+            "--as-of",
+            "2026-02-07 11:00:00 GMT+5",
+        ],
+    )
+
+    rc = syncer.main()
+    assert rc == 0
+    assert snapshot.exists()
+    assert history_totals.exists()
+
+    totals_text = history_totals.read_text(encoding="utf-8")
+    assert "| as_of | source | TOTAL_KZT | TOTAL_USD | TOTAL_RUB | TOTAL_USDT | TOTAL_KZT_EQ |" in totals_text
+    assert "2026-02-07 11:00:00 GMT+5" in totals_text
