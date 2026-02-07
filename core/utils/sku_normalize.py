@@ -9,6 +9,9 @@ Handles mapping between different SKU key conventions:
 This prevents mismatches when joining data from different sources.
 """
 
+import re
+
+
 # Mapping from source convention to canonical convention
 SKU_PREFIX_MAPPINGS = {
     'CL_NK_': 'CL_OC_',  # Stock file -> Anchor/Target convention
@@ -86,6 +89,30 @@ SIZE_SYNONYMS = {
     '4XL\u0411': '4XL',
 }
 
+NULL_SIZE_TOKENS = {
+    '',
+    '0',
+    'NONE',
+    'NULL',
+    'NAN',
+    'N/A',
+    'NA',
+    '-',
+}
+
+_CYRILLIC_SIZE_TRANSLATION = str.maketrans({
+    '\u041c': 'M',
+    '\u043c': 'M',
+    '\u0425': 'X',
+    '\u0445': 'X',
+    '\u0421': 'S',
+    '\u0441': 'S',
+    '\u041b': 'L',
+    '\u043b': 'L',
+    '\u0411': 'B',
+    '\u0431': 'B',
+})
+
 ADULT_CL_NUMERIC_SYNONYMS = {
     '42': 'S',
     '44': 'M',
@@ -98,6 +125,34 @@ ADULT_CL_NUMERIC_SYNONYMS = {
     '58': '4XL',
     '60': '4XL',
 }
+
+
+def _sanitize_size_token(raw: object) -> str:
+    """Normalize raw size token formatting before semantic mapping."""
+    token = str(raw).strip()
+    if not token:
+        return ""
+
+    token = token.translate(_CYRILLIC_SIZE_TRANSLATION)
+    token = token.upper().replace("\u00a0", " ")
+    token = token.strip().rstrip("?.!,;:")
+
+    # Numeric floats from Excel often appear as "26.0" -> "26".
+    if re.fullmatch(r"\d+\.0+", token):
+        token = token.split(".", 1)[0]
+    elif re.fullmatch(r"\d+\.\d+", token):
+        # Non-integer decimal sizes are not valid for our catalog.
+        return ""
+
+    # Keep slash for O/S before removing general punctuation.
+    token = token.replace(" ", "")
+    token = token.replace("-", "")
+    token = token.replace("(", "").replace(")", "")
+
+    # Collapse leading zeros in pure numeric tokens: 004 -> 4.
+    if re.fullmatch(r"\d+", token):
+        token = str(int(token))
+    return token
 
 
 def normalize_size(size, product_type: str = None, synonyms: dict[str, str] | None = None) -> str:
@@ -117,26 +172,32 @@ def normalize_size(size, product_type: str = None, synonyms: dict[str, str] | No
         Normalized size string or None if invalid
     """
     # Handle None/empty for electronics
-    if size is None or str(size).strip() in ('', '0', 'None', 'nan'):
+    if size is None:
         if product_type and product_type.upper() in ('ELS', 'ELEC', 'ELECTRONICS'):
             return 'ONE_SIZE'
         return None
 
-    size_str = str(size).strip().upper()
-    size_clean = "".join(size_str.split()).replace("-", "")
+    size_clean = _sanitize_size_token(size)
+    if size_clean in NULL_SIZE_TOKENS:
+        if product_type and product_type.upper() in ('ELS', 'ELEC', 'ELECTRONICS'):
+            return 'ONE_SIZE'
+        return None
 
     if synonyms and size_clean in synonyms:
-        size_clean = synonyms[size_clean]
+        size_clean = _sanitize_size_token(synonyms[size_clean])
     if product_type and product_type.upper().startswith("CL"):
         if size_clean in ADULT_CL_NUMERIC_SYNONYMS:
             size_clean = ADULT_CL_NUMERIC_SYNONYMS[size_clean]
     if size_clean in SIZE_SYNONYMS:
         size_clean = SIZE_SYNONYMS[size_clean]
 
+    if size_clean in {'ONESIZE', 'OS'}:
+        size_clean = 'ONE_SIZE'
+
     if size_clean in VALID_SIZES:
         return size_clean
 
-    return size_clean or None
+    return None
 
 
 def infer_size_from_sku_id(sku_id: str | None) -> str | None:

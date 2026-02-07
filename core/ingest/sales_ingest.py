@@ -35,13 +35,17 @@ from core.utils.sku_normalize import (
 _SIZE_TOKEN_RE = re.compile(r"[A-Z0-9]+")
 
 
-def infer_size_from_offer_name(offer_name: str | None, synonyms: dict[str, str] | None = None) -> str | None:
+def infer_size_from_offer_name(
+    offer_name: str | None,
+    synonyms: dict[str, str] | None = None,
+    product_type: str | None = None,
+) -> str | None:
     """Infer size token from a Kaspi offer name string."""
     if not offer_name:
         return None
     tokens = _SIZE_TOKEN_RE.findall(str(offer_name).upper())
     for token in tokens:
-        candidate = normalize_size(token, synonyms=synonyms)
+        candidate = normalize_size(token, product_type=product_type, synonyms=synonyms)
         if candidate and candidate in VALID_SIZES:
             return candidate
     return None
@@ -120,7 +124,10 @@ def resolve_sales_identity(
     sku_key = str(sku_key).strip() if sku_key else None
     my_size = str(my_size).strip() if my_size else None
     synonyms = _load_size_synonyms(conn)
-    my_size = normalize_size(my_size, synonyms=synonyms)
+    product_type = None
+    if sku_key and "_" in sku_key:
+        product_type = sku_key.split("_", 1)[0]
+    my_size = normalize_size(my_size, product_type=product_type, synonyms=synonyms)
 
     if sku_id:
         row = conn.execute(
@@ -129,12 +136,18 @@ def resolve_sales_identity(
         ).fetchone()
         if row:
             sku_key = row["sku_key"]
-            my_size = normalize_size(row["my_size"], synonyms=synonyms)
+            product_type = sku_key.split("_", 1)[0] if sku_key and "_" in sku_key else product_type
+            my_size = normalize_size(row["my_size"], product_type=product_type, synonyms=synonyms)
         else:
             # Attempt to normalize sku_id suffix (handles stray spaces like "_ XL")
             if "_" in sku_id:
                 base, suffix = sku_id.rsplit("_", 1)
-                candidate_size = normalize_size(suffix, synonyms=synonyms)
+                candidate_product_type = base.split("_", 1)[0] if "_" in base else product_type
+                candidate_size = normalize_size(
+                    suffix,
+                    product_type=candidate_product_type,
+                    synonyms=synonyms,
+                )
                 candidate_key = normalize_sku_key(base)
                 if candidate_key and candidate_size:
                     row2 = conn.execute(
@@ -148,9 +161,24 @@ def resolve_sales_identity(
 
     if sku_key:
         sku_key = normalize_sku_key(sku_key)
+        if "_" in sku_key:
+            product_type = sku_key.split("_", 1)[0]
+
+    if not my_size and sku_id:
+        inferred_from_sku = infer_size_from_sku_id(sku_id)
+        if inferred_from_sku:
+            my_size = normalize_size(
+                inferred_from_sku,
+                product_type=product_type,
+                synonyms=synonyms,
+            )
 
     if not my_size and kaspi_offer_name and sku_key and sku_key.startswith("CL_"):
-        inferred = infer_size_from_offer_name(kaspi_offer_name, synonyms=synonyms)
+        inferred = infer_size_from_offer_name(
+            kaspi_offer_name,
+            synonyms=synonyms,
+            product_type=product_type,
+        )
         if inferred:
             my_size = inferred
 
@@ -282,10 +310,19 @@ def parse_sales_excel(
 
         my_size = row.get("my_size")
         my_size = str(my_size).strip() if not pd.isna(my_size) else None
-        if my_size == "":
-            my_size = None
+        product_type = None
+        if sku_key and "_" in sku_key:
+            product_type = sku_key.split("_", 1)[0]
+            sku_key = normalize_sku_key(sku_key)
+        elif sku_id and "_" in sku_id:
+            product_type = sku_id.split("_", 1)[0]
+
+        my_size = normalize_size(my_size, product_type=product_type)
         if my_size is None:
-            my_size = infer_size_from_sku_id(sku_id)
+            inferred_from_sku = infer_size_from_sku_id(sku_id)
+            my_size = normalize_size(inferred_from_sku, product_type=product_type)
+        if my_size is None:
+            my_size = infer_size_from_offer_name(kaspi_offer_name, product_type=product_type)
 
         # Get date
         order_date = row.get("order_date")

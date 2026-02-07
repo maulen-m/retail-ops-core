@@ -349,6 +349,41 @@ class TestParseSalesExcel:
         records = parse_sales_excel(str(xlsx_path))
         assert records[0]["my_size"] == "XL"
 
+    def test_parse_normalizes_dirty_size_tokens(self, tmp_path):
+        data = {
+            "OrderID": ["ORD-D1", "ORD-D2", "ORD-D3", "ORD-D4"],
+            "Date": [date.today(), date.today(), date.today(), date.today()],
+            "KASPI_OFFER_NAME": [
+                "Принт 5в1 черный 3XL",
+                "Рашгард 5 в 1 черный 128",
+                "Принт 5в1 черный M",
+                "Принт 5в1 черный XL",
+            ],
+            "SKU_ID": [
+                "CL_LINE52_BLACK_3XL",
+                "CL_NEW-CLO_KID_ROMBIK_BLACK_26",
+                "CL_LINE52_BLACK_M",
+                "CL_LINE52_BLACK_XL",
+            ],
+            "SKU_key": [
+                "CL_LINE52_BLACK",
+                "CL_NEW-CLO_KID_ROMBIK_BLACK",
+                "CL_LINE52_BLACK",
+                "CL_LINE52_BLACK",
+            ],
+            "MY_SIZE": ["3XL?", "26.0", "М", "NAN"],
+            "Quantity": [1, 1, 1, 1],
+            "Sell_price_kzt": [15000, 9000, 15000, 15000],
+            "STORE_NAME": ["Universal", "Universal", "Universal", "Universal"],
+            "Return": [0, 0, 0, 0],
+        }
+        df = pd.DataFrame(data)
+        xlsx_path = tmp_path / "dirty_size.xlsx"
+        df.to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+        records = parse_sales_excel(str(xlsx_path))
+        assert [r["my_size"] for r in records] == ["3XL", "26", "M", "XL"]
+
 
 class TestIngestSales:
     """Tests for ingest_sales function."""
