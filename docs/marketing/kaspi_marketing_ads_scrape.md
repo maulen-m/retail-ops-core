@@ -151,6 +151,11 @@ Use cookies from the authenticated browser context to call them via `context.req
 - The `/campaign/<id>/products` API returns **current bid only** (no historical series).
 - We therefore **snapshot** bid_cpc at scrape time and mark provenance via `bid_cpc_source=api_current`.
 - The bookkeeper adds a `bid_cpc_note` column to flag this limitation.
+- Manual owner-workbook corrections are persisted into `bid_cpc_overrides` and reapplied with `bid_cpc_source=manual_override`.
+
+### LINE61 mapping rule
+- Ads can return marketplace-style keys like `sku_key=19796919b` plus merchant SKU payloads such as `OF_SUIT-61_BLK_XL_48`.
+- Pipeline applies heuristic mapping to internal SKU IDs/keys (size inferred from merchant SKU token), so LINE61 rows map to internal `CL_NEW-CLO2_MEN_SUIT-61_BLACK`.
 
 ### Recommended scrape schema
 ```
@@ -164,7 +169,7 @@ product_name        (text)
 product_status      (text)
 ad_score            (text)
 bid_cpc             (float, CPC input)
-bid_cpc_source      (text, csv|api_current)
+bid_cpc_source      (text, csv|api_current|manual_override)
 avg_cpc             (float)
 views               (int)
 clicks              (int)
@@ -195,6 +200,7 @@ Kaspi_marketing/
 |-- raw/YYYY-MM-DD/<run_id>/        # downloaded reports (untouched)
 |-- details/YYYY-MM-DD/<run_id>/    # normalized CSVs
 |-- db/kaspi_marketing.db           # sqlite history/current
+|   |-- bid_cpc_overrides           # manual bid_cpc corrections from owner workbook
 |-- logs/scrape_<run_id>.json       # run log + anomalies
 |-- backups/                        # workbook backups (timestamped)
 |-- Kaspi_marketing_owner.xlsx      # owner workbook (campaign + product sheets)

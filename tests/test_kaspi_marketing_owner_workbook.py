@@ -1,7 +1,9 @@
 import sqlite3
 from pathlib import Path
 
-from scripts.build_kaspi_marketing_owner_workbook import build_owner_frames
+import pandas as pd
+
+from scripts.build_kaspi_marketing_owner_workbook import build_owner_frames, build_owner_workbook
 
 
 def _seed_ads_db(path: Path) -> None:
@@ -17,6 +19,8 @@ def _seed_ads_db(path: Path) -> None:
                 sku_key TEXT,
                 product_name TEXT,
                 json_merchant_sku TEXT,
+                bid_cpc REAL,
+                bid_cpc_source TEXT,
                 orders_total INTEGER,
                 gmv REAL,
                 cost REAL,
@@ -50,18 +54,20 @@ def _seed_ads_db(path: Path) -> None:
         conn.executemany(
             """
             INSERT INTO campaign_product_daily_current
-            (date, merchant_id, store_code, campaign_id, campaign_name, sku_key, product_name, json_merchant_sku, orders_total, gmv, cost, views, clicks, favorites, carts, ingested_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (date, merchant_id, store_code, campaign_id, campaign_name, sku_key, product_name, json_merchant_sku, bid_cpc, bid_cpc_source, orders_total, gmv, cost, views, clicks, favorites, carts, ingested_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 # historical mapped allowed model -> keep
-                ("2025-01-02", "759051", "30137883", "2380614", "Acmewear_16k", "ads-a", "A", "CL_OC_MEN_LINE51_WHITE_XL_134547490", 2, 1200.0, 100.0, 10, 2, 1, 1, "2026-02-06T00:00:00+05:00"),
+                ("2025-01-02", "759051", "30137883", "2380614", "Acmewear_16k", "ads-a", "A", "CL_OC_MEN_LINE51_WHITE_XL_134547490", 70.0, "api_current", 2, 1200.0, 100.0, 10, 2, 1, 1, "2026-02-06T00:00:00+05:00"),
                 # historical unmapped -> drop
-                ("2025-01-02", "759051", "30137883", "2380614", "Acmewear_16k", "ads-b", "B", "", 1, 500.0, 50.0, 5, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
+                ("2025-01-02", "759051", "30137883", "2380614", "Acmewear_16k", "ads-b", "B", "", 40.0, "api_current", 1, 500.0, 50.0, 5, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
                 # historical mapped disallowed model -> drop
-                ("2025-01-03", "759051", "30137883", "7000000", "Line52", "ads-c", "C", "CL_OC_MEN_LINE52_BLACK_XL_0001", 1, 700.0, 70.0, 7, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
+                ("2025-01-03", "759051", "30137883", "7000000", "Line52", "ads-c", "C", "CL_OC_MEN_LINE52_BLACK_XL_0001", 55.0, "api_current", 1, 700.0, 70.0, 7, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
                 # future unmapped -> keep
-                ("2026-02-10", "759051", "30137883", "9999999", "Future", "ads-d", "D", "", 3, 900.0, 90.0, 9, 3, 1, 1, "2026-02-10T00:00:00+05:00"),
+                ("2026-02-10", "759051", "30137883", "9999999", "Future", "ads-d", "D", "", 60.0, "api_current", 3, 900.0, 90.0, 9, 3, 1, 1, "2026-02-10T00:00:00+05:00"),
+                # line61 merchant sku payload that should map by heuristic
+                ("2025-01-04", "759051", "30137883", "2545773", "ACMEWEAR_LINE61", "19796919b", "Suit", "OF_SUIT-61_BLK_XL_48", 70.0, "api_current", 1, 400.0, 40.0, 4, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
             ],
         )
         conn.executemany(
@@ -102,6 +108,7 @@ def _seed_app_db(path: Path) -> None:
             [
                 ("CL_OC_MEN_LINE51_WHITE", "LINE51"),
                 ("CL_OC_MEN_LINE52_BLACK", "LINE52"),
+                ("CL_NEW-CLO2_MEN_SUIT-61_BLACK", "SUIT-61"),
             ],
         )
         conn.executemany(
@@ -109,6 +116,7 @@ def _seed_app_db(path: Path) -> None:
             [
                 ("CL_OC_MEN_LINE51_WHITE_XL_134547490", "CL_OC_MEN_LINE51_WHITE"),
                 ("CL_OC_MEN_LINE52_BLACK_XL_0001", "CL_OC_MEN_LINE52_BLACK"),
+                ("CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL", "CL_NEW-CLO2_MEN_SUIT-61_BLACK"),
             ],
         )
         conn.executemany(
@@ -153,3 +161,59 @@ def test_build_owner_frames_applies_historical_filter_and_future_no_filter(tmp_p
 
     assert not campaign_df.empty
     assert {"db_orders_count", "db_sales_gmv_kzt", "delta_orders_db_minus_ads"}.issubset(campaign_df.columns)
+
+    suit = product_df[product_df["campaign_name"] == "ACMEWEAR_LINE61"]
+    assert len(suit) == 1
+    assert suit.iloc[0]["mapping_status"] == "mapped"
+    assert suit.iloc[0]["mapped_sku_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+
+
+def test_build_owner_workbook_persists_manual_bid_override(tmp_path: Path) -> None:
+    ads_db = tmp_path / "ads.db"
+    app_db = tmp_path / "app.db"
+    workbook = tmp_path / "owner.xlsx"
+    csv_dir = tmp_path / "csv"
+    _seed_ads_db(ads_db)
+    _seed_app_db(app_db)
+
+    summary1 = build_owner_workbook(
+        ads_db=ads_db,
+        app_db=app_db,
+        workbook_path=workbook,
+        csv_dir=csv_dir,
+        history_start_date="2025-01-01",
+        future_cutover_date="2026-02-01",
+        strict_models={"line51", "line61", "suit-61"},
+        store_code="ACMEWEAR",
+    )
+    assert summary1["product_rows"] >= 1
+
+    sheet = pd.read_excel(workbook, sheet_name="campaign_product_daily")
+    campaign_sheet = pd.read_excel(workbook, sheet_name="campaign_daily")
+    campaign_id_str = sheet["campaign_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+    target = (campaign_id_str == "2545773") & (sheet["date"].astype(str) == "2025-01-04")
+    assert target.any()
+    sheet.loc[target, "bid_cpc"] = 123.0
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        campaign_sheet.to_excel(writer, sheet_name="campaign_daily", index=False)
+        sheet.to_excel(writer, sheet_name="campaign_product_daily", index=False)
+
+    summary2 = build_owner_workbook(
+        ads_db=ads_db,
+        app_db=app_db,
+        workbook_path=workbook,
+        csv_dir=csv_dir,
+        history_start_date="2025-01-01",
+        future_cutover_date="2026-02-01",
+        strict_models={"line51", "line61", "suit-61"},
+        store_code="ACMEWEAR",
+    )
+    assert summary2["bid_override_upserts"] >= 1
+
+    sheet2 = pd.read_excel(workbook, sheet_name="campaign_product_daily")
+    campaign_id_str2 = sheet2["campaign_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+    target2 = (campaign_id_str2 == "2545773") & (sheet2["date"].astype(str) == "2025-01-04")
+    assert target2.any()
+    row = sheet2[target2].iloc[0]
+    assert float(row["bid_cpc"]) == 123.0
+    assert row["bid_cpc_source"] == "manual_override"

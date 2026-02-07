@@ -14,6 +14,7 @@ from typing import Iterable
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import re
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
@@ -56,6 +57,68 @@ def normalize_mapping_key(value: str | None) -> str:
     if len(parts) > 1 and parts[-1].isdigit():
         return "_".join(parts[:-1])
     return key
+
+
+def parse_bid_value(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace("\u00a0", " ").replace("₸", "").replace("%", "").replace(" ", "")
+    text = text.replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _extract_size_token(text: str) -> str:
+    match = re.search(r"(?:_|^)(XS|S|M|L|XL|2XL|3XL|4XL|5XL)(?:_|$)", text.upper())
+    return match.group(1) if match else ""
+
+
+def _infer_line61_mapping(
+    merchant_sku: str,
+    mapping_lookup_df: pd.DataFrame,
+) -> tuple[str, str, str]:
+    sku = merchant_sku.upper()
+    if "SUIT-61" not in sku and "LINE61" not in sku:
+        return "", "", ""
+    if mapping_lookup_df.empty:
+        return "", "", ""
+
+    candidates = mapping_lookup_df[
+        mapping_lookup_df["mapped_model_canonical"] == "line61"
+    ].copy()
+    if candidates.empty:
+        return "", "", ""
+
+    if "_BLK_" in sku or "_BLACK_" in sku:
+        candidates = candidates[
+            candidates["mapped_sku_id"].str.upper().str.contains("_BLACK_", na=False)
+        ]
+
+    size = _extract_size_token(sku)
+    if size:
+        size_candidates = candidates[
+            candidates["mapped_sku_id"].str.upper().str.endswith(f"_{size}")
+        ]
+        if not size_candidates.empty:
+            candidates = size_candidates
+
+    if candidates.empty:
+        return "", "", ""
+
+    candidates = candidates.sort_values("mapped_sku_id")
+    row = candidates.iloc[0]
+    return (
+        str(row.get("mapped_sku_id", "")).strip(),
+        str(row.get("mapped_sku_key", "")).strip(),
+        str(row.get("mapped_model", "")).strip(),
+    )
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -110,6 +173,114 @@ def _load_mapping_and_sales(app_db: Path, history_start: str, store_code: str) -
     return mapping_df, sales_df
 
 
+def ensure_bid_override_table(ads_db: Path) -> None:
+    with sqlite3.connect(ads_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bid_cpc_overrides (
+                date TEXT NOT NULL,
+                merchant_id TEXT NOT NULL,
+                campaign_id TEXT NOT NULL,
+                sku_key TEXT NOT NULL,
+                bid_cpc REAL NOT NULL,
+                source TEXT DEFAULT 'owner_workbook_manual',
+                updated_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (date, merchant_id, campaign_id, sku_key)
+            )
+            """
+        )
+        conn.commit()
+
+
+def _load_raw_bid_map(ads_db: Path) -> dict[tuple[str, str, str, str], float]:
+    with sqlite3.connect(ads_db) as conn:
+        if not _table_exists(conn, "campaign_product_daily_current"):
+            return {}
+        rows = conn.execute(
+            """
+            SELECT date, merchant_id, campaign_id, sku_key, bid_cpc
+            FROM campaign_product_daily_current
+            """
+        ).fetchall()
+    result: dict[tuple[str, str, str, str], float] = {}
+    for d, mid, cid, sku, bid in rows:
+        key = (str(d or ""), str(mid or ""), str(cid or ""), str(sku or ""))
+        bid_val = parse_bid_value(bid)
+        if bid_val is None:
+            continue
+        result[key] = bid_val
+    return result
+
+
+def ingest_bid_overrides_from_workbook(ads_db: Path, workbook_path: Path) -> int:
+    ensure_bid_override_table(ads_db)
+    if not workbook_path.exists():
+        return 0
+
+    try:
+        df = pd.read_excel(workbook_path, sheet_name="campaign_product_daily")
+    except Exception:
+        return 0
+    if df.empty:
+        return 0
+
+    required = {"date", "merchant_id", "campaign_id", "sku_key", "bid_cpc"}
+    if not required.issubset(df.columns):
+        return 0
+
+    raw_map = _load_raw_bid_map(ads_db)
+    upserts: list[tuple[str, str, str, str, float]] = []
+
+    for _, row in df.iterrows():
+        d = row.get("date")
+        try:
+            date_key = str(pd.to_datetime(d).date()) if pd.notna(d) else ""
+        except Exception:
+            date_key = str(d or "").strip()
+        merchant_id = str(row.get("merchant_id", "")).strip()
+        campaign_id = str(row.get("campaign_id", "")).strip()
+        sku_key = str(row.get("sku_key", "")).strip()
+        bid = parse_bid_value(row.get("bid_cpc"))
+
+        if not (date_key and merchant_id and campaign_id and sku_key):
+            continue
+        if bid is None:
+            continue
+
+        key = (date_key, merchant_id, campaign_id, sku_key)
+        raw_bid = raw_map.get(key)
+        if raw_bid is None:
+            continue
+        if abs(raw_bid - bid) < 1e-9:
+            continue
+        upserts.append((date_key, merchant_id, campaign_id, sku_key, bid))
+
+    if not upserts:
+        return 0
+
+    with sqlite3.connect(ads_db) as conn:
+        conn.executemany(
+            """
+            INSERT INTO bid_cpc_overrides (date, merchant_id, campaign_id, sku_key, bid_cpc, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'owner_workbook_manual', datetime('now'))
+            ON CONFLICT(date, merchant_id, campaign_id, sku_key)
+            DO UPDATE SET bid_cpc = excluded.bid_cpc, source = excluded.source, updated_at = excluded.updated_at
+            """,
+            upserts,
+        )
+        conn.commit()
+    return len(upserts)
+
+
+def load_bid_overrides(ads_db: Path) -> pd.DataFrame:
+    ensure_bid_override_table(ads_db)
+    with sqlite3.connect(ads_db) as conn:
+        return pd.read_sql_query(
+            "SELECT date, merchant_id, campaign_id, sku_key, bid_cpc, source FROM bid_cpc_overrides",
+            conn,
+        )
+
+
 def _to_float(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(0.0)
 
@@ -155,6 +326,7 @@ def build_owner_frames(
 
     mapping_df = mapping_df.copy()
     mapping_df["mapping_join_key"] = mapping_df["mapped_sku_id"].apply(normalize_mapping_key)
+    mapping_df["mapped_model_canonical"] = mapping_df["mapped_model"].apply(canonical_model)
 
     product_df["mapping_join_key"] = product_df["json_merchant_sku"].apply(normalize_mapping_key)
     empty_mask = product_df["mapping_join_key"] == ""
@@ -167,6 +339,17 @@ def build_owner_frames(
         on="mapping_join_key",
         how="left",
     )
+
+    # Heuristic mapping for LINE61 ads SKU payloads like OF_SUIT-61_BLK_XL_48.
+    suit_candidates = mapped["mapped_sku_key"].isna() | (mapped["mapped_sku_key"] == "")
+    for idx in mapped[suit_candidates].index:
+        merchant_sku = str(mapped.at[idx, "json_merchant_sku"] or "").strip()
+        mapped_sku_id, mapped_sku_key, mapped_model = _infer_line61_mapping(merchant_sku, mapping_df)
+        if mapped_sku_key:
+            mapped.at[idx, "mapped_sku_id"] = mapped_sku_id
+            mapped.at[idx, "mapped_sku_key"] = mapped_sku_key
+            mapped.at[idx, "mapped_model"] = mapped_model
+            mapped.at[idx, "mapped_model_canonical"] = canonical_model(mapped_model)
 
     mapped["mapping_status"] = mapped["mapped_sku_key"].apply(
         lambda x: "mapped" if isinstance(x, str) and x.strip() else "unmapped"
@@ -222,6 +405,23 @@ def build_owner_frames(
     mapped["db_sales_gmv_kzt"] = _to_float(mapped["db_sales_gmv_kzt"])
     mapped["delta_orders_db_minus_ads"] = mapped["db_orders_count"] - mapped["orders_total"]
     mapped["delta_gmv_db_minus_ads"] = mapped["db_sales_gmv_kzt"] - mapped["gmv"]
+
+    # Apply persisted manual bid overrides last so owner workbook stays stable.
+    overrides_df = load_bid_overrides(ads_db)
+    if not overrides_df.empty:
+        overrides_df = overrides_df.rename(columns={"bid_cpc": "bid_cpc_override", "source": "bid_cpc_override_source"})
+        overrides_df["date"] = pd.to_datetime(overrides_df["date"], errors="coerce").dt.date
+        for col in ("merchant_id", "campaign_id", "sku_key"):
+            overrides_df[col] = overrides_df[col].fillna("").astype(str).str.strip()
+        mapped = mapped.merge(
+            overrides_df,
+            on=["date", "merchant_id", "campaign_id", "sku_key"],
+            how="left",
+        )
+        has_override = mapped["bid_cpc_override"].notna()
+        mapped.loc[has_override, "bid_cpc"] = mapped.loc[has_override, "bid_cpc_override"]
+        mapped.loc[has_override, "bid_cpc_source"] = "manual_override"
+        mapped.drop(columns=["bid_cpc_override", "bid_cpc_override_source"], inplace=True, errors="ignore")
 
     product_cols = [
         "date",
@@ -370,6 +570,7 @@ def build_owner_workbook(
     strict_models: Iterable[str],
     store_code: str = DEFAULT_STORE_CODE,
 ) -> dict[str, int]:
+    override_upserts = ingest_bid_overrides_from_workbook(ads_db, workbook_path)
     campaign_df, product_df = build_owner_frames(
         ads_db=ads_db,
         app_db=app_db,
@@ -382,6 +583,7 @@ def build_owner_workbook(
     return {
         "campaign_rows": int(len(campaign_df)),
         "product_rows": int(len(product_df)),
+        "bid_override_upserts": int(override_upserts),
     }
 
 
