@@ -181,3 +181,27 @@ Validation hooks:
 - `scripts/validate_on_delivery_freeze.py`
 - `scripts/validate_single_truth_system.py`
 - `scripts/validate_params.py --strict` (includes both checks)
+
+---
+
+## 13) OPEX + Business Insides Single Truth (2026-02-08)
+
+OPEX commitments are now managed by canonical repo artifacts and synchronized into DB:
+- `config/opex/opex_schedule.yaml`
+- `config/opex/opex_commitments.csv`
+- sync entrypoint: `scripts/sync_opex_schedule.py`
+
+Business-insides snapshots are generated from paid-capital truth + delivered sales truth:
+- generator: `scripts/generate_business_insides.py`
+- snapshot path:
+  - `config/business_insides/BUSINESS_INSIDES_<as_of>.md`
+  - `config/business_insides/snapshots/BUSINESS_INSIDES_<as_of>.md`
+
+Sales metrics source for business-insides:
+- `sales_fact_v2`
+- filter: `status='DELIVERED'` and `return_flag=0`
+- COGS fallback: `dim_sku.cogs_kzt` (or canonical cost formula if missing)
+
+On-delivery settlement reconciliation:
+- `scripts/reconcile_on_delivery_settlement.py`
+- validator remains `scripts/validate_on_delivery_freeze.py`

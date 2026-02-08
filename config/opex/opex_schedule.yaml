@@ -1,0 +1,11 @@
+source_xlsx: ~/Documents/useful tables/Main crm spreadsheets/main tables/Protocols/OPEX_protocol_26.01.2026.xlsx
+generated_at_utc: '2026-02-08T15:40:14+00:00'
+horizon_days: 365
+rows_generated: 1343
+columns:
+- commit_date
+- commit_type
+- amount_kzt
+- scenario_tag
+- ref_id
+- notes

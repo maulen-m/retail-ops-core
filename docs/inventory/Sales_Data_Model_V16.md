@@ -157,3 +157,17 @@ Runtime schedule and prep-lane truth for dashboard projections:
 Dashboard row additions:
 - `sku_level.prep_lane`, `sku_level.prep_days_lane`
 - `size_level.prep_lane`, `size_level.prep_days_lane`
+
+---
+
+## 9. OPEX Commitments (Cashflow Link)
+
+Canonical OPEX schedule artifacts:
+- `config/opex/opex_schedule.yaml`
+- `config/opex/opex_commitments.csv`
+
+DB table:
+- `fact_cashflow_commitments` (`commit_type='OPEX'`)
+
+Sync entrypoint:
+- `scripts/sync_opex_schedule.py` (dry-run by default; apply requires `ENABLE_CASHFLOW_WRITE=1` and `--apply`)

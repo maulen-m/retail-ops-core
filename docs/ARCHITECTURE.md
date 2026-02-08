@@ -27,6 +27,13 @@ The operational truth chain is enforced as:
 3. Dashboard validators (`scripts/validate_po_dashboard_invariants.py`, `scripts/validate_single_truth_alignment.py`) assert PLAN/REAL separation, qty identity vs `po_line`, and formula consistency.
 6. Cashflow and inventory gates (`scripts/validate_cashflow_invariants.py`, `scripts/validate_inventory_cost_drift.py`) must remain aligned with the same underlying facts.
 7. On-delivery freeze integrity is validated by `scripts/validate_on_delivery_freeze.py`.
+8. OPEX commitments are canonicalized from protocol workbook into repo artifacts and DB:
+   - `scripts/sync_opex_schedule.py`
+   - `config/opex/opex_schedule.yaml`
+   - `config/opex/opex_commitments.csv`
+9. Business-insides snapshots are generated from paid capital + delivered sales truth:
+   - `scripts/generate_business_insides.py`
+   - validator: `scripts/validate_business_insides.py`
 
 Rules:
 - `PLAN-*` rows are recommendations only.
