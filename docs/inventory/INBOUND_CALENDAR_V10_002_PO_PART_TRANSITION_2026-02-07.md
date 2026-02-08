@@ -7,7 +7,7 @@ Capture split inbound truth from `Inbound_calendar_V10.002.xlsx` into DB tables 
 - `po_line.po_part_id` (line-level linkage)
 
 ## Source Workbook
-- Path: `~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx`
+- Path: `~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/backup/7.2.26/Inbound_calendar_V10.002.xlsx`
 - Required sheets:
   - `Inbounds_sheet`
   - `PO_part_id_Totals`
@@ -23,6 +23,8 @@ Capture split inbound truth from `Inbound_calendar_V10.002.xlsx` into DB tables 
 - `PO_part_id`, `PO_id`, `supplier_id`, `message_date`, `cargo_send_date`
 - `Estimated_Arrival_date`, `Actual_Arrival_date`, `Status`
 - `Total Units`, `Base_cost_CNY`
+- `Est. Weight (kg)`, `Total Bags`
+- `is_paid_BASE`, `is_paid_DLV`, `To_pay_BASE_KZT`, `To_pay_DLV_KZT`
 
 ### `DIM_SKU_light_v5` (used when present)
 - `SKU_key`, `AvgPrc` (stored to `dim_sku.avg_sell_price_kzt_used`)
@@ -49,6 +51,14 @@ Capture split inbound truth from `Inbound_calendar_V10.002.xlsx` into DB tables 
 - Re-running workbook sync updates existing `(po_id, po_part_id, sku_key, my_size)` rows, no duplicates.
 - `po_part` upserts by `po_part_id`.
 - ARC sell prices are refreshed from `DIM_SKU_light_v5.AvgPrc`.
+- Payment flags are normalized (`YES/NO/Y/N/TRUE/FALSE/1/0`) and persisted to `po_part`.
+- Header-level `weight_nom_kg` and `total_places` are rebuilt from `po_part` aggregates each sync.
+
+## Paid-Capital Notes (v2)
+- `is_paid_BASE=YES` marks base cost as paid.
+- `is_paid_DLV=YES` marks delivery cost as paid.
+- `To_pay_*` columns remain source-of-truth for unpaid obligations.
+- Cashflow paid-capital views include only paid portions from `po_part`.
 
 ## Status Mapping
 - `Transit` -> `IN_TRANSIT`

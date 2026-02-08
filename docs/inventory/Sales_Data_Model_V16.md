@@ -117,6 +117,15 @@ used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in
 | `status` | TEXT | `IN_TRANSIT` / `RECEIVED` / other normalized lifecycle states |
 | `total_units` | INTEGER | Total units in this part |
 | `base_cost_cny` | REAL | Part-level base cost in CNY |
+| `base_cost_kzt` | REAL | Part-level base cost in KZT |
+| `est_weight_kg` | REAL | Part-level estimated weight |
+| `total_bags` | INTEGER | Part-level bag count |
+| `est_delivery_usd` | REAL | Estimated delivery in USD |
+| `est_delivery_kzt` | REAL | Estimated delivery in KZT |
+| `is_paid_base` | INTEGER | 1 when base cost is paid |
+| `is_paid_dlv` | INTEGER | 1 when delivery is paid |
+| `to_pay_base_kzt` | REAL | Remaining base amount unpaid |
+| `to_pay_dlv_kzt` | REAL | Remaining delivery amount unpaid |
 
 ### 7.2 `po_line` addition
 

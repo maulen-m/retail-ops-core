@@ -148,3 +148,20 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 - core/integrations/kaspi_api_client.py
 - core/sync/order_sync_engine.py
 - docs/DAILY_SOP.md
+
+---
+
+## 11) Paid-Capital Truth (2026-02-08)
+
+Base capital monitoring is anchored to paid truth components:
+- `cash_actual_kzt`: from `config/bank_accounts.yaml`
+- `inventory_on_hand_paid_kzt`: latest on-hand valuation (Astana treated as fully paid)
+- `inventory_inbound_paid_kzt`: `po_part` paid portions only (`is_paid_base`, `is_paid_dlv`, `to_pay_*`)
+- `inventory_on_delivery_paid_kzt`: latest `fact_cashflow_daily.inventory_on_delivery_close`
+
+Unpaid inbound obligations are tracked separately and excluded from paid capital:
+- `inbound_unpaid_obligations_kzt`
+
+Implementation reference:
+- `core/cashflow/paid_capital_truth.py`
+- `scripts/update_cashflow_dashboard.py`

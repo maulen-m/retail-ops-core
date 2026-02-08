@@ -17,7 +17,7 @@ Top-level keys:
 - `cutoff_date` (YYYY-MM-DD string)
 - `summary` (object)
 - `pos` (object)
-- `archived_pos` (list of non-PLAN entries in `pos`)
+- `archived_pos` (list of non-PLAN entries in `pos`, part-grain IDs when `po_part` exists)
 - `real_pos` (list; may be empty)
 
 `summary` required fields:
@@ -38,6 +38,7 @@ Each non-PLAN entry in `pos` must include:
 - `po_kind` = `REAL_ARCHIVE`
 - must be listed in `archived_pos`
 - must be recomputed from message-date state (`MAX(snapshot_date <= po_message_date)`), not cloned from PLAN rows
+- when source PO has part rows, archive key must be `po_part_id` (for example `PO-5.2`, `ARC-1.0`)
 
 Each `sku_level` entry must include:
 - `sku_key` (string)
@@ -55,10 +56,13 @@ Each `sku_level` entry must include:
 
 `real_pos` entry minimal fields:
 - `po_id` (string)
+- `parent_po_id` (string or null)
 - `status` (string)
 - `message_date` (YYYY-MM-DD or null)
 - `units_total` (int)
 - `units_received` (int)
+- `weight_nom_kg` (number)
+- `total_places` (int)
 
 ## Invariants vs PO engine (same fixture input)
 For each SKU in the fixture:
