@@ -13,7 +13,9 @@ def _seed_po_db(db_path: Path) -> None:
             message_date TEXT,
             ship_date_seller TEXT,
             ship_date_cargo TEXT,
-            status TEXT
+            status TEXT,
+            weight_nom_kg REAL,
+            total_places INTEGER
         );
         CREATE TABLE po_line (
             po_id TEXT,
@@ -29,8 +31,10 @@ def _seed_po_db(db_path: Path) -> None:
     )
     conn.execute(
         """
-        INSERT INTO po_header (po_id, message_date, ship_date_seller, ship_date_cargo, status)
-        VALUES ('PO-5', '2026-01-21', '2026-02-04', '2026-02-04', 'SHIPPED_CARGO')
+        INSERT INTO po_header (
+            po_id, message_date, ship_date_seller, ship_date_cargo, status, weight_nom_kg, total_places
+        )
+        VALUES ('PO-5', '2026-01-21', '2026-02-04', '2026-02-04', 'SHIPPED_CARGO', 0.0, 0)
         """
     )
     rows = [
@@ -55,7 +59,7 @@ def test_load_po_orders_prefers_part_rows_over_legacy_null_part(monkeypatch, tmp
     _seed_po_db(db_path)
     monkeypatch.setattr(dashboard, "DB_PATH", db_path)
 
-    po = dashboard.load_po_orders("PO-5")
+    po = dashboard.load_po_orders("PO-5", db_path=db_path)
     assert po is not None
     sku_orders = po["orders_by_sku"]["CL_NEW-CLO2_MEN_SUIT-61_BLACK"]
     assert sku_orders["M"] == 110

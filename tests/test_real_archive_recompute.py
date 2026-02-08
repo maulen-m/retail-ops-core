@@ -238,3 +238,31 @@ def test_real_archive_propagates_po_part_id_to_size_rows(tmp_path: Path) -> None
     rows = [r for r in out["size_level"] if int(r.get("order_qty", 0) or 0) > 0]
     assert rows
     assert {r.get("po_part_id") for r in rows} == {"PO-5.2"}
+
+
+def test_real_archive_includes_ordered_sku_not_in_base_template(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_snapshot_db(db_path)
+
+    po_actual = _po_actual()
+    po_actual["orders_by_sku"]["CL_NEW_WM_TEST"] = {"M": 10}
+
+    out = dashboard.build_real_archive_data(
+        _base_template(),
+        po_actual,
+        params=SimpleNamespace(L=21),
+        fx_rates=SimpleNamespace(dlv_rate_usd_kg=2.66, usd_kzt=520.0),
+        db_path=db_path,
+    )
+
+    sku_rows = [r for r in out["sku_level"] if r.get("sku_key") == "CL_NEW_WM_TEST"]
+    assert len(sku_rows) == 1
+    assert int(sku_rows[0].get("po_qty_total") or 0) == 10
+    size_rows = [
+        r for r in out["size_level"]
+        if r.get("sku_key") == "CL_NEW_WM_TEST" and str(r.get("size") or "") == "M"
+    ]
+    assert len(size_rows) == 1
+    assert int(size_rows[0].get("order_qty") or 0) == 10
+    assert int(out["summary"].get("total_units") or 0) == 1225
+    assert int(out["summary"].get("skus_with_orders") or 0) == 2
