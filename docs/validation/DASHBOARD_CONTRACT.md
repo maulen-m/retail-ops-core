@@ -18,6 +18,7 @@ Top-level keys:
 - `summary` (object)
 - `pos` (object)
 - `archived_pos` (list of non-PLAN entries in `pos`, part-grain IDs when `po_part` exists)
+  - ordering contract: chronological by cargo send date ascending (oldest first)
 - `real_pos` (list; may be empty)
 
 `summary` required fields:
@@ -33,6 +34,9 @@ Top-level keys:
   - `summary` (object with `total_skus`, `total_units`)
   - `sku_level` (list)
 - `PLAN-0` represents the **next planned PO after the latest real PO** (latest real POs appear only in `archived_pos`/`real_pos`)
+- PLAN message schedule is config-driven from `config/po_schedule.yaml`:
+  - `plan0_anchor_message_date`
+  - `reorder_cycle_days`
 
 Each non-PLAN entry in `pos` must include:
 - `po_kind` = `REAL_ARCHIVE`
@@ -50,6 +54,8 @@ Each `sku_level` entry must include:
 - `consumption_until_arrival` (numeric; theoretical `d_sku * effective_L`)
 - `consumption_until_arrival_capped` (numeric; `min(consumption_until_arrival, stock_at_msg + active_inbound)`)
 - `baseline_snapshot_date` (YYYY-MM-DD; snapshot used for baseline)
+- `prep_lane` (string; `CORE_PRINT_SUIT` / `GENERAL_CL` / `ELS`)
+- `prep_days_lane` (int; lane-level prep days used for this row)
 
 `REAL_ARCHIVE` `size_level` ordered rows (`order_qty > 0`):
 - should include `po_part_id` when part-tagged source lines exist for that PO (legacy single-part archives without part tags are allowed)

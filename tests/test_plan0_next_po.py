@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 import scripts.generate_po_dashboard_data as dashboard
@@ -149,7 +149,11 @@ def test_plan0_is_next_po_after_latest_real(monkeypatch) -> None:
     monkeypatch.setattr(dashboard, "TODAY", date(2026, 2, 5))
 
     all_pos, _ = dashboard.generate_multi_po_data(num_pos=2)
+    cfg = dashboard._load_po_schedule_config()
+    anchor = date.fromisoformat(cfg["plan0_anchor_message_date"])
+    interval = int(cfg["reorder_cycle_days"])
 
     assert "PO-5" not in all_pos
-    assert all_pos["PLAN-0"]["po_message_date"] == "2026-02-01"
+    assert all_pos["PLAN-0"]["po_message_date"] == anchor.isoformat()
+    assert all_pos["PLAN-1"]["po_message_date"] == (anchor + timedelta(days=interval)).isoformat()
     assert all_pos["PLAN-0"]["po_message_date"] != "2026-01-21"

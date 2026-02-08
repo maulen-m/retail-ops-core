@@ -769,6 +769,133 @@ def test_translate_orders_allows_missing_sku_when_order_already_recorded(tmp_pat
     finally:
         conn.close()
 
+
+def test_translate_orders_creates_on_delivery_for_shipped_kaspi_delivery(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_SHIP", 1.0, 1234.0, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_SHIP",
+                "STOREB",
+                "KASPI_DELIVERY",
+                "SHIPPED",
+                "2026-02-08",
+                1,
+                10000,
+                "SKU_SHIP",
+                "SKU_SHIP_S",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 2, 8), until=date(2026, 2, 8), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        move = conn.execute(
+            """
+            SELECT COALESCE(SUM(amount_kzt), 0.0)
+            FROM fact_cashflow_events
+            WHERE ref_id='ORD_SHIP'
+              AND event_type='INVENTORY_MOVE'
+              AND account='INVENTORY_ON_DELIVERY_COST'
+            """
+        ).fetchone()[0]
+        assert move > 0
+    finally:
+        conn.close()
+
+
+def test_translate_orders_settles_returned_on_delivery_balance_without_cash(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_RET", 1.0, 250.0, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_RET",
+                "STOREB",
+                "RETURNED",
+                "RETURNED",
+                "2026-02-08",
+                1,
+                10000,
+                "SKU_RET",
+                "SKU_RET_S",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_cashflow_events (
+                event_date, event_type, account, amount_kzt,
+                store_code, sku_key, sku_id, ref_type, ref_id,
+                notes, source, run_id, event_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-02-07",
+                "INVENTORY_MOVE",
+                "INVENTORY_ON_DELIVERY_COST",
+                250.0,
+                "STOREB",
+                "SKU_RET",
+                "SKU_RET_S",
+                "ORDER",
+                "ORD_RET",
+                "",
+                "ORDER_MODELLED",
+                "seed",
+                "ord_ret_seed_move",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(db_path, since=date(2026, 2, 8), until=date(2026, 2, 8), apply=True, run_id="test")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        on_delivery_net = conn.execute(
+            """
+            SELECT COALESCE(SUM(amount_kzt), 0.0)
+            FROM fact_cashflow_events
+            WHERE ref_id='ORD_RET'
+              AND account='INVENTORY_ON_DELIVERY_COST'
+            """
+        ).fetchone()[0]
+        assert round(float(on_delivery_net), 6) == 0.0
+    finally:
+        conn.close()
+
     monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
     translate_orders(db_path, since=date(2026, 1, 19), until=date(2026, 1, 21), apply=True, run_id="test")
 
@@ -1522,7 +1649,7 @@ def test_translate_orders_on_delivery_moves_inventory(tmp_path, monkeypatch):
     assert "INVENTORY_ON_DELIVERY_COST" in accounts
 
 
-def test_translate_orders_ignores_kaspi_delivery_state_even_if_shipped(tmp_path, monkeypatch):
+def test_translate_orders_creates_on_delivery_for_kaspi_delivery_state_when_shipped(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     _init_db(db_path)
 
@@ -1561,7 +1688,15 @@ def test_translate_orders_ignores_kaspi_delivery_state_even_if_shipped(tmp_path,
 
     conn = sqlite3.connect(str(db_path))
     try:
-        count = conn.execute("SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id='ORD4'").fetchone()[0]
-        assert count == 0
+        rows = conn.execute(
+            """
+            SELECT event_type, account
+            FROM fact_cashflow_events
+            WHERE ref_id='ORD4'
+            """
+        ).fetchall()
+        assert len(rows) == 2
+        assert {row[0] for row in rows} == {"INVENTORY_MOVE"}
+        assert {row[1] for row in rows} == {"INVENTORY_ON_HAND_COST", "INVENTORY_ON_DELIVERY_COST"}
     finally:
         conn.close()

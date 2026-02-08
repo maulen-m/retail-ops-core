@@ -347,6 +347,23 @@ def _date_range(start: date, end: date) -> Iterable[date]:
         current += timedelta(days=1)
 
 
+def _is_legacy_order_modelled_receivables(event: dict) -> bool:
+    return (
+        str(event.get("account") or "").upper() == "RECEIVABLES"
+        and str(event.get("source") or "").upper() == "ORDER_MODELLED"
+    )
+
+
+def _count_ignored_legacy_receivables(events: list[dict]) -> tuple[int, float]:
+    count = 0
+    amount = 0.0
+    for event in events:
+        if _is_legacy_order_modelled_receivables(event):
+            count += 1
+            amount += float(event.get("amount_kzt", 0.0) or 0.0)
+    return count, round(amount, 2)
+
+
 def compute_daily_rows(
     events: list[dict],
     start_date: date,
@@ -374,6 +391,7 @@ def compute_daily_rows(
             e.get("amount_kzt", 0.0)
             for e in day_events
             if e.get("account") == "RECEIVABLES"
+            and not _is_legacy_order_modelled_receivables(e)
         )
         legacy_inv_flow = sum(
             e.get("amount_kzt", 0.0)
@@ -655,10 +673,27 @@ def main() -> int:
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     daily_rows, system_events = rebuild_cashflow_calendar(args.db, start, end, args.apply, run_id)
+    ignored_count, ignored_amount = (0, 0.0)
+    with sqlite3.connect(str(args.db)) as conn:
+        conn.row_factory = sqlite3.Row
+        if _table_exists(conn, "fact_cashflow_events"):
+            rows = conn.execute(
+                """
+                SELECT account, source, amount_kzt
+                FROM fact_cashflow_events
+                WHERE event_date BETWEEN ? AND ?
+                """,
+                (start.isoformat(), end.isoformat()),
+            ).fetchall()
+            ignored_count, ignored_amount = _count_ignored_legacy_receivables(
+                [dict(r) for r in rows]
+            )
 
     print("Cashflow rebuild summary")
     print(f"  Range: {start.isoformat()} → {end.isoformat()}")
     print(f"  System events generated: {len(system_events)}")
+    print(f"  legacy_receivables_ignored_count: {ignored_count}")
+    print(f"  ignored_amount_kzt: {ignored_amount:.2f}")
     print(f"  Daily rows computed: {len(daily_rows)}")
     if args.apply:
         print("  APPLY: wrote SYSTEM events + daily table.")

@@ -93,22 +93,39 @@ class TestPrepModelB:
     """Tests for Model B prep days requirements."""
 
     def test_all_cl_skus_same_prep_days_po4(self, dashboard_data):
-        """All CL SKUs in PLAN-0 should have same prep_days."""
+        """CL prep days must be consistent within each prep lane."""
         po4 = dashboard_data['pos']['PLAN-0']
-        cl_prep_days = set()
+        core_prep_days = set()
+        general_prep_days = set()
+
+        def _is_core_sku(sku_key: str) -> bool:
+            key = sku_key.upper()
+            return "LINE52" in key or "LINE61" in key or "SUIT-61" in key or "SUIT_61" in key
 
         for sku in po4['sku_level']:
-            sku_key = sku.get('sku_key', '')
+            sku_key = str(sku.get('sku_key', ''))
             prep = sku.get('prep_days', 0)
             qty = sku.get('po_qty_total', 0)
+            lane = str(sku.get('prep_lane', '') or '')
 
             if qty == 0:
-                continue  # Skip SKUs with no order
+                continue
+            if not sku_key.startswith('CL_'):
+                continue
 
-            if sku_key.startswith('CL_'):
-                cl_prep_days.add(prep)
+            if lane == "CORE_PRINT_SUIT" or _is_core_sku(sku_key):
+                core_prep_days.add(prep)
+                if lane:
+                    assert lane == "CORE_PRINT_SUIT", f"{sku_key} lane={lane}, expected CORE_PRINT_SUIT"
+            else:
+                general_prep_days.add(prep)
+                if lane:
+                    assert lane == "GENERAL_CL", f"{sku_key} lane={lane}, expected GENERAL_CL"
 
-        assert len(cl_prep_days) <= 1, f"PLAN-0 CL SKUs have inconsistent prep_days: {cl_prep_days}"
+        assert len(core_prep_days) <= 1, f"PLAN-0 core CL SKUs have inconsistent prep_days: {core_prep_days}"
+        assert len(general_prep_days) <= 1, (
+            f"PLAN-0 general CL SKUs have inconsistent prep_days: {general_prep_days}"
+        )
 
     def test_all_els_skus_prep_1(self, dashboard_data):
         """All ELS SKUs should have prep_days=1."""

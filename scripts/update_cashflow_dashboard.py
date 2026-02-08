@@ -89,6 +89,105 @@ def _filter_commitments(commitments: list[Commitment], scenario: str) -> list[Co
     return [c for c in commitments if (c.scenario_tag or "base") in allowed]
 
 
+def _to_float(value) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _row_inventory_close_paid_view(row: dict) -> float:
+    if all(k in row for k in ("inventory_on_hand_close", "inventory_inbound_close", "inventory_on_delivery_close")):
+        return (
+            _to_float(row.get("inventory_on_hand_close"))
+            + _to_float(row.get("inventory_inbound_close"))
+            + _to_float(row.get("inventory_on_delivery_close"))
+        )
+    return _to_float(row.get("inventory_cost_close"))
+
+
+def _row_inventory_open_paid_view(row: dict) -> float:
+    if all(k in row for k in ("inventory_on_hand_open", "inventory_inbound_open", "inventory_on_delivery_open")):
+        return (
+            _to_float(row.get("inventory_on_hand_open"))
+            + _to_float(row.get("inventory_inbound_open"))
+            + _to_float(row.get("inventory_on_delivery_open"))
+        )
+    return _to_float(row.get("inventory_cost_open"))
+
+
+def _ensure_paid_truth_inventory(paid_truth: dict | None) -> float:
+    if not paid_truth:
+        return 0.0
+    return (
+        _to_float(paid_truth.get("inventory_on_hand_paid_kzt"))
+        + _to_float(paid_truth.get("inventory_inbound_paid_kzt"))
+        + _to_float(paid_truth.get("inventory_on_delivery_paid_kzt"))
+    )
+
+
+def build_dashboard_rows_for_lens(
+    rows: list[dict],
+    *,
+    paid_truth: dict | None,
+    lens: str = "paid_default",
+) -> list[dict]:
+    """
+    Return display rows for a dashboard lens.
+
+    paid_default:
+      - zero receivables (model-only metric)
+      - anchor latest actual cash/capital to paid truth
+      - preserve daily deltas via constant shift
+    model:
+      - raw model ledger rows
+    """
+    normalized_lens = str(lens or "paid_default").strip().lower()
+    if normalized_lens == "model":
+        return [dict(r) for r in rows]
+
+    out: list[dict] = [dict(r) for r in rows]
+    if not out:
+        return out
+
+    actual_indexes = [idx for idx, row in enumerate(out) if not bool(row.get("is_forecast"))]
+    last_actual_idx = actual_indexes[-1] if actual_indexes else len(out) - 1
+    last_actual_row = out[last_actual_idx]
+
+    target_cash = _to_float(last_actual_row.get("cash_close"))
+    target_inventory = _row_inventory_close_paid_view(last_actual_row)
+    target_capital = _to_float(last_actual_row.get("capital_close"))
+    if paid_truth:
+        target_cash = _to_float(paid_truth.get("cash_actual_kzt")) or target_cash
+        target_capital = _to_float(paid_truth.get("total_capital_paid_kzt")) or target_capital
+        if target_capital > 0:
+            target_inventory = target_capital - target_cash
+        else:
+            target_inventory = _ensure_paid_truth_inventory(paid_truth) or target_inventory
+            target_capital = target_cash + target_inventory
+
+    cash_shift = target_cash - _to_float(last_actual_row.get("cash_close"))
+    inv_shift = target_inventory - _row_inventory_close_paid_view(last_actual_row)
+
+    for row in out:
+        cash_open = _to_float(row.get("cash_open")) + cash_shift
+        cash_close = _to_float(row.get("cash_close")) + cash_shift
+        inv_open = _row_inventory_open_paid_view(row) + inv_shift
+        inv_close = _row_inventory_close_paid_view(row) + inv_shift
+        cap_close = cash_close + inv_close
+
+        row["cash_open"] = round(cash_open, 2)
+        row["cash_close"] = round(cash_close, 2)
+        row["receivables_open"] = 0.0
+        row["receivables_close"] = 0.0
+        row["inventory_cost_open"] = round(inv_open, 2)
+        row["inventory_cost_close"] = round(inv_close, 2)
+        row["capital_close"] = round(cap_close, 2)
+        row["lens"] = "PAID_TRUTH"
+
+    return out
+
+
 def _load_sync_ages(conn: sqlite3.Connection) -> dict[str, float]:
     if not _table_exists(conn, "kaspi_order_sync_log"):
         return {}
@@ -1659,6 +1758,13 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
           </label>
         </div>
         <div class="control-group">
+          <label class="retro-checkbox">
+            <input type="checkbox" id="modelLedgerToggle">
+            <span class="checkbox-custom"></span>
+            <span class="pixel-font">MODEL LEDGER</span>
+          </label>
+        </div>
+        <div class="control-group">
           <label class="control-label pixel-font">STORE</label>
           <select id="storeSelect" class="retro-select"></select>
         </div>
@@ -1694,8 +1800,11 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
     const rowsBase = {data};
     const rowsConservative = {data_conservative};
     const rowsAggressive = {data_aggressive};
-    let rows = rowsBase;
     const meta = {meta_json};
+    const modelRowsBase = meta.model_rows_base || rowsBase;
+    const modelRowsConservative = meta.model_rows_conservative || rowsConservative;
+    const modelRowsAggressive = meta.model_rows_aggressive || rowsAggressive;
+    let rows = rowsBase;
 
     // ========================================
     // DOM ELEMENTS
@@ -1705,6 +1814,7 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
     const onDeliveryTable = document.getElementById('onDeliveryTable');
     const forecastToggle = document.getElementById('forecastToggle');
     const statementToggle = document.getElementById('statementToggle');
+    const modelLedgerToggle = document.getElementById('modelLedgerToggle');
     const rangeSelect = document.getElementById('rangeSelect');
     const storeSelect = document.getElementById('storeSelect');
     const scenarioSelect = document.getElementById('scenarioSelect');
@@ -1712,6 +1822,18 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
     const body = document.body;
     const chartCanvas = document.getElementById('cashChart');
     const tooltip = document.getElementById('chartTooltip');
+
+    function resolveRowsByScenario() {{
+      const useModel = !!(modelLedgerToggle && modelLedgerToggle.checked);
+      const scenario = scenarioSelect.value || 'base';
+      if (scenario === 'conservative') {{
+        return useModel ? modelRowsConservative : rowsConservative;
+      }}
+      if (scenario === 'aggressive') {{
+        return useModel ? modelRowsAggressive : rowsAggressive;
+      }}
+      return useModel ? modelRowsBase : rowsBase;
+    }}
 
     const storeCodes = Array.from(new Set(rowsBase.map(r => r.store_code).filter(Boolean)));
     const storeOptions = ['ALL', ...storeCodes];
@@ -1973,7 +2095,7 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
 
       const trends = calculateTrends(actualData.length > 0 ? actualData : rows);
       const paidTruth = meta.paid_capital_truth || null;
-      const usePaidTruth = !!paidTruth;
+      const usePaidTruth = !!paidTruth && !(modelLedgerToggle && modelLedgerToggle.checked);
       const paidInventory = usePaidTruth
         ? Number(paidTruth.inventory_on_hand_paid_kzt || 0)
             + Number(paidTruth.inventory_inbound_paid_kzt || 0)
@@ -2650,16 +2772,14 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
     // ========================================
     forecastToggle.addEventListener('change', renderAll);
     statementToggle.addEventListener('change', renderAll);
+    modelLedgerToggle.addEventListener('change', () => {{
+      rows = resolveRowsByScenario();
+      renderAll();
+    }});
     storeSelect.addEventListener('change', renderAll);
     rangeSelect.addEventListener('change', renderAll);
     scenarioSelect.addEventListener('change', () => {{
-      if (scenarioSelect.value === 'conservative') {{
-        rows = rowsConservative;
-      }} else if (scenarioSelect.value === 'aggressive') {{
-        rows = rowsAggressive;
-      }} else {{
-        rows = rowsBase;
-      }}
+      rows = resolveRowsByScenario();
       renderAll();
     }});
 
@@ -2670,6 +2790,7 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
     // ========================================
     // INITIALIZATION
     // ========================================
+    rows = resolveRowsByScenario();
     renderAll();
     updateRefreshTime();
     updateTodayDate();
@@ -3131,13 +3252,29 @@ def main() -> int:
         as_of=cutoff,
     )
 
-    _write_csv(all_rows, CSV_PATH)
+    paid_rows_base = build_dashboard_rows_for_lens(
+        all_rows,
+        paid_truth=paid_capital_truth,
+        lens="paid_default",
+    )
+    paid_rows_conservative = build_dashboard_rows_for_lens(
+        all_rows_conservative,
+        paid_truth=paid_capital_truth,
+        lens="paid_default",
+    )
+    paid_rows_aggressive = build_dashboard_rows_for_lens(
+        all_rows_aggressive,
+        paid_truth=paid_capital_truth,
+        lens="paid_default",
+    )
+
+    _write_csv(paid_rows_base, CSV_PATH)
     _write_min_cash(all_rows, all_rows_conservative, MIN_CASH_PATH)
     last_manual = max(manual_dates) if manual_dates else None
     _render_html(
-            all_rows,
-            all_rows_conservative,
-            all_rows_aggressive,
+            paid_rows_base,
+            paid_rows_conservative,
+            paid_rows_aggressive,
             HTML_PATH,
             {
                 "last_statement_date": last_statement_date,
@@ -3162,6 +3299,10 @@ def main() -> int:
                 "on_delivery_credit_rate": on_delivery_credit_rate,
                 "aggressive_enabled": aggressive_enabled,
                 "paid_capital_truth": paid_capital_truth,
+                "default_lens": "PAID_TRUTH",
+                "model_rows_base": all_rows,
+                "model_rows_conservative": all_rows_conservative,
+                "model_rows_aggressive": all_rows_aggressive,
             },
         )
 

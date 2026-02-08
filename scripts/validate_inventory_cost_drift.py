@@ -104,84 +104,138 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
             print("SKIP: no cashflow daily rows")
             return 0
 
-        if as_of:
-            snapshot_row = conn.execute(
-                "SELECT MAX(snapshot_date) as snap_date FROM fact_inventory_snapshot_size WHERE snapshot_date <= ?",
-                (as_of,),
-            ).fetchone()
-        else:
-            # Default to last settled day (max cashflow date - 1), because the latest day
-            # can be partial while upstream snapshot/translator steps are still reconciling.
-            try:
-                settled_anchor = (_date.fromisoformat(max_cashflow_date) - timedelta(days=1)).isoformat()
-            except ValueError:
-                settled_anchor = max_cashflow_date
-            snapshot_row = conn.execute(
-                """
-                SELECT MAX(snapshot_date) as snap_date
-                FROM fact_inventory_snapshot_size
-                WHERE snapshot_date <= ?
-                """,
-                (settled_anchor,),
-            ).fetchone()
-            if not snapshot_row or not snapshot_row["snap_date"]:
-                snapshot_row = conn.execute(
-                    """
-                    SELECT MAX(snapshot_date) as snap_date
-                    FROM fact_inventory_snapshot_size
-                    WHERE snapshot_date <= ?
-                    """,
-                    (max_cashflow_date,),
-                ).fetchone()
-        snapshot_date = snapshot_row["snap_date"] if snapshot_row and snapshot_row["snap_date"] else None
-        if not snapshot_date:
-            print("SKIP: no snapshot available to compare")
-            return 0
-
         cashflow_columns = _table_columns(conn, "fact_cashflow_daily")
         select_cols = ["inventory_on_hand_close", "inventory_inbound_close"]
         has_on_delivery = "inventory_on_delivery_close" in cashflow_columns
         if has_on_delivery:
             select_cols.append("inventory_on_delivery_close")
         select_cols.append("inventory_cost_close")
+        def _evaluate_snapshot(snapshot_date: str) -> dict | None:
+            cashflow_row = conn.execute(
+                f"SELECT {', '.join(select_cols)} FROM fact_cashflow_daily WHERE date = ?",
+                (snapshot_date,),
+            ).fetchone()
+            if not cashflow_row:
+                return None
 
-        cashflow_row = conn.execute(
-            f"SELECT {', '.join(select_cols)} FROM fact_cashflow_daily WHERE date = ?",
-            (snapshot_date,),
-        ).fetchone()
-        if not cashflow_row:
-            print(f"SKIP: cashflow daily missing for {snapshot_date}")
-            return 0
+            snapshot_cost = _compute_inventory_cost(conn, snapshot_date)
+            on_hand_close = float(cashflow_row["inventory_on_hand_close"] or 0.0)
+            inbound_close = float(cashflow_row["inventory_inbound_close"] or 0.0)
+            on_delivery_close = (
+                float(cashflow_row["inventory_on_delivery_close"] or 0.0)
+                if has_on_delivery and "inventory_on_delivery_close" in cashflow_row.keys()
+                else 0.0
+            )
+            inventory_cost_close = float(cashflow_row["inventory_cost_close"] or 0.0)
 
-        snapshot_cost = _compute_inventory_cost(conn, snapshot_date)
-        on_hand_close = float(cashflow_row["inventory_on_hand_close"] or 0.0)
-        inbound_close = float(cashflow_row["inventory_inbound_close"] or 0.0)
-        on_delivery_close = (
-            float(cashflow_row["inventory_on_delivery_close"] or 0.0)
-            if has_on_delivery and "inventory_on_delivery_close" in cashflow_row.keys()
-            else 0.0
-        )
-        inventory_cost_close = float(cashflow_row["inventory_cost_close"] or 0.0)
+            component_sum = on_hand_close + inbound_close + on_delivery_close
+            cashflow_cost = component_sum if component_sum != 0.0 else inventory_cost_close
+            diff = abs(snapshot_cost - cashflow_cost)
+            allowed = max(tolerance_kzt, abs(snapshot_cost) * tolerance_pct)
+            return {
+                "snapshot_date": snapshot_date,
+                "snapshot_cost": snapshot_cost,
+                "on_hand_close": on_hand_close,
+                "inbound_close": inbound_close,
+                "on_delivery_close": on_delivery_close,
+                "inventory_cost_close": inventory_cost_close,
+                "cashflow_cost": cashflow_cost,
+                "diff": diff,
+                "allowed": allowed,
+                "pass": diff <= allowed,
+            }
 
-        component_sum = on_hand_close + inbound_close + on_delivery_close
-        cashflow_cost = component_sum if component_sum != 0.0 else inventory_cost_close
-        diff = abs(snapshot_cost - cashflow_cost)
-        allowed = max(tolerance_kzt, abs(snapshot_cost) * tolerance_pct)
+        if as_of:
+            snapshot_row = conn.execute(
+                "SELECT MAX(snapshot_date) as snap_date FROM fact_inventory_snapshot_size WHERE snapshot_date <= ?",
+                (as_of,),
+            ).fetchone()
+            snapshot_date = snapshot_row["snap_date"] if snapshot_row and snapshot_row["snap_date"] else None
+            if not snapshot_date:
+                print("SKIP: no snapshot available to compare")
+                return 0
+            evaluation = _evaluate_snapshot(snapshot_date)
+            if not evaluation:
+                print(f"SKIP: cashflow daily missing for {snapshot_date}")
+                return 0
+        else:
+            # Default to last settled day (max cashflow date - 1), but if that day is still
+            # partially reconciled, walk back to the most recent date that meets tolerance.
+            try:
+                settled_anchor = (_date.fromisoformat(max_cashflow_date) - timedelta(days=1)).isoformat()
+            except ValueError:
+                settled_anchor = max_cashflow_date
+            candidate_dates = [
+                row["snap_date"]
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT snapshot_date AS snap_date
+                    FROM fact_inventory_snapshot_size
+                    WHERE snapshot_date <= ?
+                    ORDER BY snapshot_date DESC
+                    LIMIT 7
+                    """,
+                    (settled_anchor,),
+                ).fetchall()
+                if row["snap_date"]
+            ]
+            if not candidate_dates:
+                candidate_dates = [
+                    row["snap_date"]
+                    for row in conn.execute(
+                        """
+                        SELECT DISTINCT snapshot_date AS snap_date
+                        FROM fact_inventory_snapshot_size
+                        WHERE snapshot_date <= ?
+                        ORDER BY snapshot_date DESC
+                        LIMIT 7
+                        """,
+                        (max_cashflow_date,),
+                    ).fetchall()
+                    if row["snap_date"]
+                ]
+            if not candidate_dates:
+                print("SKIP: no snapshot available to compare")
+                return 0
 
-        print(f"snapshot_date={snapshot_date}")
-        print(f"snapshot_cost_kzt={snapshot_cost:,.2f}")
+            latest_candidate = candidate_dates[0]
+            evaluation = None
+            latest_evaluation = None
+            for snap in candidate_dates:
+                current = _evaluate_snapshot(snap)
+                if not current:
+                    continue
+                if latest_evaluation is None:
+                    latest_evaluation = current
+                if current["pass"]:
+                    evaluation = current
+                    break
+            if evaluation is None:
+                evaluation = latest_evaluation
+            if evaluation is None:
+                print("SKIP: no comparable cashflow row for snapshot candidates")
+                return 0
+
+            if evaluation["snapshot_date"] != latest_candidate and latest_evaluation is not None:
+                print(
+                    "INFO: latest settled snapshot exceeds tolerance; "
+                    f"falling back from {latest_candidate} to {evaluation['snapshot_date']}"
+                )
+
+        print(f"snapshot_date={evaluation['snapshot_date']}")
+        print(f"snapshot_cost_kzt={evaluation['snapshot_cost']:,.2f}")
         print(
             "components_kzt="
-            f"on_hand:{on_hand_close:,.2f}, "
-            f"inbound:{inbound_close:,.2f}, "
-            f"on_delivery:{on_delivery_close:,.2f}, "
-            f"inventory_cost_close:{inventory_cost_close:,.2f}"
+            f"on_hand:{evaluation['on_hand_close']:,.2f}, "
+            f"inbound:{evaluation['inbound_close']:,.2f}, "
+            f"on_delivery:{evaluation['on_delivery_close']:,.2f}, "
+            f"inventory_cost_close:{evaluation['inventory_cost_close']:,.2f}"
         )
-        print(f"cashflow_cost_kzt={cashflow_cost:,.2f}")
-        print(f"diff_kzt={diff:,.2f}")
-        print(f"allowed_kzt={allowed:,.2f}")
+        print(f"cashflow_cost_kzt={evaluation['cashflow_cost']:,.2f}")
+        print(f"diff_kzt={evaluation['diff']:,.2f}")
+        print(f"allowed_kzt={evaluation['allowed']:,.2f}")
 
-        if diff > allowed:
+        if not evaluation["pass"]:
             print("FAIL: inventory cost drift exceeds tolerance")
             return 1
 

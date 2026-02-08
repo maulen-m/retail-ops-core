@@ -165,3 +165,19 @@ Unpaid inbound obligations are tracked separately and excluded from paid capital
 Implementation reference:
 - `core/cashflow/paid_capital_truth.py`
 - `scripts/update_cashflow_dashboard.py`
+
+---
+
+## 12) Dashboard Lens Contract (2026-02-08)
+
+- Default operator lens is `PAID_TRUTH`:
+  - `receivables_close` is forced to `0` in summary/cards/chart/table/statistics.
+  - cash and capital are anchored to paid-capital truth (`bank_accounts.yaml` + paid inventory components).
+- `MODEL LEDGER` remains available as an explicit UI toggle for diagnostics.
+- Legacy `ORDER_MODELLED` receivables are excluded from actual roll-forward in
+  `scripts/rebuild_cashflow_calendar.py`.
+
+Validation hooks:
+- `scripts/validate_on_delivery_freeze.py`
+- `scripts/validate_single_truth_system.py`
+- `scripts/validate_params.py --strict` (includes both checks)

@@ -16,11 +16,17 @@ The operational truth chain is enforced as:
 
 1. `fact_inventory_snapshot_size` message-date baseline (latest snapshot on or before row message date).
 2. PO dashboard generation (`scripts/generate_po_dashboard_data.py`) computes PLAN and REAL_ARCHIVE rows from canonical math and DB facts.
+   - Plan schedule is configured by `config/po_schedule.yaml` (PLAN-0 anchor + reorder cycle).
+   - Archive ordering is chronological by cargo-send date (oldest first).
+   - Prep lanes are explicit: `CORE_PRINT_SUIT`, `GENERAL_CL`, `ELS`.
 3. REAL PO archive/lifecycle is part-grain when `po_part` exists (`po_part_id` keys in `archived_pos` and `real_pos`).
 4. Inbound payment truth is sourced from `po_part` (`is_paid_base`, `is_paid_dlv`, `to_pay_*`) loaded from `PO_part_id_Totals`.
 5. Cashflow paid-capital view is anchored to bank cash + paid inventory components only.
+   - `scripts/update_cashflow_dashboard.py` defaults to `PAID_TRUTH` lens.
+   - `MODEL LEDGER` remains an explicit toggle for diagnostics.
 3. Dashboard validators (`scripts/validate_po_dashboard_invariants.py`, `scripts/validate_single_truth_alignment.py`) assert PLAN/REAL separation, qty identity vs `po_line`, and formula consistency.
 6. Cashflow and inventory gates (`scripts/validate_cashflow_invariants.py`, `scripts/validate_inventory_cost_drift.py`) must remain aligned with the same underlying facts.
+7. On-delivery freeze integrity is validated by `scripts/validate_on_delivery_freeze.py`.
 
 Rules:
 - `PLAN-*` rows are recommendations only.

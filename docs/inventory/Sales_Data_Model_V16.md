@@ -142,3 +142,18 @@ used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in
   - `DIM_SKU_light_v5` (ARC target sell price source via `AvgPrc`)
 
 *Kaspi-only until further notice.*
+
+---
+
+## 8. PO Schedule / Lane Config
+
+Runtime schedule and prep-lane truth for dashboard projections:
+- `config/po_schedule.yaml`
+  - `plan0_anchor_message_date`
+  - `reorder_cycle_days`
+  - `archive_sort`
+  - `prep_lanes` (`CORE_PRINT_SUIT`, `GENERAL_CL`, `ELS`)
+
+Dashboard row additions:
+- `sku_level.prep_lane`, `sku_level.prep_days_lane`
+- `size_level.prep_lane`, `size_level.prep_days_lane`

@@ -37,6 +37,7 @@ from scripts.validate_single_truth_system import (
     DEFAULT_DASHBOARD as DEFAULT_SINGLE_TRUTH_DASHBOARD,
     DEFAULT_WORKBOOK as DEFAULT_SINGLE_TRUTH_WORKBOOK,
 )
+from scripts.validate_on_delivery_freeze import validate_on_delivery_freeze
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
@@ -337,6 +338,16 @@ def main():
                 result.add_info("single_truth_system: OK")
         except Exception as exc:
             result.add_error(f"single_truth_system error: {exc}")
+
+        try:
+            freeze_errors = validate_on_delivery_freeze(db_path=db_path)
+            if freeze_errors:
+                for err in freeze_errors:
+                    result.add_error(f"on_delivery_freeze: {err}")
+            else:
+                result.add_info("on_delivery_freeze: OK")
+        except Exception as exc:
+            result.add_error(f"on_delivery_freeze error: {exc}")
 
     # Output results
     if args.json:

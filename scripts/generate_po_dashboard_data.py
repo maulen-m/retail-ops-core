@@ -14,6 +14,7 @@ import json
 import statistics
 import csv
 import pandas as pd
+import yaml
 import re
 import copy
 from datetime import date, timedelta, datetime
@@ -54,6 +55,7 @@ STOCK_DIAGNOSTICS_PATH = PROJECT_ROOT / "exports" / "stock_rebuild_diagnostics.c
 SUPPLIER_EXPORT_PATH = PROJECT_ROOT / "exports" / "po_supplier_export"
 SUPPLIER_SUMMARY_PATH = PROJECT_ROOT / "exports" / "po_supplier_summary"
 DIM_SKU_EXCEL_PATH = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
+PO_SCHEDULE_PATH = PROJECT_ROOT / "config" / "po_schedule.yaml"
 ROIC_THRESHOLD = 0.15  # 15% - for display only, not filtering
 
 # Valid size codes (filter out messy data like 'CB', '0', 'DRIVE', 'NAN')
@@ -152,10 +154,9 @@ def _canonicalize_size_for_sku(sku_key: str, size: str | None) -> str | None:
     normalized = normalize_size(size, product_type=product_type)
     return normalized or size
 
-# PO-5 prep-days override (supplier will finish faster pre-holiday)
-PO5_PREP_DAYS_OVERRIDE = 18
-# PO-5 send-date override (explicit request; bypass blackout adjustments)
-PO5_SEND_DATE_OVERRIDE = date(2026, 2, 4)
+# Legacy PO-5 overrides are disabled; schedule is now config-driven.
+PO5_PREP_DAYS_OVERRIDE = None
+PO5_SEND_DATE_OVERRIDE = None
 
 # Plan naming (dashboard)
 PLAN_BASE_PO_NUM = 4  # PO-4 becomes PLAN-0
@@ -196,6 +197,165 @@ def _parse_iso_date(val: Optional[str]) -> Optional[date]:
             return datetime.fromisoformat(val).date()
         except ValueError:
             return None
+
+
+def _load_po_schedule_config(path: Optional[Path] = None) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "plan0_anchor_message_date": None,
+        "reorder_cycle_days": 10,
+        "archive_sort": "cargo_send_date_asc",
+        "prep_lanes": {
+            "core_print_suit_patterns": ["LINE52", "SUIT-61", "LINE61"],
+            "core_lane_name": "CORE_PRINT_SUIT",
+            "general_lane_name": "GENERAL_CL",
+            "els_lane_name": "ELS",
+        },
+    }
+    cfg_path = path or PO_SCHEDULE_PATH
+    if not cfg_path.exists():
+        return defaults
+    try:
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return defaults
+    merged = {**defaults, **data}
+    prep_defaults = defaults["prep_lanes"] or {}
+    prep_custom = (data.get("prep_lanes") or {}) if isinstance(data, dict) else {}
+    merged["prep_lanes"] = {**prep_defaults, **prep_custom}
+    return merged
+
+
+def prep_lane_for_sku(sku_key: str, schedule_cfg: Optional[dict[str, Any]] = None) -> str:
+    sku = str(sku_key or "").upper()
+    cfg = schedule_cfg or _load_po_schedule_config()
+    prep_cfg = cfg.get("prep_lanes") or {}
+    els_lane = str(prep_cfg.get("els_lane_name") or "ELS")
+    core_lane = str(prep_cfg.get("core_lane_name") or "CORE_PRINT_SUIT")
+    general_lane = str(prep_cfg.get("general_lane_name") or "GENERAL_CL")
+    if sku.startswith("ELS_"):
+        return els_lane
+    patterns = [str(p).upper() for p in (prep_cfg.get("core_print_suit_patterns") or [])]
+    if any(token and token in sku for token in patterns):
+        return core_lane
+    return general_lane
+
+
+def _compute_lane_prep_days(base_sku_rows: list[dict], schedule_cfg: Optional[dict[str, Any]] = None) -> dict[str, int]:
+    cfg = schedule_cfg or _load_po_schedule_config()
+    prep_cfg = cfg.get("prep_lanes") or {}
+    core_lane = str(prep_cfg.get("core_lane_name") or "CORE_PRINT_SUIT")
+    general_lane = str(prep_cfg.get("general_lane_name") or "GENERAL_CL")
+    els_lane = str(prep_cfg.get("els_lane_name") or "ELS")
+    weights = {core_lane: 0.0, general_lane: 0.0, els_lane: 0.0}
+    for row in base_sku_rows:
+        sku_key = str(row.get("sku_key") or "")
+        lane = prep_lane_for_sku(sku_key, schedule_cfg=cfg)
+        if lane == els_lane:
+            continue
+        weights[lane] = weights.get(lane, 0.0) + float(row.get("po_weight_kg") or 0.0)
+    return {
+        core_lane: calc_prep_days(weights.get(core_lane, 0.0), "CL") if weights.get(core_lane, 0.0) > 0 else 1,
+        general_lane: calc_prep_days(weights.get(general_lane, 0.0), "CL") if weights.get(general_lane, 0.0) > 0 else 1,
+        els_lane: 1,
+    }
+
+
+def load_active_part_orders_for_projection(db_path: Path = DB_PATH) -> dict[str, list[tuple[date, float, dict[str, float]]]]:
+    """Load all active inbound part orders as timed arrivals for projection."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if not _table_exists(conn, "po_part") or not _table_exists(conn, "po_line"):
+            return {}
+        active_statuses = {"IN_TRANSIT", "SHIPPED", "SHIPPED_CARGO", "ON_DELIVERY", "SENT"}
+        has_header = _table_exists(conn, "po_header")
+        if has_header:
+            rows = conn.execute(
+                """
+                SELECT
+                    p.po_part_id,
+                    p.po_id,
+                    COALESCE(p.estimated_arrival_date, h.ast_arrival_nom, h.alm_arrival_nom) AS estimated_arrival_date,
+                    UPPER(COALESCE(p.status, h.status, '')) AS part_status,
+                    l.sku_key,
+                    l.my_size,
+                    SUM(COALESCE(l.order_qty, 0)) AS qty
+                FROM po_line l
+                LEFT JOIN po_part p ON p.po_part_id = l.po_part_id
+                LEFT JOIN po_header h ON h.po_id = l.po_id
+                GROUP BY
+                    p.po_part_id,
+                    p.po_id,
+                    COALESCE(p.estimated_arrival_date, h.ast_arrival_nom, h.alm_arrival_nom),
+                    UPPER(COALESCE(p.status, h.status, '')),
+                    l.sku_key,
+                    l.my_size
+                """
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    p.po_part_id,
+                    p.po_id,
+                    p.estimated_arrival_date AS estimated_arrival_date,
+                    UPPER(COALESCE(p.status, '')) AS part_status,
+                    l.sku_key,
+                    l.my_size,
+                    SUM(COALESCE(l.order_qty, 0)) AS qty
+                FROM po_line l
+                LEFT JOIN po_part p ON p.po_part_id = l.po_part_id
+                GROUP BY p.po_part_id, p.po_id, p.estimated_arrival_date, UPPER(COALESCE(p.status, '')), l.sku_key, l.my_size
+                """
+            ).fetchall()
+
+        by_sku: dict[str, dict[date, dict[str, float]]] = {}
+        for row in rows:
+            status = str(row["part_status"] or "").strip().upper()
+            if status not in active_statuses:
+                continue
+            arr_date = _parse_iso_date(row["estimated_arrival_date"])
+            if not arr_date:
+                continue
+            sku_key = str(row["sku_key"] or "").strip()
+            if not sku_key:
+                continue
+            size = _canonicalize_size_for_sku(sku_key, str(row["my_size"] or "").strip() or "ONE_SIZE") or "ONE_SIZE"
+            qty = float(row["qty"] or 0.0)
+            if qty <= 0:
+                continue
+            by_sku.setdefault(sku_key, {})
+            by_sku[sku_key].setdefault(arr_date, {})
+            by_sku[sku_key][arr_date][size] = by_sku[sku_key][arr_date].get(size, 0.0) + qty
+
+        out: dict[str, list[tuple[date, float, dict[str, float]]]] = {}
+        for sku_key, by_date in by_sku.items():
+            events: list[tuple[date, float, dict[str, float]]] = []
+            for arr_date in sorted(by_date.keys()):
+                size_orders = by_date[arr_date]
+                total = float(sum(size_orders.values()))
+                events.append((arr_date, total, dict(size_orders)))
+            out[sku_key] = events
+        return out
+    finally:
+        conn.close()
+
+
+def compute_existing_inbound_from_active_parts(
+    active_orders: dict[str, list[tuple[date, float, dict[str, float]]]]
+) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+    by_sku: dict[str, int] = {}
+    by_size: dict[str, dict[str, int]] = {}
+    for sku_key, arrivals in active_orders.items():
+        total_qty = 0
+        size_totals: dict[str, int] = {}
+        for _, qty, size_orders in arrivals:
+            total_qty += int(round(float(qty or 0.0)))
+            for size, size_qty in (size_orders or {}).items():
+                size_totals[size] = size_totals.get(size, 0) + int(round(float(size_qty or 0.0)))
+        by_sku[sku_key] = total_qty
+        by_size[sku_key] = size_totals
+    return by_sku, by_size
 
 
 def resolve_last_real_po(db_path: Path = DB_PATH) -> tuple[str, int, Optional[str]]:
@@ -2152,11 +2312,14 @@ def load_po_part_orders(po_part_id: str, db_path: Path = DB_PATH) -> Optional[di
 
 
 def resolve_real_archive_ids(db_path: Path = DB_PATH) -> list[str]:
-    """Resolve archive ids dynamically from po_part (part-grain), fallback to PO ids."""
+    """Resolve archive ids dynamically from po_part (part-grain), sorted chronologically."""
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
         archive_ids: list[str] = []
+        schedule_cfg = _load_po_schedule_config()
+        archive_sort = str(schedule_cfg.get("archive_sort") or "cargo_send_date_asc").lower()
+        reverse = archive_sort.endswith("_desc")
 
         if _table_exists(conn, "po_part"):
             rows = conn.execute(
@@ -2171,14 +2334,13 @@ def resolve_real_archive_ids(db_path: Path = DB_PATH) -> list[str]:
                 po_part_id = str(row["po_part_id"] or "").strip()
                 if not _is_valid_archive_part_id(po_part_id):
                     continue
-                dt = (
-                    _parse_iso_date(row["message_date"])
-                    or _parse_iso_date(row["cargo_send_date"])
-                    or _parse_iso_date(row["estimated_arrival_date"])
-                    or date(1970, 1, 1)
-                )
-                candidates.append((dt, po_part_id))
-            for _, po_part_id in sorted(candidates, key=lambda item: (item[0], item[1]), reverse=True):
+                cargo_dt = _parse_iso_date(row["cargo_send_date"]) or date(1970, 1, 1)
+                candidates.append((cargo_dt, po_part_id))
+            for _, po_part_id in sorted(
+                candidates,
+                key=lambda item: (item[0], item[1]),
+                reverse=reverse,
+            ):
                 if po_part_id not in archive_ids:
                     archive_ids.append(po_part_id)
 
@@ -2187,7 +2349,7 @@ def resolve_real_archive_ids(db_path: Path = DB_PATH) -> list[str]:
                 """
                 SELECT po_id, message_date, created_at
                 FROM po_header
-                ORDER BY COALESCE(message_date, created_at) DESC
+                ORDER BY COALESCE(message_date, created_at) ASC
                 """
             ).fetchall()
             for row in rows:
@@ -2227,7 +2389,7 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
                 SELECT *
                 FROM po_part
                 WHERE COALESCE(TRIM(po_part_id), '') <> ''
-                ORDER BY COALESCE(message_date, cargo_send_date, estimated_arrival_date) DESC, po_part_id DESC
+                ORDER BY COALESCE(cargo_send_date, message_date, estimated_arrival_date) ASC, po_part_id ASC
                 """
             ).fetchall()
             real_parts: list[dict] = []
@@ -3105,8 +3267,9 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
     - Uses same base demand/stock data but projects forward
     """
     params = get_params()
+    schedule_cfg = _load_po_schedule_config()
     fx_rates = get_fx_rates(CUTOFF_DATE, db_path=DB_PATH)
-    R = params.R  # Reorder cycle (typically 10 days)
+    R = int(schedule_cfg.get("reorder_cycle_days") or params.R)  # Reorder cycle
     L = params.L  # Lead time
 
     base_po_id, last_real_po_num, _ = resolve_last_real_po()
@@ -3122,15 +3285,17 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
     # PLAN-0 is the next planned PO after the latest real PO (not the real PO itself).
     all_pos: dict[str, dict] = {}
 
-    # Build cumulative orders per SKU for projection
-    # Format: sku_key -> list of (arrival_date, order_qty_by_size)
-    cumulative_orders = {}
+    # Build cumulative orders per SKU for projection.
+    # Format: sku_key -> list[(arrival_date, total_qty, size_qty_map)].
+    cumulative_orders: dict[str, list[tuple[date, float, dict[str, float]]]] = (
+        load_active_part_orders_for_projection(db_path=DB_PATH)
+    )
     base_in_transit = (
         base_po_actual
         and base_po_actual.get("orders_by_sku")
         and base_po_actual.get("status") not in {"ARRIVED_ALM", "ARRIVED_AST", "RECEIVED", "CLOSED"}
     )
-    if base_in_transit:
+    if not cumulative_orders and base_in_transit:
         ship_date = (
             base_po_actual.get("ship_date_seller")
             or base_po_actual.get("ship_date_cargo")
@@ -3151,7 +3316,7 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                 base_match = next((s for s in base_data["sku_level"] if s["sku_key"] == sku_key), None)
                 arr_date = date.fromisoformat(base_match["est_arr_date"]) if base_match else TODAY + timedelta(days=params.L)
             cumulative_orders[sku_key] = [(arr_date, total_qty, size_orders)]
-    elif not base_po_actual or not base_po_actual.get("orders_by_sku"):
+    elif not cumulative_orders and (not base_po_actual or not base_po_actual.get("orders_by_sku")):
         for sku_line in base_data['sku_level']:
             sku_key = sku_line['sku_key']
             arr_date = date.fromisoformat(sku_line['est_arr_date'])
@@ -3164,22 +3329,25 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
     # Track existing inbound from PO-4 to avoid double counting vs snapshot inbound
     existing_inbound_by_sku: dict[str, int] = {}
     existing_inbound_by_size: dict[str, dict[str, int]] = {}
-    if base_in_transit:
-        for sku_key, size_orders in base_po_actual["orders_by_sku"].items():
-            existing_inbound_by_sku[sku_key] = sum(size_orders.values())
-            existing_inbound_by_size[sku_key] = dict(size_orders)
+    if cumulative_orders:
+        existing_inbound_by_sku, existing_inbound_by_size = compute_existing_inbound_from_active_parts(
+            cumulative_orders
+        )
 
     max_po_num = plan_base_num + num_pos - 1
     po_schedule, po5_msg_gap_days = _build_po_schedule(
         TODAY, params, base_data.get("prep_days_clothes", 1), max_po_num=max_po_num
     )
+    plan0_anchor = _parse_iso_date(schedule_cfg.get("plan0_anchor_message_date"))
+    if plan0_anchor:
+        for po_num in range(plan_base_num, max_po_num + 1):
+            po_schedule[f"PO-{po_num}"] = plan0_anchor + timedelta(days=(po_num - plan_base_num) * R)
 
-    prep_days_clothes = base_data.get("prep_days_clothes", 1)
-    po5_prep_days = PO5_PREP_DAYS_OVERRIDE or prep_days_clothes
-    if PO5_SEND_DATE_OVERRIDE:
-        po5_message_date = po_schedule.get("PO-5", TODAY + timedelta(days=R))
-        po5_prep_days = max(0, (PO5_SEND_DATE_OVERRIDE - po5_message_date).days)
-    po6_message_date = po_schedule.get("PO-6", TODAY + timedelta(days=2 * R))
+    lane_prep_days = _compute_lane_prep_days(base_data.get("sku_level", []), schedule_cfg=schedule_cfg)
+    base_prep_days_clothes = max(
+        lane_prep_days.get("CORE_PRINT_SUIT", 1),
+        lane_prep_days.get("GENERAL_CL", 1),
+    )
 
     # Generate PLAN-0 through PLAN-(num_pos-1) (PO-(last_real+1) onward)
     for po_num in range(plan_base_num, plan_base_num + num_pos):
@@ -3198,8 +3366,8 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                 )
 
         if next_message_date:
-            curr_prep_cl = po5_prep_days if po_num == 5 else prep_days_clothes
-            next_prep_cl = po5_prep_days if next_po_num == 5 else prep_days_clothes
+            curr_prep_cl = base_prep_days_clothes
+            next_prep_cl = base_prep_days_clothes
             curr_arrival_cl = _adjusted_plan_dates(po_message_date, curr_prep_cl, L)[1]
             next_arrival_cl = _adjusted_plan_dates(next_message_date, next_prep_cl, L)[1]
             effective_R = max(0, (next_arrival_cl - curr_arrival_cl).days)
@@ -3222,7 +3390,8 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
             "lead_time_L": L,
             "reorder_cycle_R": effective_R,
             "prep_model": base_data.get('prep_model', 'B'),
-            "prep_days_clothes": po5_prep_days if po_num == 5 else base_data.get('prep_days_clothes', 1),
+            "prep_days_clothes": base_prep_days_clothes,
+            "prep_days_lanes": lane_prep_days,
             "roic_threshold_pct": base_data['roic_threshold_pct'],
             "summary": {
                 "total_skus": 0,
@@ -3255,20 +3424,13 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
             # Calculate days from TODAY to this PO's message date
             days_to_message = days_offset
 
-            # Estimate prep days (use base as approximation)
-            if sku_key.startswith("ELS_"):
-                prep_days = 1
-            else:
-                prep_days = po5_prep_days if po_num == 5 else prep_days_clothes
+            prep_lane = prep_lane_for_sku(sku_key, schedule_cfg=schedule_cfg)
+            prep_days = int(lane_prep_days.get(prep_lane, base_prep_days_clothes))
 
             # This PO's send and arrival dates (blackout-aware)
             po_send_date, po_arr_date = _adjusted_plan_dates(
                 po_message_date, prep_days, L
             )
-            if po_num == 5 and PO5_SEND_DATE_OVERRIDE and not sku_key.startswith("ELS_"):
-                po_send_date = PO5_SEND_DATE_OVERRIDE
-                prep_days = max(0, (po_send_date - po_message_date).days)
-                po_arr_date = po_send_date + timedelta(days=L)
             effective_L = max(0, (po_arr_date - po_message_date).days)
 
             # === INBOUND CLASSIFICATION (stock-first approach) ===
@@ -3349,7 +3511,12 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
             next_days_offset = 0
             arrival_gap_days = None
             if next_message_date:
-                next_prep_days = 1 if sku_key.startswith("ELS_") else prep_days_clothes
+                next_prep_days = int(
+                    lane_prep_days.get(
+                        prep_lane_for_sku(sku_key, schedule_cfg=schedule_cfg),
+                        base_prep_days_clothes,
+                    )
+                )
                 next_arrival_date = _adjusted_plan_dates(
                     next_message_date, next_prep_days, L
                 )[1]
@@ -3567,7 +3734,9 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                         'deficit_size': size_deficit,
                         'order_qty': size_order_qty,
                         'weight_kg': round(weight_kg * size_order_qty, 2),
+                        'prep_lane': prep_lane,
                         'prep_days': prep_days,
+                        'prep_days_lane': prep_days,
                         'po_send_date': po_send_date.isoformat(),
                         'po_message_date': po_message_date.isoformat(),
                         'est_arr_date': po_arr_date.isoformat(),
@@ -3688,7 +3857,9 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                         'deficit_size': size_deficit,
                         'order_qty': size_order_qty,
                         'weight_kg': round(weight_kg * size_order_qty, 2),
+                        'prep_lane': prep_lane,
                         'prep_days': prep_days,
+                        'prep_days_lane': prep_days,
                         'po_send_date': po_send_date.isoformat(),
                         'po_message_date': po_message_date.isoformat(),
                         'est_arr_date': po_arr_date.isoformat(),
@@ -3760,7 +3931,9 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                 'po_qty_total': order_qty,
                 'size_orders': size_orders_this_po,
                 'po_weight_kg': round(po_weight, 2),
+                'prep_lane': prep_lane,
                 'prep_days': prep_days,
+                'prep_days_lane': prep_days,
                 'po_send_date': po_send_date.isoformat(),
                 'po_message_date': po_message_date.isoformat(),
                 'est_arr_date': po_arr_date.isoformat(),
@@ -3824,20 +3997,22 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                     cumulative_orders[sku_key] = []
                 cumulative_orders[sku_key].append((po_arr_date, order_qty, size_orders_this_po))
 
-        # Prep Model B: recalculate per-plan clothes prep from projected plan weight.
-        plan_total_cl_weight = sum(
-            s.get("po_weight_kg", 0.0)
-            for s in po_data["sku_level"]
-            if s.get("po_qty_total", 0) > 0 and not s.get("sku_key", "").startswith("ELS_")
+        # Recalculate prep by lane so Line52/Line61 run in a shared lane, parallel to other CL.
+        plan_lane_prep = _compute_lane_prep_days(po_data["sku_level"], schedule_cfg=schedule_cfg)
+        plan_prep_days_clothes = max(
+            int(plan_lane_prep.get("CORE_PRINT_SUIT", 1)),
+            int(plan_lane_prep.get("GENERAL_CL", 1)),
         )
-        plan_prep_days_clothes = calc_prep_days(plan_total_cl_weight, "CL") if plan_total_cl_weight > 0 else 1
         po_data["prep_days_clothes"] = plan_prep_days_clothes
+        po_data["prep_days_lanes"] = plan_lane_prep
 
         for sku_line in po_data["sku_level"]:
             sku_key = sku_line.get("sku_key", "")
-            new_prep = 1 if sku_key.startswith("ELS_") else plan_prep_days_clothes
+            lane = sku_line.get("prep_lane") or prep_lane_for_sku(sku_key, schedule_cfg=schedule_cfg)
+            new_prep = int(plan_lane_prep.get(lane, 1))
             if sku_line.get("prep_days") != new_prep:
                 sku_line["prep_days"] = new_prep
+                sku_line["prep_days_lane"] = new_prep
                 sku_line["days_until_arrival"] = new_prep + params.L
                 sku_line["consumption_until_arrival"] = round(
                     sku_line.get("d_sku", 0.0) * sku_line["days_until_arrival"], 2
@@ -3849,9 +4024,11 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
 
         for size_line in po_data["size_level"]:
             sku_key = size_line.get("sku_key", "")
-            new_prep = 1 if sku_key.startswith("ELS_") else plan_prep_days_clothes
+            lane = size_line.get("prep_lane") or prep_lane_for_sku(sku_key, schedule_cfg=schedule_cfg)
+            new_prep = int(plan_lane_prep.get(lane, 1))
             if size_line.get("prep_days") != new_prep:
                 size_line["prep_days"] = new_prep
+                size_line["prep_days_lane"] = new_prep
                 size_line["days_until_arrival"] = new_prep + params.L
                 size_line["consumption_until_arrival"] = round(
                     size_line.get("d_size", 0.0) * size_line["days_until_arrival"], 2
@@ -3883,7 +4060,9 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
                     'rop_total': sku_line['rop_total'],
                     'po_qty_total': sku_line['po_qty_total'],
                     'po_weight_kg': sku_line['po_weight_kg'],
+                    'prep_lane': sku_line.get('prep_lane'),
                     'prep_days': sku_line['prep_days'],
+                    'prep_days_lane': sku_line.get('prep_days_lane', sku_line['prep_days']),
                     'po_send_date': sku_line['po_send_date'],
                     'po_message_date': sku_line['po_message_date'],
                     'est_arr_date': sku_line['est_arr_date'],

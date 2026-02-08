@@ -1,0 +1,11 @@
+plan0_anchor_message_date: "2026-02-25"
+reorder_cycle_days: 10
+archive_sort: cargo_send_date_asc
+prep_lanes:
+  core_lane_name: CORE_PRINT_SUIT
+  general_lane_name: GENERAL_CL
+  els_lane_name: ELS
+  core_print_suit_patterns:
+    - LINE52
+    - SUIT-61
+    - LINE61

@@ -15,6 +15,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_DASHBOARD = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
+DEFAULT_CASHFLOW_CSV = PROJECT_ROOT / "exports" / "cashflow_calendar.csv"
 DEFAULT_WORKBOOK = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/"
     "Purchase_orders/vibe_code_PO/backup/7.2.26/Inbound_calendar_V10.002.xlsx"
@@ -189,6 +190,19 @@ def validate_system(
                 f"{part_id}: lifecycle bags mismatch dashboard={row.get('total_places')} db={db_row['total_bags']}"
             )
 
+    if DEFAULT_CASHFLOW_CSV.exists():
+        try:
+            cash_df = pd.read_csv(DEFAULT_CASHFLOW_CSV)
+            if "receivables_close" in cash_df.columns:
+                latest = cash_df.tail(30)
+                leaked = latest[latest["receivables_close"].fillna(0).abs() > tol_kzt]
+                if not leaked.empty:
+                    errors.append(
+                        "cashflow paid-default leakage: receivables_close is non-zero in cashflow_calendar.csv"
+                    )
+        except Exception as exc:
+            errors.append(f"cashflow_csv_check error: {exc}")
+
     return errors
 
 
@@ -220,4 +234,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

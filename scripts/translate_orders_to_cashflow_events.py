@@ -592,7 +592,9 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
 
         for row in rows:
             stage = classify_kaspi_stage_from_db_row(row)
-            status = normalize_order_status(stage_to_internal_status(stage), row["kaspi_status"], config)
+            raw_internal_status = str(row["internal_status"] or "").strip().upper()
+            status_seed = raw_internal_status or stage_to_internal_status(stage)
+            status = normalize_order_status(status_seed, row["kaspi_status"], config)
             event_date = (
                 _parse_date(row["status_updated_at"])
                 or _parse_date(row["actual_shipment_date"])
@@ -621,11 +623,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
             raw_kaspi_status = str(row["kaspi_status"] or "").strip().upper()
             # Guard against premature stage inflation from API fields:
             # if DB still marks order as ACCEPTED/READY, do not model on-delivery moves yet.
-            raw_internal_status = str(row["internal_status"] or "").strip().upper()
             if status == "ON_DELIVERY" and raw_internal_status in {"NEW", "ACCEPTED", "READY"}:
-                counts["ignored"] += 1
-                continue
-            if status == "ON_DELIVERY" and raw_kaspi_status == _DELIVERY_STATE:
                 counts["ignored"] += 1
                 continue
             order_lines = []
@@ -928,33 +926,64 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                     existing_cogs_dates[order_key] = event_date
                     existing_cash.add(order_key)
                 elif status == "CANCELLED":
-                    # Only reverse if we previously recorded cash for this order
-                    if not _has_existing(existing_cash, order_id, order_sku_id):
+                    did_write = False
+                    on_delivery_balance = _get_existing_balance(on_delivery_balances, order_id, order_sku_id)
+                    if abs(on_delivery_balance) > 0.01:
+                        settle_amount = round(on_delivery_balance, 2)
+                        events.append(
+                            {
+                                "event_date": event_date,
+                                "event_type": "INVENTORY_MOVE",
+                                "account": "INVENTORY_ON_HAND_COST",
+                                "amount_kzt": settle_amount,
+                                **base_fields,
+                                "notes": "Settlement from on-delivery",
+                            }
+                        )
+                        events.append(
+                            {
+                                "event_date": event_date,
+                                "event_type": "INVENTORY_MOVE",
+                                "account": "INVENTORY_ON_DELIVERY_COST",
+                                "amount_kzt": -settle_amount,
+                                **base_fields,
+                                "notes": "Settlement from on-delivery",
+                            }
+                        )
+                        _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, -settle_amount)
+                        did_write = True
+
+                    has_cash = _has_existing(existing_cash, order_id, order_sku_id)
+                    already_refunded = _has_existing(existing_refunds, order_id, order_sku_id)
+                    if has_cash and not already_refunded:
+                        refund_cash = -abs(net_rev_line + delivery_fee_line)
+                        events.append(
+                            {
+                                "event_date": event_date,
+                                "event_type": "CASH_IN",
+                                "account": _cash_account(store_code),
+                                "amount_kzt": refund_cash,
+                                **base_fields,
+                            }
+                        )
+                        if abs(on_delivery_balance) <= 0.01:
+                            events.append(
+                                {
+                                    "event_date": event_date,
+                                    "event_type": "INVENTORY_RETURN",
+                                    "account": "INVENTORY_ON_HAND_COST",
+                                    "amount_kzt": abs(cost_line),
+                                    **base_fields,
+                                }
+                            )
+                        existing_refunds.add(order_key)
+                        did_write = True
+
+                    if did_write:
+                        counts["cancelled"] += 1
+                    else:
                         counts["ignored"] += 1
                         continue
-                    if _has_existing(existing_refunds, order_id, order_sku_id):
-                        counts["ignored"] += 1
-                        continue
-                    counts["cancelled"] += 1
-                    refund_cash = -abs(net_rev_line + delivery_fee_line)
-                    events.append(
-                        {
-                            "event_date": event_date,
-                            "event_type": "CASH_IN",
-                            "account": _cash_account(store_code),
-                            "amount_kzt": refund_cash,
-                            **base_fields,
-                        }
-                    )
-                    events.append(
-                        {
-                            "event_date": event_date,
-                            "event_type": "INVENTORY_RETURN",
-                            "account": "INVENTORY_ON_HAND_COST",
-                            "amount_kzt": abs(cost_line),
-                            **base_fields,
-                        }
-                    )
                 elif status == "ON_DELIVERY":
                     if _has_existing(existing_on_delivery, order_id, order_sku_id):
                         counts["ignored"] += 1
@@ -980,6 +1009,7 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                             "notes": "On-delivery inventory",
                         }
                     )
+                    _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, abs(cost_line))
                     existing_on_delivery.add(order_key)
                 else:
                     counts["ignored"] += 1
