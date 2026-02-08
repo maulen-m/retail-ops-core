@@ -10,6 +10,7 @@ def _seed_po_db(db_path: Path) -> None:
         """
         CREATE TABLE po_line (
             po_id TEXT,
+            po_part_id TEXT,
             sku_key TEXT,
             my_size TEXT,
             order_qty INTEGER
@@ -232,5 +233,60 @@ def test_validate_alignment_passes_when_drift_and_cashflow_pass(
 
     errors = validate_alignment_payload(
         payload, db_path=db_path, run_cashflow=True, run_drift=True
+    )
+    assert errors == []
+
+
+def test_validate_alignment_prefers_part_rows_over_legacy_null_part(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE po_line (
+            po_id TEXT,
+            po_part_id TEXT,
+            sku_key TEXT,
+            my_size TEXT,
+            order_qty INTEGER
+        );
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO po_line (po_id, po_part_id, sku_key, my_size, order_qty)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            ("PO-5", None, "CL_NEW-CLO2_MEN_SUIT-61_BLACK", "M", 110),
+            ("PO-5", None, "CL_NEW-CLO2_MEN_SUIT-61_BLACK", "L", 240),
+            ("PO-5", "PO-5.2", "CL_NEW-CLO2_MEN_SUIT-61_BLACK", "M", 110),
+            ("PO-5", "PO-5.2", "CL_NEW-CLO2_MEN_SUIT-61_BLACK", "L", 240),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    payload = {
+        "pos": {
+            "PO-5": {
+                "po_name": "PO-5",
+                "po_kind": "REAL_ARCHIVE",
+                "po_message_date": "2026-01-21",
+                "sku_level": [
+                    {
+                        "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+                        "po_qty_total": 350,
+                        "baseline_snapshot_date": "2026-01-21",
+                    }
+                ],
+                "size_level": [
+                    {"sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK", "size": "M", "order_qty": 110},
+                    {"sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK", "size": "L", "order_qty": 240},
+                ],
+            }
+        }
+    }
+    errors = validate_alignment_payload(
+        payload, db_path=db_path, run_cashflow=False, run_drift=False
     )
     assert errors == []

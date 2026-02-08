@@ -50,6 +50,9 @@ Each `sku_level` entry must include:
 - `consumption_until_arrival_capped` (numeric; `min(consumption_until_arrival, stock_at_msg + active_inbound)`)
 - `baseline_snapshot_date` (YYYY-MM-DD; snapshot used for baseline)
 
+`REAL_ARCHIVE` `size_level` ordered rows (`order_qty > 0`):
+- should include `po_part_id` when part-tagged source lines exist for that PO (legacy single-part archives without part tags are allowed)
+
 `real_pos` entry minimal fields:
 - `po_id` (string)
 - `status` (string)

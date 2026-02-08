@@ -134,6 +134,22 @@ def _po_actual() -> dict:
     }
 
 
+def _po_actual_with_parts() -> dict:
+    po = _po_actual()
+    po["orders_by_sku_parts"] = {
+        "CL_NEW-CLO2_MEN_SUIT-61_BLACK": {
+            "2XL": [{"po_part_id": "PO-5.2", "qty": 240}],
+            "3XL": [{"po_part_id": "PO-5.2", "qty": 185}],
+            "4XL": [{"po_part_id": "PO-5.2", "qty": 60}],
+            "L": [{"po_part_id": "PO-5.2", "qty": 240}],
+            "M": [{"po_part_id": "PO-5.2", "qty": 110}],
+            "S": [{"po_part_id": "PO-5.2", "qty": 45}],
+            "XL": [{"po_part_id": "PO-5.2", "qty": 335}],
+        }
+    }
+    return po
+
+
 def test_real_archive_recomputes_from_message_snapshot_excluding_self_inbound(
     tmp_path: Path,
 ) -> None:
@@ -206,3 +222,19 @@ def test_real_archive_adds_consumption_capped_field(tmp_path: Path) -> None:
     sku = out["sku_level"][0]
     assert sku["consumption_until_arrival"] == 700.0
     assert sku["consumption_until_arrival_capped"] == 115.0
+
+
+def test_real_archive_propagates_po_part_id_to_size_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_snapshot_db(db_path)
+
+    out = dashboard.build_real_archive_data(
+        _base_template(),
+        _po_actual_with_parts(),
+        params=SimpleNamespace(L=21),
+        fx_rates=SimpleNamespace(dlv_rate_usd_kg=2.66, usd_kzt=520.0),
+        db_path=db_path,
+    )
+    rows = [r for r in out["size_level"] if int(r.get("order_qty", 0) or 0) > 0]
+    assert rows
+    assert {r.get("po_part_id") for r in rows} == {"PO-5.2"}

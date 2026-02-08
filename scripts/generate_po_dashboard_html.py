@@ -517,6 +517,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         })
         .map(s => ({
         'SKU Key': s.sku_key,
+        'PO Part ID': s.po_part_id || '',
         'Size': s.size,
         'Stock': s.stock,
         'Pre-Arrival': s.pre_arrival,
@@ -875,7 +876,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
           const q = search.toLowerCase();
           items = items.filter(s =>
             s.sku_key.toLowerCase().includes(q) ||
-            s.size.toLowerCase().includes(q)
+            s.size.toLowerCase().includes(q) ||
+            String(s.po_part_id || '').toLowerCase().includes(q)
           );
         }
 
@@ -929,6 +931,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             <thead>
               <tr>
                 <SortHeader field="sku_key" title="SKU Key">SKU</SortHeader>
+                <SortHeader field="po_part_id" title="PO part id (archive grain)">Part</SortHeader>
                 <SortHeader field="size" title="Size">Size</SortHeader>
                 <SortHeader field="stock" title="Current stock">Stock</SortHeader>
                 <SortHeader field="inbound" title="Snapshot inbound (from DB)">Snap_Inb</SortHeader>
@@ -957,8 +960,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
               {filtered.map(row => {
                 const rowClass = row.order_qty === 0 ? 'zero-order' : 'has-order';
                 return (
-                  <tr key={row.sku_id} className={rowClass}>
+                  <tr key={`${row.sku_id}-${row.po_part_id || 'NA'}`} className={rowClass}>
                     <td><small>{row.sku_key}</small></td>
+                    <td><small>{row.po_part_id || '-'}</small></td>
                     <td><strong>{row.size}</strong></td>
                     <td>{row.stock}</td>
                     <td>{row.inbound}</td>

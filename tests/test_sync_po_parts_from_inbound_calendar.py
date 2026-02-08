@@ -84,7 +84,7 @@ def _create_test_db(db_path: Path) -> None:
     conn.close()
 
 
-def _write_workbook(path: Path, *, suit_qty: int = 200) -> None:
+def _write_workbook(path: Path, *, suit_qty: int = 200, include_junk_part_rows: bool = False) -> None:
     inbounds = pd.DataFrame(
         [
             {
@@ -125,8 +125,7 @@ def _write_workbook(path: Path, *, suit_qty: int = 200) -> None:
             },
         ]
     )
-    part_totals = pd.DataFrame(
-        [
+    part_rows = [
             {
                 "PO_part_id": "PO-5.1",
                 "PO_id": "PO-5",
@@ -154,7 +153,38 @@ def _write_workbook(path: Path, *, suit_qty: int = 200) -> None:
                 "Base_cost_CNY": 2200,
             },
         ]
-    )
+    if include_junk_part_rows:
+        part_rows.extend(
+            [
+                {
+                    "PO_part_id": "TOTAL PENDING",
+                    "PO_id": "nan",
+                    "supplier_id": "",
+                    "message_date": None,
+                    "cargo_send_date": None,
+                    "Estimated_Arrival_date": None,
+                    "Actual_Arrival_date": None,
+                    "Status": "",
+                    "Total SKU Keys": 0,
+                    "Total Units": 9999,
+                    "Base_cost_CNY": 0,
+                },
+                {
+                    "PO_part_id": "PENDING PAYMENTS",
+                    "PO_id": "4",
+                    "supplier_id": "",
+                    "message_date": None,
+                    "cargo_send_date": None,
+                    "Estimated_Arrival_date": None,
+                    "Actual_Arrival_date": None,
+                    "Status": "",
+                    "Total SKU Keys": 0,
+                    "Total Units": 1234,
+                    "Base_cost_CNY": 0,
+                },
+            ]
+        )
+    part_totals = pd.DataFrame(part_rows)
     dim_sku_light = pd.DataFrame(
         [
             {"SKU_key": "CL_OF_ARC_LINE31_SET_DARK", "Type": "CL", "Wt (kg)": 0.9, "CNY": 110, "AvgPrc": 26990},
@@ -272,5 +302,23 @@ def test_arc_skus_upsert_with_target_price_from_dim_sheet(
         assert row is not None
         assert row["avg_sell_price_kzt_used"] == 26990
         assert row["avg_sell_price_source"] == "INBOUND_CALENDAR_V10.002"
+    finally:
+        conn.close()
+
+
+def test_parts_sheet_skips_summary_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path, include_junk_part_rows=True)
+    monkeypatch.setenv("ENABLE_PO_PART_SYNC_WRITE", "1")
+
+    sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute("SELECT po_part_id, po_id FROM po_part ORDER BY po_part_id").fetchall()
+        po_part_ids = {row[0] for row in rows}
+        assert po_part_ids == {"ARC-1.0", "PO-5.1"}
     finally:
         conn.close()

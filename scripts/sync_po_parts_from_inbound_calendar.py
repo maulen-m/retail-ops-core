@@ -13,6 +13,7 @@ from collections import defaultdict
 from datetime import datetime, date
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 from typing import Any
@@ -172,6 +173,32 @@ def _map_part_status(raw: Any) -> str:
     return txt.upper()
 
 
+def _is_summary_marker(raw: Any) -> bool:
+    txt = str(raw or "").strip().upper()
+    if not txt:
+        return True
+    if txt in {"NAN", "NONE", "NULL"}:
+        return True
+    bad_tokens = ("TOTAL", "PENDING", "UNPAID", "PAYMENT")
+    return any(token in txt for token in bad_tokens)
+
+
+def _is_valid_po_id(raw: Any) -> bool:
+    txt = str(raw or "").strip()
+    if _is_summary_marker(txt):
+        return False
+    upper = txt.upper()
+    return bool(re.match(r"^(PO[-_].+|.+_PO-\d+)$", upper))
+
+
+def _is_valid_po_part_id(raw: Any) -> bool:
+    txt = str(raw or "").strip()
+    if _is_summary_marker(txt):
+        return False
+    upper = txt.upper()
+    return bool(re.match(r"^(PO[-_].+|ARC[-_].+|.+_PO-\d+)$", upper))
+
+
 def _upsert_dim_sku(
     conn: sqlite3.Connection,
     sku_key: str,
@@ -261,6 +288,11 @@ def sync_po_parts_from_workbook(
         sku_key = str(row.get("SKU Key") or "").strip()
         my_size = _normalize_size(row.get("Size"))
         qty = _to_int(row.get("Order Qty_Approved"))
+        if not _is_valid_po_id(po_id) or not _is_valid_po_part_id(po_part_id):
+            warnings.append(
+                f"skip invalid po identifiers po={po_id} part={po_part_id} sku={sku_key} size={my_size}"
+            )
+            continue
         if not po_id or not po_part_id or not sku_key or not my_size or qty <= 0:
             warnings.append(f"skip invalid row po={po_id} part={po_part_id} sku={sku_key} size={my_size} qty={qty}")
             continue
@@ -312,6 +344,8 @@ def sync_po_parts_from_workbook(
         for _, row in parts_df.iterrows():
             po_part_id = str(row.get("PO_part_id") or "").strip()
             po_id = str(row.get("PO_id") or "").strip()
+            if not _is_valid_po_id(po_id) or not _is_valid_po_part_id(po_part_id):
+                continue
             if not po_part_id or not po_id:
                 continue
             payload = {

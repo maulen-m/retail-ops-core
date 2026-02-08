@@ -29,14 +29,33 @@ def _normalize_size(size: str | None) -> str:
     return str(size or "").strip().upper().replace(" ", "").replace("-", "")
 
 
+def _po_has_part_rows(conn: sqlite3.Connection, po_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM po_line
+        WHERE po_id = ?
+          AND COALESCE(TRIM(po_part_id), '') <> ''
+        LIMIT 1
+        """,
+        (po_id,),
+    ).fetchone()
+    return row is not None
+
+
 def _load_po_totals(conn: sqlite3.Connection, po_id: str) -> tuple[dict[str, int], dict[tuple[str, str], int]]:
     sku_totals: dict[str, int] = {}
     size_totals: dict[tuple[str, str], int] = {}
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(po_line)").fetchall()]
+    part_filter = ""
+    if "po_part_id" in columns and _po_has_part_rows(conn, po_id):
+        part_filter = "AND COALESCE(TRIM(po_part_id), '') <> ''"
     rows = conn.execute(
-        """
+        f"""
         SELECT sku_key, my_size, SUM(order_qty) AS qty
         FROM po_line
         WHERE po_id = ?
+        {part_filter}
         GROUP BY sku_key, my_size
         """,
         (po_id,),

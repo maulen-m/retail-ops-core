@@ -241,6 +241,125 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         (name,),
     ).fetchone() is not None
 
+
+def _po_line_has_part_rows(conn: sqlite3.Connection, po_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM po_line
+        WHERE po_id = ?
+          AND order_qty > 0
+          AND COALESCE(TRIM(po_part_id), '') <> ''
+        LIMIT 1
+        """,
+        (po_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _load_po_line_rows(conn: sqlite3.Connection, po_id: str) -> list[sqlite3.Row]:
+    """
+    Load canonical po_line rows for one PO.
+
+    If part-tagged rows exist, ignore legacy null/empty po_part_id rows.
+    """
+    if _po_line_has_part_rows(conn, po_id):
+        return conn.execute(
+            """
+            SELECT po_part_id, sku_key, sku_id, my_size, order_qty
+              FROM po_line
+             WHERE po_id = ?
+               AND order_qty > 0
+               AND COALESCE(TRIM(po_part_id), '') <> ''
+            """,
+            (po_id,),
+        ).fetchall()
+    return conn.execute(
+        """
+        SELECT po_part_id, sku_key, sku_id, my_size, order_qty
+          FROM po_line
+         WHERE po_id = ?
+           AND order_qty > 0
+        """,
+        (po_id,),
+    ).fetchall()
+
+
+def _load_open_inbound_by_size_from_po(
+    conn: sqlite3.Connection, sku_key: str
+) -> Optional[dict[str, int]]:
+    """
+    Load canonical inbound-by-size from po_line/po_header.
+
+    Returns:
+      - dict (possibly empty) when po_line schema is available
+      - None when required tables/columns are unavailable (caller should fallback)
+    """
+    if not _table_exists(conn, "po_line"):
+        return None
+
+    po_line_cols = {row[1] for row in conn.execute("PRAGMA table_info(po_line)").fetchall()}
+    required_cols = {"po_id", "sku_key", "my_size", "order_qty"}
+    if not required_cols.issubset(po_line_cols):
+        return None
+
+    has_part_col = "po_part_id" in po_line_cols
+    has_received_col = "received_qty" in po_line_cols
+    has_line_status_col = "status" in po_line_cols
+
+    has_header = _table_exists(conn, "po_header")
+    header_cols = set()
+    if has_header:
+        header_cols = {row[1] for row in conn.execute("PRAGMA table_info(po_header)").fetchall()}
+    has_header_status_col = has_header and "status" in header_cols
+
+    pending_expr = "pl.order_qty - COALESCE(pl.received_qty, 0)" if has_received_col else "pl.order_qty"
+    joins = []
+    where = [f"pl.sku_key = ?", f"({pending_expr}) > 0"]
+    params: list[Any] = [sku_key]
+
+    if has_header:
+        joins.append("LEFT JOIN po_header ph ON ph.po_id = pl.po_id")
+
+    if has_part_col:
+        joins.append(
+            """
+            JOIN (
+                SELECT po_id,
+                       MAX(CASE WHEN COALESCE(TRIM(po_part_id), '') <> '' THEN 1 ELSE 0 END) AS has_part
+                FROM po_line
+                GROUP BY po_id
+            ) part_scope ON part_scope.po_id = pl.po_id
+            """
+        )
+        where.append("(part_scope.has_part = 0 OR COALESCE(TRIM(pl.po_part_id), '') <> '')")
+
+    if has_line_status_col:
+        where.append("UPPER(COALESCE(pl.status, '')) NOT IN ('RECEIVED', 'CLOSED', 'CANCELLED')")
+    if has_header_status_col:
+        where.append(
+            "(ph.po_id IS NULL OR UPPER(COALESCE(ph.status, '')) NOT IN ('ARRIVED_ALM', 'ARRIVED_AST', 'RECEIVED', 'CLOSED', 'CANCELLED'))"
+        )
+
+    sql = f"""
+        SELECT pl.my_size, SUM({pending_expr}) AS pending_qty
+        FROM po_line pl
+        {' '.join(joins)}
+        WHERE {' AND '.join(where)}
+        GROUP BY pl.my_size
+    """
+    rows = conn.execute(sql, params).fetchall()
+    inbound: dict[str, int] = {}
+    for row in rows:
+        size = str(row["my_size"] or "").strip()
+        if not size:
+            continue
+        qty = int(round(float(row["pending_qty"] or 0.0)))
+        if qty > 0:
+            inbound[size] = qty
+    return inbound
+
+
 # Size-mix proxy mapping for SKUs that need demand distribution by size
 SIZE_MIX_PROXY = {
     "CL_NEW-CLO_MEN_TAICI_BLACK": "CL_NEW-CLO_MEN_TAICI_WHITE",
@@ -1216,6 +1335,11 @@ def generate_po_data(
                 size_current_map[size] = size_current_map.get(size, 0) + (row["current_stock"] or 0)
                 size_inbound_map[size] = size_inbound_map.get(size, 0) + (row["inbound_stock"] or 0)
 
+            # Prefer canonical live inbound from po_line/po_header when available.
+            live_inbound_map = _load_open_inbound_by_size_from_po(conn, sku_key)
+            if live_inbound_map is not None:
+                size_inbound_map = {size: float(qty) for size, qty in live_inbound_map.items()}
+
             size_current = filter_sizes(
                 size_current_map,
                 allow_all=allow_all_sizes,
@@ -1895,15 +2019,7 @@ def load_po_orders(po_id: str) -> Optional[dict]:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute(
-            """
-            SELECT sku_key, sku_id, my_size, order_qty
-              FROM po_line
-             WHERE po_id = ?
-               AND order_qty > 0
-            """,
-            (po_id,),
-        ).fetchall()
+        rows = _load_po_line_rows(conn, po_id)
         if not rows:
             return None
 
@@ -1916,6 +2032,7 @@ def load_po_orders(po_id: str) -> Optional[dict]:
         ).fetchone()
 
         orders_by_sku: dict[str, dict[str, int]] = {}
+        orders_by_sku_parts: dict[str, dict[str, dict[str, int]]] = {}
         for row in rows:
             sku_key = str(row["sku_key"] or "").strip()
             if not sku_key:
@@ -1931,6 +2048,27 @@ def load_po_orders(po_id: str) -> Optional[dict]:
                 orders_by_sku[sku_key] = {}
             orders_by_sku[sku_key][my_size] = orders_by_sku[sku_key].get(my_size, 0) + qty
 
+            part_id = str(row["po_part_id"] or "").strip() or "__NO_PART__"
+            orders_by_sku_parts.setdefault(sku_key, {})
+            orders_by_sku_parts[sku_key].setdefault(my_size, {})
+            orders_by_sku_parts[sku_key][my_size][part_id] = (
+                orders_by_sku_parts[sku_key][my_size].get(part_id, 0) + qty
+            )
+
+        normalized_parts: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for sku_key, size_map in orders_by_sku_parts.items():
+            normalized_parts[sku_key] = {}
+            for size, part_qty in size_map.items():
+                parts = []
+                for part_id, qty in sorted(part_qty.items(), key=lambda item: item[0]):
+                    parts.append(
+                        {
+                            "po_part_id": None if part_id == "__NO_PART__" else part_id,
+                            "qty": int(qty),
+                        }
+                    )
+                normalized_parts[sku_key][size] = parts
+
         return {
             "po_id": po_id,
             "message_date": header["message_date"] if header else None,
@@ -1938,6 +2076,7 @@ def load_po_orders(po_id: str) -> Optional[dict]:
             "ship_date_cargo": header["ship_date_cargo"] if header else None,
             "status": header["status"] if header else None,
             "orders_by_sku": orders_by_sku,
+            "orders_by_sku_parts": normalized_parts,
         }
     finally:
         conn.close()
@@ -1960,11 +2099,19 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
         if _table_exists(conn, "po_line"):
             for row in conn.execute(
                 """
-                SELECT po_id,
-                       SUM(order_qty) as units_total,
-                       SUM(received_qty) as units_received
-                FROM po_line
-                GROUP BY po_id
+                WITH po_scope AS (
+                    SELECT po_id,
+                           MAX(CASE WHEN COALESCE(TRIM(po_part_id), '') <> '' THEN 1 ELSE 0 END) AS has_part
+                    FROM po_line
+                    GROUP BY po_id
+                )
+                SELECT l.po_id,
+                       SUM(l.order_qty) AS units_total,
+                       SUM(l.received_qty) AS units_received
+                FROM po_line l
+                JOIN po_scope s ON s.po_id = l.po_id
+                WHERE s.has_part = 0 OR COALESCE(TRIM(l.po_part_id), '') <> ''
+                GROUP BY l.po_id
                 """
             ):
                 line_summary[row["po_id"]] = {
@@ -2325,6 +2472,37 @@ def _normalized_orders_by_sku(orders_by_sku: dict[str, dict[str, int]]) -> dict[
     return normalized
 
 
+def _normalized_orders_by_sku_parts(
+    orders_by_sku_parts: dict[str, dict[str, list[dict[str, Any]]]]
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    normalized: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for sku_key, size_map in (orders_by_sku_parts or {}).items():
+        sku_norm = str(sku_key or "").strip()
+        if not sku_norm:
+            continue
+        normalized.setdefault(sku_norm, {})
+        for raw_size, part_rows in (size_map or {}).items():
+            size_norm = _canonicalize_size_for_sku(sku_norm, raw_size) or str(raw_size or "").strip()
+            if not size_norm:
+                continue
+            buckets: dict[str, int] = {}
+            for row in (part_rows or []):
+                if not isinstance(row, dict):
+                    continue
+                part_id = str(row.get("po_part_id") or "").strip() or "__NO_PART__"
+                qty = int(row.get("qty") or 0)
+                if qty <= 0:
+                    continue
+                buckets[part_id] = buckets.get(part_id, 0) + qty
+            if not buckets:
+                continue
+            normalized[sku_norm][size_norm] = [
+                {"po_part_id": None if part_id == "__NO_PART__" else part_id, "qty": qty}
+                for part_id, qty in sorted(buckets.items(), key=lambda item: item[0])
+            ]
+    return normalized
+
+
 def _load_snapshot_as_of(
     db_path: Path,
     message_date: Optional[str],
@@ -2410,8 +2588,10 @@ def build_real_archive_data(
     This avoids stale PLAN-derived pre-arrival/DOC values.
     """
     normalized_orders = _normalized_orders_by_sku(po_data.get("orders_by_sku", {}))
+    normalized_parts = _normalized_orders_by_sku_parts(po_data.get("orders_by_sku_parts", {}))
     po_payload = dict(po_data)
     po_payload["orders_by_sku"] = normalized_orders
+    po_payload["orders_by_sku_parts"] = normalized_parts
 
     archive_data = apply_po_overrides(copy.deepcopy(base_template), po_payload, params, fx_rates)
 
@@ -2441,6 +2621,7 @@ def build_real_archive_data(
     baseline_snapshot_date = snapshot_date or ""
 
     orders_by_sku = normalized_orders
+    orders_by_sku_parts = normalized_parts
 
     for sku_line in archive_data.get("sku_level", []):
         sku_key = sku_line.get("sku_key")
@@ -2483,7 +2664,18 @@ def build_real_archive_data(
         size = _canonicalize_size_for_sku(sku_key, raw_size) or str(raw_size or "").strip()
         size_line["size"] = size
         size_map = orders_by_sku.get(sku_key, {})
-        order_qty = int(size_line.get("order_qty", 0) or 0)
+        part_rows = orders_by_sku_parts.get(sku_key, {}).get(size, [])
+        if part_rows:
+            order_qty = int(sum(int(row.get("qty") or 0) for row in part_rows))
+            size_line["order_qty"] = order_qty
+            if len(part_rows) == 1:
+                size_line["po_part_id"] = part_rows[0].get("po_part_id")
+            else:
+                part_ids = [str(row.get("po_part_id")) for row in part_rows if row.get("po_part_id")]
+                size_line["po_part_id"] = "|".join(part_ids) if part_ids else None
+        else:
+            order_qty = int(size_line.get("order_qty", 0) or 0)
+            size_line["po_part_id"] = size_line.get("po_part_id")
 
         stock_snapshot = float(
             stock_by_size.get(sku_key, {}).get(size, size_line.get("stock", 0.0) or 0.0)

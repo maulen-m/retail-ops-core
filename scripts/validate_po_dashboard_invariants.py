@@ -277,6 +277,19 @@ def validate_payload(
                     continue
                 if "consumption_until_arrival_capped" not in sku:
                     errors.append(f"{po_name}/{sku_key}: missing consumption_until_arrival_capped")
+            ordered_size_rows = [
+                row for row in (po_data.get("size_level", []) or [])
+                if int(row.get("order_qty", 0) or 0) > 0
+            ]
+            has_part_context = any(row.get("po_part_id") for row in ordered_size_rows)
+            for size_row in ordered_size_rows:
+                qty = int(size_row.get("order_qty", 0) or 0)
+                if qty <= 0:
+                    continue
+                if has_part_context and not size_row.get("po_part_id"):
+                    errors.append(
+                        f"{po_name}/{size_row.get('sku_key')}/{size_row.get('size')}: missing po_part_id"
+                    )
 
     for idx, row in enumerate(payload.get("real_pos") or []):
         if not isinstance(row, dict):
