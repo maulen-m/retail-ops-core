@@ -239,16 +239,25 @@ fi
 echo ""
 echo "Step 2: Importing new orders to CRM..."
 echo "----------------------------------------"
-python scripts/import_orders_to_crm.py \
-    --verbose \
-    --refresh-delivery-fees \
-    --strict-excel \
-    --transactional \
-    --no-fixed-values \
-    --skip-fixed-backfill
-if [ $? -ne 0 ]; then
+STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-900}"
+echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
+python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
+    python scripts/import_orders_to_crm.py \
+        --verbose \
+        --refresh-delivery-fees \
+        --strict-excel \
+        --transactional \
+        --no-fixed-values \
+        --kaspi-core-override \
+        --skip-fixed-backfill
+STEP2_RC=$?
+if [ ${STEP2_RC} -ne 0 ]; then
     echo "WARNING: CRM import reported errors (see above)."
-    WARNINGS+=("CRM import errors. Fix: open CRM and re-run import_orders_to_crm.py --verbose.")
+    if [ ${STEP2_RC} -eq 124 ]; then
+        WARNINGS+=("CRM import timed out after ${STEP2_TIMEOUT_SEC}s. Fix: close Excel and re-run.")
+    else
+        WARNINGS+=("CRM import errors. Fix: open CRM and re-run import_orders_to_crm.py --verbose.")
+    fi
 fi
 
 # Determine if import produced any changes (used to skip expensive retry steps)

@@ -114,14 +114,18 @@ def _excel_open_probe(workbook_path: Path, attempts: int = 3, timeout_sec: int =
         attempts = 1
     workbook_path = workbook_path.expanduser().resolve()
 
-    def _run_osascript(script_text: str) -> Tuple[int, str]:
-        proc = subprocess.run(
-            ["osascript", "-"],
-            input=script_text,
-            text=True,
-            capture_output=True,
-            timeout=timeout_sec,
-        )
+    def _run_osascript(script_text: str, script_timeout: Optional[int] = None) -> Tuple[int, str]:
+        timeout = max(int(script_timeout or timeout_sec), 1)
+        try:
+            proc = subprocess.run(
+                ["osascript", "-"],
+                input=script_text,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return 124, f"osascript timeout after {timeout}s"
         out = (proc.stdout or proc.stderr or "").strip()
         return proc.returncode, out
 
@@ -158,7 +162,7 @@ end tell
         if code == 0 and out.strip() == "OK":
             return True, "OK"
         last_msg = out or f"osascript rc={code}"
-        _run_osascript(quit_script)
+        _run_osascript(quit_script, script_timeout=8)
     return False, last_msg
 
 
@@ -179,9 +183,17 @@ def _verify_candidate_workbook(candidate_path: Path, strict_excel: bool = True, 
             print(f"  WARNING: candidate integrity warning: {msg}")
 
     if strict_excel:
-        ok, detail = _excel_open_probe(candidate_path)
+        ok, detail = _excel_open_probe(candidate_path, attempts=2, timeout_sec=35)
         if not ok:
-            raise RuntimeError(f"Excel open probe failed for candidate workbook: {detail}")
+            detail_lower = (detail or "").lower()
+            if "timeout" in detail_lower:
+                if verbose:
+                    print(
+                        "  WARNING: candidate Excel open probe timed out; "
+                        "continuing after integrity pass."
+                    )
+            else:
+                raise RuntimeError(f"Excel open probe failed for candidate workbook: {detail}")
 
 
 def _prepare_candidate_workbook(source_path: Path, candidate_dir: Path, verbose: bool = False) -> Path:
@@ -765,6 +777,12 @@ def build_fixed_value_payload(df_filt: pd.DataFrame) -> List[Dict[str, Any]]:
         )
         for row in rows
     ]
+
+
+def build_kaspi_name_core_payload(df_filt: pd.DataFrame) -> List[str]:
+    """Build explicit Kaspi_name_core values for appended rows only."""
+    fixed_payload = build_fixed_value_payload(df_filt)
+    return [str(row.get("Kaspi_name_core") or "").strip() for row in fixed_payload]
 
 
 def parse_kz_date(v) -> Optional[date]:
@@ -2117,6 +2135,7 @@ def excel_append_xlwings(
     set_date: date,
     slice_headers: List[str],
     fixed_values: Optional[List[Dict[str, Any]]] = None,
+    kaspi_name_core_values: Optional[List[str]] = None,
 ) -> Tuple[int, int]:
     """
     Append rows to CRM using xlwings (preserves formulas & external links).
@@ -2209,17 +2228,31 @@ def excel_append_xlwings(
             target = sh.range((top_row, start_col_abs + offset), (bottom_row, start_col_abs + offset))
             target.value = [[v] for v in col_values]
 
+        table_header = sh.range(
+            (header_row, tbl_start_col),
+            (header_row, tbl_end_col),
+        ).value
+        header_to_col = {
+            str(name).strip(): tbl_start_col + i
+            for i, name in enumerate(table_header or [])
+            if str(name or "").strip()
+        }
+
+        # Optional low-risk override: write only Kaspi_name_core on appended rows.
+        if kaspi_name_core_values is not None:
+            kaspi_name_core_col = header_to_col.get("Kaspi_name_core")
+            if kaspi_name_core_col:
+                core_vals = list(kaspi_name_core_values)
+                if len(core_vals) < n:
+                    core_vals.extend([""] * (n - len(core_vals)))
+                core_vals = core_vals[:n]
+                sh.range((top_row, kaspi_name_core_col), (bottom_row, kaspi_name_core_col)).value = [
+                    [v if v is not None else ""]
+                    for v in core_vals
+                ]
+
         # Write fixed-value columns for appended rows (excluding human-owned fields).
         if fixed_values:
-            table_header = sh.range(
-                (header_row, tbl_start_col),
-                (header_row, tbl_end_col),
-            ).value
-            header_to_col = {
-                str(name).strip(): tbl_start_col + i
-                for i, name in enumerate(table_header or [])
-                if str(name or "").strip()
-            }
             for col_name in FIXED_APPEND_COLUMNS:
                 if col_name in PROTECTED_HUMAN_COLUMNS:
                     continue
@@ -2236,15 +2269,6 @@ def excel_append_xlwings(
         # MY_SIZE is human-owned; always clear for newly appended rows to
         # prevent Excel table formula autofill from writing pseudo sizes.
         my_size_col_abs = None
-        table_header = sh.range(
-            (header_row, tbl_start_col),
-            (header_row, tbl_end_col),
-        ).value
-        header_to_col = {
-            str(name).strip(): tbl_start_col + i
-            for i, name in enumerate(table_header or [])
-            if str(name or "").strip()
-        }
         my_size_col_abs = header_to_col.get("MY_SIZE")
         if my_size_col_abs:
             sh.range((top_row, my_size_col_abs), (bottom_row, my_size_col_abs)).value = [[""] for _ in range(n)]
@@ -2658,6 +2682,7 @@ def main(
     update_existing=_UNSET,
     no_update=_UNSET,
     fixed_values=_UNSET,
+    kaspi_core_override=_UNSET,
     backfill_fixed_days=_UNSET,
     fixed_backfill_from=_UNSET,
     fixed_backfill_to=_UNSET,
@@ -2738,6 +2763,12 @@ def main(
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Write fixed values for trivial formula columns on appended rows (default: off)",
+    )
+    parser.add_argument(
+        "--kaspi-core-override",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Write explicit Kaspi_name_core values for appended rows only (default: off).",
     )
     parser.add_argument(
         "--backfill-fixed-days",
@@ -2825,6 +2856,7 @@ def main(
         and update_existing is _UNSET
         and no_update is _UNSET
         and fixed_values is _UNSET
+        and kaspi_core_override is _UNSET
         and backfill_fixed_days is _UNSET
         and fixed_backfill_from is _UNSET
         and fixed_backfill_to is _UNSET
@@ -2866,6 +2898,8 @@ def main(
             args.no_update = bool(no_update)
         if fixed_values is not _UNSET:
             args.fixed_values = bool(fixed_values)
+        if kaspi_core_override is not _UNSET:
+            args.kaspi_core_override = bool(kaspi_core_override)
         if backfill_fixed_days is not _UNSET:
             args.backfill_fixed_days = int(backfill_fixed_days)
         if fixed_backfill_from is not _UNSET:
@@ -3143,8 +3177,11 @@ def main(
     # Build staging data (returns tuple: stage_block, phone_values)
     stage, phone_values = build_staging(df_filt, slice_headers)
     fixed_values_payload: Optional[List[Dict[str, Any]]] = None
+    kaspi_name_core_payload: Optional[List[str]] = None
     if args.fixed_values:
         fixed_values_payload = build_fixed_value_payload(df_filt)
+    elif getattr(args, "kaspi_core_override", False):
+        kaspi_name_core_payload = build_kaspi_name_core_payload(df_filt)
 
     # Dedup against existing
     colmap = map_headers(df_filt)
@@ -3189,6 +3226,11 @@ def main(
             if fixed_values_payload is not None
             else None
         )
+        kaspi_core_filtered = (
+            [kaspi_name_core_payload[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
+            if kaspi_name_core_payload is not None
+            else None
+        )
 
         dup_count = len(stage) - len(stage_filtered)
         if dup_count > 0:
@@ -3197,6 +3239,7 @@ def main(
         stage = stage_filtered
         phone_values = phone_filtered
         fixed_values_payload = fixed_filtered
+        kaspi_name_core_payload = kaspi_core_filtered
 
     print(f"\n4. Appending new orders...")
     new_rows_added = len(stage)
@@ -3254,7 +3297,8 @@ def main(
         phone_values,
         append_date,
         slice_headers,
-        fixed_values_payload,
+        fixed_values=fixed_values_payload,
+        kaspi_name_core_values=kaspi_name_core_payload,
     )
     fixed_backfilled = maybe_run_fixed_backfill()
     if fixed_backfilled:

@@ -5,9 +5,11 @@ Phase 11 TASK-194: 12 tests for the order import script.
 """
 
 import os
+import subprocess
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import openpyxl
@@ -29,6 +31,8 @@ from scripts.import_orders_to_crm import (
     _row_in_backfill_window,
     _allow_openpyxl_backfill_fallback,
     _excel_automation_preflight,
+    _excel_open_probe,
+    _verify_candidate_workbook,
     apply_fixed_values_backfill_openpyxl,
     build_staging,
     clean_order_id,
@@ -686,6 +690,56 @@ def test_excel_automation_preflight_skips_when_not_strict(tmp_path):
     _excel_automation_preflight(crm, strict_excel=False)
 
 
+def test_excel_open_probe_retries_after_osascript_timeout(monkeypatch, tmp_path):
+    crm = tmp_path / "candidate.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+
+    open_attempts = {"count": 0}
+
+    def _fake_run(_cmd, input=None, text=True, capture_output=True, timeout=45):
+        script = input or ""
+        if "quit" in script:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        open_attempts["count"] += 1
+        if open_attempts["count"] == 1:
+            raise subprocess.TimeoutExpired(["osascript", "-"], timeout=timeout)
+        return SimpleNamespace(returncode=0, stdout="OK\n", stderr="")
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.subprocess.run", _fake_run)
+    ok, detail = _excel_open_probe(crm, attempts=2, timeout_sec=1)
+    assert ok is True
+    assert detail == "OK"
+
+
+def test_verify_candidate_workbook_allows_probe_timeout_after_integrity_pass(monkeypatch, tmp_path):
+    candidate = tmp_path / "candidate.xlsx"
+    candidate.write_text("placeholder", encoding="utf-8")
+
+    class OkIntegrity:
+        errors = []
+        warnings = []
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.validate_workbook_integrity", lambda _p: OkIntegrity())
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_open_probe", lambda *_args, **_kwargs: (False, "osascript timeout after 35s"))
+
+    _verify_candidate_workbook(candidate, strict_excel=True, verbose=True)
+
+
+def test_verify_candidate_workbook_fails_on_non_timeout_probe_error(monkeypatch, tmp_path):
+    candidate = tmp_path / "candidate.xlsx"
+    candidate.write_text("placeholder", encoding="utf-8")
+
+    class OkIntegrity:
+        errors = []
+        warnings = []
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.validate_workbook_integrity", lambda _p: OkIntegrity())
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_open_probe", lambda *_args, **_kwargs: (False, "ERR:-50:Parameter error"))
+
+    with pytest.raises(RuntimeError, match="Excel open probe failed"):
+        _verify_candidate_workbook(candidate, strict_excel=True, verbose=False)
+
+
 def test_iter_consecutive_ranges_groups_sorted_rows():
     rows = [8010, 8011, 8012, 8015, 8017, 8018]
     assert _iter_consecutive_ranges(rows) == [(8010, 8012), (8015, 8015), (8017, 8018)]
@@ -828,3 +882,60 @@ def test_main_does_not_archive_when_candidate_promotion_fails(monkeypatch, tmp_p
         )
 
     assert archive_calls["count"] == 0
+
+
+def test_main_can_write_kaspi_core_override_without_full_fixed_payload(monkeypatch, tmp_path):
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+    source_file = orders_dir / "ActiveOrders.xlsx"
+    source_file.write_text("placeholder", encoding="utf-8")
+    crm_path = tmp_path / "crm.xlsx"
+    crm_path.write_text("crm", encoding="utf-8")
+
+    df = _minimal_active_orders_df()
+    monkeypatch.setattr("scripts.import_orders_to_crm.read_active_orders", lambda _p: (df, [source_file]))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.filter_for_shipping",
+        lambda df_all, *_args, **_kwargs: (df_all, {"rows_in_files": 1, "rows_after_filters": 1}),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.sort_for_crm", lambda in_df: in_df)
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_crm_snapshot", lambda *_args, **_kwargs: _minimal_snapshot())
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["x"]], [""]))
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.build_fixed_value_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("full fixed payload should stay disabled")),
+    )
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.build_kaspi_name_core_payload",
+        lambda *_args, **_kwargs: ["6в1_Черный_+Сумка"],
+        raising=False,
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm._promote_candidate_workbook", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", lambda *_args, **_kwargs: tmp_path / "archive")
+    monkeypatch.setattr("scripts.import_orders_to_crm.sync_pending_orders_to_gdrive_safe", lambda *_args, **_kwargs: {"rows_synced": 0})
+
+    seen = {}
+
+    def _append_spy(*_args, **kwargs):
+        seen["kaspi_name_core_values"] = kwargs.get("kaspi_name_core_values")
+        seen["fixed_values"] = kwargs.get("fixed_values")
+        return (2, 2)
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", _append_spy)
+
+    stats = main(
+        orders_dir=orders_dir,
+        crm_path=crm_path,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        dry_run=False,
+        update_existing=False,
+        no_update=True,
+        fixed_values=False,
+        kaspi_core_override=True,
+        verbose=False,
+    )
+    assert stats["orders_imported"] == 1
+    assert seen["kaspi_name_core_values"] == ["6в1_Черный_+Сумка"]
+    assert seen["fixed_values"] is None
