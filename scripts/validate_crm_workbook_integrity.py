@@ -6,7 +6,7 @@ Checks:
 - Workbook externalReference r:id targets exist.
 - Worksheet tableParts r:id targets exist.
 - Table refs and tableColumns counts are structurally consistent.
-- Optional warning for #REF! named ranges.
+- Named ranges containing #REF! are treated as integrity errors.
 """
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def validate_workbook_integrity(workbook_path: Path) -> IntegrityResult:
             for dn in dns.findall(f"{{{MAIN_NS}}}definedName"):
                 if "#REF!" in (dn.text or ""):
                     name = dn.attrib.get("name", "<unnamed>")
-                    warnings.append(f"named range contains #REF!: {name}")
+                    errors.append(f"named range contains #REF!: {name}")
 
         table_files = [n for n in names if n.startswith("xl/tables/table") and n.endswith(".xml")]
         for table_file in sorted(table_files):

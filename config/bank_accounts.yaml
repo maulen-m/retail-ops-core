@@ -3,35 +3,35 @@
 ## Amounts are raw balances in account currency.
 
 # ==============================================================================
-# TOTALS (as of 2026-02-06)
+# TOTALS (as of 2026-02-08)
 # ==============================================================================
 #
 # By Currency (FX rates from binance_p2p 2026-02-06 + dim_fx_rates 2026-02-06):
 #   | Currency | Amount    | Rate | KZT Equivalent |
 #   |----------|-----------|------|----------------|
-#   | KZT      | 2,475,364 |    1 |      2,475,364 |
+#   | KZT      | 1,804,091 |    1 |      1,804,091 |
 #   | RUB      |    10,000 |  6.6 |         66,000 |
 #   | USD      |       100 |  514 |         51,400 |
-#   | USDT     |    617.36 |  502 |        309,916 |
-#   | Total    |           |      |  2,902,680 KZT |
+#   | USDT     |    160.36 |  502 |         80,502 |
+#   | Total    |           |      |  2,001,993 KZT |
 #
 # By Store:
-#   - UNIVERSAL: 1,976,664 KZT + 10,000 RUB + 100 USD + 160.36 USDT
-#   - 11KZ: 3,000 KZT + 457 USDT
-#   - STOREB: 13,000 KZT
-#   - ACMEWEAR: 482,000 KZT
-#   - MELVIS: 700 KZT
+#   - UNIVERSAL: 903,091 KZT + 10,000 RUB + 100 USD + 160.36 USDT
+#   - 11KZ: 3,000 KZT + 0 USDT
+#   - STOREB: 151,000 KZT
+#   - ACMEWEAR: 747,000 KZT
+#   - MELVIS: 0 KZT
 #
 # ==============================================================================
 
-as_of: 2026-02-06 16:59:03 GMT+5
+as_of: 2026-02-08 12:10:23 GMT+5
 stores:
   UNIVERSAL:
     accounts:
       kaspi_gold:
-        balance_kzt: 1589573
+        balance_kzt: 523000
       kaspi_pay:
-        balance_kzt: 7000
+        balance_kzt: 0
       bcc:
         balance_kzt: 243091
       freedom:
@@ -51,22 +51,22 @@ stores:
       kaspi_pay:
         balance_kzt: 0
       binance_usdt:
-        balance_usdt: 457
+        balance_usdt: 0
   STOREB:
     accounts:
       kaspi_gold:
-        balance_kzt: 10000
+        balance_kzt: 13000
       kaspi_pay:
-        balance_kzt: 3000
+        balance_kzt: 138000
   ACMEWEAR:
     accounts:
       kaspi_gold:
         balance_kzt: 350000
       kaspi_pay:
-        balance_kzt: 132000
+        balance_kzt: 397000
   MELVIS:
     accounts:
       kaspi_gold:
         balance_kzt: 0
       kaspi_pay:
-        balance_kzt: 700
+        balance_kzt: 0

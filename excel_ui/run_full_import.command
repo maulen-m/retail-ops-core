@@ -220,6 +220,21 @@ else
     WARNINGS+=("ActiveOrders.xlsx missing. Fix: re-run export_api_orders step.")
 fi
 
+# Preflight: CRM workbook integrity check (hard gate)
+echo ""
+echo "Preflight: validating CRM workbook integrity..."
+echo "----------------------------------------"
+python3 scripts/validate_crm_workbook_integrity.py --workbook excel_ui/SALES_KSP_CRM_V3.xlsx
+if [ $? -ne 0 ]; then
+    echo "ERROR: CRM workbook integrity validation failed."
+    echo "Fix workbook first, then re-run import."
+    echo "Suggested repair command:"
+    echo "  python3 scripts/repair_crm_workbook.py --workbook excel_ui/SALES_KSP_CRM_V3.xlsx --apply"
+    echo "Press Enter to close..."
+    [[ -t 0 ]] && read
+    exit 1
+fi
+
 # Step 2: Import new orders to CRM (also updates existing order status columns)
 echo ""
 echo "Step 2: Importing new orders to CRM..."

@@ -630,8 +630,51 @@ def test_excel_automation_preflight_ignores_stale_lock_file(tmp_path, monkeypatc
         def quit(self):
             return None
 
+    class OkIntegrity:
+        errors = []
+        warnings = []
+
     monkeypatch.setattr("scripts.import_orders_to_crm.xw", type("DummyXW", (), {"App": DummyApp}))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.validate_workbook_integrity",
+        lambda _path: OkIntegrity(),
+    )
     _excel_automation_preflight(crm, strict_excel=True, verbose=True)
+
+
+def test_excel_automation_preflight_fails_on_workbook_integrity_errors(tmp_path, monkeypatch):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+
+    class DummyBook:
+        def close(self):
+            return None
+
+    class DummyBooks:
+        def open(self, *args, **kwargs):
+            return DummyBook()
+
+    class DummyApp:
+        def __init__(self, *args, **kwargs):
+            self.books = DummyBooks()
+            self.display_alerts = False
+            self.screen_updating = False
+
+        def quit(self):
+            return None
+
+    class BadIntegrity:
+        errors = ["named range contains #REF!: BROKEN"]
+        warnings = []
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.xw", type("DummyXW", (), {"App": DummyApp}))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.validate_workbook_integrity",
+        lambda _path: BadIntegrity(),
+        raising=False,
+    )
+    with pytest.raises(RuntimeError, match="Workbook integrity preflight failed"):
+        _excel_automation_preflight(crm, strict_excel=True)
 
 
 def test_excel_automation_preflight_skips_when_not_strict(tmp_path):

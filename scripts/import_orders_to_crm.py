@@ -52,6 +52,7 @@ from core.parsers.kaspi_parser import extract_sku_from_article
 from core.utils.sku_map import extract_kaspi_name_core
 from core.utils.kaspi_dates import planned_date_from_order
 from core.db import get_db
+from scripts.validate_crm_workbook_integrity import validate_workbook_integrity
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
@@ -166,6 +167,23 @@ def _allow_openpyxl_backfill_fallback() -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _workbook_integrity_preflight(crm_path: Path, verbose: bool = False) -> None:
+    """
+    Validate workbook package integrity before any write path is attempted.
+    """
+    result = validate_workbook_integrity(crm_path)
+    if result.errors:
+        sample = "; ".join(result.errors[:3])
+        details = f" Examples: {sample}" if sample else ""
+        raise RuntimeError(
+            "Workbook integrity preflight failed. "
+            f"Found {len(result.errors)} integrity errors.{details}"
+        )
+    if verbose and result.warnings:
+        for msg in result.warnings:
+            print(f"  WARNING: integrity check: {msg}")
+
+
 def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbose: bool = False) -> None:
     """
     Validate that Excel automation can safely control the workbook before writes.
@@ -187,6 +205,8 @@ def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbo
                 "  WARNING: stale Excel lock file detected; ignoring "
                 f"({lock_file.name}, age={int(age_seconds)}s)"
             )
+
+    _workbook_integrity_preflight(crm_path, verbose=verbose)
 
     app = xw.App(visible=False, add_book=False)
     app.display_alerts = False

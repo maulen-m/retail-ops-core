@@ -33,6 +33,26 @@ def _make_workbook_with_table(path: Path) -> None:
     wb.save(path)
 
 
+def _inject_broken_defined_name(path: Path, name: str = "BROKEN_NAME") -> None:
+    with zipfile.ZipFile(path, "r") as zin:
+        wb_xml = ET.fromstring(zin.read("xl/workbook.xml"))
+        dns = wb_xml.find(f"{{{MAIN_NS}}}definedNames")
+        if dns is None:
+            dns = ET.SubElement(wb_xml, f"{{{MAIN_NS}}}definedNames")
+        dn = ET.SubElement(dns, f"{{{MAIN_NS}}}definedName", {"name": name})
+        dn.text = "#REF!"
+        wb_modified = ET.tostring(wb_xml, encoding="utf-8", xml_declaration=True)
+
+        tmp = path.with_name(f"{path.stem}_broken_names_tmp.xlsx")
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == "xl/workbook.xml":
+                    zout.writestr(item, wb_modified)
+                else:
+                    zout.writestr(item, zin.read(item.filename))
+    tmp.replace(path)
+
+
 def test_validate_workbook_integrity_ok(tmp_path: Path):
     wb_path = tmp_path / "ok.xlsx"
     _make_workbook_with_table(wb_path)
@@ -81,3 +101,11 @@ def test_validate_workbook_integrity_detects_missing_table_target(tmp_path: Path
     result = validate_workbook_integrity(wb_path)
     assert any("tablePart target missing" in err for err in result.errors)
 
+
+def test_validate_workbook_integrity_treats_ref_named_ranges_as_errors(tmp_path: Path):
+    wb_path = tmp_path / "broken_name.xlsx"
+    _make_workbook_with_table(wb_path)
+    _inject_broken_defined_name(wb_path)
+
+    result = validate_workbook_integrity(wb_path)
+    assert any("named range contains #REF!" in err for err in result.errors)
