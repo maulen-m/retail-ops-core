@@ -1,0 +1,89 @@
+import sqlite3
+from pathlib import Path
+
+from scripts.generate_business_insides import compute_sales_metrics
+
+
+def _seed_db(db_path: Path) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE sales_fact_v2 (
+            order_id TEXT,
+            order_date TEXT,
+            sku_key TEXT,
+            sku_id TEXT,
+            quantity REAL,
+            cogs REAL,
+            net_rev REAL,
+            status TEXT,
+            return_flag INTEGER
+        );
+        CREATE TABLE dim_sku (
+            sku_key TEXT PRIMARY KEY,
+            model TEXT,
+            color TEXT,
+            product_type TEXT,
+            base_cost_cny REAL,
+            weight_kg REAL,
+            cogs_kzt REAL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_cogs_fallback_uses_dim_sku_when_sales_fact_cogs_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, model, color, product_type, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_A', 'A', 'BLACK', 'CL', 0, 0, 1500)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, quantity, cogs, net_rev, status, return_flag)
+        VALUES ('ORD-1', '2026-02-08', 'SKU_A', 'SKU_A_M', 2, NULL, 10000, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    metrics = compute_sales_metrics(db_path=db_path, as_of="2026-02-08")
+    day = {r["date"]: r for r in metrics["last_7_days"]}["2026-02-08"]
+    assert day["cogs_kzt"] == 3000
+    assert day["profit_kzt"] == 7000
+    assert metrics["fallback_rows"] == 1
+
+
+def test_profit_uses_effective_cogs_not_raw_zero_cogs(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, model, color, product_type, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_A', 'A', 'BLACK', 'CL', 0, 0, 900)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, quantity, cogs, net_rev, status, return_flag)
+        VALUES ('ORD-2', '2026-02-08', 'SKU_A', 'SKU_A_L', 3, 0, 12000, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    metrics = compute_sales_metrics(db_path=db_path, as_of="2026-02-08")
+    day = {r["date"]: r for r in metrics["last_7_days"]}["2026-02-08"]
+    assert day["cogs_kzt"] == 2700
+    assert day["profit_kzt"] == 9300
