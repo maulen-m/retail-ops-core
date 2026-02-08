@@ -62,6 +62,10 @@ DEFAULT_WORKBOOK = data_path("excel", "Inventory_Core_V18.1_V2.xlsx")
 
 # Database path
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
+DEFAULT_OPEX_XLSX = Path(
+    "~/Documents/useful tables/Main crm spreadsheets/main tables/Protocols/"
+    "OPEX_protocol_26.01.2026.xlsx"
+)
 
 # Expected outputs
 EXPECTED_OUTPUTS = [
@@ -342,6 +346,17 @@ def main():
         default=None,
         help="Path to PO-4 inbound workbook (default: $PO4_INBOUND_PATH)",
     )
+    parser.add_argument(
+        "--sync-opex",
+        action="store_true",
+        help="Sync canonical OPEX schedule from protocol XLSX before cashflow rebuild",
+    )
+    parser.add_argument(
+        "--opex-xlsx",
+        type=Path,
+        default=DEFAULT_OPEX_XLSX,
+        help="Path to OPEX protocol workbook used by --sync-opex",
+    )
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Show script output")
     parser.add_argument("--continue-on-error", action="store_true",
@@ -402,6 +417,13 @@ def main():
             if lock:
                 lock.__exit__(None, None, None)
             sys.exit(3)
+
+    args.opex_xlsx = args.opex_xlsx.expanduser()
+    if args.sync_opex and not args.opex_xlsx.exists():
+        print(f"ERROR: OPEX workbook not found: {args.opex_xlsx}")
+        if lock:
+            lock.__exit__(None, None, None)
+        sys.exit(3)
 
     # Check if workbook is locked (only if workbook sync enabled)
     if not args.skip_workbook_sync:
@@ -562,6 +584,20 @@ def _run_pipeline(args, start_time: datetime) -> int:
             )
         )
 
+    if args.sync_opex:
+        opex_args = ["--xlsx", str(args.opex_xlsx), "--replace-existing"]
+        if not args.dry_run:
+            opex_args.append("--apply")
+        steps.append(
+            PipelineStep(
+                name="2f. Sync OPEX Schedule",
+                script="sync_opex_schedule.py",
+                args=opex_args,
+                required=True,
+                skip_on_dry_run=False,
+            )
+        )
+
     snapshot_z_path = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
     snapshot_z_required = snapshot_z_path.exists()
     if not snapshot_z_required:
@@ -614,6 +650,12 @@ def _run_pipeline(args, start_time: datetime) -> int:
                 else ["--rebuild"]
             ),
             required=True
+        ),
+        PipelineStep(
+            name="5a1. Generate Business Insides",
+            script="generate_business_insides.py",
+            args=["--as-of", cutoff_date.isoformat()],
+            required=True,
         ),
         PipelineStep(
             name="5a2. Cashflow PO Preflight",

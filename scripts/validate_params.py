@@ -38,6 +38,7 @@ from scripts.validate_single_truth_system import (
     DEFAULT_WORKBOOK as DEFAULT_SINGLE_TRUTH_WORKBOOK,
 )
 from scripts.validate_on_delivery_freeze import validate_on_delivery_freeze
+from scripts.validate_business_insides import validate_business_insides
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
@@ -348,6 +349,19 @@ def main():
                 result.add_info("on_delivery_freeze: OK")
         except Exception as exc:
             result.add_error(f"on_delivery_freeze error: {exc}")
+
+        try:
+            business_errors = validate_business_insides(
+                db_path=db_path,
+                as_of=date.today().isoformat(),
+            )
+            if business_errors:
+                for err in business_errors:
+                    result.add_error(f"business_insides: {err}")
+            else:
+                result.add_info("business_insides: OK")
+        except Exception as exc:
+            result.add_error(f"business_insides error: {exc}")
 
     # Output results
     if args.json:
