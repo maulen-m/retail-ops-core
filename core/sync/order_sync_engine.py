@@ -368,8 +368,9 @@ class OrderSyncEngine:
             # Check for status change
             old_status = existing['internal_status']
             new_status = order_data['internal_status']
+            status_changed = old_status != new_status
 
-            if old_status != new_status:
+            if status_changed:
                 result['status_change'] = StatusChange(
                     order_id=order_id,
                     old_status=old_status,
@@ -378,7 +379,7 @@ class OrderSyncEngine:
                 )
 
             # Update existing
-            self._update_order(conn, existing['id'], order_data)
+            self._update_order(conn, existing['id'], order_data, status_changed=status_changed)
             result['updated'] = True
         else:
             # Insert new
@@ -561,10 +562,26 @@ class OrderSyncEngine:
             )
         )
 
-    def _update_order(self, conn, row_id: int, order_data: dict):
+    @staticmethod
+    def _column_exists(conn, table: str, column: str) -> bool:
+        """Return True when a column exists on a table."""
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(row[1] == column for row in rows)
+
+    def _update_order(
+        self,
+        conn,
+        row_id: int,
+        order_data: dict,
+        *,
+        status_changed: bool,
+    ):
         """Update existing order in database."""
+        has_synced_at = self._column_exists(conn, "fact_orders_kaspi", "synced_at")
+        synced_at_clause = ", synced_at = CURRENT_TIMESTAMP" if has_synced_at else ""
+
         conn.execute(
-            """
+            f"""
             UPDATE fact_orders_kaspi SET
                 kaspi_status = ?,
                 kaspi_status_detail = COALESCE(?, kaspi_status_detail),
@@ -594,7 +611,8 @@ class OrderSyncEngine:
                 customer_first_name = COALESCE(?, customer_first_name),
                 customer_last_name = COALESCE(?, customer_last_name),
                 customer_phone = COALESCE(?, customer_phone),
-                status_updated_at = CURRENT_TIMESTAMP
+                status_updated_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE status_updated_at END
+                {synced_at_clause}
             WHERE id = ?
             """,
             (
@@ -626,8 +644,9 @@ class OrderSyncEngine:
                 order_data.get('customer_first_name'),
                 order_data.get('customer_last_name'),
                 order_data.get('customer_phone'),
+                1 if status_changed else 0,
                 row_id,
-            )
+            ),
         )
 
     # =========================================================================

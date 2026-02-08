@@ -85,6 +85,7 @@ def temp_db():
             source TEXT DEFAULT 'API',
             imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
             status_updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
             assigned_size TEXT,
             size_source TEXT,
             size_confidence TEXT,
@@ -440,6 +441,79 @@ class TestDatabaseOperations:
         result = engine._save_order(conn, 'UNIVERSAL', order)
 
         assert result['status_change'] is None
+
+        conn.close()
+
+    def test_same_status_does_not_restamp_status_timestamp(self, engine, temp_db, sample_api_orders):
+        """Same-status refresh must keep status timestamp but refresh synced timestamp."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+
+        order = sample_api_orders[0]
+        engine._save_order(conn, 'UNIVERSAL', order)
+        conn.commit()
+
+        conn.execute(
+            """
+            UPDATE fact_orders_kaspi
+            SET status_updated_at = ?, synced_at = ?
+            WHERE order_id = ? AND store_code = ?
+            """,
+            ('2026-01-01 00:00:00', '2026-01-01 00:00:00', '111111', 'UNIVERSAL'),
+        )
+        conn.commit()
+
+        result = engine._save_order(conn, 'UNIVERSAL', order)
+        assert result['status_change'] is None
+
+        row = conn.execute(
+            """
+            SELECT status_updated_at, synced_at
+            FROM fact_orders_kaspi
+            WHERE order_id = ? AND store_code = ?
+            """,
+            ('111111', 'UNIVERSAL'),
+        ).fetchone()
+        assert row['status_updated_at'] == '2026-01-01 00:00:00'
+        assert row['synced_at'] != '2026-01-01 00:00:00'
+
+        conn.close()
+
+    def test_status_change_restamps_status_timestamp_and_synced_at(self, engine, temp_db, sample_api_orders):
+        """Material status change must restamp status_updated_at and synced_at."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+
+        order = sample_api_orders[0]
+        engine._save_order(conn, 'UNIVERSAL', order)
+        conn.commit()
+
+        conn.execute(
+            """
+            UPDATE fact_orders_kaspi
+            SET status_updated_at = ?, synced_at = ?
+            WHERE order_id = ? AND store_code = ?
+            """,
+            ('2026-01-01 00:00:00', '2026-01-01 00:00:00', '111111', 'UNIVERSAL'),
+        )
+        conn.commit()
+
+        order['attributes']['state'] = 'ACCEPTED_BY_MERCHANT'
+        order['attributes']['status'] = 'ACCEPTED_BY_MERCHANT'
+        result = engine._save_order(conn, 'UNIVERSAL', order)
+        assert result['status_change'] is not None
+
+        row = conn.execute(
+            """
+            SELECT status_updated_at, synced_at, internal_status
+            FROM fact_orders_kaspi
+            WHERE order_id = ? AND store_code = ?
+            """,
+            ('111111', 'UNIVERSAL'),
+        ).fetchone()
+        assert row['internal_status'] == 'ACCEPTED'
+        assert row['status_updated_at'] != '2026-01-01 00:00:00'
+        assert row['synced_at'] != '2026-01-01 00:00:00'
 
         conn.close()
 
