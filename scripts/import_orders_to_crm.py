@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
@@ -102,6 +103,131 @@ def backup_crm(crm_path: Path) -> Path:
             pass  # Skip files that don't match pattern
 
     return backup_path
+
+
+def _excel_open_probe(workbook_path: Path, attempts: int = 3, timeout_sec: int = 45) -> Tuple[bool, str]:
+    """
+    Ask Microsoft Excel to open and close workbook_path.
+    Returns (ok, diagnostic_message).
+    """
+    if attempts <= 0:
+        attempts = 1
+    workbook_path = workbook_path.expanduser().resolve()
+
+    def _run_osascript(script_text: str) -> Tuple[int, str]:
+        proc = subprocess.run(
+            ["osascript", "-"],
+            input=script_text,
+            text=True,
+            capture_output=True,
+            timeout=timeout_sec,
+        )
+        out = (proc.stdout or proc.stderr or "").strip()
+        return proc.returncode, out
+
+    escaped = str(workbook_path).replace("\\", "\\\\").replace('"', '\\"')
+    open_script = f"""
+set workbookPath to "{escaped}"
+tell application "Microsoft Excel"
+    try
+        set display alerts to false
+    end try
+    try
+        open workbook workbook file name workbookPath
+        delay 1
+        if (count of workbooks) > 0 then
+            close active workbook saving no
+        end if
+        return "OK"
+    on error errMsg number errNum
+        return "ERR:" & errNum & ":" & errMsg
+    end try
+end tell
+"""
+    quit_script = """
+tell application "Microsoft Excel"
+    try
+        quit
+    end try
+end tell
+"""
+
+    last_msg = ""
+    for _ in range(attempts):
+        code, out = _run_osascript(open_script)
+        if code == 0 and out.strip() == "OK":
+            return True, "OK"
+        last_msg = out or f"osascript rc={code}"
+        _run_osascript(quit_script)
+    return False, last_msg
+
+
+def _verify_candidate_workbook(candidate_path: Path, strict_excel: bool = True, verbose: bool = False) -> None:
+    """
+    Validate candidate workbook before promotion.
+    """
+    result = validate_workbook_integrity(candidate_path)
+    if result.errors:
+        sample = "; ".join(result.errors[:3])
+        details = f" Examples: {sample}" if sample else ""
+        raise RuntimeError(
+            "Candidate workbook integrity validation failed. "
+            f"Found {len(result.errors)} errors.{details}"
+        )
+    if verbose and result.warnings:
+        for msg in result.warnings:
+            print(f"  WARNING: candidate integrity warning: {msg}")
+
+    if strict_excel:
+        ok, detail = _excel_open_probe(candidate_path)
+        if not ok:
+            raise RuntimeError(f"Excel open probe failed for candidate workbook: {detail}")
+
+
+def _prepare_candidate_workbook(source_path: Path, candidate_dir: Path, verbose: bool = False) -> Path:
+    """
+    Create timestamped candidate workbook copy for transactional writes.
+    """
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate_path = candidate_dir / f"{source_path.stem}.candidate_{ts}{source_path.suffix}"
+    shutil.copy2(source_path, candidate_path)
+    if verbose:
+        print(f"  Candidate workbook created: {candidate_path}")
+    return candidate_path
+
+
+def _promote_candidate_workbook(
+    source_path: Path,
+    candidate_path: Path,
+    failed_dir: Path,
+    strict_excel: bool = True,
+    verbose: bool = False,
+) -> None:
+    """
+    Promote candidate workbook into production path only after validation passes.
+    On failure, move candidate into failed_dir and leave source untouched.
+    """
+    if not candidate_path.exists():
+        raise FileNotFoundError(f"Candidate workbook not found: {candidate_path}")
+
+    try:
+        _verify_candidate_workbook(candidate_path, strict_excel=strict_excel, verbose=verbose)
+    except Exception as exc:
+        failed_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        failed_path = failed_dir / f"{candidate_path.stem}.failed_{ts}{candidate_path.suffix}"
+        if candidate_path.exists():
+            shutil.move(str(candidate_path), str(failed_path))
+        raise RuntimeError(
+            f"Candidate workbook verification failed: {exc}. "
+            "Source workbook left unchanged. "
+            f"Failed candidate saved at: {failed_path}"
+        ) from exc
+
+    os.replace(str(candidate_path), str(source_path))
+    if verbose:
+        print(f"  Candidate promoted: {source_path.name}")
 
 
 # ---------- Configuration ----------
@@ -2533,8 +2659,17 @@ def main(
     no_update=_UNSET,
     fixed_values=_UNSET,
     backfill_fixed_days=_UNSET,
+    fixed_backfill_from=_UNSET,
+    fixed_backfill_to=_UNSET,
+    fixed_values_scope=_UNSET,
     skip_fixed_backfill=_UNSET,
+    refresh_delivery_fees=_UNSET,
+    refresh_fees_from=_UNSET,
+    refresh_fees_to=_UNSET,
     strict_excel=_UNSET,
+    transactional=_UNSET,
+    candidate_dir=_UNSET,
+    failed_candidate_dir=_UNSET,
     summary_file=_UNSET,
 ):
     parser = argparse.ArgumentParser(
@@ -2601,8 +2736,8 @@ def main(
     parser.add_argument(
         "--fixed-values",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Write fixed values for trivial formula columns on appended rows (default: on)",
+        default=False,
+        help="Write fixed values for trivial formula columns on appended rows (default: off)",
     )
     parser.add_argument(
         "--backfill-fixed-days",
@@ -2658,6 +2793,24 @@ def main(
         default=True,
         help="Run strict Excel automation preflight and abort if unavailable (default: on).",
     )
+    parser.add_argument(
+        "--transactional",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write via candidate workbook and promote only after verification (default: on).",
+    )
+    parser.add_argument(
+        "--candidate-dir",
+        type=Path,
+        default=data_path("excel_ui", "backups", "candidates"),
+        help="Directory for transactional candidate workbooks.",
+    )
+    parser.add_argument(
+        "--failed-candidate-dir",
+        type=Path,
+        default=data_path("excel_ui", "backups", "failed_candidates"),
+        help="Directory for failed transactional candidates.",
+    )
 
     if (
         orders_dir is _UNSET
@@ -2673,32 +2826,72 @@ def main(
         and no_update is _UNSET
         and fixed_values is _UNSET
         and backfill_fixed_days is _UNSET
+        and fixed_backfill_from is _UNSET
+        and fixed_backfill_to is _UNSET
+        and fixed_values_scope is _UNSET
         and skip_fixed_backfill is _UNSET
+        and refresh_delivery_fees is _UNSET
+        and refresh_fees_from is _UNSET
+        and refresh_fees_to is _UNSET
         and strict_excel is _UNSET
+        and transactional is _UNSET
+        and candidate_dir is _UNSET
+        and failed_candidate_dir is _UNSET
+        and summary_file is _UNSET
     ):
         args = parser.parse_args()
     else:
-        args = argparse.Namespace(
-            orders_dir=Path(orders_dir) if orders_dir is not _UNSET else data_path("excel_ui", "ActiveOrders"),
-            crm_file=Path(crm_path) if crm_path is not _UNSET else data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx"),
-            sheet=sheet_name if sheet_name is not _UNSET else "SALES_KSP_CRM_1",
-            table=table_name if table_name is not _UNSET else "tb_SalesRaw",
-            date_end=date_end if date_end is not _UNSET else "today",
-            append_date=append_date if append_date is not _UNSET else "today",
-            status=status if status is not _UNSET else DEFAULT_STATUS,
-            dry_run=bool(dry_run) if dry_run is not _UNSET else False,
-            verbose=bool(verbose) if verbose is not _UNSET else False,
-            update_existing=bool(update_existing) if update_existing is not _UNSET else True,
-            no_update=bool(no_update) if no_update is not _UNSET else False,
-            fixed_values=bool(fixed_values) if fixed_values is not _UNSET else True,
-            backfill_fixed_days=int(backfill_fixed_days) if backfill_fixed_days is not _UNSET else 14,
-            fixed_backfill_from=None,
-            fixed_backfill_to=None,
-            skip_fixed_backfill=bool(skip_fixed_backfill) if skip_fixed_backfill is not _UNSET else False,
-            fixed_values_scope="window",
-            strict_excel=bool(strict_excel) if strict_excel is not _UNSET else True,
-            summary_file=Path(summary_file) if summary_file is not _UNSET else data_path("logs", "import_orders_to_crm_latest.json"),
-        )
+        args = parser.parse_args([])
+        if orders_dir is not _UNSET:
+            args.orders_dir = Path(orders_dir)
+        if crm_path is not _UNSET:
+            args.crm_file = Path(crm_path)
+        if sheet_name is not _UNSET:
+            args.sheet = sheet_name
+        if table_name is not _UNSET:
+            args.table = table_name
+        if date_end is not _UNSET:
+            args.date_end = date_end
+        if append_date is not _UNSET:
+            args.append_date = append_date
+        if status is not _UNSET:
+            args.status = status
+        if dry_run is not _UNSET:
+            args.dry_run = bool(dry_run)
+        if verbose is not _UNSET:
+            args.verbose = bool(verbose)
+        if update_existing is not _UNSET:
+            args.update_existing = bool(update_existing)
+        if no_update is not _UNSET:
+            args.no_update = bool(no_update)
+        if fixed_values is not _UNSET:
+            args.fixed_values = bool(fixed_values)
+        if backfill_fixed_days is not _UNSET:
+            args.backfill_fixed_days = int(backfill_fixed_days)
+        if fixed_backfill_from is not _UNSET:
+            args.fixed_backfill_from = fixed_backfill_from
+        if fixed_backfill_to is not _UNSET:
+            args.fixed_backfill_to = fixed_backfill_to
+        if fixed_values_scope is not _UNSET:
+            args.fixed_values_scope = fixed_values_scope
+        if skip_fixed_backfill is not _UNSET:
+            args.skip_fixed_backfill = bool(skip_fixed_backfill)
+        if refresh_delivery_fees is not _UNSET:
+            args.refresh_delivery_fees = bool(refresh_delivery_fees)
+        if refresh_fees_from is not _UNSET:
+            args.refresh_fees_from = refresh_fees_from
+        if refresh_fees_to is not _UNSET:
+            args.refresh_fees_to = refresh_fees_to
+        if strict_excel is not _UNSET:
+            args.strict_excel = bool(strict_excel)
+        if transactional is not _UNSET:
+            args.transactional = bool(transactional)
+        if candidate_dir is not _UNSET:
+            args.candidate_dir = Path(candidate_dir)
+        if failed_candidate_dir is not _UNSET:
+            args.failed_candidate_dir = Path(failed_candidate_dir)
+        if summary_file is not _UNSET:
+            args.summary_file = Path(summary_file)
 
     result = {
         "orders_imported": 0,
@@ -2707,6 +2900,7 @@ def main(
     }
     backup_done = False
     summary_path = Path(args.summary_file) if getattr(args, "summary_file", None) else None
+    candidate_state: Dict[str, Optional[Path]] = {"path": None}
 
     def finalize(outcome: dict) -> dict:
         if summary_path:
@@ -2721,6 +2915,35 @@ def main(
         print(f"  Backup created: {backup_path.name}")
         backup_done = True
 
+    def write_crm_path() -> Path:
+        if args.dry_run:
+            return args.crm_file
+        ensure_backup()
+        if not bool(getattr(args, "transactional", True)):
+            return args.crm_file
+        candidate = candidate_state.get("path")
+        if candidate is None:
+            candidate = _prepare_candidate_workbook(
+                source_path=args.crm_file,
+                candidate_dir=Path(args.candidate_dir),
+                verbose=bool(args.verbose),
+            )
+            candidate_state["path"] = candidate
+        return candidate
+
+    def finalize_candidate_if_needed() -> None:
+        candidate = candidate_state.get("path")
+        if candidate is None:
+            return
+        _promote_candidate_workbook(
+            source_path=args.crm_file,
+            candidate_path=candidate,
+            failed_dir=Path(args.failed_candidate_dir),
+            strict_excel=bool(getattr(args, "strict_excel", True)),
+            verbose=bool(args.verbose),
+        )
+        candidate_state["path"] = None
+
     def maybe_run_fixed_backfill() -> int:
         if not args.fixed_values:
             return 0
@@ -2732,10 +2955,10 @@ def main(
         explicit_to = _resolve_refresh_date(getattr(args, "fixed_backfill_to", None), today_local()) if getattr(args, "fixed_backfill_to", None) else None
         if int(args.backfill_fixed_days or 0) <= 0 and not (explicit_from or explicit_to):
             return 0
-        ensure_backup()
+        target_path = write_crm_path()
         try:
             return apply_fixed_values_backfill_xlwings(
-                crm_path=args.crm_file,
+                crm_path=target_path,
                 sheet_name=args.sheet,
                 table_name=args.table,
                 days=max(int(args.backfill_fixed_days or 0), 0),
@@ -2759,7 +2982,7 @@ def main(
                 return 0
             print("  WARNING: using openpyxl fallback for fixed-value backfill.")
             return apply_fixed_values_backfill_openpyxl(
-                crm_path=args.crm_file,
+                crm_path=target_path,
                 sheet_name=args.sheet,
                 table_name=args.table,
                 days=max(int(args.backfill_fixed_days or 0), 0),
@@ -2901,7 +3124,7 @@ def main(
 
         if orders_to_update:
             updated_count = update_existing_order_columns(
-                args.crm_file,
+                write_crm_path(),
                 args.sheet,
                 order_rows,
                 update_data,
@@ -2919,7 +3142,9 @@ def main(
 
     # Build staging data (returns tuple: stage_block, phone_values)
     stage, phone_values = build_staging(df_filt, slice_headers)
-    fixed_values_payload = build_fixed_value_payload(df_filt)
+    fixed_values_payload: Optional[List[Dict[str, Any]]] = None
+    if args.fixed_values:
+        fixed_values_payload = build_fixed_value_payload(df_filt)
 
     # Dedup against existing
     colmap = map_headers(df_filt)
@@ -2959,7 +3184,11 @@ def main(
         indices_to_keep = df_filt[new_mask].index.tolist()
         stage_filtered = [stage[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
         phone_filtered = [phone_values[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
-        fixed_filtered = [fixed_values_payload[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
+        fixed_filtered = (
+            [fixed_values_payload[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
+            if fixed_values_payload is not None
+            else None
+        )
 
         dup_count = len(stage) - len(stage_filtered)
         if dup_count > 0:
@@ -2980,7 +3209,7 @@ def main(
                 refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
                 refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
                 backfilled = backfill_seller_delivery_fee(
-                    args.crm_file,
+                    write_crm_path(),
                     args.sheet,
                     args.table,
                     refresh_from,
@@ -2993,6 +3222,7 @@ def main(
             fixed_backfilled = maybe_run_fixed_backfill()
             if fixed_backfilled:
                 print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
+            finalize_candidate_if_needed()
             sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
             print(f"\n✅ Import complete! Updated {updated_count} orders, appended 0 new.")
             return finalize(result)
@@ -3002,6 +3232,7 @@ def main(
             fixed_backfilled = maybe_run_fixed_backfill()
             if fixed_backfilled:
                 print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
+            finalize_candidate_if_needed()
             return finalize(result)
 
     if args.dry_run:
@@ -3009,12 +3240,10 @@ def main(
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return finalize(result)
 
-    # Create backup before writing (Phase 12 / Excel safe ops)
-    ensure_backup()
-
     # Append via xlwings - returns (start_row, end_row) for sync
+    target_crm_path = write_crm_path()
     append_start_row, append_end_row = excel_append_xlwings(
-        args.crm_file,
+        target_crm_path,
         args.sheet,
         args.table,
         date_abs,
@@ -3025,21 +3254,18 @@ def main(
         phone_values,
         append_date,
         slice_headers,
-        fixed_values_payload if args.fixed_values else None,
+        fixed_values_payload,
     )
     fixed_backfilled = maybe_run_fixed_backfill()
     if fixed_backfilled:
         print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
-
-    # Archive source files
-    archive_path = archive_run(args.orders_dir, source_files, df_filt)
 
     # Backfill seller delivery fee from Delivery_fee_kzt (if requested)
     if args.refresh_delivery_fees:
         refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
         refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
         backfilled = backfill_seller_delivery_fee(
-            args.crm_file,
+            write_crm_path(),
             args.sheet,
             args.table,
             refresh_from,
@@ -3049,6 +3275,11 @@ def main(
             snapshot=snapshot,
         )
         print(f"   Delivery fee backfill rows updated: {backfilled}")
+
+    finalize_candidate_if_needed()
+
+    # Archive source files only after workbook promotion succeeded.
+    archive_path = archive_run(args.orders_dir, source_files, df_filt)
 
     # Sync PENDING rows for target date to Google Drive (formatted copy)
     sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)

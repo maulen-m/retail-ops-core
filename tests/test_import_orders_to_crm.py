@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from scripts.import_orders_to_crm import (
+    CRMSnapshot,
     READY_STATUS,
     NO_SIGNATURE,
     RAW_KASPI_COLUMNS,
@@ -712,3 +713,118 @@ def test_build_line_dedupe_key_differentiates_multiline_items():
         1,
     )
     assert k1 != k2
+
+
+def _minimal_snapshot() -> CRMSnapshot:
+    return CRMSnapshot(
+        date_col=2,
+        phone_col=9,
+        start_col=25,
+        end_col=52,
+        start_row=1,
+        end_row=1,
+        slice_headers=["dummy_header"],
+        order_ids=set(),
+        order_rows={},
+        existing_keys=set(),
+        column_positions={},
+        planned_col_abs=None,
+        table_date_col=None,
+        delivery_fee_col=None,
+        seller_fee_col=None,
+        delivery_fee_rows=[],
+    )
+
+
+def _minimal_active_orders_df() -> pd.DataFrame:
+    return pd.DataFrame({"dummy": ["value"]})
+
+
+def test_main_default_does_not_compute_fixed_values_payload(monkeypatch, tmp_path):
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+    source_file = orders_dir / "ActiveOrders.xlsx"
+    source_file.write_text("placeholder", encoding="utf-8")
+    crm_path = tmp_path / "crm.xlsx"
+    crm_path.write_text("crm", encoding="utf-8")
+
+    df = _minimal_active_orders_df()
+    monkeypatch.setattr("scripts.import_orders_to_crm.read_active_orders", lambda _p: (df, [source_file]))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.filter_for_shipping",
+        lambda df_all, *_args, **_kwargs: (df_all, {"rows_in_files": 1, "rows_after_filters": 1}),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.sort_for_crm", lambda in_df: in_df)
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_crm_snapshot", lambda *_args, **_kwargs: _minimal_snapshot())
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["x"]], [""]))
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.build_fixed_value_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fixed payload must not be built by default")),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr("scripts.import_orders_to_crm._promote_candidate_workbook", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", lambda *_args, **_kwargs: tmp_path / "archive")
+    monkeypatch.setattr("scripts.import_orders_to_crm.sync_pending_orders_to_gdrive_safe", lambda *_args, **_kwargs: {"rows_synced": 0})
+
+    stats = main(
+        orders_dir=orders_dir,
+        crm_path=crm_path,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        dry_run=False,
+        update_existing=False,
+        no_update=True,
+        verbose=False,
+    )
+    assert stats["orders_imported"] == 1
+
+
+def test_main_does_not_archive_when_candidate_promotion_fails(monkeypatch, tmp_path):
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+    source_file = orders_dir / "ActiveOrders.xlsx"
+    source_file.write_text("placeholder", encoding="utf-8")
+    crm_path = tmp_path / "crm.xlsx"
+    crm_path.write_text("crm", encoding="utf-8")
+
+    df = _minimal_active_orders_df()
+    monkeypatch.setattr("scripts.import_orders_to_crm.read_active_orders", lambda _p: (df, [source_file]))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.filter_for_shipping",
+        lambda df_all, *_args, **_kwargs: (df_all, {"rows_in_files": 1, "rows_after_filters": 1}),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.sort_for_crm", lambda in_df: in_df)
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_crm_snapshot", lambda *_args, **_kwargs: _minimal_snapshot())
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["x"]], [""]))
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_fixed_value_payload", lambda *_args, **_kwargs: [{}])
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._promote_candidate_workbook",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("candidate verification failed")),
+        raising=False,
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.sync_pending_orders_to_gdrive_safe", lambda *_args, **_kwargs: {"rows_synced": 0})
+
+    archive_calls = {"count": 0}
+
+    def _archive_spy(*_args, **_kwargs):
+        archive_calls["count"] += 1
+        return tmp_path / "archive"
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", _archive_spy)
+
+    with pytest.raises(RuntimeError, match="candidate verification failed"):
+        main(
+            orders_dir=orders_dir,
+            crm_path=crm_path,
+            sheet_name="SALES_KSP_CRM_1",
+            table_name="tb_SalesRaw",
+            dry_run=False,
+            update_existing=False,
+            no_update=True,
+            verbose=False,
+        )
+
+    assert archive_calls["count"] == 0
