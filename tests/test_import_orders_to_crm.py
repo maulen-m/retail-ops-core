@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import openpyxl
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.worksheet.table import Table, TableStyleInfo
 import pandas as pd
 import pytest
@@ -31,6 +32,9 @@ from scripts.import_orders_to_crm import (
     _row_in_backfill_window,
     _allow_openpyxl_backfill_fallback,
     _allow_openpyxl_append_fallback,
+    _find_template_row_for_append,
+    _normalize_conditional_formatting_ranges,
+    _verify_appended_rows_integrity,
     _xlwings_open_timeout_sec,
     _excel_automation_preflight,
     _excel_open_probe,
@@ -811,6 +815,139 @@ def test_coerce_column_values_pads_and_truncates():
     assert _coerce_column_values([1, 2, 3], 2) == [1, 2]
 
 
+def test_find_template_row_for_append_skips_broken_tail_row():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+    ws.cell(1, 1, "Date")
+    ws.cell(1, 2, "STORE_NAME")
+    ws.cell(1, 3, "Quantity")
+    ws.cell(2, 2, '=IF(TRUE,"AcmeWear","")')
+    ws.cell(2, 3, "=1")
+    ws.cell(3, 2, "")  # broken tail row
+    ws.cell(3, 3, "")
+
+    template_row = _find_template_row_for_append(
+        ws=ws,
+        header_row=1,
+        table_end_row=3,
+        formula_cols=[2, 3],
+    )
+    wb.close()
+
+    assert template_row == 2
+
+
+def test_normalize_conditional_formatting_ranges_extends_fragmented_ranges():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+    headers = [
+        "Date",
+        "STORE_NAME",
+        "Quantity",
+        "Kaspi_name_core",
+        "OrderID",
+        "Sell_price_kzt",
+        "Total_price",
+        "Total_net_rev",
+        "№ заказа",
+    ]
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(1, idx, header)
+    ws.cell(2, 1, date.today())
+    ws.cell(2, 2, "AcmeWear")
+    ws.cell(2, 3, 1)
+    ws.cell(2, 4, "Line51")
+    ws.cell(2, 5, 800000001)
+    ws.cell(2, 6, 9000)
+    ws.cell(2, 7, 9000)
+    ws.cell(2, 8, 7800)
+    ws.cell(2, 9, 800000001)
+
+    ws.conditional_formatting.add("B2:B3 B5", FormulaRule(formula=['$B2="AcmeWear"']))
+    ws.conditional_formatting.add("F2:H3", FormulaRule(formula=["$F2>0"]))
+
+    header_to_col = {h: i for i, h in enumerate(headers, start=1)}
+    updated = _normalize_conditional_formatting_ranges(
+        ws=ws,
+        header_row=1,
+        data_end_row=10,
+        header_to_col=header_to_col,
+        verbose=False,
+    )
+
+    sqrefs = [str(cf.sqref) for cf in ws.conditional_formatting._cf_rules.keys()]
+    wb.close()
+
+    assert updated >= 1
+    assert any("B2:B10" in sqref for sqref in sqrefs)
+    assert any("F2:H10" in sqref for sqref in sqrefs)
+
+
+def test_verify_appended_rows_integrity_detects_empty_required_cell(tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+    headers = [
+        "Date",
+        "STORE_NAME",
+        "Quantity",
+        "Kaspi_name_core",
+        "OrderID",
+        "KASPI_OFFER_NAME",
+        "SKU_ID",
+        "Sell_price_kzt",
+        "Total_price",
+        "Total_net_rev",
+        "MODEL",
+        "PLANNED_SHIPPING_DATE",
+        "Product_Type",
+        "Delivery_fee_kzt",
+        "Total_weight",
+        "SKU_ID_KSP",
+        "Kaspi_name_source",
+        "№ заказа",
+        "Название товара в Kaspi Магазине",
+        "Артикул",
+        "Статус",
+    ]
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(1, idx, header)
+
+    # Template row with complete computed data.
+    for idx in range(1, len(headers) + 1):
+        ws.cell(2, idx, f"v{idx}")
+
+    # Appended row with a broken computed column (Sell_price_kzt).
+    for idx in range(1, len(headers) + 1):
+        ws.cell(3, idx, f"new{idx}")
+    ws.cell(3, 8, "")  # Sell_price_kzt
+
+    table = Table(displayName="tb_SalesRaw", ref=f"A1:{openpyxl.utils.get_column_letter(len(headers))}3")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(table)
+    wb.save(workbook)
+    wb.close()
+
+    with pytest.raises(RuntimeError, match="Append integrity check failed"):
+        _verify_appended_rows_integrity(
+            workbook_path=workbook,
+            sheet_name="SALES_KSP_CRM_1",
+            table_name="tb_SalesRaw",
+            start_row=3,
+            end_row=3,
+            verbose=False,
+        )
+
+
 def test_build_line_dedupe_key_differentiates_multiline_items():
     k1 = _build_line_dedupe_key(
         "812315649",
@@ -889,6 +1026,7 @@ def test_main_default_does_not_compute_fixed_values_payload(monkeypatch, tmp_pat
         dry_run=False,
         update_existing=False,
         no_update=True,
+        append_integrity_check=False,
         verbose=False,
     )
     assert stats["orders_imported"] == 1
@@ -938,6 +1076,7 @@ def test_main_does_not_archive_when_candidate_promotion_fails(monkeypatch, tmp_p
             dry_run=False,
             update_existing=False,
             no_update=True,
+            append_integrity_check=False,
             verbose=False,
         )
 
@@ -994,6 +1133,7 @@ def test_main_can_write_kaspi_core_override_without_full_fixed_payload(monkeypat
         no_update=True,
         fixed_values=False,
         kaspi_core_override=True,
+        append_integrity_check=False,
         verbose=False,
     )
     assert stats["orders_imported"] == 1

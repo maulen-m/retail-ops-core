@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 import json
 import os
 import re
@@ -39,12 +40,14 @@ except ModuleNotFoundError:  # pragma: no cover - environment-specific
 
 # openpyxl only for reading (inspection)
 from openpyxl import load_workbook
+from openpyxl.formatting.formatting import ConditionalFormatting
 from openpyxl.formula.translate import Translator
 from openpyxl.utils.cell import (
     coordinate_from_string,
     column_index_from_string,
     get_column_letter,
 )
+from openpyxl.worksheet.cell_range import CellRange
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -1487,6 +1490,313 @@ def _table_bounds(table) -> Tuple[int, int, int, int]:
     return start_col, start_row, end_col, end_row
 
 
+def _find_header_col(header_to_col: Dict[str, int], normalized_aliases: set[str]) -> Optional[int]:
+    for name, col in header_to_col.items():
+        if norm(name) in normalized_aliases:
+            return col
+    return None
+
+
+def _has_formula_payload(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.startswith("=")
+    if value is None:
+        return False
+    text = getattr(value, "text", None)
+    return isinstance(text, str) and bool(text.strip())
+
+
+def _formula_template_columns(header_to_col: Dict[str, int]) -> List[int]:
+    formula_alias_groups = (
+        {"storename", "store_name"},
+        {"quantity", "количество"},
+        {"kaspinamecore", "kaspi_name_core"},
+        {"probablesize", "probable_size"},
+        {"kaspioffername", "kaspi_offer_name"},
+        {"skuid", "sku_id"},
+        {"sellpricekzt", "sell_price_kzt"},
+        {"totalprice", "total_price"},
+        {"totalnetrev", "total_net_rev"},
+        {"model"},
+        {"plannedshippingdate", "planned_shipping_date", "плановаядатапередачикурьеру"},
+        {"producttype", "product_type"},
+        {"deliveryfeekzt", "delivery_fee_kzt"},
+        {"totalweight", "total_weight"},
+        {"skuidksp", "sku_id_ksp", "артикул"},
+        {"kaspinamesource", "kaspi_name_source", "названиевсистемепродавца"},
+    )
+    cols = []
+    for aliases in formula_alias_groups:
+        col = _find_header_col(header_to_col, aliases)
+        if col:
+            cols.append(col)
+    return sorted(set(cols))
+
+
+def _find_template_row_for_append(
+    ws: Any,
+    header_row: int,
+    table_end_row: int,
+    formula_cols: List[int],
+) -> Optional[int]:
+    if table_end_row <= header_row:
+        return None
+    required_hits = max(1, min(4, len(formula_cols))) if formula_cols else 0
+    for row_num in range(table_end_row, header_row, -1):
+        if not formula_cols:
+            return row_num
+        hits = 0
+        for col_num in formula_cols:
+            if _has_formula_payload(ws.cell(row=row_num, column=col_num).value):
+                hits += 1
+        if hits >= required_hits:
+            return row_num
+    return None
+
+
+def _build_cf_replacement_by_col(
+    header_to_col: Dict[str, int],
+    data_start_row: int,
+    data_end_row: int,
+) -> Dict[int, str]:
+    replacements: Dict[int, str] = {}
+    if data_end_row < data_start_row:
+        return replacements
+
+    single_alias_groups = (
+        {"date", "дата"},
+        {"storename", "store_name"},
+        {"quantity", "количество"},
+        {"kaspinamecore", "kaspi_name_core"},
+        {"orderid", "order_id"},
+        {"заказа", "номерзаказа", "№заказа"},
+    )
+    for aliases in single_alias_groups:
+        col = _find_header_col(header_to_col, aliases)
+        if not col:
+            continue
+        replacements[col] = f"{get_column_letter(col)}{data_start_row}:{get_column_letter(col)}{data_end_row}"
+
+    sell_col = _find_header_col(header_to_col, {"sellpricekzt", "sell_price_kzt"})
+    total_col = _find_header_col(header_to_col, {"totalprice", "total_price"})
+    net_col = _find_header_col(header_to_col, {"totalnetrev", "total_net_rev"})
+    if sell_col and total_col and net_col and sell_col < total_col < net_col:
+        group_range = f"{get_column_letter(sell_col)}{data_start_row}:{get_column_letter(net_col)}{data_end_row}"
+        for col in range(sell_col, net_col + 1):
+            replacements[col] = group_range
+
+    return replacements
+
+
+def _normalize_conditional_formatting_ranges(
+    ws: Any,
+    header_row: int,
+    data_end_row: int,
+    header_to_col: Dict[str, int],
+    verbose: bool = False,
+) -> int:
+    cf = ws.conditional_formatting
+    if not cf._cf_rules:
+        return 0
+
+    data_start_row = header_row + 1
+    replacements = _build_cf_replacement_by_col(header_to_col, data_start_row, data_end_row)
+    if not replacements:
+        return 0
+
+    items = list(cf._cf_rules.items())
+    new_rules: OrderedDict = OrderedDict()
+    updated = 0
+
+    for cf_obj, rules in items:
+        old_sqref = str(cf_obj.sqref)
+        parts = [part for part in old_sqref.split() if part]
+        token_ranges: List[CellRange] = []
+        for part in parts:
+            try:
+                token_ranges.append(CellRange(part))
+            except Exception:
+                token_ranges = []
+                break
+        if not token_ranges:
+            new_cf = ConditionalFormatting(
+                sqref=old_sqref,
+                pivot=getattr(cf_obj, "pivot", None),
+                extLst=getattr(cf_obj, "extLst", None),
+            )
+            new_rules[new_cf] = rules
+            continue
+
+        touched_cols: List[int] = []
+        untouched_tokens: List[str] = []
+        for cell_range in token_ranges:
+            touched = False
+            for col_num in range(cell_range.min_col, cell_range.max_col + 1):
+                if col_num in replacements:
+                    touched_cols.append(col_num)
+                    touched = True
+            if not touched:
+                untouched_tokens.append(cell_range.coord)
+
+        if touched_cols:
+            normalized_tokens: List[str] = []
+            seen = set()
+            for col_num in sorted(set(touched_cols)):
+                replacement = replacements[col_num]
+                if replacement in seen:
+                    continue
+                normalized_tokens.append(replacement)
+                seen.add(replacement)
+            normalized_tokens.extend(untouched_tokens)
+            new_sqref = " ".join(normalized_tokens)
+        else:
+            new_sqref = old_sqref
+
+        if new_sqref != old_sqref:
+            updated += 1
+
+        new_cf = ConditionalFormatting(
+            sqref=new_sqref,
+            pivot=getattr(cf_obj, "pivot", None),
+            extLst=getattr(cf_obj, "extLst", None),
+        )
+        new_rules[new_cf] = rules
+
+    cf._cf_rules = new_rules
+    if verbose and updated:
+        print(f"  Conditional formatting ranges normalized: {updated} blocks")
+    return updated
+
+
+def _collect_cf_intervals_for_column(ws: Any, col_num: int) -> List[Tuple[int, int]]:
+    intervals: List[Tuple[int, int]] = []
+    for cf_obj in ws.conditional_formatting._cf_rules.keys():
+        for part in str(cf_obj.sqref).split():
+            try:
+                cell_range = CellRange(part)
+            except Exception:
+                continue
+            if cell_range.min_col <= col_num <= cell_range.max_col:
+                intervals.append((cell_range.min_row, cell_range.max_row))
+    if not intervals:
+        return intervals
+    intervals.sort()
+    merged: List[Tuple[int, int]] = [intervals[0]]
+    for start, end in intervals[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end + 1:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _intervals_cover_range(intervals: List[Tuple[int, int]], start_row: int, end_row: int) -> bool:
+    for start, end in intervals:
+        if start <= start_row and end >= end_row:
+            return True
+    return False
+
+
+def _verify_appended_rows_integrity(
+    workbook_path: Path,
+    sheet_name: str,
+    table_name: str,
+    start_row: int,
+    end_row: int,
+    verbose: bool = False,
+) -> None:
+    if start_row <= 0 or end_row < start_row:
+        return
+
+    wb = load_workbook(filename=str(workbook_path), read_only=False, data_only=False)
+    try:
+        ws = wb[sheet_name]
+        table = _resolve_table(ws, table_name)
+        tbl_start_col, tbl_start_row, tbl_end_col, tbl_end_row = _table_bounds(table)
+        if start_row < (tbl_start_row + 1) or end_row > tbl_end_row:
+            raise RuntimeError(
+                f"Append row window {start_row}-{end_row} is outside table bounds {tbl_start_row + 1}-{tbl_end_row}."
+            )
+
+        header_values = [
+            ws.cell(row=tbl_start_row, column=col).value
+            for col in range(tbl_start_col, tbl_end_col + 1)
+        ]
+        header_to_col = {
+            str(name).strip(): tbl_start_col + i
+            for i, name in enumerate(header_values)
+            if str(name or "").strip()
+        }
+
+        required_cols = _formula_template_columns(header_to_col)
+        raw_required_aliases = (
+            {"заказа", "номерзаказа", "№заказа"},
+            {"названиетоваравkaspiмагазине"},
+            {"артикул"},
+            {"статус"},
+        )
+        for aliases in raw_required_aliases:
+            col = _find_header_col(header_to_col, aliases)
+            if col:
+                required_cols.append(col)
+        required_cols = sorted(set(required_cols))
+
+        issues: List[str] = []
+        max_issues = 40
+        for row_num in range(start_row, end_row + 1):
+            for col_num in required_cols:
+                value = ws.cell(row=row_num, column=col_num).value
+                if value in (None, ""):
+                    issues.append(f"row {row_num} col {get_column_letter(col_num)} is empty")
+                    if len(issues) >= max_issues:
+                        break
+            if len(issues) >= max_issues:
+                break
+
+        template_row = start_row - 1
+        if template_row > tbl_start_row:
+            for col_num in required_cols:
+                src_style = ws.cell(row=template_row, column=col_num).style_id
+                if src_style is None:
+                    continue
+                for row_num in range(start_row, end_row + 1):
+                    if ws.cell(row=row_num, column=col_num).style_id != src_style:
+                        issues.append(
+                            f"row {row_num} col {get_column_letter(col_num)} style mismatch vs template row {template_row}"
+                        )
+                        break
+                if len(issues) >= max_issues:
+                    break
+
+        cf_replacements = _build_cf_replacement_by_col(header_to_col, tbl_start_row + 1, tbl_end_row)
+        for col_num in sorted(set(cf_replacements.keys())):
+            intervals = _collect_cf_intervals_for_column(ws, col_num)
+            if not intervals:
+                continue
+            if not _intervals_cover_range(intervals, start_row, end_row):
+                issues.append(
+                    f"conditional formatting for column {get_column_letter(col_num)} does not cover rows {start_row}-{end_row}"
+                )
+
+        if issues:
+            sample = "; ".join(issues[:8])
+            raise RuntimeError(
+                f"Append integrity check failed for rows {start_row}-{end_row}. "
+                f"Sample issues: {sample}"
+            )
+        if verbose:
+            print(f"  Append integrity check passed for rows {start_row}-{end_row}")
+    finally:
+        wb.close()
+
+
+def _file_fingerprint(path: Path) -> str:
+    stat = path.stat()
+    mtime = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
+    return f"{path} (size={stat.st_size} bytes, mtime={mtime})"
+
+
 @dataclass
 class CRMSnapshot:
     date_col: int
@@ -2351,6 +2661,9 @@ def excel_append_openpyxl(
     slice_headers: List[str],
     fixed_values: Optional[List[Dict[str, Any]]] = None,
     kaspi_name_core_values: Optional[List[str]] = None,
+    *,
+    repair_cf_ranges: bool = True,
+    verbose: bool = False,
 ) -> Tuple[int, int]:
     """
     Append rows with openpyxl fallback when Excel automation is blocked.
@@ -2367,7 +2680,7 @@ def excel_append_openpyxl(
         header_row = tbl_start_row
         top_row = tbl_end_row + 1
         bottom_row = top_row + n - 1
-        template_row = tbl_end_row if tbl_end_row > header_row else None
+        old_table_ref = table.ref
 
         header_values = [
             ws.cell(row=header_row, column=col).value
@@ -2378,6 +2691,18 @@ def excel_append_openpyxl(
             for i, name in enumerate(header_values)
             if str(name or "").strip()
         }
+        formula_cols = _formula_template_columns(header_to_col)
+        template_row = _find_template_row_for_append(
+            ws=ws,
+            header_row=header_row,
+            table_end_row=tbl_end_row,
+            formula_cols=formula_cols,
+        )
+        if template_row is None:
+            raise RuntimeError(
+                f"Could not locate a valid template row with formulas on sheet {sheet_name} "
+                f"before append range {top_row}-{bottom_row}."
+            )
 
         if template_row:
             for row_num in range(top_row, bottom_row + 1):
@@ -2453,10 +2778,20 @@ def excel_append_openpyxl(
             f"{get_column_letter(tbl_start_col)}{tbl_start_row}:"
             f"{get_column_letter(tbl_end_col)}{bottom_row}"
         )
+        if repair_cf_ranges:
+            _normalize_conditional_formatting_ranges(
+                ws=ws,
+                header_row=header_row,
+                data_end_row=bottom_row,
+                header_to_col=header_to_col,
+                verbose=verbose,
+            )
         wb.save(str(out_wb))
     finally:
         wb.close()
 
+    print(f"  Appending {n} rows starting at row {top_row}")
+    print(f"  Table ref: {old_table_ref} -> {table.ref}")
     print(f"  ✅ Saved {out_wb.name} (openpyxl fallback)")
     return (top_row, bottom_row)
 
@@ -2478,6 +2813,7 @@ def append_orders_with_fallback(
     *,
     allow_openpyxl_fallback: bool = False,
     prefer_xlwings: bool = True,
+    repair_cf_ranges: bool = True,
     verbose: bool = False,
 ) -> Tuple[int, int]:
     if prefer_xlwings:
@@ -2524,6 +2860,8 @@ def append_orders_with_fallback(
         slice_headers,
         fixed_values=fixed_values,
         kaspi_name_core_values=kaspi_name_core_values,
+        repair_cf_ranges=repair_cf_ranges,
+        verbose=verbose,
     )
 
 
@@ -2937,6 +3275,9 @@ def main(
     transactional=_UNSET,
     openpyxl_append_fallback=_UNSET,
     prefer_xlwings_append=_UNSET,
+    append_integrity_check=_UNSET,
+    repair_cf_ranges=_UNSET,
+    enforce_crm_path=_UNSET,
     candidate_dir=_UNSET,
     failed_candidate_dir=_UNSET,
     summary_file=_UNSET,
@@ -3087,6 +3428,24 @@ def main(
         help="Try xlwings append first before openpyxl fallback (default: on).",
     )
     parser.add_argument(
+        "--append-integrity-check",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Verify appended rows (formulas/styles/CF coverage) before promotion (default: on).",
+    )
+    parser.add_argument(
+        "--repair-cf-ranges",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalize conditional-formatting row ranges to current table end during append (default: on).",
+    )
+    parser.add_argument(
+        "--enforce-crm-path",
+        type=Path,
+        default=None,
+        help="Fail if --crm-file does not exactly match this canonical workbook path.",
+    )
+    parser.add_argument(
         "--candidate-dir",
         type=Path,
         default=data_path("excel_ui", "backups", "candidates"),
@@ -3125,6 +3484,9 @@ def main(
         and transactional is _UNSET
         and openpyxl_append_fallback is _UNSET
         and prefer_xlwings_append is _UNSET
+        and append_integrity_check is _UNSET
+        and repair_cf_ranges is _UNSET
+        and enforce_crm_path is _UNSET
         and candidate_dir is _UNSET
         and failed_candidate_dir is _UNSET
         and summary_file is _UNSET
@@ -3182,12 +3544,31 @@ def main(
             args.openpyxl_append_fallback = bool(openpyxl_append_fallback)
         if prefer_xlwings_append is not _UNSET:
             args.prefer_xlwings_append = bool(prefer_xlwings_append)
+        if append_integrity_check is not _UNSET:
+            args.append_integrity_check = bool(append_integrity_check)
+        if repair_cf_ranges is not _UNSET:
+            args.repair_cf_ranges = bool(repair_cf_ranges)
+        if enforce_crm_path is not _UNSET:
+            args.enforce_crm_path = Path(enforce_crm_path) if enforce_crm_path else None
         if candidate_dir is not _UNSET:
             args.candidate_dir = Path(candidate_dir)
         if failed_candidate_dir is not _UNSET:
             args.failed_candidate_dir = Path(failed_candidate_dir)
         if summary_file is not _UNSET:
             args.summary_file = Path(summary_file)
+
+    args.crm_file = Path(args.crm_file).expanduser().resolve()
+    canonical_crm_path = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx").expanduser().resolve()
+    enforced_crm_path = (
+        Path(args.enforce_crm_path).expanduser().resolve()
+        if getattr(args, "enforce_crm_path", None)
+        else None
+    )
+    if enforced_crm_path and args.crm_file != enforced_crm_path:
+        raise RuntimeError(
+            "CRM path enforcement failed. "
+            f"--crm-file resolved to {args.crm_file}, expected {enforced_crm_path}."
+        )
 
     result = {
         "orders_imported": 0,
@@ -3307,6 +3688,12 @@ def main(
     print(f"  Data root: {get_data_root()}")
     print(f"  Orders dir: {args.orders_dir}")
     print(f"  CRM file: {args.crm_file}")
+    print(f"  CRM file fingerprint: {_file_fingerprint(args.crm_file)}")
+    if args.crm_file != canonical_crm_path:
+        print(
+            "  WARNING: --crm-file is not the canonical automation workbook "
+            f"({canonical_crm_path})"
+        )
     print(f"  Date filter: == {end_date} (TODAY only)")
     print(f"  Append date: {append_date}")
     if args.verbose and args.fixed_values:
@@ -3597,8 +3984,18 @@ def main(
         kaspi_name_core_values=kaspi_name_core_payload,
         allow_openpyxl_fallback=allow_openpyxl_append_fallback,
         prefer_xlwings=prefer_xlwings_append,
+        repair_cf_ranges=bool(getattr(args, "repair_cf_ranges", True)),
         verbose=bool(args.verbose),
     )
+    if bool(getattr(args, "append_integrity_check", True)):
+        _verify_appended_rows_integrity(
+            workbook_path=target_crm_path,
+            sheet_name=args.sheet,
+            table_name=args.table,
+            start_row=append_start_row,
+            end_row=append_end_row,
+            verbose=bool(args.verbose),
+        )
     fixed_backfilled = maybe_run_fixed_backfill()
     if fixed_backfilled:
         print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
