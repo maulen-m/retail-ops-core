@@ -32,6 +32,11 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.validate_schema import validate_schema
+from scripts.validate_single_truth_system import (
+    validate_system as validate_single_truth_system,
+    DEFAULT_DASHBOARD as DEFAULT_SINGLE_TRUTH_DASHBOARD,
+    DEFAULT_WORKBOOK as DEFAULT_SINGLE_TRUTH_WORKBOOK,
+)
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
@@ -317,6 +322,21 @@ def main():
         validate_runs_table(conn, result)
     finally:
         conn.close()
+
+    if args.strict:
+        try:
+            system_errors = validate_single_truth_system(
+                db_path=db_path,
+                workbook_path=DEFAULT_SINGLE_TRUTH_WORKBOOK,
+                dashboard_path=DEFAULT_SINGLE_TRUTH_DASHBOARD,
+            )
+            if system_errors:
+                for err in system_errors:
+                    result.add_error(f"single_truth_system: {err}")
+            else:
+                result.add_info("single_truth_system: OK")
+        except Exception as exc:
+            result.add_error(f"single_truth_system error: {exc}")
 
     # Output results
     if args.json:

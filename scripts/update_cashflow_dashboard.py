@@ -36,6 +36,7 @@ from core.config.business_params import get_fx_rates
 from core.cashflow.payout_model import load_payout_model
 from core.cashflow.order_status import normalize_order_status
 from core.cashflow.refund_reserve import compute_refund_reserve_series, apply_refund_reserve
+from core.cashflow.paid_capital_truth import compute_paid_capital_truth
 from core.calc.economics import calc_delivery_fee, calc_net_rev
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 EXPORT_DIR = PROJECT_ROOT / "exports"
@@ -1971,6 +1972,16 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
       const po60 = next60.reduce((sum, r) => sum + Number(r.po_payments_kzt || 0), 0);
 
       const trends = calculateTrends(actualData.length > 0 ? actualData : rows);
+      const paidTruth = meta.paid_capital_truth || null;
+      const usePaidTruth = !!paidTruth;
+      const paidInventory = usePaidTruth
+        ? Number(paidTruth.inventory_on_hand_paid_kzt || 0)
+            + Number(paidTruth.inventory_inbound_paid_kzt || 0)
+            + Number(paidTruth.inventory_on_delivery_paid_kzt || 0)
+        : Number(last.inventory_cost_close || 0);
+      const displayCash = usePaidTruth ? Number(paidTruth.cash_actual_kzt || 0) : Number(last.cash_close || 0);
+      const displayReceivables = usePaidTruth ? 0 : Number(last.receivables_close || 0);
+      const displayCapital = usePaidTruth ? Number(paidTruth.total_capital_paid_kzt || 0) : Number(last.capital_close || 0);
 
       const minRow = rows.reduce((a, b) => (a.cash_close < b.cash_close ? a : b));
       const breach = (minRow.cash_close || 0) < 0;
@@ -1987,81 +1998,81 @@ def _render_html(rows: list[dict], rows_conservative: list[dict], rows_aggressiv
         <div class="metric-card">
           <div class="card-header">
             <span class="card-label pixel-font">CASH BALANCE</span>
-            ${{trends ? `<span class="trend-indicator ${{trends.cash_close.direction}}">${{trends.cash_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
+            ${{(!usePaidTruth && trends) ? `<span class="trend-indicator ${{trends.cash_close.direction}}">${{trends.cash_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
           </div>
           <div class="card-value-row">
-            <span class="card-value monospace-font">${{formatKzt(last.cash_close)}}</span>
+            <span class="card-value monospace-font">${{formatKzt(displayCash)}}</span>
             <span class="card-unit">KZT</span>
           </div>
-          ${{trends ? `
+          ${{(!usePaidTruth && trends) ? `
             <div class="card-meta">
               <span class="change-value ${{trends.cash_close.isPositive ? 'positive' : 'negative'}}">
                 ${{trends.cash_close.isPositive ? '+' : ''}}${{trends.cash_close.changePercent.toFixed(1)}}%
               </span>
               <span class="change-period">vs 30d</span>
             </div>
-          ` : ''}}
+          ` : (usePaidTruth ? `<div class="card-meta"><span class="change-period">bank_accounts.yaml</span></div>` : '')}}
           <canvas class="sparkline" id="sparkline-cash" width="240" height="30"></canvas>
           ${{breachWarning}}
         </div>
 
         <div class="metric-card">
           <div class="card-header">
-            <span class="card-label pixel-font">RECEIVABLES</span>
-            ${{trends ? `<span class="trend-indicator ${{trends.receivables_close.direction}}">${{trends.receivables_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
+            <span class="card-label pixel-font">${{usePaidTruth ? 'RECEIVABLES (MODEL)' : 'RECEIVABLES'}}</span>
+            ${{(!usePaidTruth && trends) ? `<span class="trend-indicator ${{trends.receivables_close.direction}}">${{trends.receivables_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
           </div>
           <div class="card-value-row">
-            <span class="card-value monospace-font">${{formatKzt(last.receivables_close)}}</span>
+            <span class="card-value monospace-font">${{formatKzt(displayReceivables)}}</span>
             <span class="card-unit">KZT</span>
           </div>
-          ${{trends ? `
+          ${{(!usePaidTruth && trends) ? `
             <div class="card-meta">
               <span class="change-value ${{trends.receivables_close.isPositive ? 'positive' : 'negative'}}">
                 ${{trends.receivables_close.isPositive ? '+' : ''}}${{trends.receivables_close.changePercent.toFixed(1)}}%
               </span>
               <span class="change-period">vs 30d</span>
             </div>
-          ` : ''}}
+          ` : (usePaidTruth ? `<div class="card-meta"><span class="change-period">excluded from paid capital</span></div>` : '')}}
           <canvas class="sparkline" id="sparkline-receivables" width="240" height="30"></canvas>
         </div>
 
         <div class="metric-card">
           <div class="card-header">
-            <span class="card-label pixel-font">INVENTORY COST</span>
-            ${{trends ? `<span class="trend-indicator ${{trends.inventory_cost_close.direction}}">${{trends.inventory_cost_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
+            <span class="card-label pixel-font">${{usePaidTruth ? 'INVENTORY (PAID)' : 'INVENTORY COST'}}</span>
+            ${{(!usePaidTruth && trends) ? `<span class="trend-indicator ${{trends.inventory_cost_close.direction}}">${{trends.inventory_cost_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
           </div>
           <div class="card-value-row">
-            <span class="card-value monospace-font">${{formatKzt(last.inventory_cost_close)}}</span>
+            <span class="card-value monospace-font">${{formatKzt(paidInventory)}}</span>
             <span class="card-unit">KZT</span>
           </div>
-          ${{trends ? `
+          ${{(!usePaidTruth && trends) ? `
             <div class="card-meta">
               <span class="change-value ${{trends.inventory_cost_close.isPositive ? 'positive' : 'negative'}}">
                 ${{trends.inventory_cost_close.isPositive ? '+' : ''}}${{trends.inventory_cost_close.changePercent.toFixed(1)}}%
               </span>
               <span class="change-period">vs 30d</span>
             </div>
-          ` : ''}}
+          ` : (usePaidTruth ? `<div class="card-meta"><span class="change-period">on-hand + paid inbound</span></div>` : '')}}
           <canvas class="sparkline" id="sparkline-inventory" width="240" height="30"></canvas>
         </div>
 
         <div class="metric-card">
           <div class="card-header">
-            <span class="card-label pixel-font">TOTAL CAPITAL</span>
-            ${{trends ? `<span class="trend-indicator ${{trends.capital_close.direction}}">${{trends.capital_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
+            <span class="card-label pixel-font">${{usePaidTruth ? 'TOTAL CAPITAL (PAID)' : 'TOTAL CAPITAL'}}</span>
+            ${{(!usePaidTruth && trends) ? `<span class="trend-indicator ${{trends.capital_close.direction}}">${{trends.capital_close.direction === 'up' ? '▲' : '▼'}}</span>` : ''}}
           </div>
           <div class="card-value-row">
-            <span class="card-value monospace-font">${{formatKzt(last.capital_close)}}</span>
+            <span class="card-value monospace-font">${{formatKzt(displayCapital)}}</span>
             <span class="card-unit">KZT</span>
           </div>
-          ${{trends ? `
+          ${{(!usePaidTruth && trends) ? `
             <div class="card-meta">
               <span class="change-value ${{trends.capital_close.isPositive ? 'positive' : 'negative'}}">
                 ${{trends.capital_close.isPositive ? '+' : ''}}${{trends.capital_close.changePercent.toFixed(1)}}%
               </span>
               <span class="change-period">vs 30d</span>
             </div>
-          ` : ''}}
+          ` : (usePaidTruth ? `<div class="card-meta"><span class="change-period">cash + paid inventory</span></div>` : '')}}
           <canvas class="sparkline" id="sparkline-capital" width="240" height="30"></canvas>
         </div>
 
@@ -3111,7 +3122,14 @@ def main() -> int:
         on_delivery_summary,
     )
     drift_path = Path(str(DRIFT_REPORT_PATH).format(label=cutoff.isoformat()))
-    _write_drift_report(conn, drift_path, last_statement_date)
+    with sqlite3.connect(str(args.db)) as drift_conn:
+        drift_conn.row_factory = sqlite3.Row
+        _write_drift_report(drift_conn, drift_path, last_statement_date)
+    paid_capital_truth = compute_paid_capital_truth(
+        db_path=args.db,
+        bank_accounts_path=BANK_ACCOUNTS_PATH,
+        as_of=cutoff,
+    )
 
     _write_csv(all_rows, CSV_PATH)
     _write_min_cash(all_rows, all_rows_conservative, MIN_CASH_PATH)
@@ -3143,6 +3161,7 @@ def main() -> int:
                 "on_delivery_summary": on_delivery_summary,
                 "on_delivery_credit_rate": on_delivery_credit_rate,
                 "aggressive_enabled": aggressive_enabled,
+                "paid_capital_truth": paid_capital_truth,
             },
         )
 

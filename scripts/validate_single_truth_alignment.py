@@ -43,22 +43,49 @@ def _po_has_part_rows(conn: sqlite3.Connection, po_id: str) -> bool:
     return row is not None
 
 
-def _load_po_totals(conn: sqlite3.Connection, po_id: str) -> tuple[dict[str, int], dict[tuple[str, str], int]]:
+def _load_po_totals(
+    conn: sqlite3.Connection, po_id: str
+) -> tuple[dict[str, int], dict[tuple[str, str], int]]:
     sku_totals: dict[str, int] = {}
     size_totals: dict[tuple[str, str], int] = {}
     columns = [row[1] for row in conn.execute("PRAGMA table_info(po_line)").fetchall()]
-    part_filter = ""
-    if "po_part_id" in columns and _po_has_part_rows(conn, po_id):
-        part_filter = "AND COALESCE(TRIM(po_part_id), '') <> ''"
+    where_clauses = ["po_id = ?"]
+    params: list[str] = [po_id]
+
+    has_part_col = "po_part_id" in columns
+    if has_part_col:
+        scope_part_id: str | None = None
+        has_direct_rows = conn.execute(
+            "SELECT 1 FROM po_line WHERE po_id = ? LIMIT 1",
+            (po_id,),
+        ).fetchone()
+        if not has_direct_rows and _table_exists(conn, "po_part"):
+            mapped = conn.execute(
+                """
+                SELECT po_id
+                FROM po_part
+                WHERE po_part_id = ?
+                LIMIT 1
+                """,
+                (po_id,),
+            ).fetchone()
+            parent_po_id = str(mapped["po_id"] or "").strip() if mapped else ""
+            if parent_po_id:
+                where_clauses = ["po_id = ?", "po_part_id = ?"]
+                params = [parent_po_id, po_id]
+                scope_part_id = po_id
+
+        if scope_part_id is None and _po_has_part_rows(conn, po_id):
+            where_clauses.append("COALESCE(TRIM(po_part_id), '') <> ''")
+
     rows = conn.execute(
-        f"""
+        """
         SELECT sku_key, my_size, SUM(order_qty) AS qty
         FROM po_line
-        WHERE po_id = ?
-        {part_filter}
+        WHERE {where}
         GROUP BY sku_key, my_size
-        """,
-        (po_id,),
+        """.format(where=" AND ".join(where_clauses)),
+        tuple(params),
     ).fetchall()
     for row in rows:
         sku_key = str(row["sku_key"] or "").strip()

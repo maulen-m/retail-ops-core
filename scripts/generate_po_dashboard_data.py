@@ -257,16 +257,32 @@ def _po_line_has_part_rows(conn: sqlite3.Connection, po_id: str) -> bool:
     return row is not None
 
 
-def _load_po_line_rows(conn: sqlite3.Connection, po_id: str) -> list[sqlite3.Row]:
+def _load_po_line_rows(
+    conn: sqlite3.Connection,
+    po_id: str,
+    po_part_id: str | None = None,
+) -> list[sqlite3.Row]:
     """
     Load canonical po_line rows for one PO.
 
     If part-tagged rows exist, ignore legacy null/empty po_part_id rows.
     """
+    if po_part_id:
+        return conn.execute(
+            """
+            SELECT po_part_id, sku_key, sku_id, my_size, order_qty, received_qty
+              FROM po_line
+             WHERE po_id = ?
+               AND po_part_id = ?
+               AND order_qty > 0
+            """,
+            (po_id, po_part_id),
+        ).fetchall()
+
     if _po_line_has_part_rows(conn, po_id):
         return conn.execute(
             """
-            SELECT po_part_id, sku_key, sku_id, my_size, order_qty
+            SELECT po_part_id, sku_key, sku_id, my_size, order_qty, received_qty
               FROM po_line
              WHERE po_id = ?
                AND order_qty > 0
@@ -276,7 +292,7 @@ def _load_po_line_rows(conn: sqlite3.Connection, po_id: str) -> list[sqlite3.Row
         ).fetchall()
     return conn.execute(
         """
-        SELECT po_part_id, sku_key, sku_id, my_size, order_qty
+        SELECT po_part_id, sku_key, sku_id, my_size, order_qty, received_qty
           FROM po_line
          WHERE po_id = ?
            AND order_qty > 0
@@ -2014,22 +2030,46 @@ def generate_po_data(
     return output
 
 
-def load_po_orders(po_id: str) -> Optional[dict]:
-    """Load PO orders from po_line/po_header."""
-    conn = sqlite3.connect(str(DB_PATH))
+def _is_valid_archive_part_id(raw: Any) -> bool:
+    txt = str(raw or "").strip()
+    if not txt:
+        return False
+    upper = txt.upper()
+    if any(token in upper for token in ("TOTAL", "PENDING", "UNPAID", "PAYMENT")):
+        return False
+    return bool(re.match(r"^(PO[-_].+|ARC[-_].+|.+_PO-\d+)$", upper))
+
+
+def load_po_orders(
+    po_id: str,
+    db_path: Path = DB_PATH,
+    po_part_id: str | None = None,
+) -> Optional[dict]:
+    """Load PO orders from po_line/po_header (optionally scoped to po_part_id)."""
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        rows = _load_po_line_rows(conn, po_id)
+        rows = _load_po_line_rows(conn, po_id, po_part_id=po_part_id)
         if not rows:
             return None
 
         header = conn.execute(
             """
-            SELECT message_date, ship_date_seller, ship_date_cargo, status
+            SELECT message_date, ship_date_seller, ship_date_cargo, status, weight_nom_kg, total_places
             FROM po_header WHERE po_id = ?
             """,
             (po_id,),
         ).fetchone()
+        part_meta = None
+        if po_part_id and _table_exists(conn, "po_part"):
+            part_meta = conn.execute(
+                """
+                SELECT po_part_id, po_id, message_date, cargo_send_date, status, est_weight_kg, total_bags
+                FROM po_part
+                WHERE po_part_id = ?
+                """,
+                (po_part_id,),
+            ).fetchone()
 
         orders_by_sku: dict[str, dict[str, int]] = {}
         orders_by_sku_parts: dict[str, dict[str, dict[str, int]]] = {}
@@ -2071,13 +2111,95 @@ def load_po_orders(po_id: str) -> Optional[dict]:
 
         return {
             "po_id": po_id,
-            "message_date": header["message_date"] if header else None,
+            "po_part_id": po_part_id,
+            "message_date": (part_meta["message_date"] if part_meta else None) or (header["message_date"] if header else None),
             "ship_date_seller": header["ship_date_seller"] if header else None,
-            "ship_date_cargo": header["ship_date_cargo"] if header else None,
-            "status": header["status"] if header else None,
+            "ship_date_cargo": (part_meta["cargo_send_date"] if part_meta else None) or (header["ship_date_cargo"] if header else None),
+            "status": (part_meta["status"] if part_meta else None) or (header["status"] if header else None),
+            "weight_nom_kg": (part_meta["est_weight_kg"] if part_meta else None) or (header["weight_nom_kg"] if header else None),
+            "total_places": (part_meta["total_bags"] if part_meta else None) or (header["total_places"] if header else None),
             "orders_by_sku": orders_by_sku,
             "orders_by_sku_parts": normalized_parts,
         }
+    finally:
+        conn.close()
+
+
+def load_po_part_orders(po_part_id: str, db_path: Path = DB_PATH) -> Optional[dict]:
+    """Load one PO part payload by po_part_id."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if not _table_exists(conn, "po_part"):
+            return None
+        row = conn.execute(
+            """
+            SELECT po_part_id, po_id
+            FROM po_part
+            WHERE po_part_id = ?
+            LIMIT 1
+            """,
+            (po_part_id,),
+        ).fetchone()
+        if not row:
+            return None
+        po_id = str(row["po_id"] or "").strip()
+        if not po_id:
+            return None
+    finally:
+        conn.close()
+    return load_po_orders(po_id, db_path=db_path, po_part_id=po_part_id)
+
+
+def resolve_real_archive_ids(db_path: Path = DB_PATH) -> list[str]:
+    """Resolve archive ids dynamically from po_part (part-grain), fallback to PO ids."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        archive_ids: list[str] = []
+
+        if _table_exists(conn, "po_part"):
+            rows = conn.execute(
+                """
+                SELECT po_part_id, message_date, cargo_send_date, estimated_arrival_date
+                FROM po_part
+                WHERE COALESCE(TRIM(po_part_id), '') <> ''
+                """
+            ).fetchall()
+            candidates: list[tuple[date, str]] = []
+            for row in rows:
+                po_part_id = str(row["po_part_id"] or "").strip()
+                if not _is_valid_archive_part_id(po_part_id):
+                    continue
+                dt = (
+                    _parse_iso_date(row["message_date"])
+                    or _parse_iso_date(row["cargo_send_date"])
+                    or _parse_iso_date(row["estimated_arrival_date"])
+                    or date(1970, 1, 1)
+                )
+                candidates.append((dt, po_part_id))
+            for _, po_part_id in sorted(candidates, key=lambda item: (item[0], item[1]), reverse=True):
+                if po_part_id not in archive_ids:
+                    archive_ids.append(po_part_id)
+
+        if _table_exists(conn, "po_header"):
+            rows = conn.execute(
+                """
+                SELECT po_id, message_date, created_at
+                FROM po_header
+                ORDER BY COALESCE(message_date, created_at) DESC
+                """
+            ).fetchall()
+            for row in rows:
+                po_id = str(row["po_id"] or "").strip()
+                if not po_id:
+                    continue
+                if _table_exists(conn, "po_line") and _po_line_has_part_rows(conn, po_id):
+                    continue
+                if po_id not in archive_ids:
+                    archive_ids.append(po_id)
+
+        return archive_ids
     finally:
         conn.close()
 
@@ -2088,12 +2210,89 @@ def load_po4_approved_orders(po_id: str = "PO-4") -> Optional[dict]:
 
 
 def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
-    """Load real POs from po_header + po_line for dashboard display."""
+    """Load real POs for dashboard lifecycle (prefer po_part grain)."""
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
         if not _table_exists(conn, "po_header"):
             return []
+
+        header_map: dict[str, sqlite3.Row] = {}
+        for row in conn.execute("SELECT * FROM po_header").fetchall():
+            header_map[str(row["po_id"] or "")] = row
+
+        if _table_exists(conn, "po_part"):
+            part_rows = conn.execute(
+                """
+                SELECT *
+                FROM po_part
+                WHERE COALESCE(TRIM(po_part_id), '') <> ''
+                ORDER BY COALESCE(message_date, cargo_send_date, estimated_arrival_date) DESC, po_part_id DESC
+                """
+            ).fetchall()
+            real_parts: list[dict] = []
+
+            line_summary: dict[str, dict[str, int]] = {}
+            if _table_exists(conn, "po_line"):
+                for row in conn.execute(
+                    """
+                    SELECT po_part_id, SUM(order_qty) AS units_total, SUM(received_qty) AS units_received
+                    FROM po_line
+                    WHERE COALESCE(TRIM(po_part_id), '') <> ''
+                    GROUP BY po_part_id
+                    """
+                ).fetchall():
+                    part_id = str(row["po_part_id"] or "").strip()
+                    if not part_id:
+                        continue
+                    line_summary[part_id] = {
+                        "units_total": int(row["units_total"] or 0),
+                        "units_received": int(row["units_received"] or 0),
+                    }
+
+            for part in part_rows:
+                po_part_id = str(part["po_part_id"] or "").strip()
+                if not _is_valid_archive_part_id(po_part_id):
+                    continue
+                parent_po_id = str(part["po_id"] or "").strip()
+                header = header_map.get(parent_po_id)
+                status = str(part["status"] or (header["status"] if header else "") or "").upper()
+
+                summary = line_summary.get(po_part_id, {})
+                units_total = int(part["total_units"] or summary.get("units_total", 0) or 0)
+                units_received = int(summary.get("units_received", 0) or 0)
+                if status == "RECEIVED" and units_received == 0 and units_total > 0:
+                    units_received = units_total
+
+                real_parts.append(
+                    {
+                        "po_id": po_part_id,
+                        "parent_po_id": parent_po_id,
+                        "supplier_code": part["supplier_id"] or (header["supplier_code"] if header else None),
+                        "status": status or (header["status"] if header else None),
+                        "message_date": part["message_date"] or (header["message_date"] if header else None),
+                        "ship_date_seller": header["ship_date_seller"] if header else None,
+                        "ship_date_cargo": part["cargo_send_date"] or (header["ship_date_cargo"] if header else None),
+                        "alm_arrival_nom": header["alm_arrival_nom"] if header else None,
+                        "ast_arrival_nom": part["estimated_arrival_date"] or (header["ast_arrival_nom"] if header else None),
+                        "alm_arrival_real": header["alm_arrival_real"] if header else None,
+                        "ast_arrival_real": part["actual_arrival_date"] or (header["ast_arrival_real"] if header else None),
+                        "units_total": units_total,
+                        "units_received": units_received,
+                        "weight_nom_kg": part["est_weight_kg"] if part["est_weight_kg"] is not None else (header["weight_nom_kg"] if header else None),
+                        "weight_real_kg": header["weight_real_kg"] if header else None,
+                        "total_places": part["total_bags"] if part["total_bags"] is not None else (header["total_places"] if header else None),
+                        "total_cost_cny": header["total_cost_cny"] if header else None,
+                        "total_cost_kzt_supplier": header["total_cost_kzt_supplier"] if header else None,
+                        "total_landed_cost_kzt": header["total_landed_cost_kzt"] if header else None,
+                        "notes": header["notes"] if header and "notes" in header.keys() else None,
+                        "created_at": header["created_at"] if header else None,
+                        "updated_at": header["updated_at"] if header else None,
+                    }
+                )
+
+            if real_parts:
+                return real_parts
 
         line_summary = {}
         if _table_exists(conn, "po_line"):
@@ -2623,6 +2822,62 @@ def build_real_archive_data(
     orders_by_sku = normalized_orders
     orders_by_sku_parts = normalized_parts
 
+    sku_level_rows = archive_data.get("sku_level", [])
+    sku_template = copy.deepcopy(sku_level_rows[0]) if sku_level_rows else {}
+    existing_skus = {str(row.get("sku_key") or "").strip() for row in sku_level_rows}
+    for sku_key, size_map in orders_by_sku.items():
+        sku_norm = str(sku_key or "").strip()
+        if not sku_norm or sku_norm in existing_skus:
+            continue
+        total_qty = int(sum(int(v or 0) for v in size_map.values()))
+        pre_doc, post_doc = compute_doc_values(0.0, float(total_qty), 0.0)
+        sku_line = copy.deepcopy(sku_template) if sku_template else {}
+        sku_line.update(
+            {
+                "sku_key": sku_norm,
+                "sku_name": sku_norm,
+                "stock": 0,
+                "inbound": 0,
+                "active_inbound": 0,
+                "inbound_total": 0,
+                "stock_at_msg": 0.0,
+                "days_until_arrival": effective_L,
+                "effective_L": effective_L,
+                "consumption_until_arrival": 0.0,
+                "consumption_until_arrival_capped": 0.0,
+                "pre_arrival": 0,
+                "d_sku": 0.0,
+                "target": 0.0,
+                "rop_total": 0.0,
+                "po_qty_total": total_qty,
+                "po_weight_kg": 0.0,
+                "weight_per_unit_kg": 0.0,
+                "prep_days": 0,
+                "po_send_date": ship_date or "",
+                "po_message_date": message_date or "",
+                "est_arr_date": arr_dt.isoformat() if arr_dt else "",
+                "pre_arr_doc": pre_doc,
+                "post_arr_doc": post_doc,
+                "base_cost_cny": 0.0,
+                "base_cost_kzt": 0.0,
+                "unit_cogs": 0.0,
+                "po_base_cost_cny": 0.0,
+                "po_base_cost_kzt": 0.0,
+                "po_dlv_usd": 0.0,
+                "po_dlv_kzt": 0.0,
+                "po_cogs_kzt": 0.0,
+                "monthly_profit": 0.0,
+                "k_avg": 0.0,
+                "roic_pct": 0.0,
+                "profit_margin_pct": 0.0,
+                "size_orders": {size: int(qty or 0) for size, qty in size_map.items()},
+                "baseline_snapshot_date": baseline_snapshot_date,
+                "notes": "REAL_ARCHIVE_FROM_PO_PART",
+            }
+        )
+        sku_level_rows.append(sku_line)
+        existing_skus.add(sku_norm)
+
     for sku_line in archive_data.get("sku_level", []):
         sku_key = sku_line.get("sku_key")
         if not sku_key:
@@ -2706,6 +2961,28 @@ def build_real_archive_data(
         size_line["pre_arr_doc"] = pre_doc
         size_line["post_arr_doc"] = post_doc
         size_line["baseline_snapshot_date"] = baseline_snapshot_date
+
+    summary = archive_data.get("summary", {})
+    sku_rows_all = archive_data.get("sku_level", []) or []
+    skus_with_orders = [row for row in sku_rows_all if int(row.get("po_qty_total") or 0) > 0]
+    summary["total_units"] = int(sum(int(row.get("po_qty_total") or 0) for row in sku_rows_all))
+    summary["skus_with_orders"] = len(skus_with_orders)
+    summary["skus_without_orders"] = len(sku_rows_all) - len(skus_with_orders)
+    summary["total_weight_kg"] = round(
+        sum(float(row.get("po_weight_kg") or 0.0) for row in sku_rows_all),
+        1,
+    )
+
+    if po_payload.get("weight_nom_kg") not in (None, ""):
+        try:
+            summary["total_weight_kg"] = round(float(po_payload.get("weight_nom_kg") or 0.0), 1)
+        except (TypeError, ValueError):
+            pass
+    if po_payload.get("total_places") not in (None, ""):
+        try:
+            summary["total_bags"] = int(round(float(po_payload.get("total_places") or 0.0)))
+        except (TypeError, ValueError):
+            pass
 
     return archive_data
 
@@ -3648,9 +3925,11 @@ if __name__ == "__main__":
     params = get_params()
     fx_rates = get_fx_rates(CUTOFF_DATE, db_path=DB_PATH)
     archived_pos = []
-    archive_ids = ["Line52_PO-9", "PO-4", "PO-4.1", "PO-4.2", "PO-5"]
+    archive_ids = resolve_real_archive_ids(DB_PATH)
     for po_id in archive_ids:
-        po_actual = load_po_orders(po_id)
+        po_actual = load_po_part_orders(po_id, db_path=DB_PATH)
+        if not po_actual:
+            po_actual = load_po_orders(po_id, db_path=DB_PATH)
         if not po_actual:
             continue
         archive_data = build_real_archive_data(

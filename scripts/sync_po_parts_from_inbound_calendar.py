@@ -25,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_XLSX = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/"
-    "Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx"
+    "Purchase_orders/vibe_code_PO/backup/7.2.26/Inbound_calendar_V10.002.xlsx"
 )
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 
@@ -103,6 +103,20 @@ def _to_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _to_paid_flag(value: Any) -> int:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return 0
+    txt = str(value).strip().upper()
+    if txt in {"YES", "Y", "TRUE", "PAID", "1"}:
+        return 1
+    if txt in {"NO", "N", "FALSE", "UNPAID", "0", ""}:
+        return 0
+    try:
+        return 1 if float(txt) > 0 else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def _ensure_columns(df: pd.DataFrame, required: list[str], sheet: str) -> None:
@@ -197,6 +211,35 @@ def _is_valid_po_part_id(raw: Any) -> bool:
         return False
     upper = txt.upper()
     return bool(re.match(r"^(PO[-_].+|ARC[-_].+|.+_PO-\d+)$", upper))
+
+
+def _cleanup_invalid_parts(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "po_part"):
+        return
+    invalid = []
+    for row in conn.execute("SELECT po_part_id FROM po_part").fetchall():
+        po_part_id = str(row[0] or "").strip()
+        if not _is_valid_po_part_id(po_part_id):
+            invalid.append(po_part_id)
+    for po_part_id in invalid:
+        conn.execute("DELETE FROM po_part WHERE po_part_id = ?", (po_part_id,))
+
+
+def _cleanup_legacy_po_line_rows(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "po_line"):
+        return
+    conn.execute(
+        """
+        DELETE FROM po_line
+        WHERE COALESCE(TRIM(po_part_id), '') = ''
+          AND po_id IN (
+            SELECT po_id
+            FROM po_line
+            GROUP BY po_id
+            HAVING SUM(CASE WHEN COALESCE(TRIM(po_part_id), '') <> '' THEN 1 ELSE 0 END) > 0
+          )
+        """
+    )
 
 
 def _upsert_dim_sku(
@@ -339,6 +382,9 @@ def sync_po_parts_from_workbook(
         if "po_part_id" not in po_line_cols:
             raise RuntimeError("po_line.po_part_id is missing; run migrate_023_po_parts_schema.py first")
 
+        _cleanup_invalid_parts(conn)
+        _cleanup_legacy_po_line_rows(conn)
+
         # Upsert po_part from totals sheet first
         part_cols = _table_columns(conn, "po_part")
         for _, row in parts_df.iterrows():
@@ -366,8 +412,8 @@ def sync_po_parts_from_workbook(
                 "total_bags": _to_int(row.get("Total Bags")),
                 "qty_delta": _to_int(row.get("Qty Delta")),
                 "est_delivery_kzt": _to_float(row.get("Est. Delivery (KZT)")),
-                "is_paid_base": _to_int(row.get("is_paid_BASE")),
-                "is_paid_dlv": _to_int(row.get("is_paid_DLV")),
+                "is_paid_base": _to_paid_flag(row.get("is_paid_BASE")),
+                "is_paid_dlv": _to_paid_flag(row.get("is_paid_DLV")),
                 "to_pay_base_kzt": _to_float(row.get("To_pay_BASE_KZT")),
                 "to_pay_dlv_kzt": _to_float(row.get("To_pay_DLV_KZT")),
             }
@@ -433,8 +479,48 @@ def sync_po_parts_from_workbook(
             return "DRAFT"
 
         for po_id, rows in po_group.items():
-            total_units = sum(r["order_qty"] for r in rows)
-            total_cost_cny = sum(r["line_cost_cny"] for r in rows)
+            part_agg = conn.execute(
+                """
+                SELECT
+                    SUM(COALESCE(total_units, 0)) AS total_units,
+                    SUM(COALESCE(base_cost_cny, 0)) AS total_cost_cny,
+                    SUM(COALESCE(est_weight_kg, 0)) AS weight_nom_kg,
+                    SUM(COALESCE(total_bags, 0)) AS total_places
+                FROM po_part
+                WHERE po_id = ?
+                  AND COALESCE(TRIM(po_part_id), '') <> ''
+                """,
+                (po_id,),
+            ).fetchone()
+            total_units = (
+                _to_int(part_agg["total_units"])
+                if part_agg and part_agg["total_units"] is not None
+                else sum(r["order_qty"] for r in rows)
+            )
+            total_cost_cny = (
+                _to_float(part_agg["total_cost_cny"])
+                if part_agg and part_agg["total_cost_cny"] is not None
+                else sum(r["line_cost_cny"] for r in rows)
+            )
+            weight_nom_kg = _to_float(part_agg["weight_nom_kg"]) if part_agg else 0.0
+            total_places = _to_int(part_agg["total_places"]) if part_agg else 0
+
+            part_status_rows = conn.execute(
+                """
+                SELECT DISTINCT UPPER(COALESCE(status, ''))
+                FROM po_part
+                WHERE po_id = ?
+                  AND COALESCE(TRIM(po_part_id), '') <> ''
+                """,
+                (po_id,),
+            ).fetchall()
+            part_statuses = {str(r[0] or "").strip().upper() for r in part_status_rows}
+            if "IN_TRANSIT" in part_statuses:
+                header_status = "IN_TRANSIT"
+            elif part_statuses and part_statuses == {"RECEIVED"}:
+                header_status = "RECEIVED"
+            else:
+                header_status = _po_status(rows)
             payload = {
                 "po_id": po_id,
                 "supplier_code": rows[0]["supplier_id"] or "SHR",
@@ -442,9 +528,11 @@ def sync_po_parts_from_workbook(
                 "ship_date_cargo": rows[0]["cargo_send_date"],
                 "ast_arrival_nom": rows[0]["estimated_arrival_date"],
                 "ast_arrival_real": rows[0]["actual_arrival_date"],
-                "status": _po_status(rows),
+                "status": header_status,
                 "units_total": total_units,
                 "total_cost_cny": round(total_cost_cny, 2),
+                "weight_nom_kg": round(weight_nom_kg, 3),
+                "total_places": total_places,
             }
             usable = {k: v for k, v in payload.items() if k in header_cols}
             existing = conn.execute("SELECT 1 FROM po_header WHERE po_id = ? LIMIT 1", (po_id,)).fetchone()
