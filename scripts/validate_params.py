@@ -39,6 +39,7 @@ from scripts.validate_single_truth_system import (
 )
 from scripts.validate_on_delivery_freeze import validate_on_delivery_freeze
 from scripts.validate_business_insides import validate_business_insides
+from scripts.validate_sales_truth_reconciliation import reconcile_sales_truth
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
@@ -362,6 +363,21 @@ def main():
                 result.add_info("business_insides: OK")
         except Exception as exc:
             result.add_error(f"business_insides error: {exc}")
+
+        try:
+            sales_truth = reconcile_sales_truth(
+                db_path=db_path,
+                days=30,
+                as_of=date.today().isoformat(),
+            )
+            result.add_info(
+                "sales_truth_reconciliation: "
+                f"mismatch_days={sales_truth.get('daily_mismatch_count', 0)}, "
+                f"v2_cogs_coverage={sales_truth.get('sales_fact_v2', {}).get('cogs_coverage_pct', 0)}%, "
+                f"fact_cogs_coverage={sales_truth.get('fact_sales', {}).get('cogs_coverage_pct', 0)}%"
+            )
+        except Exception as exc:
+            result.add_error(f"sales_truth_reconciliation error: {exc}")
 
     # Output results
     if args.json:

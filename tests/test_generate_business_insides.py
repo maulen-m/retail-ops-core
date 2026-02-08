@@ -120,6 +120,71 @@ def _init_db(db_path: Path) -> None:
     conn.close()
 
 
+def _init_db_fact_sales_only(db_path: Path) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE fact_sales (
+            order_id TEXT,
+            order_date TEXT,
+            sku_key TEXT,
+            sku_id TEXT,
+            my_size TEXT,
+            store_code TEXT,
+            quantity REAL,
+            line_net_rev REAL,
+            cogs_line REAL,
+            profit_line REAL
+        );
+        CREATE TABLE dim_sku (
+            sku_key TEXT PRIMARY KEY,
+            model TEXT,
+            color TEXT,
+            product_type TEXT,
+            base_cost_cny REAL,
+            weight_kg REAL,
+            cogs_kzt REAL
+        );
+        CREATE TABLE fact_inventory_snapshot_size (
+            snapshot_date TEXT,
+            sku_key TEXT,
+            current_stock REAL
+        );
+        CREATE TABLE po_part (
+            po_part_id TEXT PRIMARY KEY,
+            po_id TEXT,
+            status TEXT,
+            base_cost_kzt REAL,
+            est_delivery_kzt REAL,
+            is_paid_base INTEGER,
+            is_paid_dlv INTEGER,
+            to_pay_base_kzt REAL,
+            to_pay_dlv_kzt REAL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO dim_sku (sku_key, model, color, product_type, base_cost_cny, weight_kg, cogs_kzt) "
+        "VALUES ('SKU_A', 'A', 'BLACK', 'CL', 0, 0, 900)"
+    )
+    conn.execute(
+        "INSERT INTO fact_inventory_snapshot_size (snapshot_date, sku_key, current_stock) VALUES ('2026-02-07', 'SKU_A', 10)"
+    )
+    conn.execute(
+        "INSERT INTO po_part (po_part_id, po_id, status, base_cost_kzt, est_delivery_kzt, is_paid_base, is_paid_dlv, to_pay_base_kzt, to_pay_dlv_kzt) "
+        "VALUES ('PO-1.1', 'PO-1', 'IN_TRANSIT', 100000, 20000, 1, 1, 0, 0)"
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_sales
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, line_net_rev, cogs_line, profit_line)
+        VALUES ('ORD-FS-1', '2026-02-08', 'SKU_A', 'SKU_A_M', 'M', 'ACMEWEAR', 2, 10000, 1800, 8200)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
 def _write_bank_yaml(path: Path) -> None:
     path.write_text(
         yaml.safe_dump(
@@ -225,3 +290,19 @@ def test_business_insides_includes_unpaid_inbound_obligations(tmp_path: Path) ->
         output_dir=tmp_path / "business_insides",
     )
     assert result["capital"]["inbound_unpaid_obligations_kzt"] > 0
+
+
+def test_business_insides_works_with_fact_sales_only_via_canonical_views(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    bank = tmp_path / "bank_accounts.yaml"
+    _init_db_fact_sales_only(db_path)
+    _write_bank_yaml(bank)
+
+    result = generate_business_insides(
+        db_path=db_path,
+        bank_accounts_path=bank,
+        as_of="2026-02-08",
+        output_dir=tmp_path / "business_insides",
+    )
+    assert result["performance"]["avg_7d_net_rev_kzt"] > 0
+    assert result["performance"]["avg_7d_cogs_kzt"] > 0

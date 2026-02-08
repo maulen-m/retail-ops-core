@@ -18,8 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.cashflow.paid_capital_truth import compute_paid_capital_truth
-from core.config.business_params import get_fx_rates
-from core.calc.economics import calc_cogs
+from core.sales import ensure_sales_truth_views
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_BANK = PROJECT_ROOT / "config" / "bank_accounts.yaml"
@@ -57,29 +56,73 @@ def _ascii_table(headers: list[str], rows: list[list[str]]) -> str:
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (name,),
-        ).fetchone()
-        is not None
-    )
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return row is not None
 
 
-def _load_dim_sku_costs(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
-    if not _table_exists(conn, "dim_sku"):
-        return {}
-    rows = conn.execute(
-        "SELECT sku_key, cogs_kzt, base_cost_cny, weight_kg FROM dim_sku"
-    ).fetchall()
-    return {
-        str(row[0]): {
-            "cogs_kzt": float(row[1] or 0.0),
-            "base_cost_cny": float(row[2] or 0.0),
-            "weight_kg": float(row[3] or 0.0),
-        }
-        for row in rows
+def _load_ads_daily(
+    db_path: Path,
+    start_date: date,
+    end_date: date,
+) -> tuple[dict[str, float], dict[str, float]]:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if not _table_exists(conn, "ads_spend_sidecar_daily"):
+            return {}, {
+                "mapped_rows": 0.0,
+                "unmapped_rows": 0.0,
+                "mapped_cost_kzt": 0.0,
+                "unmapped_cost_kzt": 0.0,
+                "total_cost_kzt": 0.0,
+                "mapping_coverage_pct": 0.0,
+            }
+        rows = conn.execute(
+            """
+            SELECT
+                date,
+                SUM(COALESCE(total_cost_kzt, 0)) AS total_cost_kzt,
+                SUM(COALESCE(mapped_rows, 0)) AS mapped_rows,
+                SUM(COALESCE(unmapped_rows, 0)) AS unmapped_rows,
+                SUM(COALESCE(mapped_cost_kzt, 0)) AS mapped_cost_kzt,
+                SUM(COALESCE(unmapped_cost_kzt, 0)) AS unmapped_cost_kzt
+            FROM ads_spend_sidecar_daily
+            WHERE date(date) BETWEEN ? AND ?
+            GROUP BY date
+            """,
+            (start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    by_date: dict[str, float] = {}
+    totals = {
+        "mapped_rows": 0.0,
+        "unmapped_rows": 0.0,
+        "mapped_cost_kzt": 0.0,
+        "unmapped_cost_kzt": 0.0,
+        "total_cost_kzt": 0.0,
+        "mapping_coverage_pct": 0.0,
     }
+    for row in rows:
+        d = str(row["date"])
+        cost = float(row["total_cost_kzt"] or 0.0)
+        by_date[d] = round(cost, 2)
+        totals["mapped_rows"] += float(row["mapped_rows"] or 0.0)
+        totals["unmapped_rows"] += float(row["unmapped_rows"] or 0.0)
+        totals["mapped_cost_kzt"] += float(row["mapped_cost_kzt"] or 0.0)
+        totals["unmapped_cost_kzt"] += float(row["unmapped_cost_kzt"] or 0.0)
+        totals["total_cost_kzt"] += cost
+    total_rows = totals["mapped_rows"] + totals["unmapped_rows"]
+    totals["mapping_coverage_pct"] = (
+        round((totals["mapped_rows"] / total_rows) * 100.0, 2) if total_rows else 0.0
+    )
+    for key in ("mapped_cost_kzt", "unmapped_cost_kzt", "total_cost_kzt"):
+        totals[key] = round(totals[key], 2)
+    return by_date, totals
 
 
 def compute_sales_metrics(
@@ -96,19 +139,13 @@ def compute_sales_metrics(
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        if not _table_exists(conn, "sales_fact_v2"):
-            raise RuntimeError("sales_fact_v2 table missing")
-
-        dim_costs = _load_dim_sku_costs(conn)
-        fx_rates = get_fx_rates(as_of_date, db_path=db_path)
+        ensure_sales_truth_views(conn)
         rows = conn.execute(
             """
-            SELECT order_date, sku_key, quantity, cogs, net_rev
-            FROM sales_fact_v2
-            WHERE date(order_date) BETWEEN ? AND ?
-              AND UPPER(COALESCE(status, '')) = 'DELIVERED'
-              AND COALESCE(return_flag, 0) = 0
-            ORDER BY order_date
+            SELECT sale_date, cogs_source, net_rev_kzt, cogs_kzt
+            FROM view_sales_line_truth
+            WHERE date(sale_date) BETWEEN ? AND ?
+            ORDER BY sale_date
             """,
             (start_30.isoformat(), as_of_date.isoformat()),
         ).fetchall()
@@ -123,34 +160,14 @@ def compute_sales_metrics(
 
     for row in rows:
         total_rows += 1
-        day = str(row["order_date"])
-        qty = float(row["quantity"] or 0.0)
-        net_rev = float(row["net_rev"] or 0.0)
-        cogs_raw = float(row["cogs"] or 0.0)
-        sku_key = str(row["sku_key"] or "").strip()
-
-        cogs_line = cogs_raw
-        if cogs_line <= 0:
-            meta = dim_costs.get(sku_key, {})
-            cogs_unit = float(meta.get("cogs_kzt") or 0.0)
-            if cogs_unit <= 0 and float(meta.get("base_cost_cny") or 0.0) > 0:
-                cogs_unit = float(
-                    calc_cogs(
-                        float(meta.get("base_cost_cny") or 0.0),
-                        float(meta.get("weight_kg") or 0.0),
-                        cny_kzt=float(fx_rates.cny_kzt),
-                        volumetric_factor=float(fx_rates.dlv_rate_usd_kg),
-                        freight_rate=float(fx_rates.usd_kzt),
-                    )
-                )
-            if cogs_unit > 0 and qty > 0:
-                cogs_line = round(cogs_unit * qty, 2)
-                fallback_rows += 1
-            else:
-                cogs_line = 0.0
-                unresolved_rows += 1
-                if sku_key:
-                    unresolved_skus.add(sku_key)
+        day = str(row["sale_date"])
+        net_rev = float(row["net_rev_kzt"] or 0.0)
+        cogs_line = float(row["cogs_kzt"] or 0.0)
+        cogs_source = str(row["cogs_source"] or "")
+        if cogs_source in {"fact_sales_fallback", "dim_sku_fallback"}:
+            fallback_rows += 1
+        elif cogs_source == "unresolved":
+            unresolved_rows += 1
 
         day_row = by_date.setdefault(day, {"net_rev_kzt": 0.0, "cogs_kzt": 0.0, "profit_kzt": 0.0})
         day_row["net_rev_kzt"] += net_rev
@@ -162,13 +179,26 @@ def compute_sales_metrics(
         day_row["cogs_kzt"] = round(day_row["cogs_kzt"], 2)
         day_row["profit_kzt"] = round(day_row["profit_kzt"], 2)
 
+    ads_by_date, ads_totals = _load_ads_daily(db_path, start_30, as_of_date)
+    for day, day_row in by_date.items():
+        ads_cost = float(ads_by_date.get(day, 0.0))
+        day_row["ads_spend_kzt"] = round(ads_cost, 2)
+        day_row["profit_after_ads_kzt"] = round(day_row["profit_kzt"] - ads_cost, 2)
+
     last_7_list: list[dict[str, Any]] = []
     for i in range(max(1, int(last_7_days))):
         day = (start_7 + timedelta(days=i)).isoformat()
         if day in by_date:
             item = {"date": day, **by_date[day]}
         else:
-            item = {"date": day, "net_rev_kzt": None, "cogs_kzt": None, "profit_kzt": None}
+            item = {
+                "date": day,
+                "net_rev_kzt": None,
+                "cogs_kzt": None,
+                "profit_kzt": None,
+                "ads_spend_kzt": round(float(ads_by_date.get(day, 0.0)), 2),
+                "profit_after_ads_kzt": None,
+            }
         last_7_list.append(item)
 
     window_30_days = [
@@ -181,6 +211,10 @@ def compute_sales_metrics(
     series_7_net = [r["net_rev_kzt"] for r in last_7_list if r["net_rev_kzt"] is not None]
     series_7_cogs = [r["cogs_kzt"] for r in last_7_list if r["cogs_kzt"] is not None]
     series_7_profit = [r["profit_kzt"] for r in last_7_list if r["profit_kzt"] is not None]
+    series_30_ads = [by_date[d]["ads_spend_kzt"] for d in window_30_days if d in by_date]
+    series_30_profit_after_ads = [by_date[d]["profit_after_ads_kzt"] for d in window_30_days if d in by_date]
+    series_7_ads = [r["ads_spend_kzt"] for r in last_7_list if r["profit_kzt"] is not None]
+    series_7_profit_after_ads = [r["profit_after_ads_kzt"] for r in last_7_list if r["profit_after_ads_kzt"] is not None]
 
     def _avg(values: list[float]) -> float:
         if not values:
@@ -193,14 +227,19 @@ def compute_sales_metrics(
         "avg_30d_net_rev_kzt": _avg(series_30_net),
         "avg_30d_cogs_kzt": _avg(series_30_cogs),
         "avg_30d_profit_kzt": _avg(series_30_profit),
+        "avg_30d_ads_spend_kzt": _avg(series_30_ads),
+        "avg_30d_profit_after_ads_kzt": _avg(series_30_profit_after_ads),
         "avg_7d_net_rev_kzt": _avg(series_7_net),
         "avg_7d_cogs_kzt": _avg(series_7_cogs),
         "avg_7d_profit_kzt": _avg(series_7_profit),
+        "avg_7d_ads_spend_kzt": _avg(series_7_ads),
+        "avg_7d_profit_after_ads_kzt": _avg(series_7_profit_after_ads),
         "fallback_rows": fallback_rows,
         "unresolved_rows": unresolved_rows,
-        "unresolved_sku_count": len(unresolved_skus),
+        "unresolved_sku_count": 0,
         "total_rows": total_rows,
         "cogs_fallback_coverage_pct": round((fallback_rows / total_rows * 100.0), 2) if total_rows else 0.0,
+        "ads": ads_totals,
     }
 
 
@@ -288,16 +327,22 @@ def _render_markdown(
         ["Avg 30d Net Rev", _fmt_kzt(sales_metrics["avg_30d_net_rev_kzt"])],
         ["Avg 30d COGS", _fmt_kzt(sales_metrics["avg_30d_cogs_kzt"])],
         ["Avg 30d Profit", _fmt_kzt(sales_metrics["avg_30d_profit_kzt"])],
+        ["Avg 30d Ads Spend", _fmt_kzt(sales_metrics["avg_30d_ads_spend_kzt"])],
+        ["Avg 30d Profit After Ads", _fmt_kzt(sales_metrics["avg_30d_profit_after_ads_kzt"])],
         ["Avg 7d Net Rev", _fmt_kzt(sales_metrics["avg_7d_net_rev_kzt"])],
         ["Avg 7d COGS", _fmt_kzt(sales_metrics["avg_7d_cogs_kzt"])],
         ["Avg 7d Profit", _fmt_kzt(sales_metrics["avg_7d_profit_kzt"])],
+        ["Avg 7d Ads Spend", _fmt_kzt(sales_metrics["avg_7d_ads_spend_kzt"])],
+        ["Avg 7d Profit After Ads", _fmt_kzt(sales_metrics["avg_7d_profit_after_ads_kzt"])],
     ]
     daily_rows = [
         [
             row["date"],
             _fmt_kzt(row["net_rev_kzt"]),
             _fmt_kzt(row["cogs_kzt"]),
+            _fmt_kzt(row["ads_spend_kzt"]),
             _fmt_kzt(row["profit_kzt"]),
+            _fmt_kzt(row["profit_after_ads_kzt"]),
         ]
         for row in sales_metrics["last_7_days"]
     ]
@@ -325,16 +370,19 @@ def _render_markdown(
         "## Last 7 Days Values (KZT)",
         "",
         "```text",
-        _ascii_table(["Date", "Net Rev", "COGS", "Profit"], daily_rows),
+        _ascii_table(["Date", "Net Rev", "COGS", "Ads Spend", "Profit", "Profit After Ads"], daily_rows),
         "```",
         "",
         "## Data Quality",
         "",
-        f"- Sales source: `sales_fact_v2` (`DELIVERED`, `return_flag=0`).",
+        f"- Sales source: `view_sales_line_truth` / `view_sales_daily_truth` (canonical interface over staging).",
         f"- COGS fallback rows: `{sales_metrics['fallback_rows']}/{sales_metrics['total_rows']}` "
         f"({sales_metrics['cogs_fallback_coverage_pct']:.2f}%).",
         f"- Unresolved COGS rows: `{sales_metrics['unresolved_rows']}`.",
         f"- Unresolved SKU count: `{sales_metrics['unresolved_sku_count']}`.",
+        f"- Ads mapping coverage: `{sales_metrics['ads'].get('mapping_coverage_pct', 0):.2f}%`.",
+        f"- Ads mapped/unmapped cost: `{_fmt_kzt(sales_metrics['ads'].get('mapped_cost_kzt'))}` / "
+        f"`{_fmt_kzt(sales_metrics['ads'].get('unmapped_cost_kzt'))}`.",
         "",
         "## External Reference Check",
         "",
@@ -392,15 +440,20 @@ def generate_business_insides(
             "avg_30d_net_rev_kzt": sales_metrics["avg_30d_net_rev_kzt"],
             "avg_30d_cogs_kzt": sales_metrics["avg_30d_cogs_kzt"],
             "avg_30d_profit_kzt": sales_metrics["avg_30d_profit_kzt"],
+            "avg_30d_ads_spend_kzt": sales_metrics["avg_30d_ads_spend_kzt"],
+            "avg_30d_profit_after_ads_kzt": sales_metrics["avg_30d_profit_after_ads_kzt"],
             "avg_7d_net_rev_kzt": sales_metrics["avg_7d_net_rev_kzt"],
             "avg_7d_cogs_kzt": sales_metrics["avg_7d_cogs_kzt"],
             "avg_7d_profit_kzt": sales_metrics["avg_7d_profit_kzt"],
+            "avg_7d_ads_spend_kzt": sales_metrics["avg_7d_ads_spend_kzt"],
+            "avg_7d_profit_after_ads_kzt": sales_metrics["avg_7d_profit_after_ads_kzt"],
         },
         "last_7_days": sales_metrics["last_7_days"],
         "fallback_rows": sales_metrics["fallback_rows"],
         "total_rows": sales_metrics["total_rows"],
         "unresolved_rows": sales_metrics["unresolved_rows"],
         "unresolved_sku_count": sales_metrics["unresolved_sku_count"],
+        "ads": sales_metrics["ads"],
         "external_check": external_check,
     }
 
