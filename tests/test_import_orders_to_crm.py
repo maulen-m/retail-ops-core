@@ -30,10 +30,13 @@ from scripts.import_orders_to_crm import (
     _iter_consecutive_ranges,
     _row_in_backfill_window,
     _allow_openpyxl_backfill_fallback,
+    _allow_openpyxl_append_fallback,
+    _xlwings_open_timeout_sec,
     _excel_automation_preflight,
     _excel_open_probe,
     _verify_candidate_workbook,
     apply_fixed_values_backfill_openpyxl,
+    append_orders_with_fallback,
     build_staging,
     clean_order_id,
     clean_value,
@@ -599,6 +602,63 @@ def test_openpyxl_backfill_fallback_disabled_by_default(monkeypatch):
 def test_openpyxl_backfill_fallback_can_be_enabled(monkeypatch):
     monkeypatch.setenv("CRM_FIXED_BACKFILL_OPENPYXL_FALLBACK", "1")
     assert _allow_openpyxl_backfill_fallback() is True
+
+
+def test_openpyxl_append_fallback_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("CRM_OPENPYXL_APPEND_FALLBACK", raising=False)
+    assert _allow_openpyxl_append_fallback() is False
+
+
+def test_openpyxl_append_fallback_can_be_enabled(monkeypatch):
+    monkeypatch.setenv("CRM_OPENPYXL_APPEND_FALLBACK", "1")
+    assert _allow_openpyxl_append_fallback() is True
+
+
+def test_xlwings_open_timeout_env_parsing(monkeypatch):
+    monkeypatch.delenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", raising=False)
+    assert _xlwings_open_timeout_sec() == 45
+    monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "2")
+    assert _xlwings_open_timeout_sec() == 5
+    monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "90")
+    assert _xlwings_open_timeout_sec() == 90
+    monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "not-a-number")
+    assert _xlwings_open_timeout_sec() == 45
+
+
+def test_append_orders_with_fallback_uses_openpyxl_when_xlwings_fails(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("placeholder", encoding="utf-8")
+    calls = {"openpyxl": 0}
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("xlwings failed")
+
+    def _fake_openpyxl(*_args, **_kwargs):
+        calls["openpyxl"] += 1
+        return (100, 101)
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", _boom)
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_openpyxl", _fake_openpyxl)
+
+    result = append_orders_with_fallback(
+        out_wb=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        date_col_abs=2,
+        phone_col_abs=9,
+        start_col_abs=25,
+        end_col_abs=52,
+        stage_block=[["812000111"]],
+        phone_values=["+77770000000"],
+        set_date=date.today(),
+        slice_headers=["№ заказа"],
+        allow_openpyxl_fallback=True,
+        prefer_xlwings=True,
+        verbose=False,
+    )
+
+    assert result == (100, 101)
+    assert calls["openpyxl"] == 1
 
 
 def test_excel_automation_preflight_fails_when_lock_file_exists(tmp_path):

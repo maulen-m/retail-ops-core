@@ -240,7 +240,10 @@ echo ""
 echo "Step 2: Importing new orders to CRM..."
 echo "----------------------------------------"
 STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-900}"
+XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-45}"
 echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
+echo "xlwings open timeout: ${XLWINGS_OPEN_TIMEOUT_SEC}s"
+CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" CRM_OPENPYXL_APPEND_FALLBACK=1 \
 python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
     python scripts/import_orders_to_crm.py \
         --verbose \
@@ -249,6 +252,8 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
         --transactional \
         --no-fixed-values \
         --kaspi-core-override \
+        --openpyxl-append-fallback \
+        --no-prefer-xlwings-append \
         --skip-fixed-backfill
 STEP2_RC=$?
 if [ ${STEP2_RC} -ne 0 ]; then
@@ -277,6 +282,21 @@ updated = int(payload.get("orders_updated", 0) or 0)
 print(1 if imported == 0 and updated == 0 else 0)
 PY
 )
+fi
+
+# Step 2c: Enforce canonical Line61 Kaspi_name_core for existing historical rows
+echo ""
+echo "Step 2c: Backfilling Line61 Kaspi_name_core..."
+echo "----------------------------------------"
+python3 scripts/backfill_line61_kaspi_core.py \
+    --workbook excel_ui/SALES_KSP_CRM_V3.xlsx \
+    --sheet SALES_KSP_CRM_1 \
+    --table tb_SalesRaw \
+    --backup-dir excel_ui/backups \
+    --apply
+if [ $? -ne 0 ]; then
+    echo "WARNING: Line61 Kaspi_name_core backfill failed (see above)."
+    WARNINGS+=("Line61 Kaspi_name_core backfill failed. Fix: run scripts/backfill_line61_kaspi_core.py manually.")
 fi
 
 # Step 2b: Validate pending orders alignment (CRM vs DB/ActiveOrders)

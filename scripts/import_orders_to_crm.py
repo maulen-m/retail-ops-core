@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+from copy import copy
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -38,7 +39,12 @@ except ModuleNotFoundError:  # pragma: no cover - environment-specific
 
 # openpyxl only for reading (inspection)
 from openpyxl import load_workbook
-from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
+from openpyxl.formula.translate import Translator
+from openpyxl.utils.cell import (
+    coordinate_from_string,
+    column_index_from_string,
+    get_column_letter,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -305,6 +311,47 @@ def _allow_openpyxl_backfill_fallback() -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _allow_openpyxl_append_fallback() -> bool:
+    """
+    Enable openpyxl append fallback only when explicitly requested.
+    """
+    raw = os.getenv("CRM_OPENPYXL_APPEND_FALLBACK", "")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _xlwings_open_timeout_sec(default_sec: int = 45) -> int:
+    """
+    Wall-clock timeout passed to xlwings workbook open calls.
+    """
+    raw = os.getenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "")
+    if not str(raw).strip():
+        return int(default_sec)
+    try:
+        parsed = int(str(raw).strip())
+    except ValueError:
+        return int(default_sec)
+    return max(parsed, 5)
+
+
+def _open_workbook_xlwings(
+    app: Any,
+    workbook_path: Path,
+    *,
+    update_links: bool = False,
+    read_only: bool = False,
+) -> Any:
+    """
+    Open workbook via xlwings with explicit wall-clock timeout to avoid indefinite hangs.
+    """
+    timeout_sec = _xlwings_open_timeout_sec()
+    return app.books.open(
+        str(workbook_path),
+        update_links=update_links,
+        read_only=read_only,
+        timeout=timeout_sec,
+    )
+
+
 def _workbook_integrity_preflight(crm_path: Path, verbose: bool = False) -> None:
     """
     Validate workbook package integrity before any write path is attempted.
@@ -350,7 +397,12 @@ def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbo
     app.display_alerts = False
     app.screen_updating = False
     try:
-        wb = app.books.open(str(crm_path), update_links=False, read_only=True)
+        wb = _open_workbook_xlwings(
+            app,
+            crm_path,
+            update_links=False,
+            read_only=True,
+        )
         wb.close()
         if verbose:
             print("  Strict Excel preflight OK")
@@ -908,7 +960,7 @@ def backfill_seller_delivery_fee(
     _require_xlwings()
     app = xw.App(visible=False, add_book=False)
     try:
-        book = app.books.open(str(crm_path))
+        book = _open_workbook_xlwings(app, crm_path, update_links=False, read_only=False)
         sheet = book.sheets[sheet_name]
         for row_num, value in updates:
             sheet.cells(row_num, seller_col).value = value
@@ -1871,7 +1923,7 @@ def update_existing_order_columns(
     app.screen_updating = False
 
     try:
-        wb = app.books.open(str(crm_path))
+        wb = _open_workbook_xlwings(app, crm_path, update_links=False, read_only=False)
         ws = wb.sheets[sheet_name]
 
         # Disable calculation during updates for speed
@@ -2160,7 +2212,7 @@ def excel_append_xlwings(
     app.screen_updating = False
 
     try:
-        wb = app.books.open(str(out_wb))
+        wb = _open_workbook_xlwings(app, out_wb, update_links=False, read_only=False)
         sh = wb.sheets[sheet_name]
 
         # Find the table
@@ -2285,6 +2337,196 @@ def excel_append_xlwings(
     return (0, 0)  # If we get here somehow
 
 
+def excel_append_openpyxl(
+    out_wb: Path,
+    sheet_name: str,
+    table_name: str,
+    date_col_abs: int,
+    phone_col_abs: Optional[int],
+    start_col_abs: int,
+    end_col_abs: int,
+    stage_block: List[List],
+    phone_values: List[str],
+    set_date: date,
+    slice_headers: List[str],
+    fixed_values: Optional[List[Dict[str, Any]]] = None,
+    kaspi_name_core_values: Optional[List[str]] = None,
+) -> Tuple[int, int]:
+    """
+    Append rows with openpyxl fallback when Excel automation is blocked.
+    """
+    n = len(stage_block)
+    if n == 0:
+        return (0, 0)
+
+    wb = load_workbook(filename=str(out_wb), read_only=False, data_only=False)
+    try:
+        ws = wb[sheet_name]
+        table = _resolve_table(ws, table_name)
+        tbl_start_col, tbl_start_row, tbl_end_col, tbl_end_row = _table_bounds(table)
+        header_row = tbl_start_row
+        top_row = tbl_end_row + 1
+        bottom_row = top_row + n - 1
+        template_row = tbl_end_row if tbl_end_row > header_row else None
+
+        header_values = [
+            ws.cell(row=header_row, column=col).value
+            for col in range(tbl_start_col, tbl_end_col + 1)
+        ]
+        header_to_col = {
+            str(name).strip(): tbl_start_col + i
+            for i, name in enumerate(header_values)
+            if str(name or "").strip()
+        }
+
+        if template_row:
+            for row_num in range(top_row, bottom_row + 1):
+                for col_num in range(tbl_start_col, tbl_end_col + 1):
+                    src = ws.cell(row=template_row, column=col_num)
+                    dst = ws.cell(row=row_num, column=col_num)
+                    if src.has_style:
+                        dst._style = copy(src._style)
+                    src_value = src.value
+                    if isinstance(src_value, str) and src_value.startswith("="):
+                        origin = f"{get_column_letter(col_num)}{template_row}"
+                        target = f"{get_column_letter(col_num)}{row_num}"
+                        try:
+                            dst.value = Translator(src_value, origin=origin).translate_formula(target)
+                        except Exception:
+                            dst.value = src_value
+
+        for row_num in range(top_row, bottom_row + 1):
+            cell = ws.cell(row=row_num, column=date_col_abs, value=set_date)
+            cell.number_format = "dd.mm.yyyy"
+            ws.cell(row=row_num, column=4, value="Новый")
+
+        if phone_col_abs and phone_values and any(v for v in phone_values):
+            normalized = list(phone_values)
+            if len(normalized) < n:
+                normalized.extend([""] * (n - len(normalized)))
+            normalized = normalized[:n]
+            for idx, value in enumerate(normalized):
+                ws.cell(row=top_row + idx, column=phone_col_abs, value=value or "")
+
+        width = min(len(slice_headers), max(0, end_col_abs - start_col_abs + 1))
+        for row_offset, row_values in enumerate(stage_block):
+            row_num = top_row + row_offset
+            for offset in range(width):
+                value = row_values[offset] if offset < len(row_values) else ""
+                ws.cell(row=row_num, column=start_col_abs + offset, value="" if value is None else value)
+
+        if kaspi_name_core_values is not None:
+            kaspi_name_core_col = header_to_col.get("Kaspi_name_core")
+            if kaspi_name_core_col:
+                core_vals = list(kaspi_name_core_values)
+                if len(core_vals) < n:
+                    core_vals.extend([""] * (n - len(core_vals)))
+                core_vals = core_vals[:n]
+                for idx, value in enumerate(core_vals):
+                    ws.cell(
+                        row=top_row + idx,
+                        column=kaspi_name_core_col,
+                        value="" if value is None else value,
+                    )
+
+        if fixed_values:
+            for col_name in FIXED_APPEND_COLUMNS:
+                if col_name in PROTECTED_HUMAN_COLUMNS:
+                    continue
+                col_abs = header_to_col.get(col_name)
+                if not col_abs:
+                    continue
+                for idx, row_vals in enumerate(fixed_values):
+                    value = row_vals.get(col_name)
+                    ws.cell(
+                        row=top_row + idx,
+                        column=col_abs,
+                        value="" if value is None else value,
+                    )
+
+        my_size_col_abs = header_to_col.get("MY_SIZE")
+        if my_size_col_abs:
+            for row_num in range(top_row, bottom_row + 1):
+                ws.cell(row=row_num, column=my_size_col_abs, value="")
+
+        table.ref = (
+            f"{get_column_letter(tbl_start_col)}{tbl_start_row}:"
+            f"{get_column_letter(tbl_end_col)}{bottom_row}"
+        )
+        wb.save(str(out_wb))
+    finally:
+        wb.close()
+
+    print(f"  ✅ Saved {out_wb.name} (openpyxl fallback)")
+    return (top_row, bottom_row)
+
+
+def append_orders_with_fallback(
+    out_wb: Path,
+    sheet_name: str,
+    table_name: str,
+    date_col_abs: int,
+    phone_col_abs: Optional[int],
+    start_col_abs: int,
+    end_col_abs: int,
+    stage_block: List[List],
+    phone_values: List[str],
+    set_date: date,
+    slice_headers: List[str],
+    fixed_values: Optional[List[Dict[str, Any]]] = None,
+    kaspi_name_core_values: Optional[List[str]] = None,
+    *,
+    allow_openpyxl_fallback: bool = False,
+    prefer_xlwings: bool = True,
+    verbose: bool = False,
+) -> Tuple[int, int]:
+    if prefer_xlwings:
+        try:
+            return excel_append_xlwings(
+                out_wb,
+                sheet_name,
+                table_name,
+                date_col_abs,
+                phone_col_abs,
+                start_col_abs,
+                end_col_abs,
+                stage_block,
+                phone_values,
+                set_date,
+                slice_headers,
+                fixed_values=fixed_values,
+                kaspi_name_core_values=kaspi_name_core_values,
+            )
+        except Exception as exc:
+            if not allow_openpyxl_fallback:
+                raise
+            print(f"  WARNING: xlwings append failed ({exc})")
+            if verbose:
+                import traceback
+
+                traceback.print_exc()
+
+    if not allow_openpyxl_fallback:
+        raise RuntimeError("Openpyxl append fallback is disabled.")
+
+    print("  WARNING: using openpyxl append fallback.")
+    return excel_append_openpyxl(
+        out_wb,
+        sheet_name,
+        table_name,
+        date_col_abs,
+        phone_col_abs,
+        start_col_abs,
+        end_col_abs,
+        stage_block,
+        phone_values,
+        set_date,
+        slice_headers,
+        fixed_values=fixed_values,
+        kaspi_name_core_values=kaspi_name_core_values,
+    )
+
+
 def apply_fixed_values_backfill_xlwings(
     crm_path: Path,
     sheet_name: str,
@@ -2308,7 +2550,7 @@ def apply_fixed_values_backfill_xlwings(
     app.screen_updating = False
     updated = 0
     try:
-        wb = app.books.open(str(crm_path))
+        wb = _open_workbook_xlwings(app, crm_path, update_links=False, read_only=False)
         sh = wb.sheets[sheet_name]
         try:
             tbl = sh.tables[table_name]
@@ -2693,6 +2935,8 @@ def main(
     refresh_fees_to=_UNSET,
     strict_excel=_UNSET,
     transactional=_UNSET,
+    openpyxl_append_fallback=_UNSET,
+    prefer_xlwings_append=_UNSET,
     candidate_dir=_UNSET,
     failed_candidate_dir=_UNSET,
     summary_file=_UNSET,
@@ -2831,6 +3075,18 @@ def main(
         help="Write via candidate workbook and promote only after verification (default: on).",
     )
     parser.add_argument(
+        "--openpyxl-append-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow openpyxl append fallback when xlwings append is unavailable (default: off).",
+    )
+    parser.add_argument(
+        "--prefer-xlwings-append",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Try xlwings append first before openpyxl fallback (default: on).",
+    )
+    parser.add_argument(
         "--candidate-dir",
         type=Path,
         default=data_path("excel_ui", "backups", "candidates"),
@@ -2867,6 +3123,8 @@ def main(
         and refresh_fees_to is _UNSET
         and strict_excel is _UNSET
         and transactional is _UNSET
+        and openpyxl_append_fallback is _UNSET
+        and prefer_xlwings_append is _UNSET
         and candidate_dir is _UNSET
         and failed_candidate_dir is _UNSET
         and summary_file is _UNSET
@@ -2920,6 +3178,10 @@ def main(
             args.strict_excel = bool(strict_excel)
         if transactional is not _UNSET:
             args.transactional = bool(transactional)
+        if openpyxl_append_fallback is not _UNSET:
+            args.openpyxl_append_fallback = bool(openpyxl_append_fallback)
+        if prefer_xlwings_append is not _UNSET:
+            args.prefer_xlwings_append = bool(prefer_xlwings_append)
         if candidate_dir is not _UNSET:
             args.candidate_dir = Path(candidate_dir)
         if failed_candidate_dir is not _UNSET:
@@ -3093,12 +3355,26 @@ def main(
     existing_ids = snapshot.order_ids
     print(f"Existing orders in CRM: {len(existing_ids)}")
 
+    allow_openpyxl_append_fallback = bool(
+        getattr(args, "openpyxl_append_fallback", False) or _allow_openpyxl_append_fallback()
+    )
+    xlwings_write_available = True
+
     if not args.dry_run:
-        _excel_automation_preflight(
-            crm_path=args.crm_file,
-            strict_excel=bool(getattr(args, "strict_excel", True)),
-            verbose=bool(args.verbose),
-        )
+        try:
+            _excel_automation_preflight(
+                crm_path=args.crm_file,
+                strict_excel=bool(getattr(args, "strict_excel", True)),
+                verbose=bool(args.verbose),
+            )
+        except Exception as exc:
+            if not allow_openpyxl_append_fallback:
+                raise
+            xlwings_write_available = False
+            print(
+                "  WARNING: Excel automation preflight failed; "
+                f"continuing with openpyxl append fallback ({exc})"
+            )
 
     # Update existing orders' status columns (Phase 12 Part 7)
     update_existing = args.update_existing and not args.no_update
@@ -3111,7 +3387,7 @@ def main(
         handover = df_all[update_colmap["handover"]].apply(parse_kz_date)
         update_df = df_all[handover.apply(lambda d: d is not None and d == end_date)].copy()
 
-    if update_existing and len(existing_ids) > 0:
+    if update_existing and len(existing_ids) > 0 and xlwings_write_available:
         print("\n3. Updating existing orders' status columns...")
 
         # Get order rows (order_id -> row number)
@@ -3157,22 +3433,33 @@ def main(
         print(f"  Orders with status updates: {len(orders_to_update)}")
 
         if orders_to_update:
-            updated_count = update_existing_order_columns(
-                write_crm_path(),
-                args.sheet,
-                order_rows,
-                update_data,
-                column_positions,
-                dry_run=args.dry_run,
-                verbose=args.verbose,
-            )
-            print(f"  Updated {updated_count} existing orders")
-            result["orders_updated"] = updated_count
+            try:
+                updated_count = update_existing_order_columns(
+                    write_crm_path(),
+                    args.sheet,
+                    order_rows,
+                    update_data,
+                    column_positions,
+                    dry_run=args.dry_run,
+                    verbose=args.verbose,
+                )
+                print(f"  Updated {updated_count} existing orders")
+                result["orders_updated"] = updated_count
+            except Exception as exc:
+                if not allow_openpyxl_append_fallback:
+                    raise
+                xlwings_write_available = False
+                print(
+                    "  WARNING: existing-order status updates failed; "
+                    f"continuing with append-only path ({exc})"
+                )
     else:
         if args.no_update:
             print("\n3. Skipping existing order updates (--no-update flag)")
         elif len(existing_ids) == 0:
             print("\n3. No existing orders to update")
+        elif not xlwings_write_available:
+            print("\n3. Skipping existing order updates (Excel automation unavailable)")
 
     # Build staging data (returns tuple: stage_block, phone_values)
     stage, phone_values = build_staging(df_filt, slice_headers)
@@ -3249,19 +3536,27 @@ def main(
         if updated_count > 0:
             print(f"   No new orders to append (updated {updated_count} existing orders)")
             if args.refresh_delivery_fees:
-                refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
-                refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
-                backfilled = backfill_seller_delivery_fee(
-                    write_crm_path(),
-                    args.sheet,
-                    args.table,
-                    refresh_from,
-                    refresh_to,
-                    dry_run=args.dry_run,
-                    verbose=args.verbose,
-                    snapshot=snapshot,
-                )
-                print(f"   Delivery fee backfill rows updated: {backfilled}")
+                if not xlwings_write_available and allow_openpyxl_append_fallback:
+                    print("   WARNING: skipping delivery fee backfill (Excel automation unavailable).")
+                else:
+                    refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
+                    refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
+                    try:
+                        backfilled = backfill_seller_delivery_fee(
+                            write_crm_path(),
+                            args.sheet,
+                            args.table,
+                            refresh_from,
+                            refresh_to,
+                            dry_run=args.dry_run,
+                            verbose=args.verbose,
+                            snapshot=snapshot,
+                        )
+                        print(f"   Delivery fee backfill rows updated: {backfilled}")
+                    except Exception as exc:
+                        if not allow_openpyxl_append_fallback:
+                            raise
+                        print(f"   WARNING: delivery fee backfill failed ({exc}); continuing.")
             fixed_backfilled = maybe_run_fixed_backfill()
             if fixed_backfilled:
                 print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
@@ -3283,9 +3578,10 @@ def main(
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return finalize(result)
 
-    # Append via xlwings - returns (start_row, end_row) for sync
+    # Append via xlwings with openpyxl fallback (if enabled).
     target_crm_path = write_crm_path()
-    append_start_row, append_end_row = excel_append_xlwings(
+    prefer_xlwings_append = bool(getattr(args, "prefer_xlwings_append", True)) and xlwings_write_available
+    append_start_row, append_end_row = append_orders_with_fallback(
         target_crm_path,
         args.sheet,
         args.table,
@@ -3299,6 +3595,9 @@ def main(
         slice_headers,
         fixed_values=fixed_values_payload,
         kaspi_name_core_values=kaspi_name_core_payload,
+        allow_openpyxl_fallback=allow_openpyxl_append_fallback,
+        prefer_xlwings=prefer_xlwings_append,
+        verbose=bool(args.verbose),
     )
     fixed_backfilled = maybe_run_fixed_backfill()
     if fixed_backfilled:
@@ -3306,19 +3605,27 @@ def main(
 
     # Backfill seller delivery fee from Delivery_fee_kzt (if requested)
     if args.refresh_delivery_fees:
-        refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
-        refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
-        backfilled = backfill_seller_delivery_fee(
-            write_crm_path(),
-            args.sheet,
-            args.table,
-            refresh_from,
-            refresh_to,
-            dry_run=args.dry_run,
-            verbose=args.verbose,
-            snapshot=snapshot,
-        )
-        print(f"   Delivery fee backfill rows updated: {backfilled}")
+        if not xlwings_write_available and allow_openpyxl_append_fallback:
+            print("   WARNING: skipping delivery fee backfill (Excel automation unavailable).")
+        else:
+            refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
+            refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
+            try:
+                backfilled = backfill_seller_delivery_fee(
+                    write_crm_path(),
+                    args.sheet,
+                    args.table,
+                    refresh_from,
+                    refresh_to,
+                    dry_run=args.dry_run,
+                    verbose=args.verbose,
+                    snapshot=snapshot,
+                )
+                print(f"   Delivery fee backfill rows updated: {backfilled}")
+            except Exception as exc:
+                if not allow_openpyxl_append_fallback:
+                    raise
+                print(f"   WARNING: delivery fee backfill failed ({exc}); continuing.")
 
     finalize_candidate_if_needed()
 
