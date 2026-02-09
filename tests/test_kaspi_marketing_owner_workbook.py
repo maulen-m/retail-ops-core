@@ -19,6 +19,7 @@ def _seed_ads_db(path: Path) -> None:
                 campaign_name TEXT,
                 sku_key TEXT,
                 product_name TEXT,
+                product_status TEXT,
                 json_merchant_sku TEXT,
                 bid_cpc REAL,
                 bid_cpc_source TEXT,
@@ -55,20 +56,22 @@ def _seed_ads_db(path: Path) -> None:
         conn.executemany(
             """
             INSERT INTO campaign_product_daily_current
-            (date, merchant_id, store_code, campaign_id, campaign_name, sku_key, product_name, json_merchant_sku, bid_cpc, bid_cpc_source, orders_total, gmv, cost, views, clicks, favorites, carts, ingested_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (date, merchant_id, store_code, campaign_id, campaign_name, sku_key, product_name, product_status, json_merchant_sku, bid_cpc, bid_cpc_source, orders_total, gmv, cost, views, clicks, favorites, carts, ingested_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 # historical mapped allowed model -> keep
-                ("2025-01-02", "759051", "30137883", "2380614", "Acmewear_16k", "ads-a", "A", "CL_OC_MEN_LINE51_WHITE_XL_134547490", 70.0, "api_current", 2, 1200.0, 100.0, 10, 2, 1, 1, "2026-02-06T00:00:00+05:00"),
+                ("2025-01-02", "759051", "30137883", "2380614", "Acmewear_16k", "ads-a", "A", "Активный", "CL_OC_MEN_LINE51_WHITE_XL_134547490", 70.0, "api_current", 2, 1200.0, 100.0, 10, 2, 1, 1, "2026-02-06T00:00:00+05:00"),
                 # historical unmapped -> drop
-                ("2025-01-02", "759051", "30137883", "2380614", "Acmewear_16k", "ads-b", "B", "", 40.0, "api_current", 1, 500.0, 50.0, 5, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
+                ("2025-01-02", "759051", "30137883", "2380614", "Acmewear_16k", "ads-b", "B", "Активный", "", 40.0, "api_current", 1, 500.0, 50.0, 5, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
                 # historical mapped disallowed model -> drop
-                ("2025-01-03", "759051", "30137883", "7000000", "Line52", "ads-c", "C", "CL_OC_MEN_LINE52_BLACK_XL_0001", 55.0, "api_current", 1, 700.0, 70.0, 7, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
+                ("2025-01-03", "759051", "30137883", "7000000", "Line52", "ads-c", "C", "Активный", "CL_OC_MEN_LINE52_BLACK_XL_0001", 55.0, "api_current", 1, 700.0, 70.0, 7, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
                 # future unmapped -> keep
-                ("2026-02-10", "759051", "30137883", "9999999", "Future", "ads-d", "D", "", 60.0, "api_current", 3, 900.0, 90.0, 9, 3, 1, 1, "2026-02-10T00:00:00+05:00"),
+                ("2026-02-10", "759051", "30137883", "9999999", "Future", "ads-d", "D", "Активный", "", 60.0, "api_current", 3, 900.0, 90.0, 9, 3, 1, 1, "2026-02-10T00:00:00+05:00"),
+                # future inactive -> must be excluded from owner output
+                ("2026-02-10", "759051", "30137883", "9999999", "Future", "ads-inactive", "D2", "Приостановлен", "", 60.0, "api_current", 2, 500.0, 40.0, 8, 2, 0, 0, "2026-02-10T00:00:00+05:00"),
                 # line61 merchant sku payload that should map by heuristic
-                ("2025-01-04", "759051", "30137883", "2545773", "ACMEWEAR_LINE61", "19796919b", "Suit", "OF_SUIT-61_BLK_XL_48", 70.0, "api_current", 1, 400.0, 40.0, 4, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
+                ("2025-01-04", "759051", "30137883", "2545773", "ACMEWEAR_LINE61", "19796919b", "Suit", "Активный", "OF_SUIT-61_BLK_XL_48", 70.0, "api_current", 1, 400.0, 40.0, 4, 1, 0, 0, "2026-02-06T00:00:00+05:00"),
             ],
         )
         conn.executemany(
@@ -179,6 +182,10 @@ def test_build_owner_frames_applies_historical_filter_and_future_no_filter(tmp_p
     assert len(fut) == 1
     assert fut.iloc[0]["mapping_status"] == "unmapped"
     assert fut.iloc[0]["zone_type"] == "future_all"
+    assert fut.iloc[0]["product_status"] == "Активный"
+
+    # owner workbook product sheet must not include inactive statuses
+    assert "Приостановлен" not in set(product_df["product_status"].astype(str))
 
     assert not campaign_df.empty
     assert {"db_orders_count", "db_sales_gmv_kzt", "delta_orders_db_minus_ads"}.issubset(campaign_df.columns)

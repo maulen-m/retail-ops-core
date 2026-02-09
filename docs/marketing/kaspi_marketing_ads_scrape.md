@@ -249,6 +249,9 @@ Optional export view:
 - Sheets:
   - `campaign_daily`
   - `campaign_product_daily`
+- Product row status policy:
+  - `campaign_product_daily` includes **active products only** (`product_status` active variants).
+  - Inactive statuses (e.g. `Приостановлен`, `Не допущен к рекламе`) are excluded from owner-facing output.
 - Added DB delta columns:
   - `db_orders_count`, `db_sales_gmv_kzt` (gross, from `fact_sales.sell_price_kzt * fact_sales.quantity`)
   - `delta_orders_db_minus_ads`, `delta_gmv_db_minus_ads`
