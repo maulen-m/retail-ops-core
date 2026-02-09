@@ -31,6 +31,13 @@ DEFAULT_CSV_DIR = Path(
 DEFAULT_HISTORY_START = "2025-01-01"
 DEFAULT_STRICT_MODELS = "line51,line61,suit-61"
 DEFAULT_STORE_CODE = "ACMEWEAR"
+ACTIVE_PRODUCT_STATUSES = {
+    "активный",
+    "активная",
+    "активен",
+    "active",
+    "enabled",
+}
 
 
 def canonical_model(model: str | None) -> str:
@@ -300,6 +307,12 @@ def _safe_div(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
     return out
 
 
+def _normalize_status(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
 def build_owner_frames(
     ads_db: Path,
     app_db: Path,
@@ -384,6 +397,11 @@ def build_owner_frames(
     )
 
     mapped = mapped[mapped["include_row"]].copy()
+    if "product_status" in mapped.columns:
+        mapped["product_status"] = mapped["product_status"].fillna("").astype(str).str.strip()
+        mapped["product_status_norm"] = mapped["product_status"].apply(_normalize_status)
+        mapped = mapped[mapped["product_status_norm"].isin(ACTIVE_PRODUCT_STATUSES)].copy()
+        mapped.drop(columns=["product_status_norm"], inplace=True, errors="ignore")
     if mapped.empty:
         return pd.DataFrame(), pd.DataFrame()
 
