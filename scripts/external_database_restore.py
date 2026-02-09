@@ -15,7 +15,7 @@ DEFAULT_SOURCE_ROOT = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/External_database"
 )
 DEFAULT_BACKUP_ROOT = Path(
-    "~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/repo_backups_G/External_database"
+    "~/Documents/External_database"
 )
 
 

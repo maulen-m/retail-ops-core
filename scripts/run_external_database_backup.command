@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run full External_database snapshot backup to Google Drive.
+# Run full External_database snapshot backup to local backup root.
 
 set -euo pipefail
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Create timestamped snapshots of External_database to Google Drive backup root.
+Create timestamped snapshots of External_database to local backup root.
 """
 
 from __future__ import annotations
@@ -20,9 +20,9 @@ DEFAULT_SOURCE_ROOT = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/External_database"
 )
 DEFAULT_BACKUP_ROOT = Path(
-    "~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/repo_backups_G/External_database"
+    "~/Documents/External_database"
 )
-# Keep heavy by-order waybill PDFs out of Google Drive snapshots.
+# Keep heavy by-order waybill PDFs out of snapshots.
 DEFAULT_EXCLUDE_DIRS = ["kaspi_offer_uploads", "by_order"]
 DEFAULT_EXCLUDE_FILES = ["沪锦大客户报价表 （不含邮与税）.xlsx"]
 

@@ -41,7 +41,7 @@ DEFAULT_EXTERNAL_DB_ROOT = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/External_database"
 )
 DEFAULT_EXTERNAL_DB_BACKUP_ROOT = Path(
-    "~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/repo_backups_G/External_database"
+    "~/Documents/External_database"
 )
 DEFAULT_PROFILE_DIR = "~/Library/Application Support/ChromePlaywrightProfile4"
 DEFAULT_MERCHANT_ID = "759051"

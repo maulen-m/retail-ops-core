@@ -227,7 +227,7 @@ Optional export view:
   - `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database`
   - `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Kaspi_marketing`
 - If missing, it restores from latest valid snapshot in:
-  - `~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/repo_backups_G/External_database`
+  - `~/Documents/External_database`
 - Backup layout:
 ```
 .../External_database/
