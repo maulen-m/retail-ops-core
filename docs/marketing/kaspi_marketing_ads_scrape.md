@@ -250,11 +250,20 @@ Optional export view:
   - `campaign_daily`
   - `campaign_product_daily`
 - Added DB delta columns:
-  - `db_orders_count`, `db_sales_gmv_kzt`
+  - `db_orders_count`, `db_sales_gmv_kzt` (gross, from `fact_sales.sell_price_kzt * fact_sales.quantity`)
   - `delta_orders_db_minus_ads`, `delta_gmv_db_minus_ads`
+- Added derived insight columns:
+  - `db_acos`, `db_roas`, `db_asp_kzt`, `ads_cost_per_db_order`, `db_cogs`, `db_profit_est_kzt`, `db_Unit_profit_%`
+- Bid columns:
+  - `bid_cpc` = effective value (manual override if present)
+  - `bid_cpc_2` = raw API snapshot value (pre-override)
 - Added mapping traceability:
   - `mapped_sku_id`, `mapped_sku_key`, `mapped_model`, `mapping_status`
 - Orders source for deltas: `fact_sales` (`store_code='ACMEWEAR'`).
+
+### Owner product column contract (ordered)
+`campaign_product_daily` (workbook + owner CSV) uses this exact order:
+`date, merchant_id, store_code, campaign_id, campaign_name, sku_key, product_name, product_status, ingested_at, mapped_sku_id, mapped_sku_key, mapped_model, mapping_status, filter_rule, zone_type, bid_cpc, bid_cpc_source, ad_score, avg_cpc, views, clicks, ctr, favorites, carts, conversion_order, orders_total, orders_direct, orders_assisted, gmv, cost, acos_share, delta_orders_db_minus_ads, db_acos, db_roas, delta_gmv_db_minus_ads, db_sales_gmv_kzt, bid_cpc_2, db_asp_kzt, db_orders_count, ads_cost_per_db_order, db_cogs, db_profit_est_kzt, db_Unit_profit_%`
 
 ### Historical vs future filter policy
 - Historical backfill zone (`date < future_cutover_date`):

@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from scripts.build_kaspi_marketing_owner_workbook import build_owner_frames, build_owner_workbook
 
@@ -99,7 +100,11 @@ def _seed_app_db(path: Path) -> None:
                 order_date TEXT,
                 sku_key TEXT,
                 store_code TEXT,
-                line_net_rev REAL
+                quantity INTEGER,
+                sell_price_kzt REAL,
+                line_net_rev REAL,
+                cogs_line REAL,
+                profit_line REAL
             )
             """
         )
@@ -120,11 +125,16 @@ def _seed_app_db(path: Path) -> None:
             ],
         )
         conn.executemany(
-            "INSERT INTO fact_sales (order_id, order_date, sku_key, store_code, line_net_rev) VALUES (?, ?, ?, ?, ?)",
+            """
+            INSERT INTO fact_sales
+            (order_id, order_date, sku_key, store_code, quantity, sell_price_kzt, line_net_rev, cogs_line, profit_line)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             [
-                ("ord-1", "2025-01-02", "CL_OC_MEN_LINE51_WHITE", "ACMEWEAR", 1000.0),
-                ("ord-2", "2025-01-02", "CL_OC_MEN_LINE51_WHITE", "ACMEWEAR", 300.0),
-                ("ord-3", "2026-02-10", "CL_OC_MEN_LINE51_WHITE", "ACMEWEAR", 200.0),
+                # Gross is used for db_sales_gmv_kzt (1000 + 300 = 1300), not net (750 + 200 = 950)
+                ("ord-1", "2025-01-02", "CL_OC_MEN_LINE51_WHITE", "ACMEWEAR", 2, 500.0, 750.0, 600.0, 250.0),
+                ("ord-2", "2025-01-02", "CL_OC_MEN_LINE51_WHITE", "ACMEWEAR", 1, 300.0, 200.0, 100.0, 100.0),
+                ("ord-3", "2026-02-10", "CL_OC_MEN_LINE51_WHITE", "ACMEWEAR", 1, 200.0, 150.0, 100.0, 50.0),
             ],
         )
         conn.commit()
@@ -148,10 +158,21 @@ def test_build_owner_frames_applies_historical_filter_and_future_no_filter(tmp_p
     # historical keeps only mapped + allowed model
     hist = product_df[product_df["date"].astype(str) == "2025-01-02"]
     assert len(hist) == 1
-    assert hist.iloc[0]["mapping_status"] == "mapped"
-    assert hist.iloc[0]["zone_type"] == "historical_strict"
-    assert hist.iloc[0]["db_orders_count"] == 2
-    assert hist.iloc[0]["db_sales_gmv_kzt"] == 1300.0
+    hist_row = hist.iloc[0]
+    assert hist_row["mapping_status"] == "mapped"
+    assert hist_row["zone_type"] == "historical_strict"
+    assert hist_row["db_orders_count"] == 2
+    assert hist_row["db_sales_gmv_kzt"] == 1300.0
+    assert hist_row["db_cogs"] == 700.0
+    assert hist_row["delta_orders_db_minus_ads"] == 0
+    assert hist_row["delta_gmv_db_minus_ads"] == 100.0
+    assert hist_row["db_acos"] == pytest.approx((100.0 / 1300.0) * 100.0)
+    assert hist_row["db_roas"] == pytest.approx(13.0)
+    assert hist_row["db_asp_kzt"] == pytest.approx(650.0)
+    assert hist_row["ads_cost_per_db_order"] == pytest.approx(50.0)
+    assert hist_row["db_profit_est_kzt"] == pytest.approx(250.0)
+    assert hist_row["db_Unit_profit_%"] == pytest.approx((250.0 / 1300.0) * 100.0)
+    assert hist_row["bid_cpc_2"] == pytest.approx(70.0)
 
     # future keeps unmapped rows too
     fut = product_df[product_df["date"].astype(str) == "2026-02-10"]
@@ -166,6 +187,53 @@ def test_build_owner_frames_applies_historical_filter_and_future_no_filter(tmp_p
     assert len(suit) == 1
     assert suit.iloc[0]["mapping_status"] == "mapped"
     assert suit.iloc[0]["mapped_sku_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+
+    expected_product_cols = [
+        "date",
+        "merchant_id",
+        "store_code",
+        "campaign_id",
+        "campaign_name",
+        "sku_key",
+        "product_name",
+        "product_status",
+        "ingested_at",
+        "mapped_sku_id",
+        "mapped_sku_key",
+        "mapped_model",
+        "mapping_status",
+        "filter_rule",
+        "zone_type",
+        "bid_cpc",
+        "bid_cpc_source",
+        "ad_score",
+        "avg_cpc",
+        "views",
+        "clicks",
+        "ctr",
+        "favorites",
+        "carts",
+        "conversion_order",
+        "orders_total",
+        "orders_direct",
+        "orders_assisted",
+        "gmv",
+        "cost",
+        "acos_share",
+        "delta_orders_db_minus_ads",
+        "db_acos",
+        "db_roas",
+        "delta_gmv_db_minus_ads",
+        "db_sales_gmv_kzt",
+        "bid_cpc_2",
+        "db_asp_kzt",
+        "db_orders_count",
+        "ads_cost_per_db_order",
+        "db_cogs",
+        "db_profit_est_kzt",
+        "db_Unit_profit_%",
+    ]
+    assert product_df.columns.tolist() == expected_product_cols
 
 
 def test_build_owner_workbook_persists_manual_bid_override(tmp_path: Path) -> None:
@@ -216,4 +284,5 @@ def test_build_owner_workbook_persists_manual_bid_override(tmp_path: Path) -> No
     assert target2.any()
     row = sheet2[target2].iloc[0]
     assert float(row["bid_cpc"]) == 123.0
+    assert float(row["bid_cpc_2"]) == 70.0
     assert row["bid_cpc_source"] == "manual_override"

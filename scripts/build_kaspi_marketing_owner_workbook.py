@@ -161,7 +161,9 @@ def _load_mapping_and_sales(app_db: Path, history_start: str, store_code: str) -
               order_date AS date,
               sku_key AS mapped_sku_key,
               COUNT(DISTINCT order_id) AS db_orders_count,
-              ROUND(SUM(line_net_rev), 2) AS db_sales_gmv_kzt
+              ROUND(SUM(COALESCE(sell_price_kzt, 0) * COALESCE(quantity, 0)), 2) AS db_sales_gmv_kzt,
+              ROUND(SUM(COALESCE(cogs_line, 0)), 2) AS db_cogs,
+              ROUND(SUM(COALESCE(profit_line, 0)), 2) AS db_profit_line
             FROM fact_sales
             WHERE store_code = ?
               AND order_date >= ?
@@ -289,6 +291,15 @@ def _to_int(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(0).astype(int)
 
 
+def _safe_div(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    num = _to_float(numerator)
+    den = _to_float(denominator)
+    out = pd.Series(0.0, index=num.index, dtype=float)
+    mask = den > 0
+    out.loc[mask] = num.loc[mask] / den.loc[mask]
+    return out
+
+
 def build_owner_frames(
     ads_db: Path,
     app_db: Path,
@@ -376,16 +387,42 @@ def build_owner_frames(
     if mapped.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    for col in ("orders_total", "gmv", "cost", "views", "clicks", "favorites", "carts"):
+    for col in (
+        "orders_total",
+        "orders_direct",
+        "orders_assisted",
+        "views",
+        "clicks",
+        "favorites",
+        "carts",
+        "gmv",
+        "cost",
+        "ctr",
+        "conversion_order",
+        "avg_cpc",
+        "acos_share",
+        "bid_cpc",
+    ):
         if col not in mapped.columns:
             mapped[col] = 0
     mapped["orders_total"] = _to_int(mapped["orders_total"])
+    mapped["orders_direct"] = _to_int(mapped["orders_direct"])
+    mapped["orders_assisted"] = _to_int(mapped["orders_assisted"])
     mapped["gmv"] = _to_float(mapped["gmv"])
     mapped["cost"] = _to_float(mapped["cost"])
+    mapped["ctr"] = _to_float(mapped["ctr"])
+    mapped["conversion_order"] = _to_float(mapped["conversion_order"])
+    mapped["avg_cpc"] = _to_float(mapped["avg_cpc"])
+    mapped["acos_share"] = _to_float(mapped["acos_share"])
+    mapped["bid_cpc"] = _to_float(mapped["bid_cpc"])
     mapped["views"] = _to_int(mapped["views"])
     mapped["clicks"] = _to_int(mapped["clicks"])
     mapped["favorites"] = _to_int(mapped["favorites"])
     mapped["carts"] = _to_int(mapped["carts"])
+    if "bid_cpc_source" not in mapped.columns:
+        mapped["bid_cpc_source"] = "api_current"
+    mapped["bid_cpc_source"] = mapped["bid_cpc_source"].fillna("").astype(str).str.strip()
+    mapped.loc[mapped["bid_cpc_source"] == "", "bid_cpc_source"] = "api_current"
 
     if not sales_df.empty:
         sales_df = sales_df.copy()
@@ -393,16 +430,30 @@ def build_owner_frames(
         sales_df["mapped_sku_key"] = sales_df["mapped_sku_key"].fillna("").astype(str)
         sales_df["db_orders_count"] = _to_int(sales_df["db_orders_count"])
         sales_df["db_sales_gmv_kzt"] = _to_float(sales_df["db_sales_gmv_kzt"])
+        sales_df["db_cogs"] = _to_float(sales_df["db_cogs"])
+        sales_df["db_profit_line"] = _to_float(sales_df["db_profit_line"])
     else:
-        sales_df = pd.DataFrame(columns=["date", "mapped_sku_key", "db_orders_count", "db_sales_gmv_kzt"])
+        sales_df = pd.DataFrame(
+            columns=[
+                "date",
+                "mapped_sku_key",
+                "db_orders_count",
+                "db_sales_gmv_kzt",
+                "db_cogs",
+                "db_profit_line",
+            ]
+        )
 
     mapped = mapped.merge(
         sales_df,
         on=["date", "mapped_sku_key"],
         how="left",
     )
+    mapped["bid_cpc_2"] = _to_float(mapped["bid_cpc"])
     mapped["db_orders_count"] = _to_int(mapped["db_orders_count"])
     mapped["db_sales_gmv_kzt"] = _to_float(mapped["db_sales_gmv_kzt"])
+    mapped["db_cogs"] = _to_float(mapped["db_cogs"])
+    mapped["db_profit_line"] = _to_float(mapped["db_profit_line"])
     mapped["delta_orders_db_minus_ads"] = mapped["db_orders_count"] - mapped["orders_total"]
     mapped["delta_gmv_db_minus_ads"] = mapped["db_sales_gmv_kzt"] - mapped["gmv"]
 
@@ -423,6 +474,13 @@ def build_owner_frames(
         mapped.loc[has_override, "bid_cpc_source"] = "manual_override"
         mapped.drop(columns=["bid_cpc_override", "bid_cpc_override_source"], inplace=True, errors="ignore")
 
+    mapped["db_acos"] = _safe_div(mapped["cost"], mapped["db_sales_gmv_kzt"]) * 100.0
+    mapped["db_roas"] = _safe_div(mapped["db_sales_gmv_kzt"], mapped["cost"])
+    mapped["db_asp_kzt"] = _safe_div(mapped["db_sales_gmv_kzt"], mapped["db_orders_count"])
+    mapped["ads_cost_per_db_order"] = _safe_div(mapped["cost"], mapped["db_orders_count"])
+    mapped["db_profit_est_kzt"] = mapped["db_profit_line"] - mapped["cost"]
+    mapped["db_Unit_profit_%"] = _safe_div(mapped["db_profit_est_kzt"], mapped["db_sales_gmv_kzt"]) * 100.0
+
     product_cols = [
         "date",
         "merchant_id",
@@ -432,37 +490,84 @@ def build_owner_frames(
         "sku_key",
         "product_name",
         "product_status",
-        "ad_score",
-        "bid_cpc",
-        "bid_cpc_source",
-        "avg_cpc",
-        "views",
-        "clicks",
-        "favorites",
-        "carts",
-        "ctr",
-        "gmv",
-        "orders_total",
-        "orders_direct",
-        "orders_assisted",
-        "conversion_order",
-        "cost",
-        "acos_share",
+        "ingested_at",
         "mapped_sku_id",
         "mapped_sku_key",
         "mapped_model",
         "mapping_status",
         "filter_rule",
         "zone_type",
-        "db_orders_count",
-        "db_sales_gmv_kzt",
+        "bid_cpc",
+        "bid_cpc_source",
+        "ad_score",
+        "avg_cpc",
+        "views",
+        "clicks",
+        "ctr",
+        "favorites",
+        "carts",
+        "conversion_order",
+        "orders_total",
+        "orders_direct",
+        "orders_assisted",
+        "gmv",
+        "cost",
+        "acos_share",
         "delta_orders_db_minus_ads",
+        "db_acos",
+        "db_roas",
         "delta_gmv_db_minus_ads",
-        "ingested_at",
+        "db_sales_gmv_kzt",
+        "bid_cpc_2",
+        "db_asp_kzt",
+        "db_orders_count",
+        "ads_cost_per_db_order",
+        "db_cogs",
+        "db_profit_est_kzt",
+        "db_Unit_profit_%",
     ]
+    numeric_int_cols = {
+        "views",
+        "clicks",
+        "favorites",
+        "carts",
+        "orders_total",
+        "orders_direct",
+        "orders_assisted",
+        "db_orders_count",
+        "delta_orders_db_minus_ads",
+    }
+    numeric_float_cols = {
+        "bid_cpc",
+        "avg_cpc",
+        "ctr",
+        "conversion_order",
+        "gmv",
+        "cost",
+        "acos_share",
+        "db_acos",
+        "db_roas",
+        "delta_gmv_db_minus_ads",
+        "db_sales_gmv_kzt",
+        "bid_cpc_2",
+        "db_asp_kzt",
+        "ads_cost_per_db_order",
+        "db_cogs",
+        "db_profit_est_kzt",
+        "db_Unit_profit_%",
+    }
     for col in product_cols:
         if col not in mapped.columns:
-            mapped[col] = ""
+            if col in numeric_int_cols:
+                mapped[col] = 0
+            elif col in numeric_float_cols:
+                mapped[col] = 0.0
+            else:
+                mapped[col] = ""
+    for col in numeric_int_cols:
+        mapped[col] = _to_int(mapped[col])
+    for col in numeric_float_cols:
+        mapped[col] = _to_float(mapped[col])
     product_out = mapped[product_cols].sort_values(["date", "campaign_id", "sku_key"]).reset_index(drop=True)
 
     campaign_group = (
