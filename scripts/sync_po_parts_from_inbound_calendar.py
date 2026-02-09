@@ -23,6 +23,8 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.excel.dim_sku_light_parser import parse_dim_sku_light
+
 DEFAULT_XLSX = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/"
     "Purchase_orders/vibe_code_PO/backup/7.2.26/Inbound_calendar_V10.002.xlsx"
@@ -126,39 +128,16 @@ def _ensure_columns(df: pd.DataFrame, required: list[str], sheet: str) -> None:
 
 
 def _load_sku_price_map(xlsx_path: Path, sheet_name: str) -> dict[str, dict[str, float]]:
-    raw = pd.read_excel(xlsx_path, sheet_name=sheet_name, header=None, dtype=object)
-    header_idx = None
-    for idx in range(len(raw)):
-        row_vals = [str(v).strip() for v in raw.iloc[idx].tolist() if v is not None and str(v).strip()]
-        normalized = {v.lower() for v in row_vals}
-        if "sku_key" in normalized and "avgprc" in normalized:
-            header_idx = idx
-            break
-
-    if header_idx is None:
-        return {}
-
-    cols = [
-        str(v).strip() if v is not None else f"col_{i}"
-        for i, v in enumerate(raw.iloc[header_idx].tolist())
-    ]
-    data = raw.iloc[header_idx + 1 :].copy()
-    data.columns = cols
-    if "SKU_key" not in data.columns or "AvgPrc" not in data.columns:
-        return {}
-
+    parsed, _ = parse_dim_sku_light(
+        xlsx_path,
+        sheet_name=sheet_name,
+    )
     out: dict[str, dict[str, float]] = {}
-    for _, row in data.iterrows():
-        sku_key = str(row.get("SKU_key") or "").strip()
-        if not sku_key or sku_key == "SKU_key":
-            continue
-        avg_price = _to_float(row.get("AvgPrc"))
-        if avg_price <= 0:
-            continue
+    for sku_key, row in parsed.items():
         out[sku_key] = {
-            "avg_price": avg_price,
-            "weight_kg": _to_float(row.get("Wt (kg)")) or 1.0,
-            "base_cost_cny": _to_float(row.get("CNY")),
+            "avg_price": float(row.get("avg_price_kzt") or 0.0),
+            "weight_kg": float(row.get("weight_kg") or 1.0),
+            "base_cost_cny": float(row.get("base_cost_cny") or 0.0),
         }
     return out
 
@@ -247,6 +226,8 @@ def _upsert_dim_sku(
     sku_key: str,
     base_cost_cny: float,
     sku_price_map: dict[str, dict[str, float]],
+    *,
+    allow_weight_overwrite: bool = False,
 ) -> None:
     if not _table_exists(conn, "dim_sku"):
         return
@@ -268,8 +249,13 @@ def _upsert_dim_sku(
     usable = {k: v for k, v in payload.items() if k in cols}
     existing = conn.execute("SELECT 1 FROM dim_sku WHERE sku_key = ? LIMIT 1", (sku_key,)).fetchone()
     if existing:
-        updates = ", ".join(f"{k} = ?" for k in usable.keys() if k != "sku_key")
-        params = [usable[k] for k in usable.keys() if k != "sku_key"] + [sku_key]
+        update_keys = [k for k in usable.keys() if k != "sku_key"]
+        if not allow_weight_overwrite and "weight_kg" in update_keys:
+            update_keys.remove("weight_kg")
+        if not update_keys:
+            return
+        updates = ", ".join(f"{k} = ?" for k in update_keys)
+        params = [usable[k] for k in update_keys] + [sku_key]
         conn.execute(f"UPDATE dim_sku SET {updates} WHERE sku_key = ?", params)
     else:
         fields = ", ".join(usable.keys())
@@ -313,6 +299,7 @@ def sync_po_parts_from_workbook(
     sheet_parts: str = "PO_part_id_Totals",
     sheet_sku: str = "DIM_SKU_light_v5",
     apply: bool = False,
+    allow_dim_sku_weight_overwrite: bool = False,
 ) -> dict[str, Any]:
     if apply and os.environ.get("ENABLE_PO_PART_SYNC_WRITE") != "1":
         raise RuntimeError("ENABLE_PO_PART_SYNC_WRITE=1 is required with --apply")
@@ -363,6 +350,7 @@ def sync_po_parts_from_workbook(
     po_part_ids = sorted({row["po_part_id"] for row in valid_rows})
     summary: dict[str, Any] = {
         "apply": apply,
+        "allow_dim_sku_weight_overwrite": allow_dim_sku_weight_overwrite,
         "rows_inbounds_total": int(len(inbounds_df)),
         "rows_inbounds_valid": len(valid_rows),
         "rows_parts_total": int(len(parts_df)),
@@ -552,7 +540,13 @@ def sync_po_parts_from_workbook(
 
         # Upsert po_line and dimension rows
         for row in valid_rows:
-            _upsert_dim_sku(conn, row["sku_key"], row["base_cost_cny"], sku_price_map)
+            _upsert_dim_sku(
+                conn,
+                row["sku_key"],
+                row["base_cost_cny"],
+                sku_price_map,
+                allow_weight_overwrite=allow_dim_sku_weight_overwrite,
+            )
             _upsert_dim_sku_size(conn, row["sku_id"], row["sku_key"], row["my_size"])
 
             existing = conn.execute(
@@ -624,6 +618,11 @@ def main() -> int:
     parser.add_argument("--sheet-sku", default="DIM_SKU_light_v5")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="Database path")
     parser.add_argument("--apply", action="store_true", help="Apply writes")
+    parser.add_argument(
+        "--allow-dim-sku-weight-overwrite",
+        action="store_true",
+        help="Allow workbook DIM_SKU_light_v5 rows to overwrite existing dim_sku.weight_kg",
+    )
     args = parser.parse_args()
 
     try:
@@ -634,6 +633,7 @@ def main() -> int:
             sheet_parts=args.sheet_parts,
             sheet_sku=args.sheet_sku,
             apply=args.apply,
+            allow_dim_sku_weight_overwrite=args.allow_dim_sku_weight_overwrite,
         )
     except Exception as exc:
         print(f"ERROR: {exc}")

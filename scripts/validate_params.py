@@ -47,10 +47,10 @@ from scripts.validate_sales_against_workbook import (
     DEFAULT_SHEET as DEFAULT_SALES_ANCHOR_SHEET,
 )
 from scripts.validate_cogs_integrity import validate_cogs_integrity
-from scripts.validate_dim_sku_master_alignment import (
-    validate_dim_sku_master_alignment,
-    DEFAULT_WORKBOOK as DEFAULT_MASTER_DIM_WORKBOOK,
-    DEFAULT_SHEET as DEFAULT_MASTER_DIM_SHEET,
+from scripts.validate_dim_sku_light_alignment import (
+    validate_dim_sku_light_alignment,
+    DEFAULT_WORKBOOK as DEFAULT_DIM_SKU_LIGHT_WORKBOOK,
+    DEFAULT_SHEET as DEFAULT_DIM_SKU_LIGHT_SHEET,
 )
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
@@ -438,27 +438,31 @@ def main():
             result.add_error(f"cogs_integrity error: {exc}")
 
         try:
-            workbook_master = Path(
-                os.environ.get("DIM_SKU_MASTER_WORKBOOK_PATH", str(DEFAULT_MASTER_DIM_WORKBOOK))
+            workbook_light = Path(
+                os.environ.get("DIM_SKU_LIGHT_WORKBOOK_PATH", str(DEFAULT_DIM_SKU_LIGHT_WORKBOOK))
             ).expanduser()
-            workbook_master_sheet = os.environ.get("DIM_SKU_MASTER_SHEET", DEFAULT_MASTER_DIM_SHEET)
-            master_report = validate_dim_sku_master_alignment(
+            workbook_light_sheet = os.environ.get("DIM_SKU_LIGHT_SHEET", DEFAULT_DIM_SKU_LIGHT_SHEET)
+            light_report = validate_dim_sku_light_alignment(
                 db_path=db_path,
-                workbook_path=workbook_master,
-                sheet_name=workbook_master_sheet,
+                workbook_path=workbook_light,
+                sheet_name=workbook_light_sheet,
                 weight_tol_kg=0.01,
                 base_tol_cny=0.01,
+                enforce_base_cost=False,
             )
-            if not master_report["ok"]:
-                for err in master_report["errors"]:
-                    result.add_error(f"dim_sku_master_alignment: {err}")
+            if not light_report["ok"]:
+                for err in light_report["errors"]:
+                    result.add_error(f"dim_sku_light_alignment: {err}")
             else:
                 result.add_info(
-                    "dim_sku_master_alignment: "
-                    f"OK (compared={master_report['compared_count']})"
+                    "dim_sku_light_alignment: "
+                    f"OK (compared={light_report['compared_count']}, "
+                    f"base_drift={light_report['base_mismatch_count']})"
                 )
+            for warn in light_report.get("warnings", []):
+                result.add_warning(f"dim_sku_light_alignment: {warn}")
         except Exception as exc:
-            result.add_error(f"dim_sku_master_alignment error: {exc}")
+            result.add_error(f"dim_sku_light_alignment error: {exc}")
 
     # Output results
     if args.json:

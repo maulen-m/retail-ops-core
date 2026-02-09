@@ -94,6 +94,11 @@ The dashboard is only considered functional when coverage is complete:
 - **Size mapping:** any SKU that appears in sales/orders OR in the latest snapshot date (<= cutoff) must have size mapping; missing MY_SIZE is a hard error.
 - **Day complete:** if day_complete is red, exports/writes are blocked (see `DAY_COMPLETE_CONTRACT.md`).
 
+## Dim SKU Weight Truth
+- Canonical weight source: `Dim sku light v5.xlsx` (see `scripts/sync_dim_sku_from_dim_sku_light.py`).
+- Strict gate: `scripts/validate_dim_sku_light_alignment.py` (weight mismatches are hard failures; base-cost mismatches are warnings by default).
+- Inbound sync (`scripts/sync_po_parts_from_inbound_calendar.py`) must not overwrite existing `dim_sku.weight_kg` unless explicitly enabled by CLI flag.
+
 ## Update protocol
 1) Update `docs/inventory/Master_Inventory_Rules_v8.md` first if formulas change.
 2) Update `docs/validation/PO_CONTRACT.md` tolerances as needed.

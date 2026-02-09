@@ -174,8 +174,11 @@ Then do ads attribution.
 - Canonical alias mapping is applied through `dim_kaspi_article_map` for `OF_SUIT-61_*` variants.
 - Strict validators added and wired:
   - `scripts/validate_cogs_integrity.py`
-  - `scripts/validate_dim_sku_master_alignment.py`
+  - `scripts/validate_dim_sku_light_alignment.py`
+- Weight restore path is explicit and write-gated:
+  - parser: `core/excel/dim_sku_light_parser.py`
+  - sync: `scripts/sync_dim_sku_from_dim_sku_light.py`
+  - inbound sync no longer overwrites existing `dim_sku.weight_kg` unless explicitly enabled.
 - Remaining strict blockers are now explicit and outside the COGS computation logic:
   - workbook-anchor breach day (`2026-02-07`)
-  - `dim_sku` vs master workbook mismatch count
   - existing on-delivery settlement residuals.

@@ -39,7 +39,11 @@ The operational truth chain is enforced as:
    - `view_sales_daily_truth`
    Revenue/units are v2-authoritative for overlap windows; `fact_sales` is historical fallback.
 11. Published COGS/profit are valid only when full landed formula inputs exist (`base + delivery`).
-   - strict gates: `scripts/validate_cogs_integrity.py`, `scripts/validate_dim_sku_master_alignment.py`
+   - strict gates: `scripts/validate_cogs_integrity.py`, `scripts/validate_dim_sku_light_alignment.py`
+12. `dim_sku.weight_kg` single-truth restore/write path:
+   - parser: `core/excel/dim_sku_light_parser.py`
+   - guarded sync: `scripts/sync_dim_sku_from_dim_sku_light.py`
+   - inbound PO sync must not overwrite existing `dim_sku.weight_kg` unless explicit override flag is used.
    - unresolved rows are surfaced explicitly and fail strict validation.
 
 Rules:

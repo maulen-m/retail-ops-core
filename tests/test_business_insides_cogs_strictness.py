@@ -166,3 +166,22 @@ def test_business_insides_uses_formula_cogs_series(tmp_path: Path) -> None:
 
     # suit line formula cogs: 2 * (100*75 + 1.5*520*2.66) = 19149.6
     assert day["cogs_kzt"] == 19149.6
+
+
+def test_business_insides_formula_cogs_is_not_base_only(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_db(db_path)
+    bank = tmp_path / "bank.yaml"
+    _write_bank_yaml(bank)
+
+    result = generate_business_insides(
+        db_path=db_path,
+        bank_accounts_path=bank,
+        as_of="2026-02-08",
+        output_dir=tmp_path / "out",
+        strict_cogs=False,
+    )
+    day = {r["date"]: r for r in result["last_7_days"]}["2026-02-08"]
+
+    base_only = 2 * 100 * 75
+    assert day["cogs_kzt"] > base_only
