@@ -60,7 +60,9 @@ def _init_db(path: Path) -> None:
         );
         """
     )
-    conn.execute("INSERT INTO dim_sku (sku_key, cogs_kzt, base_cost_cny, weight_kg) VALUES ('SKU_A', 2000, 0, 0)")
+    conn.execute(
+        "INSERT INTO dim_sku (sku_key, cogs_kzt, base_cost_cny, weight_kg) VALUES ('SKU_A', 0, 28, 0.9)"
+    )
     conn.execute("INSERT INTO dim_sku_size (sku_id, sku_key, my_size) VALUES ('SKU_A_M', 'SKU_A', 'M')")
     conn.execute("INSERT INTO fact_inventory_snapshot_size (snapshot_date, sku_key, current_stock) VALUES ('2026-02-07', 'SKU_A', 5)")
     conn.execute(

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
+
+from core.config.business_params import DEFAULT_FX_RATES
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -18,6 +21,68 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row[1] == column for row in rows)
 
 
+def _resolve_fx_rates(conn: sqlite3.Connection) -> tuple[float, float, float]:
+    cny_kzt = float(DEFAULT_FX_RATES["cny_kzt"])
+    usd_kzt = float(DEFAULT_FX_RATES["usd_kzt"])
+    dlv_rate_usd_kg = float(DEFAULT_FX_RATES["dlv_rate_usd_kg"])
+
+    if not _table_exists(conn, "dim_fx_rates"):
+        return cny_kzt, usd_kzt, dlv_rate_usd_kg
+
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(dim_fx_rates)").fetchall()}
+    required = {"effective_date", "cny_kzt", "usd_kzt", "dlv_rate_usd_kg"}
+    if not required.issubset(cols):
+        return cny_kzt, usd_kzt, dlv_rate_usd_kg
+
+    today = date.today().isoformat()
+    row = conn.execute(
+        """
+        SELECT cny_kzt, usd_kzt, dlv_rate_usd_kg
+        FROM dim_fx_rates
+        WHERE effective_date <= ?
+        ORDER BY effective_date DESC
+        LIMIT 1
+        """,
+        (today,),
+    ).fetchone()
+    if row is None:
+        return cny_kzt, usd_kzt, dlv_rate_usd_kg
+
+    return float(row[0]), float(row[1]), float(row[2])
+
+
+def get_article_aliases_for_sku(
+    conn: sqlite3.Connection,
+    *,
+    sku_key: str,
+    store_code: str | None = None,
+) -> list[str]:
+    """Return known article aliases for a canonical SKU key."""
+    if not _table_exists(conn, "dim_kaspi_article_map"):
+        return []
+
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(dim_kaspi_article_map)").fetchall()}
+    if "kaspi_article" not in cols or "sku_key" not in cols:
+        return []
+
+    where = ["COALESCE(active_flag, 1) = 1", "sku_key = ?"] if "active_flag" in cols else ["sku_key = ?"]
+    params: list[object] = [sku_key]
+    if store_code and "store_code" in cols:
+        where.append("store_code = ?")
+        params.append(store_code)
+
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT kaspi_article
+        FROM dim_kaspi_article_map
+        WHERE {' AND '.join(where)}
+        ORDER BY kaspi_article
+        """,
+        tuple(params),
+    ).fetchall()
+    return [str(row[0]) for row in rows if row[0]]
+
+
 def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     """
     Create canonical line/daily sales truth views.
@@ -26,6 +91,8 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     - consumers must read only `view_sales_line_truth` and `view_sales_daily_truth`.
     - revenue/units policy: sales_fact_v2 is authoritative for dates >= MIN(v2.sale_date);
       fact_sales contributes only pre-v2 historical days.
+    - COGS/profit policy: published COGS is valid only when full landed formula inputs
+      (base_cost_cny + weight_kg + FX) are present.
     """
     has_sales_v2 = _table_exists(conn, "sales_fact_v2")
     has_fact_sales = _table_exists(conn, "fact_sales")
@@ -34,6 +101,8 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
 
     conn.execute("DROP VIEW IF EXISTS view_sales_daily_truth")
     conn.execute("DROP VIEW IF EXISTS view_sales_line_truth")
+
+    cny_kzt, usd_kzt, dlv_rate_usd_kg = _resolve_fx_rates(conn)
 
     v2_select = None
     if has_sales_v2:
@@ -129,7 +198,6 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         )
         """
     )
-
     ctes.append(
         """
         base_lines AS (
@@ -145,81 +213,151 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         """
     )
 
-    if has_fact_sales:
-        fsl_store = "store_code" if _column_exists(conn, "fact_sales", "store_code") else "'UNIVERSAL'"
-        fsl_sku = "sku_id" if _column_exists(conn, "fact_sales", "sku_id") else "''"
-        fsl_cogs = "cogs_line" if _column_exists(conn, "fact_sales", "cogs_line") else "0"
+    if _table_exists(conn, "dim_kaspi_article_map"):
+        has_active_flag = _column_exists(conn, "dim_kaspi_article_map", "active_flag")
+        active_filter = "WHERE COALESCE(active_flag, 1) = 1" if has_active_flag else ""
         ctes.append(
             f"""
-            fact_sales_lookup AS (
+            article_store_map AS (
                 SELECT
-                    CAST(order_id AS TEXT) AS order_id,
-                    CAST(COALESCE({fsl_store}, 'UNIVERSAL') AS TEXT) AS store_code,
-                    CAST({fsl_sku} AS TEXT) AS sku_id,
-                    MAX(CAST(COALESCE({fsl_cogs}, 0) AS REAL)) AS cogs_line
-                FROM fact_sales
-                GROUP BY 1, 2, 3
+                    UPPER(TRIM(COALESCE(kaspi_article, ''))) AS article_norm,
+                    UPPER(TRIM(COALESCE(store_code, ''))) AS store_norm,
+                    MAX(COALESCE(sku_key, '')) AS sku_key,
+                    MAX(COALESCE(sku_id, '')) AS sku_id
+                FROM dim_kaspi_article_map
+                {active_filter}
+                GROUP BY 1, 2
+            )
+            """
+        )
+        ctes.append(
+            """
+            article_any_map AS (
+                SELECT
+                    article_norm,
+                    MAX(COALESCE(sku_key, '')) AS sku_key,
+                    MAX(COALESCE(sku_id, '')) AS sku_id
+                FROM article_store_map
+                GROUP BY 1
             )
             """
         )
     else:
         ctes.append(
             """
-            fact_sales_lookup AS (
-                SELECT NULL AS order_id, NULL AS store_code, NULL AS sku_id, 0.0 AS cogs_line
-                WHERE 0
+            article_store_map AS (
+                SELECT '' AS article_norm, '' AS store_norm, '' AS sku_key, '' AS sku_id WHERE 0
+            )
+            """
+        )
+        ctes.append(
+            """
+            article_any_map AS (
+                SELECT '' AS article_norm, '' AS sku_key, '' AS sku_id WHERE 0
             )
             """
         )
 
-    has_dim_sku = _table_exists(conn, "dim_sku") and _column_exists(conn, "dim_sku", "cogs_kzt")
-    if has_dim_sku:
-        dim_join = "LEFT JOIN dim_sku ds ON ds.sku_key = b.sku_key"
-        dim_expr = "CAST(COALESCE(ds.cogs_kzt, 0) AS REAL)"
+    ctes.append(
+        """
+        resolved_lines AS (
+            SELECT
+                b.order_id,
+                b.sale_date,
+                b.store_code,
+                COALESCE(
+                    NULLIF(am_key_store.sku_key, ''),
+                    NULLIF(am_id_store.sku_key, ''),
+                    NULLIF(am_key_any.sku_key, ''),
+                    NULLIF(am_id_any.sku_key, ''),
+                    b.sku_key
+                ) AS canonical_sku_key,
+                COALESCE(
+                    NULLIF(am_key_store.sku_id, ''),
+                    NULLIF(am_id_store.sku_id, ''),
+                    NULLIF(am_key_any.sku_id, ''),
+                    NULLIF(am_id_any.sku_id, ''),
+                    b.sku_id
+                ) AS canonical_sku_id,
+                b.my_size,
+                b.units,
+                b.net_rev_kzt,
+                b.cogs_kzt AS source_cogs_kzt,
+                b.profit_kzt AS source_profit_kzt,
+                b.source_table,
+                b.sku_key AS source_sku_key,
+                b.sku_id AS source_sku_id,
+                b.units AS source_units,
+                b.net_rev_kzt AS source_net_rev_kzt
+            FROM base_lines b
+            LEFT JOIN article_store_map am_key_store
+              ON am_key_store.article_norm = UPPER(TRIM(COALESCE(b.sku_key, '')))
+             AND am_key_store.store_norm = UPPER(TRIM(COALESCE(b.store_code, '')))
+            LEFT JOIN article_store_map am_id_store
+              ON am_id_store.article_norm = UPPER(TRIM(COALESCE(b.sku_id, '')))
+             AND am_id_store.store_norm = UPPER(TRIM(COALESCE(b.store_code, '')))
+            LEFT JOIN article_any_map am_key_any
+              ON am_key_any.article_norm = UPPER(TRIM(COALESCE(b.sku_key, '')))
+            LEFT JOIN article_any_map am_id_any
+              ON am_id_any.article_norm = UPPER(TRIM(COALESCE(b.sku_id, '')))
+        )
+        """
+    )
+
+    has_dim_sku = _table_exists(conn, "dim_sku")
+    has_base_cost = has_dim_sku and _column_exists(conn, "dim_sku", "base_cost_cny")
+    has_weight = has_dim_sku and _column_exists(conn, "dim_sku", "weight_kg")
+
+    if has_dim_sku and has_base_cost and has_weight:
+        dim_join = "LEFT JOIN dim_sku ds ON ds.sku_key = rl.canonical_sku_key"
+        base_expr = "CAST(ds.base_cost_cny AS REAL)"
+        weight_expr = "CAST(ds.weight_kg AS REAL)"
     else:
         dim_join = ""
-        dim_expr = "0.0"
+        base_expr = "NULL"
+        weight_expr = "NULL"
+
+    formula_unit_expr = (
+        f"(({base_expr}) * {cny_kzt:.8f}) + "
+        f"(({weight_expr}) * {usd_kzt:.8f} * {dlv_rate_usd_kg:.8f})"
+    )
+    formula_ready_expr = f"(({base_expr}) IS NOT NULL AND ({base_expr}) > 0 AND ({weight_expr}) IS NOT NULL AND ({weight_expr}) > 0 AND COALESCE(rl.units, 0) > 0)"
 
     cte_sql = ",\n".join(ctes)
     line_view_sql = f"""
         CREATE VIEW view_sales_line_truth AS
         WITH {cte_sql}
         SELECT
-            b.order_id,
-            b.sale_date,
-            b.store_code,
-            b.sku_key,
-            b.sku_id,
-            b.my_size,
-            b.units,
-            b.net_rev_kzt,
+            rl.order_id,
+            rl.sale_date,
+            rl.store_code,
+            rl.canonical_sku_key AS sku_key,
+            rl.canonical_sku_id AS sku_id,
+            rl.my_size,
+            rl.units,
+            rl.net_rev_kzt,
             CASE
-                WHEN b.cogs_kzt > 0 THEN b.cogs_kzt
-                WHEN fsl.cogs_line > 0 THEN fsl.cogs_line
-                WHEN {dim_expr} > 0 AND b.units > 0 THEN ROUND({dim_expr} * b.units, 2)
-                ELSE 0.0
+                WHEN {formula_ready_expr}
+                    THEN ROUND(({formula_unit_expr}) * rl.units, 2)
+                ELSE NULL
             END AS cogs_kzt,
-            ROUND(
-                b.net_rev_kzt - CASE
-                    WHEN b.cogs_kzt > 0 THEN b.cogs_kzt
-                    WHEN fsl.cogs_line > 0 THEN fsl.cogs_line
-                    WHEN {dim_expr} > 0 AND b.units > 0 THEN ROUND({dim_expr} * b.units, 2)
-                    ELSE 0.0
-                END,
-                2
-            ) AS profit_kzt,
             CASE
-                WHEN b.cogs_kzt > 0 THEN 'line_cogs'
-                WHEN fsl.cogs_line > 0 THEN 'fact_sales_fallback'
-                WHEN {dim_expr} > 0 AND b.units > 0 THEN 'dim_sku_fallback'
+                WHEN {formula_ready_expr}
+                    THEN ROUND(rl.net_rev_kzt - ROUND(({formula_unit_expr}) * rl.units, 2), 2)
+                ELSE NULL
+            END AS profit_kzt,
+            CASE
+                WHEN {formula_ready_expr} THEN 'formula_full'
                 ELSE 'unresolved'
             END AS cogs_source,
-            b.source_table
-        FROM base_lines b
-        LEFT JOIN fact_sales_lookup fsl
-          ON COALESCE(fsl.order_id, '') = COALESCE(b.order_id, '')
-         AND COALESCE(fsl.store_code, '') = COALESCE(b.store_code, '')
-         AND COALESCE(fsl.sku_id, '') = COALESCE(b.sku_id, '')
+            rl.source_table,
+            rl.source_sku_key,
+            rl.source_sku_id,
+            rl.source_units,
+            rl.source_net_rev_kzt,
+            rl.source_cogs_kzt,
+            rl.source_profit_kzt
+        FROM resolved_lines rl
         {dim_join}
     """
     conn.execute(line_view_sql)
@@ -230,10 +368,10 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             sale_date,
             store_code,
             sku_key,
-            SUM(units) AS units,
-            SUM(net_rev_kzt) AS revenue_kzt,
-            SUM(cogs_kzt) AS cogs_kzt,
-            SUM(profit_kzt) AS profit_kzt,
+            SUM(COALESCE(units, 0)) AS units,
+            SUM(COALESCE(net_rev_kzt, 0)) AS revenue_kzt,
+            SUM(COALESCE(cogs_kzt, 0)) AS cogs_kzt,
+            SUM(COALESCE(profit_kzt, 0)) AS profit_kzt,
             COUNT(*) AS line_count
         FROM view_sales_line_truth
         GROUP BY sale_date, store_code, sku_key

@@ -34,7 +34,7 @@ def _seed_db(db_path: Path) -> None:
     conn.close()
 
 
-def test_cogs_fallback_uses_dim_sku_when_sales_fact_cogs_missing(tmp_path: Path) -> None:
+def test_cogs_formula_uses_full_landed_components(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     _seed_db(db_path)
 
@@ -42,7 +42,7 @@ def test_cogs_fallback_uses_dim_sku_when_sales_fact_cogs_missing(tmp_path: Path)
     conn.execute(
         """
         INSERT INTO dim_sku (sku_key, model, color, product_type, base_cost_cny, weight_kg, cogs_kzt)
-        VALUES ('SKU_A', 'A', 'BLACK', 'CL', 0, 0, 1500)
+        VALUES ('SKU_A', 'A', 'BLACK', 'CL', 100, 1.5, 0)
         """
     )
     conn.execute(
@@ -57,9 +57,10 @@ def test_cogs_fallback_uses_dim_sku_when_sales_fact_cogs_missing(tmp_path: Path)
 
     metrics = compute_sales_metrics(db_path=db_path, as_of="2026-02-08")
     day = {r["date"]: r for r in metrics["last_7_days"]}["2026-02-08"]
-    assert day["cogs_kzt"] == 3000
-    assert day["profit_kzt"] == 7000
-    assert metrics["fallback_rows"] == 1
+    # unit COGS = 100*75 + 1.5*520*2.66 = 9574.8 -> line = 19149.6
+    assert day["cogs_kzt"] == 19149.6
+    assert day["profit_kzt"] == -9149.6
+    assert metrics["fallback_rows"] == 0
 
 
 def test_profit_uses_effective_cogs_not_raw_zero_cogs(tmp_path: Path) -> None:
@@ -70,7 +71,7 @@ def test_profit_uses_effective_cogs_not_raw_zero_cogs(tmp_path: Path) -> None:
     conn.execute(
         """
         INSERT INTO dim_sku (sku_key, model, color, product_type, base_cost_cny, weight_kg, cogs_kzt)
-        VALUES ('SKU_A', 'A', 'BLACK', 'CL', 0, 0, 900)
+        VALUES ('SKU_A', 'A', 'BLACK', 'CL', 35, 0.72, 0)
         """
     )
     conn.execute(
@@ -85,8 +86,8 @@ def test_profit_uses_effective_cogs_not_raw_zero_cogs(tmp_path: Path) -> None:
 
     metrics = compute_sales_metrics(db_path=db_path, as_of="2026-02-08")
     day = {r["date"]: r for r in metrics["last_7_days"]}["2026-02-08"]
-    assert day["cogs_kzt"] == 2700
-    assert day["profit_kzt"] == 9300
+    assert day["cogs_kzt"] > 0
+    assert day["profit_kzt"] == round(day["net_rev_kzt"] - day["cogs_kzt"], 2)
 
 
 def test_unresolved_rows_and_sku_count_are_reported(tmp_path: Path) -> None:

@@ -418,6 +418,7 @@ def generate_business_insides(
     as_of: str | date | None = None,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     external_sales_csv: Path | None = None,
+    strict_cogs: bool = False,
 ) -> dict[str, Any]:
     as_of_date = _parse_as_of(as_of)
     generated_at = datetime.now()
@@ -427,6 +428,12 @@ def generate_business_insides(
         as_of=as_of_date,
     )
     sales_metrics = compute_sales_metrics(db_path=db_path, as_of=as_of_date)
+    if strict_cogs and int(sales_metrics["unresolved_rows"]) > 0:
+        raise RuntimeError(
+            "Unresolved COGS rows detected in requested window: "
+            f"rows={sales_metrics['unresolved_rows']}, "
+            f"sku_count={sales_metrics['unresolved_sku_count']}"
+        )
     external_check = _external_reference_check(
         external_sales_csv=external_sales_csv,
         metrics=sales_metrics,
@@ -483,6 +490,7 @@ def main() -> int:
     parser.add_argument("--as-of", type=str, default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--external-sales-csv", type=Path, default=None)
+    parser.add_argument("--strict-cogs", action="store_true")
     args = parser.parse_args()
 
     result = generate_business_insides(
@@ -491,6 +499,7 @@ def main() -> int:
         as_of=args.as_of,
         output_dir=args.output_dir,
         external_sales_csv=args.external_sales_csv,
+        strict_cogs=args.strict_cogs,
     )
     print(f"snapshot_path={result['snapshot_path']}")
     print(f"latest_path={result['latest_path']}")

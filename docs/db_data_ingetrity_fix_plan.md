@@ -164,3 +164,18 @@ Phase 5 — only after green: revisit deeper issues
 If v2 has missing COGS, fill deterministically (dim_sku + calc_cogs).
 
 Then do ads attribution.
+
+## 2026-02-09 implementation status update
+
+- `view_sales_line_truth` now keeps `sales_fact_v2` authoritative on overlap/recent windows and limits `fact_sales` to pre-v2 history contribution.
+- Published COGS/profit now follow one contract:
+  - `cogs_source=formula_full` only when full landed inputs exist (`base_cost_cny`, `weight_kg`, FX, cargo rate).
+  - unresolved rows emit `NULL` COGS/profit and are surfaced explicitly.
+- Canonical alias mapping is applied through `dim_kaspi_article_map` for `OF_SUIT-61_*` variants.
+- Strict validators added and wired:
+  - `scripts/validate_cogs_integrity.py`
+  - `scripts/validate_dim_sku_master_alignment.py`
+- Remaining strict blockers are now explicit and outside the COGS computation logic:
+  - workbook-anchor breach day (`2026-02-07`)
+  - `dim_sku` vs master workbook mismatch count
+  - existing on-delivery settlement residuals.

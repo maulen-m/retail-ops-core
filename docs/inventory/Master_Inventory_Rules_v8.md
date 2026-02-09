@@ -185,6 +185,12 @@ Net_rev_unit  = (Sell_price_kzt * (1 - Commission) - Delivery_fee) * (1 - VAT_ra
 Unit_profit   = Net_rev_unit - COGS_unit
 ```
 
+**COGS integrity rule (non-negotiable):**
+- A sales line is **COGS-valid** only when full landed inputs exist:
+  `BaseCost_CNY`, `Weight_kg`, `FX_CNY_KZT`, `FX_USD_KZT`, `CargoRate_USDkg`.
+- If any input is missing, mark row as `unresolved` and block profit publication for that row.
+- Partial/base-only COGS must not be published as final profit input.
+
 ---
 
 ## 4. Safety stock policy parameters

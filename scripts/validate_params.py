@@ -46,6 +46,12 @@ from scripts.validate_sales_against_workbook import (
     DEFAULT_WORKBOOK as DEFAULT_SALES_ANCHOR_WORKBOOK,
     DEFAULT_SHEET as DEFAULT_SALES_ANCHOR_SHEET,
 )
+from scripts.validate_cogs_integrity import validate_cogs_integrity
+from scripts.validate_dim_sku_master_alignment import (
+    validate_dim_sku_master_alignment,
+    DEFAULT_WORKBOOK as DEFAULT_MASTER_DIM_WORKBOOK,
+    DEFAULT_SHEET as DEFAULT_MASTER_DIM_SHEET,
+)
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
@@ -410,6 +416,49 @@ def main():
                 )
         except Exception as exc:
             result.add_error(f"sales_workbook_anchor error: {exc}")
+
+        try:
+            cogs_report = validate_cogs_integrity(
+                db_path=db_path,
+                as_of=date.today().isoformat(),
+                days=30,
+                max_unresolved_rows=0,
+                max_unresolved_skus=0,
+            )
+            if not cogs_report["ok"]:
+                for err in cogs_report["errors"]:
+                    result.add_error(f"cogs_integrity: {err}")
+            else:
+                result.add_info(
+                    "cogs_integrity: "
+                    f"OK (window={cogs_report['window_start']}..{cogs_report['window_end']}, "
+                    f"rows={cogs_report['total_rows']})"
+                )
+        except Exception as exc:
+            result.add_error(f"cogs_integrity error: {exc}")
+
+        try:
+            workbook_master = Path(
+                os.environ.get("DIM_SKU_MASTER_WORKBOOK_PATH", str(DEFAULT_MASTER_DIM_WORKBOOK))
+            ).expanduser()
+            workbook_master_sheet = os.environ.get("DIM_SKU_MASTER_SHEET", DEFAULT_MASTER_DIM_SHEET)
+            master_report = validate_dim_sku_master_alignment(
+                db_path=db_path,
+                workbook_path=workbook_master,
+                sheet_name=workbook_master_sheet,
+                weight_tol_kg=0.01,
+                base_tol_cny=0.01,
+            )
+            if not master_report["ok"]:
+                for err in master_report["errors"]:
+                    result.add_error(f"dim_sku_master_alignment: {err}")
+            else:
+                result.add_info(
+                    "dim_sku_master_alignment: "
+                    f"OK (compared={master_report['compared_count']})"
+                )
+        except Exception as exc:
+            result.add_error(f"dim_sku_master_alignment error: {exc}")
 
     # Output results
     if args.json:

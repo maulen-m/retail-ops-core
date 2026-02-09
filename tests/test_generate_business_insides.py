@@ -62,8 +62,8 @@ def _init_db(db_path: Path) -> None:
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            ("SKU_A", "A", "BLACK", "CL", 0, 0, 1000),
-            ("SKU_B", "B", "WHITE", "CL", 0, 0, 800),
+            ("SKU_A", "A", "BLACK", "CL", 32, 0.95, 0),
+            ("SKU_B", "B", "WHITE", "CL", 24, 0.65, 0),
         ],
     )
     conn.executemany(
@@ -165,7 +165,7 @@ def _init_db_fact_sales_only(db_path: Path) -> None:
     )
     conn.execute(
         "INSERT INTO dim_sku (sku_key, model, color, product_type, base_cost_cny, weight_kg, cogs_kzt) "
-        "VALUES ('SKU_A', 'A', 'BLACK', 'CL', 0, 0, 900)"
+        "VALUES ('SKU_A', 'A', 'BLACK', 'CL', 28, 0.9, 0)"
     )
     conn.execute(
         "INSERT INTO fact_inventory_snapshot_size (snapshot_date, sku_key, current_stock) VALUES ('2026-02-07', 'SKU_A', 10)"

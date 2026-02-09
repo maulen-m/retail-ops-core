@@ -34,6 +34,13 @@ The operational truth chain is enforced as:
 9. Business-insides snapshots are generated from paid capital + delivered sales truth:
    - `scripts/generate_business_insides.py`
    - validator: `scripts/validate_business_insides.py`
+10. Published sales truth is exposed only through:
+   - `view_sales_line_truth`
+   - `view_sales_daily_truth`
+   Revenue/units are v2-authoritative for overlap windows; `fact_sales` is historical fallback.
+11. Published COGS/profit are valid only when full landed formula inputs exist (`base + delivery`).
+   - strict gates: `scripts/validate_cogs_integrity.py`, `scripts/validate_dim_sku_master_alignment.py`
+   - unresolved rows are surfaced explicitly and fail strict validation.
 
 Rules:
 - `PLAN-*` rows are recommendations only.

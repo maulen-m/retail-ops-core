@@ -35,7 +35,17 @@ def _seed_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE TABLE dim_sku (
             sku_key TEXT PRIMARY KEY,
+            base_cost_cny REAL,
+            weight_kg REAL,
             cogs_kzt REAL
+        );
+        CREATE TABLE dim_kaspi_article_map (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_code TEXT,
+            kaspi_article TEXT,
+            sku_key TEXT,
+            sku_id TEXT,
+            active_flag INTEGER DEFAULT 1
         );
         """
     )
@@ -45,7 +55,12 @@ def test_view_sales_line_truth_prefers_sales_fact_v2_on_overlap(tmp_path: Path) 
     db = tmp_path / "app.db"
     conn = sqlite3.connect(db)
     _seed_schema(conn)
-    conn.execute("INSERT INTO dim_sku (sku_key, cogs_kzt) VALUES ('SKU_A', 700)")
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_A', 40, 0.5, 0)
+        """
+    )
     conn.execute(
         """
         INSERT INTO sales_fact_v2
@@ -65,7 +80,7 @@ def test_view_sales_line_truth_prefers_sales_fact_v2_on_overlap(tmp_path: Path) 
     ensure_sales_truth_views(conn)
     row = conn.execute(
         """
-        SELECT net_rev_kzt, cogs_kzt, profit_kzt, source_table
+        SELECT net_rev_kzt, source_table
         FROM view_sales_line_truth
         WHERE order_id='ORD-1'
         """
@@ -73,16 +88,19 @@ def test_view_sales_line_truth_prefers_sales_fact_v2_on_overlap(tmp_path: Path) 
     conn.close()
 
     assert row[0] == 10000
-    assert row[1] == 3000
-    assert row[2] == 7000
-    assert row[3] == "sales_fact_v2"
+    assert row[1] == "sales_fact_v2"
 
 
 def test_view_sales_daily_truth_uses_fact_sales_when_missing_in_sales_fact_v2(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     conn = sqlite3.connect(db)
     _seed_schema(conn)
-    conn.execute("INSERT INTO dim_sku (sku_key, cogs_kzt) VALUES ('SKU_B', 1000)")
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_B', 20, 0.2, 0)
+        """
+    )
     conn.execute(
         """
         INSERT INTO fact_sales
@@ -95,7 +113,7 @@ def test_view_sales_daily_truth_uses_fact_sales_when_missing_in_sales_fact_v2(tm
     ensure_sales_truth_views(conn)
     row = conn.execute(
         """
-        SELECT units, revenue_kzt, cogs_kzt, profit_kzt
+        SELECT units, revenue_kzt
         FROM view_sales_daily_truth
         WHERE sale_date='2026-02-08' AND sku_key='SKU_B'
         """
@@ -104,8 +122,6 @@ def test_view_sales_daily_truth_uses_fact_sales_when_missing_in_sales_fact_v2(tm
 
     assert row[0] == 3
     assert row[1] == 15000
-    assert row[2] == 4500
-    assert row[3] == 10500
 
 
 def test_view_sales_truth_excludes_fact_sales_on_overlapping_dates(tmp_path: Path) -> None:
@@ -134,6 +150,7 @@ def test_view_sales_truth_excludes_fact_sales_on_overlapping_dates(tmp_path: Pat
             ("ORD-FS-PRE", "2026-02-04", "SKU_A", "SKU_A_L", "L", "ACMEWEAR", 3, 2400, 900, 1500),
         ],
     )
+    conn.execute("INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt) VALUES ('SKU_A', 30, 0.5, 0)")
     conn.commit()
 
     ensure_sales_truth_views(conn)
@@ -148,7 +165,6 @@ def test_view_sales_truth_excludes_fact_sales_on_overlapping_dates(tmp_path: Pat
     ).fetchall()
     conn.close()
 
-    # Overlapping date (2026-02-05) must use v2 only and exclude fact_sales revenue/units.
     assert daily == [
         ("2026-02-04", 3.0, 2400.0),
         ("2026-02-05", 1.0, 1000.0),
@@ -178,6 +194,7 @@ def test_view_sales_truth_keeps_fact_sales_for_pre_v2_history_only(tmp_path: Pat
             ("ORD-FS-OVERLAP", "2026-02-10", "SKU_A", "SKU_A_M", "M", "ACMEWEAR", 7, 7000, 2100, 4900),
         ],
     )
+    conn.execute("INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt) VALUES ('SKU_A', 25, 0.4, 0)")
     conn.commit()
 
     ensure_sales_truth_views(conn)
@@ -196,22 +213,27 @@ def test_view_sales_truth_keeps_fact_sales_for_pre_v2_history_only(tmp_path: Pat
     ]
 
 
-def test_cogs_fallback_from_fact_sales_still_works_without_fact_sales_revenue_union(tmp_path: Path) -> None:
+def test_truth_view_maps_offer_article_to_canonical_line61(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     conn = sqlite3.connect(db)
     _seed_schema(conn)
     conn.execute(
         """
-        INSERT INTO sales_fact_v2
-        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
-        VALUES ('ORD-1', '2026-02-08', 'SKU_A', 'SKU_A_M', 'M', 'ACMEWEAR', 2, 10000, 0, 0, 'DELIVERED', 0)
+        INSERT INTO dim_kaspi_article_map (store_code, kaspi_article, sku_key, sku_id, active_flag)
+        VALUES ('ACMEWEAR', 'OF_SUIT-61_BLK_XL_50', 'CL_NEW-CLO2_MEN_SUIT-61_BLACK', 'CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL', 1)
         """
     )
     conn.execute(
         """
-        INSERT INTO fact_sales
-        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, line_net_rev, cogs_line, profit_line)
-        VALUES ('ORD-1', '2026-02-08', 'SKU_A', 'SKU_A_M', 'M', 'ACMEWEAR', 2, 9000, 3200, 5800)
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('CL_NEW-CLO2_MEN_SUIT-61_BLACK', 100, 1.5, 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-SUIT', '2026-02-08', 'OF_SUIT-61_BLK_XL_50', 'OF_SUIT-61_BLK_XL_50_XL', 'XL', 'ACMEWEAR', 2, 20000, 0, 0, 'DELIVERED', 0)
         """
     )
     conn.commit()
@@ -219,11 +241,117 @@ def test_cogs_fallback_from_fact_sales_still_works_without_fact_sales_revenue_un
     ensure_sales_truth_views(conn)
     row = conn.execute(
         """
-        SELECT cogs_kzt, cogs_source, source_table, net_rev_kzt
+        SELECT sku_key, sku_id, source_sku_key, source_sku_id
         FROM view_sales_line_truth
-        WHERE order_id='ORD-1'
+        WHERE order_id='ORD-SUIT'
         """
     ).fetchone()
     conn.close()
 
-    assert row == (3200.0, "fact_sales_fallback", "sales_fact_v2", 10000.0)
+    assert row == (
+        "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+        "CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL",
+        "OF_SUIT-61_BLK_XL_50",
+        "OF_SUIT-61_BLK_XL_50_XL",
+    )
+
+
+def test_truth_view_cogs_uses_full_formula_not_partial_source_cogs(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_FORMULA', 100, 1.5, 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-FML', '2026-02-08', 'SKU_FORMULA', 'SKU_FORMULA_L', 'L', 'ACMEWEAR', 2, 25000, 1, 24999, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    row = conn.execute(
+        """
+        SELECT cogs_kzt, cogs_source, source_cogs_kzt
+        FROM view_sales_line_truth
+        WHERE order_id='ORD-FML'
+        """
+    ).fetchone()
+    conn.close()
+
+    # cogs_unit = 100*75 + 1.5*520*2.66 = 9574.8; line = 19149.6
+    assert row[0] == 19149.6
+    assert row[1] == "formula_full"
+    assert row[2] == 1.0
+
+
+def test_truth_view_unresolved_when_base_or_weight_missing(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_BAD', 80, NULL, 2500)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-BAD', '2026-02-08', 'SKU_BAD', 'SKU_BAD_M', 'M', 'ACMEWEAR', 1, 10000, 0, 0, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    row = conn.execute(
+        """
+        SELECT cogs_kzt, profit_kzt, cogs_source
+        FROM view_sales_line_truth
+        WHERE order_id='ORD-BAD'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row[0] is None
+    assert row[1] is None
+    assert row[2] == "unresolved"
+
+
+def test_truth_view_preserves_source_columns_for_audit(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_A', 50, 1.0, 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-AUD', '2026-02-08', 'SKU_A', 'SKU_A_XL', 'XL', 'ACMEWEAR', 1, 8000, 1234, 6766, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    row = conn.execute(
+        """
+        SELECT source_sku_key, source_sku_id, source_units, source_net_rev_kzt, source_cogs_kzt, source_table
+        FROM view_sales_line_truth
+        WHERE order_id='ORD-AUD'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row == ("SKU_A", "SKU_A_XL", 1.0, 8000.0, 1234.0, "sales_fact_v2")
