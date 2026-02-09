@@ -55,3 +55,52 @@ def test_create_snapshot_excludes_heavy_file_and_offer_uploads(tmp_path: Path) -
     excluded_items = set(manifest.get("excluded_items", []))
     assert heavy_file_name in excluded_items
     assert "kaspi_offer_uploads" in excluded_items
+
+
+def test_create_snapshot_excludes_by_order_dir_by_default(tmp_path: Path) -> None:
+    source_root = tmp_path / "External_database"
+    kaspi_dir = source_root / "Kaspi_marketing"
+    kaspi_dir.mkdir(parents=True)
+    (kaspi_dir / "sample.txt").write_text("ok", encoding="utf-8")
+
+    by_order_dir = source_root / "Autonomous_business" / "kaspi_waybills" / "by_order"
+    by_order_dir.mkdir(parents=True)
+    (by_order_dir / "123.pdf").write_bytes(b"%PDF-1.4")
+
+    backup_root = tmp_path / "backup_root"
+    manifest = create_snapshot(
+        source_root=source_root,
+        backup_root=backup_root,
+        keep_days=30,
+        critical_subdirs=["Kaspi_marketing"],
+    )
+    snapshot_data = backup_root / "snapshots" / manifest["snapshot_id"] / "External_database"
+
+    assert not (snapshot_data / "Autonomous_business" / "kaspi_waybills" / "by_order").exists()
+    excluded_items = set(manifest.get("excluded_items", []))
+    assert "Autonomous_business/kaspi_waybills/by_order" in excluded_items
+
+
+def test_create_snapshot_always_excludes_by_order_even_with_custom_exclude_dirs(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "External_database"
+    kaspi_dir = source_root / "Kaspi_marketing"
+    kaspi_dir.mkdir(parents=True)
+    (kaspi_dir / "sample.txt").write_text("ok", encoding="utf-8")
+
+    by_order_dir = source_root / "Autonomous_business" / "kaspi_waybills" / "by_order"
+    by_order_dir.mkdir(parents=True)
+    (by_order_dir / "999.pdf").write_bytes(b"%PDF-1.4")
+
+    backup_root = tmp_path / "backup_root"
+    manifest = create_snapshot(
+        source_root=source_root,
+        backup_root=backup_root,
+        keep_days=30,
+        critical_subdirs=["Kaspi_marketing"],
+        exclude_dirs=["kaspi_offer_uploads"],
+    )
+    snapshot_data = backup_root / "snapshots" / manifest["snapshot_id"] / "External_database"
+
+    assert not (snapshot_data / "Autonomous_business" / "kaspi_waybills" / "by_order").exists()

@@ -22,7 +22,8 @@ DEFAULT_SOURCE_ROOT = Path(
 DEFAULT_BACKUP_ROOT = Path(
     "~/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/repo_backups_G/External_database"
 )
-DEFAULT_EXCLUDE_DIRS = ["kaspi_offer_uploads"]
+# Keep heavy by-order waybill PDFs out of Google Drive snapshots.
+DEFAULT_EXCLUDE_DIRS = ["kaspi_offer_uploads", "by_order"]
 DEFAULT_EXCLUDE_FILES = ["沪锦大客户报价表 （不含邮与税）.xlsx"]
 
 
@@ -132,6 +133,9 @@ def create_snapshot(
 
     critical_subdirs = critical_subdirs or ["Kaspi_marketing"]
     exclude_dirs = exclude_dirs or DEFAULT_EXCLUDE_DIRS
+    # Hard guard: never snapshot by-order waybill PDFs into Google Drive backups.
+    if "by_order" not in exclude_dirs:
+        exclude_dirs = [*exclude_dirs, "by_order"]
     exclude_files = exclude_files or DEFAULT_EXCLUDE_FILES
     started_at = datetime.now(ALMATY_TZ)
     timestamp = started_at.strftime("%Y%m%d_%H%M%S")

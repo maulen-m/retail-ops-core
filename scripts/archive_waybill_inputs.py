@@ -28,6 +28,9 @@ from pathlib import Path
 
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_EXTERNAL_DB_ROOT = Path(
+    "~/Documents/useful tables/Main crm spreadsheets/main tables/External_database"
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -99,6 +102,26 @@ def _remove_old_dirs(base_dir: Path, prefix: str, days: int) -> int:
             shutil.rmtree(child, ignore_errors=True)
             removed += 1
     return removed
+
+
+def _is_gdrive_like_path(path: Path) -> bool:
+    as_posix = str(path).replace("\\", "/")
+    return (
+        "/Library/CloudStorage/GoogleDrive-" in as_posix
+        or "/repo_backups_G/External_database" in as_posix
+    )
+
+
+def _resolve_external_db_root(candidate: Path | None) -> Path | None:
+    if candidate is None:
+        return None
+    if _is_gdrive_like_path(candidate):
+        LOGGER.warning(
+            "External DB root points to Google Drive snapshot path; "
+            f"forcing local External_database root: {DEFAULT_EXTERNAL_DB_ROOT}"
+        )
+        return DEFAULT_EXTERNAL_DB_ROOT
+    return candidate
 
 
 @dataclass
@@ -200,8 +223,9 @@ def main() -> int:
                 result.copied_zip_count += 1
 
     # Migrate old cache PDFs to External_database before pruning local cache.
-    if args.external_db_root:
-        repo_dir = args.external_db_root / args.repo_label / "kaspi_waybills"
+    external_db_root = _resolve_external_db_root(args.external_db_root)
+    if external_db_root:
+        repo_dir = external_db_root / args.repo_label / "kaspi_waybills"
         by_order_dir = repo_dir / "by_order"
         manifests_dir = repo_dir / "manifests" / datetime.now().strftime("%Y-%m-%d")
         workbooks_dir = repo_dir / "workbooks"

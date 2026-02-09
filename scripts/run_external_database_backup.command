@@ -14,4 +14,7 @@ else
   PYTHON="python3"
 fi
 
-"$PYTHON" scripts/external_database_backup.py --keep-days 30 --critical-subdir Kaspi_marketing
+"$PYTHON" scripts/external_database_backup.py \
+  --keep-days 30 \
+  --critical-subdir Kaspi_marketing \
+  --exclude-dir by_order

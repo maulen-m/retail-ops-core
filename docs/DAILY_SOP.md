@@ -987,6 +987,12 @@ python scripts/build_daily_waybills.py --verbose
 - External_database also receives workbook snapshots under:
 - `.../Autonomous_business/kaspi_waybills/workbooks/`
 
+**Google Drive snapshot rule:**
+- `repo_backups_G/External_database/snapshots/*` must not include
+  `Autonomous_business/kaspi_waybills/by_order/` PDFs.
+- Source of truth for by-order waybill PDFs is local External_database:
+  `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Autonomous_business/kaspi_waybills/by_order/`
+
 **Config env vars:**
 - `KASPI_WAYBILL_CACHE_RETENTION_DAYS` (default `30`)
 - `KASPI_ARCHIVE_RETENTION_DAYS` (default `14`)
