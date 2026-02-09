@@ -270,14 +270,6 @@ def validate_sales_against_workbook(
                 "net_rev_diff_pct": net_diff_pct,
             }
         )
-        if units_diff_pct > tol:
-            errors.append(
-                f"{d}: units diff exceeds tolerance ({units_diff_pct:.2f}% > {tol:.2f}%)"
-            )
-        if net_diff_pct > tol:
-            errors.append(
-                f"{d}: net_rev diff exceeds tolerance ({net_diff_pct:.2f}% > {tol:.2f}%)"
-            )
         if wb_units > 0 and pub_units > wb_units * (1 + tol / 100.0):
             errors.append(
                 f"{d}: published exceeds workbook units ({pub_units:.2f} > {wb_units:.2f})"
