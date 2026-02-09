@@ -27,6 +27,7 @@ from datetime import date
 from pathlib import Path
 import sys
 import json
+import os
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -40,6 +41,11 @@ from scripts.validate_single_truth_system import (
 from scripts.validate_on_delivery_freeze import validate_on_delivery_freeze
 from scripts.validate_business_insides import validate_business_insides
 from scripts.validate_sales_truth_reconciliation import reconcile_sales_truth
+from scripts.validate_sales_against_workbook import (
+    validate_sales_against_workbook,
+    DEFAULT_WORKBOOK as DEFAULT_SALES_ANCHOR_WORKBOOK,
+    DEFAULT_SHEET as DEFAULT_SALES_ANCHOR_SHEET,
+)
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
@@ -378,6 +384,32 @@ def main():
             )
         except Exception as exc:
             result.add_error(f"sales_truth_reconciliation error: {exc}")
+
+        try:
+            workbook_anchor = Path(
+                os.environ.get("SALES_WORKBOOK_ANCHOR_PATH", str(DEFAULT_SALES_ANCHOR_WORKBOOK))
+            ).expanduser()
+            workbook_sheet = os.environ.get("SALES_WORKBOOK_ANCHOR_SHEET", DEFAULT_SALES_ANCHOR_SHEET)
+            workbook_gate = validate_sales_against_workbook(
+                db_path=db_path,
+                workbook_path=workbook_anchor,
+                sheet_name=workbook_sheet,
+                days=14,
+                tol_pct=5.0,
+                as_of=date.today().isoformat(),
+                min_overlap_days=7,
+            )
+            if not workbook_gate["ok"]:
+                for err in workbook_gate["errors"]:
+                    result.add_error(f"sales_workbook_anchor: {err}")
+            else:
+                result.add_info(
+                    "sales_workbook_anchor: "
+                    f"OK (window={workbook_gate['window_start']}..{workbook_gate['window_end']}, "
+                    f"overlap_days={workbook_gate['overlap_days']})"
+                )
+        except Exception as exc:
+            result.add_error(f"sales_workbook_anchor error: {exc}")
 
     # Output results
     if args.json:
