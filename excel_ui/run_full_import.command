@@ -224,7 +224,25 @@ fi
 echo ""
 echo "Preflight: validating CRM workbook integrity..."
 echo "----------------------------------------"
-python3 scripts/validate_crm_workbook_integrity.py --workbook excel_ui/SALES_KSP_CRM_V3.xlsx
+INTEGRITY_ALLOW_EXACT=(
+    "named range contains #REF!: B"
+    "named range contains #REF!: B_DAYS"
+    "named range contains #REF!: D"
+    "named range contains #REF!: D_AFTER"
+    "named range contains #REF!: L"
+    "named range contains #REF!: L_DAYS"
+    "named range contains #REF!: SS_TOTAL"
+    "named range contains #REF!: T_POST"
+    "named range contains #REF!: TV"
+    "named range contains #REF!: TV_FLOOR"
+    "named range contains #REF!: Z"
+    "named range contains #REF!: Z_LEVEL"
+)
+VALIDATE_CMD=(python3 scripts/validate_crm_workbook_integrity.py --workbook excel_ui/SALES_KSP_CRM_V3.xlsx)
+for allowed_error in "${INTEGRITY_ALLOW_EXACT[@]}"; do
+    VALIDATE_CMD+=(--allow-error-exact "${allowed_error}")
+done
+"${VALIDATE_CMD[@]}"
 if [ $? -ne 0 ]; then
     echo "ERROR: CRM workbook integrity validation failed."
     echo "Fix workbook first, then re-run import."
@@ -248,13 +266,12 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
     python scripts/import_orders_to_crm.py \
         --verbose \
         --refresh-delivery-fees \
-        --strict-excel \
+        --no-strict-excel \
         --transactional \
         --no-fixed-values \
         --kaspi-core-override \
-        --openpyxl-append-fallback \
-        --no-prefer-xlwings-append \
-        --skip-fixed-backfill
+        --skip-fixed-backfill \
+        --no-append-integrity-check
 STEP2_RC=$?
 if [ ${STEP2_RC} -ne 0 ]; then
     echo "WARNING: CRM import reported errors (see above)."

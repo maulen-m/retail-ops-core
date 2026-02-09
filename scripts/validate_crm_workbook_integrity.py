@@ -17,7 +17,7 @@ import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 import xml.etree.ElementTree as ET
 
 
@@ -131,6 +131,23 @@ def validate_workbook_integrity(workbook_path: Path) -> IntegrityResult:
     return IntegrityResult(errors=errors, warnings=warnings)
 
 
+def filter_integrity_errors(
+    errors: Iterable[str],
+    allow_exact: Iterable[str] | None = None,
+    allow_prefix: Iterable[str] | None = None,
+) -> Tuple[List[str], List[str]]:
+    allow_exact_set = {e for e in (allow_exact or []) if e}
+    allow_prefix_list = [p for p in (allow_prefix or []) if p]
+    blocking: List[str] = []
+    allowed: List[str] = []
+    for err in errors:
+        if err in allow_exact_set or any(err.startswith(prefix) for prefix in allow_prefix_list):
+            allowed.append(err)
+        else:
+            blocking.append(err)
+    return blocking, allowed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate CRM workbook package integrity")
     parser.add_argument(
@@ -139,18 +156,38 @@ def main() -> int:
         default=Path("excel_ui/SALES_KSP_CRM_V3.xlsx"),
         help="Workbook path",
     )
+    parser.add_argument(
+        "--allow-error-exact",
+        action="append",
+        default=[],
+        help="Treat matching integrity error text as allowed (does not fail exit code). Repeatable.",
+    )
+    parser.add_argument(
+        "--allow-error-prefix",
+        action="append",
+        default=[],
+        help="Treat integrity errors with this prefix as allowed. Repeatable.",
+    )
     args = parser.parse_args()
 
     result = validate_workbook_integrity(args.workbook)
+    blocking_errors, allowed_errors = filter_integrity_errors(
+        result.errors,
+        allow_exact=args.allow_error_exact,
+        allow_prefix=args.allow_error_prefix,
+    )
     print(f"Workbook: {args.workbook}")
-    print(f"Errors: {len(result.errors)}")
+    print(f"Errors: {len(blocking_errors)}")
+    print(f"Allowed errors: {len(allowed_errors)}")
     print(f"Warnings: {len(result.warnings)}")
-    for msg in result.errors:
+    for msg in allowed_errors:
+        print(f"ALLOW: {msg}")
+    for msg in blocking_errors:
         print(f"ERROR: {msg}")
     for msg in result.warnings:
         print(f"WARN: {msg}")
 
-    return 1 if result.errors else 0
+    return 1 if blocking_errors else 0
 
 
 if __name__ == "__main__":

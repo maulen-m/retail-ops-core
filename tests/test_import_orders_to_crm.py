@@ -32,6 +32,8 @@ from scripts.import_orders_to_crm import (
     _row_in_backfill_window,
     _allow_openpyxl_backfill_fallback,
     _allow_openpyxl_append_fallback,
+    _open_workbook_xlwings,
+    _open_workbook_xlwings_without_timeout_kwarg,
     _find_template_row_for_append,
     _normalize_conditional_formatting_ranges,
     _verify_appended_rows_integrity,
@@ -629,6 +631,74 @@ def test_xlwings_open_timeout_env_parsing(monkeypatch):
     assert _xlwings_open_timeout_sec() == 45
 
 
+def test_open_workbook_xlwings_retries_without_timeout_kwarg(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("placeholder", encoding="utf-8")
+
+    class DummyBooks:
+        def __init__(self):
+            self.calls = []
+
+        def open(self, _path, **kwargs):
+            self.calls.append(dict(kwargs))
+            if "timeout" in kwargs:
+                raise TypeError("Books.open() got an unexpected keyword argument 'timeout'")
+            return "OK"
+
+    class DummyApp:
+        def __init__(self):
+            self.books = DummyBooks()
+
+    monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "45")
+    app = DummyApp()
+    result = _open_workbook_xlwings(app, workbook, update_links=False, read_only=False)
+    assert result == "OK"
+    assert len(app.books.calls) == 2
+    assert "timeout" in app.books.calls[0]
+    assert "timeout" not in app.books.calls[1]
+
+
+def test_open_workbook_xlwings_uses_wall_clock_helper_when_timeout_kwarg_missing(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("placeholder", encoding="utf-8")
+
+    class DummyBooks:
+        def __init__(self):
+            self.calls = []
+
+        def open(self, _path, **kwargs):
+            self.calls.append(dict(kwargs))
+            if "timeout" in kwargs:
+                raise TypeError("Books.open() got an unexpected keyword argument 'timeout'")
+            return "DIRECT"
+
+    class DummyApp:
+        def __init__(self):
+            self.books = DummyBooks()
+
+    called = {}
+
+    def _fake_helper(app, workbook_path, open_kwargs, timeout_sec):
+        called["app"] = app
+        called["workbook_path"] = workbook_path
+        called["open_kwargs"] = dict(open_kwargs)
+        called["timeout_sec"] = timeout_sec
+        return "HELPER_OK"
+
+    monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "33")
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._open_workbook_xlwings_without_timeout_kwarg",
+        _fake_helper,
+    )
+    app = DummyApp()
+    result = _open_workbook_xlwings(app, workbook, update_links=False, read_only=False)
+    assert result == "HELPER_OK"
+    assert called["app"] is app
+    assert called["workbook_path"] == workbook
+    assert called["open_kwargs"] == {"update_links": False, "read_only": False}
+    assert called["timeout_sec"] == 33
+
+
 def test_append_orders_with_fallback_uses_openpyxl_when_xlwings_fails(monkeypatch, tmp_path):
     workbook = tmp_path / "crm.xlsx"
     workbook.write_text("placeholder", encoding="utf-8")
@@ -802,6 +872,49 @@ def test_verify_candidate_workbook_fails_on_non_timeout_probe_error(monkeypatch,
 
     with pytest.raises(RuntimeError, match="Excel open probe failed"):
         _verify_candidate_workbook(candidate, strict_excel=True, verbose=False)
+
+
+def test_verify_candidate_workbook_allows_inherited_integrity_errors(monkeypatch, tmp_path):
+    candidate = tmp_path / "candidate.xlsx"
+    candidate.write_text("placeholder", encoding="utf-8")
+
+    class IntegrityWithInherited:
+        errors = ["named range contains #REF!: B", "named range contains #REF!: SS_TOTAL"]
+        warnings = []
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.validate_workbook_integrity",
+        lambda _p: IntegrityWithInherited(),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_open_probe", lambda *_args, **_kwargs: (True, "OK"))
+
+    _verify_candidate_workbook(
+        candidate,
+        strict_excel=True,
+        verbose=True,
+        allowed_integrity_errors={"named range contains #REF!: B", "named range contains #REF!: SS_TOTAL"},
+    )
+
+
+def test_verify_candidate_workbook_blocks_new_integrity_errors(monkeypatch, tmp_path):
+    candidate = tmp_path / "candidate.xlsx"
+    candidate.write_text("placeholder", encoding="utf-8")
+
+    class IntegrityWithNew:
+        errors = ["named range contains #REF!: B", "tablePart target missing: xl/tables/table7.xml"]
+        warnings = []
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.validate_workbook_integrity",
+        lambda _p: IntegrityWithNew(),
+    )
+    with pytest.raises(RuntimeError, match="new errors"):
+        _verify_candidate_workbook(
+            candidate,
+            strict_excel=False,
+            verbose=False,
+            allowed_integrity_errors={"named range contains #REF!: B"},
+        )
 
 
 def test_iter_consecutive_ranges_groups_sorted_rows():

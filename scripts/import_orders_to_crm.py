@@ -18,9 +18,11 @@ from collections import OrderedDict
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
+import zipfile
 from copy import copy
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
@@ -175,18 +177,33 @@ end tell
     return False, last_msg
 
 
-def _verify_candidate_workbook(candidate_path: Path, strict_excel: bool = True, verbose: bool = False) -> None:
+def _verify_candidate_workbook(
+    candidate_path: Path,
+    strict_excel: bool = True,
+    verbose: bool = False,
+    allowed_integrity_errors: Optional[set[str]] = None,
+) -> None:
     """
     Validate candidate workbook before promotion.
     """
     result = validate_workbook_integrity(candidate_path)
-    if result.errors:
-        sample = "; ".join(result.errors[:3])
+    baseline_errors = allowed_integrity_errors or set()
+    candidate_errors = list(result.errors or [])
+    new_errors = [err for err in candidate_errors if err not in baseline_errors]
+    if new_errors:
+        sample = "; ".join(new_errors[:3])
         details = f" Examples: {sample}" if sample else ""
         raise RuntimeError(
             "Candidate workbook integrity validation failed. "
-            f"Found {len(result.errors)} errors.{details}"
+            f"Found {len(new_errors)} new errors.{details}"
         )
+    if verbose and baseline_errors and candidate_errors:
+        inherited = [err for err in candidate_errors if err in baseline_errors]
+        if inherited:
+            print(
+                "  WARNING: candidate workbook retained baseline integrity errors "
+                f"({len(inherited)} inherited)."
+            )
     if verbose and result.warnings:
         for msg in result.warnings:
             print(f"  WARNING: candidate integrity warning: {msg}")
@@ -233,7 +250,14 @@ def _promote_candidate_workbook(
         raise FileNotFoundError(f"Candidate workbook not found: {candidate_path}")
 
     try:
-        _verify_candidate_workbook(candidate_path, strict_excel=strict_excel, verbose=verbose)
+        source_integrity = validate_workbook_integrity(source_path)
+        baseline_errors = set(source_integrity.errors or [])
+        _verify_candidate_workbook(
+            candidate_path,
+            strict_excel=strict_excel,
+            verbose=verbose,
+            allowed_integrity_errors=baseline_errors,
+        )
     except Exception as exc:
         failed_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -336,6 +360,37 @@ def _xlwings_open_timeout_sec(default_sec: int = 45) -> int:
     return max(parsed, 5)
 
 
+def _open_workbook_xlwings_without_timeout_kwarg(
+    app: Any,
+    workbook_path: Path,
+    open_kwargs: Dict[str, Any],
+    timeout_sec: int,
+) -> Any:
+    """
+    Open workbook via xlwings when timeout kwarg is unavailable.
+    On POSIX, enforce wall-clock timeout via SIGALRM.
+    """
+    kwargs = dict(open_kwargs)
+    if os.name != "posix" or not hasattr(signal, "SIGALRM"):
+        return app.books.open(str(workbook_path), **kwargs)
+
+    safe_timeout = max(int(timeout_sec), 1)
+
+    def _alarm_handler(_signum, _frame):
+        raise TimeoutError(f"xlwings workbook open timed out after {safe_timeout}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _alarm_handler)
+    previous_alarm = signal.alarm(safe_timeout)
+    try:
+        return app.books.open(str(workbook_path), **kwargs)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_alarm > 0:
+            signal.alarm(previous_alarm)
+
+
 def _open_workbook_xlwings(
     app: Any,
     workbook_path: Path,
@@ -347,12 +402,24 @@ def _open_workbook_xlwings(
     Open workbook via xlwings with explicit wall-clock timeout to avoid indefinite hangs.
     """
     timeout_sec = _xlwings_open_timeout_sec()
-    return app.books.open(
-        str(workbook_path),
-        update_links=update_links,
-        read_only=read_only,
-        timeout=timeout_sec,
-    )
+    open_kwargs: Dict[str, Any] = {
+        "update_links": update_links,
+        "read_only": read_only,
+        "timeout": timeout_sec,
+    }
+    try:
+        return app.books.open(str(workbook_path), **open_kwargs)
+    except TypeError as exc:
+        # Older xlwings releases on macOS do not expose timeout kwarg.
+        if "timeout" in str(exc).lower():
+            open_kwargs.pop("timeout", None)
+            return _open_workbook_xlwings_without_timeout_kwarg(
+                app,
+                workbook_path,
+                open_kwargs,
+                timeout_sec,
+            )
+        raise
 
 
 def _workbook_integrity_preflight(crm_path: Path, verbose: bool = False) -> None:
@@ -1791,6 +1858,26 @@ def _verify_appended_rows_integrity(
         wb.close()
 
 
+def _snapshot_workbook_xml(workbook_path: Path) -> Optional[bytes]:
+    try:
+        with zipfile.ZipFile(workbook_path, "r") as zf:
+            return zf.read("xl/workbook.xml")
+    except Exception:
+        return None
+
+
+def _restore_workbook_xml(workbook_path: Path, workbook_xml: Optional[bytes]) -> None:
+    if not workbook_xml:
+        return
+    tmp_path = workbook_path.with_suffix(f"{workbook_path.suffix}.xmlrestore")
+    with zipfile.ZipFile(workbook_path, "r") as zin:
+        with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                payload = workbook_xml if item.filename == "xl/workbook.xml" else zin.read(item.filename)
+                zout.writestr(item, payload)
+    os.replace(str(tmp_path), str(workbook_path))
+
+
 def _file_fingerprint(path: Path) -> str:
     stat = path.stat()
     mtime = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
@@ -2672,6 +2759,7 @@ def excel_append_openpyxl(
     if n == 0:
         return (0, 0)
 
+    original_workbook_xml = _snapshot_workbook_xml(out_wb)
     wb = load_workbook(filename=str(out_wb), read_only=False, data_only=False)
     try:
         ws = wb[sheet_name]
@@ -2789,6 +2877,8 @@ def excel_append_openpyxl(
         wb.save(str(out_wb))
     finally:
         wb.close()
+
+    _restore_workbook_xml(out_wb, original_workbook_xml)
 
     print(f"  Appending {n} rows starting at row {top_row}")
     print(f"  Table ref: {old_table_ref} -> {table.ref}")

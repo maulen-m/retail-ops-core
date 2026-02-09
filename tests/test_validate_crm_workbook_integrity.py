@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 import openpyxl
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from scripts.validate_crm_workbook_integrity import validate_workbook_integrity
+from scripts.validate_crm_workbook_integrity import filter_integrity_errors, validate_workbook_integrity
 
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -109,3 +109,31 @@ def test_validate_workbook_integrity_treats_ref_named_ranges_as_errors(tmp_path:
 
     result = validate_workbook_integrity(wb_path)
     assert any("named range contains #REF!" in err for err in result.errors)
+
+
+def test_filter_integrity_errors_allows_prefix():
+    errors = [
+        "named range contains #REF!: B",
+        "table column mismatch: xl/tables/table1.xml width=2 count_attr=3 count_nodes=2",
+    ]
+    blocking, allowed = filter_integrity_errors(
+        errors,
+        allow_exact=[],
+        allow_prefix=["named range contains #REF!:"],
+    )
+    assert allowed == ["named range contains #REF!: B"]
+    assert blocking == [errors[1]]
+
+
+def test_filter_integrity_errors_allows_exact_only():
+    errors = [
+        "named range contains #REF!: B",
+        "named range contains #REF!: SS_TOTAL",
+    ]
+    blocking, allowed = filter_integrity_errors(
+        errors,
+        allow_exact=["named range contains #REF!: SS_TOTAL"],
+        allow_prefix=[],
+    )
+    assert allowed == ["named range contains #REF!: SS_TOTAL"]
+    assert blocking == ["named range contains #REF!: B"]
