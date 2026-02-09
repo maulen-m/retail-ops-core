@@ -1,9 +1,9 @@
 # Business Insides Snapshot
 
-- Generated at: `2026-02-09 16:20:14`
-- As of date: `2026-02-08`
+- Generated at: `2026-02-09 16:20:34`
+- As of date: `2026-02-09`
 - Paid-capital snapshot date: `2026-02-07`
-- Bank snapshot date: `2026-02-08`
+- Bank snapshot date: `2026-02-09`
 
 ## Capital Snapshot (KZT)
 
@@ -27,16 +27,16 @@
 +--------------------------+------------+
 | Metric                   | Value KZT  |
 +--------------------------+------------+
-| Avg 30d Net Rev          | 361,797.93 |
-| Avg 30d COGS             | 174,181.64 |
-| Avg 30d Profit           | 187,616.27 |
+| Avg 30d Net Rev          | 364,297.28 |
+| Avg 30d COGS             | 174,600.00 |
+| Avg 30d Profit           | 189,697.25 |
 | Avg 30d Ads Spend        | 0.00       |
-| Avg 30d Profit After Ads | 187,616.27 |
-| Avg 7d Net Rev           | 347,085.04 |
-| Avg 7d COGS              | 160,806.70 |
-| Avg 7d Profit            | 186,278.31 |
+| Avg 30d Profit After Ads | 189,697.25 |
+| Avg 7d Net Rev           | 343,398.31 |
+| Avg 7d COGS              | 158,771.12 |
+| Avg 7d Profit            | 184,627.16 |
 | Avg 7d Ads Spend         | 0.00       |
-| Avg 7d Profit After Ads  | 186,278.31 |
+| Avg 7d Profit After Ads  | 184,627.16 |
 +--------------------------+------------+
 ```
 
@@ -46,20 +46,20 @@
 +------------+---------------+------------+------------+-----------+------------+------------------+
 | Date       | Units Shipped | Net Rev    | COGS       | Ads Spend | Profit     | Profit After Ads |
 +------------+---------------+------------+------------+-----------+------------+------------------+
-| 2026-02-02 | 60            | 369,205.40 | 173,020.18 | 0.00      | 196,185.21 | 196,185.21       |
 | 2026-02-03 | 49            | 294,228.04 | 137,620.51 | 0.00      | 156,607.52 | 156,607.52       |
 | 2026-02-04 | 51            | 428,146.24 | 221,314.02 | 0.00      | 206,832.23 | 206,832.23       |
 | 2026-02-05 | 41            | 235,971.05 | 105,554.04 | 0.00      | 130,416.98 | 130,416.98       |
 | 2026-02-06 | 46            | 278,560.36 | 124,867.22 | 0.00      | 153,693.10 | 153,693.10       |
 | 2026-02-07 | 50            | 327,356.33 | 132,866.48 | 0.00      | 194,489.84 | 194,489.84       |
 | 2026-02-08 | 48            | 496,127.84 | 230,404.48 | 0.00      | 265,723.30 | 265,723.30       |
+| 2026-02-09 | N/A           | N/A        | N/A        | 0.00      | N/A        | N/A              |
 +------------+---------------+------------+------------+-----------+------------+------------------+
 ```
 
 ## Data Quality
 
 - Sales source: `view_sales_line_truth` / `view_sales_daily_truth` (canonical interface over staging).
-- COGS fallback rows: `517/1645` (31.43%).
+- COGS fallback rows: `517/1599` (32.33%).
 - Unresolved COGS rows: `6`.
 - Unresolved SKU count: `2`.
 - Ads mapping coverage: `0.00%`.
@@ -68,4 +68,4 @@
 ## External Reference Check
 
 - Status: `ok`
-- Details: `{'status': 'ok', 'path': '~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/Exports_db/real_sales_snapshots/20260207_205717/sales_daily_sku_size_2024-09-06_to_2026-02-07_real_sales_snapshot_20260207_205717.csv', 'matched_days': 6, 'max_abs_diff_net_rev_kzt': 96228.12, 'max_abs_diff_cogs_kzt': 221314.02}`
+- Details: `{'status': 'ok', 'path': '~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/Exports_db/real_sales_snapshots/20260207_205717/sales_daily_sku_size_2024-09-06_to_2026-02-07_real_sales_snapshot_20260207_205717.csv', 'matched_days': 5, 'max_abs_diff_net_rev_kzt': 96228.12, 'max_abs_diff_cogs_kzt': 221314.02}`

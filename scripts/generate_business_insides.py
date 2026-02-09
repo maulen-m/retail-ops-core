@@ -140,11 +140,25 @@ def compute_sales_metrics(
     conn.row_factory = sqlite3.Row
     try:
         ensure_sales_truth_views(conn)
-        rows = conn.execute(
+        line_rows = conn.execute(
             """
-            SELECT sale_date, sku_key, units, cogs_source, net_rev_kzt, cogs_kzt
+            SELECT sale_date, sku_key, cogs_source
             FROM view_sales_line_truth
             WHERE date(sale_date) BETWEEN ? AND ?
+            """,
+            (start_30.isoformat(), as_of_date.isoformat()),
+        ).fetchall()
+        daily_rows = conn.execute(
+            """
+            SELECT
+                sale_date,
+                SUM(COALESCE(units, 0)) AS units_shipped,
+                SUM(COALESCE(revenue_kzt, 0)) AS net_rev_kzt,
+                SUM(COALESCE(cogs_kzt, 0)) AS cogs_kzt,
+                SUM(COALESCE(profit_kzt, 0)) AS profit_kzt
+            FROM view_sales_daily_truth
+            WHERE date(sale_date) BETWEEN ? AND ?
+            GROUP BY sale_date
             ORDER BY sale_date
             """,
             (start_30.isoformat(), as_of_date.isoformat()),
@@ -158,13 +172,9 @@ def compute_sales_metrics(
     unresolved_skus: set[str] = set()
     total_rows = 0
 
-    for row in rows:
+    for row in line_rows:
         total_rows += 1
-        day = str(row["sale_date"])
         sku_key = str(row["sku_key"] or "").strip()
-        units = float(row["units"] or 0.0)
-        net_rev = float(row["net_rev_kzt"] or 0.0)
-        cogs_line = float(row["cogs_kzt"] or 0.0)
         cogs_source = str(row["cogs_source"] or "")
         if cogs_source in {"fact_sales_fallback", "dim_sku_fallback"}:
             fallback_rows += 1
@@ -173,20 +183,14 @@ def compute_sales_metrics(
             if sku_key:
                 unresolved_skus.add(sku_key)
 
-        day_row = by_date.setdefault(
-            day,
-            {"units_shipped": 0.0, "net_rev_kzt": 0.0, "cogs_kzt": 0.0, "profit_kzt": 0.0},
-        )
-        day_row["units_shipped"] += units
-        day_row["net_rev_kzt"] += net_rev
-        day_row["cogs_kzt"] += cogs_line
-        day_row["profit_kzt"] += net_rev - cogs_line
-
-    for day_row in by_date.values():
-        day_row["units_shipped"] = round(day_row["units_shipped"], 2)
-        day_row["net_rev_kzt"] = round(day_row["net_rev_kzt"], 2)
-        day_row["cogs_kzt"] = round(day_row["cogs_kzt"], 2)
-        day_row["profit_kzt"] = round(day_row["profit_kzt"], 2)
+    for row in daily_rows:
+        day = str(row["sale_date"])
+        by_date[day] = {
+            "units_shipped": round(float(row["units_shipped"] or 0.0), 2),
+            "net_rev_kzt": round(float(row["net_rev_kzt"] or 0.0), 2),
+            "cogs_kzt": round(float(row["cogs_kzt"] or 0.0), 2),
+            "profit_kzt": round(float(row["profit_kzt"] or 0.0), 2),
+        }
 
     ads_by_date, ads_totals = _load_ads_daily(db_path, start_30, as_of_date)
     for day, day_row in by_date.items():
