@@ -236,6 +236,8 @@ def test_business_insides_last_7_days_no_false_zero_on_dates_with_delivered_rows
     last7 = {r["date"]: r for r in result["last_7_days"]}
     assert last7["2026-02-05"]["net_rev_kzt"] > 0
     assert last7["2026-02-07"]["net_rev_kzt"] > 0
+    assert last7["2026-02-05"]["units_shipped"] > 0
+    assert last7["2026-02-07"]["units_shipped"] > 0
 
 
 def test_business_insides_marks_missing_day_as_na_when_no_rows(tmp_path: Path) -> None:
@@ -253,6 +255,7 @@ def test_business_insides_marks_missing_day_as_na_when_no_rows(tmp_path: Path) -
     last7 = {r["date"]: r for r in result["last_7_days"]}
     assert last7["2026-02-06"]["net_rev_kzt"] is None
     assert last7["2026-02-06"]["profit_kzt"] is None
+    assert last7["2026-02-06"]["units_shipped"] is None
 
 
 def test_business_insides_capital_components_match_paid_capital_truth(tmp_path: Path) -> None:
@@ -306,3 +309,20 @@ def test_business_insides_works_with_fact_sales_only_via_canonical_views(tmp_pat
     )
     assert result["performance"]["avg_7d_net_rev_kzt"] > 0
     assert result["performance"]["avg_7d_cogs_kzt"] > 0
+    assert any(row["units_shipped"] for row in result["last_7_days"] if row["units_shipped"] is not None)
+
+
+def test_business_insides_markdown_includes_units_shipped_column(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    bank = tmp_path / "bank_accounts.yaml"
+    _init_db(db_path)
+    _write_bank_yaml(bank)
+
+    result = generate_business_insides(
+        db_path=db_path,
+        bank_accounts_path=bank,
+        as_of="2026-02-08",
+        output_dir=tmp_path / "business_insides",
+    )
+    content = Path(result["latest_path"]).read_text(encoding="utf-8")
+    assert "Units Shipped" in content

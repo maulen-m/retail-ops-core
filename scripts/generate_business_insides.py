@@ -142,7 +142,7 @@ def compute_sales_metrics(
         ensure_sales_truth_views(conn)
         rows = conn.execute(
             """
-            SELECT sale_date, cogs_source, net_rev_kzt, cogs_kzt
+            SELECT sale_date, sku_key, units, cogs_source, net_rev_kzt, cogs_kzt
             FROM view_sales_line_truth
             WHERE date(sale_date) BETWEEN ? AND ?
             ORDER BY sale_date
@@ -161,6 +161,8 @@ def compute_sales_metrics(
     for row in rows:
         total_rows += 1
         day = str(row["sale_date"])
+        sku_key = str(row["sku_key"] or "").strip()
+        units = float(row["units"] or 0.0)
         net_rev = float(row["net_rev_kzt"] or 0.0)
         cogs_line = float(row["cogs_kzt"] or 0.0)
         cogs_source = str(row["cogs_source"] or "")
@@ -168,13 +170,20 @@ def compute_sales_metrics(
             fallback_rows += 1
         elif cogs_source == "unresolved":
             unresolved_rows += 1
+            if sku_key:
+                unresolved_skus.add(sku_key)
 
-        day_row = by_date.setdefault(day, {"net_rev_kzt": 0.0, "cogs_kzt": 0.0, "profit_kzt": 0.0})
+        day_row = by_date.setdefault(
+            day,
+            {"units_shipped": 0.0, "net_rev_kzt": 0.0, "cogs_kzt": 0.0, "profit_kzt": 0.0},
+        )
+        day_row["units_shipped"] += units
         day_row["net_rev_kzt"] += net_rev
         day_row["cogs_kzt"] += cogs_line
         day_row["profit_kzt"] += net_rev - cogs_line
 
     for day_row in by_date.values():
+        day_row["units_shipped"] = round(day_row["units_shipped"], 2)
         day_row["net_rev_kzt"] = round(day_row["net_rev_kzt"], 2)
         day_row["cogs_kzt"] = round(day_row["cogs_kzt"], 2)
         day_row["profit_kzt"] = round(day_row["profit_kzt"], 2)
@@ -193,6 +202,7 @@ def compute_sales_metrics(
         else:
             item = {
                 "date": day,
+                "units_shipped": None,
                 "net_rev_kzt": None,
                 "cogs_kzt": None,
                 "profit_kzt": None,
@@ -236,7 +246,7 @@ def compute_sales_metrics(
         "avg_7d_profit_after_ads_kzt": _avg(series_7_profit_after_ads),
         "fallback_rows": fallback_rows,
         "unresolved_rows": unresolved_rows,
-        "unresolved_sku_count": 0,
+        "unresolved_sku_count": len(unresolved_skus),
         "total_rows": total_rows,
         "cogs_fallback_coverage_pct": round((fallback_rows / total_rows * 100.0), 2) if total_rows else 0.0,
         "ads": ads_totals,
@@ -338,6 +348,7 @@ def _render_markdown(
     daily_rows = [
         [
             row["date"],
+            str(int(round(float(row["units_shipped"])))) if row["units_shipped"] is not None else "N/A",
             _fmt_kzt(row["net_rev_kzt"]),
             _fmt_kzt(row["cogs_kzt"]),
             _fmt_kzt(row["ads_spend_kzt"]),
@@ -370,7 +381,10 @@ def _render_markdown(
         "## Last 7 Days Values (KZT)",
         "",
         "```text",
-        _ascii_table(["Date", "Net Rev", "COGS", "Ads Spend", "Profit", "Profit After Ads"], daily_rows),
+        _ascii_table(
+            ["Date", "Units Shipped", "Net Rev", "COGS", "Ads Spend", "Profit", "Profit After Ads"],
+            daily_rows,
+        ),
         "```",
         "",
         "## Data Quality",

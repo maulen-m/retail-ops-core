@@ -87,3 +87,28 @@ def test_profit_uses_effective_cogs_not_raw_zero_cogs(tmp_path: Path) -> None:
     day = {r["date"]: r for r in metrics["last_7_days"]}["2026-02-08"]
     assert day["cogs_kzt"] == 2700
     assert day["profit_kzt"] == 9300
+
+
+def test_unresolved_rows_and_sku_count_are_reported(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.executemany(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, quantity, cogs, net_rev, status, return_flag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("ORD-U-1", "2026-02-08", "SKU_X", "SKU_X_M", 1, None, 2000, "DELIVERED", 0),
+            ("ORD-U-2", "2026-02-08", "SKU_X", "SKU_X_L", 2, 0, 3000, "DELIVERED", 0),
+            ("ORD-U-3", "2026-02-08", "SKU_Y", "SKU_Y_S", 1, None, 1000, "DELIVERED", 0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    metrics = compute_sales_metrics(db_path=db_path, as_of="2026-02-08")
+    assert metrics["unresolved_rows"] == 3
+    assert metrics["unresolved_sku_count"] == 2
