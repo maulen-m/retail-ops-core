@@ -24,6 +24,8 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
 
     - sales_fact_v2 and fact_sales remain staging.
     - consumers must read only `view_sales_line_truth` and `view_sales_daily_truth`.
+    - revenue/units policy: sales_fact_v2 is authoritative for dates >= MIN(v2.sale_date);
+      fact_sales contributes only pre-v2 historical days.
     """
     has_sales_v2 = _table_exists(conn, "sales_fact_v2")
     has_fact_sales = _table_exists(conn, "fact_sales")
@@ -119,6 +121,14 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             "NULL AS sku_id, NULL AS my_size, 0.0 AS units, 0.0 AS net_rev_kzt, 0.0 AS cogs_kzt, 0.0 AS profit_kzt, "
             "NULL AS status, 0 AS return_flag, NULL AS source_table WHERE 0)"
         )
+    ctes.append(
+        """
+        v2_bounds AS (
+            SELECT MIN(date(sale_date)) AS v2_min_sale_date
+            FROM sales_v2
+        )
+        """
+    )
 
     ctes.append(
         """
@@ -127,28 +137,28 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             UNION ALL
             SELECT sf.*
             FROM sales_fact sf
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM sales_v2 s2
-                WHERE COALESCE(s2.order_id, '') = COALESCE(sf.order_id, '')
-                  AND COALESCE(s2.store_code, '') = COALESCE(sf.store_code, '')
-                  AND COALESCE(s2.sku_id, '') = COALESCE(sf.sku_id, '')
+            WHERE (
+                (SELECT v2_min_sale_date FROM v2_bounds) IS NULL
+                OR date(sf.sale_date) < date((SELECT v2_min_sale_date FROM v2_bounds))
             )
         )
         """
     )
 
     if has_fact_sales:
+        fsl_store = "store_code" if _column_exists(conn, "fact_sales", "store_code") else "'UNIVERSAL'"
+        fsl_sku = "sku_id" if _column_exists(conn, "fact_sales", "sku_id") else "''"
+        fsl_cogs = "cogs_line" if _column_exists(conn, "fact_sales", "cogs_line") else "0"
         ctes.append(
-            """
+            f"""
             fact_sales_lookup AS (
                 SELECT
                     CAST(order_id AS TEXT) AS order_id,
-                    CAST(COALESCE(store_code, 'UNIVERSAL') AS TEXT) AS store_code,
-                    CAST(sku_id AS TEXT) AS sku_id,
-                    MAX(CAST(COALESCE(cogs_line, 0) AS REAL)) AS cogs_line
+                    CAST(COALESCE({fsl_store}, 'UNIVERSAL') AS TEXT) AS store_code,
+                    CAST({fsl_sku} AS TEXT) AS sku_id,
+                    MAX(CAST(COALESCE({fsl_cogs}, 0) AS REAL)) AS cogs_line
                 FROM fact_sales
-                GROUP BY order_id, store_code, sku_id
+                GROUP BY 1, 2, 3
             )
             """
         )
