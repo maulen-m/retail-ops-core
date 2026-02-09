@@ -214,12 +214,12 @@ Optional export view:
   - `ads_campaign_daily_current`
   - `ads_campaign_product_daily_current`
 
-## Unfinished tasks
-- **Backfill full ads history** (from 2025-01-01 onward) into the ads history tables.
-  - History lives in the **dedicated ads DB**:
+## History status
+- **Historical ads backfill is completed** from `2025-01-01` onward.
+  - History source of truth:
     - `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Kaspi_marketing/db/kaspi_marketing.db`
     - Tables: `campaign_daily_history`, `campaign_product_daily_history`
-  - The main app DB (`~/Docs/Autonomous_business/db/app.db`) only receives **current** snapshots:
+  - Main app DB (`~/Docs/Autonomous_business/db/app.db`) receives **current snapshots only**:
     - `ads_campaign_daily_current`, `ads_campaign_product_daily_current`
 
 ## External_database resilience
@@ -330,7 +330,7 @@ Repo files:
 ## Backfill (from 2025-01-01)
 Use the scraper in **API-only** mode with an explicit date range:
 ```
-python3 scripts/kaspi_marketing_scrape.py --start-date 2025-01-01 --end-date 2026-02-03 --export-app-db
+python3 scripts/kaspi_marketing_scrape.py --start-date 2025-01-01 --end-date $(date +%F) --skip-global-report --export-app-db
 ```
 If the API denies some days, re-run with `--headful` to refresh session cookies and continue.
 
