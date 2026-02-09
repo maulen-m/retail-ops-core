@@ -41,9 +41,8 @@ from scripts.validate_single_truth_system import (
 from scripts.validate_on_delivery_freeze import validate_on_delivery_freeze
 from scripts.validate_business_insides import validate_business_insides
 from scripts.validate_sales_truth_reconciliation import reconcile_sales_truth
-from scripts.validate_sales_against_workbook import (
-    validate_sales_against_workbook,
-    DEFAULT_WORKBOOK as DEFAULT_SALES_ANCHOR_WORKBOOK,
+from scripts.validate_sales_vs_workbook_anchor import (
+    validate_sales_vs_workbook_anchor,
     DEFAULT_SHEET as DEFAULT_SALES_ANCHOR_SHEET,
 )
 from scripts.validate_cogs_integrity import validate_cogs_integrity
@@ -392,28 +391,35 @@ def main():
             result.add_error(f"sales_truth_reconciliation error: {exc}")
 
         try:
-            workbook_anchor = Path(
-                os.environ.get("SALES_WORKBOOK_ANCHOR_PATH", str(DEFAULT_SALES_ANCHOR_WORKBOOK))
-            ).expanduser()
-            workbook_sheet = os.environ.get("SALES_WORKBOOK_ANCHOR_SHEET", DEFAULT_SALES_ANCHOR_SHEET)
-            workbook_gate = validate_sales_against_workbook(
-                db_path=db_path,
-                workbook_path=workbook_anchor,
-                sheet_name=workbook_sheet,
-                days=14,
-                tol_pct=5.0,
-                as_of=date.today().isoformat(),
-                min_overlap_days=7,
-            )
-            if not workbook_gate["ok"]:
-                for err in workbook_gate["errors"]:
-                    result.add_error(f"sales_workbook_anchor: {err}")
+            workbook_anchor_raw = os.environ.get("AB_CRM_WORKBOOK_PATH", "").strip()
+            if workbook_anchor_raw:
+                workbook_anchor = Path(workbook_anchor_raw).expanduser()
+                if not workbook_anchor.exists():
+                    result.add_error(
+                        f"sales_workbook_anchor: AB_CRM_WORKBOOK_PATH does not exist: {workbook_anchor}"
+                    )
+                else:
+                    workbook_sheet = os.environ.get("AB_CRM_WORKBOOK_SHEET", DEFAULT_SALES_ANCHOR_SHEET)
+                    workbook_gate = validate_sales_vs_workbook_anchor(
+                        db_path=db_path,
+                        workbook_path=workbook_anchor,
+                        sheet_name=workbook_sheet,
+                        days=14,
+                        tol_pct=5.0,
+                        as_of=date.today().isoformat(),
+                        min_overlap_days=7,
+                    )
+                    if not workbook_gate["ok"]:
+                        for err in workbook_gate["errors"]:
+                            result.add_error(f"sales_workbook_anchor: {err}")
+                    else:
+                        result.add_info(
+                            "sales_workbook_anchor: "
+                            f"OK (window={workbook_gate['window_start']}..{workbook_gate['window_end']}, "
+                            f"overlap_days={workbook_gate['overlap_days']})"
+                        )
             else:
-                result.add_info(
-                    "sales_workbook_anchor: "
-                    f"OK (window={workbook_gate['window_start']}..{workbook_gate['window_end']}, "
-                    f"overlap_days={workbook_gate['overlap_days']})"
-                )
+                result.add_info("sales_workbook_anchor: skipped (AB_CRM_WORKBOOK_PATH not set)")
         except Exception as exc:
             result.add_error(f"sales_workbook_anchor error: {exc}")
 
