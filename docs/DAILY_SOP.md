@@ -17,6 +17,17 @@ python scripts/test_schema.py
 sqlite3 db/app.db "SELECT COUNT(*), MIN(order_date), MAX(order_date) FROM fact_sales;"
 ```
 
+### 1.1 Run strict gate with workbook anchor enabled
+Set `AB_CRM_WORKBOOK_PATH` to the current CRM shipping journal so strict validation enforces
+the anti-inflation workbook ceiling on recent published sales truth.
+
+```bash
+export AB_CRM_WORKBOOK_PATH="~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx"
+python3 scripts/validate_params.py --strict
+```
+
+If the workbook path is not set, `sales_workbook_anchor` is skipped by design.
+
 ### 2. Download Today's Inventory
 1. Export current stock from Kaspi seller dashboard
 2. Save as `excel/Current_stock_YYYY-MM-DD.xlsx`
