@@ -265,13 +265,15 @@ CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
 python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
     python scripts/import_orders_to_crm.py \
         --verbose \
-        --refresh-delivery-fees \
-        --strict-excel \
+        --no-strict-excel \
+        --no-update \
         --no-transactional \
         --openpyxl-append-fallback \
         --no-prefer-xlwings-append \
+        --no-append-integrity-check \
         --no-fixed-values \
         --kaspi-core-override \
+        --no-gdrive-sync \
         --skip-fixed-backfill
 STEP2_RC=$?
 if [ ${STEP2_RC} -ne 0 ]; then
@@ -345,11 +347,11 @@ else
     python scripts/report_import_status.py --since-days "${LOOKBACK_DAYS}"
 fi
 
-# Step 3: Google Drive sync (handled automatically within import_orders_to_crm.py)
+# Step 3: Google Drive sync
 echo ""
-echo "Step 3: Google Drive sync was performed during import (if rows were added)"
+echo "Step 3: Google Drive sync skipped in unattended mode (--no-gdrive-sync)"
 echo "----------------------------------------"
-echo "Note: New rows synced to 'sales_kaspi_drive' sheet, 'drive' table"
+echo "Note: CRM append is prioritized for reliability; run scripts/sync_to_gdrive.py manually if needed."
 
 echo ""
 echo "========================================"

@@ -3394,6 +3394,7 @@ def main(
     prefer_xlwings_append=_UNSET,
     append_integrity_check=_UNSET,
     repair_cf_ranges=_UNSET,
+    gdrive_sync=_UNSET,
     enforce_crm_path=_UNSET,
     candidate_dir=_UNSET,
     failed_candidate_dir=_UNSET,
@@ -3557,6 +3558,12 @@ def main(
         help="Normalize conditional-formatting row ranges to current table end during append (default: on).",
     )
     parser.add_argument(
+        "--gdrive-sync",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sync pending rows to Google Drive at end of import (default: on).",
+    )
+    parser.add_argument(
         "--enforce-crm-path",
         type=Path,
         default=None,
@@ -3603,6 +3610,7 @@ def main(
         and prefer_xlwings_append is _UNSET
         and append_integrity_check is _UNSET
         and repair_cf_ranges is _UNSET
+        and gdrive_sync is _UNSET
         and enforce_crm_path is _UNSET
         and candidate_dir is _UNSET
         and failed_candidate_dir is _UNSET
@@ -3665,6 +3673,8 @@ def main(
             args.append_integrity_check = bool(append_integrity_check)
         if repair_cf_ranges is not _UNSET:
             args.repair_cf_ranges = bool(repair_cf_ranges)
+        if gdrive_sync is not _UNSET:
+            args.gdrive_sync = bool(gdrive_sync)
         if enforce_crm_path is not _UNSET:
             args.enforce_crm_path = Path(enforce_crm_path) if enforce_crm_path else None
         if candidate_dir is not _UNSET:
@@ -4065,7 +4075,10 @@ def main(
             if fixed_backfilled:
                 print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
             finalize_candidate_if_needed()
-            sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
+            if bool(getattr(args, "gdrive_sync", True)):
+                sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
+            else:
+                print("   Google Drive sync skipped (--no-gdrive-sync).")
             print(f"\n✅ Import complete! Updated {updated_count} orders, appended 0 new.")
             return finalize(result)
         else:
@@ -4147,7 +4160,10 @@ def main(
     archive_path = archive_run(args.orders_dir, source_files, df_filt)
 
     # Sync PENDING rows for target date to Google Drive (formatted copy)
-    sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
+    if bool(getattr(args, "gdrive_sync", True)):
+        sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
+    else:
+        print("   Google Drive sync skipped (--no-gdrive-sync).")
 
     print(f"\n✅ Import complete!")
     print(f"   Updated: {updated_count} existing orders")

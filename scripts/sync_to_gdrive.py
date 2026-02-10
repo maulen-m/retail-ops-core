@@ -233,7 +233,7 @@ def sync_new_rows_to_gdrive(
         app.screen_updating = False
 
         # Open source CRM (read-only)
-        wb_src = app.books.open(str(crm_path), read_only=True)
+        wb_src = app.books.open(str(crm_path), read_only=True, update_links=False)
         sh_src = wb_src.sheets[CRM_SHEET_NAME]
 
         # Determine row range to sync
@@ -269,7 +269,7 @@ def sync_new_rows_to_gdrive(
             return {"rows_synced": len(new_values), "dry_run": True}
 
         # Open target Google Drive file
-        wb_dst = app.books.open(str(gdrive_path))
+        wb_dst = app.books.open(str(gdrive_path), update_links=False)
 
         # Get target sheet
         try:
@@ -422,7 +422,7 @@ def sync_pending_orders_to_gdrive(
         app.display_alerts = False
         app.screen_updating = False
 
-        wb_src = app.books.open(str(crm_path), read_only=True)
+        wb_src = app.books.open(str(crm_path), read_only=True, update_links=False)
         sh_src = wb_src.sheets[sheet_name]
 
         try:
@@ -474,7 +474,7 @@ def sync_pending_orders_to_gdrive(
             print("  No pending rows matched criteria.")
             return {"rows_synced": 0, "dry_run": dry_run}
 
-        wb_dst = app.books.open(str(gdrive_path))
+        wb_dst = app.books.open(str(gdrive_path), update_links=False)
         try:
             sh_dst = wb_dst.sheets[GDRIVE_SHEET_NAME]
         except Exception as exc:

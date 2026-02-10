@@ -1289,3 +1289,45 @@ def test_main_can_write_kaspi_core_override_without_full_fixed_payload(monkeypat
     assert stats["orders_imported"] == 1
     assert seen["kaspi_name_core_values"] == ["6в1_Черный_+Сумка"]
     assert seen["fixed_values"] is None
+
+
+def test_main_skip_gdrive_sync_flag_disables_drive_sync(monkeypatch, tmp_path):
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+    source_file = orders_dir / "ActiveOrders.xlsx"
+    source_file.write_text("placeholder", encoding="utf-8")
+    crm_path = tmp_path / "crm.xlsx"
+    crm_path.write_text("crm", encoding="utf-8")
+
+    df = _minimal_active_orders_df()
+    monkeypatch.setattr("scripts.import_orders_to_crm.read_active_orders", lambda _p: (df, [source_file]))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.filter_for_shipping",
+        lambda df_all, *_args, **_kwargs: (df_all, {"rows_in_files": 1, "rows_after_filters": 1}),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.sort_for_crm", lambda in_df: in_df)
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_crm_snapshot", lambda *_args, **_kwargs: _minimal_snapshot())
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["x"]], [""]))
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr("scripts.import_orders_to_crm._promote_candidate_workbook", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", lambda *_args, **_kwargs: tmp_path / "archive")
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.sync_pending_orders_to_gdrive_safe",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("gdrive sync must be skipped")),
+    )
+
+    stats = main(
+        orders_dir=orders_dir,
+        crm_path=crm_path,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        dry_run=False,
+        update_existing=False,
+        no_update=True,
+        append_integrity_check=False,
+        gdrive_sync=False,
+        verbose=False,
+    )
+
+    assert stats["orders_imported"] == 1
