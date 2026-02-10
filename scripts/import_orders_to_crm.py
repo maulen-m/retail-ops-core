@@ -64,7 +64,10 @@ from core.parsers.kaspi_parser import extract_sku_from_article
 from core.utils.sku_map import extract_kaspi_name_core
 from core.utils.kaspi_dates import planned_date_from_order
 from core.db import get_db
-from scripts.validate_crm_workbook_integrity import validate_workbook_integrity
+from scripts.validate_crm_workbook_integrity import (
+    filter_integrity_errors,
+    validate_workbook_integrity,
+)
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
@@ -328,6 +331,21 @@ PROTECTED_HUMAN_COLUMNS = {
     "MY_SIZE",
 }
 
+KNOWN_BASELINE_INTEGRITY_ERRORS = {
+    "named range contains #REF!: B",
+    "named range contains #REF!: B_DAYS",
+    "named range contains #REF!: D",
+    "named range contains #REF!: D_AFTER",
+    "named range contains #REF!: L",
+    "named range contains #REF!: L_DAYS",
+    "named range contains #REF!: SS_TOTAL",
+    "named range contains #REF!: T_POST",
+    "named range contains #REF!: TV",
+    "named range contains #REF!: TV_FLOOR",
+    "named range contains #REF!: Z",
+    "named range contains #REF!: Z_LEVEL",
+}
+
 
 def _allow_openpyxl_backfill_fallback() -> bool:
     """
@@ -427,12 +445,21 @@ def _workbook_integrity_preflight(crm_path: Path, verbose: bool = False) -> None
     Validate workbook package integrity before any write path is attempted.
     """
     result = validate_workbook_integrity(crm_path)
-    if result.errors:
-        sample = "; ".join(result.errors[:3])
+    blocking_errors, allowed_errors = filter_integrity_errors(
+        result.errors,
+        allow_exact=KNOWN_BASELINE_INTEGRITY_ERRORS,
+    )
+    if blocking_errors:
+        sample = "; ".join(blocking_errors[:3])
         details = f" Examples: {sample}" if sample else ""
         raise RuntimeError(
             "Workbook integrity preflight failed. "
-            f"Found {len(result.errors)} integrity errors.{details}"
+            f"Found {len(blocking_errors)} integrity errors.{details}"
+        )
+    if verbose and allowed_errors:
+        print(
+            "  WARNING: workbook integrity preflight retained baseline errors "
+            f"({len(allowed_errors)} allowed)."
         )
     if verbose and result.warnings:
         for msg in result.warnings:

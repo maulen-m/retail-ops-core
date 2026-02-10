@@ -261,17 +261,18 @@ STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-900}"
 XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-45}"
 echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
 echo "xlwings open timeout: ${XLWINGS_OPEN_TIMEOUT_SEC}s"
-CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" CRM_OPENPYXL_APPEND_FALLBACK=1 \
+CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
 python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
     python scripts/import_orders_to_crm.py \
         --verbose \
         --refresh-delivery-fees \
-        --no-strict-excel \
-        --transactional \
+        --strict-excel \
+        --no-transactional \
+        --openpyxl-append-fallback \
+        --no-prefer-xlwings-append \
         --no-fixed-values \
         --kaspi-core-override \
-        --skip-fixed-backfill \
-        --no-append-integrity-check
+        --skip-fixed-backfill
 STEP2_RC=$?
 if [ ${STEP2_RC} -ne 0 ]; then
     echo "WARNING: CRM import reported errors (see above)."

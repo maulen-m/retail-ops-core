@@ -12,7 +12,7 @@ Sources last updated (GMT+5):
 |Binance withdrawals         |2026-02-06 13:45:58|
 |Binance deposits            |                   |
 |Binance transfers           |2026-02-06 13:45:24|
-|Funding snapshots           |2026-02-10 04:22:20|
+|Funding snapshots           |2026-02-10 16:24:23|
 +----------------------------+-------------------+
 ```
 Current funding USDT (used for balance): 160.362615

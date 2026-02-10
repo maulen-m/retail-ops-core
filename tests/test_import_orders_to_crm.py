@@ -34,6 +34,7 @@ from scripts.import_orders_to_crm import (
     _allow_openpyxl_append_fallback,
     _open_workbook_xlwings,
     _open_workbook_xlwings_without_timeout_kwarg,
+    _workbook_integrity_preflight,
     _find_template_row_for_append,
     _normalize_conditional_formatting_ranges,
     _verify_appended_rows_integrity,
@@ -814,6 +815,42 @@ def test_excel_automation_preflight_fails_on_workbook_integrity_errors(tmp_path,
     )
     with pytest.raises(RuntimeError, match="Workbook integrity preflight failed"):
         _excel_automation_preflight(crm, strict_excel=True)
+
+
+def test_workbook_integrity_preflight_allows_known_named_ref_baseline(tmp_path, monkeypatch):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+
+    class BaselineIntegrity:
+        errors = ["named range contains #REF!: B", "named range contains #REF!: SS_TOTAL"]
+        warnings = []
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.validate_workbook_integrity",
+        lambda _path: BaselineIntegrity(),
+        raising=False,
+    )
+    _workbook_integrity_preflight(crm, verbose=True)
+
+
+def test_workbook_integrity_preflight_blocks_non_baseline_errors(tmp_path, monkeypatch):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+
+    class MixedIntegrity:
+        errors = [
+            "named range contains #REF!: B",
+            "tablePart target missing: rid=rId7 target=xl/tables/table7.xml",
+        ]
+        warnings = []
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.validate_workbook_integrity",
+        lambda _path: MixedIntegrity(),
+        raising=False,
+    )
+    with pytest.raises(RuntimeError, match="Workbook integrity preflight failed"):
+        _workbook_integrity_preflight(crm, verbose=False)
 
 
 def test_excel_automation_preflight_skips_when_not_strict(tmp_path):
