@@ -7,6 +7,7 @@ Phase 11 TASK-194: 12 tests for the order import script.
 import os
 import subprocess
 import tempfile
+import zipfile
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +35,8 @@ from scripts.import_orders_to_crm import (
     _allow_openpyxl_append_fallback,
     _open_workbook_xlwings,
     _open_workbook_xlwings_without_timeout_kwarg,
+    _restore_preserved_package_parts,
+    _snapshot_preserved_package_parts,
     _workbook_integrity_preflight,
     _find_template_row_for_append,
     _normalize_conditional_formatting_ranges,
@@ -1331,3 +1334,46 @@ def test_main_skip_gdrive_sync_flag_disables_drive_sync(monkeypatch, tmp_path):
     )
 
     assert stats["orders_imported"] == 1
+
+
+def test_restore_preserved_package_parts_readds_missing_pivot_parts(tmp_path):
+    workbook_path = tmp_path / "workbook.xlsx"
+
+    with zipfile.ZipFile(workbook_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<types>original</types>")
+        zf.writestr("xl/workbook.xml", "<workbook>original</workbook>")
+        zf.writestr("xl/_rels/workbook.xml.rels", "<rels>original</rels>")
+        zf.writestr("xl/pivotTables/pivotTable1.xml", "<pivotTable>original</pivotTable>")
+        zf.writestr("xl/pivotCache/pivotCacheDefinition2.xml", "<cacheDef>original</cacheDef>")
+        zf.writestr("xl/pivotCache/_rels/pivotCacheDefinition2.xml.rels", "<cacheRel>original</cacheRel>")
+        zf.writestr("xl/pivotCache/pivotCacheRecords2.xml", "<cacheRecords>original</cacheRecords>")
+        zf.writestr("xl/worksheets/sheet1.xml", "<sheet>v1</sheet>")
+
+    preserved = _snapshot_preserved_package_parts(workbook_path)
+    assert "xl/pivotCache/pivotCacheRecords2.xml" in preserved
+    assert "xl/pivotTables/pivotTable1.xml" in preserved
+
+    with zipfile.ZipFile(workbook_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<types>mutated</types>")
+        zf.writestr("xl/workbook.xml", "<workbook>mutated</workbook>")
+        zf.writestr("xl/_rels/workbook.xml.rels", "<rels>mutated</rels>")
+        zf.writestr("xl/pivotTables/pivotTable1.xml", "<pivotTable>mutated</pivotTable>")
+        zf.writestr("xl/pivotCache/pivotCacheDefinition2.xml", "<cacheDef>mutated</cacheDef>")
+        # intentionally drop pivot cache rel + records parts
+        zf.writestr("xl/worksheets/sheet1.xml", "<sheet>v2</sheet>")
+
+    _restore_preserved_package_parts(workbook_path, preserved)
+
+    with zipfile.ZipFile(workbook_path, "r") as zf:
+        assert zf.read("[Content_Types].xml") == b"<types>original</types>"
+        assert zf.read("xl/workbook.xml") == b"<workbook>original</workbook>"
+        assert zf.read("xl/_rels/workbook.xml.rels") == b"<rels>original</rels>"
+        assert zf.read("xl/pivotTables/pivotTable1.xml") == b"<pivotTable>original</pivotTable>"
+        assert zf.read("xl/pivotCache/pivotCacheDefinition2.xml") == b"<cacheDef>original</cacheDef>"
+        assert (
+            zf.read("xl/pivotCache/_rels/pivotCacheDefinition2.xml.rels")
+            == b"<cacheRel>original</cacheRel>"
+        )
+        assert zf.read("xl/pivotCache/pivotCacheRecords2.xml") == b"<cacheRecords>original</cacheRecords>"
+        # Non-preserved parts should keep post-save content.
+        assert zf.read("xl/worksheets/sheet1.xml") == b"<sheet>v2</sheet>"

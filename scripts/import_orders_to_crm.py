@@ -1885,23 +1885,51 @@ def _verify_appended_rows_integrity(
         wb.close()
 
 
-def _snapshot_workbook_xml(workbook_path: Path) -> Optional[bytes]:
+_PRESERVED_PARTS_EXACT = {
+    "[Content_Types].xml",
+    "xl/workbook.xml",
+    "xl/_rels/workbook.xml.rels",
+}
+_PRESERVED_PART_PREFIXES = (
+    "xl/pivotTables/",
+    "xl/pivotCache/",
+)
+
+
+def _should_preserve_package_part(part_name: str) -> bool:
+    if part_name in _PRESERVED_PARTS_EXACT:
+        return True
+    return any(part_name.startswith(prefix) for prefix in _PRESERVED_PART_PREFIXES)
+
+
+def _snapshot_preserved_package_parts(workbook_path: Path) -> Dict[str, bytes]:
+    preserved: Dict[str, bytes] = {}
     try:
         with zipfile.ZipFile(workbook_path, "r") as zf:
-            return zf.read("xl/workbook.xml")
+            for item in zf.infolist():
+                if _should_preserve_package_part(item.filename):
+                    preserved[item.filename] = zf.read(item.filename)
     except Exception:
-        return None
+        return {}
+    return preserved
 
 
-def _restore_workbook_xml(workbook_path: Path, workbook_xml: Optional[bytes]) -> None:
-    if not workbook_xml:
+def _restore_preserved_package_parts(workbook_path: Path, preserved_parts: Dict[str, bytes]) -> None:
+    if not preserved_parts:
         return
-    tmp_path = workbook_path.with_suffix(f"{workbook_path.suffix}.xmlrestore")
+
+    tmp_path = workbook_path.with_suffix(f"{workbook_path.suffix}.partsrestore")
     with zipfile.ZipFile(workbook_path, "r") as zin:
         with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            existing_names = set()
             for item in zin.infolist():
-                payload = workbook_xml if item.filename == "xl/workbook.xml" else zin.read(item.filename)
+                existing_names.add(item.filename)
+                payload = preserved_parts.get(item.filename, zin.read(item.filename))
                 zout.writestr(item, payload)
+
+            for missing_name in sorted(set(preserved_parts.keys()) - existing_names):
+                zout.writestr(missing_name, preserved_parts[missing_name])
+
     os.replace(str(tmp_path), str(workbook_path))
 
 
@@ -2786,7 +2814,7 @@ def excel_append_openpyxl(
     if n == 0:
         return (0, 0)
 
-    original_workbook_xml = _snapshot_workbook_xml(out_wb)
+    preserved_package_parts = _snapshot_preserved_package_parts(out_wb)
     wb = load_workbook(filename=str(out_wb), read_only=False, data_only=False)
     try:
         ws = wb[sheet_name]
@@ -2905,7 +2933,7 @@ def excel_append_openpyxl(
     finally:
         wb.close()
 
-    _restore_workbook_xml(out_wb, original_workbook_xml)
+    _restore_preserved_package_parts(out_wb, preserved_package_parts)
 
     print(f"  Appending {n} rows starting at row {top_row}")
     print(f"  Table ref: {old_table_ref} -> {table.ref}")
