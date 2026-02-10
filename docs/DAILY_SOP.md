@@ -4,6 +4,19 @@
 This document outlines the daily routine for operating the Autonomous Inventory/PO System.  
 Scope: Kaspi-only.
 
+### Single-Truth Strict Gate (Workbook Anchored)
+
+Run strict validation with workbook anchor enabled before operator decisions:
+
+```bash
+AB_CRM_WORKBOOK_PATH="~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
+python3 scripts/validate_params.py --strict
+```
+
+Notes:
+- `AB_CRM_WORKBOOK_PATH` gate is optional by design; if unset, workbook anchor check is skipped.
+- In production operations, set it explicitly so daily published sales truth cannot exceed workbook anchor tolerance.
+
 ---
 
 ## Morning Routine (9:00 AM)

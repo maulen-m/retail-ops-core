@@ -77,15 +77,15 @@ Write a single comprehensive strategy document at `docs/ideas/strategical/PROFIT
 
 **However**, the 1.7x ratio still means women's is a $3B market vs $1.7B men's — a $1.3B gap that AcmeWear has zero exposure to.
 
-### 2.3 WB/Ozon Reference Data
+### 2.3 Wildberries/Ozon Reference Data
 
 | Metric | Value |
 |--------|-------|
-| WB annual revenue (2024) | $34.4B |
-| WB fashion share | 38% ($13.1B) |
-| WB women's clothing share | **42% of total marketplace turnover** |
-| WB women's Q3 2024 revenue | 113B RUB |
-| WB sports category share | 13% of turnover |
+| Wildberries annual revenue (2024) | $34.4B |
+| Wildberries fashion share | 38% ($13.1B) |
+| Wildberries women's clothing share | **42% of total marketplace turnover** |
+| Wildberries women's Q3 2024 revenue | 113B RUB |
+| Wildberries sports category share | 13% of turnover |
 | Ozon annual revenue (2024) | $35.5B |
 | Russia sportswear market (2024) | $3.87B, CAGR 3.77% |
 | Global women's activewear (2025) | $129B, CAGR 8.95% |
@@ -103,13 +103,13 @@ Write a single comprehensive strategy document at `docs/ideas/strategical/PROFIT
 
 ---
 
-## 3. Niche Opportunity Matrix (WB→Kaspi Arbitrage)
+## 3. Niche Opportunity Matrix (Wildberries→Kaspi Arbitrage)
 
 Research identified 13 niches. Ranked by Kaspi opportunity score:
 
-| Rank | Niche | Kaspi Opp. | WB Demand Signal | Kaspi Competition | Est. Margin |
+| Rank | Niche | Kaspi Opp. | Wildberries Demand Signal | Kaspi Competition | Est. Margin |
 |------|-------|-----------|-----------------|-------------------|-------------|
-| 1 | **Women's workout sets (top+leggings)** | 9/10 | Sets = #1 WB subcategory in costumes | Very few dedicated sellers | 40-60% |
+| 1 | **Women's workout sets (top+leggings)** | 9/10 | Sets = #1 Wildberries subcategory in costumes | Very few dedicated sellers | 40-60% |
 | 2 | **Women's sports bras** | 8/10 | Entry point for women's trust; essential | Very few on Kaspi | 50-65% |
 | 3 | **Seamless activewear** | 8/10 | Global trend, "second skin" feel | Absent from Kaspi | 45-60% |
 | 4 | **Lightweight running/training sets** | 8/10 | Spring/summer peak demand; running culture growing in Almaty/Astana | Very limited on Kaspi | 40-55% |
@@ -120,7 +120,7 @@ Research identified 13 niches. Ranked by Kaspi opportunity score:
 | 9 | **Maternity activewear** | 7/10 | Young KZ demographics | Zero on Kaspi | 45-60% |
 | 10 | **Compression socks/sleeves** | 6/10 | Good AOV booster, accessory | Very limited | 55-70% |
 | 11 | **Kids' sportswear sets** | 5/10 | Already partially served | Some presence | 35-50% |
-| 12 | **Plus-size women's activewear** | 5/10 | 6.7B RUB on WB, 30K+ sellers | Sizing risk | 35-50% |
+| 12 | **Plus-size women's activewear** | 5/10 | 6.7B RUB on Wildberries, 30K+ sellers | Sizing risk | 35-50% |
 | 13 | **Men's running/cycling compression** | 5/10 | Cycling niche in KZ | Minimal | 35-45% |
 
 ### 3.1 Priority Tier Selection
@@ -130,7 +130,7 @@ Research identified 13 niches. Ranked by Kaspi opportunity score:
 - Women's sports bras (low/medium/high support)
 - Women's compression leggings (standalone)
 
-**Rationale**: These three form a complete women's activewear core. On WB, women's clothing = 42% of turnover. Sports bras are the trust entry point. Sets generate $5-20 more profit per order vs singles. These share the same supplier base and fabric technology as current men's compression products.
+**Rationale**: These three form a complete women's activewear core. On Wildberries, women's clothing = 42% of turnover. Sports bras are the trust entry point. Sets generate $5-20 more profit per order vs singles. These share the same supplier base and fabric technology as current men's compression products.
 
 **Tier 2 (Launch within 2-3 months, spring/summer wave):**
 - Seamless activewear (global trend, first-mover advantage on Kaspi)
@@ -305,14 +305,14 @@ Monthly ROIC (at D_30=3, L=21d, R=10d): ~30%+ → ORDER_FULL gate
 |------|------------|------------------|
 | `core/calc/portfolio.py` | 20% SKU concentration rule | Add category-level + gender-level caps |
 | `core/calc/capital_optimizer.py` | ROIC-based allocation | Add women's category inputs |
-| `core/calc/expansion_scorer.py` | KSP→WB scoring | Adapt for "new category" scoring (not just cross-channel) |
+| `core/calc/expansion_scorer.py` | KSP→Wildberries scoring | Adapt for "new category" scoring (not just cross-channel) |
 | `core/calc/economics.py` | Unit economics | No change needed; works for women's products |
 | `scripts/kaspi_marketing_scrape.py` | Ads data | Add new women's campaigns when launched |
 | `core/calc/demand_estimator.py` | 30-day demand | No change; will start collecting women's demand data |
 
 ### External tools for niche monitoring:
 - **Market-Stat (mstat.kz)**: Kaspi demand estimation, 80-85% accuracy. Use for pre-launch validation
-- **MPSTATS (mpstats.io)**: WB analytics for cross-referencing demand trends
+- **MPSTATS (mpstats.io)**: Wildberries analytics for cross-referencing demand trends
 - **Kaspi search autocomplete**: Manual demand signal collection
 
 ---

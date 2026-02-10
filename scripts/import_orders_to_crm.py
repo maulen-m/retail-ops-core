@@ -253,9 +253,20 @@ def _promote_candidate_workbook(
     if not candidate_path.exists():
         raise FileNotFoundError(f"Candidate workbook not found: {candidate_path}")
 
+    baseline_errors: set[str] = set()
     try:
         source_integrity = validate_workbook_integrity(source_path)
         baseline_errors = set(source_integrity.errors or [])
+    except Exception as source_exc:
+        # Preserve transactional safety for candidate promotion tests and
+        # fallback paths where source integrity cannot be probed.
+        if verbose:
+            print(
+                "  WARNING: source workbook integrity baseline unavailable; "
+                f"continuing with empty baseline ({source_exc})"
+            )
+
+    try:
         _verify_candidate_workbook(
             candidate_path,
             strict_excel=strict_excel,

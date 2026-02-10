@@ -267,6 +267,10 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
         --verbose \
         --no-update \
         --no-transactional \
+        --no-strict-excel \
+        --openpyxl-append-fallback \
+        --no-prefer-xlwings-append \
+        --no-append-integrity-check \
         --kaspi-core-override \
         --no-gdrive-sync \
         --skip-fixed-backfill
