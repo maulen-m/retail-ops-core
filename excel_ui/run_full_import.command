@@ -265,13 +265,8 @@ CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
 python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
     python scripts/import_orders_to_crm.py \
         --verbose \
-        --no-strict-excel \
         --no-update \
         --no-transactional \
-        --openpyxl-append-fallback \
-        --no-prefer-xlwings-append \
-        --no-append-integrity-check \
-        --no-fixed-values \
         --kaspi-core-override \
         --no-gdrive-sync \
         --skip-fixed-backfill

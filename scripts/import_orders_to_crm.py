@@ -145,13 +145,14 @@ def _excel_open_probe(workbook_path: Path, attempts: int = 3, timeout_sec: int =
 
     escaped = str(workbook_path).replace("\\", "\\\\").replace('"', '\\"')
     open_script = f"""
-set workbookPath to "{escaped}"
+set workbookPath to POSIX file "{escaped}"
 tell application "Microsoft Excel"
     try
         set display alerts to false
     end try
     try
-        open workbook workbook file name workbookPath
+        activate
+        open workbookPath
         delay 1
         if (count of workbooks) > 0 then
             close active workbook saving no
@@ -625,7 +626,7 @@ def _build_line_dedupe_key(
     clean_order = clean_order_id(order_id) or ""
     planned_iso = planned_date.isoformat() if planned_date else ""
     offer_key = _norm_key_text(offer_name)
-    article_key = _norm_key_text(article)
+    article_key = _norm_key_text(normalize_article_code(article))
     quantity_key = str(_to_int(quantity, 0))
     return f"{clean_order}|{planned_iso}|{article_key}|{offer_key}|{quantity_key}"
 

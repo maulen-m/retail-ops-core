@@ -869,9 +869,11 @@ def test_excel_open_probe_retries_after_osascript_timeout(monkeypatch, tmp_path)
     crm.write_text("placeholder", encoding="utf-8")
 
     open_attempts = {"count": 0}
+    scripts_seen = []
 
     def _fake_run(_cmd, input=None, text=True, capture_output=True, timeout=45):
         script = input or ""
+        scripts_seen.append(script)
         if "quit" in script:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         open_attempts["count"] += 1
@@ -883,6 +885,10 @@ def test_excel_open_probe_retries_after_osascript_timeout(monkeypatch, tmp_path)
     ok, detail = _excel_open_probe(crm, attempts=2, timeout_sec=1)
     assert ok is True
     assert detail == "OK"
+    open_scripts = [s for s in scripts_seen if "open " in s and "quit" not in s]
+    assert open_scripts, "expected Excel open probe script to be executed"
+    assert 'set workbookPath to POSIX file "' in open_scripts[0]
+    assert "open workbookPath" in open_scripts[0]
 
 
 def test_verify_candidate_workbook_allows_probe_timeout_after_integrity_pass(monkeypatch, tmp_path):
@@ -1117,6 +1123,24 @@ def test_build_line_dedupe_key_differentiates_multiline_items():
         1,
     )
     assert k1 != k2
+
+
+def test_build_line_dedupe_key_normalizes_article_prefix_tokens():
+    k_raw = _build_line_dedupe_key(
+        "815312915",
+        date(2026, 2, 10),
+        "Комплект ALPIKA 102492502 черный 52",
+        "102529963\tCL_OC_MEN_LINE52_BLACK_2XL_102529963",
+        1,
+    )
+    k_norm = _build_line_dedupe_key(
+        "815312915",
+        date(2026, 2, 10),
+        "Комплект ALPIKA 102492502 черный 52",
+        "CL_OC_MEN_LINE52_BLACK_2XL_102529963",
+        1,
+    )
+    assert k_raw == k_norm
 
 
 def _minimal_snapshot() -> CRMSnapshot:
