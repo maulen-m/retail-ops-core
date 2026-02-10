@@ -19,7 +19,6 @@ This plan turns those into GREEN strict gates with the smallest safe changes pos
   - env flag is enabled, AND
   - explicit CLI flag (e.g. --apply) is provided
 - Tests first (fail-first evidence).
-- Use worktrees to keep main clean; do not run DB write actions concurrently across worktrees.
 
 ## Success criteria (measurable)
 A. Strict gates GREEN:
@@ -35,12 +34,6 @@ B. Single-truth integrity GREEN (with workbook gate enabled):
 C. Operator outputs sane:
 - BUSINESS_INSIDES last-7-days table does not inflate beyond workbook guardrail
 - No single-day “spikes” caused by restamping/duplication.
-
-## Work method (to avoid dirty repo blockers)
-Follow .claude/PARALLEL_WORK.md and .claude/GIT_HYGIENE.md:
-- One worktree per task branch
-- One “scribe” branch touches .claude logs; other branches avoid editing .claude/*
-- No concurrent DB writes across worktrees; isolate AB_DATA_DIR if needed
 
 ## Phase 1 — Unblock strict gate: on_delivery_freeze residual settlement
 Goal: make validate_on_delivery_freeze PASS.
