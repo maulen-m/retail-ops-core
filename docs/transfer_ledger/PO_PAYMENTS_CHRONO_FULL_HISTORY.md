@@ -8,11 +8,11 @@ Sources last updated (GMT+5):
 |Source                      |Last_Update        |
 +----------------------------+-------------------+
 |Exchanger emails            |2026-02-06 14:12:55|
-|Binance P2P (BUY)           |2026-02-06 13:26:39|
-|Binance withdrawals         |2026-02-06 13:45:58|
+|Binance P2P (BUY)           |2026-02-10 13:00:37|
+|Binance withdrawals         |2026-02-10 13:15:02|
 |Binance deposits            |                   |
-|Binance transfers           |2026-02-06 13:45:24|
-|Funding snapshots           |2026-02-10 16:24:23|
+|Binance transfers           |2026-02-10 13:14:25|
+|Funding snapshots           |2026-02-10 22:25:26|
 +----------------------------+-------------------+
 ```
 
