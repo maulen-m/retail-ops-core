@@ -10,6 +10,11 @@ import re
 import sqlite3
 from typing import Any
 
+try:
+    from scripts.kaspi_ads_paths import assert_ads_db_path_safe, resolve_ads_db_path
+except ModuleNotFoundError:
+    from kaspi_ads_paths import assert_ads_db_path_safe, resolve_ads_db_path
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_APP_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_ADS_DB = Path(
@@ -312,17 +317,22 @@ def sync_ads_sidecar(
 def run_sync_ads_sidecar(
     *,
     app_db: Path,
-    ads_db: Path,
+    ads_db: Path | None,
     since: str | None,
     until: str | None,
     apply: bool,
 ) -> int:
+    resolved_ads_db = resolve_ads_db_path(
+        ads_db_arg=ads_db,
+        default_path=DEFAULT_ADS_DB,
+    )
+    assert_ads_db_path_safe(ads_db_path=resolved_ads_db)
     if apply and os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
         print("ERROR: ENABLE_CASHFLOW_WRITE=1 is required with --apply")
         return 1
     summary = sync_ads_sidecar(
         app_db=app_db,
-        ads_db=ads_db,
+        ads_db=resolved_ads_db,
         since=since,
         until=until,
         apply=apply,
@@ -334,7 +344,12 @@ def run_sync_ads_sidecar(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sync ads spend sidecar from external marketing DB")
     parser.add_argument("--app-db", type=Path, default=DEFAULT_APP_DB)
-    parser.add_argument("--ads-db", type=Path, default=DEFAULT_ADS_DB)
+    parser.add_argument(
+        "--ads-db",
+        type=Path,
+        default=None,
+        help="Ads DB path (or set KASPI_MARKETING_DB_PATH)",
+    )
     parser.add_argument("--since", type=str, default=None)
     parser.add_argument("--until", type=str, default=None)
     parser.add_argument("--apply", action="store_true")

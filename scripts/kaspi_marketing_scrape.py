@@ -23,6 +23,21 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from dotenv import load_dotenv
 
+try:
+    from scripts.kaspi_ads_paths import (
+        PROD_ADS_DB_PATH,
+        assert_ads_db_path_safe,
+        copy_ads_db_once,
+        resolve_ads_db_path,
+    )
+except ModuleNotFoundError:
+    from kaspi_ads_paths import (
+        PROD_ADS_DB_PATH,
+        assert_ads_db_path_safe,
+        copy_ads_db_once,
+        resolve_ads_db_path,
+    )
+
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
 DEFAULT_OUTPUT_ROOT = Path(
@@ -1221,6 +1236,23 @@ def main() -> int:
     parser.add_argument("--profile-dir", default=env_profile_dir)
     parser.add_argument("--merchant-id", default=env_merchant_id)
     parser.add_argument("--store-code", default=env_store_code)
+    parser.add_argument(
+        "--ads-db",
+        type=Path,
+        default=None,
+        help="Ads DB path (or set KASPI_MARKETING_DB_PATH)",
+    )
+    parser.add_argument(
+        "--ads-db-copy-source",
+        type=Path,
+        default=PROD_ADS_DB_PATH,
+        help="Copy-once source DB when --ads-db points to a missing local DB",
+    )
+    parser.add_argument(
+        "--skip-ads-db-copy",
+        action="store_true",
+        help="Do not perform one-time DB copy from --ads-db-copy-source",
+    )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--bookkeeper", type=Path, default=DEFAULT_BOOKKEEPER)
     parser.add_argument("--owner-workbook-path", type=Path, default=DEFAULT_OWNER_WORKBOOK)
@@ -1316,13 +1348,24 @@ def main() -> int:
     run_id = now.strftime("%Y%m%d_%H%M%S")
     ingested_at = now.isoformat()
 
+    default_ads_db = args.output_root / "db" / "kaspi_marketing.db"
+    db_path = resolve_ads_db_path(
+        ads_db_arg=args.ads_db,
+        default_path=default_ads_db,
+    )
+    assert_ads_db_path_safe(ads_db_path=db_path)
+    copy_result: dict[str, Any] | None = None
+    if not args.skip_ads_db_copy:
+        copy_result = copy_ads_db_once(
+            source_db=args.ads_db_copy_source,
+            dest_db=db_path,
+        )
+
     raw_root = args.output_root / "raw"
     details_root = args.output_root / "details"
-    db_root = args.output_root / "db"
+    db_root = db_path.parent
     log_root = args.output_root / "logs"
     ensure_dirs(raw_root, details_root, db_root, log_root)
-
-    db_path = db_root / "kaspi_marketing.db"
 
     anomalies: list[dict[str, Any]] = []
     run_log: dict[str, Any] = {
@@ -1336,7 +1379,10 @@ def main() -> int:
         "report_skipped": [],
         "notes": [],
         "external_restore": restore_result,
+        "ads_db_path": str(db_path),
     }
+    if copy_result is not None:
+        run_log["ads_db_copy_once"] = copy_result
     run_log["notes"].append("bid_cpc is current API snapshot; no historical bid data available.")
 
     last_state_by_campaign: dict[str, str] = {}

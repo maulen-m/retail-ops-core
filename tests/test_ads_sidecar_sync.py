@@ -2,7 +2,9 @@ import os
 import sqlite3
 from pathlib import Path
 
-from scripts.sync_ads_sidecar import sync_ads_sidecar, run_sync_ads_sidecar
+import pytest
+
+from scripts.sync_ads_sidecar import run_sync_ads_sidecar, sync_ads_sidecar
 
 
 def _init_app_db(path: Path) -> None:
@@ -98,3 +100,40 @@ def test_run_sync_ads_sidecar_apply_requires_enable_cashflow_write(tmp_path: Pat
         apply=True,
     )
     assert rc == 1
+
+
+def test_run_sync_ads_sidecar_uses_env_ads_db_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app_db = tmp_path / "app.db"
+    ads_db = tmp_path / "ads.db"
+    _init_app_db(app_db)
+    _init_ads_db(ads_db)
+
+    monkeypatch.setenv("KASPI_MARKETING_DB_PATH", str(ads_db))
+    rc = run_sync_ads_sidecar(
+        app_db=app_db,
+        ads_db=None,
+        since="2026-02-07",
+        until="2026-02-07",
+        apply=False,
+    )
+    assert rc == 0
+
+
+def test_run_sync_ads_sidecar_blocks_prod_default_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app_db = tmp_path / "app.db"
+    _init_app_db(app_db)
+    prod_ads_path = Path(
+        "~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/"
+        "Kaspi_marketing/db/kaspi_marketing.db"
+    )
+
+    monkeypatch.delenv("ALLOW_PROD_ADS_DB", raising=False)
+
+    with pytest.raises(RuntimeError, match="Refusing to use production ads DB path"):
+        run_sync_ads_sidecar(
+            app_db=app_db,
+            ads_db=prod_ads_path,
+            since="2026-02-07",
+            until="2026-02-07",
+            apply=False,
+        )

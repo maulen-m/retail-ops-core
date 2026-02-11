@@ -16,6 +16,11 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import re
 
+try:
+    from scripts.kaspi_ads_paths import assert_ads_db_path_safe, resolve_ads_db_path
+except ModuleNotFoundError:
+    from kaspi_ads_paths import assert_ads_db_path_safe, resolve_ads_db_path
+
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
 DEFAULT_ADS_DB = Path(
@@ -712,7 +717,12 @@ def build_owner_workbook(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build owner-facing Kaspi marketing workbook")
-    parser.add_argument("--ads-db", type=Path, default=DEFAULT_ADS_DB)
+    parser.add_argument(
+        "--ads-db",
+        type=Path,
+        default=None,
+        help="Ads DB path (or set KASPI_MARKETING_DB_PATH)",
+    )
     parser.add_argument("--app-db", type=Path, default=DEFAULT_APP_DB)
     parser.add_argument("--workbook-path", type=Path, default=DEFAULT_WORKBOOK)
     parser.add_argument("--csv-dir", type=Path, default=DEFAULT_CSV_DIR)
@@ -729,8 +739,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    ads_db = resolve_ads_db_path(
+        ads_db_arg=args.ads_db,
+        default_path=DEFAULT_ADS_DB,
+    )
+    assert_ads_db_path_safe(ads_db_path=ads_db)
     summary = build_owner_workbook(
-        ads_db=args.ads_db,
+        ads_db=ads_db,
         app_db=args.app_db,
         workbook_path=args.workbook_path,
         csv_dir=args.csv_dir,

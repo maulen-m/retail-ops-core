@@ -1,0 +1,11 @@
+{
+  "captured_at": "",
+  "merchant_id": "759051",
+  "campaign_id": "",
+  "candidates_found": 0,
+  "candidates": [],
+  "notes": [
+    "Populate this file by running scripts/kaspi_ads_discover_bid_write_api.py in headful mode.",
+    "Do not commit raw cookies/tokens; keep sensitive headers redacted."
+  ]
+}
