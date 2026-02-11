@@ -1,0 +1,31 @@
+version: 1
+safety:
+  dry_run: true
+  min_bid_kzt: 10
+  max_bid_kzt: 200
+  max_step_change_kzt: 30
+  max_daily_changes: 2
+  cooldown_minutes: 60
+  require_env: ENABLE_KASPI_ADS_WRITE
+
+allowlist:
+  - campaign_id: "2380614"
+    sku_key: "19796919b"
+
+schedules:
+  - name: night_reduction
+    enabled: true
+    start_hour: 2
+    end_hour: 7
+    multiplier: 0.5
+  - name: day_restore
+    enabled: true
+    start_hour: 7
+    end_hour: 24
+    multiplier: 1.0
+
+campaigns:
+  "2380614":
+    base_bid: 70
+  "2545773":
+    base_bid: 70
