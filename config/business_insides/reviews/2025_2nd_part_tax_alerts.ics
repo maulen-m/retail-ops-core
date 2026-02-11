@@ -1,0 +1,32 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Autonomous Business//Tax Alerts//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VEVENT
+UID:tax-report-2025-h2-20260213-1000@autonomous-business
+DTSTAMP:20260211T090019Z
+DTSTART:20260213T100000
+DTEND:20260213T110000
+SUMMARY:Report 2025 H2 Taxes (Gov Filing)
+DESCRIPTION:2025 2nd Part Tax Report\nReport deadline: 2026-02-15\nPayment deadline: 2026-02-25\n\nUniversal split:\nQ3 (2025-07-01..2025-09-30): 11,663,192.30 | tax 349,895.77 | ALREADY_PAID\nQ4 (2025-10-01..2025-12-31): 15,910,446.52 | tax 477,313.40 | PAYABLE\n\nPayable by 2026-02-25: 1,266,207.40 KZT\nDoc: ~/Docs/Autonomous_business/config/business_insides/reviews/2025_2nd_part_tax_report.md
+BEGIN:VALARM
+TRIGGER:-PT10M
+ACTION:DISPLAY
+DESCRIPTION:Tax report reminder
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:tax-payment-2025-h2-20260224-1000@autonomous-business
+DTSTAMP:20260211T090019Z
+DTSTART:20260224T100000
+DTEND:20260224T110000
+SUMMARY:Pay 2025 H2 Taxes
+DESCRIPTION:2025 H2 Tax Payment (24 Feb 2026)\n+-----------+-----------------------------+---------------+--------------+--------------+\n| store     | period_used                 | net_rev_kzt   | tax_3pct_kzt | status       |\n+-----------+-----------------------------+---------------+--------------+--------------+\n| UNIVERSAL | Q4 2025-10-01..2025-12-31   | 15,910,446.52 | 477,313.40   | PAYABLE      |\n| ACMEWEAR   | H2 2025-07-01..2025-12-31   | 15,613,157.66 | 468,394.73   | PAYABLE      |\n| STOREB    | H2 2025-07-01..2025-12-31   | 8,982,176.84  | 269,465.31   | PAYABLE      |\n| 11KZ      | H2 2025-07-01..2025-12-31   | 1,701,132.04  | 51,033.96    | PAYABLE      |\n| MELVIS    | H2 2025-07-01..2025-12-31   | 0.00          | 0.00         | PAYABLE      |\n+-----------+-----------------------------+---------------+--------------+--------------+\n| TOTAL     | DECLARED_FOR_THIS_REPORT    | 42,206,913.06 | 1,266,207.40 | PAY_NOW      |\n+-----------+-----------------------------+---------------+--------------+--------------+\n\nUniversal Q3 is already paid (not included in payable total).\nAccounting cashflow ref_id: TAX_2025_H2_PAY_20260224_1000\nDoc: ~/Docs/Autonomous_business/config/business_insides/reviews/2025_2nd_part_tax_report.md
+BEGIN:VALARM
+TRIGGER:-PT10M
+ACTION:DISPLAY
+DESCRIPTION:Tax payment reminder
+END:VALARM
+END:VEVENT
+END:VCALENDAR
