@@ -264,8 +264,11 @@ echo "Step 2: Importing new orders to CRM..."
 echo "----------------------------------------"
 STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-900}"
 XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-45}"
+XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-60}"
 echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
 echo "xlwings open timeout: ${XLWINGS_OPEN_TIMEOUT_SEC}s"
+echo "xlwings append timeout: ${XLWINGS_APPEND_TIMEOUT_SEC}s"
+CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \
 CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
 python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
     python scripts/import_orders_to_crm.py \

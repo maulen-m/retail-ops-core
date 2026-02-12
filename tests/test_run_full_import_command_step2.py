@@ -26,6 +26,7 @@ def test_step2_uses_hybrid_mode_xlwings_first_with_guarded_openpyxl_fallback():
 
     # Keep hard timeout wrapper in place.
     assert 'python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \\' in step2_block
+    assert 'CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \\' in step2_block
 
     # Unattended mode: avoid candidate writes and keep strict probe disabled.
     assert "--no-transactional" in flags
