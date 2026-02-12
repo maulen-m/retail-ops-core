@@ -18,7 +18,7 @@ def _extract_cli_flags(step2_block: str) -> set[str]:
     return flags
 
 
-def test_step2_uses_unattended_openpyxl_mode_without_excel_automation():
+def test_step2_uses_hybrid_mode_xlwings_first_with_guarded_openpyxl_fallback():
     script_path = Path("excel_ui/run_full_import.command")
     text = script_path.read_text(encoding="utf-8")
     step2_block = _extract_step2_block(text)
@@ -27,13 +27,15 @@ def test_step2_uses_unattended_openpyxl_mode_without_excel_automation():
     # Keep hard timeout wrapper in place.
     assert 'python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \\' in step2_block
 
-    # Unattended mode: avoid candidate writes and avoid Excel-automation-only branches.
+    # Unattended mode: avoid candidate writes and keep strict probe disabled.
     assert "--no-transactional" in flags
     assert "--no-strict-excel" in flags
     assert "--no-update" in flags
+
+    # Keep fallback available for business continuity, but do not force openpyxl path.
     assert "--openpyxl-append-fallback" in flags
-    assert "--no-prefer-xlwings-append" in flags
-    assert "--no-append-integrity-check" in flags
+    assert "--no-prefer-xlwings-append" not in flags
+    assert "--no-append-integrity-check" not in flags
     assert "--no-gdrive-sync" in flags
 
     # Keep no-gui unattended mode and do not rely on env-side toggles.

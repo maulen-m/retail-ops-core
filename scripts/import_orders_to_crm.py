@@ -66,6 +66,7 @@ from core.utils.kaspi_dates import planned_date_from_order
 from core.db import get_db
 from scripts.validate_crm_workbook_integrity import (
     filter_integrity_errors,
+    repair_missing_shared_strings_part,
     validate_workbook_integrity,
 )
 
@@ -388,6 +389,44 @@ def _xlwings_open_timeout_sec(default_sec: int = 45) -> int:
     except ValueError:
         return int(default_sec)
     return max(parsed, 5)
+
+
+def _xlwings_append_timeout_sec(default_sec: int = 180) -> int:
+    """
+    Wall-clock timeout for xlwings append execution before falling back.
+    """
+    raw = os.getenv("CRM_XLWINGS_APPEND_TIMEOUT_SEC", "")
+    if not str(raw).strip():
+        return int(default_sec)
+    try:
+        parsed = int(str(raw).strip())
+    except ValueError:
+        return int(default_sec)
+    return max(parsed, 10)
+
+
+def _run_with_posix_alarm_timeout(timeout_sec: int, func, *args, **kwargs):
+    """
+    Execute callable with SIGALRM timeout on POSIX; no-op timeout on other OSes.
+    """
+    if os.name != "posix" or not hasattr(signal, "SIGALRM"):
+        return func(*args, **kwargs)
+
+    safe_timeout = max(int(timeout_sec), 1)
+
+    def _alarm_handler(_signum, _frame):
+        raise TimeoutError(f"operation timed out after {safe_timeout}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _alarm_handler)
+    previous_alarm = signal.alarm(safe_timeout)
+    try:
+        return func(*args, **kwargs)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_alarm > 0:
+            signal.alarm(previous_alarm)
 
 
 def _open_workbook_xlwings_without_timeout_kwarg(
@@ -1901,6 +1940,7 @@ _PRESERVED_PARTS_EXACT = {
     "[Content_Types].xml",
     "xl/workbook.xml",
     "xl/_rels/workbook.xml.rels",
+    "xl/sharedStrings.xml",
 }
 _PRESERVED_PART_PREFIXES = (
     "xl/pivotTables/",
@@ -2975,7 +3015,9 @@ def append_orders_with_fallback(
 ) -> Tuple[int, int]:
     if prefer_xlwings:
         try:
-            return excel_append_xlwings(
+            return _run_with_posix_alarm_timeout(
+                _xlwings_append_timeout_sec(),
+                excel_append_xlwings,
                 out_wb,
                 sheet_name,
                 table_name,
@@ -3869,7 +3911,18 @@ def main(
         print(f"  Protected columns (never overwritten): {', '.join(sorted(PROTECTED_HUMAN_COLUMNS))}")
         print(f"  Fixed values scope: {args.fixed_values_scope}")
     print()
-    
+
+    if not args.dry_run and zipfile.is_zipfile(args.crm_file):
+        repaired, repair_backup = repair_missing_shared_strings_part(
+            args.crm_file,
+            backup_dir=args.crm_file.parent / "backups",
+        )
+        if repaired:
+            backup_done = True
+            if repair_backup:
+                print(f"  SharedStrings repair backup: {repair_backup.name}")
+            print("  Repaired missing xl/sharedStrings.xml in CRM workbook package.")
+
     # Read and filter
     df_all, source_files = read_active_orders(args.orders_dir)
     df_filt, stats = filter_for_shipping(df_all, args.status, None, end_date)

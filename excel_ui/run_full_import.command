@@ -238,7 +238,12 @@ INTEGRITY_ALLOW_EXACT=(
     "named range contains #REF!: Z"
     "named range contains #REF!: Z_LEVEL"
 )
-VALIDATE_CMD=(python3 scripts/validate_crm_workbook_integrity.py --workbook excel_ui/SALES_KSP_CRM_V3.xlsx)
+VALIDATE_CMD=(
+    python3 scripts/validate_crm_workbook_integrity.py
+    --workbook excel_ui/SALES_KSP_CRM_V3.xlsx
+    --repair-missing-shared-strings
+    --repair-backup-dir excel_ui/backups
+)
 for allowed_error in "${INTEGRITY_ALLOW_EXACT[@]}"; do
     VALIDATE_CMD+=(--allow-error-exact "${allowed_error}")
 done
@@ -269,8 +274,6 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
         --no-transactional \
         --no-strict-excel \
         --openpyxl-append-fallback \
-        --no-prefer-xlwings-append \
-        --no-append-integrity-check \
         --kaspi-core-override \
         --no-gdrive-sync \
         --skip-fixed-backfill

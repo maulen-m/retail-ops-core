@@ -11,10 +11,12 @@ Checks:
 from __future__ import annotations
 
 import argparse
+import shutil
 import posixpath
 import re
 import sys
 import zipfile
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
@@ -24,7 +26,15 @@ import xml.etree.ElementTree as ET
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+SHARED_STRINGS_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings"
+SHARED_STRINGS_CT = "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"
 A1_RANGE_RE = re.compile(r"^([A-Z]+)(\d+):([A-Z]+)(\d+)$")
+EMPTY_SHARED_STRINGS_XML = (
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+    "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+    "count=\"0\" uniqueCount=\"0\"/>"
+).encode("utf-8")
 
 
 @dataclass
@@ -53,6 +63,88 @@ def _norm_target(base_path: str, target: str) -> str:
     return normalized.lstrip("/")
 
 
+def _shared_strings_targets(zf: zipfile.ZipFile) -> List[Tuple[str, str]]:
+    rels_root = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+    targets: List[Tuple[str, str]] = []
+    for rel in rels_root.findall(f"{{{PKG_REL_NS}}}Relationship"):
+        rel_type = rel.attrib.get("Type", "")
+        if rel_type != SHARED_STRINGS_REL_TYPE:
+            continue
+        rid = rel.attrib.get("Id", "")
+        target = rel.attrib.get("Target", "")
+        if not target:
+            continue
+        targets.append((rid, _norm_target("xl/workbook.xml", target)))
+    return targets
+
+
+def repair_missing_shared_strings_part(
+    workbook_path: Path,
+    backup_dir: Path | None = None,
+) -> Tuple[bool, Path | None]:
+    """Add empty xl/sharedStrings.xml when workbook rels reference it but part is missing."""
+    workbook_path = Path(workbook_path)
+    with zipfile.ZipFile(workbook_path, "r") as zin:
+        names = set(zin.namelist())
+        targets = _shared_strings_targets(zin)
+        if not targets:
+            return False, None
+
+        missing_targets = [target for _, target in targets if target not in names]
+        if not missing_targets:
+            return False, None
+
+        shared_cells = 0
+        for name in names:
+            if name.startswith("xl/worksheets/sheet") and name.endswith(".xml"):
+                shared_cells += zin.read(name).count(b't="s"')
+        if shared_cells > 0:
+            raise RuntimeError(
+                "Workbook references sharedStrings.xml but it is missing and worksheet cells still "
+                "use shared-string indexes (t=\"s\"). Automatic repair is unsafe."
+            )
+
+        backup_path: Path | None = None
+        if backup_dir is not None:
+            backup_dir = Path(backup_dir)
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = backup_dir / f"{workbook_path.stem}_pre_sharedstrings_fix_{ts}{workbook_path.suffix}"
+            shutil.copy2(workbook_path, backup_path)
+
+        tmp_path = workbook_path.with_suffix(f"{workbook_path.suffix}.sharedstrings_fix")
+
+        ct_root = ET.fromstring(zin.read("[Content_Types].xml"))
+        existing_overrides = {
+            node.attrib.get("PartName", "")
+            for node in ct_root.findall(f"{{{CT_NS}}}Override")
+        }
+        for target in missing_targets:
+            part_name = "/" + target
+            if part_name not in existing_overrides:
+                ET.SubElement(
+                    ct_root,
+                    f"{{{CT_NS}}}Override",
+                    {
+                        "PartName": part_name,
+                        "ContentType": SHARED_STRINGS_CT,
+                    },
+                )
+        ct_bytes = ET.tostring(ct_root, encoding="utf-8", xml_declaration=True)
+
+        with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == "[Content_Types].xml":
+                    zout.writestr(item, ct_bytes)
+                else:
+                    zout.writestr(item, zin.read(item.filename))
+            for target in missing_targets:
+                zout.writestr(target, EMPTY_SHARED_STRINGS_XML)
+
+    shutil.move(str(tmp_path), str(workbook_path))
+    return True, backup_path
+
+
 def validate_workbook_integrity(workbook_path: Path) -> IntegrityResult:
     errors: List[str] = []
     warnings: List[str] = []
@@ -62,6 +154,10 @@ def validate_workbook_integrity(workbook_path: Path) -> IntegrityResult:
 
         wb_root = ET.fromstring(zf.read("xl/workbook.xml"))
         wb_rel_map = _load_rels_map(zf, "xl/_rels/workbook.xml.rels")
+
+        for rid, target in _shared_strings_targets(zf):
+            if target not in names:
+                errors.append(f"workbook sharedStrings target missing: rid={rid} target={target}")
 
         ext_refs = wb_root.find(f"{{{MAIN_NS}}}externalReferences")
         if ext_refs is not None:
@@ -168,7 +264,28 @@ def main() -> int:
         default=[],
         help="Treat integrity errors with this prefix as allowed. Repeatable.",
     )
+    parser.add_argument(
+        "--repair-missing-shared-strings",
+        action="store_true",
+        help="Safely add empty xl/sharedStrings.xml if workbook rels reference it but part is missing.",
+    )
+    parser.add_argument(
+        "--repair-backup-dir",
+        type=Path,
+        default=Path("excel_ui/backups"),
+        help="Backup directory used when --repair-missing-shared-strings is enabled.",
+    )
     args = parser.parse_args()
+
+    if args.repair_missing_shared_strings:
+        repaired, backup_path = repair_missing_shared_strings_part(
+            args.workbook,
+            backup_dir=args.repair_backup_dir,
+        )
+        if repaired:
+            print("REPAIR: added missing sharedStrings part")
+            if backup_path:
+                print(f"REPAIR_BACKUP: {backup_path}")
 
     result = validate_workbook_integrity(args.workbook)
     blocking_errors, allowed_errors = filter_integrity_errors(

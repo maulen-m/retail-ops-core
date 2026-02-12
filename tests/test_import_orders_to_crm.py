@@ -45,6 +45,7 @@ from scripts.import_orders_to_crm import (
     _excel_automation_preflight,
     _excel_open_probe,
     _verify_candidate_workbook,
+    _xlwings_append_timeout_sec,
     apply_fixed_values_backfill_openpyxl,
     append_orders_with_fallback,
     build_staging,
@@ -739,6 +740,44 @@ def test_append_orders_with_fallback_uses_openpyxl_when_xlwings_fails(monkeypatc
     assert calls["openpyxl"] == 1
 
 
+def test_append_orders_with_fallback_uses_openpyxl_when_xlwings_times_out(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("placeholder", encoding="utf-8")
+
+    def _timeout(*_args, **_kwargs):
+        raise TimeoutError("operation timed out after 1s")
+
+    def _fake_openpyxl(*_args, **_kwargs):
+        return (200, 201)
+
+    monkeypatch.setattr("scripts.import_orders_to_crm._run_with_posix_alarm_timeout", _timeout)
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_openpyxl", _fake_openpyxl)
+
+    result = append_orders_with_fallback(
+        out_wb=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        date_col_abs=2,
+        phone_col_abs=9,
+        start_col_abs=25,
+        end_col_abs=52,
+        stage_block=[["812000222"]],
+        phone_values=["+77770000001"],
+        set_date=date.today(),
+        slice_headers=["№ заказа"],
+        allow_openpyxl_fallback=True,
+        prefer_xlwings=True,
+        verbose=False,
+    )
+
+    assert result == (200, 201)
+
+
+def test_xlwings_append_timeout_sec_respects_env(monkeypatch):
+    monkeypatch.setenv("CRM_XLWINGS_APPEND_TIMEOUT_SEC", "75")
+    assert _xlwings_append_timeout_sec() == 75
+
+
 def test_excel_automation_preflight_fails_when_lock_file_exists(tmp_path):
     crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
     crm.write_text("placeholder", encoding="utf-8")
@@ -1367,6 +1406,14 @@ def test_restore_preserved_package_parts_readds_missing_pivot_parts(tmp_path):
         zf.writestr("[Content_Types].xml", "<types>original</types>")
         zf.writestr("xl/workbook.xml", "<workbook>original</workbook>")
         zf.writestr("xl/_rels/workbook.xml.rels", "<rels>original</rels>")
+        zf.writestr(
+            "xl/sharedStrings.xml",
+            (
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+                "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+                "count=\"1\" uniqueCount=\"1\"><si><t>original</t></si></sst>"
+            ),
+        )
         zf.writestr("xl/pivotTables/pivotTable1.xml", "<pivotTable>original</pivotTable>")
         zf.writestr("xl/pivotCache/pivotCacheDefinition2.xml", "<cacheDef>original</cacheDef>")
         zf.writestr("xl/pivotCache/_rels/pivotCacheDefinition2.xml.rels", "<cacheRel>original</cacheRel>")
@@ -1376,6 +1423,7 @@ def test_restore_preserved_package_parts_readds_missing_pivot_parts(tmp_path):
     preserved = _snapshot_preserved_package_parts(workbook_path)
     assert "xl/pivotCache/pivotCacheRecords2.xml" in preserved
     assert "xl/pivotTables/pivotTable1.xml" in preserved
+    assert "xl/sharedStrings.xml" in preserved
 
     with zipfile.ZipFile(workbook_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", "<types>mutated</types>")
@@ -1392,6 +1440,7 @@ def test_restore_preserved_package_parts_readds_missing_pivot_parts(tmp_path):
         assert zf.read("[Content_Types].xml") == b"<types>original</types>"
         assert zf.read("xl/workbook.xml") == b"<workbook>original</workbook>"
         assert zf.read("xl/_rels/workbook.xml.rels") == b"<rels>original</rels>"
+        assert b"<t>original</t>" in zf.read("xl/sharedStrings.xml")
         assert zf.read("xl/pivotTables/pivotTable1.xml") == b"<pivotTable>original</pivotTable>"
         assert zf.read("xl/pivotCache/pivotCacheDefinition2.xml") == b"<cacheDef>original</cacheDef>"
         assert (

@@ -12,7 +12,7 @@ Sources last updated (GMT+5):
 |Binance withdrawals         |2026-02-10 13:15:02|
 |Binance deposits            |                   |
 |Binance transfers           |2026-02-10 13:14:25|
-|Funding snapshots           |2026-02-11 16:28:53|
+|Funding snapshots           |2026-02-12 16:33:32|
 +----------------------------+-------------------+
 ```
 

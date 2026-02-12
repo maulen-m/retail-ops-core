@@ -7,10 +7,16 @@ import xml.etree.ElementTree as ET
 import openpyxl
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from scripts.validate_crm_workbook_integrity import filter_integrity_errors, validate_workbook_integrity
+from scripts.validate_crm_workbook_integrity import (
+    filter_integrity_errors,
+    repair_missing_shared_strings_part,
+    validate_workbook_integrity,
+)
 
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 
 
 def _make_workbook_with_table(path: Path) -> None:
@@ -48,6 +54,44 @@ def _inject_broken_defined_name(path: Path, name: str = "BROKEN_NAME") -> None:
             for item in zin.infolist():
                 if item.filename == "xl/workbook.xml":
                     zout.writestr(item, wb_modified)
+                else:
+                    zout.writestr(item, zin.read(item.filename))
+    tmp.replace(path)
+
+
+def _inject_missing_shared_strings_reference(path: Path) -> None:
+    with zipfile.ZipFile(path, "r") as zin:
+        wb_rels = ET.fromstring(zin.read("xl/_rels/workbook.xml.rels"))
+        rid = "rIdSharedStrings"
+        ET.SubElement(
+            wb_rels,
+            f"{{{PKG_REL_NS}}}Relationship",
+            {
+                "Id": rid,
+                "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings",
+                "Target": "sharedStrings.xml",
+            },
+        )
+        wb_rels_modified = ET.tostring(wb_rels, encoding="utf-8", xml_declaration=True)
+
+        ct_root = ET.fromstring(zin.read("[Content_Types].xml"))
+        ET.SubElement(
+            ct_root,
+            f"{{{CT_NS}}}Override",
+            {
+                "PartName": "/xl/sharedStrings.xml",
+                "ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml",
+            },
+        )
+        ct_modified = ET.tostring(ct_root, encoding="utf-8", xml_declaration=True)
+
+        tmp = path.with_name(f"{path.stem}_missing_ss_tmp.xlsx")
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == "xl/_rels/workbook.xml.rels":
+                    zout.writestr(item, wb_rels_modified)
+                elif item.filename == "[Content_Types].xml":
+                    zout.writestr(item, ct_modified)
                 else:
                     zout.writestr(item, zin.read(item.filename))
     tmp.replace(path)
@@ -109,6 +153,38 @@ def test_validate_workbook_integrity_treats_ref_named_ranges_as_errors(tmp_path:
 
     result = validate_workbook_integrity(wb_path)
     assert any("named range contains #REF!" in err for err in result.errors)
+
+
+def test_validate_workbook_integrity_detects_missing_shared_strings_part(tmp_path: Path):
+    wb_path = tmp_path / "missing_shared_strings.xlsx"
+    _make_workbook_with_table(wb_path)
+    _inject_missing_shared_strings_reference(wb_path)
+
+    result = validate_workbook_integrity(wb_path)
+    assert any("sharedStrings target missing" in err for err in result.errors)
+
+
+def test_repair_missing_shared_strings_part_adds_empty_part(tmp_path: Path):
+    wb_path = tmp_path / "repair_shared_strings.xlsx"
+    _make_workbook_with_table(wb_path)
+    _inject_missing_shared_strings_reference(wb_path)
+
+    repaired, backup = repair_missing_shared_strings_part(
+        wb_path,
+        backup_dir=tmp_path / "backups",
+    )
+
+    assert repaired is True
+    assert backup is not None and backup.exists()
+
+    with zipfile.ZipFile(wb_path, "r") as zf:
+        assert "xl/sharedStrings.xml" in set(zf.namelist())
+
+    wb = openpyxl.load_workbook(wb_path, read_only=True)
+    wb.close()
+
+    result = validate_workbook_integrity(wb_path)
+    assert not any("sharedStrings target missing" in err for err in result.errors)
 
 
 def test_filter_integrity_errors_allows_prefix():
