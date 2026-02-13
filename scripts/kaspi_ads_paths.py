@@ -70,7 +70,7 @@ def assert_ads_db_path_safe(
 
 
 def copy_ads_db_once(*, source_db: Path, dest_db: Path) -> dict[str, Any]:
-    """Copy source DB to destination only when destination does not already exist."""
+    """Copy source DB to destination only when destination is missing/empty."""
     src = source_db.expanduser().resolve()
     dst = dest_db.expanduser().resolve()
 
@@ -78,9 +78,15 @@ def copy_ads_db_once(*, source_db: Path, dest_db: Path) -> dict[str, Any]:
         return {"copied": False, "reason": "same_path", "source": str(src), "dest": str(dst)}
     if not src.exists():
         return {"copied": False, "reason": "source_missing", "source": str(src), "dest": str(dst)}
-    if dst.exists():
-        return {"copied": False, "reason": "dest_exists", "source": str(src), "dest": str(dst)}
+    dst_existed = dst.exists()
+    if dst_existed:
+        try:
+            if dst.stat().st_size > 0:
+                return {"copied": False, "reason": "dest_exists", "source": str(src), "dest": str(dst)}
+        except OSError:
+            return {"copied": False, "reason": "dest_exists", "source": str(src), "dest": str(dst)}
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
-    return {"copied": True, "reason": "copied", "source": str(src), "dest": str(dst)}
+    reason = "dest_empty_replaced" if dst_existed else "copied"
+    return {"copied": True, "reason": reason, "source": str(src), "dest": str(dst)}
