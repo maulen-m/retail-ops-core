@@ -1,0 +1,86 @@
+{
+  "captured_date": "2026-02-13",
+  "store_code": "UNIVERSAL",
+  "merchant_id": "761413",
+  "campaign_count": 10,
+  "enabled_campaigns": [
+    {
+      "campaign_id": "2566809",
+      "name": "Line52_bundle",
+      "state": "Enabled"
+    },
+    {
+      "campaign_id": "2572387",
+      "name": "Line52_bad_ratings",
+      "state": "Enabled"
+    },
+    {
+      "campaign_id": "2572822",
+      "name": "T_shirts",
+      "state": "Enabled"
+    },
+    {
+      "campaign_id": "2572825",
+      "name": "Kid_rombik",
+      "state": "Enabled"
+    }
+  ],
+  "all_campaigns": [
+    {
+      "campaign_id": "1361704",
+      "name": "CB51 nike 14.12.24",
+      "state": "Paused"
+    },
+    {
+      "campaign_id": "1404630",
+      "name": "Uni beli 3.1.25",
+      "state": "Paused"
+    },
+    {
+      "campaign_id": "1474586",
+      "name": "Esdy 24.1.25 uni",
+      "state": "Paused"
+    },
+    {
+      "campaign_id": "1474589",
+      "name": "TF 24.1.25",
+      "state": "Paused"
+    },
+    {
+      "campaign_id": "1517570",
+      "name": "CB51 Costyum 11.2.25 Uni",
+      "state": "Paused"
+    },
+    {
+      "campaign_id": "1520424",
+      "name": "WTF 12.2.25 uni",
+      "state": "Paused"
+    },
+    {
+      "campaign_id": "2566809",
+      "name": "Line52_bundle",
+      "state": "Enabled"
+    },
+    {
+      "campaign_id": "2572387",
+      "name": "Line52_bad_ratings",
+      "state": "Enabled"
+    },
+    {
+      "campaign_id": "2572822",
+      "name": "T_shirts",
+      "state": "Enabled"
+    },
+    {
+      "campaign_id": "2572825",
+      "name": "Kid_rombik",
+      "state": "Enabled"
+    }
+  ],
+  "findings": {
+    "line52_campaign_ids": [
+      "2566809",
+      "2572387"
+    ]
+  }
+}

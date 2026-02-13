@@ -11,7 +11,7 @@ import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 try:
@@ -35,7 +35,9 @@ ALMATY_TZ = ZoneInfo("Asia/Almaty")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_FILE = PROJECT_ROOT / "logs" / ".kaspi_ads_lock"
 DEFAULT_MERCHANT_ID = "759051"
+DEFAULT_MERCHANT_IDS = [DEFAULT_MERCHANT_ID]
 DEFAULT_PROFILE_DIR = "~/Library/Application Support/ChromePlaywrightProfile4"
+DEFAULT_CREDENTIAL_PROFILE = "default"
 
 CAMPAIGNS_URL = (
     "https://marketing.kaspi.kz/advertising/products/api/v5/merchant/{merchant_id}"
@@ -45,6 +47,127 @@ CAMPAIGN_PRODUCTS_URL = (
     "https://marketing.kaspi.kz/advertising/products/api/v5/merchant/{merchant_id}"
     "/campaign/{campaign_id}/products?StartDate={date}&EndDate={date}"
 )
+
+
+def _env_get(env: Mapping[str, str] | Any | None, key: str) -> str | None:
+    if env is None:
+        return os.environ.get(key)
+    if isinstance(env, Mapping):
+        value = env.get(key)
+        return None if value is None else str(value)
+    getter = getattr(env, "get", None)
+    if callable(getter):
+        value = getter(key)
+        return None if value is None else str(value)
+    return None
+
+
+def load_env_file(path: Path | None) -> dict[str, str]:
+    if path is None or not path.exists():
+        return {}
+    env_map: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key_txt = key.strip()
+        if not key_txt:
+            continue
+        env_map[key_txt] = value.strip()
+    return env_map
+
+
+def _split_csv(value: str | None) -> list[str]:
+    if value is None:
+        return []
+    out: list[str] = []
+    for part in str(value).split(","):
+        item = part.strip()
+        if item:
+            out.append(item)
+    return out
+
+
+def parse_merchant_ids(
+    *,
+    merchant_id_arg: str | None,
+    merchant_ids_arg: str | None,
+    env: Mapping[str, str] | Any | None = None,
+    default_ids: list[str] | None = None,
+) -> list[str]:
+    values: list[str]
+    if _split_csv(merchant_ids_arg):
+        values = _split_csv(merchant_ids_arg)
+    elif merchant_id_arg and str(merchant_id_arg).strip():
+        values = [str(merchant_id_arg).strip()]
+    else:
+        env_multi = _split_csv(_env_get(env, "KASPI_MARKETING_MERCHANT_IDS"))
+        if env_multi:
+            values = env_multi
+        else:
+            env_single = (_env_get(env, "KASPI_MARKETING_MERCHANT_ID") or "").strip()
+            if env_single:
+                values = [env_single]
+            else:
+                values = list(default_ids or DEFAULT_MERCHANT_IDS)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
+def resolve_marketing_credentials(
+    *,
+    credential_profile: str,
+    env: Mapping[str, str] | Any | None = None,
+) -> tuple[str, str]:
+    profile = (credential_profile or DEFAULT_CREDENTIAL_PROFILE).strip().lower()
+    if profile == "universal":
+        login_keys = [
+            "Kaspi_marketing_login_UNIVERSAL",
+            "KASPI_MARKETING_LOGIN_UNIVERSAL",
+            "Kaspi_marketing_login",
+            "KASPI_MARKETING_LOGIN",
+        ]
+        password_keys = [
+            "Kaspi_marketing_Password_UNIVERSAL",
+            "KASPI_MARKETING_PASSWORD_UNIVERSAL",
+            "Kaspi_marketing_Password",
+            "KASPI_MARKETING_PASSWORD",
+        ]
+    else:
+        login_keys = [
+            "Kaspi_marketing_login",
+            "KASPI_MARKETING_LOGIN",
+            "Kaspi_marketing_login_UNIVERSAL",
+            "KASPI_MARKETING_LOGIN_UNIVERSAL",
+        ]
+        password_keys = [
+            "Kaspi_marketing_Password",
+            "KASPI_MARKETING_PASSWORD",
+            "Kaspi_marketing_Password_UNIVERSAL",
+            "KASPI_MARKETING_PASSWORD_UNIVERSAL",
+        ]
+
+    login_value = ""
+    password_value = ""
+    for key in login_keys:
+        value = (_env_get(env, key) or "").strip()
+        if value:
+            login_value = value
+            break
+    for key in password_keys:
+        value = (_env_get(env, key) or "").strip()
+        if value:
+            password_value = value
+            break
+
+    return login_value, password_value
 
 
 def _num_int(value: Any) -> int:
@@ -586,8 +709,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-ads-db-copy", action="store_true")
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK_FILE)
     parser.add_argument("--lock-timeout", type=float, default=10.0)
-    parser.add_argument("--merchant-id", default=os.environ.get("KASPI_MARKETING_MERCHANT_ID", DEFAULT_MERCHANT_ID))
-    parser.add_argument("--profile-dir", default=os.environ.get("KASPI_MARKETING_PROFILE_DIR", DEFAULT_PROFILE_DIR))
+    parser.add_argument(
+        "--merchant-id",
+        default=None,
+        help="Single merchant ID target. Backward-compatible alias for --merchant-ids with one value.",
+    )
+    parser.add_argument(
+        "--merchant-ids",
+        default=None,
+        help="Comma-separated merchant IDs (e.g. 759051,761413).",
+    )
+    parser.add_argument("--profile-dir", default=None)
+    parser.add_argument("--env-file", type=Path, default=None, help="Optional .env file to source credentials from")
+    parser.add_argument(
+        "--credential-profile",
+        default=DEFAULT_CREDENTIAL_PROFILE,
+        choices=("default", "universal"),
+        help="Credential profile used for login resolution.",
+    )
     parser.add_argument("--date", default=datetime.now(ALMATY_TZ).date().isoformat())
     parser.add_argument("--snapshot-at", default=None, help="Override snapshot timestamp (ISO-8601)")
     parser.add_argument("--headful", action="store_true")
@@ -600,6 +739,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    env_from_file = load_env_file(args.env_file)
+    runtime_env: dict[str, str] = {**env_from_file, **dict(os.environ)}
+
     ads_db = resolve_ads_db_path(
         ads_db_arg=args.ads_db,
         default_path=DEFAULT_WORKTREE_ADS_DB_PATH,
@@ -620,6 +762,13 @@ def main() -> int:
         if args.snapshot_at
         else datetime.now(ALMATY_TZ)
     )
+    merchant_ids = parse_merchant_ids(
+        merchant_id_arg=args.merchant_id,
+        merchant_ids_arg=args.merchant_ids,
+        env=runtime_env,
+        default_ids=DEFAULT_MERCHANT_IDS,
+    )
+    profile_dir = args.profile_dir or runtime_env.get("KASPI_MARKETING_PROFILE_DIR") or DEFAULT_PROFILE_DIR
 
     try:
         with sqlite3.connect(ads_db) as conn:
@@ -635,12 +784,14 @@ def main() -> int:
             except ModuleNotFoundError:
                 from kaspi_marketing_scrape import build_kaspi_headers, ensure_login  # type: ignore
 
-            login_value = os.environ.get("Kaspi_marketing_login") or os.environ.get("KASPI_MARKETING_LOGIN")
-            password_value = os.environ.get("Kaspi_marketing_Password") or os.environ.get("KASPI_MARKETING_PASSWORD")
+            login_value, password_value = resolve_marketing_credentials(
+                credential_profile=args.credential_profile,
+                env=runtime_env,
+            )
 
             with sync_playwright() as p:
                 context = p.chromium.launch_persistent_context(
-                    user_data_dir=args.profile_dir,
+                    user_data_dir=profile_dir,
                     channel="chrome",
                     headless=not args.headful,
                 )
@@ -660,22 +811,42 @@ def main() -> int:
                         context.cookies(),
                         "https://marketing.kaspi.kz/advertising/campaigns",
                     )
-                    rows = _collect_live_rows(
-                        context=context,
-                        merchant_id=args.merchant_id,
-                        target_date=args.date,
-                        headers=headers,
-                        max_attempts=max(1, args.max_attempts),
-                        base_sleep_seconds=max(0.0, args.backoff_seconds),
-                    )
-                    summary = persist_hourly_snapshot(conn, snapshot_at=snapshot_at, rows=rows)
+                    all_rows: list[dict[str, Any]] = []
+                    merchant_summary: list[dict[str, Any]] = []
+                    for merchant_id in merchant_ids:
+                        rows = _collect_live_rows(
+                            context=context,
+                            merchant_id=merchant_id,
+                            target_date=args.date,
+                            headers=headers,
+                            max_attempts=max(1, args.max_attempts),
+                            base_sleep_seconds=max(0.0, args.backoff_seconds),
+                        )
+                        all_rows.extend(rows)
+                        merchant_summary.append(
+                            {
+                                "merchant_id": merchant_id,
+                                "rows_collected": len(rows),
+                                "campaign_ids_seen": sorted(
+                                    {
+                                        _str(row.get("campaign_id"))
+                                        for row in rows
+                                        if _str(row.get("campaign_id"))
+                                    }
+                                ),
+                            }
+                        )
+                    summary = persist_hourly_snapshot(conn, snapshot_at=snapshot_at, rows=all_rows)
                     print(
                         json.dumps(
                             {
                                 "status": "ok",
                                 "ads_db": str(ads_db),
                                 "snapshot_at": snapshot_at.isoformat(),
-                                "rows_collected": len(rows),
+                                "merchant_ids": merchant_ids,
+                                "credential_profile": args.credential_profile,
+                                "rows_collected": len(all_rows),
+                                "merchant_summary": merchant_summary,
                                 **summary,
                             },
                             ensure_ascii=False,

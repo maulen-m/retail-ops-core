@@ -1,0 +1,12 @@
+version: 1
+stores:
+  - store_code: ACMEWEAR
+    merchant_id: "759051"
+    credential_profile: default
+    profile_dir: "~/Library/Application Support/ChromePlaywrightProfile4"
+    enabled: true
+  - store_code: UNIVERSAL
+    merchant_id: "761413"
+    credential_profile: universal
+    profile_dir: "~/Library/Application Support/ChromePlaywrightProfile4_universal"
+    enabled: true
