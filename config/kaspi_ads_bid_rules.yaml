@@ -9,7 +9,7 @@ safety:
   require_env: ENABLE_KASPI_ADS_WRITE
 
 allowlist:
-  - campaign_id: "2380614"
+  - campaign_id: "2545773"
     sku_key: "19796919b"
 
 schedules:
@@ -25,7 +25,5 @@ schedules:
     multiplier: 1.0
 
 campaigns:
-  "2380614":
-    base_bid: 70
   "2545773":
     base_bid: 70
