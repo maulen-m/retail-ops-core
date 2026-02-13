@@ -30,6 +30,37 @@ python scripts/test_schema.py
 sqlite3 db/app.db "SELECT COUNT(*), MIN(order_date), MAX(order_date) FROM fact_sales;"
 ```
 
+### 1.1 Run strict daily preflight (fail closed)
+Use the wrapper so workbook-anchor validation is mandatory for operator runs.
+
+```bash
+python3 scripts/run_strict_daily_preflight.py \
+  --workbook "~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
+  --emit-lineage
+```
+
+Behavior:
+- Fails closed when workbook path is missing.
+- Runs `validate_params.py --strict`.
+- Optionally emits lineage JSON under `exports/lineage/`.
+
+### 1.2 Run on-delivery residual dry-run check
+Run this daily before any write-side cashflow reconciliation:
+
+```bash
+python3 scripts/check_on_delivery_residuals.py \
+  --since 2026-01-01 \
+  --until "$(date +%F)"
+```
+
+Optional alert mode:
+
+```bash
+python3 scripts/check_on_delivery_residuals.py \
+  --since 2026-01-01 \
+  --until "$(date +%F)" \
+  --send-alert
+```
 ### 2. Download Today's Inventory
 1. Export current stock from Kaspi seller dashboard
 2. Save as `excel/Current_stock_YYYY-MM-DD.xlsx`
