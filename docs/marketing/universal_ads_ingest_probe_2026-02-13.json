@@ -1,0 +1,38 @@
+{
+  "captured_at": "2026-02-13T23:09:36.683641",
+  "store_code": "UNIVERSAL",
+  "merchant_id": "761413",
+  "date": "2026-02-13",
+  "campaigns": [
+    {
+      "campaign_id": "2566809",
+      "campaign_name": "Line52_bundle",
+      "state": "Enabled",
+      "products_count": 11
+    },
+    {
+      "campaign_id": "2572387",
+      "campaign_name": "Line52_bad_ratings",
+      "state": "Enabled",
+      "products_count": 5
+    },
+    {
+      "campaign_id": "2572822",
+      "campaign_name": "T_shirts",
+      "state": "Enabled",
+      "products_count": 4
+    },
+    {
+      "campaign_id": "2572825",
+      "campaign_name": "Kid_rombik",
+      "state": "Enabled",
+      "products_count": 1
+    }
+  ],
+  "campaign_count": 4,
+  "total_products": 21,
+  "line52_campaign_ids": [
+    "2566809",
+    "2572387"
+  ]
+}

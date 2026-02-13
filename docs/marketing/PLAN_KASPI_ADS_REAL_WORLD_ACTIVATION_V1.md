@@ -43,19 +43,18 @@ Use the existing args of the hourly script:
 - python3 scripts/kaspi_ads_hourly_snapshot.py --help
 
 Recommended initial run (dry, safe):
-- python3 scripts/kaspi_ads_hourly_snapshot.py \
+- python3 scripts/kaspi_ads_hourly_pipeline.py \
     --ads-db db/kaspi_marketing_ads_wt.db \
-    --merchant-id 759051 \
-    --timezone Asia/Almaty \
-    --verbose
+    --stores-config config/kaspi_ads_hourly_stores.yaml \
+    --env-file ~/Docs/Autonomous_business/.env \
+    --tolerance-pct 5.0
 
 Then build the profile:
 - python3 scripts/kaspi_ads_build_hourly_profile.py \
-    --ads-db db/kaspi_marketing_ads_wt.db \
-    --verbose
+    --ads-db db/kaspi_marketing_ads_wt.db
 
 ### Turn on hourly schedule (still no writes)
-Use config/com.example.kaspi-marketing-hourly.plist (already points to WT + logs).
+Use config/com.example.kaspi-marketing-hourly.plist (points to WT + logs + stores config + env file).
 Enable it in *user space* only after the manual run works and logs look clean.
 
 ### Acceptance for telemetry

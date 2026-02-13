@@ -7,8 +7,11 @@ from pathlib import Path
 from scripts.kaspi_ads_hourly_snapshot import (
     acquire_file_lock,
     ensure_schema,
+    load_env_file,
+    parse_merchant_ids,
     persist_hourly_snapshot,
     release_file_lock,
+    resolve_marketing_credentials,
     request_json_with_backoff,
 )
 
@@ -128,3 +131,49 @@ def test_request_json_with_backoff_retries_on_429() -> None:
     assert data == {"data": [1, 2, 3]}
     assert req.calls == 2
     assert sleeps == [0.25]
+
+
+def test_parse_merchant_ids_precedence_and_dedupe() -> None:
+    env = {
+        "KASPI_MARKETING_MERCHANT_IDS": "111,222,111",
+        "KASPI_MARKETING_MERCHANT_ID": "333",
+    }
+    assert parse_merchant_ids(merchant_id_arg="444", merchant_ids_arg=None, env=env) == ["444"]
+    assert parse_merchant_ids(merchant_id_arg=None, merchant_ids_arg="555,666,555", env=env) == ["555", "666"]
+    assert parse_merchant_ids(merchant_id_arg=None, merchant_ids_arg=None, env=env) == ["111", "222"]
+
+
+def test_resolve_marketing_credentials_by_profile() -> None:
+    env = {
+        "Kaspi_marketing_login": "acmewear_login",
+        "Kaspi_marketing_Password": "acmewear_password",
+        "Kaspi_marketing_login_UNIVERSAL": "universal_login",
+        "Kaspi_marketing_Password_UNIVERSAL": "universal_password",
+    }
+
+    login, password = resolve_marketing_credentials(credential_profile="default", env=env)
+    assert login == "acmewear_login"
+    assert password == "acmewear_password"
+
+    login_u, password_u = resolve_marketing_credentials(credential_profile="universal", env=env)
+    assert login_u == "universal_login"
+    assert password_u == "universal_password"
+
+
+def test_load_env_file_skips_invalid_lines(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "# comment",
+                "Kaspi_marketing_login=test_login",
+                "invalid_line_without_equals",
+                "Kaspi_marketing_Password=test_password",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_env_file(env_path)
+    assert loaded["Kaspi_marketing_login"] == "test_login"
+    assert loaded["Kaspi_marketing_Password"] == "test_password"
+    assert "invalid_line_without_equals" not in loaded
