@@ -1,8 +1,8 @@
 # Business Insides Snapshot
 
-- Generated at: `2026-02-13 21:47:29`
+- Generated at: `2026-02-14 01:36:32`
 - As of date: `2026-02-13`
-- Paid-capital snapshot date: `2026-02-09`
+- Paid-capital snapshot date: `2026-02-13`
 - Bank snapshot date: `2026-02-13`
 
 ## Capital Snapshot (KZT)
@@ -12,12 +12,12 @@
 | Metric                            | Value KZT     |
 +-----------------------------------+---------------+
 | Cash (actual, bank_accounts.yaml) | 2,003,917.38  |
-| Inventory on-hand paid            | 6,407,856.00  |
+| Inventory on-hand paid            | 6,132,048.00  |
 | Inventory inbound paid            | 12,145,974.20 |
 | Inventory on-delivery paid        | 416,175.00    |
-| Total capital (paid truth)        | 20,973,922.58 |
+| Total capital (paid truth)        | 20,698,114.58 |
 | Inbound unpaid obligations        | 19,228,238.50 |
-| Capital + unpaid inbound          | 40,202,161.08 |
+| Capital + unpaid inbound          | 39,926,353.08 |
 +-----------------------------------+---------------+
 ```
 

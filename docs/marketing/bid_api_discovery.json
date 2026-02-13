@@ -1,32 +1,247 @@
 {
-  "captured_at": "2026-02-13T21:54:08.636133+05:00",
+  "captured_at": "2026-02-14T01:43:20.665992+05:00",
   "merchant_id": "759051",
   "campaign_id": "2545773",
-  "candidates_found": 1,
+  "candidates_found": 8,
+  "bid_candidate_found": true,
   "candidates": [
     {
-      "captured_at": "2026-02-13T21:54:08.636133+05:00",
-      "method": "PATCH",
-      "url": "https://marketing.kaspi.kz/advertising/products/api/v5/merchant/759051/campaign/2545773/products/bid",
-      "path": "/advertising/products/api/v5/merchant/759051/campaign/2545773/products/bid",
+      "captured_at": "2026-02-14T01:41:40.091341+05:00",
+      "method": "POST",
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v3/merchant/759051/overview/daily/views",
+      "path": "/advertising/products/api/v3/merchant/759051/overview/daily/views",
       "query": "",
       "headers": {
-        "content-type": "application/json",
-        "x-xsrf-token": "<redacted>",
-        "cookie": "<redacted>"
+        "sec-ch-ua-platform": "\"macOS\"",
+        "referer": "https://marketing.kaspi.kz/advertising/overview",
+        "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+        "sec-ch-ua-mobile": "?0",
+        "baggage": "sentry-environment=production,sentry-release=marketing%405.0.460,sentry-public_key=070d1bc4c3034c678a57cf32feafbf47,sentry-trace_id=91a68d4b2fcd440fb8f7a6bac27400e5,sentry-sample_rate=0.2,sentry-sampled=false",
+        "sentry-trace": "91a68d4b2fcd440fb8f7a6bac27400e5-b256ef01340a3a1f-0",
+        "x-front-version": "5.0.460",
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json"
       },
       "post_json": {
-        "campaignId": "2545773",
-        "sku": "19796919b",
-        "bid": 70
+        "startDate": "2026-02-08",
+        "endDate": "2026-02-14",
+        "categoriesDictionary": null
       },
       "post_data": null,
+      "is_marketing_write_request": true,
+      "is_bid_write_candidate": false
+    },
+    {
+      "captured_at": "2026-02-14T01:41:40.091824+05:00",
+      "method": "POST",
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v4/merchant/759051/Overview",
+      "path": "/advertising/products/api/v4/merchant/759051/Overview",
+      "query": "",
+      "headers": {
+        "sec-ch-ua-platform": "\"macOS\"",
+        "referer": "https://marketing.kaspi.kz/advertising/overview",
+        "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+        "sec-ch-ua-mobile": "?0",
+        "baggage": "sentry-environment=production,sentry-release=marketing%405.0.460,sentry-public_key=070d1bc4c3034c678a57cf32feafbf47,sentry-trace_id=91a68d4b2fcd440fb8f7a6bac27400e5,sentry-sample_rate=0.2,sentry-sampled=false",
+        "sentry-trace": "91a68d4b2fcd440fb8f7a6bac27400e5-b7553b614bcb1ec3-0",
+        "x-front-version": "5.0.460",
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json"
+      },
+      "post_json": {
+        "startDate": "2026-02-08",
+        "endDate": "2026-02-14"
+      },
+      "post_data": null,
+      "is_marketing_write_request": true,
+      "is_bid_write_candidate": false
+    },
+    {
+      "captured_at": "2026-02-14T01:41:44.195498+05:00",
+      "method": "POST",
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v3/merchant/759051/overview/daily/2545773/views",
+      "path": "/advertising/products/api/v3/merchant/759051/overview/daily/2545773/views",
+      "query": "",
+      "headers": {
+        "sec-ch-ua-platform": "\"macOS\"",
+        "referer": "https://marketing.kaspi.kz/advertising/campaigns/2545773",
+        "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+        "sec-ch-ua-mobile": "?0",
+        "baggage": "sentry-environment=production,sentry-release=marketing%405.0.460,sentry-public_key=070d1bc4c3034c678a57cf32feafbf47,sentry-trace_id=9f2fa465de30452088749cbc8a4f70f4,sentry-sample_rate=0.2,sentry-sampled=false",
+        "sentry-trace": "9f2fa465de30452088749cbc8a4f70f4-980d56ee7a2a3f23-0",
+        "x-front-version": "5.0.460",
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json"
+      },
+      "post_json": {
+        "startDate": "2026-02-08",
+        "endDate": "2026-02-14",
+        "categoriesDictionary": null
+      },
+      "post_data": null,
+      "is_marketing_write_request": true,
+      "is_bid_write_candidate": false
+    },
+    {
+      "captured_at": "2026-02-14T01:41:44.196077+05:00",
+      "method": "POST",
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v4/merchant/759051/Overview/2545773",
+      "path": "/advertising/products/api/v4/merchant/759051/Overview/2545773",
+      "query": "",
+      "headers": {
+        "sec-ch-ua-platform": "\"macOS\"",
+        "referer": "https://marketing.kaspi.kz/advertising/campaigns/2545773",
+        "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+        "sec-ch-ua-mobile": "?0",
+        "baggage": "sentry-environment=production,sentry-release=marketing%405.0.460,sentry-public_key=070d1bc4c3034c678a57cf32feafbf47,sentry-trace_id=9f2fa465de30452088749cbc8a4f70f4,sentry-sample_rate=0.2,sentry-sampled=false",
+        "sentry-trace": "9f2fa465de30452088749cbc8a4f70f4-8ba885f0e7f86864-0",
+        "x-front-version": "5.0.460",
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json"
+      },
+      "post_json": {
+        "startDate": "2026-02-08",
+        "endDate": "2026-02-14"
+      },
+      "post_data": null,
+      "is_marketing_write_request": true,
+      "is_bid_write_candidate": false
+    },
+    {
+      "captured_at": "2026-02-14T01:41:44.279894+05:00",
+      "method": "POST",
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v3/merchant/759051/Categories/average-bid",
+      "path": "/advertising/products/api/v3/merchant/759051/Categories/average-bid",
+      "query": "",
+      "headers": {
+        "sec-ch-ua-platform": "\"macOS\"",
+        "referer": "https://marketing.kaspi.kz/advertising/campaigns/2545773",
+        "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+        "sec-ch-ua-mobile": "?0",
+        "baggage": "sentry-environment=production,sentry-release=marketing%405.0.460,sentry-public_key=070d1bc4c3034c678a57cf32feafbf47,sentry-trace_id=9f2fa465de30452088749cbc8a4f70f4,sentry-sample_rate=0.2,sentry-sampled=false",
+        "sentry-trace": "9f2fa465de30452088749cbc8a4f70f4-8985f8d3b8a610f5-0",
+        "x-front-version": "5.0.460",
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json"
+      },
+      "post_json": {
+        "levelsAndCategories": {
+          "3": [
+            1215
+          ]
+        }
+      },
+      "post_data": null,
+      "is_marketing_write_request": true,
+      "is_bid_write_candidate": true
+    },
+    {
+      "captured_at": "2026-02-14T01:43:13.868265+05:00",
+      "method": "PUT",
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v1/merchant/759051/campaign/2545773/products/update-bid",
+      "path": "/advertising/products/api/v1/merchant/759051/campaign/2545773/products/update-bid",
+      "query": "",
+      "headers": {
+        "sec-ch-ua-platform": "\"macOS\"",
+        "referer": "https://marketing.kaspi.kz/advertising/campaigns/2545773",
+        "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+        "sec-ch-ua-mobile": "?0",
+        "baggage": "sentry-environment=production,sentry-release=marketing%405.0.460,sentry-public_key=070d1bc4c3034c678a57cf32feafbf47,sentry-trace_id=9f2fa465de30452088749cbc8a4f70f4,sentry-sample_rate=0.2,sentry-sampled=false",
+        "sentry-trace": "9f2fa465de30452088749cbc8a4f70f4-89b28838e6598bf1-0",
+        "x-front-version": "5.0.460",
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json"
+      },
+      "post_json": {
+        "skuList": [
+          "19796919b"
+        ],
+        "bid": "20"
+      },
+      "post_data": null,
+      "is_marketing_write_request": true,
+      "is_bid_write_candidate": true
+    },
+    {
+      "captured_at": "2026-02-14T01:43:13.878472+05:00",
+      "method": "PUT",
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v3/merchant/759051/Campaign/update",
+      "path": "/advertising/products/api/v3/merchant/759051/Campaign/update",
+      "query": "",
+      "headers": {
+        "sec-ch-ua-platform": "\"macOS\"",
+        "referer": "https://marketing.kaspi.kz/advertising/campaigns/2545773",
+        "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+        "sec-ch-ua-mobile": "?0",
+        "baggage": "sentry-environment=production,sentry-release=marketing%405.0.460,sentry-public_key=070d1bc4c3034c678a57cf32feafbf47,sentry-trace_id=9f2fa465de30452088749cbc8a4f70f4,sentry-sample_rate=0.2,sentry-sampled=false",
+        "sentry-trace": "9f2fa465de30452088749cbc8a4f70f4-89b28838e6598bf1-0",
+        "x-front-version": "5.0.460",
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*",
+        "content-type": "multipart/form-data; boundary=----WebKitFormBoundaryo0V1HYEBJwR3jNQM"
+      },
+      "post_json": null,
+      "post_data": "------WebKitFormBoundaryo0V1HYEBJwR3jNQM\r\nContent-Disposition: form-data; name=\"Id\"\r\n\r\n2545773\r\n------WebKitFormBoundaryo0V1HYEBJwR3jNQM\r\nContent-Disposition: form-data; name=\"Name\"\r\n\r\nACMEWEAR_LINE61\r\n------WebKitFormBoundaryo0V1HYEBJwR3jNQM\r\nContent-Disposition: form-data; name=\"State\"\r\n\r\nEnabled\r\n------WebKitFormBoundaryo0V1HYEBJwR3jNQM\r\nContent-Disposition: form-data; name=\"DailyBudget\"\r\n\r\n40000\r\n------WebKitFormBoundaryo0V1HYEBJwR3jNQM\r\nContent-Disposition: form-data; name=\"StartDate\"\r\n\r\n2026-02-03\r\n------WebKitFormBoundaryo0V1HYEBJwR3jNQM\r\nContent-Disposition: form-data; name=\"DefaultBid\"\r\n\r\n0\r\n------WebKitFormBoundaryo0V1HYEBJwR3jNQM--\r\n",
+      "is_marketing_write_request": true,
+      "is_bid_write_candidate": true
+    },
+    {
+      "captured_at": "2026-02-14T01:43:13.882324+05:00",
+      "method": "PUT",
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v1/merchant/759051/campaign/2545773/products/update-bid",
+      "path": "/advertising/products/api/v1/merchant/759051/campaign/2545773/products/update-bid",
+      "query": "",
+      "headers": {
+        "sec-ch-ua-platform": "\"macOS\"",
+        "referer": "https://marketing.kaspi.kz/advertising/campaigns/2545773",
+        "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+        "sec-ch-ua-mobile": "?0",
+        "baggage": "sentry-environment=production,sentry-release=marketing%405.0.460,sentry-public_key=070d1bc4c3034c678a57cf32feafbf47,sentry-trace_id=9f2fa465de30452088749cbc8a4f70f4,sentry-sample_rate=0.2,sentry-sampled=false",
+        "sentry-trace": "9f2fa465de30452088749cbc8a4f70f4-89b28838e6598bf1-0",
+        "x-front-version": "5.0.460",
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json"
+      },
+      "post_json": {
+        "skuList": [
+          "19796919b"
+        ],
+        "bid": "30"
+      },
+      "post_data": null,
+      "is_marketing_write_request": true,
       "is_bid_write_candidate": true
     }
   ],
   "notes": [
-    "Discovery session executed in worktree on 2026-02-13.",
-    "No raw auth/cookie material is stored; sensitive headers are redacted.",
-    "Candidate payload is kept as sanitized shape for live-write/rollback request construction."
-  ]
+    "Headers are sanitized; sensitive auth/cookie tokens are redacted.",
+    "Use this file as shape reference only; do not hardcode transient headers."
+  ],
+  "method": "PUT",
+  "url": "https://marketing.kaspi.kz/advertising/products/api/v1/merchant/759051/campaign/2545773/products/update-bid",
+  "path": "/advertising/products/api/v1/merchant/759051/campaign/2545773/products/update-bid",
+  "query": "",
+  "post_json": {
+    "skuList": [
+      "19796919b"
+    ],
+    "bid": "20"
+  },
+  "selected_candidate_score": 240,
+  "selected_candidate_reason": "highest confidence bid-write candidate ranking"
 }

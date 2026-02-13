@@ -13,7 +13,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
@@ -64,6 +64,46 @@ def _parse_post_json(post_data: str | None) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _strip_wrapped_quotes(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    return text
+
+
+def _read_dotenv_value(path: Path, key: str) -> str:
+    if not path.exists():
+        return ""
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        if raw.startswith("export "):
+            raw = raw[7:].strip()
+        if "=" not in raw:
+            continue
+        k, v = raw.split("=", 1)
+        if k.strip() != key:
+            continue
+        return _strip_wrapped_quotes(v)
+    return ""
+
+
+def _resolve_credentials(env_file: Path) -> tuple[str, str]:
+    login_value = os.environ.get("Kaspi_marketing_login") or os.environ.get("KASPI_MARKETING_LOGIN") or ""
+    password_value = os.environ.get("Kaspi_marketing_Password") or os.environ.get("KASPI_MARKETING_PASSWORD") or ""
+    if login_value and password_value:
+        return login_value, password_value
+
+    for login_key in ("Kaspi_marketing_login", "KASPI_MARKETING_LOGIN"):
+        if not login_value:
+            login_value = _read_dotenv_value(env_file, login_key)
+    for password_key in ("Kaspi_marketing_Password", "KASPI_MARKETING_PASSWORD"):
+        if not password_value:
+            password_value = _read_dotenv_value(env_file, password_key)
+    return login_value, password_value
+
+
 def build_candidate_record(
     *,
     method: str,
@@ -80,6 +120,7 @@ def build_candidate_record(
         return None
 
     text_probe = f"{url}\n{post_data or ''}"
+    is_marketing_write = "/advertising/products/api/" in (parsed.path or "")
     is_bid_candidate = _is_bid_signal(text_probe)
 
     record = {
@@ -91,12 +132,13 @@ def build_candidate_record(
         "headers": sanitize_headers(headers),
         "post_json": _parse_post_json(post_data),
         "post_data": None,
+        "is_marketing_write_request": bool(is_marketing_write),
         "is_bid_write_candidate": bool(is_bid_candidate),
     }
     if record["post_json"] is None and post_data:
         record["post_data"] = post_data[:5000]
 
-    return record if is_bid_candidate else None
+    return record if (is_bid_candidate or is_marketing_write) else None
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,19 +147,68 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile-dir", default=os.environ.get("KASPI_MARKETING_PROFILE_DIR", DEFAULT_PROFILE_DIR))
     parser.add_argument("--merchant-id", default=os.environ.get("KASPI_MARKETING_MERCHANT_ID", DEFAULT_MERCHANT_ID))
     parser.add_argument("--campaign-id", default="")
+    parser.add_argument("--start-date", default="")
+    parser.add_argument("--end-date", default="")
+    parser.add_argument("--target-url", default="")
     parser.add_argument("--manual-login", action="store_true")
+    parser.add_argument("--env-file", type=Path, default=PROJECT_ROOT / ".env")
     parser.add_argument("--login-timeout", type=float, default=300.0)
     parser.add_argument("--max-candidates", type=int, default=50)
     return parser.parse_args()
 
 
-def _campaign_url(merchant_id: str, campaign_id: str) -> str:
+def _campaign_url(
+    merchant_id: str,
+    campaign_id: str,
+    *,
+    start_date: str = "",
+    end_date: str = "",
+    target_url: str = "",
+) -> str:
+    if target_url:
+        return target_url
     if campaign_id:
-        return (
-            "https://marketing.kaspi.kz/advertising/campaigns"
-            f"?merchantId={merchant_id}&campaignId={campaign_id}&tab=campaigns"
-        )
+        base = f"https://marketing.kaspi.kz/advertising/campaigns/{campaign_id}"
+        params: dict[str, str] = {}
+        if start_date:
+            params["startDate"] = start_date
+        if end_date:
+            params["endDate"] = end_date
+        if params:
+            return f"{base}?{urlencode(params)}"
+        return base
     return "https://marketing.kaspi.kz/advertising/campaigns?tab=campaigns"
+
+
+def _candidate_score(candidate: Mapping[str, Any]) -> int:
+    score = 0
+    path = str(candidate.get("path", "") or "").lower()
+    method = str(candidate.get("method", "") or "").upper()
+    post_json = candidate.get("post_json")
+
+    if method in {"PUT", "PATCH"}:
+        score += 30
+    if "update-bid" in path:
+        score += 100
+    if "/campaign/" in path and "/products/" in path:
+        score += 20
+    if "average-bid" in path:
+        score -= 60
+    if isinstance(post_json, dict):
+        if "skuList" in post_json and "bid" in post_json:
+            score += 80
+        elif "bid" in post_json:
+            score += 20
+    if bool(candidate.get("is_bid_write_candidate")):
+        score += 10
+    return score
+
+
+def _pick_preferred_candidate(captured: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not captured:
+        return None
+    ranked = sorted(captured, key=_candidate_score, reverse=True)
+    return ranked[0]
 
 
 def main() -> int:
@@ -134,8 +225,7 @@ def main() -> int:
     except ModuleNotFoundError:
         from kaspi_marketing_scrape import ensure_login  # type: ignore
 
-    login_value = os.environ.get("Kaspi_marketing_login") or os.environ.get("KASPI_MARKETING_LOGIN")
-    password_value = os.environ.get("Kaspi_marketing_Password") or os.environ.get("KASPI_MARKETING_PASSWORD")
+    login_value, password_value = _resolve_credentials(args.env_file)
 
     captured: list[dict[str, Any]] = []
 
@@ -167,34 +257,69 @@ def main() -> int:
                 manual_login=args.manual_login,
                 login_timeout=args.login_timeout,
             ):
-                print(json.dumps({"status": "login_failed"}, ensure_ascii=False))
-                return 1
+                print("Auto-login failed. Fallback: complete login manually in opened browser, then press Enter.")
+                page.goto("https://marketing.kaspi.kz/sign-in", wait_until="domcontentloaded")
+                input()
+                if not ensure_login(
+                    page,
+                    login_value or "",
+                    password_value or "",
+                    manual_login=True,
+                    login_timeout=args.login_timeout,
+                ):
+                    print(json.dumps({"status": "login_failed"}, ensure_ascii=False))
+                    return 1
 
-            target_url = _campaign_url(args.merchant_id, args.campaign_id)
+            target_url = _campaign_url(
+                args.merchant_id,
+                args.campaign_id,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                target_url=args.target_url,
+            )
             page.goto(target_url, wait_until="domcontentloaded")
             page.wait_for_timeout(2000)
 
             print("Manual step required:")
-            print("1) In the opened browser, change one bid value and save.")
+            print(f"1) In the opened browser ({target_url}), change one bid value and save.")
             print("2) Return here and press Enter to finish capture.")
             input()
             page.wait_for_timeout(1500)
         finally:
             context.close()
 
+    selected = _pick_preferred_candidate(captured)
+
     payload = {
         "captured_at": datetime.now(ALMATY_TZ).isoformat(),
         "merchant_id": str(args.merchant_id),
         "campaign_id": str(args.campaign_id or ""),
         "candidates_found": len(captured),
+        "bid_candidate_found": bool(any(bool(c.get("is_bid_write_candidate")) for c in captured)),
         "candidates": captured,
         "notes": [
             "Headers are sanitized; sensitive auth/cookie tokens are redacted.",
             "Use this file as shape reference only; do not hardcode transient headers.",
         ],
     }
+    if selected is not None:
+        payload["method"] = selected.get("method")
+        payload["url"] = selected.get("url")
+        payload["path"] = selected.get("path")
+        payload["query"] = selected.get("query")
+        payload["post_json"] = selected.get("post_json")
+
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"status": "ok", "output": str(args.output), "candidates_found": len(captured)}))
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "output": str(args.output),
+                "candidates_found": len(captured),
+                "bid_candidate_found": payload["bid_candidate_found"],
+            }
+        )
+    )
     return 0
 
 
