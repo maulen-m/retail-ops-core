@@ -1,0 +1,30 @@
+version: 1
+default_effective_cost_multiplier: 1.0
+
+notes: |
+  N2 Profit Realism Calibration policy.
+  effective_cost = raw_cost * campaign_multiplier * discount_multiplier
+  Keep this read-only policy for analytics; no bid writes are performed.
+
+# Optional broad multipliers by campaign.
+# Use this only when cost accounting requires campaign-level normalization.
+campaign_multipliers:
+  "2380614":
+    multiplier: 1.0
+    reason: "Acmewear_16k baseline"
+  "2545773":
+    multiplier: 1.0
+    reason: "ACMEWEAR_LINE61 baseline"
+
+rules:
+  - id: "LINE61_30_DISCOUNT"
+    enabled: true
+    priority: 100
+    start_date: "2025-01-01"
+    end_date: "2026-12-31"
+    multiplier: 0.7
+    reason: "30% promo-adjusted effective spend for LINE61 realism calibration"
+    match:
+      campaign_ids: ["2545773"]
+      # sku_key_regex can be added if/when naming is stabilized in ads payload.
+      # sku_key_regex: "(?i)suit[-_]?61"
