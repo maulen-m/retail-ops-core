@@ -17,16 +17,37 @@ python scripts/test_schema.py
 sqlite3 db/app.db "SELECT COUNT(*), MIN(order_date), MAX(order_date) FROM fact_sales;"
 ```
 
-### 1.1 Run strict gate with workbook anchor enabled
-Set `AB_CRM_WORKBOOK_PATH` to the current CRM shipping journal so strict validation enforces
-the anti-inflation workbook ceiling on recent published sales truth.
+### 1.1 Run strict daily preflight (fail closed)
+Use the wrapper so workbook-anchor validation is mandatory for operator runs.
 
 ```bash
-export AB_CRM_WORKBOOK_PATH="~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx"
-python3 scripts/validate_params.py --strict
+python3 scripts/run_strict_daily_preflight.py \
+  --workbook "~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
+  --emit-lineage
 ```
 
-If the workbook path is not set, `sales_workbook_anchor` is skipped by design.
+Behavior:
+- Fails closed when workbook path is missing.
+- Runs `validate_params.py --strict`.
+- Optionally emits lineage JSON under `exports/lineage/`.
+
+### 1.2 Run on-delivery residual dry-run check
+Run this daily before any write-side cashflow reconciliation:
+
+```bash
+python3 scripts/check_on_delivery_residuals.py \
+  --since 2026-01-01 \
+  --until "$(date +%F)"
+```
+
+Optional alert mode:
+
+```bash
+python3 scripts/check_on_delivery_residuals.py \
+  --since 2026-01-01 \
+  --until "$(date +%F)" \
+  --send-alert
+```
 
 ### 2. Download Today's Inventory
 1. Export current stock from Kaspi seller dashboard
