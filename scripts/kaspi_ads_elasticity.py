@@ -43,6 +43,7 @@ def _load_ads_rows(
     *,
     since: str | None,
     until: str | None,
+    campaign_ids: list[str] | None,
 ) -> pd.DataFrame:
     if not _table_exists(conn, "campaign_product_daily_current"):
         return pd.DataFrame()
@@ -55,6 +56,12 @@ def _load_ads_rows(
     if until:
         where.append("date(date) <= date(?)")
         params.append(until)
+    if campaign_ids:
+        unique_ids = sorted({str(cid).strip() for cid in campaign_ids if str(cid).strip()})
+        if unique_ids:
+            placeholders = ",".join("?" for _ in unique_ids)
+            where.append(f"campaign_id IN ({placeholders})")
+            params.extend(unique_ids)
 
     query = f"""
         SELECT
@@ -247,9 +254,10 @@ def analyze_elasticity(
     until: str | None,
     min_days: int,
     default_margin_pct: float,
+    campaign_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     with sqlite3.connect(ads_db) as conn:
-        ads_df = _load_ads_rows(conn, since=since, until=until)
+        ads_df = _load_ads_rows(conn, since=since, until=until, campaign_ids=campaign_ids)
 
     margin_df = _load_margin_map(app_db, since=since, until=until)
     level_df = _build_level_frame(ads_df, margin_df, default_margin_pct=float(default_margin_pct))
@@ -272,6 +280,7 @@ def analyze_elasticity(
         "app_db": str(app_db),
         "since": since,
         "until": until,
+        "campaign_ids": sorted({str(cid).strip() for cid in (campaign_ids or []) if str(cid).strip()}),
         "level_rows": int(len(level_df)),
         "transition_rows": int(len(transition_df)),
         "recommendation_rows": int(len(recommendation_df)),
@@ -294,6 +303,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--since", default=None)
     parser.add_argument("--until", default=None)
+    parser.add_argument(
+        "--campaign-ids",
+        default=None,
+        help="Comma-separated campaign IDs filter (e.g. 2545773,2488450).",
+    )
     parser.add_argument("--min-days", type=int, default=3)
     parser.add_argument("--default-margin-pct", type=float, default=0.25)
     return parser.parse_args()
@@ -304,6 +318,10 @@ def main() -> int:
     ads_db = resolve_ads_db_path(ads_db_arg=args.ads_db, default_path=DEFAULT_WORKTREE_ADS_DB_PATH)
     assert_ads_db_path_safe(ads_db_path=ads_db)
 
+    campaign_ids = None
+    if args.campaign_ids:
+        campaign_ids = [part.strip() for part in str(args.campaign_ids).split(",") if part.strip()]
+
     summary = analyze_elasticity(
         ads_db=ads_db,
         app_db=args.app_db,
@@ -312,6 +330,7 @@ def main() -> int:
         until=args.until,
         min_days=args.min_days,
         default_margin_pct=args.default_margin_pct,
+        campaign_ids=campaign_ids,
     )
     print(json.dumps(summary, ensure_ascii=False))
     return 0

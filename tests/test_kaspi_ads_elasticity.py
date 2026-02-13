@@ -39,6 +39,39 @@ def _seed_ads_db(path: Path) -> None:
         )
 
 
+def _seed_ads_db_two_campaigns(path: Path) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE campaign_product_daily_current (
+                date TEXT,
+                merchant_id TEXT,
+                campaign_id TEXT,
+                sku_key TEXT,
+                bid_cpc REAL,
+                clicks INTEGER,
+                orders_total INTEGER,
+                gmv REAL,
+                cost REAL,
+                PRIMARY KEY (date, merchant_id, campaign_id, sku_key)
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO campaign_product_daily_current
+            (date, merchant_id, campaign_id, sku_key, bid_cpc, clicks, orders_total, gmv, cost)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("2026-02-08", "759051", "2380614", "SKU-A", 30.0, 100, 10, 10000.0, 1000.0),
+                ("2026-02-09", "759051", "2380614", "SKU-A", 60.0, 150, 12, 12000.0, 2500.0),
+                ("2026-02-08", "759051", "2545773", "SKU-B", 40.0, 80, 8, 9000.0, 900.0),
+                ("2026-02-09", "759051", "2545773", "SKU-B", 70.0, 95, 9, 10200.0, 1800.0),
+            ],
+        )
+
+
 def _seed_app_db(path: Path) -> None:
     with sqlite3.connect(path) as conn:
         conn.execute(
@@ -115,3 +148,26 @@ def test_analyze_elasticity_falls_back_to_default_margin(tmp_path: Path) -> None
     assert result["level_rows"] == 2
     assert result["economics_rows"] == 0
     assert result["recommendation_rows"] == 1
+
+
+def test_analyze_elasticity_filters_campaign_ids(tmp_path: Path) -> None:
+    ads_db = tmp_path / "ads.db"
+    app_db = tmp_path / "app.db"
+    out_dir = tmp_path / "out"
+    _seed_ads_db_two_campaigns(ads_db)
+    _seed_app_db(app_db)
+
+    result = analyze_elasticity(
+        ads_db=ads_db,
+        app_db=app_db,
+        out_dir=out_dir,
+        since="2026-02-01",
+        until="2026-02-10",
+        min_days=1,
+        default_margin_pct=0.25,
+        campaign_ids=["2545773"],
+    )
+
+    assert result["recommendation_rows"] == 1
+    rec = result["recommendations"][0]
+    assert rec["campaign_id"] == "2545773"
