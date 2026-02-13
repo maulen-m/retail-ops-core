@@ -1,11 +1,32 @@
 {
-  "captured_at": "",
+  "captured_at": "2026-02-13T21:54:08.636133+05:00",
   "merchant_id": "759051",
-  "campaign_id": "",
-  "candidates_found": 0,
-  "candidates": [],
+  "campaign_id": "2545773",
+  "candidates_found": 1,
+  "candidates": [
+    {
+      "captured_at": "2026-02-13T21:54:08.636133+05:00",
+      "method": "PATCH",
+      "url": "https://marketing.kaspi.kz/advertising/products/api/v5/merchant/759051/campaign/2545773/products/bid",
+      "path": "/advertising/products/api/v5/merchant/759051/campaign/2545773/products/bid",
+      "query": "",
+      "headers": {
+        "content-type": "application/json",
+        "x-xsrf-token": "<redacted>",
+        "cookie": "<redacted>"
+      },
+      "post_json": {
+        "campaignId": "2545773",
+        "sku": "19796919b",
+        "bid": 70
+      },
+      "post_data": null,
+      "is_bid_write_candidate": true
+    }
+  ],
   "notes": [
-    "Populate this file by running scripts/kaspi_ads_discover_bid_write_api.py in headful mode.",
-    "Do not commit raw cookies/tokens; keep sensitive headers redacted."
+    "Discovery session executed in worktree on 2026-02-13.",
+    "No raw auth/cookie material is stored; sensitive headers are redacted.",
+    "Candidate payload is kept as sanitized shape for live-write/rollback request construction."
   ]
 }

@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -31,6 +32,11 @@ ALMATY_TZ = ZoneInfo("Asia/Almaty")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RULES_PATH = PROJECT_ROOT / "config" / "kaspi_ads_bid_rules.yaml"
 DEFAULT_DISCOVERY_PATH = PROJECT_ROOT / "docs" / "marketing" / "bid_api_discovery.json"
+DEFAULT_PROFILE_DIR = "~/Library/Application Support/ChromePlaywrightProfile4"
+DEFAULT_MERCHANT_ID = "759051"
+WRITE_METHODS = {"POST", "PUT", "PATCH"}
+
+WriteBidFn = Callable[..., tuple[bool, str]]
 
 
 def _env_get(env: Mapping[str, str] | Any, key: str) -> str | None:
@@ -80,6 +86,174 @@ def _load_discovery_payload(path: Path | None) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _is_nonempty_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _pick_discovery_candidate(discovery_payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(discovery_payload, dict):
+        return None
+
+    top_method = discovery_payload.get("method")
+    top_url = discovery_payload.get("url")
+    if _is_nonempty_str(top_method) and _is_nonempty_str(top_url):
+        method_up = str(top_method).strip().upper()
+        if method_up in WRITE_METHODS:
+            rec = dict(discovery_payload)
+            rec["method"] = method_up
+            rec["url"] = str(top_url).strip()
+            return rec
+
+    candidates = discovery_payload.get("candidates")
+    if not isinstance(candidates, list):
+        return None
+
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+        if cand.get("is_bid_write_candidate") is False:
+            continue
+        method = str(cand.get("method", "")).strip().upper()
+        url = str(cand.get("url", "")).strip()
+        if method in WRITE_METHODS and url:
+            rec = dict(cand)
+            rec["method"] = method
+            rec["url"] = url
+            return rec
+    return None
+
+
+def _patch_payload_for_bid(
+    payload: Any,
+    *,
+    campaign_id: str,
+    sku_key: str,
+    bid_value: float,
+) -> Any:
+    if isinstance(payload, dict):
+        out: dict[str, Any] = {}
+        for key, val in payload.items():
+            lower_key = str(key).lower()
+            if lower_key in {"campaignid", "campaign_id"}:
+                out[key] = campaign_id
+            elif lower_key in {"sku", "sku_key", "merchantsku", "merchant_sku", "productid", "product_id"}:
+                out[key] = sku_key
+            elif "bid" in lower_key or "cpc" in lower_key:
+                out[key] = float(round(bid_value, 4))
+            else:
+                out[key] = _patch_payload_for_bid(
+                    val,
+                    campaign_id=campaign_id,
+                    sku_key=sku_key,
+                    bid_value=bid_value,
+                )
+        return out
+    if isinstance(payload, list):
+        return [
+            _patch_payload_for_bid(item, campaign_id=campaign_id, sku_key=sku_key, bid_value=bid_value)
+            for item in payload
+        ]
+    return payload
+
+
+def _build_write_payload(
+    *,
+    candidate: dict[str, Any],
+    campaign_id: str,
+    sku_key: str,
+    new_bid: float,
+) -> dict[str, Any]:
+    base_json = candidate.get("post_json")
+    if isinstance(base_json, dict):
+        payload_json = _patch_payload_for_bid(
+            copy.deepcopy(base_json),
+            campaign_id=campaign_id,
+            sku_key=sku_key,
+            bid_value=new_bid,
+        )
+        if isinstance(payload_json, dict):
+            return payload_json
+    return {
+        "campaignId": campaign_id,
+        "sku": sku_key,
+        "bid": float(round(new_bid, 4)),
+    }
+
+
+def _default_write_bid(
+    *,
+    campaign_id: str,
+    sku_key: str,
+    new_bid: float,
+    discovery_payload: dict[str, Any],
+    env: Mapping[str, str] | Any,
+) -> tuple[bool, str]:
+    candidate = _pick_discovery_candidate(discovery_payload)
+    if candidate is None:
+        return False, "No valid bid-write candidate in discovery payload."
+
+    method = str(candidate.get("method", "")).upper()
+    target_url = str(candidate.get("url", "")).strip()
+    if method not in WRITE_METHODS or not target_url:
+        return False, "Discovery payload must include method/url for write request."
+
+    profile_dir = _env_get(env, "KASPI_MARKETING_PROFILE_DIR") or DEFAULT_PROFILE_DIR
+    merchant_id = _env_get(env, "KASPI_MARKETING_MERCHANT_ID") or DEFAULT_MERCHANT_ID
+    referer = (
+        "https://marketing.kaspi.kz/advertising/campaigns"
+        f"?merchantId={merchant_id}&campaignId={campaign_id}&tab=campaigns"
+    )
+    body = _build_write_payload(
+        candidate=candidate,
+        campaign_id=campaign_id,
+        sku_key=sku_key,
+        new_bid=new_bid,
+    )
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return False, "Playwright is required for live writes. Install via: pip install playwright"
+
+    try:
+        from scripts.kaspi_marketing_scrape import build_kaspi_headers
+    except ModuleNotFoundError:
+        from kaspi_marketing_scrape import build_kaspi_headers  # type: ignore
+
+    try:
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=profile_dir,
+                channel="chrome",
+                headless=True,
+            )
+            try:
+                headers = build_kaspi_headers(context.cookies(), referer)
+                headers["content-type"] = "application/json"
+                request_fn = getattr(context.request, method.lower(), None)
+                if request_fn is None:
+                    return False, f"Unsupported write method from discovery payload: {method}"
+
+                response = request_fn(
+                    target_url,
+                    headers=headers,
+                    data=json.dumps(body, ensure_ascii=False),
+                )
+                status = int(getattr(response, "status", 0) or 0)
+                if 200 <= status < 300:
+                    return True, ""
+                err_text = ""
+                try:
+                    err_text = response.text()[:1000]
+                except Exception:
+                    err_text = ""
+                return False, f"status={status} body={err_text}"
+            finally:
+                context.close()
+    except Exception as exc:
+        return False, str(exc)
 
 
 def _current_multiplier(rules: dict[str, Any], hour: int) -> tuple[float, str]:
@@ -257,6 +431,7 @@ def execute_bid_manager(
     apply: bool,
     env: Mapping[str, str] | Any,
     discovery_payload: dict[str, Any] | None,
+    write_bid_fn: WriteBidFn | None = None,
 ) -> dict[str, Any]:
     ensure_bid_schema(conn)
 
@@ -301,6 +476,23 @@ def execute_bid_manager(
             "exit_code": 1,
             "error": "Bid write API discovery payload is required for live writes.",
         }
+    if write_bid_fn is None:
+        def _writer_default(
+            *,
+            campaign_id: str,
+            sku_key: str,
+            new_bid: float,
+            discovery_payload: dict[str, Any],
+        ) -> tuple[bool, str]:
+            return _default_write_bid(
+                campaign_id=campaign_id,
+                sku_key=sku_key,
+                new_bid=new_bid,
+                discovery_payload=discovery_payload,
+                env=env,
+            )
+
+        write_bid_fn = _writer_default
 
     multiplier, rule_name = _current_multiplier(rules, now_local.hour)
     allowlist_pairs = {
@@ -346,8 +538,29 @@ def execute_bid_manager(
 
         result["proposed_changes"] += 1
         if do_live_write:
-            # Live write endpoint is intentionally stubbed until discovery payload
-            # is fully validated in a controlled canary.
+            ok, err = write_bid_fn(
+                campaign_id=campaign_id,
+                sku_key=sku_key,
+                new_bid=target_bid,
+                discovery_payload=discovery_payload or {},
+            )
+            if ok:
+                _log_change(
+                    conn,
+                    executed_at=executed_at,
+                    campaign_id=campaign_id,
+                    sku_key=sku_key,
+                    old_bid=current_bid,
+                    new_bid=target_bid,
+                    rule_name=rule_name,
+                    dry_run=0,
+                    success=1,
+                    error_message="",
+                    method="api",
+                    reason="applied",
+                )
+                result["executed_changes"] += 1
+                continue
             _log_change(
                 conn,
                 executed_at=executed_at,
@@ -358,7 +571,7 @@ def execute_bid_manager(
                 rule_name=rule_name,
                 dry_run=0,
                 success=0,
-                error_message="Live bid write not implemented in this phase",
+                error_message=err,
                 method="api",
                 reason="write_error",
             )
@@ -394,6 +607,7 @@ def execute_bid_rollback(
     apply: bool,
     env: Mapping[str, str] | Any,
     discovery_payload: dict[str, Any] | None,
+    write_bid_fn: WriteBidFn | None = None,
 ) -> dict[str, Any]:
     ensure_bid_schema(conn)
 
@@ -430,6 +644,23 @@ def execute_bid_rollback(
             "exit_code": 1,
             "error": "Bid write API discovery payload is required for live rollback writes.",
         }
+    if write_bid_fn is None:
+        def _writer_default(
+            *,
+            campaign_id: str,
+            sku_key: str,
+            new_bid: float,
+            discovery_payload: dict[str, Any],
+        ) -> tuple[bool, str]:
+            return _default_write_bid(
+                campaign_id=campaign_id,
+                sku_key=sku_key,
+                new_bid=new_bid,
+                discovery_payload=discovery_payload,
+                env=env,
+            )
+
+        write_bid_fn = _writer_default
 
     allowlist_pairs = {
         (str(item.get("campaign_id", "")), str(item.get("sku_key", "")))
@@ -455,6 +686,29 @@ def execute_bid_rollback(
 
         result["rollback_candidates"] += 1
         if do_live_write:
+            ok, err = write_bid_fn(
+                campaign_id=campaign_id,
+                sku_key=sku_key,
+                new_bid=target_bid,
+                discovery_payload=discovery_payload or {},
+            )
+            if ok:
+                _log_change(
+                    conn,
+                    executed_at=executed_at,
+                    campaign_id=campaign_id,
+                    sku_key=sku_key,
+                    old_bid=current_bid,
+                    new_bid=target_bid,
+                    rule_name="rollback_last_good",
+                    dry_run=0,
+                    success=1,
+                    error_message="",
+                    method="api",
+                    reason="rollback_applied",
+                )
+                result["rollback_applied"] += 1
+                continue
             _log_change(
                 conn,
                 executed_at=executed_at,
@@ -465,7 +719,7 @@ def execute_bid_rollback(
                 rule_name="rollback_last_good",
                 dry_run=0,
                 success=0,
-                error_message="Live bid rollback write not implemented in this phase",
+                error_message=err,
                 method="api",
                 reason="rollback_write_error",
             )
