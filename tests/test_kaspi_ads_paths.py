@@ -77,3 +77,17 @@ def test_copy_ads_db_once(tmp_path: Path) -> None:
     assert second["copied"] is False
     # Copy-once guarantee: existing destination is preserved.
     assert dest.read_bytes() == b"abc"
+
+
+def test_copy_ads_db_once_replaces_empty_destination(tmp_path: Path) -> None:
+    source = tmp_path / "source.db"
+    source.write_bytes(b"abc123")
+
+    dest = tmp_path / "dest" / "ads.db"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"")
+
+    result = copy_ads_db_once(source_db=source, dest_db=dest)
+    assert result["copied"] is True
+    assert result["reason"] == "dest_empty_replaced"
+    assert dest.read_bytes() == b"abc123"
