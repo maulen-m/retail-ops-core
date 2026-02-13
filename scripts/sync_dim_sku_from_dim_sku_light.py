@@ -22,6 +22,8 @@ DEFAULT_XLSX = Path(
 )
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_SHEET = "DIM_SKU_light_v5"
+_GUARD_KEY = "dim_sku_weight_kg"
+_GUARD_SOURCE = "sync_dim_sku_from_dim_sku_light"
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -30,6 +32,47 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return row is not None
+
+
+def _activate_weight_guard(conn: sqlite3.Connection) -> bool:
+    if not _table_exists(conn, "dim_sku_weight_write_guard"):
+        return False
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO dim_sku_weight_write_guard
+        (guard_key, allow_updates, source, expires_at, updated_at)
+        VALUES (?, 0, NULL, NULL, datetime('now'))
+        """,
+        (_GUARD_KEY,),
+    )
+    conn.execute(
+        """
+        UPDATE dim_sku_weight_write_guard
+        SET allow_updates = 1,
+            source = ?,
+            expires_at = datetime('now', '+10 minutes'),
+            updated_at = datetime('now')
+        WHERE guard_key = ?
+        """,
+        (_GUARD_SOURCE, _GUARD_KEY),
+    )
+    return True
+
+
+def _deactivate_weight_guard(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "dim_sku_weight_write_guard"):
+        return
+    conn.execute(
+        """
+        UPDATE dim_sku_weight_write_guard
+        SET allow_updates = 0,
+            source = NULL,
+            expires_at = NULL,
+            updated_at = datetime('now')
+        WHERE guard_key = ?
+        """,
+        (_GUARD_KEY,),
+    )
 
 
 def sync_dim_sku_from_dim_sku_light(
@@ -52,9 +95,12 @@ def sync_dim_sku_from_dim_sku_light(
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    guard_active = False
     try:
         if not _table_exists(conn, "dim_sku"):
             raise RuntimeError("dim_sku table not found")
+        if apply:
+            guard_active = _activate_weight_guard(conn)
 
         rows = conn.execute(
             """
@@ -116,6 +162,12 @@ def sync_dim_sku_from_dim_sku_light(
         if apply:
             conn.commit()
     finally:
+        if apply and guard_active:
+            try:
+                _deactivate_weight_guard(conn)
+                conn.commit()
+            except Exception:
+                conn.rollback()
         conn.close()
 
     return {

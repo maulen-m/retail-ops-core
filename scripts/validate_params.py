@@ -51,6 +51,7 @@ from scripts.validate_dim_sku_light_alignment import (
     DEFAULT_WORKBOOK as DEFAULT_DIM_SKU_LIGHT_WORKBOOK,
     DEFAULT_SHEET as DEFAULT_DIM_SKU_LIGHT_SHEET,
 )
+from scripts.migrate_025_dim_sku_weight_guard import validate_dim_sku_weight_guard_schema
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
@@ -469,6 +470,16 @@ def main():
                 result.add_warning(f"dim_sku_light_alignment: {warn}")
         except Exception as exc:
             result.add_error(f"dim_sku_light_alignment error: {exc}")
+
+        try:
+            guard_errors = validate_dim_sku_weight_guard_schema(db_path)
+            if guard_errors:
+                for err in guard_errors:
+                    result.add_error(f"dim_sku_weight_guard: {err}")
+            else:
+                result.add_info("dim_sku_weight_guard: OK")
+        except Exception as exc:
+            result.add_error(f"dim_sku_weight_guard error: {exc}")
 
     # Output results
     if args.json:
