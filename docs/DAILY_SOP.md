@@ -1154,6 +1154,33 @@ launchctl unload ~/Library/LaunchAgents/com.example.crm-db-sync.plist
 launchctl load ~/Library/LaunchAgents/com.example.crm-db-sync.plist
 ```
 
+### Single-Truth Hardening Jobs (21:00/21:05 local)
+
+Install/update schedulers:
+
+```bash
+chmod +x scripts/install_single_truth_ops_scheduler.sh
+./scripts/install_single_truth_ops_scheduler.sh
+```
+
+Anchor workbook path (symlink):
+
+```bash
+ln -sfn "~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
+  "~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx"
+```
+
+Jobs:
+- `com.example.single-truth-preflight` (21:00): runs strict preflight with lineage output.
+- `com.example.on-delivery-residuals` (21:05): runs residual dry-run and sends alert when residuals exist.
+
+Manual trigger:
+
+```bash
+launchctl start com.example.single-truth-preflight
+launchctl start com.example.on-delivery-residuals
+```
+
 ---
 
 ## Contact / Escalation
