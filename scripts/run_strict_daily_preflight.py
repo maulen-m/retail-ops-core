@@ -14,13 +14,17 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Tuple
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
+DEFAULT_MAX_WORKBOOK_AGE_HOURS = 168.0
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.alerts.error_alerts import send_run_failure_alert
 
 
 def emit_lineage_report(
@@ -40,12 +44,45 @@ def emit_lineage_report(
     )
 
 
+def _resolve_max_workbook_age_hours(value: float | None) -> float:
+    if value is not None:
+        return float(value)
+    env_raw = os.environ.get("AB_CRM_WORKBOOK_MAX_AGE_HOURS", "").strip()
+    if env_raw:
+        try:
+            return float(env_raw)
+        except ValueError:
+            return DEFAULT_MAX_WORKBOOK_AGE_HOURS
+    return DEFAULT_MAX_WORKBOOK_AGE_HOURS
+
+
+def _workbook_age_hours(path: Path) -> float:
+    age_seconds = max(0.0, time.time() - path.stat().st_mtime)
+    return age_seconds / 3600.0
+
+
+def _best_effort_failure_alert(*, message: str, db_path: Path, workbook_path: Path | None) -> None:
+    context = f"db={db_path}"
+    if workbook_path is not None:
+        context += f", workbook={workbook_path}"
+    try:
+        send_run_failure_alert(
+            error_message=message,
+            script_name="run_strict_daily_preflight",
+            context=context,
+        )
+    except Exception as exc:
+        print(f"Preflight alert failed: {exc}")
+
+
 def run_preflight(
     *,
     db_path: Path = DEFAULT_DB,
     workbook_path: Path | None = None,
     emit_lineage: bool = False,
     lineage_output: Path | None = None,
+    max_workbook_age_hours: float | None = None,
+    send_alert_on_fail: bool = False,
 ) -> Tuple[int, str]:
     workbook = workbook_path
     if workbook is None:
@@ -54,9 +91,27 @@ def run_preflight(
             workbook = Path(raw).expanduser()
 
     if workbook is None:
-        return 2, "STRICT_DAILY_PREFLIGHT FAIL: AB_CRM_WORKBOOK_PATH is required"
+        msg = "STRICT_DAILY_PREFLIGHT FAIL: AB_CRM_WORKBOOK_PATH is required"
+        if send_alert_on_fail:
+            _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=None)
+        return 2, msg
     if not workbook.exists():
-        return 2, f"STRICT_DAILY_PREFLIGHT FAIL: workbook does not exist: {workbook}"
+        msg = f"STRICT_DAILY_PREFLIGHT FAIL: workbook does not exist: {workbook}"
+        if send_alert_on_fail:
+            _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
+        return 2, msg
+
+    age_limit_hours = _resolve_max_workbook_age_hours(max_workbook_age_hours)
+    if age_limit_hours > 0:
+        workbook_age_hours = _workbook_age_hours(workbook)
+        if workbook_age_hours > age_limit_hours:
+            msg = (
+                "STRICT_DAILY_PREFLIGHT FAIL: stale workbook "
+                f"(age_hours={workbook_age_hours:.1f}, max={age_limit_hours:.1f}) path={workbook}"
+            )
+            if send_alert_on_fail:
+                _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
+            return 2, msg
 
     env = os.environ.copy()
     env["AB_CRM_WORKBOOK_PATH"] = str(workbook)
@@ -83,6 +138,8 @@ def run_preflight(
     msg = f"STRICT_DAILY_PREFLIGHT {status}: validate_params --strict rc={strict_code}"
     if emit_lineage and lineage_path is not None:
         msg += f" lineage={lineage_path}"
+    if strict_code != 0 and send_alert_on_fail:
+        _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
     return strict_code, msg
 
 
@@ -92,6 +149,17 @@ def main() -> int:
     parser.add_argument("--workbook", type=Path, default=None, help="CRM workbook path (overrides env)")
     parser.add_argument("--emit-lineage", action="store_true", help="Emit lineage artifact JSON")
     parser.add_argument("--lineage-output", type=Path, default=None, help="Explicit lineage artifact path")
+    parser.add_argument(
+        "--max-workbook-age-hours",
+        type=float,
+        default=None,
+        help=f"Fail if workbook mtime age exceeds this threshold (default {DEFAULT_MAX_WORKBOOK_AGE_HOURS:g})",
+    )
+    parser.add_argument(
+        "--send-alert-on-fail",
+        action="store_true",
+        help="Best-effort Telegram alert on preflight failure",
+    )
     args = parser.parse_args()
 
     code, summary = run_preflight(
@@ -99,6 +167,8 @@ def main() -> int:
         workbook_path=args.workbook,
         emit_lineage=bool(args.emit_lineage),
         lineage_output=args.lineage_output,
+        max_workbook_age_hours=args.max_workbook_age_hours,
+        send_alert_on_fail=bool(args.send_alert_on_fail),
     )
     print(summary)
     return code
