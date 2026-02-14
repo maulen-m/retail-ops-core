@@ -36,11 +36,13 @@ Use the wrapper so workbook-anchor validation is mandatory for operator runs.
 ```bash
 python3 scripts/run_strict_daily_preflight.py \
   --workbook "~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
-  --emit-lineage
+  --emit-lineage \
+  --send-alert-on-fail
 ```
 
 Behavior:
 - Fails closed when workbook path is missing.
+- Fails closed when workbook is stale (mtime age exceeds threshold).
 - Runs `validate_params.py --strict`.
 - Optionally emits lineage JSON under `exports/lineage/`.
 

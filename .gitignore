@@ -56,10 +56,13 @@ db/app.db
 # Logs
 *.log
 logs/
+logs
+logs.pre_migration_*/
 
 # Exports (regeneratable)
 exports/
 reports/
+Oracle_listings/generated/
 
 # Excel exports (generated)
 *_raw.xlsx
@@ -70,7 +73,12 @@ excel_ui/ActiveOrders/*.xlsx
 
 # Backups
 backups/
+backups
 archives/
+backups.pre_migration_*/
+db/backups/
+db/backups
+db/backups.pre_migration_*/
 
 # Excel temp files
 ~$*.xls
@@ -81,6 +89,11 @@ archives/
 # Local UI workbooks (keep untracked)
 excel_ui/SALES_KSP_CRM_V3.xlsx
 excel/Inventory_Core_V18.1_V2.xlsx
+config/anchors/SALES_KSP_CRM_LATEST.xlsx
+
+# Generated business-insides snapshots (daily)
+config/business_insides/BUSINESS_INSIDES_*.md
+config/business_insides/snapshots/BUSINESS_INSIDES_*.md
 
 # Kaspi offer creation references (track only the canonical reference)
 docs/offer_creation/*.xlsm
