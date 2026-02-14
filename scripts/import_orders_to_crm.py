@@ -429,6 +429,96 @@ def _run_with_posix_alarm_timeout(timeout_sec: int, func, *args, **kwargs):
             signal.alarm(previous_alarm)
 
 
+def _safe_close_xlwings_book(book: Any, *, context: str) -> None:
+    if book is None:
+        return
+    try:
+        book.close()
+    except Exception as exc:
+        print(f"  WARNING: failed to close Excel workbook ({context}): {exc}")
+
+
+def _safe_quit_xlwings_app(app: Any, *, context: str) -> None:
+    if app is None:
+        return
+    try:
+        app.quit()
+        return
+    except Exception as exc:
+        print(f"  WARNING: failed to quit Excel app ({context}): {exc}")
+
+    kill = getattr(app, "kill", None)
+    if callable(kill):
+        try:
+            kill()
+            print(f"  WARNING: Excel app force-killed ({context})")
+        except Exception as kill_exc:
+            print(f"  WARNING: failed to force-kill Excel app ({context}): {kill_exc}")
+
+
+def _is_expected_xlwings_timeout(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+
+    msg = str(exc or "").lower()
+    if not msg:
+        return False
+
+    timeout_markers = (
+        "apple event timed out",
+        "oserror: -1712",
+        "(-1712)",
+        "operation timed out",
+        "xlwings workbook open timed out",
+    )
+    return any(marker in msg for marker in timeout_markers)
+
+
+_ORDER_ID_HEADER_ALIASES = {"orderid", "номерзаказа", "заказ", "№заказа", "заказа"}
+
+
+def _coerce_order_id_numeric(value: Any) -> Any:
+    cleaned = clean_order_id(value)
+    if cleaned:
+        try:
+            return int(cleaned)
+        except (TypeError, ValueError):
+            return cleaned
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.isdigit():
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            return text
+    return text
+
+
+def _coerce_phone_numeric(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if not digits:
+        return ""
+
+    if len(digits) == 11 and digits.startswith("8"):
+        digits = "7" + digits[1:]
+    elif len(digits) == 10:
+        digits = "7" + digits
+
+    try:
+        return int(digits)
+    except (TypeError, ValueError):
+        return digits
+
+
 def _open_workbook_xlwings_without_timeout_kwarg(
     app: Any,
     workbook_path: Path,
@@ -560,7 +650,7 @@ def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbo
             "Grant python automation access to Excel and close all open workbook sessions."
         ) from exc
     finally:
-        app.quit()
+        _safe_quit_xlwings_app(app, context="strict preflight")
 
 
 LINE61_CANONICAL_SKU_KEY = "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
@@ -1115,7 +1205,7 @@ def backfill_seller_delivery_fee(
         book.save()
         book.close()
     finally:
-        app.quit()
+        _safe_quit_xlwings_app(app, context="delivery-fee backfill")
 
     return len(updates)
 
@@ -2459,7 +2549,7 @@ def update_existing_order_columns(
         return len(orders_to_update)
 
     finally:
-        app.quit()
+        _safe_quit_xlwings_app(app, context="existing-order updates")
 
 
 def build_update_data(df: pd.DataFrame, colmap: Dict[str, str]) -> Dict[str, dict]:
@@ -2550,7 +2640,7 @@ def build_update_data(df: pd.DataFrame, colmap: Dict[str, str]) -> Dict[str, dic
 
 # ---------- Build Staging Data ----------
 
-def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[List[List], List[str]]:
+def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[List[List], List[Any]]:
     """
     Build 2D list matching CRM slice columns plus phone values.
 
@@ -2592,11 +2682,9 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
 
         # Map canonical keys
         # Note: "№ заказа" normalizes to "заказа"
-        if h in {"orderid", "номерзаказа", "заказ", "№заказа", "заказа"} and "order_id" in S:
+        if h in _ORDER_ID_HEADER_ALIASES and "order_id" in S:
             col = S["order_id"].copy()
-            col = col.apply(lambda v: "" if pd.isna(v) else (
-                str(int(v)) if isinstance(v, (int, float)) and float(v).is_integer() else str(v)
-            ))
+            col = col.apply(_coerce_order_id_numeric)
             return col
 
         if h in {"названиевсистемепродавца"} and "seller_name" in S:
@@ -2648,27 +2736,11 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
             row.append(v)
         stage.append(row)
 
-    # Extract phone values separately (Phase 12)
-    # Format: +7XXXXXXXXXX (Kazakhstan format)
+    # Extract phone values separately as numeric MSISDN.
     phone_values = []
     if "phone" in S:
         for i in range(len(df_filt)):
-            v = S["phone"].iloc[i]
-            if pd.isna(v):
-                v = ""
-            else:
-                v = str(v).strip()
-                # Add +7 prefix if phone has digits and doesn't already start with +
-                if v and v[0] != '+':
-                    # Remove any leading 8 or 7 (common Kazakhstan patterns)
-                    if v.startswith('8') and len(v) == 11:
-                        v = '+7' + v[1:]
-                    elif v.startswith('7') and len(v) == 11:
-                        v = '+7' + v[1:]
-                    elif len(v) == 10:
-                        v = '+7' + v
-                    else:
-                        v = '+7' + v  # Default: prepend +7
+            v = _coerce_phone_numeric(S["phone"].iloc[i])
             phone_values.append(v)
     else:
         phone_values = [""] * len(df_filt)
@@ -2687,7 +2759,7 @@ def excel_append_xlwings(
     start_col_abs: int,
     end_col_abs: int,
     stage_block: List[List],
-    phone_values: List[str],
+    phone_values: List[Any],
     set_date: date,
     slice_headers: List[str],
     fixed_values: Optional[List[Dict[str, Any]]] = None,
@@ -2714,6 +2786,7 @@ def excel_append_xlwings(
     app = xw.App(visible=False, add_book=False)
     app.display_alerts = False
     app.screen_updating = False
+    wb = None
 
     try:
         wb = _open_workbook_xlwings(app, out_wb, update_links=False, read_only=False)
@@ -2764,11 +2837,12 @@ def excel_append_xlwings(
 
         # Write phone column (Phase 12)
         if phone_col_abs and phone_values:
-            # Only write non-empty phone values
-            has_phones = any(v for v in phone_values)
+            normalized_phones = [_coerce_phone_numeric(v) for v in phone_values]
+            has_phones = any(v not in (None, "") for v in normalized_phones)
             if has_phones:
                 phone_range = sh.range((top_row, phone_col_abs), (bottom_row, phone_col_abs))
-                phone_range.value = [[v] for v in phone_values]
+                phone_range.value = [[v if v not in (None, "") else None] for v in normalized_phones]
+                phone_range.number_format = "0"
                 print(f"  Phone data written to column {phone_col_abs}")
 
         # Write data columns (skip formula-driven columns like OrderID if they exist in table)
@@ -2776,6 +2850,9 @@ def excel_append_xlwings(
         for offset in range(width):
             header = slice_headers[offset]
             col_values = [row[offset] for row in stage_block]
+            is_order_col = norm(header) in _ORDER_ID_HEADER_ALIASES
+            if is_order_col:
+                col_values = [_coerce_order_id_numeric(v) for v in col_values]
 
             # Skip entirely empty columns
             if all((v is None) or (isinstance(v, str) and v == "") for v in col_values):
@@ -2783,6 +2860,8 @@ def excel_append_xlwings(
 
             target = sh.range((top_row, start_col_abs + offset), (bottom_row, start_col_abs + offset))
             target.value = [[v] for v in col_values]
+            if is_order_col:
+                target.number_format = "0"
 
         table_header = sh.range(
             (header_row, tbl_start_col),
@@ -2831,12 +2910,15 @@ def excel_append_xlwings(
 
         wb.save()
         wb.close()
+        wb = None
         print(f"  ✅ Saved {out_wb.name}")
 
         return (top_row, bottom_row)
 
     finally:
-        app.quit()
+        if wb is not None:
+            _safe_close_xlwings_book(wb, context="append")
+        _safe_quit_xlwings_app(app, context="append")
 
     return (0, 0)  # If we get here somehow
 
@@ -2850,7 +2932,7 @@ def excel_append_openpyxl(
     start_col_abs: int,
     end_col_abs: int,
     stage_block: List[List],
-    phone_values: List[str],
+    phone_values: List[Any],
     set_date: date,
     slice_headers: List[str],
     fixed_values: Optional[List[Dict[str, Any]]] = None,
@@ -2920,20 +3002,40 @@ def excel_append_openpyxl(
             cell.number_format = "dd.mm.yyyy"
             ws.cell(row=row_num, column=4, value="Новый")
 
-        if phone_col_abs and phone_values and any(v for v in phone_values):
-            normalized = list(phone_values)
-            if len(normalized) < n:
-                normalized.extend([""] * (n - len(normalized)))
-            normalized = normalized[:n]
-            for idx, value in enumerate(normalized):
-                ws.cell(row=top_row + idx, column=phone_col_abs, value=value or "")
+        if phone_col_abs and phone_values:
+            normalized = [_coerce_phone_numeric(v) for v in phone_values]
+            if any(v not in (None, "") for v in normalized):
+                if len(normalized) < n:
+                    normalized.extend([""] * (n - len(normalized)))
+                normalized = normalized[:n]
+                for idx, value in enumerate(normalized):
+                    cell = ws.cell(row=top_row + idx, column=phone_col_abs)
+                    if value in (None, ""):
+                        cell.value = ""
+                    else:
+                        cell.value = value
+                        cell.number_format = "0"
 
         width = min(len(slice_headers), max(0, end_col_abs - start_col_abs + 1))
+        order_header_offsets = {
+            idx for idx, header in enumerate(slice_headers[:width])
+            if norm(header) in _ORDER_ID_HEADER_ALIASES
+        }
         for row_offset, row_values in enumerate(stage_block):
             row_num = top_row + row_offset
             for offset in range(width):
                 value = row_values[offset] if offset < len(row_values) else ""
-                ws.cell(row=row_num, column=start_col_abs + offset, value="" if value is None else value)
+                col_num = start_col_abs + offset
+                cell = ws.cell(row=row_num, column=col_num)
+                if offset in order_header_offsets:
+                    coerced = _coerce_order_id_numeric(value)
+                    if coerced in (None, ""):
+                        cell.value = ""
+                    else:
+                        cell.value = coerced
+                        cell.number_format = "0"
+                else:
+                    cell.value = "" if value is None else value
 
         if kaspi_name_core_values is not None:
             kaspi_name_core_col = header_to_col.get("Kaspi_name_core")
@@ -3002,7 +3104,7 @@ def append_orders_with_fallback(
     start_col_abs: int,
     end_col_abs: int,
     stage_block: List[List],
-    phone_values: List[str],
+    phone_values: List[Any],
     set_date: date,
     slice_headers: List[str],
     fixed_values: Optional[List[Dict[str, Any]]] = None,
@@ -3035,8 +3137,12 @@ def append_orders_with_fallback(
         except Exception as exc:
             if not allow_openpyxl_fallback:
                 raise
-            print(f"  WARNING: xlwings append failed ({exc})")
-            if verbose:
+            timeout_like = _is_expected_xlwings_timeout(exc)
+            if timeout_like:
+                print("  WARNING: xlwings append timed out; switching to openpyxl fallback.")
+            else:
+                print(f"  WARNING: xlwings append failed ({exc})")
+            if verbose and not timeout_like:
                 import traceback
 
                 traceback.print_exc()
@@ -3223,7 +3329,7 @@ def apply_fixed_values_backfill_xlwings(
             mode = "DRY RUN" if dry_run else "APPLY"
             print(f"  Fixed-value backfill ({mode}): {updated} rows ({date_from}..{date_to})")
     finally:
-        app.quit()
+        _safe_quit_xlwings_app(app, context="fixed-values backfill")
 
     return updated
 

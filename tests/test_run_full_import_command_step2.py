@@ -43,3 +43,12 @@ def test_step2_uses_hybrid_mode_xlwings_first_with_guarded_openpyxl_fallback():
     assert "--strict-excel" not in flags
     assert "CRM_OPENPYXL_APPEND_FALLBACK=1" not in step2_block
     assert "--refresh-delivery-fees" not in flags
+
+
+def test_step2_append_timeout_default_is_not_overly_aggressive():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    step2_block = _extract_step2_block(text)
+
+    # 60s is too low for larger day volumes; keep a safer unattended default.
+    assert 'XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-180}"' in step2_block

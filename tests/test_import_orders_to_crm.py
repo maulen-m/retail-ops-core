@@ -42,6 +42,7 @@ from scripts.import_orders_to_crm import (
     _normalize_conditional_formatting_ranges,
     _verify_appended_rows_integrity,
     _xlwings_open_timeout_sec,
+    excel_append_xlwings,
     _excel_automation_preflight,
     _excel_open_probe,
     _verify_candidate_workbook,
@@ -391,7 +392,30 @@ def test_build_staging_derives_sku_key_and_size_from_acmewear_article():
     assert stage[0][0] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
     assert stage[0][1] == ""
     assert stage[0][2] == "OF_SUIT-61_BLK_3XL"
-    assert phone_values == ["+77771234567"]
+    assert phone_values == [77771234567]
+
+
+def test_build_staging_coerces_order_id_to_numeric():
+    df = pd.DataFrame(
+        {
+            "№ заказа": ["812345678"],
+            "Телефон": ["+7 (777) 123-45-67"],
+            "Артикул": ["OF_SUIT-61_BLK_3XL"],
+            "Название товара в Kaspi Магазине": [
+                "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL черный 3XL"
+            ],
+            "Склад передачи КД": ["30137883_PP1"],
+            "Количество": [1],
+            "Сумма": [12990],
+            "Стоимость доставки для продавца": [0],
+            "Плановая дата передачи курьеру": ["21.02.2026"],
+        }
+    )
+
+    stage, phone_values = build_staging(df, ["№ заказа", "Артикул"])
+
+    assert stage[0][0] == 812345678
+    assert phone_values == [77771234567]
 
 
 def test_compute_fixed_value_columns_for_acmewear_suit_row():
@@ -605,6 +629,60 @@ def test_apply_fixed_values_backfill_openpyxl_updates_recent_rows_and_keeps_my_s
         wb2.close()
 
 
+def test_excel_append_openpyxl_writes_numeric_order_id_and_phone(tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+    headers = ["Date", "Phone", "№ заказа"]
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(row=1, column=idx, value=header)
+    ws.cell(row=2, column=1, value=date.today())
+    ws.cell(row=2, column=2, value=77770000000)
+    ws.cell(row=2, column=3, value=800000001)
+
+    table = Table(displayName="tb_SalesRaw", ref="A1:C2")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(table)
+    wb.save(workbook)
+    wb.close()
+
+    from scripts.import_orders_to_crm import excel_append_openpyxl
+
+    start_row, end_row = excel_append_openpyxl(
+        out_wb=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        date_col_abs=1,
+        phone_col_abs=2,
+        start_col_abs=3,
+        end_col_abs=3,
+        stage_block=[["812300001"]],
+        phone_values=["+7 (777) 000-00-01"],
+        set_date=date.today(),
+        slice_headers=["№ заказа"],
+        repair_cf_ranges=False,
+        verbose=False,
+    )
+
+    assert (start_row, end_row) == (3, 3)
+
+    wb2 = openpyxl.load_workbook(workbook)
+    ws2 = wb2["SALES_KSP_CRM_1"]
+    assert ws2.cell(row=3, column=3).value == 812300001
+    assert ws2.cell(row=3, column=3).number_format == "0"
+    assert ws2.cell(row=3, column=2).value == 77770000001
+    assert ws2.cell(row=3, column=2).number_format == "0"
+    wb2.close()
+
+
 def test_openpyxl_backfill_fallback_disabled_by_default(monkeypatch):
     monkeypatch.delenv("CRM_FIXED_BACKFILL_OPENPYXL_FALLBACK", raising=False)
     assert _allow_openpyxl_backfill_fallback() is False
@@ -773,9 +851,85 @@ def test_append_orders_with_fallback_uses_openpyxl_when_xlwings_times_out(monkey
     assert result == (200, 201)
 
 
+def test_append_orders_with_fallback_suppresses_traceback_for_apple_event_timeout(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("placeholder", encoding="utf-8")
+    printed = {"traceback": 0}
+
+    def _apple_event_timeout(*_args, **_kwargs):
+        raise RuntimeError(
+            "Command failed:\n\t\tOSERROR: -1712\n\t\tMESSAGE: Apple event timed out."
+        )
+
+    def _fake_openpyxl(*_args, **_kwargs):
+        return (300, 301)
+
+    def _fake_print_exc():
+        printed["traceback"] += 1
+
+    monkeypatch.setattr("scripts.import_orders_to_crm._run_with_posix_alarm_timeout", _apple_event_timeout)
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_openpyxl", _fake_openpyxl)
+    monkeypatch.setattr("traceback.print_exc", _fake_print_exc)
+
+    result = append_orders_with_fallback(
+        out_wb=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        date_col_abs=2,
+        phone_col_abs=9,
+        start_col_abs=25,
+        end_col_abs=52,
+        stage_block=[["812000444"]],
+        phone_values=["+77770000003"],
+        set_date=date.today(),
+        slice_headers=["№ заказа"],
+        allow_openpyxl_fallback=True,
+        prefer_xlwings=True,
+        verbose=True,
+    )
+
+    assert result == (300, 301)
+    assert printed["traceback"] == 0
+
+
 def test_xlwings_append_timeout_sec_respects_env(monkeypatch):
     monkeypatch.setenv("CRM_XLWINGS_APPEND_TIMEOUT_SEC", "75")
     assert _xlwings_append_timeout_sec() == 75
+
+
+def test_excel_append_xlwings_does_not_mask_primary_error_when_app_quit_fails(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("placeholder", encoding="utf-8")
+
+    class DummyApp:
+        def __init__(self, *args, **kwargs):
+            self.display_alerts = False
+            self.screen_updating = False
+
+        def quit(self):
+            raise RuntimeError("quit failed")
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.xw", type("DummyXW", (), {"App": DummyApp}))
+
+    def _open_timeout(*_args, **_kwargs):
+        raise TimeoutError("operation timed out after 60s")
+
+    monkeypatch.setattr("scripts.import_orders_to_crm._open_workbook_xlwings", _open_timeout)
+
+    with pytest.raises(TimeoutError, match="operation timed out after 60s"):
+        excel_append_xlwings(
+            out_wb=workbook,
+            sheet_name="SALES_KSP_CRM_1",
+            table_name="tb_SalesRaw",
+            date_col_abs=2,
+            phone_col_abs=9,
+            start_col_abs=25,
+            end_col_abs=52,
+            stage_block=[["812000333"]],
+            phone_values=["+77770000002"],
+            set_date=date.today(),
+            slice_headers=["№ заказа"],
+        )
 
 
 def test_excel_automation_preflight_fails_when_lock_file_exists(tmp_path):
