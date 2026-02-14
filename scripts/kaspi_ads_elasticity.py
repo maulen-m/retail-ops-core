@@ -328,39 +328,89 @@ def _load_ads_rows(
     until: str | None,
     campaign_ids: list[str] | None,
 ) -> pd.DataFrame:
-    if not _table_exists(conn, "campaign_product_daily_current"):
-        return pd.DataFrame()
+    key_cols = ["date", "merchant_id", "campaign_id", "sku_key"]
+    unique_ids = sorted({str(cid).strip() for cid in (campaign_ids or []) if str(cid).strip()})
 
-    where = ["COALESCE(bid_cpc, 0) > 0"]
-    params: list[Any] = []
-    if since:
-        where.append("date(date) >= date(?)")
-        params.append(since)
-    if until:
-        where.append("date(date) <= date(?)")
-        params.append(until)
-    if campaign_ids:
-        unique_ids = sorted({str(cid).strip() for cid in campaign_ids if str(cid).strip()})
+    def _build_where(*, date_expr: str = "date") -> tuple[str, list[Any]]:
+        where = ["COALESCE(bid_cpc, 0) > 0"]
+        params: list[Any] = []
+        if since:
+            where.append(f"date({date_expr}) >= date(?)")
+            params.append(since)
+        if until:
+            where.append(f"date({date_expr}) <= date(?)")
+            params.append(until)
         if unique_ids:
             placeholders = ",".join("?" for _ in unique_ids)
             where.append(f"campaign_id IN ({placeholders})")
             params.extend(unique_ids)
+        return " AND ".join(where), params
 
-    query = f"""
-        SELECT
-            date,
-            merchant_id,
-            campaign_id,
-            sku_key,
-            COALESCE(bid_cpc, 0) AS bid_cpc,
-            COALESCE(clicks, 0) AS clicks,
-            COALESCE(orders_total, 0) AS orders_total,
-            COALESCE(gmv, 0) AS gmv,
-            COALESCE(cost, 0) AS cost
-        FROM campaign_product_daily_current
-        WHERE {' AND '.join(where)}
-    """
-    return pd.read_sql_query(query, conn, params=params)
+    hourly_df = pd.DataFrame()
+    if _table_exists(conn, "hourly_delta_daily_fact"):
+        where, params = _build_where(date_expr="date")
+        hourly_df = pd.read_sql_query(
+            f"""
+            SELECT
+                date,
+                merchant_id,
+                campaign_id,
+                sku_key,
+                COALESCE(bid_cpc, 0) AS bid_cpc,
+                COALESCE(clicks, 0) AS clicks,
+                COALESCE(orders_total, 0) AS orders_total,
+                COALESCE(gmv, 0) AS gmv,
+                COALESCE(cost, 0) AS cost,
+                'hourly_delta_daily_fact' AS row_source
+            FROM hourly_delta_daily_fact
+            WHERE {where}
+            """,
+            conn,
+            params=params,
+        )
+
+    daily_df = pd.DataFrame()
+    if _table_exists(conn, "campaign_product_daily_current"):
+        where, params = _build_where(date_expr="date")
+        daily_df = pd.read_sql_query(
+            f"""
+            SELECT
+                date,
+                merchant_id,
+                campaign_id,
+                sku_key,
+                COALESCE(bid_cpc, 0) AS bid_cpc,
+                COALESCE(clicks, 0) AS clicks,
+                COALESCE(orders_total, 0) AS orders_total,
+                COALESCE(gmv, 0) AS gmv,
+                COALESCE(cost, 0) AS cost,
+                'campaign_product_daily_current' AS row_source
+            FROM campaign_product_daily_current
+            WHERE {where}
+            """,
+            conn,
+            params=params,
+        )
+
+    if hourly_df.empty and daily_df.empty:
+        return pd.DataFrame(columns=[*key_cols, "bid_cpc", "clicks", "orders_total", "gmv", "cost", "row_source"])
+
+    if not hourly_df.empty and not daily_df.empty:
+        hourly_keys = set(
+            zip(
+                hourly_df["date"].astype(str),
+                hourly_df["merchant_id"].astype(str),
+                hourly_df["campaign_id"].astype(str),
+                hourly_df["sku_key"].astype(str),
+            )
+        )
+        keep_mask = [
+            (str(row.date), str(row.merchant_id), str(row.campaign_id), str(row.sku_key)) not in hourly_keys
+            for row in daily_df.itertuples(index=False)
+        ]
+        daily_df = daily_df.loc[keep_mask].reset_index(drop=True)
+
+    return pd.concat([hourly_df, daily_df], ignore_index=True)
 
 
 def _load_margin_map(

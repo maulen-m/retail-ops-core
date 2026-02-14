@@ -54,7 +54,7 @@ def test_reconciliation_reports_daily_mismatch_and_coverage_gap(tmp_path: Path) 
     conn.commit()
     conn.close()
 
-    report = reconcile_sales_truth(db_path=db, days=7)
+    report = reconcile_sales_truth(db_path=db, days=7, as_of="2026-02-08")
     assert report["window_days"] == 7
     assert report["daily_mismatch_count"] == 1
     assert report["sales_fact_v2"]["cogs_coverage_pct"] == 0.0
@@ -79,7 +79,7 @@ def test_reconciliation_passes_when_sources_match(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    report = reconcile_sales_truth(db_path=db, days=7)
+    report = reconcile_sales_truth(db_path=db, days=7, as_of="2026-02-08")
     assert report["daily_mismatch_count"] == 0
     assert report["sales_fact_v2"]["orders"] == report["fact_sales"]["orders"]
     assert report["sales_fact_v2"]["units"] == report["fact_sales"]["units"]
