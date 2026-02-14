@@ -10,6 +10,9 @@ def test_single_truth_preflight_plist_contract() -> None:
     assert "<string>~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx</string>" in plist
     assert "<string>scripts/run_strict_daily_preflight.py</string>" in plist
     assert "<string>--emit-lineage</string>" in plist
+    assert "<string>--send-alert-on-fail</string>" in plist
+    assert "<string>/usr/bin/env</string>" in plist
+    assert "<string>python3</string>" in plist
 
 
 def test_on_delivery_residuals_plist_contract() -> None:
@@ -21,6 +24,8 @@ def test_on_delivery_residuals_plist_contract() -> None:
     assert "<string>--send-alert</string>" in plist
     assert "<string>--since</string>" in plist
     assert "<string>2026-01-01</string>" in plist
+    assert "<string>/usr/bin/env</string>" in plist
+    assert "<string>python3</string>" in plist
 
 
 def test_install_script_references_both_single_truth_jobs() -> None:
