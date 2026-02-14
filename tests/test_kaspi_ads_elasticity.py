@@ -75,6 +75,40 @@ def _seed_ads_db_two_campaigns(path: Path) -> None:
         )
 
 
+def _seed_ads_db_daily_fact_only(path: Path) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE hourly_delta_daily_fact (
+                date TEXT NOT NULL,
+                merchant_id TEXT NOT NULL,
+                campaign_id TEXT NOT NULL,
+                sku_key TEXT NOT NULL,
+                bid_cpc REAL,
+                views INTEGER NOT NULL DEFAULT 0,
+                clicks INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0,
+                gmv REAL NOT NULL DEFAULT 0,
+                orders_total INTEGER NOT NULL DEFAULT 0,
+                hour_rows INTEGER NOT NULL DEFAULT 0,
+                computed_at TEXT NOT NULL,
+                PRIMARY KEY (date, merchant_id, campaign_id, sku_key)
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO hourly_delta_daily_fact
+            (date, merchant_id, campaign_id, sku_key, bid_cpc, views, clicks, cost, gmv, orders_total, hour_rows, computed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("2026-02-08", "761413", "2566809", "SKU-P", 50.0, 4000, 120, 2400.0, 42000.0, 4, 24, "2026-02-08T23:59:00+05:00"),
+                ("2026-02-09", "761413", "2566809", "SKU-P", 80.0, 4500, 130, 3900.0, 45000.0, 5, 24, "2026-02-09T23:59:00+05:00"),
+            ],
+        )
+
+
 def _seed_app_db(path: Path) -> None:
     with sqlite3.connect(path) as conn:
         conn.execute(
@@ -324,3 +358,92 @@ def test_missing_cost_adjustments_config_fails_explicitly(tmp_path: Path) -> Non
             default_margin_pct=0.25,
             cost_adjustments_config=missing_cfg,
         )
+
+
+def test_analyze_elasticity_uses_hourly_daily_fact_when_daily_current_missing(tmp_path: Path) -> None:
+    ads_db = tmp_path / "ads.db"
+    app_db = tmp_path / "app.db"
+    out_dir = tmp_path / "out"
+    cost_cfg = tmp_path / "cost_adjustments.yaml"
+    _seed_ads_db_daily_fact_only(ads_db)
+    _seed_app_db(app_db)
+    _write_cost_adjustments_config(cost_cfg)
+
+    result = analyze_elasticity(
+        ads_db=ads_db,
+        app_db=app_db,
+        out_dir=out_dir,
+        since="2026-02-01",
+        until="2026-02-10",
+        min_days=1,
+        default_margin_pct=0.25,
+        campaign_ids=["2566809"],
+        cost_adjustments_config=cost_cfg,
+    )
+
+    assert result["level_rows"] == 2
+    assert result["recommendation_rows"] == 1
+    rec = result["recommendations"][0]
+    assert rec["campaign_id"] == "2566809"
+    assert rec["sku_key"] == "SKU-P"
+
+
+def test_analyze_elasticity_prefers_hourly_daily_fact_over_stale_daily_current(tmp_path: Path) -> None:
+    ads_db = tmp_path / "ads.db"
+    app_db = tmp_path / "app.db"
+    out_dir = tmp_path / "out"
+    cost_cfg = tmp_path / "cost_adjustments.yaml"
+    _seed_ads_db(ads_db)
+    _seed_app_db(app_db)
+    _write_cost_adjustments_config(cost_cfg)
+
+    with sqlite3.connect(ads_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE hourly_delta_daily_fact (
+                date TEXT NOT NULL,
+                merchant_id TEXT NOT NULL,
+                campaign_id TEXT NOT NULL,
+                sku_key TEXT NOT NULL,
+                bid_cpc REAL,
+                views INTEGER NOT NULL DEFAULT 0,
+                clicks INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0,
+                gmv REAL NOT NULL DEFAULT 0,
+                orders_total INTEGER NOT NULL DEFAULT 0,
+                hour_rows INTEGER NOT NULL DEFAULT 0,
+                computed_at TEXT NOT NULL,
+                PRIMARY KEY (date, merchant_id, campaign_id, sku_key)
+            )
+            """
+        )
+        # Override one day with telemetry-derived daily fact values.
+        conn.execute(
+            """
+            INSERT INTO hourly_delta_daily_fact
+            (date, merchant_id, campaign_id, sku_key, bid_cpc, views, clicks, cost, gmv, orders_total, hour_rows, computed_at)
+            VALUES ('2026-02-10', '759051', '2380614', 'SKU-A', 60.0, 100, 10, 9999.0, 12000.0, 12, 24, '2026-02-10T23:59:00+05:00')
+            """
+        )
+
+    result = analyze_elasticity(
+        ads_db=ads_db,
+        app_db=app_db,
+        out_dir=out_dir,
+        since="2026-02-01",
+        until="2026-02-11",
+        min_days=1,
+        default_margin_pct=0.25,
+        cost_adjustments_config=cost_cfg,
+    )
+
+    levels = pd.read_csv(out_dir / "kaspi_ads_elasticity_levels.csv")
+    row = levels[
+        (levels["campaign_id"].astype(str) == "2380614")
+        & (levels["sku_key"] == "SKU-A")
+        & (levels["bid_cpc"] == 60.0)
+    ]
+    assert len(row) == 1
+    # Telemetry fact should be used for matching key/date instead of stale campaign_product_daily_current row.
+    assert float(row.iloc[0]["cost_total"]) >= 9999.0
+    assert result["recommendation_rows"] == 1

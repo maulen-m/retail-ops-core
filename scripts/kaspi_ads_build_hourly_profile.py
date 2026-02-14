@@ -75,6 +75,25 @@ def ensure_profile_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hourly_delta_daily_fact (
+            date TEXT NOT NULL,
+            merchant_id TEXT NOT NULL,
+            campaign_id TEXT NOT NULL,
+            sku_key TEXT NOT NULL,
+            bid_cpc REAL,
+            views INTEGER NOT NULL DEFAULT 0,
+            clicks INTEGER NOT NULL DEFAULT 0,
+            cost REAL NOT NULL DEFAULT 0,
+            gmv REAL NOT NULL DEFAULT 0,
+            orders_total INTEGER NOT NULL DEFAULT 0,
+            hour_rows INTEGER NOT NULL DEFAULT 0,
+            computed_at TEXT NOT NULL,
+            UNIQUE(date, merchant_id, campaign_id, sku_key)
+        )
+        """
+    )
     conn.commit()
 
 
@@ -94,14 +113,19 @@ def _classify_hour(
     return "normal"
 
 
-def _where_clause(since: str | None, until: str | None) -> tuple[str, list[Any]]:
+def _where_clause(
+    since: str | None,
+    until: str | None,
+    *,
+    date_expr: str = "date",
+) -> tuple[str, list[Any]]:
     where = ["1=1"]
     params: list[Any] = []
     if since:
-        where.append("date(date) >= date(?)")
+        where.append(f"date({date_expr}) >= date(?)")
         params.append(since)
     if until:
-        where.append("date(date) <= date(?)")
+        where.append(f"date({date_expr}) <= date(?)")
         params.append(until)
     return " AND ".join(where), params
 
@@ -179,6 +203,51 @@ def _upsert_reconciliation_row(conn: sqlite3.Connection, row: dict[str, Any]) ->
     )
 
 
+def _upsert_daily_fact_row(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO hourly_delta_daily_fact (
+            date,
+            merchant_id,
+            campaign_id,
+            sku_key,
+            bid_cpc,
+            views,
+            clicks,
+            cost,
+            gmv,
+            orders_total,
+            hour_rows,
+            computed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date, merchant_id, campaign_id, sku_key)
+        DO UPDATE SET
+            bid_cpc=excluded.bid_cpc,
+            views=excluded.views,
+            clicks=excluded.clicks,
+            cost=excluded.cost,
+            gmv=excluded.gmv,
+            orders_total=excluded.orders_total,
+            hour_rows=excluded.hour_rows,
+            computed_at=excluded.computed_at
+        """,
+        (
+            row["date"],
+            row["merchant_id"],
+            row["campaign_id"],
+            row["sku_key"],
+            row["bid_cpc"],
+            row["views"],
+            row["clicks"],
+            row["cost"],
+            row["gmv"],
+            row["orders_total"],
+            row["hour_rows"],
+            row["computed_at"],
+        ),
+    )
+
+
 def build_hourly_profile_and_reconciliation(
     conn: sqlite3.Connection,
     *,
@@ -190,6 +259,7 @@ def build_hourly_profile_and_reconciliation(
     if not _table_exists(conn, "hourly_delta"):
         return {
             "profile_rows": 0,
+            "daily_fact_rows": 0,
             "reconciliation_rows": 0,
             "reconciliation_failures": 0,
         }
@@ -281,35 +351,67 @@ def build_hourly_profile_and_reconciliation(
         )
         profile_rows += 1
 
+    where_sql_delta, params_delta = _where_clause(since, until, date_expr="d.date")
     hourly_totals_rows = conn.execute(
         f"""
         SELECT
-            date,
-            merchant_id,
-            campaign_id,
-            sku_key,
-            COALESCE(SUM(views_delta), 0) AS views_total,
-            COALESCE(SUM(clicks_delta), 0) AS clicks_total,
-            COALESCE(SUM(cost_delta), 0) AS cost_total,
-            COALESCE(SUM(gmv_delta), 0) AS gmv_total,
-            COALESCE(SUM(orders_delta), 0) AS orders_total
-        FROM hourly_delta
-        WHERE {where_sql}
-        GROUP BY date, merchant_id, campaign_id, sku_key
+            d.date,
+            d.merchant_id,
+            d.campaign_id,
+            d.sku_key,
+            (
+                SELECT d2.bid_cpc
+                FROM hourly_delta d2
+                WHERE d2.date = d.date
+                  AND d2.merchant_id = d.merchant_id
+                  AND d2.campaign_id = d.campaign_id
+                  AND d2.sku_key = d.sku_key
+                  AND d2.bid_cpc IS NOT NULL
+                ORDER BY d2.hour_end DESC, COALESCE(d2.snapshot_at, '') DESC, d2.delta_id DESC
+                LIMIT 1
+            ) AS latest_bid_cpc,
+            COALESCE(SUM(d.views_delta), 0) AS views_total,
+            COALESCE(SUM(d.clicks_delta), 0) AS clicks_total,
+            COALESCE(SUM(d.cost_delta), 0) AS cost_total,
+            COALESCE(SUM(d.gmv_delta), 0) AS gmv_total,
+            COALESCE(SUM(d.orders_delta), 0) AS orders_total,
+            COUNT(*) AS hour_rows
+        FROM hourly_delta d
+        WHERE {where_sql_delta}
+        GROUP BY d.date, d.merchant_id, d.campaign_id, d.sku_key
         """,
-        tuple(params),
+        tuple(params_delta),
     ).fetchall()
 
     hourly_map: dict[tuple[str, str, str, str], dict[str, float]] = {}
+    daily_fact_rows = 0
     for row in hourly_totals_rows:
         key = (str(row[0]), str(row[1]), str(row[2]), str(row[3]))
         hourly_map[key] = {
-            "views": float(row[4]),
-            "clicks": float(row[5]),
-            "cost": float(row[6]),
-            "gmv": float(row[7]),
-            "orders": float(row[8]),
+            "views": float(row[5]),
+            "clicks": float(row[6]),
+            "cost": float(row[7]),
+            "gmv": float(row[8]),
+            "orders": float(row[9]),
         }
+        _upsert_daily_fact_row(
+            conn,
+            {
+                "date": key[0],
+                "merchant_id": key[1],
+                "campaign_id": key[2],
+                "sku_key": key[3],
+                "bid_cpc": float(row[4] or 0.0),
+                "views": int(float(row[5] or 0.0)),
+                "clicks": int(float(row[6] or 0.0)),
+                "cost": round(float(row[7] or 0.0), 6),
+                "gmv": round(float(row[8] or 0.0), 6),
+                "orders_total": int(float(row[9] or 0.0)),
+                "hour_rows": int(row[10] or 0),
+                "computed_at": computed_at,
+            },
+        )
+        daily_fact_rows += 1
 
     daily_map: dict[tuple[str, str, str, str], dict[str, float]] = {}
     if _table_exists(conn, "campaign_product_daily_current"):
@@ -382,6 +484,7 @@ def build_hourly_profile_and_reconciliation(
     conn.commit()
     return {
         "profile_rows": profile_rows,
+        "daily_fact_rows": daily_fact_rows,
         "reconciliation_rows": reconciliation_rows,
         "reconciliation_failures": reconciliation_failures,
     }

@@ -67,3 +67,12 @@ python3 scripts/kaspi_ads_bid_manager.py \
 - `bid_change_log` entries show `success=1` and expected `new_bid`.
 - `hourly_snapshot` and `hourly_delta` continue updating each hour.
 - `hourly_reconciliation` does not trend worse after canary changes.
+
+## N6 Control-Loop Notes (current bid truth)
+1. Current bid for restore/rollback is resolved in this order:
+   - latest `hourly_snapshot.bid_cpc`
+   - latest successful `bid_change_log.new_bid`
+   - then `campaign_product_daily_current.bid_cpc`
+2. For restore schedules (rule name contains `restore`), target bid is recovered from last successful change history so pre-canary bid is restored deterministically.
+3. Run profile builder before elasticity/reporting to refresh telemetry daily facts:
+   - `python3 scripts/kaspi_ads_build_hourly_profile.py --ads-db db/kaspi_marketing_ads_wt.db`

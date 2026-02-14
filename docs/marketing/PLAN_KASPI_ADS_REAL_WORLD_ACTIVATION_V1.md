@@ -63,6 +63,10 @@ Enable it in *user space* only after the manual run works and logs look clean.
 - hourly_reconciliation within tolerance (if daily_current present)
 
 ## Phase 6C — Get the “sweet spot” now using Phase 5 (daily history)
+First refresh telemetry-derived daily facts (N6):
+- python3 scripts/kaspi_ads_build_hourly_profile.py \
+    --ads-db db/kaspi_marketing_ads_wt.db
+
 Run the optimizer right away (no need to wait for hourly):
 - python3 scripts/kaspi_ads_elasticity.py \
     --ads-db db/kaspi_marketing_ads_wt.db \
@@ -79,6 +83,7 @@ Review:
 Decision output:
 - recommended base bid for LINE61 (static first)
 - expected profit delta vs cost (with confidence guards)
+- Works even when `campaign_product_daily_current` has gaps, because optimizer now prefers `hourly_delta_daily_fact` rows.
 
 ## Phase 6D — Fix config to target LINE61 only
 1) Validate the real (campaign_id, sku_key) pairs in DB for LINE61.

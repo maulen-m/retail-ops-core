@@ -47,6 +47,14 @@ def _env_get(env: Mapping[str, str] | Any, key: str) -> str | None:
     return None
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 def ensure_bid_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -274,27 +282,76 @@ def _current_multiplier(rules: dict[str, Any], hour: int) -> tuple[float, str]:
 
 
 def _load_current_bids(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    row = conn.execute("SELECT MAX(date) FROM campaign_product_daily_current").fetchone()
-    if not row or not row[0]:
-        return []
-    target_date = str(row[0])
-    rows = conn.execute(
-        """
-        SELECT date, merchant_id, campaign_id, sku_key, COALESCE(bid_cpc, 0)
-        FROM campaign_product_daily_current
-        WHERE date = ?
-        """,
-        (target_date,),
-    ).fetchall()
+    hourly_map: dict[tuple[str, str], float] = {}
+    if _table_exists(conn, "hourly_snapshot"):
+        rows = conn.execute(
+            """
+            SELECT campaign_id, sku_key, COALESCE(bid_cpc, 0)
+            FROM hourly_snapshot
+            WHERE bid_cpc IS NOT NULL
+            ORDER BY snapshot_at DESC, snapshot_hour DESC, snapshot_id DESC
+            """
+        ).fetchall()
+        for campaign_id, sku_key, bid_cpc in rows:
+            key = (str(campaign_id or ""), str(sku_key or ""))
+            if not key[0] or not key[1] or key in hourly_map:
+                continue
+            hourly_map[key] = float(bid_cpc or 0.0)
+
+    history_map: dict[tuple[str, str], float] = {}
+    if _table_exists(conn, "bid_change_log"):
+        rows = conn.execute(
+            """
+            SELECT campaign_id, sku_key, COALESCE(new_bid, 0)
+            FROM bid_change_log
+            WHERE COALESCE(success, 0) = 1
+            ORDER BY change_id DESC
+            """
+        ).fetchall()
+        for campaign_id, sku_key, new_bid in rows:
+            key = (str(campaign_id or ""), str(sku_key or ""))
+            if not key[0] or not key[1] or key in history_map:
+                continue
+            history_map[key] = float(new_bid or 0.0)
+
+    daily_map: dict[tuple[str, str], float] = {}
+    if _table_exists(conn, "campaign_product_daily_current"):
+        rows = conn.execute(
+            """
+            SELECT campaign_id, sku_key, COALESCE(bid_cpc, 0)
+            FROM campaign_product_daily_current
+            WHERE bid_cpc IS NOT NULL
+            ORDER BY date DESC
+            """
+        ).fetchall()
+        for campaign_id, sku_key, bid_cpc in rows:
+            key = (str(campaign_id or ""), str(sku_key or ""))
+            if not key[0] or not key[1] or key in daily_map:
+                continue
+            daily_map[key] = float(bid_cpc or 0.0)
+
     out: list[dict[str, Any]] = []
-    for date_value, merchant_id, campaign_id, sku_key, bid_cpc in rows:
+    for campaign_id, sku_key in sorted(set(hourly_map) | set(history_map) | set(daily_map)):
+        key = (campaign_id, sku_key)
+        bid_cpc = 0.0
+        source = ""
+        if key in hourly_map:
+            bid_cpc = hourly_map[key]
+            source = "hourly_snapshot"
+        elif key in history_map:
+            bid_cpc = history_map[key]
+            source = "bid_change_log"
+        elif key in daily_map:
+            bid_cpc = daily_map[key]
+            source = "campaign_product_daily_current"
+        else:
+            continue
         out.append(
             {
-                "date": str(date_value),
-                "merchant_id": str(merchant_id or ""),
-                "campaign_id": str(campaign_id or ""),
-                "sku_key": str(sku_key or ""),
-                "bid_cpc": float(bid_cpc or 0.0),
+                "campaign_id": campaign_id,
+                "sku_key": sku_key,
+                "bid_cpc": bid_cpc,
+                "current_bid_source": source,
             }
         )
     return out
@@ -359,6 +416,28 @@ def _last_successful_change(
         return None
     old_bid, new_bid = row
     return float(old_bid or 0.0), float(new_bid or 0.0)
+
+
+def _restore_target_from_history(
+    conn: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    sku_key: str,
+    current_bid: float,
+    rule_name: str,
+) -> float | None:
+    # Restore is explicit: only schedule rules named as restore can override caps.
+    if "restore" not in str(rule_name or "").lower():
+        return None
+    hist = _last_successful_change(conn, campaign_id=campaign_id, sku_key=sku_key)
+    if hist is None:
+        return None
+    previous_bid, reduced_bid = hist
+    if abs(float(current_bid) - float(reduced_bid)) > 1e-6:
+        return None
+    if previous_bid <= reduced_bid:
+        return None
+    return round(float(previous_bid), 4)
 
 
 def _log_change(
@@ -517,9 +596,19 @@ def execute_bid_manager(
         campaign_cfg = campaigns_cfg.get(campaign_id, {}) if isinstance(campaigns_cfg.get(campaign_id), dict) else {}
         base_bid = float(campaign_cfg.get("base_bid", current_bid))
 
-        target_bid = _clamp(base_bid * multiplier, min_bid, max_bid)
-        target_bid = _apply_step_cap(current_bid, target_bid, max_step)
-        target_bid = round(_clamp(target_bid, min_bid, max_bid), 4)
+        restore_target = _restore_target_from_history(
+            conn,
+            campaign_id=campaign_id,
+            sku_key=sku_key,
+            current_bid=current_bid,
+            rule_name=rule_name,
+        )
+        if restore_target is not None:
+            target_bid = restore_target
+        else:
+            target_bid = _clamp(base_bid * multiplier, min_bid, max_bid)
+            target_bid = _apply_step_cap(current_bid, target_bid, max_step)
+            target_bid = round(_clamp(target_bid, min_bid, max_bid), 4)
 
         if abs(target_bid - current_bid) < 1e-9:
             result["skipped_no_change"] += 1

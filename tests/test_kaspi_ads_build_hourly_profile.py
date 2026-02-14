@@ -111,3 +111,50 @@ def test_build_hourly_profile_and_reconciliation_detects_mismatch(tmp_path: Path
         assert bad_click_row is not None
         assert bad_click_row[0] == 0
         assert bad_click_row[1] > 5.0
+
+
+def test_daily_fact_from_hourly_delta_is_idempotent_and_correct(tmp_path: Path) -> None:
+    db_path = tmp_path / "ads.db"
+    with sqlite3.connect(db_path) as conn:
+        ensure_hourly_schema(conn)
+        ensure_profile_schema(conn)
+        _seed_hourly_delta(conn)
+
+        first = build_hourly_profile_and_reconciliation(conn, tolerance_pct=5.0)
+        second = build_hourly_profile_and_reconciliation(conn, tolerance_pct=5.0)
+
+        assert first["daily_fact_rows"] == 1
+        assert second["daily_fact_rows"] == 1
+
+        rows = conn.execute(
+            """
+            SELECT
+                date,
+                merchant_id,
+                campaign_id,
+                sku_key,
+                bid_cpc,
+                views,
+                clicks,
+                cost,
+                gmv,
+                orders_total,
+                hour_rows
+            FROM hourly_delta_daily_fact
+            ORDER BY date, merchant_id, campaign_id, sku_key
+            """
+        ).fetchall()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row[0] == "2026-02-10"
+        assert row[1] == "759051"
+        assert row[2] == "2380614"
+        assert row[3] == "19796919b"
+        # Latest bid in seeded delta rows (hour_end 11) is preserved.
+        assert row[4] == 70.0
+        assert row[5] == 200
+        assert row[6] == 20
+        assert row[7] == 1000.0
+        assert row[8] == 4000.0
+        assert row[9] == 3
+        assert row[10] == 2
