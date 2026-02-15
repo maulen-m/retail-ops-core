@@ -111,7 +111,29 @@ PY
             TMP_DIR=$(mktemp -d -t kaspi_store-c_import)
             MELVIS_OUT="${TMP_DIR}/ActiveOrders_MELVIS.xlsx"
             python scripts/export_api_orders.py --store MELVIS --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" --refetch-missing-costs --verbose --no-archive --output "${MELVIS_OUT}"
-            if [ $? -eq 0 ] && [ -f "${MELVIS_OUT}" ]; then
+            MELVIS_RC=$?
+            if [ -f "${MELVIS_OUT}" ]; then
+                MELVIS_ROWS=$(MELVIS_OUT="${MELVIS_OUT}" python3 - <<'PY'
+import os
+from pathlib import Path
+import pandas as pd
+
+p = Path(os.environ.get("MELVIS_OUT", ""))
+if not p.exists():
+    print(0)
+    raise SystemExit(0)
+try:
+    df = pd.read_excel(p)
+except Exception:
+    print(-1)
+    raise SystemExit(0)
+print(len(df))
+PY
+)
+            else
+                MELVIS_ROWS=0
+            fi
+            if [ "${MELVIS_RC}" -eq 0 ] && [ -f "${MELVIS_OUT}" ] && [ "${MELVIS_ROWS}" -gt 0 ]; then
                 MELVIS_OUT="${MELVIS_OUT}" python3 - <<'PY'
 import pandas as pd
 from pathlib import Path
@@ -126,6 +148,8 @@ if store-c and base.exists() and store-c.exists():
     merged.to_excel(base, index=False, engine='openpyxl')
     print(f"Merged MELVIS rows: +{len(df_store-c)} (deduped to {len(merged)})")
 PY
+            elif [ "${MELVIS_RC}" -eq 0 ]; then
+                echo "No MELVIS rows found for filter; continuing."
             else
                 echo "WARNING: MELVIS export failed or missing output."
                 WARNINGS+=("MELVIS export failed or missing output. Fix: check KASPI_TOKEN_MELVIS and API connectivity.")
@@ -265,6 +289,8 @@ echo "----------------------------------------"
 STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-900}"
 XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-45}"
 XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-180}"
+# This command intentionally skips existing-row status updates for unattended runs.
+STEP2_NO_UPDATE=1
 echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
 echo "xlwings open timeout: ${XLWINGS_OPEN_TIMEOUT_SEC}s"
 echo "xlwings append timeout: ${XLWINGS_APPEND_TIMEOUT_SEC}s"
@@ -277,6 +303,7 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
         --no-transactional \
         --no-strict-excel \
         --openpyxl-append-fallback \
+        --no-prefer-xlwings-append \
         --kaspi-core-override \
         --no-gdrive-sync \
         --skip-fixed-backfill
@@ -313,22 +340,28 @@ fi
 echo ""
 echo "Step 2c: Backfilling Line61 Kaspi_name_core..."
 echo "----------------------------------------"
-python3 scripts/backfill_line61_kaspi_core.py \
-    --workbook excel_ui/SALES_KSP_CRM_V3.xlsx \
-    --sheet SALES_KSP_CRM_1 \
-    --table tb_SalesRaw \
-    --backup-dir excel_ui/backups \
-    --apply
-if [ $? -ne 0 ]; then
-    echo "WARNING: Line61 Kaspi_name_core backfill failed (see above)."
-    WARNINGS+=("Line61 Kaspi_name_core backfill failed. Fix: run scripts/backfill_line61_kaspi_core.py manually.")
+if [ "${IMPORT_NOOP}" -eq 1 ]; then
+    echo "NO-OP: skipping Line61 Kaspi_name_core backfill (no CRM changes)."
+else
+    python3 scripts/backfill_line61_kaspi_core.py \
+        --workbook excel_ui/SALES_KSP_CRM_V3.xlsx \
+        --sheet SALES_KSP_CRM_1 \
+        --table tb_SalesRaw \
+        --backup-dir excel_ui/backups \
+        --apply
+    if [ $? -ne 0 ]; then
+        echo "WARNING: Line61 Kaspi_name_core backfill failed (see above)."
+        WARNINGS+=("Line61 Kaspi_name_core backfill failed. Fix: run scripts/backfill_line61_kaspi_core.py manually.")
+    fi
 fi
 
 # Step 2b: Validate pending orders alignment (CRM vs DB/ActiveOrders)
 echo ""
 echo "Step 2b: Validating pending orders..."
 echo "----------------------------------------"
-if [ "${IMPORT_NOOP}" -eq 1 ]; then
+if [ "${STEP2_NO_UPDATE}" = "1" ]; then
+    echo "NO-OP: skipping pending order validation in --no-update mode."
+elif [ "${IMPORT_NOOP}" -eq 1 ]; then
     echo "NO-OP: skipping pending order validation (no CRM changes)."
 else
     PENDING_ARGS=""
