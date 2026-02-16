@@ -11,6 +11,7 @@ def test_single_truth_preflight_plist_contract() -> None:
     assert "<string>scripts/run_strict_daily_preflight.py</string>" in plist
     assert "<string>--emit-lineage</string>" in plist
     assert "<string>--send-alert-on-fail</string>" in plist
+    assert "<string>--ensure-business-insides</string>" in plist
     assert "<string>/usr/bin/env</string>" in plist
     assert "<string>python3</string>" in plist
 

@@ -18,3 +18,9 @@ def test_gitignore_includes_ops_reliability_generated_paths() -> None:
     ]
     for entry in expected:
         assert entry in content
+
+
+def test_gitignore_does_not_ignore_transfer_ledger_docs() -> None:
+    content = Path(".gitignore").read_text(encoding="utf-8")
+    assert "docs/transfer_ledger/" not in content
+    assert "transfer_ledger" not in [line.strip() for line in content.splitlines()]

@@ -42,6 +42,7 @@ def test_preflight_propagates_strict_validation_result(
         db_path=db_path,
         workbook_path=workbook_path,
         emit_lineage=False,
+        ensure_business_insides=False,
     )
 
     assert code == 0
@@ -74,6 +75,7 @@ def test_preflight_emits_lineage_when_requested(
         workbook_path=workbook_path,
         emit_lineage=True,
         lineage_output=lineage_path,
+        ensure_business_insides=False,
     )
 
     assert code == 0
@@ -99,6 +101,7 @@ def test_cli_emit_lineage_does_not_crash_from_script_entrypoint(tmp_path: Path) 
             "--emit-lineage",
             "--lineage-output",
             str(lineage_path),
+            "--no-ensure-business-insides",
         ],
         cwd=str(repo_root),
         capture_output=True,
@@ -197,3 +200,79 @@ def test_preflight_alert_failures_are_best_effort(
 
     assert code == 4
     assert "FAIL" in summary
+
+
+def test_preflight_autogenerates_business_insides_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    workbook_path = tmp_path / "crm.xlsx"
+    db_path.write_text("", encoding="utf-8")
+    workbook_path.write_text("fixture", encoding="utf-8")
+    (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config" / "business_insides" / "snapshots").mkdir(parents=True, exist_ok=True)
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        calls.append([str(part) for part in cmd])
+        cmd_str = " ".join(str(part) for part in cmd)
+        if "generate_business_insides.py" in cmd_str:
+            snapshot = (
+                tmp_path
+                / "config"
+                / "business_insides"
+                / "BUSINESS_INSIDES_2026-02-17.md"
+            )
+            snapshot.write_text("# ok\n", encoding="utf-8")
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
+        if "validate_params.py" in cmd_str:
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
+        raise AssertionError(f"Unexpected command: {cmd_str}")
+
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _fake_run)
+
+    code, summary = run_preflight(
+        db_path=db_path,
+        workbook_path=workbook_path,
+        emit_lineage=False,
+        ensure_business_insides=True,
+        business_insides_as_of="2026-02-17",
+    )
+
+    assert code == 0
+    assert "PASS" in summary
+    assert any("generate_business_insides.py" in " ".join(cmd) for cmd in calls)
+    assert any("validate_params.py" in " ".join(cmd) for cmd in calls)
+
+
+def test_preflight_fails_when_business_insides_generation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    workbook_path = tmp_path / "crm.xlsx"
+    db_path.write_text("", encoding="utf-8")
+    workbook_path.write_text("fixture", encoding="utf-8")
+    (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config" / "business_insides" / "snapshots").mkdir(parents=True, exist_ok=True)
+
+    def _fake_run(cmd, *args, **kwargs):
+        cmd_str = " ".join(str(part) for part in cmd)
+        if "generate_business_insides.py" in cmd_str:
+            return subprocess.CompletedProcess(args=cmd, returncode=7)
+        raise AssertionError("validate_params should not run when generation fails")
+
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _fake_run)
+
+    code, summary = run_preflight(
+        db_path=db_path,
+        workbook_path=workbook_path,
+        emit_lineage=False,
+        ensure_business_insides=True,
+        business_insides_as_of="2026-02-17",
+    )
+
+    assert code == 7
+    assert "business-insides generation failed" in summary
