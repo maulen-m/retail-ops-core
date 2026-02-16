@@ -148,14 +148,54 @@ def repair_missing_shared_strings_part(
 def validate_workbook_integrity(workbook_path: Path) -> IntegrityResult:
     errors: List[str] = []
     warnings: List[str] = []
+    part_cache: Dict[str, bytes | None] = {}
+
+    def _safe_read(zf: zipfile.ZipFile, part_name: str) -> bytes | None:
+        if part_name in part_cache:
+            return part_cache[part_name]
+        try:
+            data = zf.read(part_name)
+            part_cache[part_name] = data
+            return data
+        except KeyError:
+            errors.append(f"package part missing: {part_name}")
+        except Exception as exc:  # pragma: no cover - exercised via integration/corrupt files
+            errors.append(f"zip entry unreadable: {part_name} ({exc})")
+        part_cache[part_name] = None
+        return None
 
     with zipfile.ZipFile(workbook_path, "r") as zf:
         names = set(zf.namelist())
+        for part_name in sorted(name for name in names if name.startswith("xl/")):
+            _safe_read(zf, part_name)
 
-        wb_root = ET.fromstring(zf.read("xl/workbook.xml"))
-        wb_rel_map = _load_rels_map(zf, "xl/_rels/workbook.xml.rels")
+        wb_xml = _safe_read(zf, "xl/workbook.xml")
+        wb_rels_xml = _safe_read(zf, "xl/_rels/workbook.xml.rels")
+        if wb_xml is None or wb_rels_xml is None:
+            return IntegrityResult(errors=errors, warnings=warnings)
 
-        for rid, target in _shared_strings_targets(zf):
+        try:
+            wb_root = ET.fromstring(wb_xml)
+        except ET.ParseError as exc:
+            errors.append(f"xml parse error: xl/workbook.xml ({exc})")
+            return IntegrityResult(errors=errors, warnings=warnings)
+
+        try:
+            rels_root = ET.fromstring(wb_rels_xml)
+            wb_rel_map = {
+                r.attrib.get("Id", ""): r.attrib.get("Target", "")
+                for r in rels_root.findall(f"{{{PKG_REL_NS}}}Relationship")
+            }
+        except ET.ParseError as exc:
+            errors.append(f"xml parse error: xl/_rels/workbook.xml.rels ({exc})")
+            return IntegrityResult(errors=errors, warnings=warnings)
+
+        try:
+            shared_targets = _shared_strings_targets(zf)
+        except Exception as exc:
+            errors.append(f"zip entry unreadable: xl/_rels/workbook.xml.rels ({exc})")
+            shared_targets = []
+        for rid, target in shared_targets:
             if target not in names:
                 errors.append(f"workbook sharedStrings target missing: rid={rid} target={target}")
 
@@ -182,7 +222,14 @@ def validate_workbook_integrity(workbook_path: Path) -> IntegrityResult:
 
         table_files = [n for n in names if n.startswith("xl/tables/table") and n.endswith(".xml")]
         for table_file in sorted(table_files):
-            root = ET.fromstring(zf.read(table_file))
+            table_xml = _safe_read(zf, table_file)
+            if table_xml is None:
+                continue
+            try:
+                root = ET.fromstring(table_xml)
+            except ET.ParseError as exc:
+                errors.append(f"xml parse error: {table_file} ({exc})")
+                continue
             table_ref = root.attrib.get("ref", "")
             m = A1_RANGE_RE.match(table_ref)
             if not m:
@@ -206,9 +253,26 @@ def validate_workbook_integrity(workbook_path: Path) -> IntegrityResult:
             rels_file = ws_file.replace("xl/worksheets/", "xl/worksheets/_rels/") + ".rels"
             rel_map: Dict[str, str] = {}
             if rels_file in names:
-                rel_map = _load_rels_map(zf, rels_file)
+                rels_xml = _safe_read(zf, rels_file)
+                if rels_xml is not None:
+                    try:
+                        rels_root = ET.fromstring(rels_xml)
+                        rel_map = {
+                            r.attrib.get("Id", ""): r.attrib.get("Target", "")
+                            for r in rels_root.findall(f"{{{PKG_REL_NS}}}Relationship")
+                        }
+                    except ET.ParseError as exc:
+                        errors.append(f"xml parse error: {rels_file} ({exc})")
+                        rel_map = {}
 
-            ws_root = ET.fromstring(zf.read(ws_file))
+            ws_xml = _safe_read(zf, ws_file)
+            if ws_xml is None:
+                continue
+            try:
+                ws_root = ET.fromstring(ws_xml)
+            except ET.ParseError as exc:
+                errors.append(f"xml parse error: {ws_file} ({exc})")
+                continue
             table_parts = ws_root.find(f"{{{MAIN_NS}}}tableParts")
             if table_parts is None:
                 continue

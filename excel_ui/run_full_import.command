@@ -288,7 +288,7 @@ echo "Step 2: Importing new orders to CRM..."
 echo "----------------------------------------"
 STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-900}"
 XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-45}"
-XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-180}"
+XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-420}"
 # This command intentionally skips existing-row status updates for unattended runs.
 STEP2_NO_UPDATE=1
 echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
@@ -302,8 +302,6 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
         --no-update \
         --no-transactional \
         --no-strict-excel \
-        --openpyxl-append-fallback \
-        --no-prefer-xlwings-append \
         --kaspi-core-override \
         --no-gdrive-sync \
         --skip-fixed-backfill

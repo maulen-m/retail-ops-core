@@ -18,7 +18,7 @@ def _extract_cli_flags(step2_block: str) -> set[str]:
     return flags
 
 
-def test_step2_uses_unattended_safe_openpyxl_first_mode():
+def test_step2_uses_unattended_safe_xlwings_first_mode():
     script_path = Path("excel_ui/run_full_import.command")
     text = script_path.read_text(encoding="utf-8")
     step2_block = _extract_step2_block(text)
@@ -33,9 +33,9 @@ def test_step2_uses_unattended_safe_openpyxl_first_mode():
     assert "--no-strict-excel" in flags
     assert "--no-update" in flags
 
-    # In unattended launchd runs, avoid AppleEvent hangs: use openpyxl append path first.
-    assert "--openpyxl-append-fallback" in flags
-    assert "--no-prefer-xlwings-append" in flags
+    # Keep Excel-safe append path first; openpyxl append can corrupt pivot caches.
+    assert "--openpyxl-append-fallback" not in flags
+    assert "--no-prefer-xlwings-append" not in flags
     assert "--no-append-integrity-check" not in flags
     assert "--no-gdrive-sync" in flags
 
@@ -50,8 +50,8 @@ def test_step2_append_timeout_default_is_not_overly_aggressive():
     text = script_path.read_text(encoding="utf-8")
     step2_block = _extract_step2_block(text)
 
-    # 60s is too low for larger day volumes; keep a safer unattended default.
-    assert 'XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-180}"' in step2_block
+    # 180s is too low for larger day volumes; keep a safer unattended default.
+    assert 'XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-420}"' in step2_block
 
 
 def test_step2c_backfill_is_skipped_when_import_is_noop():

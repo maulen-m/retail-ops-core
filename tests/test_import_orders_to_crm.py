@@ -42,6 +42,7 @@ from scripts.import_orders_to_crm import (
     _normalize_conditional_formatting_ranges,
     _verify_appended_rows_integrity,
     _xlwings_open_timeout_sec,
+    _build_xlwings_write_plan,
     excel_append_xlwings,
     _excel_automation_preflight,
     _excel_open_probe,
@@ -895,6 +896,46 @@ def test_append_orders_with_fallback_suppresses_traceback_for_apple_event_timeou
 def test_xlwings_append_timeout_sec_respects_env(monkeypatch):
     monkeypatch.setenv("CRM_XLWINGS_APPEND_TIMEOUT_SEC", "75")
     assert _xlwings_append_timeout_sec() == 75
+
+
+def test_xlwings_append_timeout_sec_uses_safer_default(monkeypatch):
+    monkeypatch.delenv("CRM_XLWINGS_APPEND_TIMEOUT_SEC", raising=False)
+    assert _xlwings_append_timeout_sec() == 420
+
+
+def test_build_xlwings_write_plan_coerces_order_ids_and_skips_empty_columns():
+    stage_block = [
+        ["812345678", "", "alpha"],
+        ["", "", "beta"],
+    ]
+    slice_headers = ["№ заказа", "empty_col", "SKU_ID"]
+
+    col_values_by_offset, write_segments, order_offsets = _build_xlwings_write_plan(
+        stage_block=stage_block,
+        slice_headers=slice_headers,
+    )
+
+    assert order_offsets == [0]
+    assert col_values_by_offset[0] == [812345678, ""]
+    assert col_values_by_offset[1] == ["", ""]
+    assert col_values_by_offset[2] == ["alpha", "beta"]
+    assert write_segments == [(0, 0), (2, 2)]
+
+
+def test_build_xlwings_write_plan_merges_contiguous_non_empty_columns():
+    stage_block = [
+        ["812345678", "core", "sku", ""],
+        ["812345679", "core2", "sku2", ""],
+    ]
+    slice_headers = ["№ заказа", "Kaspi_name_core", "SKU_ID", "unused"]
+
+    _col_values, write_segments, order_offsets = _build_xlwings_write_plan(
+        stage_block=stage_block,
+        slice_headers=slice_headers,
+    )
+
+    assert order_offsets == [0]
+    assert write_segments == [(0, 2)]
 
 
 def test_excel_append_xlwings_does_not_mask_primary_error_when_app_quit_fails(monkeypatch, tmp_path):

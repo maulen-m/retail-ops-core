@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import zipfile
+import zlib
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -213,3 +214,51 @@ def test_filter_integrity_errors_allows_exact_only():
     )
     assert allowed == ["named range contains #REF!: SS_TOTAL"]
     assert blocking == ["named range contains #REF!: B"]
+
+
+def test_validate_workbook_integrity_reports_unreadable_zip_member(tmp_path: Path, monkeypatch):
+    wb_path = tmp_path / "zip_corrupt_like.xlsx"
+    _make_workbook_with_table(wb_path)
+
+    original_read = zipfile.ZipFile.read
+
+    def _patched_read(self, name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "xl/workbook.xml":
+            raise zlib.error("Error -3 while decompressing data: invalid code lengths set")
+        return original_read(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", _patched_read)
+
+    result = validate_workbook_integrity(wb_path)
+    assert any("zip entry unreadable: xl/workbook.xml" in err for err in result.errors)
+
+
+def test_validate_workbook_integrity_reports_unreadable_non_core_xl_part(
+    tmp_path: Path, monkeypatch
+):
+    wb_path = tmp_path / "zip_corrupt_pivot_cache_like.xlsx"
+    _make_workbook_with_table(wb_path)
+
+    # Add an extra xl/ part to simulate a workbook member that openpyxl/Excel may touch later.
+    with zipfile.ZipFile(wb_path, "r") as zin:
+        tmp = tmp_path / "zip_corrupt_pivot_cache_like_tmp.xlsx"
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                zout.writestr(item, zin.read(item.filename))
+            zout.writestr("xl/pivotCache/pivotCacheRecords1.xml", b"<pivotCacheRecords/>")
+    tmp.replace(wb_path)
+
+    original_read = zipfile.ZipFile.read
+
+    def _patched_read(self, name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "xl/pivotCache/pivotCacheRecords1.xml":
+            raise zlib.error("Error -3 while decompressing data: invalid code lengths set")
+        return original_read(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", _patched_read)
+
+    result = validate_workbook_integrity(wb_path)
+    assert any(
+        "zip entry unreadable: xl/pivotCache/pivotCacheRecords1.xml" in err
+        for err in result.errors
+    )

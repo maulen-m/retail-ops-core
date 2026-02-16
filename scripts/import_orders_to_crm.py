@@ -391,7 +391,7 @@ def _xlwings_open_timeout_sec(default_sec: int = 45) -> int:
     return max(parsed, 5)
 
 
-def _xlwings_append_timeout_sec(default_sec: int = 180) -> int:
+def _xlwings_append_timeout_sec(default_sec: int = 420) -> int:
     """
     Wall-clock timeout for xlwings append execution before falling back.
     """
@@ -2750,6 +2750,48 @@ def build_staging(df_filt: pd.DataFrame, crm_slice_headers: List[str]) -> Tuple[
 
 # ---------- Excel Append via xlwings ----------
 
+def _build_xlwings_write_plan(
+    stage_block: List[List[Any]],
+    slice_headers: List[str],
+) -> Tuple[List[List[Any]], List[Tuple[int, int]], List[int]]:
+    """
+    Build xlwings write plan that skips fully empty staged columns (so formula
+    autofill columns are preserved) while minimizing AppleEvent write calls.
+    """
+    width = len(slice_headers)
+    order_offsets = [
+        idx
+        for idx, header in enumerate(slice_headers)
+        if norm(header) in _ORDER_ID_HEADER_ALIASES
+    ]
+    order_offset_set = set(order_offsets)
+
+    col_values_by_offset: List[List[Any]] = []
+    non_empty_offsets: List[int] = []
+    for offset in range(width):
+        col_values = [(row[offset] if offset < len(row) else "") for row in stage_block]
+        if offset in order_offset_set:
+            col_values = [_coerce_order_id_numeric(v) for v in col_values]
+        col_values_by_offset.append(col_values)
+        if not all((v is None) or (isinstance(v, str) and v == "") for v in col_values):
+            non_empty_offsets.append(offset)
+
+    write_segments: List[Tuple[int, int]] = []
+    if non_empty_offsets:
+        seg_start = non_empty_offsets[0]
+        prev = seg_start
+        for offset in non_empty_offsets[1:]:
+            if offset == prev + 1:
+                prev = offset
+                continue
+            write_segments.append((seg_start, prev))
+            seg_start = offset
+            prev = offset
+        write_segments.append((seg_start, prev))
+
+    return col_values_by_offset, write_segments, order_offsets
+
+
 def excel_append_xlwings(
     out_wb: Path,
     sheet_name: str,
@@ -2845,23 +2887,31 @@ def excel_append_xlwings(
                 phone_range.number_format = "0"
                 print(f"  Phone data written to column {phone_col_abs}")
 
-        # Write data columns (skip formula-driven columns like OrderID if they exist in table)
-        width = len(slice_headers)
-        for offset in range(width):
-            header = slice_headers[offset]
-            col_values = [row[offset] for row in stage_block]
-            is_order_col = norm(header) in _ORDER_ID_HEADER_ALIASES
-            if is_order_col:
-                col_values = [_coerce_order_id_numeric(v) for v in col_values]
+        # Write data using contiguous segments to reduce AppleEvent round-trips.
+        col_values_by_offset, write_segments, order_offsets = _build_xlwings_write_plan(
+            stage_block=stage_block,
+            slice_headers=slice_headers,
+        )
+        for seg_start, seg_end in write_segments:
+            block = [
+                [col_values_by_offset[offset][row_idx] for offset in range(seg_start, seg_end + 1)]
+                for row_idx in range(n)
+            ]
+            target = sh.range(
+                (top_row, start_col_abs + seg_start),
+                (bottom_row, start_col_abs + seg_end),
+            )
+            target.value = block
 
-            # Skip entirely empty columns
+        for order_offset in order_offsets:
+            col_values = col_values_by_offset[order_offset]
             if all((v is None) or (isinstance(v, str) and v == "") for v in col_values):
                 continue
-
-            target = sh.range((top_row, start_col_abs + offset), (bottom_row, start_col_abs + offset))
-            target.value = [[v] for v in col_values]
-            if is_order_col:
-                target.number_format = "0"
+            order_target = sh.range(
+                (top_row, start_col_abs + order_offset),
+                (bottom_row, start_col_abs + order_offset),
+            )
+            order_target.number_format = "0"
 
         table_header = sh.range(
             (header_row, tbl_start_col),
