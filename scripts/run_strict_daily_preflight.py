@@ -9,7 +9,7 @@ Optionally emit lineage artifact.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import date, datetime
 import os
 from pathlib import Path
 import subprocess
@@ -75,6 +75,56 @@ def _best_effort_failure_alert(*, message: str, db_path: Path, workbook_path: Pa
         print(f"Preflight alert failed: {exc}")
 
 
+def _business_insides_snapshot_exists(as_of_iso: str) -> bool:
+    current = PROJECT_ROOT / "config" / "business_insides" / f"BUSINESS_INSIDES_{as_of_iso}.md"
+    snapshot = (
+        PROJECT_ROOT
+        / "config"
+        / "business_insides"
+        / "snapshots"
+        / f"BUSINESS_INSIDES_{as_of_iso}.md"
+    )
+    return current.exists() or snapshot.exists()
+
+
+def _ensure_business_insides_snapshot(
+    *,
+    db_path: Path,
+    as_of_iso: str,
+    send_alert_on_fail: bool,
+    workbook_path: Path,
+) -> Tuple[int, str | None]:
+    if _business_insides_snapshot_exists(as_of_iso):
+        return 0, None
+
+    cmd = [
+        sys.executable,
+        "scripts/generate_business_insides.py",
+        "--db",
+        str(db_path),
+        "--as-of",
+        as_of_iso,
+    ]
+    completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=False)
+    if int(completed.returncode) != 0:
+        msg = (
+            "STRICT_DAILY_PREFLIGHT FAIL: business-insides generation failed "
+            f"rc={int(completed.returncode)} as_of={as_of_iso}"
+        )
+        if send_alert_on_fail:
+            _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook_path)
+        return int(completed.returncode), msg
+    if not _business_insides_snapshot_exists(as_of_iso):
+        msg = (
+            "STRICT_DAILY_PREFLIGHT FAIL: business-insides snapshot missing after generation "
+            f"as_of={as_of_iso}"
+        )
+        if send_alert_on_fail:
+            _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook_path)
+        return 2, msg
+    return 0, None
+
+
 def run_preflight(
     *,
     db_path: Path = DEFAULT_DB,
@@ -83,6 +133,8 @@ def run_preflight(
     lineage_output: Path | None = None,
     max_workbook_age_hours: float | None = None,
     send_alert_on_fail: bool = False,
+    ensure_business_insides: bool = True,
+    business_insides_as_of: str | None = None,
 ) -> Tuple[int, str]:
     workbook = workbook_path
     if workbook is None:
@@ -112,6 +164,17 @@ def run_preflight(
             if send_alert_on_fail:
                 _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
             return 2, msg
+
+    if ensure_business_insides:
+        as_of_iso = (business_insides_as_of or date.today().isoformat()).strip()
+        generate_code, generate_error = _ensure_business_insides_snapshot(
+            db_path=db_path,
+            as_of_iso=as_of_iso,
+            send_alert_on_fail=send_alert_on_fail,
+            workbook_path=workbook,
+        )
+        if generate_code != 0:
+            return generate_code, str(generate_error)
 
     env = os.environ.copy()
     env["AB_CRM_WORKBOOK_PATH"] = str(workbook)
@@ -160,6 +223,25 @@ def main() -> int:
         action="store_true",
         help="Best-effort Telegram alert on preflight failure",
     )
+    parser.add_argument(
+        "--ensure-business-insides",
+        dest="ensure_business_insides",
+        action="store_true",
+        default=True,
+        help="Generate missing BUSINESS_INSIDES snapshot for the preflight as-of date",
+    )
+    parser.add_argument(
+        "--no-ensure-business-insides",
+        dest="ensure_business_insides",
+        action="store_false",
+        help="Disable BUSINESS_INSIDES auto-generation in preflight",
+    )
+    parser.add_argument(
+        "--business-insides-as-of",
+        type=str,
+        default=None,
+        help="BUSINESS_INSIDES as-of date (YYYY-MM-DD); defaults to today",
+    )
     args = parser.parse_args()
 
     code, summary = run_preflight(
@@ -169,6 +251,8 @@ def main() -> int:
         lineage_output=args.lineage_output,
         max_workbook_age_hours=args.max_workbook_age_hours,
         send_alert_on_fail=bool(args.send_alert_on_fail),
+        ensure_business_insides=bool(args.ensure_business_insides),
+        business_insides_as_of=args.business_insides_as_of,
     )
     print(summary)
     return code
