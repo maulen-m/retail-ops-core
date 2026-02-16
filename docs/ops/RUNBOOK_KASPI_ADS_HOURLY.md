@@ -31,10 +31,30 @@
 
 ## Report Output Paths
 - Coverage JSON (latest): `reports/marketing/trust_loop/kaspi_ads_campaign_coverage_latest.json`
+- Trust-loop summary JSON (latest): `reports/marketing/trust_loop/kaspi_ads_daily_trust_loop_latest.json`
 - Daily brief outputs (latest set):
   - `reports/marketing/daily_brief/kaspi_ads_elasticity_summary.json`
   - `reports/marketing/daily_brief/kaspi_ads_bid_recommendations.csv`
   - `reports/marketing/daily_brief/kaspi_ads_elasticity_levels.csv`
+
+## Single-Command Daily Trust Loop
+Run all three daily checks in one command:
+
+```bash
+python3 scripts/kaspi_ads_daily_trust_loop.py \
+  --ads-db db/kaspi_marketing_ads_wt.db \
+  --stores-config config/kaspi_ads_hourly_stores.yaml \
+  --app-db db/app.db
+```
+
+What it runs:
+1. `kaspi_ads_healthcheck.py`
+2. `kaspi_ads_campaign_coverage_report.py`
+3. `kaspi_ads_elasticity.py`
+
+Exit code:
+- `0` if all steps pass
+- non-zero if any step fails (trust-loop escalation)
 
 ## One-time Install/Update (per job)
 Use user LaunchAgents. Do not run in main repo path.
