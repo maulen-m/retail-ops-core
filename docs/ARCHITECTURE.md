@@ -45,6 +45,12 @@ The operational truth chain is enforced as:
    - guarded sync: `scripts/sync_dim_sku_from_dim_sku_light.py`
    - inbound PO sync must not overwrite existing `dim_sku.weight_kg` unless explicit override flag is used.
    - unresolved rows are surfaced explicitly and fail strict validation.
+13. Strict daily ops preflight wrapper:
+   - `scripts/run_strict_daily_preflight.py`
+   - fail-closed workbook anchor (`AB_CRM_WORKBOOK_PATH`) with freshness threshold
+   - best-effort alerting on strict failures (`--send-alert-on-fail`)
+   - auto-generates missing daily `BUSINESS_INSIDES_<as_of>.md` before `validate_params --strict`
+   - launchd entrypoint: `config/com.example.single-truth-preflight.plist`
 
 Rules:
 - `PLAN-*` rows are recommendations only.

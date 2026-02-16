@@ -37,12 +37,14 @@ Use the wrapper so workbook-anchor validation is mandatory for operator runs.
 python3 scripts/run_strict_daily_preflight.py \
   --workbook "~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
   --emit-lineage \
-  --send-alert-on-fail
+  --send-alert-on-fail \
+  --ensure-business-insides
 ```
 
 Behavior:
 - Fails closed when workbook path is missing.
 - Fails closed when workbook is stale (mtime age exceeds threshold).
+- Auto-generates missing daily `BUSINESS_INSIDES_<as_of>.md` before strict validation.
 - Runs `validate_params.py --strict`.
 - Optionally emits lineage JSON under `exports/lineage/`.
 
@@ -1173,7 +1175,7 @@ ln -sfn "~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
 ```
 
 Jobs:
-- `com.example.single-truth-preflight` (21:00): runs strict preflight with lineage output.
+- `com.example.single-truth-preflight` (21:00): runs strict preflight with lineage output and auto-generates missing daily `BUSINESS_INSIDES`.
 - `com.example.on-delivery-residuals` (21:05): runs residual dry-run and sends alert when residuals exist.
 
 Manual trigger:
