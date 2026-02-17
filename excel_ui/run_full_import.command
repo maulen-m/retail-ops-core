@@ -56,6 +56,9 @@ if [ "${INCLUDE_OVERDUE}" = "1" ]; then
 fi
 
 WARNINGS=()
+HARD_FAIL=0
+HARD_FAIL_REASONS=()
+ACTIVEORDERS_SNAPSHOT=""
 
 echo "========================================"
 echo "  FAST Kaspi Order Import"
@@ -286,6 +289,21 @@ fi
 echo ""
 echo "Step 2: Importing new orders to CRM..."
 echo "----------------------------------------"
+if [ -f "excel_ui/ActiveOrders/ActiveOrders.xlsx" ]; then
+    ACTIVEORDERS_SNAPSHOT=$(mktemp -t activeorders_snapshot_XXXXXX.xlsx)
+    if cp "excel_ui/ActiveOrders/ActiveOrders.xlsx" "${ACTIVEORDERS_SNAPSHOT}"; then
+        echo "Captured ActiveOrders snapshot for success gate: ${ACTIVEORDERS_SNAPSHOT}"
+    else
+        echo "WARNING: failed to snapshot ActiveOrders; strict gate will use API-vs-CRM report."
+        WARNINGS+=("ActiveOrders snapshot failed. Fix: check temp dir permissions.")
+        rm -f "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
+        ACTIVEORDERS_SNAPSHOT=""
+    fi
+else
+    echo "WARNING: ActiveOrders.xlsx missing before Step 2; snapshot gate disabled."
+    WARNINGS+=("ActiveOrders missing before Step 2. Fix: re-run export step.")
+fi
+
 STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-900}"
 XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-45}"
 XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-420}"
@@ -302,6 +320,7 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
         --no-update \
         --no-transactional \
         --no-strict-excel \
+        --no-append-integrity-check \
         --kaspi-core-override \
         --no-gdrive-sync \
         --skip-fixed-backfill
@@ -377,11 +396,37 @@ fi
 echo ""
 echo "Post-import health report..."
 echo "----------------------------------------"
-if [ "${IMPORT_NOOP}" -eq 1 ]; then
-    echo "NO-OP: skipping health report (no CRM changes)."
-else
-    python scripts/report_import_status.py --since-days "${LOOKBACK_DAYS}"
+HEALTH_JSON=$(mktemp -t kaspi_import_health)
+python3 scripts/report_import_status.py --since-days "${LOOKBACK_DAYS}" --json-out "${HEALTH_JSON}"
+if [ $? -ne 0 ]; then
+    echo "WARNING: Post-import health report failed."
+    WARNINGS+=("Post-import health report failed. Fix: run scripts/report_import_status.py manually.")
+    HARD_FAIL=1
+    HARD_FAIL_REASONS+=("Post-import health report command failed.")
 fi
+
+echo ""
+echo "Final success gate..."
+echo "----------------------------------------"
+EVAL_CMD=(
+    python3 scripts/evaluate_import_run_result.py
+    --step2-rc "${STEP2_RC}"
+    --health-json "${HEALTH_JSON}"
+)
+if [ -n "${ACTIVEORDERS_SNAPSHOT}" ] && [ -f "${ACTIVEORDERS_SNAPSHOT}" ]; then
+    EVAL_CMD+=(
+        --activeorders-file "${ACTIVEORDERS_SNAPSHOT}"
+        --crm-file "excel_ui/SALES_KSP_CRM_V3.xlsx"
+        --target-date "$(date +%Y-%m-%d)"
+    )
+fi
+"${EVAL_CMD[@]}"
+GATE_RC=$?
+if [ ${GATE_RC} -ne 0 ]; then
+    HARD_FAIL=1
+    HARD_FAIL_REASONS+=("Strict success gate failed (Step2 failure or API/CRM mismatch).")
+fi
+rm -f "${HEALTH_JSON}" "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
 
 # Step 3: Google Drive sync
 echo ""
@@ -402,6 +447,20 @@ if [ ${#WARNINGS[@]} -ne 0 ]; then
     for w in "${WARNINGS[@]}"; do
         echo "  - ${w}"
     done
+fi
+if [ "${HARD_FAIL}" -ne 0 ]; then
+    echo ""
+    echo "ERROR: strict success gate failed."
+    if [ ${#HARD_FAIL_REASONS[@]} -ne 0 ]; then
+        echo "Hard failure reasons:"
+        for reason in "${HARD_FAIL_REASONS[@]}"; do
+            echo "  - ${reason}"
+        done
+    fi
+    echo ""
+    echo "Press Enter to close..."
+    [[ -t 0 ]] && read
+    exit 1
 fi
 echo ""
 echo "Press Enter to close..."

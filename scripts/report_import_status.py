@@ -5,6 +5,7 @@ Post-import health report (API vs CRM vs DB) in ASCII table.
 
 import argparse
 import csv
+import json
 import logging
 import re
 import sys
@@ -265,6 +266,7 @@ def main() -> int:
     parser.add_argument("--sheet", default=DEFAULT_SHEET_NAME)
     parser.add_argument("--since-days", type=int, default=7)
     parser.add_argument("--store", help="Filter by store (ACMEWEAR/UNIVERSAL/11KZ/STOREB)")
+    parser.add_argument("--json-out", type=Path, default=None, help="Write machine-readable JSON summary to path")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -304,6 +306,7 @@ def main() -> int:
         "MISS_CRM", "MISS_SIZE",
     ]
     rows = []
+    store_rows: list[dict[str, Any]] = []
     totals = defaultdict(int)
 
     for store in sorted(all_stores):
@@ -326,6 +329,19 @@ def main() -> int:
 
         if api_failed:
             row = [store, "ERR", "-", "-", "-", "-", "-", "-"]
+            store_rows.append(
+                {
+                    "store": store,
+                    "api_error": True,
+                    "api_today": None,
+                    "crm_today": None,
+                    "db_today": None,
+                    "crm_size": None,
+                    "db_size": None,
+                    "miss_crm": None,
+                    "miss_size": None,
+                }
+            )
         else:
             row = [
                 store,
@@ -344,6 +360,19 @@ def main() -> int:
             totals["DB_SIZE"] += len(db_size_ids)
             totals["MISS_CRM"] += miss_crm
             totals["MISS_SIZE"] += miss_size
+            store_rows.append(
+                {
+                    "store": store,
+                    "api_error": False,
+                    "api_today": len(api_ids),
+                    "crm_today": len(crm_ids),
+                    "db_today": len(db_ids),
+                    "crm_size": len(crm_size_ids),
+                    "db_size": len(db_size_ids),
+                    "miss_crm": miss_crm,
+                    "miss_size": miss_size,
+                }
+            )
 
         rows.append(row)
 
@@ -363,6 +392,30 @@ def main() -> int:
     rows.append(totals_row)
 
     print(format_table(headers, rows))
+
+    report_payload = {
+        "target_date": target_date.isoformat(),
+        "partial_api": bool(api_errors),
+        "api_error_stores": sorted(API_TO_DISPLAY.get(code, code) for code in api_errors),
+        "totals": {
+            "api_today": int(totals["API"]),
+            "crm_today": int(totals["CRM"]),
+            "db_today": int(totals["DB"]),
+            "crm_size": int(totals["CRM_SIZE"]),
+            "db_size": int(totals["DB_SIZE"]),
+            "miss_crm": int(totals["MISS_CRM"]),
+            "miss_size": int(totals["MISS_SIZE"]),
+        },
+        "stores": store_rows,
+    }
+    if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(
+            json.dumps(report_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if args.verbose:
+            print(f"JSON summary written: {args.json_out}")
 
     # Missing samples (only if API ok)
     if api_errors:

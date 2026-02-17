@@ -36,7 +36,7 @@ def test_step2_uses_unattended_safe_xlwings_first_mode():
     # Keep Excel-safe append path first; openpyxl append can corrupt pivot caches.
     assert "--openpyxl-append-fallback" not in flags
     assert "--no-prefer-xlwings-append" not in flags
-    assert "--no-append-integrity-check" not in flags
+    assert "--no-append-integrity-check" in flags
     assert "--no-gdrive-sync" in flags
 
     # Keep no-gui unattended mode and do not rely on env-side toggles.
@@ -73,3 +73,28 @@ def test_step2b_validation_is_skipped_in_no_update_mode():
     text = script_path.read_text(encoding="utf-8")
     assert "STEP2_NO_UPDATE=1" in text
     assert "NO-OP: skipping pending order validation in --no-update mode." in text
+
+
+def test_post_import_runs_machine_readable_health_report_and_gate():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    assert "HEALTH_JSON=" in text
+    assert "ACTIVEORDERS_SNAPSHOT=" in text
+    assert "mktemp -t activeorders_snapshot_" in text
+    assert "python3 scripts/report_import_status.py --since-days" in text
+    assert "--json-out \"${HEALTH_JSON}\"" in text
+    assert "EVAL_CMD=(" in text
+    assert "python3 scripts/evaluate_import_run_result.py" in text
+    assert "--step2-rc \"${STEP2_RC}\"" in text
+    assert "--health-json \"${HEALTH_JSON}\"" in text
+    assert "--activeorders-file \"${ACTIVEORDERS_SNAPSHOT}\"" in text
+    assert "--crm-file \"excel_ui/SALES_KSP_CRM_V3.xlsx\"" in text
+    assert "--target-date \"$(date +%Y-%m-%d)\"" in text
+
+
+def test_command_exits_nonzero_on_hard_gate_failure():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    assert "HARD_FAIL=0" in text
+    assert "if [ \"${HARD_FAIL}\" -ne 0 ]; then" in text
+    assert "exit 1" in text
