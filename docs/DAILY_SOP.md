@@ -43,10 +43,12 @@ python3 scripts/run_strict_daily_preflight.py \
 
 Behavior:
 - Fails closed when workbook path is missing.
-- Fails closed when workbook is stale (mtime age exceeds threshold).
+- Fails closed when workbook is stale (default max age: 36h, configurable).
+- Fails closed when workbook mtime is in the future beyond allowed skew (default 120s).
 - Auto-generates missing daily `BUSINESS_INSIDES_<as_of>.md` before strict validation.
 - Runs `validate_params.py --strict`.
 - Optionally emits lineage JSON under `exports/lineage/`.
+- If repo `.venv/bin/python` exists, preflight re-execs under it for deterministic dependencies.
 
 ### 1.2 Run on-delivery residual dry-run check
 Run this daily before any write-side cashflow reconciliation:

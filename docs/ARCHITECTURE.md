@@ -47,9 +47,11 @@ The operational truth chain is enforced as:
    - unresolved rows are surfaced explicitly and fail strict validation.
 13. Strict daily ops preflight wrapper:
    - `scripts/run_strict_daily_preflight.py`
-   - fail-closed workbook anchor (`AB_CRM_WORKBOOK_PATH`) with freshness threshold
+   - fail-closed workbook anchor (`AB_CRM_WORKBOOK_PATH`) with freshness threshold (default 36h)
+   - fail-closed on future workbook mtime beyond skew (default 120s)
    - best-effort alerting on strict failures (`--send-alert-on-fail`)
    - auto-generates missing daily `BUSINESS_INSIDES_<as_of>.md` before `validate_params --strict`
+   - bootstraps to repo `.venv/bin/python` when available for deterministic scheduler runtime
    - launchd entrypoint: `config/com.example.single-truth-preflight.plist`
 
 Rules:
