@@ -1,12 +1,14 @@
+from __future__ import annotations
+
 import sqlite3
 from pathlib import Path
 
 import openpyxl
 
-from scripts.validate_sales_vs_workbook_anchor import validate_sales_vs_workbook_anchor
+from scripts.validate_sales_against_workbook import validate_sales_against_workbook
 
 
-def _seed_v2(db_path: Path, rows: list[tuple[str, str, float, float]]) -> None:
+def _seed_v2(db_path: Path, *, order_date: str = "2026-02-06", units: float = 100.0, net_rev: float = 100000.0) -> None:
     conn = sqlite3.connect(str(db_path))
     conn.executescript(
         """
@@ -32,13 +34,13 @@ def _seed_v2(db_path: Path, rows: list[tuple[str, str, float, float]]) -> None:
         );
         """
     )
-    conn.executemany(
+    conn.execute(
         """
         INSERT INTO sales_fact_v2
         (order_id, order_date, sku_key, sku_id, quantity, net_rev, cogs, status, return_flag)
-        VALUES (?, ?, 'SKU_A', 'SKU_A_M', ?, ?, 0, 'DELIVERED', 0)
+        VALUES ('ORD-1', ?, 'SKU_A', 'SKU_A_M', ?, ?, 0, 'DELIVERED', 0)
         """,
-        rows,
+        (order_date, units, net_rev),
     )
     conn.commit()
     conn.close()
@@ -49,61 +51,71 @@ def _write_workbook(path: Path, rows: list[tuple[str, float, float]]) -> None:
     ws = wb.active
     ws.title = "SALES_KSP_CRM_1"
     ws.append(["Date", "Quantity", "Total_net_rev"])
-    for day, units, net_rev in rows:
-        ws.append([day, units, net_rev])
+    for day, units, net in rows:
+        ws.append([day, units, net])
     wb.save(path)
 
 
-def test_validator_allows_db_below_workbook_by_more_than_5pct(tmp_path: Path) -> None:
+def test_validator_fails_when_workbook_content_lags_threshold(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     wb = tmp_path / "crm.xlsx"
-    _seed_v2(db, [("O1", "2026-02-08", 80.0, 80000.0)])
-    _write_workbook(wb, [("2026-02-08", 100.0, 100000.0)])
-
-    report = validate_sales_vs_workbook_anchor(
-        db_path=db,
-        workbook_path=wb,
-        days=14,
-        tol_pct=5.0,
-        as_of="2026-02-08",
-        min_overlap_days=1,
-    )
-    assert report["ok"] is True
-
-
-def test_validator_fails_when_db_exceeds_workbook_by_gt_5pct(tmp_path: Path) -> None:
-    db = tmp_path / "app.db"
-    wb = tmp_path / "crm.xlsx"
-    _seed_v2(db, [("O1", "2026-02-08", 106.0, 106000.0)])
-    _write_workbook(wb, [("2026-02-08", 100.0, 100000.0)])
-
-    report = validate_sales_vs_workbook_anchor(
-        db_path=db,
-        workbook_path=wb,
-        days=14,
-        tol_pct=5.0,
-        as_of="2026-02-08",
-        min_overlap_days=1,
-    )
-    assert report["ok"] is False
-    assert any("published exceeds workbook" in err for err in report["errors"])
-
-
-def test_wrapper_enforces_workbook_content_lag_threshold(tmp_path: Path) -> None:
-    db = tmp_path / "app.db"
-    wb = tmp_path / "crm.xlsx"
-    _seed_v2(db, [("O1", "2026-02-06", 100.0, 100000.0)])
+    _seed_v2(db, order_date="2026-02-06")
     _write_workbook(wb, [("2026-02-06", 100.0, 100000.0)])
 
-    report = validate_sales_vs_workbook_anchor(
+    report = validate_sales_against_workbook(
         db_path=db,
         workbook_path=wb,
+        as_of="2026-02-08",
         days=14,
         tol_pct=5.0,
-        as_of="2026-02-08",
         min_overlap_days=1,
         max_lag_days=1,
     )
 
     assert report["ok"] is False
     assert any("workbook content lag exceeds threshold" in err for err in report["errors"])
+
+
+def test_validator_passes_when_workbook_content_within_lag_threshold(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    wb = tmp_path / "crm.xlsx"
+    _seed_v2(db, order_date="2026-02-07")
+    _write_workbook(wb, [("2026-02-07", 100.0, 100000.0)])
+
+    report = validate_sales_against_workbook(
+        db_path=db,
+        workbook_path=wb,
+        as_of="2026-02-08",
+        days=14,
+        tol_pct=5.0,
+        min_overlap_days=1,
+        max_lag_days=1,
+    )
+
+    assert report["ok"] is True
+
+
+def test_validator_fails_closed_on_workbook_parse_error(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    wb = tmp_path / "crm.xlsx"
+    _seed_v2(db, order_date="2026-02-08")
+
+    bad_wb = openpyxl.Workbook()
+    ws = bad_wb.active
+    ws.title = "SALES_KSP_CRM_1"
+    ws.append(["WrongColumn", "Q"])
+    ws.append(["2026-02-08", 1])
+    bad_wb.save(wb)
+
+    report = validate_sales_against_workbook(
+        db_path=db,
+        workbook_path=wb,
+        as_of="2026-02-08",
+        days=14,
+        tol_pct=5.0,
+        min_overlap_days=1,
+        max_lag_days=1,
+    )
+
+    assert report["ok"] is False
+    assert any("workbook parse error" in err for err in report["errors"])

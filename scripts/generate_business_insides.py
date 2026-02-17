@@ -18,6 +18,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.cashflow.paid_capital_truth import compute_paid_capital_truth
+from core.db.sales_truth_query_guard import (
+    install_sales_truth_query_guard,
+    remove_sales_truth_query_guard,
+)
 from core.sales import ensure_sales_truth_views
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
@@ -131,6 +135,7 @@ def compute_sales_metrics(
     as_of: str | date | None = None,
     last_7_days: int = 7,
     last_30_days: int = 30,
+    enforce_query_guard: bool = False,
 ) -> dict[str, Any]:
     as_of_date = _parse_as_of(as_of)
     start_30 = as_of_date - timedelta(days=max(1, int(last_30_days)) - 1)
@@ -138,8 +143,12 @@ def compute_sales_metrics(
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    guard_installed = False
     try:
         ensure_sales_truth_views(conn)
+        if enforce_query_guard:
+            install_sales_truth_query_guard(conn)
+            guard_installed = True
         line_rows = conn.execute(
             """
             SELECT sale_date, sku_key, cogs_source
@@ -164,6 +173,8 @@ def compute_sales_metrics(
             (start_30.isoformat(), as_of_date.isoformat()),
         ).fetchall()
     finally:
+        if guard_installed:
+            remove_sales_truth_query_guard(conn)
         conn.close()
 
     by_date: dict[str, dict[str, float]] = {}
@@ -427,7 +438,11 @@ def generate_business_insides(
         bank_accounts_path=bank_accounts_path,
         as_of=as_of_date,
     )
-    sales_metrics = compute_sales_metrics(db_path=db_path, as_of=as_of_date)
+    sales_metrics = compute_sales_metrics(
+        db_path=db_path,
+        as_of=as_of_date,
+        enforce_query_guard=bool(strict_cogs),
+    )
     if strict_cogs and int(sales_metrics["unresolved_rows"]) > 0:
         raise RuntimeError(
             "Unresolved COGS rows detected in requested window: "

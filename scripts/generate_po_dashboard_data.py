@@ -45,6 +45,7 @@ from core.po.blackout import adjust_po_dates, CNY_2026
 from core.po.dashboard_math import round_half_up_1dp, compute_doc_values
 from core.utils.sku_normalize import normalize_size
 from core.capital.guardrails import check_roic_gate
+from core.sales import ensure_sales_truth_views
 
 # Constants
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
@@ -625,7 +626,7 @@ class SizePOLine:
     est_arr_date: str  # Estimated arrival date
     pre_arr_doc: float  # Days of coverage before arrival
     post_arr_doc: float  # Days of coverage after order arrives
-    roic_pct: float
+    roic_pct: Optional[float]
     notes: str
     consumption_until_arrival_capped: float = 0.0
     baseline_snapshot_date: str = ""
@@ -657,17 +658,17 @@ class SkuPOLine:
     est_arr_date: str  # Estimated arrival date
     pre_arr_doc: float  # Days of coverage before arrival
     post_arr_doc: float  # Days of coverage after order arrives
-    monthly_profit: float  # unit_profit × d_sku × 30
-    k_avg: float  # D×(L+R/2)×COGS + SS×COGS
-    roic_pct: float
-    profit_margin_pct: float  # (unit_profit / unit_cogs) × 100
+    monthly_profit: Optional[float]  # unit_profit × d_sku × 30
+    k_avg: Optional[float]  # D×(L+R/2)×COGS + SS×COGS
+    roic_pct: Optional[float]
+    profit_margin_pct: Optional[float]  # (unit_profit / unit_cogs) × 100
     base_cost_cny: float
     base_cost_kzt: float
     weight_per_unit_kg: float
     unit_cogs: float
     avg_sell_price: float
     net_revenue_unit: float
-    profit_unit: float
+    profit_unit: Optional[float]
     po_base_cost_cny: float
     po_base_cost_kzt: float
     po_dlv_usd: float
@@ -682,6 +683,10 @@ class SkuPOLine:
     confidence: str  # HIGH, MEDIUM, LOW, ANCHOR_ONLY
     oos_type: str  # NONE, EXTENDED, INTERMITTENT, PARTIAL
     partial_oos_sizes: str  # Comma-separated list of OOS sizes
+    cogs_source: str  # formula_full or unresolved
+    cogs_unresolved_rows: int
+    cogs_total_rows: int
+    profit_publishable: bool
     notes: str
     consumption_until_arrival_capped: float = 0.0
     baseline_snapshot_date: str = ""
@@ -1067,11 +1072,15 @@ def get_size_sales_history_with_cutoff(
 
     # Get sales data
     sales_data = conn.execute("""
-        SELECT sale_date, my_size, units
-        FROM fact_sales_daily_size
+        SELECT
+            sale_date,
+            my_size,
+            SUM(COALESCE(units, 0)) AS units
+        FROM view_sales_line_truth
         WHERE sku_key = ?
-          AND sale_date >= ?
-          AND sale_date <= ?
+          AND date(sale_date) >= ?
+          AND date(sale_date) <= ?
+        GROUP BY sale_date, my_size
         ORDER BY sale_date
     """, (sku_key, start_date.isoformat(), end_date.isoformat())).fetchall()
 
@@ -1099,6 +1108,39 @@ def get_size_sales_history_with_cutoff(
             result[size].append(units)
 
     return result
+
+
+def _load_sku_cogs_quality(
+    conn: sqlite3.Connection,
+    *,
+    cutoff_date: str,
+    days: int = 90,
+) -> dict[str, dict[str, int]]:
+    rows = conn.execute(
+        """
+        SELECT
+            sku_key,
+            SUM(CASE WHEN cogs_source = 'unresolved' THEN 1 ELSE 0 END) AS unresolved_rows,
+            COUNT(*) AS total_rows
+        FROM view_sales_line_truth
+        WHERE date(sale_date) >= date(?, ?)
+          AND date(sale_date) <= date(?)
+        GROUP BY sku_key
+        """,
+        (cutoff_date, f"-{max(1, int(days))} days", cutoff_date),
+    ).fetchall()
+    out: dict[str, dict[str, int]] = {}
+    for row in rows:
+        sku = str(row["sku_key"] or "").strip()
+        if not sku:
+            continue
+        unresolved_rows = int(row["unresolved_rows"] or 0)
+        total_rows = int(row["total_rows"] or 0)
+        out[sku] = {
+            "unresolved_rows": unresolved_rows,
+            "total_rows": total_rows,
+        }
+    return out
 
 
 def calc_d_sku_simple(size_sales_90d: dict[str, int]) -> float:
@@ -1382,6 +1424,7 @@ def generate_po_data(
     if not use_fixture:
         conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row
+        ensure_sales_truth_views(conn)
 
     params = get_params()
     fx_rates = get_fx_rates(CUTOFF_DATE, db_path=DB_PATH)
@@ -1459,6 +1502,13 @@ def generate_po_data(
     skipped_no_stock = 0
     skipped_no_order = 0
     low_roic_count = 0
+    sku_cogs_quality: dict[str, dict[str, int]] = {}
+    if conn is not None:
+        sku_cogs_quality = _load_sku_cogs_quality(
+            conn,
+            cutoff_date=DATA_CUTOFF,
+            days=90,
+        )
 
     for sku in skus:
         sku_key = sku['sku_key']
@@ -1550,32 +1600,41 @@ def generate_po_data(
             # Formula: COGS = base_cost_cny × CNY_KZT + weight_kg × 2.66 × 530
             unit_cogs = calc_cogs(base_cost_cny, weight_kg)
 
-            # Get average sell price
+            # Use canonical published sales truth for realized net price.
             price_row = conn.execute("""
-                SELECT AVG(sell_price_kzt) as avg_price
-                FROM fact_sales
+                SELECT
+                    SUM(COALESCE(net_rev_kzt, 0)) / NULLIF(SUM(COALESCE(units, 0)), 0) AS avg_net_price
+                FROM view_sales_line_truth
                 WHERE sku_key = ?
-                AND order_date >= date(?, '-90 days')
-                AND order_date <= ?
+                AND date(sale_date) >= date(?, '-90 days')
+                AND date(sale_date) <= ?
             """, (sku_key, DATA_CUTOFF, DATA_CUTOFF)).fetchone()
 
-            avg_sell_price = price_row['avg_price'] if price_row and price_row['avg_price'] else None
+            avg_net_price = (
+                float(price_row["avg_net_price"])
+                if price_row and price_row["avg_net_price"] is not None
+                else None
+            )
+
+            avg_sell_price = sku.get("avg_sell_price_kzt_used")
             if not avg_sell_price:
-                avg_sell_price = sku.get("avg_sell_price_kzt_used")
-                if avg_sell_price:
-                    notes_list.append("AVG_PRICE_DIM_SKU_DB")
-            if not avg_sell_price and avg_price_lookup:
-                avg_sell_price = avg_price_lookup.get(sku_key)
+                if avg_price_lookup:
+                    avg_sell_price = avg_price_lookup.get(sku_key)
                 if avg_sell_price:
                     notes_list.append("AVG_PRICE_DIM_SKU")
+            else:
+                notes_list.append("AVG_PRICE_DIM_SKU_DB")
             if not avg_sell_price:
                 avg_sell_price = 15000
                 notes_list.append("AVG_PRICE_FALLBACK_DEFAULT")
 
-            # Calculate NET revenue (commission, delivery fee, VAT schedule)
-            # Formula: (price * (1 - commission) - delivery_fee) * (1 - VAT)
-            delivery_fee = calc_delivery_fee(avg_sell_price, weight_kg=weight_kg, delivery_type="city")
-            avg_net_price = calc_net_rev(avg_sell_price, delivery_fee, as_of_date=CUTOFF_DATE)
+            if avg_net_price is None:
+                # Fall back to modeled NET when no realized NET exists.
+                delivery_fee = calc_delivery_fee(avg_sell_price, weight_kg=weight_kg, delivery_type="city")
+                avg_net_price = calc_net_rev(avg_sell_price, delivery_fee, as_of_date=CUTOFF_DATE)
+                notes_list.append("NET_PRICE_MODELLED")
+            else:
+                notes_list.append("NET_PRICE_PUBLISHED_TRUTH")
 
             # Unit profit = NET revenue - COGS (not GROSS - COGS!)
             unit_profit = avg_net_price - unit_cogs
@@ -1734,10 +1793,18 @@ def generate_po_data(
                 draft = None
 
         # Track ROIC status (but don't filter!)
+        cogs_quality = sku_cogs_quality.get(sku_key, {"unresolved_rows": 0, "total_rows": 0})
+        cogs_unresolved_rows = int(cogs_quality.get("unresolved_rows", 0))
+        cogs_total_rows = int(cogs_quality.get("total_rows", 0))
+        profit_publishable = cogs_unresolved_rows == 0
+        cogs_source = "formula_full" if profit_publishable else "unresolved"
+        if not profit_publishable:
+            notes_list.append(f"COGS_UNRESOLVED_LOCK rows={cogs_unresolved_rows}")
+
         roic_below_threshold = False
         if draft:
             roic_below_threshold = draft.roic_monthly < ROIC_THRESHOLD
-            if roic_below_threshold:
+            if roic_below_threshold and profit_publishable:
                 low_roic_count += 1
                 notes_list.append(f"ROIC {draft.roic_monthly*100:.1f}% < 15%")
 
@@ -1868,6 +1935,13 @@ def generate_po_data(
             L=params.L,
             R=params.R
         )
+        monthly_profit_publish = round(monthly_profit, 2) if profit_publishable else None
+        k_avg_publish = round(k_avg, 2) if profit_publishable else None
+        roic_pct_publish = round(roic_monthly * 100, 1) if profit_publishable else None
+        profit_margin_publish = round(profit_margin_pct, 1) if profit_publishable else None
+        profit_unit_publish = round(unit_profit, 2) if profit_publishable else None
+        if not profit_publishable:
+            roic_below_threshold = False
 
         base_cost_kzt = base_cost_cny * fx_rates.cny_kzt
         po_base_cost_cny = base_cost_cny * total_qty
@@ -1904,17 +1978,17 @@ def generate_po_data(
             est_arr_date=est_arr.isoformat(),  # Estimated arrival date
             pre_arr_doc=pre_arr_doc,  # Days of coverage before arrival
             post_arr_doc=post_arr_doc,  # Days of coverage after arrival
-            monthly_profit=round(monthly_profit, 2),
-            k_avg=round(k_avg, 2),
-            roic_pct=round(roic_monthly * 100, 1),
-            profit_margin_pct=round(profit_margin_pct, 1),
+            monthly_profit=monthly_profit_publish,
+            k_avg=k_avg_publish,
+            roic_pct=roic_pct_publish,
+            profit_margin_pct=profit_margin_publish,
             base_cost_cny=round(base_cost_cny, 2),
             base_cost_kzt=round(base_cost_kzt, 2),
             weight_per_unit_kg=round(weight_kg, 3),
             unit_cogs=round(unit_cogs, 2),
             avg_sell_price=round(avg_sell_price, 2),
             net_revenue_unit=round(avg_net_price, 2),
-            profit_unit=round(unit_profit, 2),
+            profit_unit=profit_unit_publish,
             po_base_cost_cny=round(po_base_cost_cny, 2),
             po_base_cost_kzt=round(po_base_cost_kzt, 2),
             po_dlv_usd=round(po_dlv_usd, 2),
@@ -1929,6 +2003,10 @@ def generate_po_data(
             confidence=confidence,
             oos_type=oos_type,
             partial_oos_sizes=partial_oos_sizes,  # Stock-first detected
+            cogs_source=cogs_source,
+            cogs_unresolved_rows=cogs_unresolved_rows,
+            cogs_total_rows=cogs_total_rows,
+            profit_publishable=profit_publishable,
             notes="; ".join(notes_list) if notes_list else ""
         )
         sku_lines.append(asdict(sku_line))
@@ -1995,7 +2073,7 @@ def generate_po_data(
                 est_arr_date=est_arr.isoformat(),
                 pre_arr_doc=size_pre_arr_doc,
                 post_arr_doc=size_post_arr_doc,
-                roic_pct=round(roic_monthly * 100, 1),
+                roic_pct=round(roic_monthly * 100, 1) if profit_publishable else None,
                 notes=""
             )
             size_lines.append(asdict(size_line))

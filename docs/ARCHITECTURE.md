@@ -38,8 +38,11 @@ The operational truth chain is enforced as:
    - `view_sales_line_truth`
    - `view_sales_daily_truth`
    Revenue/units are v2-authoritative for overlap windows; `fact_sales` is historical fallback.
+   - Static consumer gate: `scripts/validate_sales_truth_consumers.py`
+   - Runtime SQL guard module: `core/db/sales_truth_query_guard.py` (strict paths)
 11. Published COGS/profit are valid only when full landed formula inputs exist (`base + delivery`).
    - strict gates: `scripts/validate_cogs_integrity.py`, `scripts/validate_dim_sku_light_alignment.py`
+   - publication gate: `scripts/validate_profit_publication_integrity.py`
 12. `dim_sku.weight_kg` single-truth restore/write path:
    - parser: `core/excel/dim_sku_light_parser.py`
    - guarded sync: `scripts/sync_dim_sku_from_dim_sku_light.py`
@@ -49,8 +52,10 @@ The operational truth chain is enforced as:
    - `scripts/run_strict_daily_preflight.py`
    - fail-closed workbook anchor (`AB_CRM_WORKBOOK_PATH`) with freshness threshold (default 36h)
    - fail-closed on future workbook mtime beyond skew (default 120s)
+   - fail-closed workbook content-lag threshold (`AB_CRM_WORKBOOK_MAX_LAG_DAYS`, default 1)
    - best-effort alerting on strict failures (`--send-alert-on-fail`)
-   - auto-generates missing daily `BUSINESS_INSIDES_<as_of>.md` before `validate_params --strict`
+   - auto-generates missing daily `BUSINESS_INSIDES_<as_of>.md` with `--strict-cogs` before `validate_params --strict`
+   - emits single-truth drift pack after strict PASS (`exports/validation/<date>/single_truth_drift_pack.{md,json}`)
    - bootstraps to repo `.venv/bin/python` when available for deterministic scheduler runtime
    - launchd entrypoint: `config/com.example.single-truth-preflight.plist`
 

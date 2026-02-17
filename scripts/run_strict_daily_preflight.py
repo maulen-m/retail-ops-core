@@ -22,10 +22,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_MAX_WORKBOOK_AGE_HOURS = 36.0
 DEFAULT_MAX_FUTURE_MTIME_SKEW_SECONDS = 120.0
+DEFAULT_MAX_WORKBOOK_LAG_DAYS = 1
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.alerts.error_alerts import send_run_failure_alert
+
+try:
+    from scripts.build_single_truth_drift_pack import build_single_truth_drift_pack
+except Exception:  # pragma: no cover - optional import safety during bootstrap
+    build_single_truth_drift_pack = None
 
 
 def _resolve_reexec_target(
@@ -110,6 +116,18 @@ def _resolve_max_future_mtime_skew_seconds(value: float | None) -> float:
     return DEFAULT_MAX_FUTURE_MTIME_SKEW_SECONDS
 
 
+def _resolve_max_workbook_lag_days(value: int | None) -> int:
+    if value is not None:
+        return int(value)
+    env_raw = os.environ.get("AB_CRM_WORKBOOK_MAX_LAG_DAYS", "").strip()
+    if env_raw:
+        try:
+            return int(env_raw)
+        except ValueError:
+            return DEFAULT_MAX_WORKBOOK_LAG_DAYS
+    return DEFAULT_MAX_WORKBOOK_LAG_DAYS
+
+
 def _workbook_age_hours(path: Path) -> float:
     age_seconds = max(0.0, time.time() - path.stat().st_mtime)
     return age_seconds / 3600.0
@@ -158,6 +176,7 @@ def _ensure_business_insides_snapshot(
         str(db_path),
         "--as-of",
         as_of_iso,
+        "--strict-cogs",
     ]
     completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=False)
     if int(completed.returncode) != 0:
@@ -190,6 +209,7 @@ def run_preflight(
     send_alert_on_fail: bool = False,
     ensure_business_insides: bool = True,
     business_insides_as_of: str | None = None,
+    emit_drift_pack: bool = True,
 ) -> Tuple[int, str]:
     workbook = workbook_path
     if workbook is None:
@@ -264,10 +284,30 @@ def run_preflight(
             strict_exit_code=strict_code,
         )
 
+    drift_pack_path: Path | None = None
+    drift_pack_error: str | None = None
+    if strict_code == 0 and emit_drift_pack and callable(build_single_truth_drift_pack):
+        try:
+            as_of_iso = (business_insides_as_of or date.today().isoformat()).strip()
+            max_lag_days = _resolve_max_workbook_lag_days(None)
+            drift_result = build_single_truth_drift_pack(
+                db_path=db_path,
+                as_of=as_of_iso,
+                workbook_path=workbook,
+                max_lag_days=max_lag_days,
+            )
+            drift_pack_path = Path(str(drift_result.get("markdown_path", "")))
+        except Exception as exc:
+            drift_pack_error = str(exc)
+
     status = "PASS" if strict_code == 0 else "FAIL"
     msg = f"STRICT_DAILY_PREFLIGHT {status}: validate_params --strict rc={strict_code}"
     if emit_lineage and lineage_path is not None:
         msg += f" lineage={lineage_path}"
+    if drift_pack_path is not None:
+        msg += f" drift_pack={drift_pack_path}"
+    if drift_pack_error:
+        msg += f" drift_pack_error={drift_pack_error}"
     if strict_code != 0 and send_alert_on_fail:
         _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
     return strict_code, msg
@@ -318,6 +358,19 @@ def main() -> int:
         default=None,
         help="BUSINESS_INSIDES as-of date (YYYY-MM-DD); defaults to today",
     )
+    parser.add_argument(
+        "--emit-drift-pack",
+        dest="emit_drift_pack",
+        action="store_true",
+        default=True,
+        help="Emit single-truth drift pack after strict PASS",
+    )
+    parser.add_argument(
+        "--no-emit-drift-pack",
+        dest="emit_drift_pack",
+        action="store_false",
+        help="Disable drift pack emission after strict PASS",
+    )
     args = parser.parse_args()
 
     code, summary = run_preflight(
@@ -330,6 +383,7 @@ def main() -> int:
         send_alert_on_fail=bool(args.send_alert_on_fail),
         ensure_business_insides=bool(args.ensure_business_insides),
         business_insides_as_of=args.business_insides_as_of,
+        emit_drift_pack=bool(args.emit_drift_pack),
     )
     print(summary)
     return code

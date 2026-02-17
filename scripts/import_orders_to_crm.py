@@ -614,8 +614,6 @@ def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbo
     """
     if not strict_excel:
         return
-    if xw is None:
-        raise RuntimeError("xlwings is required for strict Excel mode.")
     lock_file = crm_path.parent / f"~${crm_path.name}"
     if lock_file.exists():
         age_seconds = datetime.now().timestamp() - lock_file.stat().st_mtime
@@ -628,6 +626,9 @@ def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbo
                 "  WARNING: stale Excel lock file detected; ignoring "
                 f"({lock_file.name}, age={int(age_seconds)}s)"
             )
+
+    if xw is None:
+        raise RuntimeError("xlwings is required for strict Excel mode.")
 
     _workbook_integrity_preflight(crm_path, verbose=verbose)
 

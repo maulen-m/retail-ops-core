@@ -187,7 +187,7 @@ def main() -> int:
         SELECT order_number, create_time, fiat_amount, crypto_amount, unit_price, counterparty, account_label
         FROM binance_c2c_orders
         {p2p_where}
-        ORDER BY create_time DESC
+        ORDER BY create_time DESC, order_number DESC
         """,
         p2p_params,
     ).fetchall()
@@ -204,7 +204,7 @@ def main() -> int:
                amount_usdt, amount_cny, deposit_address
         FROM exchanger_orders
         {ex_where}
-        ORDER BY message_date DESC
+        ORDER BY message_date DESC, exchanger_order_id DESC
         """,
         ex_params,
     ).fetchall()

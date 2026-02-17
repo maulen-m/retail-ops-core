@@ -1,0 +1,18 @@
+disallowed_tables:
+  - fact_sales
+  - sales_fact_v2
+  - fact_sales_daily
+  - fact_sales_daily_size
+
+production_scripts:
+  - scripts/generate_po_dashboard_data.py
+  - scripts/generate_business_insides.py
+  - scripts/update_cashflow_dashboard.py
+
+allow_raw_read_scripts:
+  - scripts/rebuild_fact_sales.py
+  - scripts/sync_crm_to_db.py
+  - scripts/reconcile_sales_sources.py
+  - scripts/validate_sales_truth_reconciliation.py
+  - scripts/validate_sales_against_workbook.py
+  - scripts/compare_sales_sources_to_workbook.py

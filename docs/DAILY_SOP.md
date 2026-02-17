@@ -45,9 +45,12 @@ Behavior:
 - Fails closed when workbook path is missing.
 - Fails closed when workbook is stale (default max age: 36h, configurable).
 - Fails closed when workbook mtime is in the future beyond allowed skew (default 120s).
+- Fails closed when workbook **content** is stale beyond allowed lag (`AB_CRM_WORKBOOK_MAX_LAG_DAYS`, default `1` day).
 - Auto-generates missing daily `BUSINESS_INSIDES_<as_of>.md` before strict validation.
+- Business-insides auto-generation runs with `--strict-cogs` (unresolved COGS blocks publication).
 - Runs `validate_params.py --strict`.
 - Optionally emits lineage JSON under `exports/lineage/`.
+- Emits drift pack artifact under `exports/validation/<YYYY-MM-DD>/single_truth_drift_pack.{md,json}` after strict PASS.
 - If repo `.venv/bin/python` exists, preflight re-execs under it for deterministic dependencies.
 
 ### 1.2 Run on-delivery residual dry-run check

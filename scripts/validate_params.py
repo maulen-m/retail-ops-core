@@ -45,7 +45,9 @@ from scripts.validate_sales_vs_workbook_anchor import (
     validate_sales_vs_workbook_anchor,
     DEFAULT_SHEET as DEFAULT_SALES_ANCHOR_SHEET,
 )
+from scripts.validate_sales_truth_consumers import validate_sales_truth_consumers
 from scripts.validate_cogs_integrity import validate_cogs_integrity
+from scripts.validate_profit_publication_integrity import validate_profit_publication_integrity
 from scripts.validate_dim_sku_light_alignment import (
     validate_dim_sku_light_alignment,
     DEFAULT_WORKBOOK as DEFAULT_DIM_SKU_LIGHT_WORKBOOK,
@@ -392,6 +394,22 @@ def main():
             result.add_error(f"sales_truth_reconciliation error: {exc}")
 
         try:
+            consumer_gate = validate_sales_truth_consumers(
+                project_root=PROJECT_ROOT,
+                contract_path=PROJECT_ROOT / "config" / "sales_truth_consumer_contract.yaml",
+            )
+            if not consumer_gate["ok"]:
+                for err in consumer_gate["errors"]:
+                    result.add_error(f"sales_truth_consumers: {err}")
+            else:
+                result.add_info(
+                    "sales_truth_consumers: "
+                    f"OK (checked={len(consumer_gate['checked_scripts'])})"
+                )
+        except Exception as exc:
+            result.add_error(f"sales_truth_consumers error: {exc}")
+
+        try:
             workbook_anchor_raw = os.environ.get("AB_CRM_WORKBOOK_PATH", "").strip()
             if workbook_anchor_raw:
                 workbook_anchor = Path(workbook_anchor_raw).expanduser()
@@ -401,6 +419,7 @@ def main():
                     )
                 else:
                     workbook_sheet = os.environ.get("AB_CRM_WORKBOOK_SHEET", DEFAULT_SALES_ANCHOR_SHEET)
+                    workbook_max_lag_days = int(os.environ.get("AB_CRM_WORKBOOK_MAX_LAG_DAYS", "1"))
                     workbook_gate = validate_sales_vs_workbook_anchor(
                         db_path=db_path,
                         workbook_path=workbook_anchor,
@@ -409,6 +428,7 @@ def main():
                         tol_pct=5.0,
                         as_of=date.today().isoformat(),
                         min_overlap_days=7,
+                        max_lag_days=workbook_max_lag_days,
                     )
                     if not workbook_gate["ok"]:
                         for err in workbook_gate["errors"]:
@@ -443,6 +463,23 @@ def main():
                 )
         except Exception as exc:
             result.add_error(f"cogs_integrity error: {exc}")
+
+        try:
+            profit_publication = validate_profit_publication_integrity(
+                db_path=db_path,
+                as_of=date.today().isoformat(),
+                days=30,
+            )
+            if not profit_publication["ok"]:
+                for err in profit_publication["errors"]:
+                    result.add_error(f"profit_publication_integrity: {err}")
+            else:
+                result.add_info(
+                    "profit_publication_integrity: "
+                    f"OK (window={profit_publication['window_start']}..{profit_publication['window_end']})"
+                )
+        except Exception as exc:
+            result.add_error(f"profit_publication_integrity error: {exc}")
 
         try:
             workbook_light = Path(

@@ -243,7 +243,9 @@ def test_preflight_autogenerates_business_insides_when_missing(
 
     assert code == 0
     assert "PASS" in summary
-    assert any("generate_business_insides.py" in " ".join(cmd) for cmd in calls)
+    gen_calls = [cmd for cmd in calls if "generate_business_insides.py" in " ".join(cmd)]
+    assert gen_calls, "expected generate_business_insides.py call"
+    assert any("--strict-cogs" in cmd for cmd in gen_calls)
     assert any("validate_params.py" in " ".join(cmd) for cmd in calls)
 
 
@@ -276,6 +278,54 @@ def test_preflight_fails_when_business_insides_generation_fails(
 
     assert code == 7
     assert "business-insides generation failed" in summary
+
+
+def test_preflight_emits_drift_pack_after_strict_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    workbook_path = tmp_path / "crm.xlsx"
+    db_path.write_text("", encoding="utf-8")
+    workbook_path.write_text("fixture", encoding="utf-8")
+    calls: list[dict] = []
+
+    def _fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(args=["python3"], returncode=0)
+
+    def _fake_build(*, db_path: Path, as_of: str, workbook_path: Path, max_lag_days: int):
+        calls.append(
+            {
+                "db_path": str(db_path),
+                "as_of": as_of,
+                "workbook_path": str(workbook_path),
+                "max_lag_days": max_lag_days,
+            }
+        )
+        out_dir = tmp_path / "exports" / "validation" / as_of
+        out_dir.mkdir(parents=True, exist_ok=True)
+        md = out_dir / "single_truth_drift_pack.md"
+        js = out_dir / "single_truth_drift_pack.json"
+        md.write_text("# ok\n", encoding="utf-8")
+        js.write_text("{}", encoding="utf-8")
+        return {"markdown_path": str(md), "json_path": str(js)}
+
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _fake_run)
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.build_single_truth_drift_pack", _fake_build, raising=False)
+
+    code, summary = run_preflight(
+        db_path=db_path,
+        workbook_path=workbook_path,
+        emit_lineage=False,
+        ensure_business_insides=False,
+        emit_drift_pack=True,
+        business_insides_as_of="2026-02-17",
+    )
+
+    assert code == 0
+    assert "PASS" in summary
+    assert len(calls) == 1
+    assert calls[0]["max_lag_days"] == 1
 
 
 def test_preflight_passes_workbook_env_to_validate_params_subprocess(

@@ -9,6 +9,7 @@ Principles:
 - FX must be explicit per entry.
 
 See `docs/transfer_ledger/CONTRACTS.md` for invariants.
+See `docs/transfer_ledger/GOVERNANCE.md` for deterministic generation policy (script-generated only; no manual edits).
 
 ## Live Runtime Method (current production path)
 
@@ -65,7 +66,8 @@ Main generated reports:
 - `docs/transfer_ledger/EXCHANGER_BUY_FULL_HISTORY.md`
 - `docs/transfer_ledger/PO_PAYMENTS_CHRONO_FULL_HISTORY.md`
 - `docs/transfer_ledger/PO_PAYMENT_STATUS.md`
-- `config/bank_accounts_history_totals.md` (newest->oldest bank balances with first columns as cross-store totals and per-store/account asset columns)
+- `config/bank_accounts_history_totals.md` (newest->oldest compact table: core totals first, then store-level rollups)
+  - full account-level matrix stays available via: `python3 scripts/generate_bank_accounts_history_totals.py --detail`
 
 ## Validation
 

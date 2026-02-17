@@ -91,6 +91,7 @@ def test_validate_sales_against_workbook_passes_within_tolerance(tmp_path: Path)
         tol_pct=5.0,
         as_of="2026-02-08",
         min_overlap_days=2,
+        max_lag_days=7,
     )
     assert report["ok"] is True
     assert report["overlap_days"] == 2
@@ -114,6 +115,7 @@ def test_validate_sales_against_workbook_fails_when_published_exceeds_by_gt_5pct
         tol_pct=5.0,
         as_of="2026-02-08",
         min_overlap_days=1,
+        max_lag_days=7,
     )
     assert report["ok"] is False
     assert any("published exceeds workbook" in err for err in report["errors"])
@@ -138,6 +140,7 @@ def test_validate_sales_against_workbook_uses_min_window_end(tmp_path: Path) -> 
         tol_pct=5.0,
         as_of="2026-02-10",
         min_overlap_days=1,
+        max_lag_days=7,
     )
     assert report["window_end"] == "2026-02-06"
 
@@ -160,6 +163,7 @@ def test_validate_sales_against_workbook_fails_when_overlap_below_min_required(t
         tol_pct=5.0,
         as_of="2026-02-08",
         min_overlap_days=3,
+        max_lag_days=7,
     )
     assert report["ok"] is False
     assert any("overlap days below minimum" in err for err in report["errors"])

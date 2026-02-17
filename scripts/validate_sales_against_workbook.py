@@ -206,8 +206,22 @@ def validate_sales_against_workbook(
     tol_pct: float = 5.0,
     as_of: str | None = None,
     min_overlap_days: int = 7,
+    max_lag_days: int = 1,
 ) -> dict[str, Any]:
-    workbook_daily = parse_workbook_daily_totals(workbook_path, sheet_name=sheet_name)
+    try:
+        workbook_daily = parse_workbook_daily_totals(workbook_path, sheet_name=sheet_name)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "errors": [f"workbook parse error: {exc}"],
+            "overlap_days": 0,
+            "window_start": None,
+            "window_end": None,
+            "workbook_max_date": None,
+            "db_max_date": None,
+            "max_lag_days": int(max_lag_days),
+            "daily": [],
+        }
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -228,12 +242,24 @@ def validate_sales_against_workbook(
             "overlap_days": 0,
             "window_start": None,
             "window_end": None,
+            "workbook_max_date": None,
+            "db_max_date": None,
+            "max_lag_days": int(max_lag_days),
             "daily": [],
         }
 
     as_of_date = date.fromisoformat(as_of) if as_of else date.today()
     wb_max = max(date.fromisoformat(d) for d in workbook_daily)
     db_max = max(date.fromisoformat(d) for d in published_daily)
+
+    lag_days = (as_of_date - wb_max).days
+    if lag_days > int(max_lag_days):
+        errors.append(
+            "workbook content lag exceeds threshold: "
+            f"workbook_max_date={wb_max.isoformat()} as_of={as_of_date.isoformat()} "
+            f"lag_days={lag_days} max_lag_days={int(max_lag_days)}"
+        )
+
     window_end = min(as_of_date, wb_max, db_max)
     window_start = window_end - timedelta(days=max(1, int(days)) - 1)
 
@@ -289,6 +315,9 @@ def validate_sales_against_workbook(
         "overlap_days": len(overlap_days),
         "window_start": window_start.isoformat(),
         "window_end": window_end.isoformat(),
+        "workbook_max_date": wb_max.isoformat(),
+        "db_max_date": db_max.isoformat(),
+        "max_lag_days": int(max_lag_days),
         "daily": details,
     }
 
@@ -302,6 +331,7 @@ def main() -> int:
     parser.add_argument("--tol-pct", type=float, default=5.0)
     parser.add_argument("--as-of", type=str, default=None)
     parser.add_argument("--min-overlap-days", type=int, default=7)
+    parser.add_argument("--max-lag-days", type=int, default=1)
     args = parser.parse_args()
 
     report = validate_sales_against_workbook(
@@ -312,6 +342,7 @@ def main() -> int:
         tol_pct=args.tol_pct,
         as_of=args.as_of,
         min_overlap_days=args.min_overlap_days,
+        max_lag_days=args.max_lag_days,
     )
     print(
         "window="

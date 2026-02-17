@@ -28,6 +28,7 @@ def validate_sales_vs_workbook_anchor(
     tol_pct: float = 5.0,
     as_of: str | None = None,
     min_overlap_days: int = 7,
+    max_lag_days: int = 1,
 ) -> dict[str, Any]:
     return validate_sales_against_workbook(
         db_path=db_path,
@@ -37,6 +38,7 @@ def validate_sales_vs_workbook_anchor(
         tol_pct=tol_pct,
         as_of=as_of,
         min_overlap_days=min_overlap_days,
+        max_lag_days=max_lag_days,
     )
 
 
@@ -49,6 +51,7 @@ def main() -> int:
     parser.add_argument("--tol-pct", type=float, default=5.0)
     parser.add_argument("--as-of", type=str, default=None)
     parser.add_argument("--min-overlap-days", type=int, default=7)
+    parser.add_argument("--max-lag-days", type=int, default=1)
     args = parser.parse_args()
 
     report = validate_sales_vs_workbook_anchor(
@@ -59,6 +62,7 @@ def main() -> int:
         tol_pct=args.tol_pct,
         as_of=args.as_of,
         min_overlap_days=args.min_overlap_days,
+        max_lag_days=args.max_lag_days,
     )
     print(
         "window="

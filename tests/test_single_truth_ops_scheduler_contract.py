@@ -12,6 +12,8 @@ def test_single_truth_preflight_plist_contract() -> None:
     assert "<string>36</string>" in plist
     assert "<key>AB_CRM_WORKBOOK_MAX_FUTURE_SKEW_SECONDS</key>" in plist
     assert "<string>120</string>" in plist
+    assert "<key>AB_CRM_WORKBOOK_MAX_LAG_DAYS</key>" in plist
+    assert "<string>1</string>" in plist
     assert "<string>scripts/run_strict_daily_preflight.py</string>" in plist
     assert "<string>--emit-lineage</string>" in plist
     assert "<string>--send-alert-on-fail</string>" in plist
