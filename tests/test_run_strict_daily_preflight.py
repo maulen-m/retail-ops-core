@@ -276,3 +276,112 @@ def test_preflight_fails_when_business_insides_generation_fails(
 
     assert code == 7
     assert "business-insides generation failed" in summary
+
+
+def test_preflight_passes_workbook_env_to_validate_params_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    workbook_path = tmp_path / "crm.xlsx"
+    db_path.write_text("", encoding="utf-8")
+    workbook_path.write_text("fixture", encoding="utf-8")
+    captured_env: dict[str, str] = {}
+
+    def _fake_run(cmd, *args, **kwargs):
+        cmd_str = " ".join(str(part) for part in cmd)
+        if "validate_params.py" in cmd_str:
+            captured_env.update(kwargs.get("env", {}))
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
+        raise AssertionError(f"Unexpected command: {cmd_str}")
+
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _fake_run)
+
+    code, _summary = run_preflight(
+        db_path=db_path,
+        workbook_path=workbook_path,
+        emit_lineage=False,
+        ensure_business_insides=False,
+    )
+
+    assert code == 0
+    assert captured_env.get("AB_CRM_WORKBOOK_PATH") == str(workbook_path)
+
+
+def test_preflight_fails_when_workbook_mtime_is_future_beyond_skew(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    workbook_path = tmp_path / "crm.xlsx"
+    db_path.write_text("", encoding="utf-8")
+    workbook_path.write_text("fixture", encoding="utf-8")
+    now = time.time()
+    future_ts = now + 600
+    os.utime(workbook_path, (future_ts, future_ts))
+
+    def _fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(args=["python3"], returncode=0)
+
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _fake_run)
+
+    code, summary = run_preflight(
+        db_path=db_path,
+        workbook_path=workbook_path,
+        emit_lineage=False,
+        ensure_business_insides=False,
+    )
+
+    assert code != 0
+    assert "future workbook mtime" in summary
+
+
+def test_preflight_allows_small_future_mtime_within_skew(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    workbook_path = tmp_path / "crm.xlsx"
+    db_path.write_text("", encoding="utf-8")
+    workbook_path.write_text("fixture", encoding="utf-8")
+    now = time.time()
+    future_ts = now + 30
+    os.utime(workbook_path, (future_ts, future_ts))
+
+    def _fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(args=["python3"], returncode=0)
+
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _fake_run)
+
+    code, summary = run_preflight(
+        db_path=db_path,
+        workbook_path=workbook_path,
+        emit_lineage=False,
+        ensure_business_insides=False,
+    )
+
+    assert code == 0
+    assert "PASS" in summary
+
+
+def test_preflight_uses_36h_default_age_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    workbook_path = tmp_path / "crm.xlsx"
+    db_path.write_text("", encoding="utf-8")
+    workbook_path.write_text("fixture", encoding="utf-8")
+    old_ts = time.time() - (40 * 3600)
+    os.utime(workbook_path, (old_ts, old_ts))
+
+    def _fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(args=["python3"], returncode=0)
+
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _fake_run)
+
+    code, summary = run_preflight(
+        db_path=db_path,
+        workbook_path=workbook_path,
+        emit_lineage=False,
+        ensure_business_insides=False,
+    )
+
+    assert code != 0
+    assert "stale workbook" in summary

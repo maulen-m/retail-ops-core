@@ -8,6 +8,10 @@ def test_single_truth_preflight_plist_contract() -> None:
     assert "<string>com.example.single-truth-preflight</string>" in plist
     assert "<key>AB_CRM_WORKBOOK_PATH</key>" in plist
     assert "<string>~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx</string>" in plist
+    assert "<key>AB_CRM_WORKBOOK_MAX_AGE_HOURS</key>" in plist
+    assert "<string>36</string>" in plist
+    assert "<key>AB_CRM_WORKBOOK_MAX_FUTURE_SKEW_SECONDS</key>" in plist
+    assert "<string>120</string>" in plist
     assert "<string>scripts/run_strict_daily_preflight.py</string>" in plist
     assert "<string>--emit-lineage</string>" in plist
     assert "<string>--send-alert-on-fail</string>" in plist
