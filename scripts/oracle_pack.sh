@@ -7,7 +7,7 @@ PACK_SCRIPT="$ORCH_HOME/scripts/oracle_pack_local.py"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/oracle_pack.sh --slug <slug> [--task-id TASK-###] [--prompt "..."] [--prompt-file path] --file <path|glob> [--file <path|glob> ...]
+Usage: scripts/oracle_pack.sh --slug <slug> [--task-id TASK-###] [--prompt "..."] [--prompt-file path] [--out-dir path] --file <path|glob> [--file <path|glob> ...]
 
 Offline pack generator (no network, no browser automation).
 If --task-id is omitted, it is inferred from the current git branch (TASK-###), or TASK-000.
@@ -18,6 +18,7 @@ TASK_ID=""
 SLUG=""
 PROMPT=""
 PROMPT_FILE=""
+OUT_DIR=""
 FILES=()
 
 while [[ $# -gt 0 ]]; do
@@ -30,6 +31,8 @@ while [[ $# -gt 0 ]]; do
       PROMPT="$2"; shift 2;;
     --prompt-file)
       PROMPT_FILE="$2"; shift 2;;
+    --out-dir)
+      OUT_DIR="$2"; shift 2;;
     --file)
       FILES+=("$2"); shift 2;;
     -h|--help)
@@ -72,6 +75,9 @@ if [[ -n "$PROMPT" ]]; then
 fi
 if [[ -n "$PROMPT_FILE" ]]; then
   ARGS+=("--prompt-file" "$PROMPT_FILE")
+fi
+if [[ -n "$OUT_DIR" ]]; then
+  ARGS+=("--out-dir" "$OUT_DIR")
 fi
 for f in "${FILES[@]}"; do
   ARGS+=("--file" "$f")
