@@ -15,16 +15,58 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from typing import Tuple
+from typing import Callable, Sequence, Tuple
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
-DEFAULT_MAX_WORKBOOK_AGE_HOURS = 168.0
+DEFAULT_MAX_WORKBOOK_AGE_HOURS = 36.0
+DEFAULT_MAX_FUTURE_MTIME_SKEW_SECONDS = 120.0
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.alerts.error_alerts import send_run_failure_alert
+
+
+def _resolve_reexec_target(
+    *,
+    project_root: Path = PROJECT_ROOT,
+    current_executable: str | Path | None = None,
+) -> Path | None:
+    venv_python = project_root / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        return None
+    current = Path(current_executable or sys.executable)
+    try:
+        current_resolved = current.resolve()
+    except OSError:
+        current_resolved = current
+    try:
+        target_resolved = venv_python.resolve()
+    except OSError:
+        target_resolved = venv_python
+    if current_resolved == target_resolved:
+        return None
+    return target_resolved
+
+
+def bootstrap_repo_venv_python(
+    *,
+    project_root: Path = PROJECT_ROOT,
+    current_executable: str | Path | None = None,
+    argv: Sequence[str] | None = None,
+    execv_fn: Callable[[str, list[str]], None] | None = None,
+) -> bool:
+    target = _resolve_reexec_target(
+        project_root=project_root,
+        current_executable=current_executable,
+    )
+    if target is None:
+        return False
+    execv = execv_fn or os.execv
+    arg_values = list(argv if argv is not None else sys.argv)
+    execv(str(target), [str(target), *arg_values])
+    return True
 
 
 def emit_lineage_report(
@@ -54,6 +96,18 @@ def _resolve_max_workbook_age_hours(value: float | None) -> float:
         except ValueError:
             return DEFAULT_MAX_WORKBOOK_AGE_HOURS
     return DEFAULT_MAX_WORKBOOK_AGE_HOURS
+
+
+def _resolve_max_future_mtime_skew_seconds(value: float | None) -> float:
+    if value is not None:
+        return float(value)
+    env_raw = os.environ.get("AB_CRM_WORKBOOK_MAX_FUTURE_SKEW_SECONDS", "").strip()
+    if env_raw:
+        try:
+            return float(env_raw)
+        except ValueError:
+            return DEFAULT_MAX_FUTURE_MTIME_SKEW_SECONDS
+    return DEFAULT_MAX_FUTURE_MTIME_SKEW_SECONDS
 
 
 def _workbook_age_hours(path: Path) -> float:
@@ -132,6 +186,7 @@ def run_preflight(
     emit_lineage: bool = False,
     lineage_output: Path | None = None,
     max_workbook_age_hours: float | None = None,
+    max_future_mtime_skew_seconds: float | None = None,
     send_alert_on_fail: bool = False,
     ensure_business_insides: bool = True,
     business_insides_as_of: str | None = None,
@@ -149,6 +204,18 @@ def run_preflight(
         return 2, msg
     if not workbook.exists():
         msg = f"STRICT_DAILY_PREFLIGHT FAIL: workbook does not exist: {workbook}"
+        if send_alert_on_fail:
+            _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
+        return 2, msg
+
+    allowed_future_skew = _resolve_max_future_mtime_skew_seconds(max_future_mtime_skew_seconds)
+    now_ts = time.time()
+    mtime_delta_seconds = workbook.stat().st_mtime - now_ts
+    if mtime_delta_seconds > allowed_future_skew:
+        msg = (
+            "STRICT_DAILY_PREFLIGHT FAIL: future workbook mtime "
+            f"(future_seconds={mtime_delta_seconds:.1f}, max_skew={allowed_future_skew:.1f}) path={workbook}"
+        )
         if send_alert_on_fail:
             _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
         return 2, msg
@@ -219,6 +286,15 @@ def main() -> int:
         help=f"Fail if workbook mtime age exceeds this threshold (default {DEFAULT_MAX_WORKBOOK_AGE_HOURS:g})",
     )
     parser.add_argument(
+        "--max-future-mtime-skew-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Fail if workbook mtime is in the future beyond this skew "
+            f"(default {DEFAULT_MAX_FUTURE_MTIME_SKEW_SECONDS:g} seconds)"
+        ),
+    )
+    parser.add_argument(
         "--send-alert-on-fail",
         action="store_true",
         help="Best-effort Telegram alert on preflight failure",
@@ -250,6 +326,7 @@ def main() -> int:
         emit_lineage=bool(args.emit_lineage),
         lineage_output=args.lineage_output,
         max_workbook_age_hours=args.max_workbook_age_hours,
+        max_future_mtime_skew_seconds=args.max_future_mtime_skew_seconds,
         send_alert_on_fail=bool(args.send_alert_on_fail),
         ensure_business_insides=bool(args.ensure_business_insides),
         business_insides_as_of=args.business_insides_as_of,
@@ -259,4 +336,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    bootstrap_repo_venv_python()
     raise SystemExit(main())
