@@ -4,7 +4,8 @@
 Reads append-only bank account history, composes sparse autosync rows over the
 latest full snapshot, and renders a newest-to-oldest markdown table with:
   - leading totals across stores
-  - per-store/per-account/per-currency columns
+  - compact mode (default): per-store/per-currency rollups
+  - detail mode: per-store/per-account/per-currency columns
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ BASE_COLUMNS = [
 ]
 
 STORE_ORDER = ["UNIVERSAL", "11KZ", "STOREB", "ACMEWEAR", "MELVIS"]
+CURRENCY_ORDER = ["KZT", "USDT", "USD", "RUB", "CNY"]
 ACCOUNT_ORDER = [
     "kaspi_gold",
     "kaspi_pay",
@@ -72,6 +74,12 @@ def _account_sort_key(account: str) -> tuple[int, str]:
     if account in ACCOUNT_ORDER:
         return (ACCOUNT_ORDER.index(account), account)
     return (len(ACCOUNT_ORDER), account)
+
+
+def _currency_sort_key(currency: str) -> tuple[int, str]:
+    if currency in CURRENCY_ORDER:
+        return (CURRENCY_ORDER.index(currency), currency)
+    return (len(CURRENCY_ORDER), currency)
 
 
 def _compose_sparse_entry(entry: dict[str, Any], base_entry: dict[str, Any]) -> dict[str, Any]:
@@ -145,6 +153,19 @@ def _collect_account_keys(entries: list[dict[str, Any]]) -> list[tuple[str, str,
     return sorted(keys, key=lambda k: (_store_sort_key(k[0]), _account_sort_key(k[1]), k[2], k[0], k[1]))
 
 
+def _collect_store_currency_keys(entries: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    for entry in entries:
+        balances = entry.get("balances") or []
+        for row in balances:
+            key = (
+                str(row.get("store") or ""),
+                str(row.get("currency") or "").upper(),
+            )
+            keys.add(key)
+    return sorted(keys, key=lambda k: (_store_sort_key(k[0]), _currency_sort_key(k[1]), k[0], k[1]))
+
+
 def _fx_summary(fx_rates: dict[str, tuple[float, str, str]]) -> str:
     pairs = ["USDT_KZT", "USD_KZT", "RUB_KZT", "CNY_KZT"]
     items: list[str] = []
@@ -158,12 +179,20 @@ def generate_history_totals_markdown(
     entries: list[dict[str, Any]],
     fx_rates: dict[str, tuple[float, str, str]],
     history_label: str,
+    mode: str = "compact",
 ) -> str:
     effective_entries = build_effective_history_entries(entries)
-    account_keys = _collect_account_keys(effective_entries)
+    if mode not in {"compact", "detail"}:
+        raise ValueError(f"Unsupported mode: {mode}")
 
-    account_headers = [f"{store}/{account}/{currency}" for store, account, currency in account_keys]
-    headers = BASE_COLUMNS + account_headers
+    if mode == "detail":
+        account_keys = _collect_account_keys(effective_entries)
+        extra_headers = [f"{store}/{account}/{currency}" for store, account, currency in account_keys]
+    else:
+        store_currency_keys = _collect_store_currency_keys(effective_entries)
+        extra_headers = [f"{store}_{currency}" for store, currency in store_currency_keys]
+
+    headers = BASE_COLUMNS + extra_headers
 
     align = []
     for idx, _header in enumerate(headers):
@@ -176,6 +205,7 @@ def generate_history_totals_markdown(
         "# Bank Accounts History Totals",
         "",
         f"Source: `{history_label}`",
+        f"Mode: {mode}",
         "Order: newest to oldest",
         f"KZT conversion rates: {_fx_summary(fx_rates)}",
         "",
@@ -185,7 +215,7 @@ def generate_history_totals_markdown(
 
     for entry in effective_entries:
         balances = entry.get("balances") or []
-        by_currency, _, total_kzt = generate_bank_snapshot.compute_totals(balances, fx_rates)
+        by_currency, by_store, total_kzt = generate_bank_snapshot.compute_totals(balances, fx_rates)
         mapped = _balances_to_map(balances)
 
         row = [
@@ -198,8 +228,12 @@ def generate_history_totals_markdown(
             _format_amount(float(total_kzt)),
         ]
 
-        for key in account_keys:
-            row.append(_format_amount(float(mapped.get(key, 0.0))))
+        if mode == "detail":
+            for key in account_keys:
+                row.append(_format_amount(float(mapped.get(key, 0.0))))
+        else:
+            for store, currency in store_currency_keys:
+                row.append(_format_amount(float(by_store.get(store, {}).get(currency, 0.0))))
 
         lines.append(f"| {' | '.join(row)} |")
 
@@ -210,10 +244,11 @@ def generate_history_totals_markdown(
 def render_history_totals(
     history_path: Path = HISTORY_PATH,
     db_path: Path = DEFAULT_DB_PATH,
+    mode: str = "compact",
 ) -> str:
     entries = generate_bank_snapshot.load_history(history_path)
     fx_rates = generate_bank_snapshot.get_fx_rates(db_path)
-    return generate_history_totals_markdown(entries, fx_rates, str(history_path))
+    return generate_history_totals_markdown(entries, fx_rates, str(history_path), mode=mode)
 
 
 def main() -> int:
@@ -224,11 +259,13 @@ def main() -> int:
     parser.add_argument("--history", type=Path, default=HISTORY_PATH, help="Path to bank_accounts_history.yaml")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="DB path for FX conversion rates")
     parser.add_argument("--output", type=Path, default=OUTPUT_PATH, help="Output markdown table path")
+    parser.add_argument("--detail", action="store_true", help="Render full account-level columns")
     parser.add_argument("--dry-run", action="store_true", help="Print output without writing")
     args = parser.parse_args()
 
     try:
-        content = render_history_totals(history_path=args.history, db_path=args.db)
+        mode = "detail" if args.detail else "compact"
+        content = render_history_totals(history_path=args.history, db_path=args.db, mode=mode)
         if args.dry_run:
             print(content)
             return 0

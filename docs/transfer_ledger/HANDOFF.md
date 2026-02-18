@@ -54,7 +54,8 @@ Inside `transfer_ledger_autopilot.py`, the pipeline covers:
 - `docs/transfer_ledger/EXCHANGER_BUY_FULL_HISTORY.md`
 - `docs/transfer_ledger/PO_PAYMENTS_CHRONO_FULL_HISTORY.md`
 - `docs/transfer_ledger/PO_PAYMENT_STATUS.md`
-- `config/bank_accounts_history_totals.md` (bank history totals timeline, newest->oldest)
+- `config/bank_accounts_history_totals.md` (bank history totals timeline, newest->oldest, compact rollups)
+  - full account-level variant on demand: `python3 scripts/generate_bank_accounts_history_totals.py --detail`
 
 ## Required env and controls
 

@@ -184,6 +184,7 @@ def main() -> int:
         entries=entries,
         fx_rates=fx_rates,
         history_label=str(args.history),
+        mode="compact",
     )
     args.history_totals.write_text(history_totals_text, encoding="utf-8")
 

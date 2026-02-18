@@ -88,15 +88,17 @@ def test_generate_history_totals_newest_first_with_sparse_composition(tmp_path):
     assert rows[0]["as_of"] == "2026-02-06 16:59:03 GMT+5"
     assert rows[1]["as_of"] == "2026-02-05 18:19:13 GMT+5"
 
-    # Sparse autosync row preserves non-USDT balances from the latest full snapshot.
-    assert rows[0]["UNIVERSAL/kaspi_gold/KZT"] == "1,000"
-    assert rows[0]["UNIVERSAL/kaspi_pay/KZT"] == "200"
-    assert rows[0]["11KZ/kaspi_gold/KZT"] == "3,000"
-    assert rows[0]["UNIVERSAL/binance_usdt/USDT"] == "160.362615"
+    # Default mode is compact store/currency rollups.
+    assert "UNIVERSAL_KZT" in headers
+    assert "UNIVERSAL_USDT" in headers
+    assert "11KZ_KZT" in headers
 
     # TOTAL columns are across stores for each snapshot row.
     assert rows[0]["TOTAL_KZT"] == "4,200"
     assert rows[0]["TOTAL_USDT"] == "160.362615"
+    assert rows[0]["UNIVERSAL_KZT"] == "1,200"
+    assert rows[0]["11KZ_KZT"] == "3,000"
+    assert rows[0]["UNIVERSAL_USDT"] == "160.362615"
 
 
 def test_generate_history_totals_column_order_is_deterministic(tmp_path):
@@ -110,7 +112,7 @@ def test_generate_history_totals_column_order_is_deterministic(tmp_path):
         "CNY_KZT": (75.0, "dim_fx_rates", "2026-02-06"),
     }
 
-    content = history_totals.generate_history_totals_markdown(entries, fx_rates, str(history))
+    content = history_totals.generate_history_totals_markdown(entries, fx_rates, str(history), mode="detail")
     headers, _rows = _parse_markdown_table(content)
 
     assert headers.index("UNIVERSAL/kaspi_gold/KZT") < headers.index("UNIVERSAL/kaspi_pay/KZT")
