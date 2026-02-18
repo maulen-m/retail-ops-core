@@ -77,14 +77,19 @@ if [ "${ENABLE_KASPI_WRITE}" != "1" ]; then
     exit 1
 fi
 
-LOOKBACK_DAYS="${KASPI_LOOKBACK_DAYS:-4}"
+ASSEMBLE_EXTRA_ARGS=()
+if [ -n "${KASPI_ASSEMBLE_SINCE_DAYS:-}" ]; then
+    echo "Using creation-date lookback override: ${KASPI_ASSEMBLE_SINCE_DAYS} days"
+    ASSEMBLE_EXTRA_ARGS+=(--since-days "${KASPI_ASSEMBLE_SINCE_DAYS}")
+else
+    echo "Running in status-first mode (no creation-date lookback filter)."
+fi
 
 echo "========================================"
 echo "  Kaspi Assemble (Daily)"
 echo "========================================"
 echo ""
 echo "Data root: ${DATA_ROOT}"
-echo "Lookback days: ${LOOKBACK_DAYS}"
 echo ""
 
 if [ "${SKIP_PREFLIGHT:-0}" != "1" ]; then
@@ -105,7 +110,7 @@ fi
 
 echo "Step: Shipping orders (set package count)"
 echo "----------------------------------------"
-python scripts/ship_orders_api.py --verbose --since-days "${LOOKBACK_DAYS}"
+python scripts/ship_orders_api.py --verbose "${ASSEMBLE_EXTRA_ARGS[@]}"
 
 if [ $? -ne 0 ]; then
     echo ""

@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -110,6 +111,8 @@ ASSEMBLE_REFRESH_RETRIES_UNIVERSAL = int(
 ASSEMBLE_REFRESH_DELAY_UNIVERSAL = float(
     os.environ.get("KASPI_ASSEMBLE_REFRESH_DELAY_UNIVERSAL", "60")
 )
+ASSEMBLE_BACKSTOP_LOOKBACK_DAYS = int(os.environ.get("KASPI_ASSEMBLE_BACKSTOP_LOOKBACK_DAYS", "14"))
+ASSEMBLE_BACKSTOP_STALE_HOURS = int(os.environ.get("KASPI_ASSEMBLE_BACKSTOP_STALE_HOURS", "24"))
 
 
 def _assemble_settings_for_store(store_code: str) -> tuple[int, float, int, float]:
@@ -125,6 +128,118 @@ def _assemble_settings_for_store(store_code: str) -> tuple[int, float, int, floa
         ASSEMBLE_VERIFY_DELAY,
         ASSEMBLE_REFRESH_RETRIES,
         ASSEMBLE_REFRESH_DELAY,
+    )
+
+
+def _parse_api_timestamp_ms(value: Any) -> Optional[datetime]:
+    """Parse Kaspi millisecond timestamp to timezone-aware Almaty datetime."""
+    if value in (None, ""):
+        return None
+    try:
+        return datetime.fromtimestamp(int(value) / 1000, tz=ALMATY_TZ)
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def derive_dynamic_since_days(
+    db_path: Optional[Path],
+    target_date: date,
+    store_codes: Optional[set[str]] = None,
+    default_days: int = ASSEMBLE_BACKSTOP_LOOKBACK_DAYS,
+    max_days: int = 120,
+) -> int:
+    """
+    Derive fallback creation-date window from DB unresolved KASPI_DELIVERY backlog.
+
+    This avoids fragile fixed lookbacks while still supporting APIs that require
+    creationDate filters for pending-order fetches.
+    """
+    if not db_path or not db_path.exists():
+        return int(default_days)
+
+    try:
+        with get_db(db_path) as conn:
+            where = [
+                "kaspi_status = 'KASPI_DELIVERY'",
+                "internal_status NOT IN ('COMPLETED','CANCELLED','RETURNED')",
+                "date(planned_shipment_date) <= date(?)",
+                "created_at IS NOT NULL",
+            ]
+            params: list[Any] = [target_date.isoformat()]
+            if store_codes:
+                placeholders = ",".join(["?"] * len(store_codes))
+                where.append(f"store_code IN ({placeholders})")
+                params.extend(sorted(store_codes))
+
+            row = conn.execute(
+                f"""
+                SELECT MIN(date(created_at)) AS min_created
+                FROM fact_orders_kaspi
+                WHERE {' AND '.join(where)}
+                """,
+                params,
+            ).fetchone()
+            min_created = row["min_created"] if row else None
+    except Exception:
+        return int(default_days)
+
+    if not min_created:
+        return int(default_days)
+
+    try:
+        min_date = datetime.strptime(str(min_created), "%Y-%m-%d").date()
+    except ValueError:
+        return int(default_days)
+
+    span_days = (target_date - min_date).days + 1
+    if span_days < 1:
+        span_days = 1
+    return int(min(max(default_days, span_days), max_days))
+
+
+def _fetch_pending_status_first(client: KaspiAPIClient, max_pages: int = 30) -> APIResponse:
+    """
+    Fetch pending assembly queue without creation-date lookback filter.
+
+    Status-first contract:
+    - state = KASPI_DELIVERY
+    - status = ACCEPTED_BY_MERCHANT
+    - assembled = false (post-filter)
+    """
+    all_orders: list[dict[str, Any]] = []
+    page = 0
+    while page < max_pages:
+        result = client.list_orders(
+            state="KASPI_DELIVERY",
+            status="ACCEPTED_BY_MERCHANT",
+            page_number=page,
+            page_size=100,
+        )
+        if not result.success:
+            return result
+        page_orders = result.data.get("data", []) if isinstance(result.data, dict) else []
+        if not page_orders:
+            break
+        all_orders.extend(page_orders)
+        meta = result.data.get("meta", {}) if isinstance(result.data, dict) else {}
+        total_pages = int(meta.get("pageCount", page + 1) or (page + 1))
+        page += 1
+        if page >= total_pages:
+            break
+
+    pending = []
+    for order in all_orders:
+        attrs = order.get("attributes", {}) or {}
+        assembled_flag = attrs.get("assembled", False)
+        status = str(attrs.get("status", "")).upper()
+        if assembled_flag or status == "ASSEMBLED":
+            continue
+        pending.append(order)
+
+    return APIResponse(
+        success=True,
+        data={"data": pending, "meta": {"totalCount": len(pending)}},
+        status_code=200,
     )
 
 
@@ -488,9 +603,15 @@ def read_crm_orders(
 
 def get_pending_assembly_orders(
     target_date: Optional[date] = None,
-    since_days: int = 7,
+    since_days: Optional[int] = None,
+    fallback_since_days: int = ASSEMBLE_BACKSTOP_LOOKBACK_DAYS,
     store_codes: Optional[set[str]] = None,
-) -> tuple[dict[str, set[str]], dict[str, dict[str, str]], dict[str, dict[str, date]]]:
+) -> tuple[
+    dict[str, set[str]],
+    dict[str, dict[str, str]],
+    dict[str, dict[str, date]],
+    dict[str, dict[str, dict[str, Any]]],
+]:
     """
     Get orders in "Упаковка" stage from ALL stores via API.
 
@@ -502,8 +623,7 @@ def get_pending_assembly_orders(
     # Store-scoped base64 IDs prevent cross-store collisions on assemble.
     order_id_to_base64: dict[str, dict[str, str]] = {}
     planned_date_by_store: dict[str, dict[str, date]] = {}
-
-    since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
+    pending_meta_by_store: dict[str, dict[str, dict[str, Any]]] = {}
 
     selected = store_codes or set(STORE_TOKEN_MAP.keys())
     store_iter = [code for code in STORE_TOKEN_MAP.keys() if code in selected]
@@ -511,15 +631,32 @@ def get_pending_assembly_orders(
     for store_code in store_iter:
         try:
             client = KaspiAPIClient(store_code=store_code)
-            result = client.get_pending_assembly_orders(since=since)
+            if since_days is None:
+                result = _fetch_pending_status_first(client)
+                fetch_mode = "status-first"
+                if not result.success:
+                    since = (
+                        datetime.now(ALMATY_TZ) - timedelta(days=int(max(1, fallback_since_days)))
+                    ).strftime('%Y-%m-%d')
+                    result = client.get_pending_assembly_orders(since=since)
+                    fetch_mode = f"fallback-creation-lookback-{int(max(1, fallback_since_days))}d"
+            else:
+                since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
+                result = client.get_pending_assembly_orders(since=since)
+                fetch_mode = f"creation-lookback-{since_days}d"
             if result.success:
                 orders = result.data.get('data', [])
                 order_ids = set()
                 for order in orders:
+                    attrs = order.get("attributes", {}) or {}
+                    assembled_flag = attrs.get("assembled", False)
+                    status = str(attrs.get("status", "")).upper()
+                    if assembled_flag or status == "ASSEMBLED":
+                        continue
                     order_code = order.get('attributes', {}).get('code', '')
                     base64_id = order.get('id', '')
                     planned_date = _planned_date_from_order(order)
-                    if target_date and planned_date != target_date:
+                    if target_date and planned_date and planned_date > target_date:
                         continue
                     if order_code:
                         order_ids.add(order_code)
@@ -527,8 +664,13 @@ def get_pending_assembly_orders(
                             order_id_to_base64.setdefault(store_code, {})[order_code] = base64_id
                         if planned_date:
                             planned_date_by_store.setdefault(store_code, {})[order_code] = planned_date
+                        pending_meta_by_store.setdefault(store_code, {})[order_code] = {
+                            "planned_date": planned_date,
+                            "created_at": _parse_api_timestamp_ms(attrs.get("creationDate")),
+                            "fetch_mode": fetch_mode,
+                        }
                 pending_by_store[store_code] = order_ids
-                logger.info(f"{store_code}: {len(order_ids)} orders pending assembly")
+                logger.info(f"{store_code}: {len(order_ids)} orders pending assembly ({fetch_mode})")
             else:
                 logger.warning(f"{store_code}: Could not fetch pending orders: {result.error}")
                 pending_by_store[store_code] = set()
@@ -536,7 +678,66 @@ def get_pending_assembly_orders(
             logger.warning(f"{store_code}: Auth error - {e}")
             pending_by_store[store_code] = set()
 
-    return pending_by_store, order_id_to_base64, planned_date_by_store
+    return pending_by_store, order_id_to_base64, planned_date_by_store, pending_meta_by_store
+
+
+def summarize_pending_backlog(
+    pending_meta_by_store: dict[str, dict[str, dict[str, Any]]],
+    target_date: date,
+    stale_hours: int = ASSEMBLE_BACKSTOP_STALE_HOURS,
+    now_dt: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """
+    Build stale-pending backstop report for traceability and alerting.
+
+    Stale condition:
+    - planned_date is known and <= target_date
+    - created_at is older than now - stale_hours
+    """
+    now = now_dt or datetime.now(ALMATY_TZ)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ALMATY_TZ)
+    cutoff = now - timedelta(hours=max(1, stale_hours))
+
+    total_pending = 0
+    overdue_pending = 0
+    stale_orders: list[dict[str, Any]] = []
+
+    for store_code, order_map in pending_meta_by_store.items():
+        for order_id, meta in order_map.items():
+            total_pending += 1
+            planned = meta.get("planned_date")
+            created = meta.get("created_at")
+            if planned and planned <= target_date:
+                overdue_pending += 1
+            if not planned or planned > target_date:
+                continue
+            if not isinstance(created, datetime):
+                continue
+            created_local = created if created.tzinfo else created.replace(tzinfo=ALMATY_TZ)
+            if created_local > cutoff:
+                continue
+            age_hours = int((now - created_local).total_seconds() // 3600)
+            stale_orders.append(
+                {
+                    "store_code": store_code,
+                    "order_id": order_id,
+                    "planned_date": planned.isoformat(),
+                    "created_at": created_local.isoformat(),
+                    "age_hours": age_hours,
+                }
+            )
+
+    stale_orders.sort(key=lambda x: (-x["age_hours"], x["store_code"], x["order_id"]))
+    return {
+        "generated_at": now.isoformat(),
+        "target_date": target_date.isoformat(),
+        "stale_hours": int(max(1, stale_hours)),
+        "total_pending": int(total_pending),
+        "overdue_pending": int(overdue_pending),
+        "stale_pending": int(len(stale_orders)),
+        "stale_orders": stale_orders,
+    }
 
 
 def ship_orders(
@@ -546,7 +747,7 @@ def ship_orders(
     planned_date_by_store: dict[str, dict[str, date]],
     dry_run: bool = False,
     verbose: bool = False,
-    since_days: int = 7,
+    since_days: Optional[int] = None,
     target_date: Optional[date] = None,
 ) -> dict:
     """
@@ -773,7 +974,8 @@ def ship_orders(
                         print(f"      -> EXCEPTION: {e}")
 
         if retry_queue and refresh_retries > 0:
-            refresh_since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
+            refresh_days = since_days if since_days is not None else ASSEMBLE_BACKSTOP_LOOKBACK_DAYS
+            refresh_since = (datetime.now(ALMATY_TZ) - timedelta(days=refresh_days)).strftime('%Y-%m-%d')
             if verbose:
                 print(f"  Retrying {len(retry_queue)} orders after refresh...")
             for attempt in range(refresh_retries):
@@ -877,8 +1079,8 @@ def main():
     parser.add_argument(
         '--since-days',
         type=int,
-        default=7,
-        help='Days to look back in API (default: 7)'
+        default=None,
+        help='Optional creation-date lookback for pending fetch (default: disabled, status-first mode)'
     )
     parser.add_argument(
         '--dry-run',
@@ -903,6 +1105,23 @@ def main():
         action='store_false',
         help='Require size in CRM/DB before assembling'
     )
+    parser.add_argument(
+        '--backstop-stale-hours',
+        type=int,
+        default=ASSEMBLE_BACKSTOP_STALE_HOURS,
+        help='Mark pending orders as stale when age exceeds this threshold (default from env or 24h)'
+    )
+    parser.add_argument(
+        '--backstop-report',
+        type=Path,
+        default=Path("runtime_logs/assemble_backstop_latest.json"),
+        help='Write stale pending backstop report JSON to this path'
+    )
+    parser.add_argument(
+        '--fail-on-stale-backlog',
+        action='store_true',
+        help='Exit nonzero if stale pending orders are detected'
+    )
 
     args = parser.parse_args()
 
@@ -923,6 +1142,10 @@ def main():
     print(f"  Target date: {target_date}")
     if args.store:
         print(f"  Store filter: {args.store}")
+    if args.since_days is None:
+        print("  Pending fetch: status-first (no fixed lookback)")
+    else:
+        print(f"  Pending fetch lookback override: {args.since_days} days")
     if args.dry_run:
         print("  [DRY RUN MODE - No API calls]")
     print()
@@ -932,16 +1155,50 @@ def main():
     api_store_codes = None
     if args.store:
         api_store_codes = {STORE_NAME_TO_API_CODE.get(args.store, args.store).upper()}
-    pending_orders, order_id_to_base64, planned_date_by_store = get_pending_assembly_orders(
+    resolved_db_path = resolve_db_path(None)
+    fallback_since_days = derive_dynamic_since_days(
+        db_path=resolved_db_path,
+        target_date=target_date,
+        store_codes=api_store_codes,
+    )
+    if args.since_days is None:
+        print(f"  Fallback lookback (DB-derived): {fallback_since_days} days")
+    pending_orders, order_id_to_base64, planned_date_by_store, pending_meta_by_store = get_pending_assembly_orders(
         target_date=target_date,
         since_days=args.since_days,
+        fallback_since_days=fallback_since_days,
         store_codes=api_store_codes,
     )
 
     total_pending = sum(len(ids) for ids in pending_orders.values())
+    backstop_report = summarize_pending_backlog(
+        pending_meta_by_store=pending_meta_by_store,
+        target_date=target_date,
+        stale_hours=args.backstop_stale_hours,
+    )
+    try:
+        args.backstop_report.parent.mkdir(parents=True, exist_ok=True)
+        args.backstop_report.write_text(
+            json.dumps(backstop_report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if args.verbose:
+            print(f"Backstop report: {args.backstop_report}")
+    except Exception as exc:
+        logger.warning(f"Could not write backstop report: {exc}")
+
+    if backstop_report["stale_pending"] > 0:
+        sample = ", ".join(x["order_id"] for x in backstop_report["stale_orders"][:5])
+        print(
+            f"WARNING: stale pending backlog={backstop_report['stale_pending']} "
+            f"(overdue={backstop_report['overdue_pending']}, sample={sample})"
+        )
+        if args.fail_on_stale_backlog:
+            return 2
+
     if total_pending == 0:
         print("No orders pending assembly in Kaspi (Упаковка stage).")
-        return
+        return 0
 
     print(f"  Found {total_pending} orders pending assembly across all stores")
 
@@ -955,7 +1212,6 @@ def main():
 
     # Step 2: Read orders from CRM
     print("\nStep 2: Reading CRM (DB-first, size optional)...")
-    resolved_db_path = resolve_db_path(None)
     if resolved_db_path:
         print(f"  DB: {resolved_db_path}")
     db_order_info = load_db_order_info(resolved_db_path or DEFAULT_DB_PATH, all_pending)
@@ -1045,7 +1301,7 @@ def main():
 
     if not orders_by_id and not missing_in_crm:
         print("No eligible orders in CRM/DB.")
-        return
+        return 0
     if args.allow_missing_size:
         print(f"  Found {len(orders_by_id)} orders (size optional)")
     else:
@@ -1091,7 +1347,8 @@ def main():
 
     if args.dry_run:
         print("\n  [DRY RUN] No API calls were made.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
