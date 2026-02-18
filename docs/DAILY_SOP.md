@@ -9,13 +9,18 @@ Scope: Kaspi-only.
 Run strict validation with workbook anchor enabled before operator decisions:
 
 ```bash
-AB_CRM_WORKBOOK_PATH="~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
-python3 scripts/validate_params.py --strict
+AB_CRM_WORKBOOK_PATH="~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx" \
+AB_INBOUND_WORKBOOK_PATH="~/Docs/Autonomous_business/config/anchors/INBOUND_CALENDAR_LATEST.xlsx" \
+./.venv/bin/python scripts/validate_params.py --strict
 ```
 
 Notes:
 - `AB_CRM_WORKBOOK_PATH` gate is optional by design; if unset, workbook anchor check is skipped.
 - In production operations, set it explicitly so daily published sales truth cannot exceed workbook anchor tolerance.
+- Canonical workbook location is `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`;
+  `config/anchors/SALES_KSP_CRM_LATEST.xlsx` must symlink to that file.
+- Canonical inbound/payment truth pointer is `config/anchors/INBOUND_CALENDAR_LATEST.xlsx`
+  (or set `AB_INBOUND_WORKBOOK_PATH` directly).
 
 ---
 
@@ -34,8 +39,8 @@ sqlite3 db/app.db "SELECT COUNT(*), MIN(order_date), MAX(order_date) FROM fact_s
 Use the wrapper so workbook-anchor validation is mandatory for operator runs.
 
 ```bash
-python3 scripts/run_strict_daily_preflight.py \
-  --workbook "~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
+./.venv/bin/python scripts/run_strict_daily_preflight.py \
+  --workbook "~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx" \
   --emit-lineage \
   --send-alert-on-fail \
   --ensure-business-insides
@@ -57,7 +62,7 @@ Behavior:
 Run this daily before any write-side cashflow reconciliation:
 
 ```bash
-python3 scripts/check_on_delivery_residuals.py \
+./.venv/bin/python scripts/check_on_delivery_residuals.py \
   --since 2026-01-01 \
   --until "$(date +%F)"
 ```
@@ -65,7 +70,7 @@ python3 scripts/check_on_delivery_residuals.py \
 Optional alert mode:
 
 ```bash
-python3 scripts/check_on_delivery_residuals.py \
+./.venv/bin/python scripts/check_on_delivery_residuals.py \
   --since 2026-01-01 \
   --until "$(date +%F)" \
   --send-alert
