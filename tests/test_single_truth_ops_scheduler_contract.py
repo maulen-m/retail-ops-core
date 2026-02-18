@@ -18,8 +18,8 @@ def test_single_truth_preflight_plist_contract() -> None:
     assert "<string>--emit-lineage</string>" in plist
     assert "<string>--send-alert-on-fail</string>" in plist
     assert "<string>--ensure-business-insides</string>" in plist
-    assert "<string>/usr/bin/env</string>" in plist
-    assert "<string>python3</string>" in plist
+    assert "<string>~/Docs/Autonomous_business/.venv/bin/python</string>" in plist
+    assert "<string>/usr/bin/env</string>" not in plist
 
 
 def test_on_delivery_residuals_plist_contract() -> None:
@@ -31,8 +31,8 @@ def test_on_delivery_residuals_plist_contract() -> None:
     assert "<string>--send-alert</string>" in plist
     assert "<string>--since</string>" in plist
     assert "<string>2026-01-01</string>" in plist
-    assert "<string>/usr/bin/env</string>" in plist
-    assert "<string>python3</string>" in plist
+    assert "<string>~/Docs/Autonomous_business/.venv/bin/python</string>" in plist
+    assert "<string>/usr/bin/env</string>" not in plist
 
 
 def test_install_script_references_both_single_truth_jobs() -> None:
@@ -42,3 +42,6 @@ def test_install_script_references_both_single_truth_jobs() -> None:
     assert "com.example.single-truth-preflight.plist" in script
     assert "com.example.on-delivery-residuals.plist" in script
     assert "launchctl load" in script
+    assert ".venv/bin/python" in script
+    assert "import pandas" in script
+    assert "import requests" in script

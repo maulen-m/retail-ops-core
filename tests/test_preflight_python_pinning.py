@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
+
+import pytest
 
 from scripts.run_strict_daily_preflight import bootstrap_repo_venv_python, _resolve_reexec_target
 
@@ -59,3 +63,19 @@ def test_resolve_reexec_target_returns_none_when_venv_missing(tmp_path: Path) ->
         current_executable=tmp_path / "python-system",
     )
     assert target is None
+
+
+def test_preflight_help_runs_under_system_python_when_venv_exists() -> None:
+    system_python = Path("/usr/bin/python3")
+    if not system_python.exists():
+        pytest.skip("/usr/bin/python3 not available")
+    repo_root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(
+        [str(system_python), "scripts/run_strict_daily_preflight.py", "--help"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0
+    assert "run strict daily preflight" in (completed.stdout or "").lower()
