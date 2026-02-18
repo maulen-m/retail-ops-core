@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -16,10 +17,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_DASHBOARD = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
 DEFAULT_CASHFLOW_CSV = PROJECT_ROOT / "exports" / "cashflow_calendar.csv"
-DEFAULT_WORKBOOK = Path(
-    "~/Documents/useful tables/Main crm spreadsheets/main tables/"
-    "Purchase_orders/vibe_code_PO/backup/7.2.26/Inbound_calendar_V10.002.xlsx"
-)
+DEFAULT_WORKBOOK = PROJECT_ROOT / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+
+
+def resolve_workbook_path(workbook_path: Path | None = None) -> Path:
+    """Resolve inbound workbook source with explicit > env > anchored default precedence."""
+    if workbook_path is not None:
+        return Path(workbook_path).expanduser()
+    env_raw = str(os.environ.get("AB_INBOUND_WORKBOOK_PATH", "")).strip()
+    if env_raw:
+        return Path(env_raw).expanduser()
+    return DEFAULT_WORKBOOK
 
 
 def _is_valid_part_id(raw: Any) -> bool:
@@ -209,14 +217,23 @@ def validate_system(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate workbook/DB/dashboard single truth")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
-    parser.add_argument("--xlsx", type=Path, default=DEFAULT_WORKBOOK)
+    parser.add_argument(
+        "--xlsx",
+        type=Path,
+        default=None,
+        help=(
+            "Inbound workbook path (default resolves via AB_INBOUND_WORKBOOK_PATH, "
+            f"then {DEFAULT_WORKBOOK})"
+        ),
+    )
     parser.add_argument("--dashboard", type=Path, default=DEFAULT_DASHBOARD)
     args = parser.parse_args()
 
     try:
+        workbook_path = resolve_workbook_path(args.xlsx)
         errors = validate_system(
             db_path=args.db,
-            workbook_path=args.xlsx,
+            workbook_path=workbook_path,
             dashboard_path=args.dashboard,
         )
     except Exception as exc:

@@ -2,19 +2,79 @@
 # Install/update launchd schedulers for single-truth daily preflight and residual checks.
 # Run: chmod +x scripts/install_single_truth_ops_scheduler.sh && ./scripts/install_single_truth_ops_scheduler.sh
 
-set -e
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/install_single_truth_ops_scheduler.sh [--validate-only] [--project-dir <path>]
+
+Options:
+  --validate-only       Run fail-closed runtime checks only; do not load launchd jobs.
+  --project-dir <path>  Override project root for validation/testing.
+EOF
+}
+
+VALIDATE_ONLY=0
+PROJECT_DIR_OVERRIDE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --validate-only)
+            VALIDATE_ONLY=1
+            shift
+            ;;
+        --project-dir)
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: --project-dir requires a path" >&2
+                exit 2
+            fi
+            PROJECT_DIR_OVERRIDE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [[ -n "$PROJECT_DIR_OVERRIDE" ]]; then
+    PROJECT_DIR="$PROJECT_DIR_OVERRIDE"
+fi
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 
 PREFLIGHT_PLIST="com.example.single-truth-preflight.plist"
 RESIDUALS_PLIST="com.example.on-delivery-residuals.plist"
+VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
 
 echo "========================================"
 echo "  Single-Truth Ops Scheduler Installation"
 echo "========================================"
 echo ""
+
+if [[ ! -x "$VENV_PYTHON" ]]; then
+    echo "FAIL: missing .venv/bin/python at $VENV_PYTHON" >&2
+    exit 1
+fi
+
+if ! "$VENV_PYTHON" -c "import pandas; import requests" >/dev/null 2>&1; then
+    echo "FAIL: cannot import pandas/requests with $VENV_PYTHON" >&2
+    exit 1
+fi
+
+echo "runtime checks passed: $VENV_PYTHON imports pandas/requests"
+
+if [[ "$VALIDATE_ONLY" -eq 1 ]]; then
+    echo "Validation-only mode complete."
+    exit 0
+fi
 
 mkdir -p "$LAUNCH_AGENTS_DIR"
 mkdir -p "$PROJECT_DIR/logs"

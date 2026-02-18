@@ -36,7 +36,6 @@ from scripts.validate_schema import validate_schema
 from scripts.validate_single_truth_system import (
     validate_system as validate_single_truth_system,
     DEFAULT_DASHBOARD as DEFAULT_SINGLE_TRUTH_DASHBOARD,
-    DEFAULT_WORKBOOK as DEFAULT_SINGLE_TRUTH_WORKBOOK,
 )
 from scripts.validate_on_delivery_freeze import validate_on_delivery_freeze
 from scripts.validate_business_insides import validate_business_insides
@@ -56,6 +55,7 @@ from scripts.validate_dim_sku_light_alignment import (
 from scripts.migrate_025_dim_sku_weight_guard import validate_dim_sku_weight_guard_schema
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
+DEFAULT_INBOUND_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
 
 # Required frozen parameters
 # Note: DB uses TV_mix_floor (not TV_factor) per dim_params seeding in bootstrap_db.py
@@ -69,6 +69,13 @@ FROZEN_VALUES = {
     "z_factor": 1.65,
     "TV_mix_floor": 0.23,
 }
+
+
+def resolve_single_truth_workbook_path(*, project_root: Path = PROJECT_ROOT) -> Path:
+    env_raw = os.environ.get("AB_INBOUND_WORKBOOK_PATH", "").strip()
+    if env_raw:
+        return Path(env_raw).expanduser()
+    return project_root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
 
 
 class ValidationResult:
@@ -342,16 +349,24 @@ def main():
 
     if args.strict:
         try:
-            system_errors = validate_single_truth_system(
-                db_path=db_path,
-                workbook_path=DEFAULT_SINGLE_TRUTH_WORKBOOK,
-                dashboard_path=DEFAULT_SINGLE_TRUTH_DASHBOARD,
-            )
-            if system_errors:
-                for err in system_errors:
-                    result.add_error(f"single_truth_system: {err}")
+            single_truth_workbook = resolve_single_truth_workbook_path(project_root=PROJECT_ROOT)
+            if not single_truth_workbook.exists():
+                result.add_error(
+                    "single_truth_system: inbound workbook not found "
+                    f"(set AB_INBOUND_WORKBOOK_PATH or provide anchor at {DEFAULT_INBOUND_ANCHOR})"
+                )
             else:
-                result.add_info("single_truth_system: OK")
+                result.add_info(f"single_truth_system workbook: {single_truth_workbook}")
+                system_errors = validate_single_truth_system(
+                    db_path=db_path,
+                    workbook_path=single_truth_workbook,
+                    dashboard_path=DEFAULT_SINGLE_TRUTH_DASHBOARD,
+                )
+                if system_errors:
+                    for err in system_errors:
+                        result.add_error(f"single_truth_system: {err}")
+                else:
+                    result.add_info("single_truth_system: OK")
         except Exception as exc:
             result.add_error(f"single_truth_system error: {exc}")
 

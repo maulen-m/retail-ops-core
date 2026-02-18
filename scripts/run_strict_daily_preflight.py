@@ -26,12 +26,9 @@ DEFAULT_MAX_WORKBOOK_LAG_DAYS = 1
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.alerts.error_alerts import send_run_failure_alert
-
-try:
-    from scripts.build_single_truth_drift_pack import build_single_truth_drift_pack
-except Exception:  # pragma: no cover - optional import safety during bootstrap
-    build_single_truth_drift_pack = None
+# Optional dependency loaded lazily for bootstrap safety and test injection.
+build_single_truth_drift_pack: Callable[..., dict] | None = None
+send_run_failure_alert: Callable[..., bool] | None = None
 
 
 def _resolve_reexec_target(
@@ -138,6 +135,11 @@ def _best_effort_failure_alert(*, message: str, db_path: Path, workbook_path: Pa
     if workbook_path is not None:
         context += f", workbook={workbook_path}"
     try:
+        global send_run_failure_alert
+        if send_run_failure_alert is None:
+            from core.alerts.error_alerts import send_run_failure_alert as _sender
+
+            send_run_failure_alert = _sender
         send_run_failure_alert(
             error_message=message,
             script_name="run_strict_daily_preflight",
@@ -145,6 +147,22 @@ def _best_effort_failure_alert(*, message: str, db_path: Path, workbook_path: Pa
         )
     except Exception as exc:
         print(f"Preflight alert failed: {exc}")
+
+
+def _load_drift_pack_builder() -> Callable[..., dict] | None:
+    global build_single_truth_drift_pack
+    if callable(build_single_truth_drift_pack):
+        return build_single_truth_drift_pack
+    try:
+        from scripts.build_single_truth_drift_pack import (
+            build_single_truth_drift_pack as _build_single_truth_drift_pack,
+        )
+
+        build_single_truth_drift_pack = _build_single_truth_drift_pack
+        return build_single_truth_drift_pack
+    except Exception:
+        build_single_truth_drift_pack = None
+        return None
 
 
 def _business_insides_snapshot_exists(as_of_iso: str) -> bool:
@@ -286,11 +304,12 @@ def run_preflight(
 
     drift_pack_path: Path | None = None
     drift_pack_error: str | None = None
-    if strict_code == 0 and emit_drift_pack and callable(build_single_truth_drift_pack):
+    drift_pack_builder = _load_drift_pack_builder() if emit_drift_pack else None
+    if strict_code == 0 and emit_drift_pack and callable(drift_pack_builder):
         try:
             as_of_iso = (business_insides_as_of or date.today().isoformat()).strip()
             max_lag_days = _resolve_max_workbook_lag_days(None)
-            drift_result = build_single_truth_drift_pack(
+            drift_result = drift_pack_builder(
                 db_path=db_path,
                 as_of=as_of_iso,
                 workbook_path=workbook,
