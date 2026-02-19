@@ -34,6 +34,18 @@ for pat in "${PATTERNS[@]}"; do
   fi
 done
 
+# Ban machine-local absolute paths in active operator-facing docs.
+# Exception: config/anchors/README.md may define operator-specific examples.
+ACTIVE_PATH_DOCS=(
+  docs/00_START_HERE.md
+  docs/DAILY_SOP.md
+  docs/ARCHITECTURE.md
+)
+if rg -n -e '~/' "${ACTIVE_PATH_DOCS[@]}"; then
+  echo "ERROR: docs lint found user-specific absolute path (~/) in active docs; use config/anchors/README.md for path authority" >&2
+  fail=1
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "Docs lint failed. Remove legacy references in non-archive docs." >&2
   exit 1

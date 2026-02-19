@@ -11,8 +11,8 @@ Anchor path and symlink contract authority: `config/anchors/README.md` is author
 Run strict validation with workbook anchor enabled before operator decisions:
 
 ```bash
-AB_CRM_WORKBOOK_PATH="~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx" \
-AB_INBOUND_WORKBOOK_PATH="~/Docs/Autonomous_business/config/anchors/INBOUND_CALENDAR_LATEST.xlsx" \
+AB_CRM_WORKBOOK_PATH="config/anchors/SALES_KSP_CRM_LATEST.xlsx" \
+AB_INBOUND_WORKBOOK_PATH="config/anchors/INBOUND_CALENDAR_LATEST.xlsx" \
 ./.venv/bin/python scripts/validate_params.py --strict
 ```
 
@@ -22,7 +22,7 @@ Notes:
 - Content freshness guard also enforces workbook max-date lag/future windows:
   - `AB_CRM_WORKBOOK_MAX_LAG_DAYS` (default `1`)
   - `AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS` (default `0`)
-- Canonical workbook location is `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`;
+- Canonical workbook location is `excel_ui/SALES_KSP_CRM_V3.xlsx`;
   `config/anchors/SALES_KSP_CRM_LATEST.xlsx` must symlink to that file.
 - Canonical inbound/payment truth pointer is `config/anchors/INBOUND_CALENDAR_LATEST.xlsx`
   (or set `AB_INBOUND_WORKBOOK_PATH` directly).
@@ -45,7 +45,7 @@ Use the wrapper so workbook-anchor validation is mandatory for operator runs.
 
 ```bash
 ./.venv/bin/python scripts/run_strict_daily_preflight.py \
-  --workbook "~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx" \
+  --workbook "config/anchors/SALES_KSP_CRM_LATEST.xlsx" \
   --emit-lineage \
   --send-alert-on-fail \
   --ensure-business-insides
@@ -67,7 +67,7 @@ Behavior:
 Run this before launchd smoke/manual starts to verify anchor health + scheduler validate-only together:
 
 ```bash
-./.venv/bin/python scripts/ops_status.py --project-root "~/Docs/Autonomous_business"
+./.venv/bin/python scripts/ops_status.py --project-root .
 ```
 
 Expected outcome:
@@ -1052,7 +1052,7 @@ python scripts/build_daily_waybills.py --verbose
 
 **Cold storage (External_database):**
 - Old local cache PDFs are migrated to:
-- `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Autonomous_business/kaspi_waybills/by_order/{order_id}.pdf`
+- `<EXTERNAL_DB_ROOT>/Autonomous_business/kaspi_waybills/by_order/{order_id}.pdf`
 - Deduplication is by order ID filename, so shipped waybill PDFs are never duplicated.
 
 **Workbook backups:**
@@ -1064,7 +1064,7 @@ python scripts/build_daily_waybills.py --verbose
 - `repo_backups_G/External_database/snapshots/*` must not include
   `Autonomous_business/kaspi_waybills/by_order/` PDFs.
 - Source of truth for by-order waybill PDFs is local External_database:
-  `~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Autonomous_business/kaspi_waybills/by_order/`
+  `<EXTERNAL_DB_ROOT>/Autonomous_business/kaspi_waybills/by_order/`
 
 **Config env vars:**
 - `KASPI_WAYBILL_CACHE_RETENTION_DAYS` (default `30`)
@@ -1195,10 +1195,11 @@ chmod +x scripts/install_single_truth_ops_scheduler.sh
 Anchor workbook paths (symlinks):
 
 ```bash
-ln -sfn "~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx" \
-  "~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx"
-ln -sfn "~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx" \
-  "~/Docs/Autonomous_business/config/anchors/INBOUND_CALENDAR_LATEST.xlsx"
+REPO_PATH="$(pwd)"
+CRM_SOURCE_PATH="$REPO_PATH/excel_ui/SALES_KSP_CRM_V3.xlsx"
+INBOUND_SOURCE_PATH="<set from config/anchors/README.md>"
+ln -sfn "$CRM_SOURCE_PATH" "$REPO_PATH/config/anchors/SALES_KSP_CRM_LATEST.xlsx"
+ln -sfn "$INBOUND_SOURCE_PATH" "$REPO_PATH/config/anchors/INBOUND_CALENDAR_LATEST.xlsx"
 ```
 
 Jobs:

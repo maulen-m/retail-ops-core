@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def test_daily_sop_uses_repo_anchor_paths_only() -> None:
+def test_daily_sop_avoids_machine_specific_absolute_paths() -> None:
     sop = Path("docs/DAILY_SOP.md").read_text(encoding="utf-8")
     assert "Autonomous_business 2" not in sop
-    assert "~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx" in sop
-    assert "~/Docs/Autonomous_business/config/anchors/INBOUND_CALENDAR_LATEST.xlsx" in sop
+    assert "~/" not in sop
+    assert "config/anchors/README.md" in sop
 
 
 def test_anchor_readme_contains_both_canonical_symlink_contracts() -> None:
@@ -56,3 +56,11 @@ def test_ops_rollout_v24_plan_has_no_deprecated_clone_token() -> None:
 def test_docs_daily_sop_includes_ops_status_command() -> None:
     sop = Path("docs/DAILY_SOP.md").read_text(encoding="utf-8")
     assert "scripts/ops_status.py" in sop
+
+
+def test_ops_rollout_v25_plan_avoids_banned_legacy_clone_token() -> None:
+    plan = Path(
+        "docs/PLAN_SINGLE_TRUTH_OPS_ROLLOUT_V2_5_RELEASE_OBSERVABILITY_SCALE_2026-02-20.md"
+    ).read_text(encoding="utf-8")
+    assert "Autonomous_business 2" not in plan
+    assert "config/anchors/README.md" in plan
