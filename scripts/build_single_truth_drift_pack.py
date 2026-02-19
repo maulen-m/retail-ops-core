@@ -211,6 +211,11 @@ def _render_markdown(payload: dict[str, Any]) -> str:
             "",
             f"- Generated at: `{payload['generated_at']}`",
             f"- As of: `{payload['as_of']}`",
+            f"- Status: `{payload['status']}`",
+            "",
+            "## Status Reasons",
+            "",
+            _json_block(payload["status_reasons"]),
             "",
             "## Workbook Overage",
             "",
@@ -234,6 +239,42 @@ def _render_markdown(payload: dict[str, Any]) -> str:
             "",
         ]
     )
+
+
+def classify_pack_status(payload: dict[str, Any]) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+
+    workbook = payload.get("workbook_overage", {}) or {}
+    workbook_errors = list(workbook.get("errors") or [])
+    workbook_status = str(workbook.get("status") or "").lower()
+    if workbook_status in {"fail", "error"} or workbook_errors:
+        reasons.append("workbook_overage indicates fail/error")
+        return "STOP_LINE", reasons
+
+    cogs = payload.get("cogs_integrity", {}) or {}
+    unresolved_rows = int(cogs.get("unresolved_rows") or 0)
+    if unresolved_rows > 0:
+        reasons.append(f"cogs_integrity unresolved_rows={unresolved_rows}")
+        return "CRITICAL", reasons
+
+    dim_alignment = payload.get("dim_sku_alignment", {}) or {}
+    dim_status = str(dim_alignment.get("status") or "").lower()
+    dim_mismatch = int(dim_alignment.get("weight_mismatch_count") or 0)
+    residuals = payload.get("on_delivery_residuals", {}) or {}
+    residual_count = int(residuals.get("residual_count") or 0)
+
+    if dim_status not in {"ok", "pass"}:
+        reasons.append(f"dim_sku_alignment status={dim_status or 'unknown'}")
+    elif dim_mismatch > 0:
+        reasons.append(f"dim_sku_alignment weight_mismatch_count={dim_mismatch}")
+
+    if residual_count > 0:
+        reasons.append(f"on_delivery_residuals residual_count={residual_count}")
+
+    if reasons:
+        return "WARN", reasons
+
+    return "PASS", ["all monitored checks are green"]
 
 
 def build_single_truth_drift_pack(
@@ -267,6 +308,9 @@ def build_single_truth_drift_pack(
         "dim_sku_alignment": collect_dim_sku_alignment(db_path=db_path),
         "paid_capital_snapshot": collect_paid_capital_snapshot(db_path=db_path, as_of=as_of_iso),
     }
+    status, status_reasons = classify_pack_status(payload)
+    payload["status"] = status
+    payload["status_reasons"] = status_reasons
 
     out_dir = output_root / as_of_iso
     out_dir.mkdir(parents=True, exist_ok=True)

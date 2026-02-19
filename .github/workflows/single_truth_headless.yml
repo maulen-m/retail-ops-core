@@ -1,0 +1,50 @@
+name: single_truth_headless
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  headless-gates:
+    runs-on: ubuntu-latest
+    env:
+      AB_CRM_WORKBOOK_PATH: config/anchors/SALES_KSP_CRM_LATEST.xlsx
+      AB_INBOUND_WORKBOOK_PATH: config/anchors/INBOUND_CALENDAR_LATEST.xlsx
+      AB_CRM_WORKBOOK_MAX_AGE_HOURS: "36"
+      AB_CRM_WORKBOOK_MAX_LAG_DAYS: "1"
+      AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS: "0"
+      AB_CRM_WORKBOOK_MAX_FUTURE_SKEW_SECONDS: "120"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements-ci.txt pandas requests openpyxl
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install pandas requests openpyxl pyyaml
+
+      - name: Prepare headless anchor fixtures
+        run: |
+          python3 scripts/prepare_ci_headless_fixture.py --project-root "$GITHUB_WORKSPACE" --as-of "$(date -u +%F)"
+          ls -l config/anchors/SALES_KSP_CRM_LATEST.xlsx
+          ls -l config/anchors/INBOUND_CALENDAR_LATEST.xlsx
+
+      - name: Run required headless gate chain
+        run: |
+          python3 scripts/validate_params.py --strict
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
+          python3 scripts/run_contract_suite.py --fixture small
+          python3 scripts/validate_single_truth_system.py
+          scripts/lint_docs.sh
+          scripts/check_no_db_tracked.sh
+          bash scripts/install_single_truth_ops_scheduler.sh --validate-only
+          python3 scripts/check_anchor_health.py --project-root "$GITHUB_WORKSPACE"
+          python3 scripts/ops_status.py --project-root "$GITHUB_WORKSPACE"

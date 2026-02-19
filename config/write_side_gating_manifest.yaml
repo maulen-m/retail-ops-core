@@ -1,0 +1,67 @@
+scripts:
+  - path: scripts/rebuild_cashflow_calendar.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/sync_opex_schedule.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/reconcile_on_delivery_settlement.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/sync_po_parts_from_inbound_calendar.py
+    env_gate: ENABLE_PO_PART_SYNC_WRITE
+    apply_flag: --apply
+  - path: scripts/sync_dim_sku_from_dim_sku_light.py
+    env_gate: ENABLE_DIM_SKU_SYNC_WRITE
+    apply_flag: --apply
+  - path: scripts/migrate_022_po_execution_tables.py
+    env_gate: ENABLE_SCHEMA_WRITE
+    apply_flag: --apply
+  - path: scripts/migrate_023_po_parts_schema.py
+    env_gate: ENABLE_SCHEMA_WRITE
+    apply_flag: --apply
+  - path: scripts/migrate_024_order_synced_at.py
+    env_gate: ENABLE_SCHEMA_WRITE
+    apply_flag: --apply
+  - path: scripts/migrate_025_dim_sku_weight_guard.py
+    env_gate: ENABLE_SCHEMA_WRITE
+    apply_flag: --apply
+  - path: scripts/import_cashflow_events.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/import_cash_balance_checks.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/import_cashflow_balance_checks.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/import_cashflow_opening_balances.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/import_cashflow_payouts.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/import_cashflow_commitments.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/import_kaspi_pay_mt940.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/seed_inventory_open_from_snapshot.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/import_po_arrivals_as_inventory_in.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/translate_orders_to_cashflow_events.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/import_transfer_ledger_cashflow.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/dedupe_cashflow_order_events.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
+  - path: scripts/update_cashflow_dashboard.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply

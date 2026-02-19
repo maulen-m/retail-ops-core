@@ -53,6 +53,10 @@ from scripts.validate_dim_sku_light_alignment import (
     DEFAULT_SHEET as DEFAULT_DIM_SKU_LIGHT_SHEET,
 )
 from scripts.migrate_025_dim_sku_weight_guard import validate_dim_sku_weight_guard_schema
+from scripts.validate_write_side_gating import (
+    validate_manifest as validate_write_side_manifest,
+    DEFAULT_MANIFEST as DEFAULT_WRITE_SIDE_MANIFEST,
+)
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_INBOUND_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
@@ -532,6 +536,22 @@ def main():
                 result.add_info("dim_sku_weight_guard: OK")
         except Exception as exc:
             result.add_error(f"dim_sku_weight_guard error: {exc}")
+
+        try:
+            write_side_report = validate_write_side_manifest(
+                manifest_path=DEFAULT_WRITE_SIDE_MANIFEST,
+                project_root=PROJECT_ROOT,
+            )
+            if not write_side_report["ok"]:
+                for err in write_side_report["errors"]:
+                    result.add_error(f"write_side_gating: {err}")
+            else:
+                result.add_info(
+                    "write_side_gating: "
+                    f"OK (checked={write_side_report['checked_count']})"
+                )
+        except Exception as exc:
+            result.add_error(f"write_side_gating error: {exc}")
 
     # Output results
     if args.json:
