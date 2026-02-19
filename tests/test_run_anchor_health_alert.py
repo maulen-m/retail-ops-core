@@ -134,3 +134,22 @@ def test_anchor_health_alert_spam_guard_realerts_after_recovery(monkeypatch, tmp
     )
 
     assert len(calls) == 2
+
+
+def test_anchor_health_alert_fails_closed_when_state_file_is_not_writable(monkeypatch) -> None:
+    def _fake_check(**_kwargs):
+        return 0, ["anchor health PASS"]
+
+    def _fake_save_state(_path: Path, _state: dict) -> None:
+        raise PermissionError("read-only filesystem")
+
+    monkeypatch.setattr("scripts.run_anchor_health_alert.check_anchor_health", _fake_check)
+    monkeypatch.setattr("scripts.run_anchor_health_alert._save_state", _fake_save_state)
+
+    code, summary = run_anchor_health_alert(
+        project_root=Path("/tmp/repo"),
+        send_alert=False,
+    )
+
+    assert code == 1
+    assert "state write failed" in summary

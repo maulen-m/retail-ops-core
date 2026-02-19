@@ -83,7 +83,10 @@ def run_anchor_health_alert(
     state["last_status"] = status
     state["last_checked_ts"] = now
     state["last_summary"] = summary
-    _save_state(state_path, state)
+    try:
+        _save_state(state_path, state)
+    except Exception as exc:
+        return 1, f"{summary} | state write failed: {exc}"
     return code, summary
 
 
