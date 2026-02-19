@@ -6,6 +6,8 @@ Scope: Kaspi-only.
 
 ### Single-Truth Strict Gate (Workbook Anchored)
 
+Anchor path and symlink contract authority: `config/anchors/README.md` is authoritative.
+
 Run strict validation with workbook anchor enabled before operator decisions:
 
 ```bash

@@ -42,7 +42,7 @@ Read in this order:
 3. `inventory/Excel_UI_Contract_for_CRM_*`
 
 ### If you’re doing **Kaspi orders automation**
-1. `DAILY_SOP.md`
+1. `docs/DAILY_SOP.md`
 2. `KASPI_API_INTEGRATION.md`
 3. `Kaspi_API_Official_document_8.12.2025_GP.md` (reference)
 
