@@ -19,6 +19,9 @@ AB_INBOUND_WORKBOOK_PATH="~/Docs/Autonomous_business/config/anchors/INBOUND_CALE
 Notes:
 - `AB_CRM_WORKBOOK_PATH` gate is optional by design; if unset, workbook anchor check is skipped.
 - In production operations, set it explicitly so daily published sales truth cannot exceed workbook anchor tolerance.
+- Content freshness guard also enforces workbook max-date lag/future windows:
+  - `AB_CRM_WORKBOOK_MAX_LAG_DAYS` (default `1`)
+  - `AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS` (default `0`)
 - Canonical workbook location is `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`;
   `config/anchors/SALES_KSP_CRM_LATEST.xlsx` must symlink to that file.
 - Canonical inbound/payment truth pointer is `config/anchors/INBOUND_CALENDAR_LATEST.xlsx`
@@ -59,6 +62,16 @@ Behavior:
 - Optionally emits lineage JSON under `exports/lineage/`.
 - Emits drift pack artifact under `exports/validation/<YYYY-MM-DD>/single_truth_drift_pack.{md,json}` after strict PASS.
 - If repo `.venv/bin/python` exists, preflight re-execs under it for deterministic dependencies.
+
+### 1.1.1 Run deterministic ops status check
+Run this before launchd smoke/manual starts to verify anchor health + scheduler validate-only together:
+
+```bash
+./.venv/bin/python scripts/ops_status.py --project-root "~/Docs/Autonomous_business"
+```
+
+Expected outcome:
+- `OPS_STATUS PASS` with zero exit code.
 
 ### 1.2 Run on-delivery residual dry-run check
 Run this daily before any write-side cashflow reconciliation:

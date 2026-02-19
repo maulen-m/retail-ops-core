@@ -43,3 +43,16 @@ def test_stopline_plan_has_no_deprecated_autonomous_business_2_path() -> None:
     )
     assert "Autonomous_business 2" not in plan
     assert "config/anchors/README.md" in plan
+
+
+def test_ops_rollout_v24_plan_has_no_deprecated_clone_token() -> None:
+    plan = Path(
+        "docs/PLAN_SINGLE_TRUTH_OPS_ROLLOUT_V2_4_ANCHOR_CONTENT_FRESHNESS_2026-02-19.md"
+    ).read_text(encoding="utf-8")
+    assert "Autonomous_business 2" not in plan
+    assert "config/anchors/README.md" in plan
+
+
+def test_docs_daily_sop_includes_ops_status_command() -> None:
+    sop = Path("docs/DAILY_SOP.md").read_text(encoding="utf-8")
+    assert "scripts/ops_status.py" in sop
