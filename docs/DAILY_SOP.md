@@ -1177,11 +1177,13 @@ chmod +x scripts/install_single_truth_ops_scheduler.sh
 ./scripts/install_single_truth_ops_scheduler.sh
 ```
 
-Anchor workbook path (symlink):
+Anchor workbook paths (symlinks):
 
 ```bash
-ln -sfn "~/Docs/Autonomous_business 2/excel_ui/SALES_KSP_CRM_V3.xlsx" \
+ln -sfn "~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx" \
   "~/Docs/Autonomous_business/config/anchors/SALES_KSP_CRM_LATEST.xlsx"
+ln -sfn "~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx" \
+  "~/Docs/Autonomous_business/config/anchors/INBOUND_CALENDAR_LATEST.xlsx"
 ```
 
 Jobs:
