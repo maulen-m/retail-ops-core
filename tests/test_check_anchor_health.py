@@ -93,6 +93,26 @@ def test_anchor_health_fails_when_workbook_content_lag_exceeds(tmp_path: Path) -
     assert any("workbook content lag exceeds threshold" in line for line in lines)
 
 
+def test_anchor_health_fails_when_workbook_content_date_is_future(tmp_path: Path) -> None:
+    project, crm_workbook, _venv = _prepare_repo(
+        tmp_path, venv_script="#!/bin/bash\nif [ \"$1\" = \"-c\" ]; then exit 0; fi\nexit 0\n"
+    )
+    _write_sales_workbook(crm_workbook, date(2026, 2, 21))
+    now = 1_760_000_000.0
+    os.utime(crm_workbook, (now, now))
+
+    rc, lines = check_anchor_health(
+        project_root=project,
+        now_ts=now,
+        max_age_hours=72,
+        max_future_skew_seconds=120,
+        max_lag_days=1,
+        as_of=date(2026, 2, 19),
+    )
+    assert rc != 0
+    assert any("workbook content date is in the future" in line for line in lines)
+
+
 def test_anchor_health_fails_when_venv_import_contract_breaks(tmp_path: Path) -> None:
     project, crm_workbook, _venv = _prepare_repo(
         tmp_path,
