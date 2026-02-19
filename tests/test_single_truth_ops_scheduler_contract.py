@@ -44,6 +44,10 @@ def test_anchor_health_warning_plist_contract() -> None:
     assert "<string>scripts/run_anchor_health_alert.py</string>" in plist
     assert "<string>--project-root</string>" in plist
     assert "<string>~/Docs/Autonomous_business</string>" in plist
+    assert "<string>--state-path</string>" in plist
+    assert "<string>~/Docs/Autonomous_business/logs/anchor_health_alert_state.json</string>" in plist
+    assert "<string>--repeat-alert-seconds</string>" in plist
+    assert "<string>21600</string>" in plist
     assert "<string>--send-alert</string>" in plist
     assert "<string>/usr/bin/env</string>" not in plist
 
