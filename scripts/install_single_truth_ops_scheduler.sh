@@ -53,6 +53,7 @@ LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 
 PREFLIGHT_PLIST="com.example.single-truth-preflight.plist"
 RESIDUALS_PLIST="com.example.on-delivery-residuals.plist"
+ANCHOR_HEALTH_PLIST="com.example.anchor-health-warning.plist"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
 
 echo "========================================"
@@ -98,18 +99,26 @@ if launchctl list | grep -q "com.example.on-delivery-residuals"; then
     launchctl unload "$LAUNCH_AGENTS_DIR/$RESIDUALS_PLIST" 2>/dev/null || true
 fi
 
+if launchctl list | grep -q "com.example.anchor-health-warning"; then
+    echo "Unloading existing anchor-health scheduler..."
+    launchctl unload "$LAUNCH_AGENTS_DIR/$ANCHOR_HEALTH_PLIST" 2>/dev/null || true
+fi
+
 echo "Installing plists..."
 cp "$PROJECT_DIR/config/$PREFLIGHT_PLIST" "$LAUNCH_AGENTS_DIR/"
 cp "$PROJECT_DIR/config/$RESIDUALS_PLIST" "$LAUNCH_AGENTS_DIR/"
+cp "$PROJECT_DIR/config/$ANCHOR_HEALTH_PLIST" "$LAUNCH_AGENTS_DIR/"
 
 echo "Loading schedulers..."
 launchctl load "$LAUNCH_AGENTS_DIR/$PREFLIGHT_PLIST"
 launchctl load "$LAUNCH_AGENTS_DIR/$RESIDUALS_PLIST"
+launchctl load "$LAUNCH_AGENTS_DIR/$ANCHOR_HEALTH_PLIST"
 
 echo ""
 echo "Single-truth schedulers installed successfully."
 echo ""
 echo "Schedules (local macOS time):"
+echo "  - 20:55: anchor health check + optional alert"
 echo "  - 21:00: strict preflight + lineage"
 echo "  - 21:05: on-delivery residual dry-run + optional alert"
 echo ""
@@ -117,13 +126,15 @@ echo "Anchor workbook expected at:"
 echo "  - $PROJECT_DIR/config/anchors/SALES_KSP_CRM_LATEST.xlsx"
 echo ""
 echo "Status:"
-launchctl list | grep "com.example.single-truth-preflight\\|com.example.on-delivery-residuals" || echo "  (not yet running)"
+launchctl list | grep "com.example.single-truth-preflight\\|com.example.on-delivery-residuals\\|com.example.anchor-health-warning" || echo "  (not yet running)"
 echo ""
 echo "To test manually:"
+echo "  launchctl start com.example.anchor-health-warning"
 echo "  launchctl start com.example.single-truth-preflight"
 echo "  launchctl start com.example.on-delivery-residuals"
 echo ""
 echo "To uninstall:"
 echo "  launchctl unload ~/Library/LaunchAgents/$PREFLIGHT_PLIST"
 echo "  launchctl unload ~/Library/LaunchAgents/$RESIDUALS_PLIST"
-echo "  rm ~/Library/LaunchAgents/$PREFLIGHT_PLIST ~/Library/LaunchAgents/$RESIDUALS_PLIST"
+echo "  launchctl unload ~/Library/LaunchAgents/$ANCHOR_HEALTH_PLIST"
+echo "  rm ~/Library/LaunchAgents/$PREFLIGHT_PLIST ~/Library/LaunchAgents/$RESIDUALS_PLIST ~/Library/LaunchAgents/$ANCHOR_HEALTH_PLIST"

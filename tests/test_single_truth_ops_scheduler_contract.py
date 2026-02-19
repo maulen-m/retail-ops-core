@@ -35,12 +35,26 @@ def test_on_delivery_residuals_plist_contract() -> None:
     assert "<string>/usr/bin/env</string>" not in plist
 
 
+def test_anchor_health_warning_plist_contract() -> None:
+    plist_path = Path("config/com.example.anchor-health-warning.plist")
+    assert plist_path.exists(), "missing launchd plist for anchor health warning"
+    plist = plist_path.read_text(encoding="utf-8")
+    assert "<string>com.example.anchor-health-warning</string>" in plist
+    assert "<string>~/Docs/Autonomous_business/.venv/bin/python</string>" in plist
+    assert "<string>scripts/run_anchor_health_alert.py</string>" in plist
+    assert "<string>--project-root</string>" in plist
+    assert "<string>~/Docs/Autonomous_business</string>" in plist
+    assert "<string>--send-alert</string>" in plist
+    assert "<string>/usr/bin/env</string>" not in plist
+
+
 def test_install_script_references_both_single_truth_jobs() -> None:
     script_path = Path("scripts/install_single_truth_ops_scheduler.sh")
     assert script_path.exists(), "missing scheduler installer"
     script = script_path.read_text(encoding="utf-8")
     assert "com.example.single-truth-preflight.plist" in script
     assert "com.example.on-delivery-residuals.plist" in script
+    assert "com.example.anchor-health-warning.plist" in script
     assert "launchctl load" in script
     assert ".venv/bin/python" in script
     assert "import pandas" in script
