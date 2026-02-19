@@ -48,6 +48,7 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 if [[ -n "$PROJECT_DIR_OVERRIDE" ]]; then
     PROJECT_DIR="$PROJECT_DIR_OVERRIDE"
 fi
+CHECK_ANCHOR_SCRIPT="$SCRIPT_DIR/check_anchor_health.py"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 
 PREFLIGHT_PLIST="com.example.single-truth-preflight.plist"
@@ -64,12 +65,19 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
     exit 1
 fi
 
-if ! "$VENV_PYTHON" -c "import pandas; import requests" >/dev/null 2>&1; then
-    echo "FAIL: cannot import pandas/requests with $VENV_PYTHON" >&2
+if ! "$VENV_PYTHON" -c "import pandas; import requests; import openpyxl" >/dev/null 2>&1; then
+    echo "FAIL: cannot import pandas/requests/openpyxl with $VENV_PYTHON" >&2
     exit 1
 fi
 
-echo "runtime checks passed: $VENV_PYTHON imports pandas/requests"
+echo "runtime checks passed: $VENV_PYTHON imports pandas/requests/openpyxl"
+
+if ! "$VENV_PYTHON" "$CHECK_ANCHOR_SCRIPT" --project-root "$PROJECT_DIR"; then
+    echo "FAIL: anchor health check failed" >&2
+    exit 1
+fi
+
+echo "anchor health checks passed"
 
 if [[ "$VALIDATE_ONLY" -eq 1 ]]; then
     echo "Validation-only mode complete."

@@ -44,7 +44,27 @@ def test_validate_only_fails_when_repo_venv_missing_required_imports(tmp_path: P
     completed = _run_validate_only(project_dir)
 
     assert completed.returncode != 0
-    assert "cannot import pandas/requests" in (completed.stdout + completed.stderr)
+    assert "cannot import pandas/requests/openpyxl" in (completed.stdout + completed.stderr)
+
+
+def test_validate_only_fails_when_anchor_health_check_fails(tmp_path: Path) -> None:
+    project_dir = tmp_path / "repo"
+    venv_python = project_dir / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True, exist_ok=True)
+    venv_python.write_text(
+        "#!/bin/bash\n"
+        "if [ \"$1\" = \"-c\" ]; then\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 9\n",
+        encoding="utf-8",
+    )
+    venv_python.chmod(0o755)
+
+    completed = _run_validate_only(project_dir)
+
+    assert completed.returncode != 0
+    assert "anchor health check failed" in (completed.stdout + completed.stderr)
 
 
 def test_validate_only_passes_with_repo_venv_and_required_imports(tmp_path: Path) -> None:

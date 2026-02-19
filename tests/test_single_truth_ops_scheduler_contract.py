@@ -45,3 +45,5 @@ def test_install_script_references_both_single_truth_jobs() -> None:
     assert ".venv/bin/python" in script
     assert "import pandas" in script
     assert "import requests" in script
+    assert "import openpyxl" in script
+    assert "check_anchor_health.py" in script
