@@ -8,12 +8,15 @@ from datetime import date
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 from typing import Sequence
 
-from scripts.validate_sales_against_workbook import parse_workbook_daily_totals
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CRM_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
 DEFAULT_INBOUND_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
 DEFAULT_VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
@@ -93,6 +96,11 @@ def _validate_content_lag(
     max_lag_days: int,
 ) -> list[str]:
     errors: list[str] = []
+    try:
+        from scripts.validate_sales_against_workbook import parse_workbook_daily_totals
+    except Exception as exc:  # pragma: no cover - import path failures are asserted via CLI tests
+        return [f"unable to import workbook parser for lag check: {exc}"]
+
     try:
         daily = parse_workbook_daily_totals(workbook_path)
     except Exception as exc:  # pragma: no cover - covered via error assertions
@@ -208,9 +216,9 @@ def _print_lines(lines: Sequence[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fail-closed anchor and runtime health check")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT, help="Repository root path")
-    parser.add_argument("--crm-anchor", type=Path, default=DEFAULT_CRM_ANCHOR, help="CRM anchor symlink")
-    parser.add_argument("--inbound-anchor", type=Path, default=DEFAULT_INBOUND_ANCHOR, help="Inbound anchor symlink")
-    parser.add_argument("--venv-python", type=Path, default=DEFAULT_VENV_PYTHON, help="Repo venv python path")
+    parser.add_argument("--crm-anchor", type=Path, default=None, help="CRM anchor symlink")
+    parser.add_argument("--inbound-anchor", type=Path, default=None, help="Inbound anchor symlink")
+    parser.add_argument("--venv-python", type=Path, default=None, help="Repo venv python path")
     parser.add_argument("--max-age-hours", type=float, default=None, help="Override workbook max age hours")
     parser.add_argument(
         "--max-future-skew-seconds",

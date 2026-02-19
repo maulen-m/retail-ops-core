@@ -73,7 +73,12 @@ fi
 
 echo "runtime checks passed: $VENV_PYTHON imports pandas/requests/openpyxl"
 
-if ! "$VENV_PYTHON" "$CHECK_ANCHOR_SCRIPT" --project-root "$PROJECT_DIR"; then
+if [[ ! -f "$CHECK_ANCHOR_SCRIPT" ]]; then
+    echo "FAIL: missing anchor health script at $CHECK_ANCHOR_SCRIPT" >&2
+    exit 1
+fi
+
+if ! (cd "$PROJECT_DIR" && "$VENV_PYTHON" "$CHECK_ANCHOR_SCRIPT" --project-root "$PROJECT_DIR"); then
     echo "FAIL: anchor health check failed" >&2
     exit 1
 fi
