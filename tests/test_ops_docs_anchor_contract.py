@@ -35,3 +35,11 @@ def test_root_daily_sop_has_no_absolute_workbook_paths() -> None:
     text = root_sop.read_text(encoding="utf-8")
     assert "~/Docs/Autonomous_business/config/anchors/" not in text
     assert "Autonomous_business 2" not in text
+
+
+def test_stopline_plan_has_no_deprecated_autonomous_business_2_path() -> None:
+    plan = Path("docs/PLAN_SINGLE_TRUTH_OPS_STOP_THE_LINE_CLEARING_V2_1_2026-02-18.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Autonomous_business 2" not in plan
+    assert "config/anchors/README.md" in plan

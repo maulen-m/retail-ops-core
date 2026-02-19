@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 from openpyxl import Workbook
 
@@ -137,3 +139,29 @@ def test_anchor_health_passes_when_symlinks_and_runtime_are_healthy(tmp_path: Pa
     )
     assert rc == 0
     assert any("anchor health PASS" in line for line in lines)
+
+
+def test_anchor_health_cli_runs_from_external_cwd_without_module_error(tmp_path: Path) -> None:
+    project = tmp_path / "repo"
+    project.mkdir(parents=True, exist_ok=True)
+    script = Path(__file__).resolve().parents[1] / "scripts" / "check_anchor_health.py"
+    outside_cwd = tmp_path / "outside"
+    outside_cwd.mkdir(parents=True, exist_ok=True)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--project-root",
+            str(project),
+        ],
+        cwd=str(outside_cwd),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    output = (completed.stdout or "") + (completed.stderr or "")
+    assert completed.returncode != 0
+    assert "ModuleNotFoundError" not in output
+    assert "missing anchor symlink" in output
