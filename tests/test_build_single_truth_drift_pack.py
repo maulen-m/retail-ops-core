@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.build_single_truth_drift_pack import build_single_truth_drift_pack
+from scripts.build_single_truth_drift_pack import (
+    build_single_truth_drift_pack,
+    classify_pack_status,
+)
 
 
 def test_drift_pack_generates_required_sections_and_deterministic_paths(
@@ -88,3 +91,50 @@ def test_drift_pack_is_read_only_for_db_file(tmp_path: Path, monkeypatch) -> Non
 
     after_mtime = db_path.stat().st_mtime
     assert before_mtime == after_mtime
+
+
+def test_drift_pack_includes_status_classification(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    db_path.write_text("placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "scripts.build_single_truth_drift_pack.collect_workbook_overage",
+        lambda **_kwargs: {"status": "ok", "ok": True, "overage_count": 0, "errors": []},
+    )
+    monkeypatch.setattr(
+        "scripts.build_single_truth_drift_pack.collect_cogs_summary",
+        lambda **_kwargs: {"unresolved_rows": 0, "unresolved_skus": 0},
+    )
+    monkeypatch.setattr(
+        "scripts.build_single_truth_drift_pack.collect_on_delivery_residuals",
+        lambda **_kwargs: {"residual_count": 0, "sample": []},
+    )
+    monkeypatch.setattr(
+        "scripts.build_single_truth_drift_pack.collect_dim_sku_alignment",
+        lambda **_kwargs: {"status": "ok", "weight_mismatch_count": 0, "errors": []},
+    )
+    monkeypatch.setattr(
+        "scripts.build_single_truth_drift_pack.collect_paid_capital_snapshot",
+        lambda **_kwargs: {"cash_actual_kzt": 1, "total_capital_paid_kzt": 1},
+    )
+
+    report = build_single_truth_drift_pack(
+        db_path=db_path,
+        as_of="2026-02-20",
+        output_root=tmp_path / "exports" / "validation",
+    )
+    payload = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    assert payload["status"] == "PASS"
+
+
+def test_classify_pack_status_prioritizes_stop_line_then_critical() -> None:
+    status, reasons = classify_pack_status(
+        {
+            "workbook_overage": {"status": "fail", "errors": ["anchor mismatch"]},
+            "cogs_integrity": {"unresolved_rows": 0},
+            "on_delivery_residuals": {"residual_count": 0},
+            "dim_sku_alignment": {"status": "ok"},
+        }
+    )
+    assert status == "STOP_LINE"
+    assert any("workbook_overage" in reason for reason in reasons)

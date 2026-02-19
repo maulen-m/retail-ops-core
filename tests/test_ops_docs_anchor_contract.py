@@ -64,3 +64,11 @@ def test_ops_rollout_v25_plan_avoids_banned_legacy_clone_token() -> None:
     ).read_text(encoding="utf-8")
     assert "Autonomous_business 2" not in plan
     assert "config/anchors/README.md" in plan
+
+
+def test_ops_next_v27_plan_has_no_oracle_listing_artifact_tokens() -> None:
+    plan = Path(
+        "docs/PLAN_SINGLE_TRUTH_OPS_NEXT_V2_7_RELEASE_CI_WRITE_SCALE_2026-02-20.md"
+    ).read_text(encoding="utf-8")
+    assert "TASK-000_task-ops-rollou" not in plan
+    assert "config/anchors/README.md" in plan
