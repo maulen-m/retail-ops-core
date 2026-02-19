@@ -23,6 +23,7 @@ PATTERNS=(
   '\bWildberries\b'
   '\bWB\s+export\b'
   '\bWB\b'
+  'Autonomous_business 2'
 )
 
 fail=0

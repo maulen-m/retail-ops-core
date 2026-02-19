@@ -60,7 +60,8 @@ No ads worktree changes.
 A) Workbook stale
 
 Most likely cause: the symlink points at a workbook copy that simply wasn’t updated within 36h (your human evidence shows 52.7h).
-Second-order risk: today’s docs still show a symlink to an “Autonomous_business 2/…” path, which increases the probability of updating the wrong file.
+Second-order risk: any stale alternate-workspace anchor examples increase the probability of updating the wrong file.
+Canonical authority for anchor paths is `config/anchors/README.md`.
 
 B) Launchd runtime mismatch (missing pandas/requests)
 
@@ -198,7 +199,7 @@ config/anchors/README.md
 
 docs/DAILY_SOP.md
 
-Replace the “Autonomous_business 2” anchor example with a canonical single location:
+Replace legacy alternate-workspace anchor examples with a canonical single location:
 
 Recommended canonical workbook: <REPO_PATH>/excel_ui/SALES_KSP_CRM_V3.xlsx
 
