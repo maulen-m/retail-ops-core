@@ -23,6 +23,7 @@ DEFAULT_VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
 DEFAULT_MAX_AGE_HOURS = 36.0
 DEFAULT_MAX_FUTURE_SKEW_SECONDS = 120.0
 DEFAULT_MAX_LAG_DAYS = 1
+DEFAULT_MAX_FUTURE_CONTENT_DAYS = 0
 
 
 def _resolve_float(arg_value: float | None, env_key: str, default: float) -> float:
@@ -94,6 +95,7 @@ def _validate_content_lag(
     *,
     as_of: date,
     max_lag_days: int,
+    max_future_content_days: int,
 ) -> list[str]:
     errors: list[str] = []
     try:
@@ -108,6 +110,13 @@ def _validate_content_lag(
     if not daily:
         return ["unable to parse workbook content for lag check: no daily rows found"]
     max_day = max(date.fromisoformat(day_iso) for day_iso in daily.keys())
+    future_days = (max_day - as_of).days
+    if future_days > max_future_content_days:
+        errors.append(
+            "workbook content date is in the future "
+            f"(workbook_max_date={max_day.isoformat()}, as_of={as_of.isoformat()}, "
+            f"future_days={future_days}, max_future_content_days={max_future_content_days})"
+        )
     lag_days = (as_of - max_day).days
     if lag_days > max_lag_days:
         errors.append(
@@ -148,6 +157,7 @@ def check_anchor_health(
     max_age_hours: float | None = None,
     max_future_skew_seconds: float | None = None,
     max_lag_days: int | None = None,
+    max_future_content_days: int | None = None,
     as_of: date | None = None,
     now_ts: float | None = None,
 ) -> tuple[int, list[str]]:
@@ -164,6 +174,11 @@ def check_anchor_health(
         DEFAULT_MAX_FUTURE_SKEW_SECONDS,
     )
     lag_limit = _resolve_int(max_lag_days, "AB_CRM_WORKBOOK_MAX_LAG_DAYS", DEFAULT_MAX_LAG_DAYS)
+    future_content_limit = _resolve_int(
+        max_future_content_days,
+        "AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS",
+        DEFAULT_MAX_FUTURE_CONTENT_DAYS,
+    )
 
     errors: list[str] = []
     lines: list[str] = []
@@ -187,6 +202,7 @@ def check_anchor_health(
                 crm_target,
                 as_of=current_day,
                 max_lag_days=lag_limit,
+                max_future_content_days=future_content_limit,
             )
         )
         lines.append(f"crm_anchor={crm_anchor_path} -> {crm_target}")
@@ -196,7 +212,8 @@ def check_anchor_health(
     errors.extend(_validate_venv_imports(venv_path))
     lines.append(
         "thresholds="
-        f"max_age_hours={age_limit} max_future_skew_seconds={future_limit} max_lag_days={lag_limit}"
+        f"max_age_hours={age_limit} max_future_skew_seconds={future_limit} "
+        f"max_lag_days={lag_limit} max_future_content_days={future_content_limit}"
     )
 
     if errors:
@@ -227,6 +244,12 @@ def main() -> int:
         help="Override allowed future mtime skew in seconds",
     )
     parser.add_argument("--max-lag-days", type=int, default=None, help="Override workbook content lag threshold")
+    parser.add_argument(
+        "--max-future-content-days",
+        type=int,
+        default=None,
+        help="Override allowed future workbook content date offset in days",
+    )
     parser.add_argument("--as-of", type=str, default=None, help="As-of date in YYYY-MM-DD")
     args = parser.parse_args()
 
@@ -239,6 +262,7 @@ def main() -> int:
         max_age_hours=args.max_age_hours,
         max_future_skew_seconds=args.max_future_skew_seconds,
         max_lag_days=args.max_lag_days,
+        max_future_content_days=args.max_future_content_days,
         as_of=as_of,
     )
     _print_lines(lines)
