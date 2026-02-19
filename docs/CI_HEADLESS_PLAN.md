@@ -8,6 +8,7 @@ Run the single-truth ops gate chain in a clean, headless environment without mac
 - Validate docs/path contracts.
 - Validate write-side gating contract.
 - Do not run write/apply workflows.
+- Run through `.github/workflows/single_truth_headless.yml` with fixture bootstrap.
 
 ## Required jobs
 1. `python3 scripts/validate_params.py --strict`
@@ -28,6 +29,12 @@ Run the single-truth ops gate chain in a clean, headless environment without mac
 ## Fixture expectations
 - Workbook fixture for parser tests must be generated in temp dirs.
 - Tests must not rely on local symlink targets.
+- Headless runtime fixture bootstrap script:
+  - `python3 scripts/prepare_ci_headless_fixture.py --project-root <repo> --as-of <YYYY-MM-DD>`
+- Fixture script must create both anchor symlinks:
+  - `config/anchors/SALES_KSP_CRM_LATEST.xlsx`
+  - `config/anchors/INBOUND_CALENDAR_LATEST.xlsx`
+- Fixture script is read-only for DB/external systems.
 
 ## Rollback
 - `git revert <ci_headless_plan_commit_sha>`

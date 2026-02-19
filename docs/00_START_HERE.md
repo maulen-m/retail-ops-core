@@ -62,7 +62,7 @@ Read in this order:
 - `protocol/active/PO_making_logic_v2.md` ✅
 
 ### B) Operating procedures (how to run the machine)
-- `DAILY_SOP.md`
+- `docs/DAILY_SOP.md`
 - `PACKAGING_RULES.md`
 - `DAILY_WORKFLOW.md`
 

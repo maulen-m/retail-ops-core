@@ -7,6 +7,7 @@ Scope: Kaspi-only.
 ### Single-Truth Strict Gate (Workbook Anchored)
 
 Anchor path and symlink contract authority: `config/anchors/README.md` is authoritative.
+Write-side apply contract authority: `docs/WRITE_SIDE_GATING_CONTRACT.md` and `docs/WRITE_APPLY_RUNBOOK.md`.
 
 Run strict validation with workbook anchor enabled before operator decisions:
 
