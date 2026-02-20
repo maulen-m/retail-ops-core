@@ -34,6 +34,11 @@ Run the single-truth ops gate chain in a clean, headless environment without mac
 - Fixture script must create both anchor symlinks:
   - `config/anchors/SALES_KSP_CRM_LATEST.xlsx`
   - `config/anchors/INBOUND_CALENDAR_LATEST.xlsx`
+- Fixture script must create strict-validation local artifacts:
+  - `db/app.db` (fixture schema/data for strict checks),
+  - `exports/po_dashboard_data.json`,
+  - `config/business_insides/BUSINESS_INSIDES_<as_of>.md`,
+  - `config/anchors/fixtures/DIM_SKU_LIGHT_V5.fixture.xlsx`.
 - Fixture script is read-only for DB/external systems.
 
 ## Rollback
