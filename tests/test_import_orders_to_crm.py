@@ -5,9 +5,11 @@ Phase 11 TASK-194: 12 tests for the order import script.
 """
 
 import os
+import sqlite3
 import subprocess
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +29,7 @@ from scripts.import_orders_to_crm import (
     STORE_MAP,
     WAREHOUSE_STORE_MAP,
     _derive_identity_from_raw_row,
+    _load_sku_meta_for_keys,
     _build_line_dedupe_key,
     _coerce_column_values,
     _iter_consecutive_ranges,
@@ -523,6 +526,28 @@ def test_compute_fixed_values_forces_line61_core():
     values = compute_fixed_value_columns(raw_row, {}, {})
     assert values["SKU_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
     assert values["Kaspi_name_core"] == "6в1_Черный_+Сумка"
+
+
+def test_load_sku_meta_for_keys_handles_missing_dim_sku_table(monkeypatch, tmp_path):
+    db_path = tmp_path / "empty.db"
+    sqlite3.connect(db_path).close()
+
+    @contextmanager
+    def _fake_get_db():
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.get_db", _fake_get_db)
+
+    sku_meta, kaspi_core, valid_keys = _load_sku_meta_for_keys(["CL_NEW-CLO2_MEN_SUIT-61_BLACK"])
+    assert sku_meta == {}
+    assert kaspi_core == {}
+    assert valid_keys == set()
 
 
 def test_derive_identity_uses_normalized_article_map_key():
