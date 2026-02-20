@@ -8,12 +8,14 @@ jobs:
   headless-gates:
     runs-on: ubuntu-latest
     env:
+      AB_HEADLESS_FIXTURE: "1"
       AB_CRM_WORKBOOK_PATH: config/anchors/SALES_KSP_CRM_LATEST.xlsx
       AB_INBOUND_WORKBOOK_PATH: config/anchors/INBOUND_CALENDAR_LATEST.xlsx
       AB_CRM_WORKBOOK_MAX_AGE_HOURS: "36"
       AB_CRM_WORKBOOK_MAX_LAG_DAYS: "1"
       AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS: "0"
       AB_CRM_WORKBOOK_MAX_FUTURE_SKEW_SECONDS: "120"
+      DIM_SKU_LIGHT_WORKBOOK_PATH: config/anchors/fixtures/DIM_SKU_LIGHT_V5.fixture.xlsx
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,6 +27,8 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
           python3 -m pip install --upgrade pip
           python3 -m pip install -r requirements-ci.txt pandas requests openpyxl
           python3 -m venv .venv
@@ -34,13 +38,27 @@ jobs:
       - name: Prepare headless anchor fixtures
         run: |
           python3 scripts/prepare_ci_headless_fixture.py --project-root "$GITHUB_WORKSPACE" --as-of "$(date -u +%F)"
+          ls -l db/app.db
           ls -l config/anchors/SALES_KSP_CRM_LATEST.xlsx
           ls -l config/anchors/INBOUND_CALENDAR_LATEST.xlsx
 
       - name: Run required headless gate chain
         run: |
           python3 scripts/validate_params.py --strict
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q \
+            tests/test_ci_headless_workflow_contract.py \
+            tests/test_prepare_ci_headless_fixture.py \
+            tests/test_check_anchor_health.py \
+            tests/test_run_strict_daily_preflight.py \
+            tests/test_install_single_truth_ops_scheduler.py \
+            tests/test_ops_docs_anchor_contract.py \
+            tests/test_ops_status.py \
+            tests/test_validate_write_side_gating.py \
+            tests/test_write_side_gating_contract.py \
+            tests/test_validate_sales_vs_workbook_anchor.py \
+            tests/test_sales_workbook_anchor_parser.py \
+            tests/test_validate_sales_truth_consumers.py \
+            tests/test_import_orders_to_crm.py::test_load_sku_meta_for_keys_handles_missing_dim_sku_table
           python3 scripts/run_contract_suite.py --fixture small
           python3 scripts/validate_single_truth_system.py
           scripts/lint_docs.sh

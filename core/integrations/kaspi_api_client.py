@@ -369,6 +369,9 @@ class KaspiAPIClient:
         until: Optional[str] = None,
         page_number: int = 0,
         page_size: int = 100,
+        delivery_type: Optional[str] = None,
+        signature_required: Optional[bool] = None,
+        include_orders: Optional[str] = None,
     ) -> APIResponse:
         """
         List orders with optional filters.
@@ -405,13 +408,25 @@ class KaspiAPIClient:
             until_ts = self._to_timestamp_ms(until)
             params['filter[orders][creationDate][$le]'] = until_ts
 
+        if delivery_type is not None:
+            params['filter[orders][deliveryType]'] = delivery_type
+
+        if signature_required is not None:
+            params['filter[orders][signatureRequired]'] = str(bool(signature_required)).lower()
+
+        if include_orders is not None:
+            params['filter[orders][includeOrders]'] = include_orders
+
         return self._request('GET', 'orders', params=params)
 
     def list_all_orders(
         self,
         state: Optional[str] = None,
+        status: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        signature_required: Optional[bool] = None,
+        include_orders: Optional[str] = None,
         max_pages: int = 100,
     ) -> list[dict]:
         """
@@ -432,8 +447,11 @@ class KaspiAPIClient:
         while page < max_pages:
             response = self.list_orders(
                 state=state,
+                status=status,
                 since=since,
                 until=until,
+                signature_required=signature_required,
+                include_orders=include_orders,
                 page_number=page,
                 page_size=100,
             )

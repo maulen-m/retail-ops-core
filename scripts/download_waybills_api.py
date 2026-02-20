@@ -7,7 +7,7 @@ Phase 12: Automated waybill download - aligned with CRM order selection.
 IMPORTANT: Only downloads waybills for orders that:
 1. Exist in CRM with MY_SIZE filled
 2. Have planned_date within the target lookback window (default 14 days)
-3. Are in KASPI_DELIVERY state (shipped via API)
+3. Are in the delivery stage (shipped via API)
 
 This ensures we download only pending waybills, not all historical ones.
 
@@ -42,6 +42,7 @@ from core.integrations.kaspi_api_client import (
     KaspiAuthError,
     STORE_TOKEN_MAP,
 )
+from core.integrations.kaspi_order_stage import StageCode, api_state_filter_for_stage
 from core.paths import data_path, get_data_root
 
 # Configure logging
@@ -63,6 +64,7 @@ WAYBILL_RETRY_DELAY = int(os.environ.get("KASPI_WAYBILL_RETRY_DELAY", "20"))
 WAYBILL_RETRY_PASSES = int(os.environ.get("KASPI_WAYBILL_RETRY_PASSES", "1"))
 WAYBILL_RETRY_DELAY_UNIVERSAL = int(os.environ.get("KASPI_WAYBILL_RETRY_DELAY_UNIVERSAL", "90"))
 WAYBILL_RETRY_PASSES_UNIVERSAL = int(os.environ.get("KASPI_WAYBILL_RETRY_PASSES_UNIVERSAL", "3"))
+DELIVERY_STATE = api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY) or ""
 
 
 def _retry_settings_for_store(store_code: str) -> tuple[int, int]:
@@ -80,6 +82,7 @@ STORE_MAP = {
     '30000001_PP1': 'Universal',
     '30290083_PP1': '11KZ',
     '30000002_PP1': 'STORE-B',
+    '30362323_PP1': 'Store-C',
 }
 
 # Reverse mapping: display name -> API store code
@@ -88,6 +91,7 @@ STORE_NAME_TO_API_CODE = {
     'Universal': 'UNIVERSAL',
     '11KZ': '11KZ',
     'STORE-B': 'STOREB',
+    'Store-C': 'MELVIS',
 }
 
 # DB/CRM store values -> API store code
@@ -99,11 +103,13 @@ DB_STORE_TO_API = {
     'MELVIS': 'MELVIS',
     'STOREB': 'STOREB',
     'STORE-B': 'STOREB',
+    'MELVIS': 'MELVIS',
     # CRM/Excel codes
     '30137883_PP1': 'ACMEWEAR',
     '30000001_PP1': 'UNIVERSAL',
     '30290083_PP1': '11KZ',
     '30000002_PP1': 'STOREB',
+    '30362323_PP1': 'MELVIS',
     # Internal store codes
     'PP1': 'ACMEWEAR',
     'PP2': 'ACMEWEAR',
@@ -172,10 +178,11 @@ def get_target_orders_from_api(
     target_date: date,
     since_days: int,
     exact_date: bool = True,
+    include_overdue: bool = False,
     all_dates: bool = False,
     verbose: bool = False,
 ) -> tuple[list[dict], bool]:
-    """Fetch KASPI_DELIVERY orders from API and filter by planned date."""
+    """Fetch delivery-stage orders from API and filter by planned date/signature."""
     try:
         client = KaspiAPIClient(store_code=store_code)
     except KaspiAuthError as exc:
@@ -188,7 +195,7 @@ def get_target_orders_from_api(
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
     try:
-        orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+        orders = client.list_all_orders(state=DELIVERY_STATE, since=since, signature_required=False)
     except Exception as exc:
         logger.warning(f"{store_code}: API list error - {exc}")
         return [], True
@@ -197,7 +204,13 @@ def get_target_orders_from_api(
         print(f"    API returned {len(orders)} orders for {store_code}")
 
     filtered = []
+    min_planned_date = target_date - timedelta(days=since_days)
     for order in orders:
+        attrs = order.get("attributes", {})
+        if attrs.get("signatureRequired"):
+            continue
+        if attrs.get("kaspiDelivery", {}).get("courierTransmissionDate"):
+            continue
         planned_date = _planned_date_from_order(order)
         if planned_date is None:
             continue
@@ -206,6 +219,9 @@ def get_target_orders_from_api(
                 filtered.append(order)
         elif exact_date:
             if planned_date == target_date:
+                filtered.append(order)
+        elif include_overdue:
+            if min_planned_date <= planned_date <= target_date:
                 filtered.append(order)
         else:
             # Default to exact-date selection
@@ -291,6 +307,35 @@ def normalize_store_name(value: Any) -> str:
     return store_str
 
 
+def _is_signature_required(value: Any) -> bool:
+    """Normalize signature-required flags from API/DB/CRM sources."""
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "required", "требуется"}:
+        return True
+    return False
+
+
+def _is_handed_over(courier_transmission_date: Any) -> bool:
+    if courier_transmission_date is None or pd.isna(courier_transmission_date):
+        return False
+    text = str(courier_transmission_date).strip().lower()
+    return bool(text and text not in {"none", "nan", "null"})
+
+
+def _is_pending_crm_status(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    return text in {
+        "ожидает передачи курьеру",
+        "принят",
+    }
+
+
 def get_target_order_ids_from_db(
     db_path: Path,
     target_date: date,
@@ -322,7 +367,14 @@ def get_target_order_ids_from_db(
             return {}
 
         query = """
-            SELECT order_id, store_code, assigned_size, my_size, planned_shipment_date
+            SELECT
+                order_id,
+                store_code,
+                assigned_size,
+                my_size,
+                planned_shipment_date,
+                signature_required,
+                courier_transmission_date
             FROM fact_orders_kaspi
             WHERE (
                 (assigned_size IS NOT NULL AND assigned_size != '')
@@ -351,6 +403,11 @@ def get_target_order_ids_from_db(
         if order_id.endswith(".0"):
             order_id = order_id[:-2]
         if not order_id:
+            continue
+
+        if _is_signature_required(row["signature_required"]):
+            continue
+        if _is_handed_over(row["courier_transmission_date"]):
             continue
 
         api_store = normalize_api_store_code(row["store_code"])
@@ -420,6 +477,16 @@ def get_target_order_ids_from_crm(
         my_size = str(row.get('MY_SIZE', '')).strip()
         if not my_size or my_size.lower() in ('nan', 'none', ''):
             skipped_no_size += 1
+            continue
+
+        if _is_signature_required(row.get('Требуется подписание')):
+            continue
+
+        status_value = row.get('Статус')
+        if not _is_pending_crm_status(status_value):
+            continue
+
+        if _is_handed_over(row.get('Дата передачи курьеру')):
             continue
 
         # Get order_id
@@ -548,13 +615,13 @@ def download_waybills_for_store(
         if verbose:
             print(f"    Using {len(orders)} pre-filtered API orders for {store_code}")
     else:
-        # Fetch orders in KASPI_DELIVERY state
+        # Fetch orders in delivery stage
         since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
         if verbose:
-            print(f"    Fetching KASPI_DELIVERY orders from {store_code}...")
+            print(f"    Fetching delivery-stage orders from {store_code}...")
 
-        orders = client.list_all_orders(state='KASPI_DELIVERY', since=since)
+        orders = client.list_all_orders(state=DELIVERY_STATE, since=since)
 
         if verbose:
             print(f"    API returned {len(orders)} orders, filtering to {len(target_order_ids)} targets")
@@ -758,6 +825,7 @@ def download_all_waybills(
             target_date,
             since_days=since_days,
             exact_date=exact_date or not all_dates,
+            include_overdue=not exact_date and not all_dates,
             all_dates=all_dates,
             verbose=verbose,
         )
@@ -953,7 +1021,7 @@ def main():
     )
     parser.add_argument(
         '--store',
-        choices=['AcmeWear', 'Universal', '11KZ', 'STORE-B'],
+        choices=['AcmeWear', 'Universal', '11KZ', 'STORE-B', 'Store-C'],
         help='Filter by store (optional)'
     )
     parser.add_argument(
@@ -988,6 +1056,11 @@ def main():
         help='Only include orders with planned_date == target_date'
     )
     parser.add_argument(
+        '--include-overdue',
+        action='store_true',
+        help='Include planned dates <= target date within lookback window (legacy compatibility)'
+    )
+    parser.add_argument(
         '--fallback-crm',
         action='store_true',
         help='Fallback to DB/CRM selection if API returns no orders'
@@ -1005,6 +1078,9 @@ def main():
 
     if args.all_dates and args.exact_date:
         logger.warning("Both --all-dates and --exact-date set; using --all-dates.")
+        args.exact_date = False
+    if args.include_overdue and args.exact_date:
+        logger.warning("Both --include-overdue and --exact-date set; using overdue mode.")
         args.exact_date = False
 
     # Parse target date
@@ -1024,6 +1100,8 @@ def main():
     print(f"  Target date: {target_date}")
     if args.all_dates:
         date_mode_str = "all dates <= target"
+    elif args.include_overdue:
+        date_mode_str = "planned <= target within lookback"
     elif args.exact_date:
         date_mode_str = "exact date only (today's batch)"
     else:
@@ -1049,7 +1127,7 @@ def main():
         dry_run=args.dry_run,
         verbose=args.verbose,
         all_dates=args.all_dates,
-        exact_date=args.exact_date,
+        exact_date=(False if args.include_overdue else args.exact_date),
         fallback_crm=args.fallback_crm,
     )
 

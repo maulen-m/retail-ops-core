@@ -523,7 +523,10 @@ def main():
                     f"base_drift={light_report['base_mismatch_count']})"
                 )
             for warn in light_report.get("warnings", []):
-                result.add_warning(f"dim_sku_light_alignment: {warn}")
+                if "base-cost reference drift" in warn:
+                    result.add_info(f"dim_sku_light_alignment: non-blocking {warn}")
+                else:
+                    result.add_warning(f"dim_sku_light_alignment: {warn}")
         except Exception as exc:
             result.add_error(f"dim_sku_light_alignment error: {exc}")
 

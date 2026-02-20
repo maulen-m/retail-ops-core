@@ -12,7 +12,20 @@ Run the single-truth ops gate chain in a clean, headless environment without mac
 
 ## Required jobs
 1. `python3 scripts/validate_params.py --strict`
-2. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q`
+2. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q` (curated headless bucket):
+   - `tests/test_ci_headless_workflow_contract.py`
+   - `tests/test_prepare_ci_headless_fixture.py`
+   - `tests/test_check_anchor_health.py`
+   - `tests/test_run_strict_daily_preflight.py`
+   - `tests/test_install_single_truth_ops_scheduler.py`
+   - `tests/test_ops_docs_anchor_contract.py`
+   - `tests/test_ops_status.py`
+   - `tests/test_validate_write_side_gating.py`
+   - `tests/test_write_side_gating_contract.py`
+   - `tests/test_validate_sales_vs_workbook_anchor.py`
+   - `tests/test_sales_workbook_anchor_parser.py`
+   - `tests/test_validate_sales_truth_consumers.py`
+   - `tests/test_import_orders_to_crm.py::test_load_sku_meta_for_keys_handles_missing_dim_sku_table`
 3. `python3 scripts/run_contract_suite.py --fixture small`
 4. `python3 scripts/validate_single_truth_system.py`
 5. `scripts/lint_docs.sh`
@@ -34,7 +47,13 @@ Run the single-truth ops gate chain in a clean, headless environment without mac
 - Fixture script must create both anchor symlinks:
   - `config/anchors/SALES_KSP_CRM_LATEST.xlsx`
   - `config/anchors/INBOUND_CALENDAR_LATEST.xlsx`
+- Fixture script must create strict-validation local artifacts:
+  - `db/app.db` (fixture schema/data for strict checks),
+  - `exports/po_dashboard_data.json`,
+  - `config/business_insides/BUSINESS_INSIDES_<as_of>.md`,
+  - `config/anchors/fixtures/DIM_SKU_LIGHT_V5.fixture.xlsx`.
 - Fixture script is read-only for DB/external systems.
+- Headless workflow sets `AB_HEADLESS_FIXTURE=1` to enable fixture-aware contracts.
 
 ## Rollback
 - `git revert <ci_headless_plan_commit_sha>`

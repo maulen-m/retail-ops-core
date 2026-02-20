@@ -37,6 +37,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.db import DEFAULT_DB_PATH, get_db
 from core.paths import data_path, get_data_root
 from core.integrations.kaspi_api_client import (
+    APIResponse,
     KaspiAPIClient,
     KaspiAuthError,
     KaspiNotFoundError,
@@ -65,6 +66,7 @@ STORE_MAP = {
     '30000001_PP1': 'Universal',
     '30290083_PP1': '11KZ',
     '30000002_PP1': 'STORE-B',
+    '30362323_PP1': 'Store-C',
 }
 
 # Reverse mapping: display name -> store code for API
@@ -73,6 +75,7 @@ STORE_NAME_TO_API_CODE = {
     'Universal': 'UNIVERSAL',
     '11KZ': '11KZ',
     'STORE-B': 'STOREB',
+    'Store-C': 'MELVIS',
 }
 API_CODE_TO_STORE_NAME = {v: k for k, v in STORE_NAME_TO_API_CODE.items()}
 
@@ -332,7 +335,7 @@ def read_crm_orders(
     target_order_ids: Optional[set[str]] = None,
     db_order_info: Optional[dict[str, dict[str, Any]]] = None,
     apply_date_filter: bool = True,
-    allow_missing_size: bool = False,
+    allow_missing_size: bool = True,
 ) -> dict[str, list[OrderItem]]:
     """
     Read orders from CRM Excel file, grouped by order_id.
@@ -465,50 +468,239 @@ def read_crm_orders(
     return dict(orders_by_id)
 
 
+def _creation_dt_from_order(order: dict) -> Optional[datetime]:
+    """Extract order creation datetime from Kaspi API payload."""
+    ts = order.get("attributes", {}).get("creationDate")
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(ts) / 1000, tz=ALMATY_TZ).replace(tzinfo=None)
+    except (ValueError, OSError, TypeError):
+        return None
+
+
+def _extract_orders_from_list_response(response: Any) -> tuple[list[dict], Optional[int]]:
+    """Normalize API list response shape to orders + optional page count."""
+    if isinstance(response, APIResponse):
+        if not response.success:
+            return [], None
+        payload = response.data or {}
+    else:
+        payload = response or {}
+    data = payload.get("data") or []
+    meta = payload.get("meta") or {}
+    page_count = meta.get("pageCount")
+    return data, int(page_count) if page_count else None
+
+
+def _response_requires_since(response: Any) -> bool:
+    """Detect Kaspi API validation error requiring creationDate[$ge]."""
+    if not isinstance(response, APIResponse):
+        return False
+    if response.success:
+        return False
+    err_text = str(response.error or "")
+    return "creationDate" in err_text and "$ge" in err_text
+
+
 def get_pending_assembly_orders(
     target_date: Optional[date] = None,
-    since_days: int = 7,
-) -> tuple[dict[str, set[str]], dict[str, dict[str, str]]]:
+    since_days: Optional[int] = 7,
+    *,
+    store_codes: Optional[set[str]] = None,
+    fallback_since_days: int = 30,
+) -> tuple[
+    dict[str, set[str]],
+    dict[str, dict[str, str]],
+    dict[str, dict[str, date]],
+    dict[str, dict[str, dict[str, Any]]],
+]:
     """
     Get orders in "Упаковка" stage from ALL stores via API.
 
     Returns:
         - pending_by_store: dict store_api_code -> set of order_ids pending assembly
         - order_id_to_base64: dict store_code -> {order_code: base64_id}
+        - planned_by_store: dict store_api_code -> {order_code: planned_date}
+        - pending_meta_by_store: dict store_api_code -> order metadata
     """
     pending_by_store: dict[str, set[str]] = {}
     # Store-scoped base64 IDs prevent cross-store collisions on assemble.
     order_id_to_base64: dict[str, dict[str, str]] = {}
+    planned_by_store: dict[str, dict[str, date]] = {}
+    pending_meta_by_store: dict[str, dict[str, dict[str, Any]]] = {}
 
-    since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
+    since = None
+    if since_days is not None:
+        since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
+    scope = set(store_codes or STORE_TOKEN_MAP.keys())
     for store_code in STORE_TOKEN_MAP.keys():
+        if store_code not in scope:
+            continue
         try:
             client = KaspiAPIClient(store_code=store_code)
-            result = client.get_pending_assembly_orders(since=since)
-            if result.success:
-                orders = result.data.get('data', [])
-                order_ids = set()
-                for order in orders:
-                    order_code = order.get('attributes', {}).get('code', '')
-                    base64_id = order.get('id', '')
-                    planned_date = _planned_date_from_order(order)
-                    if target_date and planned_date != target_date:
-                        continue
-                    if order_code:
-                        order_ids.add(order_code)
-                        if base64_id:
-                            order_id_to_base64.setdefault(store_code, {})[order_code] = base64_id
-                pending_by_store[store_code] = order_ids
-                logger.info(f"{store_code}: {len(order_ids)} orders pending assembly")
-            else:
-                logger.warning(f"{store_code}: Could not fetch pending orders: {result.error}")
-                pending_by_store[store_code] = set()
+            fetch_mode = "status-first"
+            orders: list[dict] = []
+
+            page_number = 0
+            while True:
+                response = client.list_orders(
+                    state="KASPI_DELIVERY",
+                    status="ACCEPTED_BY_MERCHANT",
+                    since=since,
+                    page_number=page_number,
+                    page_size=100,
+                )
+                if _response_requires_since(response) and since is None:
+                    fetch_mode = f"fallback-creation-lookback-{fallback_since_days}d"
+                    fallback_since = (
+                        datetime.now(ALMATY_TZ) - timedelta(days=fallback_since_days)
+                    ).strftime("%Y-%m-%d")
+                    fallback_result = client.get_pending_assembly_orders(since=fallback_since)
+                    if fallback_result.success:
+                        orders = fallback_result.data.get("data", [])
+                    else:
+                        logger.warning(
+                            f"{store_code}: Could not fetch pending orders: {fallback_result.error}"
+                        )
+                        orders = []
+                    break
+                if isinstance(response, APIResponse) and not response.success:
+                    logger.warning(f"{store_code}: Could not fetch pending orders: {response.error}")
+                    orders = []
+                    break
+
+                page_orders, page_count = _extract_orders_from_list_response(response)
+                if not page_orders:
+                    break
+                orders.extend(page_orders)
+                page_number += 1
+                if page_count is not None and page_number >= page_count:
+                    break
+
+            order_ids = set()
+            for order in orders:
+                attrs = order.get("attributes", {})
+                if attrs.get("assembled"):
+                    continue
+                order_code = attrs.get("code", "")
+                base64_id = order.get("id", "")
+                planned_date = _planned_date_from_order(order)
+                if target_date and planned_date != target_date:
+                    continue
+                if order_code:
+                    order_ids.add(order_code)
+                    if base64_id:
+                        order_id_to_base64.setdefault(store_code, {})[order_code] = base64_id
+                    if planned_date:
+                        planned_by_store.setdefault(store_code, {})[order_code] = planned_date
+                    pending_meta_by_store.setdefault(store_code, {})[order_code] = {
+                        "planned_date": planned_date,
+                        "created_at": _creation_dt_from_order(order),
+                        "fetch_mode": fetch_mode,
+                    }
+            pending_by_store[store_code] = order_ids
+            logger.info(f"{store_code}: {len(order_ids)} orders pending assembly")
         except KaspiAuthError as e:
             logger.warning(f"{store_code}: Auth error - {e}")
             pending_by_store[store_code] = set()
 
-    return pending_by_store, order_id_to_base64
+    return pending_by_store, order_id_to_base64, planned_by_store, pending_meta_by_store
+
+
+def summarize_pending_backlog(
+    pending_meta_by_store: dict[str, dict[str, dict[str, Any]]],
+    target_date: date,
+    stale_hours: int = 24,
+    now_dt: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Summarize pending backlog health for alerts/telemetry."""
+    now_dt = now_dt or datetime.now(ALMATY_TZ).replace(tzinfo=None)
+    total_pending = 0
+    overdue_pending = 0
+    stale_pending = 0
+    stale_orders: list[dict[str, Any]] = []
+
+    for store_code, store_rows in pending_meta_by_store.items():
+        for order_id, meta in store_rows.items():
+            total_pending += 1
+            planned_date = meta.get("planned_date")
+            created_at = meta.get("created_at")
+            if isinstance(planned_date, date) and planned_date < now_dt.date():
+                overdue_pending += 1
+            if isinstance(created_at, datetime):
+                age_hours = (now_dt - created_at).total_seconds() / 3600
+                if age_hours >= stale_hours:
+                    stale_pending += 1
+                    stale_orders.append(
+                        {
+                            "store_code": store_code,
+                            "order_id": order_id,
+                            "planned_date": planned_date,
+                            "created_at": created_at.isoformat(sep=" "),
+                            "age_hours": round(age_hours, 1),
+                        }
+                    )
+
+    stale_orders.sort(key=lambda row: row["age_hours"], reverse=True)
+    return {
+        "total_pending": total_pending,
+        "overdue_pending": overdue_pending,
+        "stale_pending": stale_pending,
+        "stale_orders": stale_orders,
+    }
+
+
+def derive_dynamic_since_days(
+    db_path: Path,
+    target_date: date,
+    store_codes: Optional[set[str]] = None,
+    default_days: int = 14,
+    max_days: int = 120,
+) -> int:
+    """Derive safe creation-date lookback based on oldest pending record in DB."""
+    if not db_path or not Path(db_path).exists():
+        return default_days
+
+    scope = set(store_codes or [])
+    with get_db(Path(db_path)) as conn:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_orders_kaspi'"
+        ).fetchone()
+        if not table:
+            return default_days
+        rows = conn.execute(
+            """
+            SELECT store_code, planned_shipment_date, created_at
+            FROM fact_orders_kaspi
+            WHERE kaspi_status = 'KASPI_DELIVERY'
+              AND (internal_status IS NULL OR internal_status NOT IN ('SHIPPED', 'COMPLETED', 'CANCELLED'))
+            """
+        ).fetchall()
+
+    oldest_days = default_days
+    for row in rows:
+        store = _coerce_str(row["store_code"]).upper()
+        if scope and store and store not in scope:
+            continue
+        planned_raw = _coerce_str(row["planned_shipment_date"])
+        planned = parse_date(planned_raw) if planned_raw else None
+        if planned and planned > target_date:
+            continue
+        created_raw = _coerce_str(row["created_at"])
+        if not created_raw:
+            continue
+        try:
+            created_dt = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            if created_dt.tzinfo is not None:
+                created_dt = created_dt.astimezone(ALMATY_TZ).replace(tzinfo=None)
+        except ValueError:
+            continue
+        age_days = max(0, (target_date - created_dt.date()).days + 1)
+        oldest_days = max(oldest_days, age_days)
+
+    return min(max_days, oldest_days)
 
 
 def ship_orders(
@@ -590,28 +782,33 @@ def ship_orders(
                 shipped += 1
                 continue
 
-            # Helper: verify assemble state (handles delayed state updates)
-            def _wait_for_assembled(order_code: str, base64_hint: Optional[str] = None) -> bool:
-                for attempt in range(ASSEMBLE_VERIFY_RETRIES):
-                    try:
-                        detail = None
-                        if base64_hint:
-                            detail = client.get_order_by_id(base64_hint)
-                            if detail.success:
-                                attrs = detail.data.get('attributes', {})
-                                if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
-                                    if verbose:
-                                        print("      -> Already assembled, skipping")
-                                    return True
-                        detail = client.get_order(order_code)
+            def _is_assembled_now(order_code: str, base64_hint: Optional[str] = None) -> bool:
+                try:
+                    if base64_hint and hasattr(client, "get_order_by_id"):
+                        detail = client.get_order_by_id(base64_hint)
                         if detail.success:
                             attrs = detail.data.get('attributes', {})
                             if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
-                                if verbose:
-                                    print("      -> Already assembled, skipping")
                                 return True
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
+                try:
+                    detail = client.get_order(order_code)
+                    if detail.success:
+                        attrs = detail.data.get('attributes', {})
+                        if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
+                            return True
+                except Exception:
+                    pass
+                return False
+
+            # Helper: verify assemble state (handles delayed state updates)
+            def _wait_for_assembled(order_code: str, base64_hint: Optional[str] = None) -> bool:
+                for attempt in range(ASSEMBLE_VERIFY_RETRIES):
+                    if _is_assembled_now(order_code, base64_hint):
+                        if verbose:
+                            print("      -> Assembled confirmed")
+                        return True
                     if attempt < ASSEMBLE_VERIFY_RETRIES - 1:
                         time.sleep(ASSEMBLE_VERIFY_DELAY)
                 return False
@@ -627,9 +824,12 @@ def ship_orders(
                 try:
                     result_fallback = client.assemble_order(order_id, parcel_count=parcel_count)
                     if result_fallback.success:
-                        if verbose:
-                            print("      -> Shipped OK (fallback)")
-                        return True
+                        if _wait_for_assembled(order_id, base64_hint):
+                            if verbose:
+                                print("      -> Shipped OK (fallback)")
+                            return True
+                        _queue_retry(order_id, parcel_count)
+                        return False
                     err_text = str(result_fallback.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
                         if _wait_for_assembled(order_id, base64_hint):
@@ -662,9 +862,14 @@ def ship_orders(
             try:
                 result = client.assemble_order_by_id(base64_id, order_id, parcel_count=parcel_count)
                 if result.success:
-                    shipped += 1
-                    if verbose:
-                        print("      -> Shipped OK")
+                    if _is_assembled_now(order_id, base64_id):
+                        shipped += 1
+                        if verbose:
+                            print("      -> Shipped OK")
+                    elif _fallback_assemble("Assemble accepted but not confirmed", base64_id):
+                        shipped += 1
+                    else:
+                        _queue_retry(order_id, parcel_count)
                 else:
                     # Some API errors return 404-equivalent errors without raising.
                     err_text = str(result.error or "")
@@ -727,9 +932,12 @@ def ship_orders(
                         continue
                     result = client.assemble_order_by_id(base64_id, order_code, parcel_count=parcels)
                     if result.success:
-                        shipped += 1
-                        if verbose:
-                            print(f"      {order_code}: Shipped OK (refresh)")
+                        if _is_assembled_now(order_code, base64_id):
+                            shipped += 1
+                            if verbose:
+                                print(f"      {order_code}: Shipped OK (refresh)")
+                        else:
+                            still_retry[order_code] = parcels
                         continue
                     err_text = str(result.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
@@ -746,7 +954,10 @@ def ship_orders(
                     break
             if retry_queue:
                 for order_code in retry_queue:
-                    errors.append(f"{order_code}: Resource not found after refresh")
+                    errors.append(f"{order_code}: Assemble not confirmed after refresh")
+        elif retry_queue:
+            for order_code in retry_queue:
+                errors.append(f"{order_code}: Assemble not confirmed (refresh disabled)")
 
     return {
         'shipped': shipped,
@@ -772,7 +983,7 @@ def main():
     )
     parser.add_argument(
         '--store',
-        choices=['AcmeWear', 'Universal', '11KZ', 'STORE-B'],
+        choices=['AcmeWear', 'Universal', '11KZ', 'STORE-B', 'Store-C'],
         help='Filter by store (optional)'
     )
     parser.add_argument(
@@ -826,7 +1037,7 @@ def main():
 
     # Step 1: Get pending assembly orders from API
     print("Step 1: Fetching pending assembly orders from API...")
-    pending_orders, order_id_to_base64 = get_pending_assembly_orders(
+    pending_orders, order_id_to_base64, _planned_map, _pending_meta = get_pending_assembly_orders(
         target_date=target_date,
         since_days=args.since_days,
     )

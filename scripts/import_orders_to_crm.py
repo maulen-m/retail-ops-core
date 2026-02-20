@@ -895,7 +895,10 @@ def _load_sku_meta_for_keys(sku_keys: List[str]) -> Tuple[Dict[str, Dict[str, An
     valid_sku_keys: set[str] = set()
 
     with get_db() as conn:
-        if clean_keys:
+        has_dim_sku = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dim_sku'"
+        ).fetchone()
+        if clean_keys and has_dim_sku:
             placeholders = ",".join("?" for _ in clean_keys)
             rows = conn.execute(
                 f"""

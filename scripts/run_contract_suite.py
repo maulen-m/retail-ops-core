@@ -456,6 +456,8 @@ def _run_stagecode_waybill(db_path: Path) -> dict:
         lookback_days=None,
     )
     order_ids = {o.order_id for o in orders}
+    # API-target selection keeps only non-signature, non-handed-over rows.
+    # Waybill builder keeps only size-resolved actionable rows.
     ok = actual == expected and order_ids == {"1001"}
     return {
         "ok": ok,
