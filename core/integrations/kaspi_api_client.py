@@ -15,12 +15,6 @@ Environment Variables:
     KASPI_TOKEN_11KZ: Token for 11KZ store
     KASPI_TOKEN_MELVIS: Token for Store-C store
     KASPI_TOKEN_STOREB: Token for MGroup store
-    KASPI_MERCHANT_UID: Default merchant UID header (optional)
-    KASPI_MERCHANT_UID_UNIVERSAL: Merchant UID header for Universal (optional)
-    KASPI_MERCHANT_UID_ACMEWEAR: Merchant UID header for AcmeWear (optional)
-    KASPI_MERCHANT_UID_11KZ: Merchant UID header for 11KZ (optional)
-    KASPI_MERCHANT_UID_MELVIS: Merchant UID header for Store-C (optional)
-    KASPI_MERCHANT_UID_STOREB: Merchant UID header for MGroup (optional)
     ENABLE_KASPI_WRITE: Set to "1" to enable write operations (default: "0")
 
 Usage:
@@ -39,7 +33,7 @@ import time
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Optional, Union
+from typing import Any, Optional
 from enum import Enum
 
 import requests
@@ -75,7 +69,6 @@ MAX_PAGE_SIZE = 100           # Kaspi API max items per page
 
 # Token environment variable prefix
 TOKEN_ENV_PREFIX = "KASPI_TOKEN_"
-MERCHANT_UID_ENV_PREFIX = "KASPI_MERCHANT_UID_"
 
 # Store code mapping to env var names
 STORE_TOKEN_MAP = {
@@ -192,16 +185,10 @@ class KaspiAPIClient:
         token: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
         enable_writes: Optional[bool] = None,
-        merchant_uid: Optional[str] = None,
     ):
         self.store_code = store_code.upper()
         self.timeout = timeout
         self._token = token or self._load_token(self.store_code)
-        self._merchant_uid = (
-            merchant_uid.strip()
-            if isinstance(merchant_uid, str) and merchant_uid.strip()
-            else self._load_merchant_uid(self.store_code)
-        )
         self._last_request_time = 0.0
 
         # Write operations guard
@@ -236,32 +223,6 @@ class KaspiAPIClient:
 
         return token
 
-    def _load_merchant_uid(self, store_code: str) -> Optional[str]:
-        """Load optional merchant UID header from environment."""
-        store_env = f"{MERCHANT_UID_ENV_PREFIX}{store_code}"
-        store_value = os.environ.get(store_env)
-        if store_value and store_value.strip():
-            return store_value.strip()
-        default_value = os.environ.get("KASPI_MERCHANT_UID")
-        if default_value and default_value.strip():
-            return default_value.strip()
-        # Fallback to config/kaspi_stores.yaml if present
-        try:
-            from pathlib import Path
-            import yaml  # type: ignore
-
-            config_path = Path(__file__).resolve().parents[2] / "config" / "kaspi_stores.yaml"
-            if config_path.exists():
-                with config_path.open("r", encoding="utf-8") as f:
-                    config = yaml.safe_load(f) or {}
-                store_cfg = (config.get("stores") or {}).get(store_code.upper()) or {}
-                cfg_val = store_cfg.get("merchant_uid") or store_cfg.get("account_id")
-                if cfg_val:
-                    return str(cfg_val).strip()
-        except Exception as exc:
-            logger.debug(f"Merchant UID config load failed: {exc}")
-        return None
-
     def _create_session(self) -> requests.Session:
         """Create session with retry adapter."""
         session = requests.Session()
@@ -281,16 +242,13 @@ class KaspiAPIClient:
 
     def _get_headers(self) -> dict:
         """Get request headers with authorization."""
-        headers = {
+        return {
             'Authorization': self._token,
             'X-Auth-Token': self._token,
             'Accept': 'application/vnd.api+json',
             'Content-Type': 'application/vnd.api+json',
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
-        if self._merchant_uid:
-            headers['X-Merchant-Uid'] = self._merchant_uid
-        return headers
 
     def _rate_limit(self):
         """Apply rate limiting between requests."""
@@ -411,9 +369,6 @@ class KaspiAPIClient:
         until: Optional[str] = None,
         page_number: int = 0,
         page_size: int = 100,
-        delivery_type: Optional[str] = None,
-        signature_required: Optional[bool] = None,
-        include_orders: Optional[Union[str, Iterable[str]]] = None,
     ) -> APIResponse:
         """
         List orders with optional filters.
@@ -426,9 +381,6 @@ class KaspiAPIClient:
             until: Filter orders created before this date
             page_number: Page number (0-indexed)
             page_size: Items per page (max 100)
-            delivery_type: Filter by delivery type (DELIVERY or PICKUP)
-            signature_required: Filter by signature requirement (True/False)
-            include_orders: Extra data to include (e.g., 'user')
 
         Returns:
             APIResponse with list of orders in data
@@ -444,20 +396,6 @@ class KaspiAPIClient:
         if status:
             params['filter[orders][status]'] = status
 
-        if delivery_type and state != 'PICKUP':
-            params['filter[orders][deliveryType]'] = delivery_type
-
-        if signature_required is not None and state != 'SIGN_REQUIRED':
-            params['filter[orders][signatureRequired]'] = str(signature_required).lower()
-
-        if include_orders:
-            if isinstance(include_orders, (list, tuple, set)):
-                include_value = ",".join([str(v) for v in include_orders if v])
-            else:
-                include_value = str(include_orders)
-            if include_value:
-                params['include[orders]'] = include_value
-
         if since:
             # Convert to milliseconds timestamp if date string
             since_ts = self._to_timestamp_ms(since)
@@ -472,45 +410,32 @@ class KaspiAPIClient:
     def list_all_orders(
         self,
         state: Optional[str] = None,
-        status: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
         max_pages: int = 100,
-        delivery_type: Optional[str] = None,
-        signature_required: Optional[bool] = None,
-        include_orders: Optional[Union[str, Iterable[str]]] = None,
     ) -> list[dict]:
         """
         List all orders with pagination handling.
 
         Args:
             state: Filter by order state
-            status: Filter by order status (APPROVED_BY_BANK, ACCEPTED_BY_MERCHANT, etc.)
             since: Filter orders created after this date
             until: Filter orders created before this date
             max_pages: Maximum pages to fetch (safety limit)
-            delivery_type: Filter by delivery type (DELIVERY or PICKUP)
-            signature_required: Filter by signature requirement (True/False)
-            include_orders: Extra data to include (e.g., 'user')
 
         Returns:
             List of all order dicts
         """
         all_orders = []
         page = 0
-        include_user = _include_has_user(include_orders)
 
         while page < max_pages:
             response = self.list_orders(
                 state=state,
-                status=status,
                 since=since,
                 until=until,
                 page_number=page,
                 page_size=100,
-                delivery_type=delivery_type,
-                signature_required=signature_required,
-                include_orders=include_orders,
             )
 
             if not response.success:
@@ -520,10 +445,6 @@ class KaspiAPIClient:
             data = response.data.get('data', [])
             if not data:
                 break
-
-            if include_user:
-                included = response.data.get('included', []) if isinstance(response.data, dict) else []
-                _attach_included_user(data, included)
 
             all_orders.extend(data)
             page += 1
@@ -569,24 +490,6 @@ class KaspiAPIClient:
             )
         return result
 
-    def get_order_by_id(self, order_id: str) -> APIResponse:
-        """
-        Get single order by Base64 order ID.
-
-        Args:
-            order_id: Base64 order ID from list responses
-
-        Returns:
-            APIResponse with order data
-        """
-        if not order_id:
-            return APIResponse(
-                success=False,
-                error="Missing order_id",
-                status_code=400,
-            )
-        return self._request('GET', f'orders/{order_id}')
-
     def _get_order_base64_id(self, order_code: str) -> str:
         """
         Get Base64 order ID from order code.
@@ -627,30 +530,6 @@ class KaspiAPIClient:
         base64_id = self._get_order_base64_id(order_code)
         return self._request('GET', f'orders/{base64_id}/entries')
 
-    def get_order_entry(self, entry_id: str) -> APIResponse:
-        """
-        Get order entry detail (line item detail).
-
-        Args:
-            entry_id: Order entry ID
-
-        Returns:
-            APIResponse with entry detail data
-        """
-        return self._request('GET', f'orderentries/{entry_id}')
-
-    def get_order_entry_product(self, entry_id: str) -> APIResponse:
-        """
-        Get order entry product details.
-
-        Args:
-            entry_id: Order entry ID
-
-        Returns:
-            APIResponse with product data
-        """
-        return self._request('GET', f'orderentries/{entry_id}/product')
-
     def get_masterproduct(self, masterproduct_id: str) -> APIResponse:
         """
         Get masterproduct details (Kaspi's official product info).
@@ -665,30 +544,6 @@ class KaspiAPIClient:
             APIResponse with masterproduct data including 'name' (Kaspi public name)
         """
         return self._request('GET', f'masterproducts/{masterproduct_id}')
-
-    def get_merchantproduct(self, masterproduct_id: str) -> APIResponse:
-        """
-        Get merchant product details for a masterproduct.
-
-        Args:
-            masterproduct_id: Masterproduct ID
-
-        Returns:
-            APIResponse with merchant product data
-        """
-        return self._request('GET', f'masterproducts/{masterproduct_id}/merchantProduct')
-
-    def get_point_of_service(self, pos_id: str) -> APIResponse:
-        """
-        Get point of service details (warehouse/pos metadata).
-
-        Args:
-            pos_id: Point of service ID
-
-        Returns:
-            APIResponse with POS data
-        """
-        return self._request('GET', f'pointofservices/{pos_id}')
 
     def get_waybill_url(self, order: dict) -> Optional[str]:
         """
@@ -707,13 +562,12 @@ class KaspiAPIClient:
         except (KeyError, TypeError):
             return None
 
-    def download_waybill(self, waybill_url: str, timeout: Optional[int] = None) -> APIResponse:
+    def download_waybill(self, waybill_url: str) -> APIResponse:
         """
         Download waybill PDF from URL.
 
         Args:
             waybill_url: Direct waybill URL
-            timeout: Optional timeout override in seconds
 
         Returns:
             APIResponse with PDF binary in data
@@ -723,8 +577,8 @@ class KaspiAPIClient:
         try:
             response = self._session.get(
                 waybill_url,
-                headers=self._get_headers(),
-                timeout=timeout or DOWNLOAD_TIMEOUT,
+                headers={'Authorization': self._token},
+                timeout=DOWNLOAD_TIMEOUT,
             )
 
             if response.ok:
@@ -831,8 +685,24 @@ class KaspiAPIClient:
         self._require_write_enabled()
         logger.info(f"Assembling order {order_code} (ID: {base64_id}) with {parcel_count} parcels")
 
-        # Primary (official) endpoint: POST /orders with ASSEMBLE status
-        primary_payload = {
+        # Preferred endpoint (works for Universal + other stores)
+        assemble_payload = {'data': {'numberOfSpace': str(parcel_count)}}
+        try:
+            result = self._request(
+                'POST',
+                f'orders/{base64_id}/assemble',
+                json_data=assemble_payload,
+            )
+            if result.success:
+                return result
+        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError):
+            # Fall back to legacy endpoint below
+            pass
+        except Exception as exc:
+            logger.warning(f"Assemble via /orders/{base64_id}/assemble failed: {exc}")
+
+        # Legacy fallback (some stores still accept status update on /orders)
+        data = {
             'data': {
                 'type': 'orders',
                 'id': base64_id,
@@ -842,47 +712,8 @@ class KaspiAPIClient:
                 }
             }
         }
-        primary_error: Optional[str] = None
-        primary_status: int = 0
-        try:
-            result = self._request('POST', 'orders', json_data=primary_payload)
-            primary_status = result.status_code or 0
-            if result.success:
-                return result
-            primary_error = result.error
-        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError) as exc:
-            primary_error = str(exc)
 
-        # Fallback endpoint (some stores still accept /assemble)
-        fallback_payload = {'data': {'numberOfSpace': str(parcel_count)}}
-        fallback_error: Optional[str] = None
-        fallback_status: int = 0
-        try:
-            fallback = self._request(
-                'POST',
-                f'orders/{base64_id}/assemble',
-                json_data=fallback_payload,
-            )
-            fallback_status = fallback.status_code or 0
-            if fallback.success:
-                return fallback
-            fallback_error = fallback.error
-        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError) as exc:
-            fallback_error = str(exc)
-        except Exception as exc:
-            fallback_error = f"Unexpected error: {exc}"
-
-        error_parts = []
-        if primary_error:
-            error_parts.append(f"primary: {primary_error}")
-        if fallback_error:
-            error_parts.append(f"fallback: {fallback_error}")
-        error_msg = "; ".join(error_parts) if error_parts else "Assemble failed"
-        return APIResponse(
-            success=False,
-            error=error_msg,
-            status_code=fallback_status or primary_status,
-        )
+        return self._request('POST', 'orders', json_data=data)
 
     def ship_order(self, order_code: str) -> APIResponse:
         """
@@ -1118,14 +949,10 @@ class KaspiAPIClient:
 
         # Filter to only unassembled orders
         orders = result.data.get('data', [])
-        pending = []
-        for order in orders:
-            attrs = order.get('attributes', {}) or {}
-            assembled_flag = attrs.get('assembled', False)
-            status = str(attrs.get('status', '')).upper()
-            if assembled_flag or status == "ASSEMBLED":
-                continue
-            pending.append(order)
+        pending = [
+            o for o in orders
+            if not o.get('attributes', {}).get('assembled', False)
+        ]
 
         return APIResponse(
             success=True,
@@ -1254,39 +1081,6 @@ class KaspiAPIClient:
 # =============================================================================
 # FACTORY FUNCTIONS
 # =============================================================================
-
-
-def _include_has_user(include_orders: Optional[Union[str, Iterable[str]]]) -> bool:
-    if not include_orders:
-        return False
-    if isinstance(include_orders, str):
-        items = [s.strip() for s in include_orders.split(",") if s.strip()]
-    else:
-        items = [str(s).strip() for s in include_orders if str(s).strip()]
-    return "user" in {item.lower() for item in items}
-
-
-def _attach_included_user(orders: list[dict], included: list[dict]) -> None:
-    if not included:
-        return
-    user_map: dict[str, dict] = {}
-    for item in included:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") not in {"customers", "users"}:
-            continue
-        item_id = item.get("id")
-        if item_id:
-            user_map[str(item_id)] = item.get("attributes", {}) or {}
-    if not user_map:
-        return
-    for order in orders:
-        rel = order.get("relationships", {}) if isinstance(order, dict) else {}
-        user_rel = rel.get("user", {}) if isinstance(rel, dict) else {}
-        user_data = user_rel.get("data", {}) if isinstance(user_rel, dict) else {}
-        user_id = user_data.get("id")
-        if user_id and str(user_id) in user_map:
-            order["included_user"] = user_map[str(user_id)]
 
 def get_client(store_code: str, **kwargs) -> KaspiAPIClient:
     """

@@ -234,13 +234,6 @@ class TestRequestBuilding:
         assert headers['Content-Type'] == 'application/vnd.api+json'
         assert headers['Accept'] == 'application/vnd.api+json'
 
-    def test_headers_include_merchant_uid_when_set(self, mock_env):
-        """Test that merchant UID header is included when configured."""
-        with patch.dict(os.environ, {'KASPI_MERCHANT_UID_UNIVERSAL': '30000001'}, clear=False):
-            client = KaspiAPIClient(store_code='UNIVERSAL')
-            headers = client._get_headers()
-            assert headers.get('X-Merchant-Uid') == '30000001'
-
 
 # =============================================================================
 # DATE CONVERSION TESTS
@@ -608,32 +601,6 @@ class TestListOrdersStatusFilter:
         assert params.get('filter[orders][state]') == 'KASPI_DELIVERY'
 
 
-class TestListOrdersExtraFilters:
-    """Tests for list_orders extra filter parameters."""
-
-    @patch('requests.Session.request')
-    def test_list_orders_with_extra_filters(self, mock_request, mock_env):
-        """Test list_orders accepts deliveryType, signatureRequired, include orders."""
-        mock_response = MagicMock()
-        mock_response.ok = True
-        mock_response.status_code = 200
-        mock_response.json.return_value = {'data': []}
-        mock_request.return_value = mock_response
-
-        client = KaspiAPIClient('UNIVERSAL')
-        client.list_orders(
-            state='KASPI_DELIVERY',
-            delivery_type='DELIVERY',
-            signature_required=False,
-            include_orders='user',
-        )
-
-        call_kwargs = mock_request.call_args[1]
-        params = call_kwargs.get('params', {})
-        assert params.get('filter[orders][deliveryType]') == 'DELIVERY'
-        assert params.get('filter[orders][signatureRequired]') == 'false'
-        assert params.get('include[orders]') == 'user'
-
 class TestGetOrderByCode:
     """Tests for get_order using filter approach."""
 
@@ -722,24 +689,6 @@ class TestPendingAssemblyOrders:
         assert result.success
         assert len(result.data['data']) == 2  # Only assembled orders
         assert result.data['meta']['totalCount'] == 2
-
-
-def test_list_all_orders_passes_status(mock_env):
-    client = KaspiAPIClient('UNIVERSAL')
-    captured = {}
-
-    def fake_list_orders(**kwargs):
-        captured.update(kwargs)
-        return APIResponse(success=True, data={'data': []}, status_code=200)
-
-    with patch.object(client, "list_orders", side_effect=fake_list_orders):
-        client.list_all_orders(
-            state="KASPI_DELIVERY",
-            status="ACCEPTED_BY_MERCHANT",
-            since="2026-01-01",
-        )
-
-    assert captured["status"] == "ACCEPTED_BY_MERCHANT"
 
 
 class TestAPIConstants:
@@ -1033,7 +982,7 @@ class TestWriteOperationsBase64ID:
 
     @patch('requests.Session.request')
     def test_assemble_order_uses_base64_id(self, mock_request, mock_env_with_write):
-        """Test assemble_order uses Base64 ID in assemble payload."""
+        """Test assemble_order uses Base64 ID in assemble endpoint."""
         lookup_response = MagicMock()
         lookup_response.ok = True
         lookup_response.status_code = 200
@@ -1051,16 +1000,14 @@ class TestWriteOperationsBase64ID:
         client = KaspiAPIClient('UNIVERSAL')
         client.assemble_order('738784236')
 
-        # Verify Base64 ID in assemble payload
+        # Verify Base64 ID in assemble URL
         write_call = mock_request.call_args_list[1]
         url = write_call[1]['url']
-        assert url.endswith('/orders')
-        json_data = write_call[1]['json']
-        assert json_data['data']['id'] == 'NzM4Nzg0MjM2'
+        assert 'orders/NzM4Nzg0MjM2/assemble' in url
 
     @patch('requests.Session.request')
     def test_assemble_order_uses_correct_format(self, mock_request, mock_env_with_write):
-        """Test assemble_order uses status + numberOfSpace payload."""
+        """Test assemble_order uses numberOfSpace payload for assemble endpoint."""
         lookup_response = MagicMock()
         lookup_response.ok = True
         lookup_response.status_code = 200
@@ -1078,11 +1025,10 @@ class TestWriteOperationsBase64ID:
         client = KaspiAPIClient('UNIVERSAL')
         client.assemble_order('12345', parcel_count=2)
 
-        # Verify correct format for assemble payload
+        # Verify correct format for assemble endpoint
         write_call = mock_request.call_args_list[1]
         json_data = write_call[1]['json']
-        assert json_data['data']['attributes']['status'] == 'ASSEMBLE'
-        assert json_data['data']['attributes']['numberOfSpace'] == '2'  # API requires STRING, not int
+        assert json_data['data']['numberOfSpace'] == '2'  # API requires STRING, not int
 
     @patch('requests.Session.request')
     def test_ship_order_uses_base64_id(self, mock_request, mock_env_with_write):
