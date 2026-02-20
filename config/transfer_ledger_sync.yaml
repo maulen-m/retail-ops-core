@@ -1,0 +1,4 @@
+settings:
+  max_age_hours: 25
+  required_sources:
+    - exchanger_emails

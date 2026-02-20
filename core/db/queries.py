@@ -241,10 +241,11 @@ def get_size_current_stock(
 
         # Get current stock from latest snapshot
         stock_data = conn.execute("""
-            SELECT my_size, current_stock
+            SELECT my_size, SUM(current_stock) as current_stock
             FROM fact_inventory_snapshot_size
             WHERE sku_key = ?
               AND snapshot_date = ?
+            GROUP BY my_size
         """, (sku_key, latest["max_date"])).fetchall()
 
         # Build result
@@ -304,10 +305,11 @@ def get_size_inbound(
 
         if latest and latest["max_date"]:
             inbound_data = conn.execute("""
-                SELECT my_size, inbound_stock
+                SELECT my_size, SUM(inbound_stock) as inbound_stock
                 FROM fact_inventory_snapshot_size
                 WHERE sku_key = ?
                   AND snapshot_date = ?
+                GROUP BY my_size
             """, (sku_key, latest["max_date"])).fetchall()
 
             for row in inbound_data:
@@ -352,42 +354,8 @@ def get_size_sales_90d(
     Returns:
         Dict mapping size -> total units sold in last 90 days
     """
-    with get_db(db_path) as conn:
-        # Get all sizes for this SKU
-        sizes_result = conn.execute("""
-            SELECT DISTINCT my_size, size_order
-            FROM dim_sku_size
-            WHERE sku_key = ?
-            ORDER BY size_order
-        """, (sku_key,)).fetchall()
-
-        sizes = [row["my_size"] for row in sizes_result]
-
-        if not sizes:
-            return {}
-
-        # Calculate date range
-        end_date = date.today()
-        start_date = end_date - timedelta(days=90)
-
-        # Get aggregated sales
-        sales_data = conn.execute("""
-            SELECT my_size, SUM(units) as total_units
-            FROM fact_sales_daily_size
-            WHERE sku_key = ?
-              AND store_code = ?
-              AND sale_date >= ?
-              AND sale_date <= ?
-            GROUP BY my_size
-        """, (sku_key, store_code, start_date.isoformat(), end_date.isoformat())).fetchall()
-
-        # Build result
-        result = {size: 0 for size in sizes}
-        for row in sales_data:
-            if row["my_size"] in result:
-                result[row["my_size"]] = row["total_units"] or 0
-
-        return result
+    # Use sales_fact_v2 for size shares (newer data source)
+    return get_size_sales_90d_v2(sku_key, store_code=store_code, db_path=db_path)
 
 
 def get_sku_age_days(
@@ -580,8 +548,8 @@ def get_size_sales_90d_v2(
             FROM sales_fact_v2
             WHERE sku_key = ?
               AND store_code = ?
-              AND sale_date >= ?
-              AND sale_date <= ?
+              AND order_date >= ?
+              AND order_date <= ?
               AND status NOT IN ('CANCELLED', 'RETURNED')
             GROUP BY my_size
         """, (sku_key, store_code, start_date.isoformat(), end_date.isoformat())).fetchall()
@@ -641,21 +609,21 @@ def get_size_sales_history_v2(
 
         # Get sales data aggregated by day from sales_fact_v2
         sales_data = conn.execute("""
-            SELECT sale_date, my_size, SUM(quantity) as units
+            SELECT order_date, my_size, SUM(quantity) as units
             FROM sales_fact_v2
             WHERE sku_key = ?
               AND store_code = ?
-              AND sale_date >= ?
-              AND sale_date <= ?
+              AND order_date >= ?
+              AND order_date <= ?
               AND status NOT IN ('CANCELLED', 'RETURNED')
-            GROUP BY sale_date, my_size
-            ORDER BY sale_date
+            GROUP BY order_date, my_size
+            ORDER BY order_date
         """, (sku_key, store_code, start_date.isoformat(), end_date.isoformat())).fetchall()
 
         # Build date -> size -> units mapping
         sales_by_date: dict[str, dict[str, int]] = {}
         for row in sales_data:
-            d = row["sale_date"]
+            d = row["order_date"]
             if d not in sales_by_date:
                 sales_by_date[d] = {}
             sales_by_date[d][row["my_size"]] = row["units"]
@@ -798,7 +766,7 @@ def get_sku_age_days_v2(
     """
     with get_db(db_path) as conn:
         first_sale = conn.execute("""
-            SELECT MIN(sale_date) as first_date
+            SELECT MIN(order_date) as first_date
             FROM sales_fact_v2
             WHERE sku_key = ?
               AND store_code = ?

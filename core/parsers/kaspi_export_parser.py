@@ -26,6 +26,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from core.utils.sku_map import lookup_sku_from_offer
+
 
 # Path to column mapping config
 CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "kaspi_column_map.yaml"
@@ -241,6 +243,38 @@ def _extract_size_from_article(article: str) -> Optional[str]:
     return None
 
 
+def _looks_like_size_token(token: str) -> bool:
+    """Heuristic for suffix tokens that encode size info in Артикул."""
+    if not token:
+        return False
+    t = token.strip().strip("()")
+    if not t:
+        return False
+    t_upper = t.upper()
+    size_tokens = {"XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "ONE_SIZE", "ONESIZE", "OS"}
+    if t_upper in size_tokens:
+        return True
+    if "/" in t_upper:
+        if any(size in t_upper for size in size_tokens):
+            return True
+        if any(ch.isdigit() for ch in t_upper) and any(ch.isalpha() for ch in t_upper):
+            return True
+    if t_upper.isdigit() and len(t_upper) in (2, 3):
+        return True
+    if "-" in t_upper:
+        parts = [p for p in t_upper.split("-") if p]
+        if parts and all(p.isdigit() for p in parts):
+            return True
+    return False
+
+
+def _strip_article_prefix(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    return re.sub(r"^[\\d\\s]+", "", text).strip()
+
+
 def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
     """
     Extract SKU components from article and/or kaspi name.
@@ -253,7 +287,8 @@ def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
     if not article:
         return result
 
-    article = str(article).upper().strip()
+    article_raw = _strip_article_prefix(article)
+    article = article_raw.upper()
 
     # Extract size first
     my_size = _extract_size_from_article(article)
@@ -261,46 +296,78 @@ def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
         my_size = _extract_size_from_article(kaspi_name)
     result['my_size'] = my_size
 
+    # SKU_key is embedded at the beginning of Артикул
+    raw_tokens = [t for t in article_raw.split("_") if t]
+    upper_tokens = [t.upper() for t in raw_tokens]
+    size_token = None
+    while upper_tokens:
+        token = upper_tokens[-1].strip()
+        if not token:
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        token_stripped = token.strip("()")
+        if _looks_like_size_token(token_stripped):
+            size_token = raw_tokens[-1]
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        if token_stripped.isdigit() and len(token_stripped) >= 4:
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        break
+
+    if raw_tokens and len(raw_tokens) >= 2:
+        result['sku_key'] = "_".join(raw_tokens)
+        if not result.get('my_size') and size_token:
+            result['my_size'] = size_token
+        if result.get('my_size'):
+            result['sku_id'] = f"{result['sku_key']}_{result['my_size']}"
+        return result
+
+    # Fallback: lookup by Kaspi_name_core mapping
+    if kaspi_name:
+        sku_key, map_size = lookup_sku_from_offer(kaspi_name)
+        if sku_key:
+            result['sku_key'] = sku_key
+            if not result.get('my_size') and map_size:
+                result['my_size'] = map_size
+            if result.get('my_size'):
+                result['sku_id'] = f"{result['sku_key']}_{result['my_size']}"
+            return result
+
     # Check if article is already in our SKU format
     # Pattern: TYPE_LINE_GENDER_MODEL_COLOR or TYPE_LINE_GENDER_MODEL_COLOR_SIZE
-    sku_pattern = r'^([A-Z]+_[A-Z]+_[A-Z]+_[A-Z0-9]+_[A-Z]+)(?:_([A-Z0-9]+))?$'
-    match = re.match(sku_pattern, article)
+    sku_pattern = r'^([A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+)(?:_([A-Za-z0-9-]+))?$'
+    match = re.match(sku_pattern, article_raw)
 
     if match:
         result['sku_key'] = match.group(1)
         if match.group(2):
             result['my_size'] = match.group(2)
-            result['sku_id'] = article
+            result['sku_id'] = article_raw
         elif my_size:
             result['sku_id'] = f"{result['sku_key']}_{my_size}"
 
     return result
 
 
-def parse_active_orders(filepath: Path, config: dict = None) -> ParseResult:
+def parse_active_orders_df(df: pd.DataFrame, source_file: str, config: dict = None) -> ParseResult:
     """
-    Parse Kaspi ActiveOrders*.xlsx export file.
+    Parse Kaspi ActiveOrders DataFrame (ActiveOrders.xlsx format).
 
     Args:
-        filepath: Path to ActiveOrders Excel file
+        df: DataFrame with ActiveOrders columns
+        source_file: Source label for traceability
         config: Optional pre-loaded config (loads from yaml if None)
 
     Returns:
         ParseResult with list of order dicts with normalized column names
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        ValueError: If required columns are missing
     """
-    filepath = Path(filepath)
-    if not filepath.exists():
-        raise FileNotFoundError(f"File not found: {filepath}")
-
     if config is None:
         config = load_column_config()
 
-    # Read Excel file
-    df = pd.read_excel(filepath)
     df_columns = list(df.columns)
     total_rows = len(df)
 
@@ -337,7 +404,7 @@ def parse_active_orders(filepath: Path, config: dict = None) -> ParseResult:
 
     for idx, row in df.iterrows():
         try:
-            order = _parse_order_row(row, column_map, config, filepath.name)
+            order = _parse_order_row(row, column_map, config, source_file)
             if order:
                 orders.append(order)
             else:
@@ -353,6 +420,25 @@ def parse_active_orders(filepath: Path, config: dict = None) -> ParseResult:
         skipped_rows=skipped,
         errors=errors
     )
+
+
+def parse_active_orders(filepath: Path, config: dict = None) -> ParseResult:
+    """
+    Parse Kaspi ActiveOrders*.xlsx export file.
+
+    Args:
+        filepath: Path to ActiveOrders Excel file
+        config: Optional pre-loaded config (loads from yaml if None)
+
+    Returns:
+        ParseResult with list of order dicts with normalized column names
+    """
+    filepath = Path(filepath)
+    if not filepath.exists():
+        raise FileNotFoundError(f"File not found: {filepath}")
+
+    df = pd.read_excel(filepath)
+    return parse_active_orders_df(df, source_file=filepath.name, config=config)
 
 
 def _parse_order_row(

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from core.db import get_db
+from core.utils.sku_normalize import normalize_size
 
 
 logger = logging.getLogger(__name__)
@@ -387,6 +388,7 @@ def determine_size(
         size = calc_size_from_params(customer_height, customer_weight, product_type)
         if size:
             logger.debug(f"Size from customer params: {size}")
+            size = normalize_size(size, product_type) or size
             return SizeResult(
                 size=size,
                 source='CUSTOMER',
@@ -401,8 +403,9 @@ def determine_size(
                 f"Size from offer mode: {prob.mode_size} "
                 f"({prob.mode_share:.1%}, n={prob.sample_count})"
             )
+            size = normalize_size(prob.mode_size, product_type) or prob.mode_size
             return SizeResult(
-                size=prob.mode_size,
+                size=size,
                 source='OFFER_MODE',
                 confidence=prob.confidence,
                 probability=prob,
@@ -416,8 +419,9 @@ def determine_size(
                 f"Size from style mode: {prob.mode_size} "
                 f"({prob.mode_share:.1%}, n={prob.sample_count})"
             )
+            size = normalize_size(prob.mode_size, product_type) or prob.mode_size
             return SizeResult(
-                size=prob.mode_size,
+                size=size,
                 source='STYLE_MODE',
                 confidence=prob.confidence,
                 probability=prob,
@@ -426,6 +430,7 @@ def determine_size(
     # Tier 4: Product type default
     size, prob = get_product_type_default(product_type, db_path)
     logger.debug(f"Size from product type default: {size}")
+    size = normalize_size(size, product_type) or size
     return SizeResult(
         size=size,
         source='DEFAULT',

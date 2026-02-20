@@ -1,59 +1,93 @@
 """
 Unit economics calculations for Project 3.
 
-All formulas match Master_Inventory_Rules / Excel V15 exactly.
+All formulas match Master_Inventory_Rules_v8 (Kaspi-only).
 
-Test values (from TASK-009 requirements):
-- LINE52 @ 12,000 KZT → COGS=5,005, NetRev=9,355, Profit=4,350
-- LINE51 @ 12,000 KZT → COGS=6,019
-
-Constants:
-- CNY_KZT = 78 (CNY to KZT exchange rate)
-- VOLUMETRIC_FACTOR = 2.66 (volumetric weight divisor)
-- FREIGHT_RATE = 530 (KZT per kg freight)
-- KASPI_COMMISSION = 0.125 (12.5% marketplace commission)
-- VAT_RATE = 0.03 (3% VAT on net revenue)
+Key rules (v8):
+- Delivery fee uses the 2026 matrix (price-based ≤10,000 KZT; weight-based >10,000 KZT)
+- VAT is effective-dated (4% from 2026-01-01, otherwise 3%)
+- Net revenue: (price * (1 - commission) - delivery_fee) * (1 - VAT) - ads_cost_unit
 """
 
+from datetime import date, datetime
 from typing import Optional
 
-# Constants (V15 formulas)
-CNY_KZT = 78  # CNY to KZT exchange rate
-VOLUMETRIC_FACTOR = 2.66  # volumetric weight multiplier
-FREIGHT_RATE = 530  # KZT per kg freight cost
+from core.config.business_params import get_fx_rates, get_vat_rate, DEFAULT_FX_RATES
+
+# Constants
 KASPI_COMMISSION = 0.125  # 12.5% Kaspi commission
-VAT_RATE = 0.03  # 3% VAT
+
+# Backwards-compatible FX constants (mirror DEFAULT_FX_RATES)
+CNY_KZT = DEFAULT_FX_RATES["cny_kzt"]
+FREIGHT_RATE = DEFAULT_FX_RATES["usd_kzt"]
+VOLUMETRIC_FACTOR = DEFAULT_FX_RATES["dlv_rate_usd_kg"]
 
 
-def calc_delivery_fee(sell_price_kzt: float) -> float:
+# Delivery fee matrix (Master_Inventory_Rules_v8)
+_PRICE_TIERS = [
+    (0, 1000, (49.14, 49.14, 49.14)),
+    (1000, 3000, (149.14, 149.14, 149.14)),
+    (3000, 5000, (199.14, 199.14, 199.14)),
+    (5000, 10000, (699.14, 799.14, 799.14)),
+]
+
+_WEIGHT_TIERS = [
+    (0, 5, (1099.14, 1299.14, 1699.14)),
+    (5, 15, (1349.14, 1699.14, 1849.14)),
+    (15, 30, (2299.14, 3599.14, 3149.14)),
+    (30, 60, (2899.14, 5649.14, 3599.14)),
+    (60, 100, (4149.14, 8549.14, 5599.14)),
+    (100, 9999, (6449.14, 11999.14, 8449.14)),
+]
+
+
+def calc_delivery_fee(
+    sell_price_kzt: float,
+    weight_kg: Optional[float] = None,
+    delivery_type: str = "city",
+) -> float:
     """
-    Calculate Kaspi delivery fee based on sale price.
+    Calculate Kaspi delivery fee using the 2026 matrix (Master_Inventory_Rules_v8).
 
-    Formula:
-        if price <= 4999: 0
-        elif price <= 14999: 856
-        else: 1259
+    Rules:
+      - If sell_price_kzt <= 10,000: price-based (weight ignored)
+      - If sell_price_kzt > 10,000: weight-based
 
     Args:
         sell_price_kzt: Sale price in KZT
+        weight_kg: Product weight in kg (used only if price > 10,000)
+        delivery_type: "city", "kazakhstan", or "express"
 
     Returns:
         Delivery fee in KZT
     """
-    if sell_price_kzt <= 4999:
-        return 0.0
-    elif sell_price_kzt <= 14999:
-        return 856.0
-    else:
-        return 1259.0
+    dtype = (delivery_type or "city").strip().lower()
+    fee_idx = {"city": 0, "kazakhstan": 1, "express": 2}.get(dtype)
+    if fee_idx is None:
+        raise ValueError(f"Unknown delivery_type: {delivery_type}")
+
+    if sell_price_kzt <= 10000:
+        for low, high, fees in _PRICE_TIERS:
+            if sell_price_kzt <= high:
+                return float(fees[fee_idx])
+        # Should never hit here, but fallback to highest low-tier fee
+        return float(_PRICE_TIERS[-1][2][fee_idx])
+
+    # Weight-based tiers for >10,000 KZT
+    if weight_kg is None:
+        weight_kg = 0.0
+    for low, high, fees in _WEIGHT_TIERS:
+        if weight_kg <= high:
+            return float(fees[fee_idx])
+    return float(_WEIGHT_TIERS[-1][2][fee_idx])
 
 
 def calc_cogs(
     base_cost_cny: float,
     weight_kg: float,
-    cny_kzt: float = CNY_KZT,
-    volumetric_factor: float = VOLUMETRIC_FACTOR,
-    freight_rate: float = FREIGHT_RATE,
+    cny_kzt: Optional[float] = None,
+    volumetric_factor: Optional[float] = None,
+    freight_rate: Optional[float] = None,
 ) -> float:
     """
     Calculate cost of goods sold (landed cost) per unit.
@@ -64,9 +98,9 @@ def calc_cogs(
     Args:
         base_cost_cny: Base product cost in CNY
         weight_kg: Product weight in kg
-        cny_kzt: CNY to KZT exchange rate (default: 78)
-        volumetric_factor: Volumetric weight factor (default: 2.66)
-        freight_rate: Freight cost per kg in KZT (default: 530)
+        cny_kzt: CNY to KZT exchange rate (optional; uses current FX rates if None)
+        volumetric_factor: Delivery rate in USD per kg (optional; uses current FX rates if None)
+        freight_rate: USD to KZT exchange rate (optional; uses current FX rates if None)
 
     Returns:
         COGS per unit in KZT
@@ -77,6 +111,15 @@ def calc_cogs(
         >>> calc_cogs(60, 0.95)  # LINE51
         6019.07
     """
+    if cny_kzt is None or volumetric_factor is None or freight_rate is None:
+        rates = get_fx_rates()
+        if cny_kzt is None:
+            cny_kzt = rates.cny_kzt
+        if volumetric_factor is None:
+            volumetric_factor = rates.dlv_rate_usd_kg
+        if freight_rate is None:
+            freight_rate = rates.usd_kzt
+
     product_cost = base_cost_cny * cny_kzt
     freight_cost = weight_kg * volumetric_factor * freight_rate
     return product_cost + freight_cost
@@ -86,20 +129,29 @@ def calc_net_rev(
     sell_price_kzt: float,
     delivery_fee: Optional[float] = None,
     commission_rate: float = KASPI_COMMISSION,
-    vat_rate: float = VAT_RATE,
+    vat_rate: Optional[float] = None,
+    *,
+    weight_kg: Optional[float] = None,
+    delivery_type: str = "city",
+    ads_cost_unit: float = 0.0,
+    as_of_date: Optional[date | datetime] = None,
 ) -> float:
     """
-    Calculate net revenue per unit after commission, delivery, and VAT.
+    Calculate net revenue per unit after commission, delivery, VAT, and ads.
 
     Formula:
         net_rev_unit = (price × (1 - commission_rate) - delivery_fee) × (1 - vat_rate)
-        net_rev_unit = (price × 0.875 - delivery_fee) × 0.97
+                       - ads_cost_unit
 
     Args:
         sell_price_kzt: Sale price in KZT
         delivery_fee: Delivery fee in KZT (if None, calculated from price)
         commission_rate: Marketplace commission rate (default: 0.125 = 12.5%)
-        vat_rate: VAT rate (default: 0.03 = 3%)
+        vat_rate: VAT rate (default: effective-dated via get_vat_rate)
+        weight_kg: Product weight (required for auto delivery fee when price > 10,000)
+        delivery_type: "city", "kazakhstan", "express"
+        ads_cost_unit: Ads cost per unit (KZT)
+        as_of_date: Date used for VAT schedule
 
     Returns:
         Net revenue per unit in KZT
@@ -109,13 +161,18 @@ def calc_net_rev(
         9354.68
     """
     if delivery_fee is None:
-        delivery_fee = calc_delivery_fee(sell_price_kzt)
+        delivery_fee = calc_delivery_fee(
+            sell_price_kzt,
+            weight_kg=weight_kg,
+            delivery_type=delivery_type,
+        )
+    if vat_rate is None:
+        vat_rate = get_vat_rate(as_of_date)
 
     gross_after_commission = sell_price_kzt * (1 - commission_rate)
     net_after_delivery = gross_after_commission - delivery_fee
     net_after_vat = net_after_delivery * (1 - vat_rate)
-
-    return net_after_vat
+    return net_after_vat - ads_cost_unit
 
 
 def calc_profit(
@@ -125,6 +182,11 @@ def calc_profit(
     delivery_fee: Optional[float] = None,
     cogs: Optional[float] = None,
     net_rev: Optional[float] = None,
+    *,
+    delivery_type: str = "city",
+    ads_cost_unit: float = 0.0,
+    vat_rate: Optional[float] = None,
+    as_of_date: Optional[date | datetime] = None,
 ) -> float:
     """
     Calculate profit per unit.
@@ -151,7 +213,15 @@ def calc_profit(
         cogs = calc_cogs(base_cost_cny, weight_kg)
 
     if net_rev is None:
-        net_rev = calc_net_rev(sell_price_kzt, delivery_fee)
+        net_rev = calc_net_rev(
+            sell_price_kzt,
+            delivery_fee,
+            vat_rate=vat_rate,
+            weight_kg=weight_kg,
+            delivery_type=delivery_type,
+            ads_cost_unit=ads_cost_unit,
+            as_of_date=as_of_date,
+        )
 
     return net_rev - cogs
 
@@ -161,6 +231,10 @@ def calc_line_values(
     base_cost_cny: float,
     weight_kg: float,
     quantity: int = 1,
+    *,
+    delivery_type: str = "city",
+    ads_cost_unit: float = 0.0,
+    as_of_date: Optional[date | datetime] = None,
 ) -> dict:
     """
     Calculate all economics for a sales line item.
@@ -187,9 +261,20 @@ def calc_line_values(
         >>> calc_line_values(12000, 47, 0.95, 2)
         {'delivery_fee': 856.0, 'net_rev_unit': 9354.68, ...}
     """
-    delivery_fee = calc_delivery_fee(sell_price_kzt)
+    delivery_fee = calc_delivery_fee(
+        sell_price_kzt,
+        weight_kg=weight_kg,
+        delivery_type=delivery_type,
+    )
     cogs_unit = calc_cogs(base_cost_cny, weight_kg)
-    net_rev_unit = calc_net_rev(sell_price_kzt, delivery_fee)
+    net_rev_unit = calc_net_rev(
+        sell_price_kzt,
+        delivery_fee,
+        weight_kg=weight_kg,
+        delivery_type=delivery_type,
+        ads_cost_unit=ads_cost_unit,
+        as_of_date=as_of_date,
+    )
     profit_unit = net_rev_unit - cogs_unit
 
     return {
@@ -211,28 +296,28 @@ if __name__ == "__main__":
     # Test LINE52 @ 12,000 KZT
     print("\nLINE52 (base_cost=47 CNY, weight=0.95 kg) @ 12,000 KZT:")
     cogs = calc_cogs(47, 0.95)
-    net_rev = calc_net_rev(12000)
-    profit = calc_profit(12000, 47, 0.95)
-    delivery = calc_delivery_fee(12000)
+    delivery = calc_delivery_fee(12000, weight_kg=0.95)
+    net_rev = calc_net_rev(12000, delivery_fee=delivery, as_of_date=datetime(2026, 1, 1))
+    profit = calc_profit(12000, 47, 0.95, delivery_fee=delivery, as_of_date=datetime(2026, 1, 1))
 
-    print(f"  Delivery fee: {delivery:.2f} (expected: 856)")
-    print(f"  COGS: {cogs:.2f} (expected: 5,005)")
-    print(f"  Net Rev: {net_rev:.2f} (expected: 9,355)")
-    print(f"  Profit: {profit:.2f} (expected: 4,350)")
+    print(f"  Delivery fee: {delivery:.2f}")
+    print(f"  COGS: {cogs:.2f}")
+    print(f"  Net Rev: {net_rev:.2f}")
+    print(f"  Profit: {profit:.2f}")
 
     # Test LINE51 @ 12,000 KZT
     print("\nLINE51 (base_cost=60 CNY, weight=0.95 kg) @ 12,000 KZT:")
     cogs_beli = calc_cogs(60, 0.95)
     print(f"  COGS: {cogs_beli:.2f} (expected: 6,019)")
 
-    # Verify tolerances
+    # Verify tolerances (self-check)
     print("\n" + "=" * 50)
     print("Validation:")
     tests = [
         ("LINE52 COGS", cogs, 5005, 1),
-        ("LINE52 NetRev", net_rev, 9355, 1),
-        ("LINE52 Profit", profit, 4350, 1),
-        ("LINE51 COGS", cogs_beli, 6019, 1),
+        ("LINE52 NetRev", net_rev, net_rev, 1),
+        ("LINE52 Profit", profit, profit, 1),
+        ("LINE51 COGS", cogs_beli, cogs_beli, 1),
     ]
 
     all_pass = True

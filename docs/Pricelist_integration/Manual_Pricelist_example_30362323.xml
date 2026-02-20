@@ -1,0 +1,2516 @@
+<?xml version="1.0" encoding="UTF-8"?><kaspi_catalog xmlns="kaspiShopping" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://kaspi.kz/kaspishopping.xsd" date="2026-01-23 16:18">
+    <company>30362323</company>
+    <merchantid>30362323</merchantid>
+    <offers>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK_L_135106879">
+            <model>Berserk_длинный_рашгард_черный_мужской_46/M_135106879_(121625146)_(BERSERK-Rush)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10000</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK_M_147772845">
+            <model>Berserk_длинный_рашгард_черный_мужской_44-46/S_147772845_(121625146)_(BERSERK-Rush)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10000</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KID_ROMBIK_BLACK_S_143893497">
+            <model>Костюм_Ромбик_ДЕТСКИЙ_детский_164_143893497_(118071705)_(Rombik)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10000</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_BLACK_S_123591314">
+            <model>Тайтсы_черные_мужской_S 44-46_123591314_(123591314)_(TAICI)_(S)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_WHITE_L_123649782">
+            <model>Трусы_белые_мужской_L 48-50_123649782_(133398489)_(TAICI)_(L)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_WHITE_XL_123649785">
+            <model>Трусы_белые_мужской_XL 50-52_123649785_(133398489)_(TAICI)_(XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_L_122661640">
+            <model>Футболка_черная_мужской_46_122661640_(122661785)_(T-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_BLACK_M_123591334">
+            <model>Тайтсы_черные_мужской_M 46-48_123591334_(123591314)_(TAICI)_(M)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_L_142101032">
+            <model>Футболка_черная_мужской_46_142101032_(142102722)_(T-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_2XL_132571892">
+            <model>Berserk_футболка_черная_мужской_2XL_132571892_(121460065)_(BERSERK-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_S_137440176">
+            <model>Berserk_футболка_черная_мужской_XS_137440176_(121460065)_(BERSERK-Shirt)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH_WHITE_L_149066048">
+            <model>Длинный_рашгард_Белый_мужской_44-46/S_149066048_(149066056)_(RUSH)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_XL_121460065">
+            <model>Футболка На спине рисунок анимационного фильма «Берсерк» черный</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK_XL_121625347">
+            <model>Berserk_длинный_рашгард_черный_мужской_50/XL_121625347_(121625146)_(BERSERK-Rush)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_M_147601347">
+            <model>Nike_Футболка_черная_мужской_44_147601347_(144057488)_(Nike-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_S_132571923">
+            <model>Berserk_футболка_черная_мужской_S_132571923_(121460065)_(BERSERK-Shirt)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_L_144057487">
+            <model>Nike_Футболка_черная_мужской_46_144057487_(144057488)_(Nike-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_XL_122753992">
+            <model>Футболка_черная_мужской_48/L_122753992_(122754031)_(T-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_3XL_122661789">
+            <model>Футболка_белая_мужской_54_122661789_(122661796)_(T-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_L_122753977">
+            <model>Футболка_черная_мужской_46/М_122753977_(122754031)_(T-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH-PRO_BLACK_XL_129513500">
+            <model>Рашгард_ДЛИННЫЙ_РУКАВ_черный_мужской_XL_50-52_129513500_(135277314)_(RUSH-Pro)_(XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_ROMBIK_BLACK_2XL_114632470">
+            <model>Костюм_мужской_Ромбик_мужской_2XL-52_114632470_(114632644)_(Rombik)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_M_142255502">
+            <model>Футболка_черная_мужской_44_142255502_(122754031)_(T-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_M_129174905">
+            <model>Футболка_черная_мужской_44/S_129174905_(122754031)_(T-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_BLACK_XL_123591345">
+            <model>Тайтсы_черные_мужской_XL 50-52_123591345_(123591314)_(TAICI)_(XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_BLACK_3XL_140525307">
+            <model>Тайтсы_черные_мужской_3XL 54-56_140525307_(123591314)_(TAICI)_(3XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_3XL_145325867">
+            <model>Berserk_футболка_черная_мужской_3XL_145325867_(121460065)_(BERSERK-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_L_120765723">
+            <model>Berserk_футболка_черная_мужской_L_120765723_(121207970)_(BERSERK-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_S_129966843">
+            <model>Berserk_футболка_черная_мужской_S_129966843_(121207970)_(BERSERK-Shirt)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_144057488">
+            <model>Nike_Футболка_черная_мужской_48_144057488_(144057488)_(Nike-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_144057490">
+            <model>Nike_Футболка_черная_мужской_50_144057490_(144057488)_(Nike-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK_XL_121625147">
+            <model>Berserk_длинный_рашгард_черный_мужской_48/L_121625147_(121625146)_(BERSERK-Rush)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_M_142102722a">
+            <model>Футболка_черная_мужской_44_142102722_(142102722)_(T-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_XL_121207970">
+            <model>Berserk_футболка_черная_мужской_XL_121207970_(121207970)_(BERSERK-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_WHITE_2XL_133398489">
+            <model>Трусы_белые_мужской_2XL 52-54_133398489_(133398489)_(TAICI)_(2XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_M_120765729">
+            <model>Berserk_футболка_черная_мужской_M_120765729_(121207970)_(BERSERK-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_L_121460063">
+            <model>Berserk_футболка_черная_мужской_L_121460063_(121460065)_(BERSERK-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_2XL_135292626">
+            <model>Nike_Футболка_черная_мужской_52_135292626_(134083700)_(Nike-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK_3XL_144019144">
+            <model>Berserk_длинный_рашгард_черный_мужской_54/3XL_144019144_(121625146)_(BERSERK-Rush)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_121213258">
+            <model>Принт_5в1_черный_мужской_62_121213258_(117313518)_(Line52)_(4XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_WHITE_3XL_140756026">
+            <model>Трусы_белые_мужской_3XL 54-56_140756026_(133398489)_(TAICI)_(3XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_BLACK_2XL_130183761">
+            <model>Тайтсы_черные_мужской_2XL 52-54_130183761_(123591314)_(TAICI)_(2XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH-PRO_BLACK_L_131294684">
+            <model>Рашгард_ДЛИННЫЙ_РУКАВ_черный_мужской_L_48-50_131294684_(135277314)_(RUSH-Pro)_(L)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_M_122661785">
+            <model>Футболка_черная_мужской_44_122661785_(122661785)_(T-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH_WHITE_XL_135396192">
+            <model>Длинный_рашгард_Белый_мужской_48-50_135396192_(135396193)_(RUSH)_(XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_2XL_121208216">
+            <model>Berserk_футболка_черная_мужской_2XL_121208216_(121207970)_(BERSERK-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_28_136306556">
+            <model>Спортивный_3в1_десткий_черный_детский_140_136306556_(136306498)_(Kid-31)_(28)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KID_ROMBIK_BLACK_S_147855005">
+            <model>Костюм_Ромбик_ДЕТСКИЙ_детский_170_147855005_(118071705)_(Rombik)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_BLACK_L_123591337">
+            <model>Тайтсы_черные_мужской_L 48-50_123591337_(123591314)_(TAICI)_(L)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_M_121460073">
+            <model>Berserk_футболка_черная_мужской_M_121460073_(121460065)_(BERSERK-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH_WHITE_2XL_149065941">
+            <model>Длинный_рашгард_Белый_мужской_52-54/L_149065941_(149066056)_(RUSH)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH_WHITE_L_135396191">
+            <model>Длинный_рашгард_Белый_мужской_46-48_135396191_(135396193)_(RUSH)_(L)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KID_ROMBIK_BLACK_S_135222379">
+            <model>Костюм_Ромбик_ДЕТСКИЙ_детский_152_135222379_(118071705)_(Rombik)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_M_122661635">
+            <model>Футболка_белая_мужской_46_122661635_(122661796)_(T-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_XL_122661759">
+            <model>Футболка_черная_мужской_48_122661759_(122661785)_(T-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_2XL_143130110">
+            <model>Nike_Футболка_черная_мужской_2XL_143130110_(143130110)_(Nike-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK_S_147772841">
+            <model>Berserk_длинный_рашгард_черный_мужской_42-44/XS_147772841_(121625146)_(BERSERK-Rush)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_TAICI_WHITE_M_123649780">
+            <model>Трусы_белые_мужской_M 46-48_123649780_(133398489)_(TAICI)_(M)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK_3XL_121934234">
+            <model>Berserk_футболка_черная_мужской_3XL_121934234_(121207970)_(BERSERK-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_3XL_145700542">
+            <model>Berserk_футболка_белая_мужской_54_145700542_(145700548)_(BERSERK-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_S_131516381">
+            <model>Костюм_мужской_Хус_мужской_42_131516381_(102792061)_(Hus)_(S)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14987</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK_S_121625146">
+            <model>Berserk_длинный_рашгард_черный_мужской_42/XS_121625146_(121625146)_(BERSERK-Rush)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK_M_138284689">
+            <model>Berserk_длинный_рашгард_черный_мужской_44/S_138284689_(121625146)_(BERSERK-Rush)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_121213256">
+            <model>Принт_5в1_черный_мужской_58_121213256_(117313518)_(Line52)_(4XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14120</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_105133584">
+            <model>Принт_5в1_черный_мужской_50-52_105133584_(105133574)_(Line52)_(XL)</model>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9888</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_110154253">
+            <model>Принт_5в1_черный_мужской_52_110154253_(120939888)_(Line52)_(2XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_105133585">
+            <model>Принт_5в1_черный_мужской_52-54_105133585_(105133574)_(Line52)_(2XL)</model>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_105133582">
+            <model>Принт_5в1_черный_мужской_48-50_105133582_(105133574)_(Line52)_(XL)</model>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="9998.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_S_133990292">
+            <model>Спортивный_3в1_десткий_черный_детский_152-158_133990292_(136306498)_(Kid-31)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8887</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_103217238">
+            <model>Принт_5в1_черный_мужской_42/44, 46_103217238_(103217238)_(Line52)_(L)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9997</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_L_135588182">
+            <model>Nike_Футболка_черная_мужской_M_135588182_(143130110)_(Nike-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_XL_102792057">
+            <model>Костюм_мужской_Хус_мужской_48_102792057_(102792061)_(Hus)_(XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_112127015">
+            <model>Принт_5в1_черный_мужской_48_112127015_(112128130)_(Line52)_(XL)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KID_ROMBIK_BLACK_26_118071627">
+            <model>Костюм_Ромбик_ДЕТСКИЙ_детский_128_118071627_(118071705)_(Rombik)_(26)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9898</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_M_108382483">
+            <model>Принт_5в1_черный_мужской_44_108382483_(108382478)_(Line52)_(M)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8984</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_120938458">
+            <model>Принт_5в1_черный_мужской_56-4XL_120938458_(112128130)_(Line52)_(4XL)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11997</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_119912128">
+            <model>Принт_5в1_черный_мужской_56_119912128_(110686476)_(Line52)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_M_112127935">
+            <model>Принт_5в1_черный_мужской_44_112127935_(112128130)_(Line52)_(M)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_L_140575337">
+            <model>Футболка_белая_мужской_48_140575337_(140575338)_(T-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">4826</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_135909784">
+            <model>Принт_5в1_черный_мужской_50_135909784_(103217238)_(Line52)_(XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">12898</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_117229089">
+            <model>Принт_5в1_черный_мужской_52_117229089_(110686476)_(Line52)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9929</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_109953019">
+            <model>Принт_5в1_черный_мужской_48_109953019_(109953019)_(Line52)_(XL)</model>
+            <brand>sports</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_S_134510722">
+            <model>Nike_Футболка_черная_мужской_42_134510722_(134083700)_(Nike-Shirt)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_131580954">
+            <model>CL_OC_MEN_LINE52_BLACK_2XL_131580954</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_116155650">
+            <model>Принт_5в1_черный_мужской_48-50_116155650_(116155651)_(Line52)_(XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9068</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_M_134510721">
+            <model>Nike_Футболка_черная_мужской_44_134510721_(134083700)_(Nike-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_M_140493416">
+            <model>Футболка_белая_мужской_46_140493416_(140575338)_(T-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">4815</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_103217220">
+            <model>Принт_5в1_черный_мужской_48/50, 52_103217220_(103217238)_(Line52)_(2XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10897</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_2XL_145700549">
+            <model>Berserk_футболка_белая_мужской_52_145700549_(145700548)_(BERSERK-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">5999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_134722900">
+            <model>Принт_5в1_черный_мужской_52-54/52-54_134722900_(103217238)_(Line52)_(3XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="9999.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_L_134510286">
+            <model>Nike_Футболка_черная_мужской_46_134510286_(134083700)_(Nike-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_123873163">
+            <model>Принт_5в1_черный_мужской_56_123873163_(117313518)_(Line52)_(4XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14113</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_S_122661796">
+            <model>Футболка_белая_мужской_44_122661796_(122661796)_(T-Shirt)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">4989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH-PRO_BLACK_S_135277315">
+            <model>CL_NEW-CLO_MEN_RUSH-PRO_BLACK_S_135277315</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">7989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_2XL_122754013">
+            <model>Футболка_черная_мужской_52/2XL_122754013_(122754031)_(T-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">1799</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_135292588">
+            <model>Nike_Футболка_черная_мужской_50_135292588_(134083700)_(Nike-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_26_137601192">
+            <model>Спортивный_3в1_десткий_черный_детский_128-134_137601192_(136306498)_(Kid-31)_(26)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8304</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_109952859 ">
+            <model>Принт_5в1_черный_мужской_46_109952859_(109952859)_(Line52)_(L)</model>
+            <brand>sports-avto</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_S_145700546">
+            <model>Berserk_футболка_белая_мужской_42_145700546_(145700548)_(BERSERK-Shirt)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">5999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_112127011">
+            <model>Принт_5в1_черный_мужской_50-XL_112127011_(112128130)_(Line52)_(XL)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_110686476">
+            <model>Принт_5в1_черный_мужской_50_110686476_(110686476)_(Line52)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9808</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_L_122661787">
+            <model>Футболка_белая_мужской_48_122661787_(122661796)_(T-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">4895</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_120939888">
+            <model>Принт_5в1_черный_мужской_58_120939888_(120939888)_(Line52)_(4XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_103200285">
+            <model>Принт_5в1_черный_мужской_46_103200285_(108382478)_(Line52)_(L)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_XL_142255503">
+            <model>Футболка_черная_мужской_50_142255503_(122754031)_(T-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">1769</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_S_136185658">
+            <model>Спортивный_3в1_десткий_черный_детский_158-164_136185658_(136306498)_(Kid-31)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8898</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_117193700">
+            <model>Принт_5в1_черный_мужской_52_117193700_(117193721)_(Line52)_(2XL)</model>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9497</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_S_140575338">
+            <model>Футболка_белая_мужской_44_140575338_(140575338)_(T-Shirt)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">4946</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KID_ROMBIK_BLACK_26_121720874">
+            <model>Костюм_Ромбик_ДЕТСКИЙ_детский_134_121720874_(118071705)_(Rombik)_(26)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9499</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_105495244">
+            <model>Принт_5в1_черный_мужской_54-56_105495244_(105133574)_(Line52)_(3XL)</model>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11289</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_22_143866921">
+            <model>Спортивный_3в1_десткий_черный_детский_116-122_143866921_(136306498)_(Kid-31)_(22)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8893</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_L_145700550">
+            <model>Berserk_футболка_белая_мужской_46_145700550_(145700548)_(BERSERK-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">5999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_24_114350929">
+            <model>Спортивный_3в1_десткий_черный_детский_128_114350929_(136306498)_(Kid-31)_(24)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9986</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_S_147648414">
+            <model>Berserk_футболка_белая_мужской_44/S_147648414_(147648414)_(BERSERK-Shirt)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">7499</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_M_145700543">
+            <model>Berserk_футболка_белая_мужской_44_145700543_(145700548)_(BERSERK-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">5999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_119578718">
+            <model>Принт_5в1_черный_мужской_56-3XL_119578718_(112128130)_(Line52)_(3XL)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9699</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_109953157">
+            <model>Принт_5в1_черный_мужской_52_109953157_(109953157)_(Line52)_(2XL)</model>
+            <brand>sports</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_S_108382478">
+            <model>Принт_5в1_черный_мужской_42_108382478_(108382478)_(Line52)_(S)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11887</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH_WHITE_XL_149066056">
+            <model>Длинный_рашгард_Белый_мужской_48-50/M_149066056_(149066056)_(RUSH)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">3998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_S_110154239">
+            <model>Принт_5в1_черный_мужской_42_110154239_(120939888)_(Line52)_(S)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KID_ROMBIK_BLACK_28_118071705">
+            <model>Костюм_Ромбик_ДЕТСКИЙ_детский_140_118071705_(118071705)_(Rombik)_(28)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KID_ROMBIK_BLACK_S_128541983">
+            <model>Костюм_Ромбик_ДЕТСКИЙ_детский_158_128541983_(118071705)_(Rombik)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_121213257">
+            <model>Принт_5в1_черный_мужской_60_121213257_(117313518)_(Line52)_(4XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14160</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_131854046">
+            <model>Принт_5в1_черный_мужской_56_131854046_(108382478)_(Line52)_(3XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_118425306">
+            <model>Принт_5в1_черный_мужской_54_118425306_(120939888)_(Line52)_(3XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9498</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_117313520">
+            <model>Принт_5в1_черный_мужской_46_117313520_(117313518)_(Line52)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9795</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_109953056">
+            <model>Принт_5в1_черный_мужской_46_109953056_(109953056)_(Line52)_(L)</model>
+            <brand>sports</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9575</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_112126978">
+            <model>Принт_5в1_черный_мужской_54_112126978_(112128130)_(Line52)_(3XL)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9498</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_116155649">
+            <model>Принт_5в1_черный_мужской_46-48_116155649_(116155651)_(Line52)_(L)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8996</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_136102531">
+            <model>Принт_5в1_черный_мужской_52_136102531_(103217238)_(Line52)_(2XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">12998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_102529963">
+            <model>Принт_5в1_черный_мужской_52_102529963_(108382478)_(Line52)_(2XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9636</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_3XL_141274806">
+            <model>Футболка_белая_мужской_54_141274806_(140575338)_(T-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_XL_145700547">
+            <model>Berserk_футболка_белая_мужской_48_145700547_(145700548)_(BERSERK-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">5999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_103217193">
+            <model>Принт_5в1_черный_мужской_56-58/56, 58_103217193_(103217238)_(Line52)_(4XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10666</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_102705937">
+            <model>Принт_5в1_черный_мужской_54_102705937_(108382478)_(Line52)_(3XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_137051360">
+            <model>Nike_Футболка_черная_мужской_XL_137051360_(143130110)_(Nike-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_112128130">
+            <model>Принт_5в1_черный_мужской_42_112128130_(112128130)_(Line52)_(S)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10354</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_102705938">
+            <model>Принт_5в1_черный_мужской_50_102705938_(108382478)_(Line52)_(XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9427</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_121243779">
+            <model>Принт_5в1_черный_мужской_48_121243779_(110686476)_(Line52)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9890</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_105133574">
+            <model>Принт_5в1_черный_мужской_46-48_105133574_(105133574)_(Line52)_(L)</model>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_XL_140493417">
+            <model>Футболка_белая_мужской_50_140493417_(140575338)_(T-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">4840</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_119912130">
+            <model>Принт_5в1_черный_мужской_54_119912130_(110686476)_(Line52)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_2XL_121208018">
+            <model>Berserk_футболка_белая_мужской_52/2XL_121208018_(147648414)_(BERSERK-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">7499</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_110154245">
+            <model>Принт_5в1_черный_мужской_46_110154245_(120939888)_(Line52)_(L)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK_2XL_140937883">
+            <model>Berserk_длинный_рашгард_черный_мужской_52/2XL_140937883_(121625146)_(BERSERK-Rush)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">6499</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_110154251">
+            <model>Принт_5в1_черный_мужской_50_110154251_(120939888)_(Line52)_(XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_3XL_122659793">
+            <model>Футболка_черная_мужской_54_122659793_(122661785)_(T-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">3999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH-PRO_BLACK_3XL_135277316">
+            <model>Рашгард_ДЛИННЫЙ_РУКАВ_черный_мужской_3XL_54-56_135277316_(135277314)_(RUSH-Pro)_(3XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">7989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_116515376">
+            <model>Принт_5в1_черный_мужской_50-52_116515376_(116515378)_(Line52)_(XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_112126990">
+            <model>Принт_5в1_черный_мужской_52_112126990_(112128130)_(Line52)_(2XL)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9497</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_121243780">
+            <model>Принт_5в1_черный_мужской_46_121243780_(110686476)_(Line52)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_M_131688377">
+            <model>Принт_5в1_черный_мужской_42-44_131688377_(105133574)_(Line52)_(M)</model>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9699</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_110154249">
+            <model>Принт_5в1_черный_мужской_48_110154249_(120939888)_(Line52)_(XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_S_132869971">
+            <model>Принт_5в1_черный_мужской_42/S_132869971_(103217238)_(Line52)_(S)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9889</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH_WHITE_2XL_145559055">
+            <model>Длинный_рашгард_Белый_мужской_52-54_145559055_(135396193)_(RUSH)_(2XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">2889</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_116155653">
+            <model>Принт_5в1_черный_мужской_50-52_116155653_(116155651)_(Line52)_(XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8939</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_28_136306498">
+            <model>Спортивный_3в1_десткий_черный_детский_146_136306498_(136306498)_(Kid-31)_(28)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9987</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_M_131580950">
+            <model>Принт_5в1_черный_мужской_44/M_131580950_(103217238)_(Line52)_(M)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_140027991">
+            <model>Принт_5в1_черный_мужской_60_140027991_(108382478)_(Line52)_(4XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">13999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_116515383">
+            <model>Принт_5в1_черный_мужской_48-50_116515383_(116515378)_(Line52)_(XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8949</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_M_137051359">
+            <model>Nike_Футболка_черная_мужской_S_137051359_(143130110)_(Nike-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_117313532">
+            <model>Принт_5в1_черный_мужской_54-56_117313532_(116155651)_(Line52)_(3XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_140027990">
+            <model>Принт_5в1_черный_мужской_58_140027990_(108382478)_(Line52)_(4XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_119337287">
+            <model>Принт_5в1_черный_мужской_52-54_119337287_(116155651)_(Line52)_(2XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_M_120765725">
+            <model>Berserk_футболка_белая_мужской_46/M_120765725_(147648414)_(BERSERK-Shirt)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">7499</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_2XL_102792063">
+            <model>Костюм_мужской_Хус_мужской_52_102792063_(102792061)_(Hus)_(2XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_137051358">
+            <model>Nike_Футболка_черная_мужской_L_137051358_(143130110)_(Nike-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH-PRO_BLACK_2XL_131294683">
+            <model>Рашгард_ДЛИННЫЙ_РУКАВ_черный_мужской_2XL_52-54_131294683_(135277314)_(RUSH-Pro)_(2XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="9999.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">1899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH-PRO_BLACK_M_135277314">
+            <model>Рашгард_ДЛИННЫЙ_РУКАВ_черный_мужской_M_46-48_135277314_(135277314)_(RUSH-Pro)_(M)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">1999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_26_114351091">
+            <model>Спортивный_3в1_десткий_черный_детский_134_114351091_(136306498)_(Kid-31)_(26)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_3XL_122754031">
+            <model>Футболка_черная_мужской_54/3XL_122754031_(122754031)_(T-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">1899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_M_131516382">
+            <model>Костюм_мужской_Хус_мужской_44_131516382_(102792061)_(Hus)_(M)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11499</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KID_ROMBIK_BLACK_24_118071570">
+            <model>Костюм_Ромбик_ДЕТСКИЙ_детский_122_118071570_(118071705)_(Rombik)_(24)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_131138245">
+            <model>Принт_5в1_черный_мужской_46-M_131138245_(112128130)_(Line52)_(L)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9997</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_132606395">
+            <model>Принт_5в1_черный_мужской_52/3XL_132606395_(103217238)_(Line52)_(3XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_135215906">
+            <model>Принт_5в1_черный_мужской_54_135215906_(103217238)_(Line52)_(3XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8957</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_2XL_140493418">
+            <model>Футболка_белая_мужской_52_140493418_(140575338)_(T-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">4996</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_2XL_142255505">
+            <model>Футболка_черная_мужской_52_142255505_(122754031)_(T-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">2299</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_3XL_121934256">
+            <model>Berserk_футболка_белая_мужской_54/3XL_121934256_(147648414)_(BERSERK-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">7499</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_103217227">
+            <model>Принт_5в1_черный_мужской_46/48, 50_103217227_(103217238)_(Line52)_(XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_XL_102792061">
+            <model>Костюм_мужской_Хус_мужской_50_102792061_(102792061)_(Hus)_(XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_131580955">
+            <model>Принт_5в1_черный_мужской_48/XL_131580955_(103217238)_(Line52)_(XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KID_ROMBIK_BLACK_22_118071520">
+            <model>Костюм_Ромбик_ДЕТСКИЙ_детский_110_118071520_(118071705)_(Rombik)_(22)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10154</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_S_147820298">
+            <model>Спортивный_3в1_десткий_черный_детский_170_147820298_(136306498)_(Kid-31)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_121213229">
+            <model>Принт_5в1_черный_мужской_60-6XL_121213229_(112128130)_(Line52)_(4XL)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_120939942">
+            <model>Принт_5в1_черный_мужской_56_120939942_(120939888)_(Line52)_(3XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_120939962">
+            <model>Принт_5в1_черный_мужской_60_120939962_(120939888)_(Line52)_(4XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_L_120765717">
+            <model>Berserk_футболка_белая_мужской_48/L_120765717_(147648414)_(BERSERK-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">7499</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_S_137550329">
+            <model>Спортивный_3в1_десткий_черный_детский_164_137550329_(136306498)_(Kid-31)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10446</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_103217230">
+            <model>Принт_5в1_черный_мужской_44/46, 48_103217230_(103217238)_(Line52)_(XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_134083700">
+            <model>Nike_Футболка_черная_мужской_48_134083700_(134083700)_(Nike-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_M_117313519">
+            <model>Принт_5в1_черный_мужской_44_117313519_(117313518)_(Line52)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9067</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_103217212">
+            <model>Принт_5в1_черный_мужской_50/52, 54_103217212_(103217238)_(Line52)_(3XL)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_M_116155651">
+            <model>Принт_5в1_черный_мужской_44-46_116155651_(116155651)_(Line52)_(M)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_116515378">
+            <model>Принт_5в1_черный_мужской_46-48_116515378_(116515378)_(Line52)_(L)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11909</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_2XL_122659781">
+            <model>Футболка_черная_мужской_52_122659781_(122661785)_(T-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">2999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_24_135377454">
+            <model>Спортивный_3в1_десткий_черный_детский_122-128_135377454_(136306498)_(Kid-31)_(24)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8787</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_XL_122661869">
+            <model>Футболка_черная_мужской_50_122661869_(122661785)_(T-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">1999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_28_133990290">
+            <model>Спортивный_3в1_десткий_черный_детский_140-146_133990290_(136306498)_(Kid-31)_(28)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8890</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_L_147852828">
+            <model>Костюм_мужской_Хус_мужской_46_147852828_(102792061)_(Hus)_(L)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">12998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_M_140027992">
+            <model>Принт_5в1_черный_мужской_44-46_140027992_(116515378)_(Line52)_(M)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11909</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_S_117313518">
+            <model>Принт_5в1_черный_мужской_42_117313518_(117313518)_(Line52)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_116515385">
+            <model>Принт_5в1_черный_мужской_54-56_116515385_(116515378)_(Line52)_(3XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_102529973">
+            <model>Принт_5в1_черный_мужской_48_102529973_(108382478)_(Line52)_(XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9379</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_M_110154243">
+            <model>Принт_5в1_черный_мужской_44_110154243_(120939888)_(Line52)_(M)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L_131580951">
+            <model>Принт_5в1_черный_мужской_46/L_131580951_(103217238)_(Line52)_(L)</model>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_116515380">
+            <model>Принт_5в1_черный_мужской_52-54_116515380_(116515378)_(Line52)_(2XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_30_133990291">
+            <model>Спортивный_3в1_десткий_черный_детский_146-152_133990291_(136306498)_(Kid-31)_(30)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9986</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_3XL_102792066">
+            <model>Костюм_мужской_Хус_мужской_54_102792066_(102792061)_(Hus)_(3XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_ROMBIK_BLACK_XL_114632644">
+            <model>Костюм_мужской_Ромбик_мужской_L-48_114632644_(114632644)_(Rombik)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">19989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_XL_145700548">
+            <model>Berserk_футболка_белая_мужской_50_145700548_(145700548)_(BERSERK-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">5999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_4XL_102792068">
+            <model>Костюм_мужской_Хус_мужской_56_102792068_(102792061)_(Hus)_(4XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_KIDS_KID-31_BLACK_S_144893753">
+            <model>Спортивный_3в1_десткий_черный_детский_164-170_144893753_(136306498)_(Kid-31)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_ROMBIK_BLACK_XL_114632570">
+            <model>Костюм_мужской_Ромбик_мужской_XL-50_114632570_(114632644)_(Rombik)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">17976</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_ROMBIK_BLACK_XL_114632139">
+            <model>Костюм_мужской_Ромбик_мужской_M-46_114632139_(114632644)_(Rombik)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">17976</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_ROMBIK_BLACK_M_135020510">
+            <model>Костюм_мужской_Ромбик_мужской_S-44_135020510_(114632644)_(Rombik)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">17976</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_119912129">
+            <model>Принт_5в1_черный_мужской_58_119912129_(110686476)_(Line52)_(4XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14975</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_L_142255459">
+            <model>Футболка_черная_мужской_46_142255459_(122754031)_(T-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">1999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_RUSH_WHITE_XL_135396193">
+            <model>Длинный_рашгард_Белый_мужской_50-52_135396193_(135396193)_(RUSH)_(XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">3199</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_ROMBIK_BLACK_3XL_114632368">
+            <model>Костюм_мужской_Ромбик_мужской_3XL-54_114632368_(114632644)_(Rombik)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">13144</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_116575104">
+            <model>Принт_5в1_черный_мужской_50-52_116575104_(117313518)_(Line52)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9858</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_119912131">
+            <model>Принт_5в1_черный_мужской_62_119912131_(110686476)_(Line52)_(4XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14940</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_116575102">
+            <model>Принт_5в1_черный_мужской_54-56_116575102_(117313518)_(Line52)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11105</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_117193697">
+            <model>Принт_5в1_черный_мужской_50_117193697_(117193721)_(Line52)_(XL)</model>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14934</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL_116575103">
+            <model>Принт_5в1_черный_мужской_52-54_116575103_(117313518)_(Line52)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11101</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_121213226">
+            <model>Принт_5в1_черный_мужской_62-7XL_121213226_(112128130)_(Line52)_(4XL)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14940</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_XL_135502267">
+            <model>Berserk_футболка_белая_мужской_50_135502267_(147648414)_(BERSERK-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14910</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_SPIDER-RUSH_BLACK_XL_121208059">
+            <model>Spider_длинный_рашгард_черный_мужской_50/XL_121208059_(120765428)_(Spider-Rush)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">2659</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_SPIDER-RUSH_BLACK_L_136139058">
+            <model>Spider_длинный_рашгард_черный_мужской_46_136139058_(120765428)_(Spider-Rush)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10811</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_SPIDER-RUSH_BLACK_S_120765380">
+            <model>Spider_длинный_рашгард_черный_мужской_46/M_120765380_(120765428)_(Spider-Rush)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">3316</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_SPIDER-RUSH_BLACK_XL_120765428">
+            <model>Spider_длинный_рашгард_черный_мужской_48/L_120765428_(120765428)_(Spider-Rush)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">3082</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_SPIDER-RUSH_BLACK_3XL_121612783">
+            <model>Spider_длинный_рашгард_черный_мужской_54/3XL_121612783_(120765428)_(Spider-Rush)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">3023</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_SPIDER-RUSH_BLACK_M_129356871">
+            <model>Spider_длинный_рашгард_черный_мужской_44/S_129356871_(120765428)_(Spider-Rush)_(M)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">2962</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_119385958">
+            <model>Принт_5в1_черный_мужской_64_119385958_(117193721)_(Line52)_(4XL)</model>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14862</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_121213228">
+            <model>Принт_5в1_черный_мужской_58-5XL_121213228_(112128130)_(Line52)_(4XL)</model>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14939</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_119385956">
+            <model>Принт_5в1_черный_мужской_62_119385956_(117193721)_(Line52)_(4XL)</model>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14858</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_119912127">
+            <model>Принт_5в1_черный_мужской_60_119912127_(110686476)_(Line52)_(4XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14931</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_SPIDER-RUSH_BLACK_2XL_121208015">
+            <model>Spider_длинный_рашгард_черный_мужской_52/2XL_121208015_(120765428)_(Spider-Rush)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9825</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_119385960">
+            <model>Принт_5в1_черный_мужской_66_119385960_(117193721)_(Line52)_(4XL)</model>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14858</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_4XL_117193704">
+            <model>Принт_5в1_черный_мужской_58_117193704_(117193721)_(Line52)_(4XL)</model>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14859</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_XL_121207859">
+            <model>Berserk_футболка_белая_мужской_50/XL_121207859_(147648414)_(BERSERK-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14913</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_3XL_142255507">
+            <model>Футболка_черная_мужской_54_142255507_(122754031)_(T-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14859</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_L_135502266">
+            <model>Berserk_футболка_белая_мужской_46_135502266_(147648414)_(BERSERK-Shirt)_(L)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14926</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL_117193721">
+            <model>Принт_5в1_черный_мужской_48_117193721_(117193721)_(Line52)_(XL)</model>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14935</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_117193702">
+            <model>Принт_5в1_черный_мужской_54_117193702_(117193721)_(Line52)_(3XL)</model>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14933</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_BLACK_S_144046182">
+            <model>Футболка_черная_мужской_42_144046182_(122754031)_(T-Shirt)_(S)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14858</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_2XL_122661739">
+            <model>Футболка_белая_мужской_52_122661739_(122661796)_(T-Shirt)_(2XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14935</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_BERSERK-SHIRT_WHITE_XL_135502268">
+            <model>Berserk_футболка_белая_мужской_48_135502268_(147648414)_(BERSERK-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14929</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_3XL_145166819">
+            <model>Nike_Футболка_черная_мужской_3XL_145166819_(143130110)_(Nike-Shirt)_(3XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14929</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_3XL_117193710">
+            <model>Принт_5в1_черный_мужской_56_117193710_(117193721)_(Line52)_(3XL)</model>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14860</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO_MEN_T-SHIRT_WHITE_XL_122661758">
+            <model>Футболка_белая_мужской_50_122661758_(122661796)_(T-Shirt)_(XL)</model>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30362323_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14932</cityprice>
+            </cityprices>
+        </offer>
+    </offers>
+</kaspi_catalog>

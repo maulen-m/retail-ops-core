@@ -5,8 +5,18 @@
 set -e
 
 PLIST_NAME="com.example.kaspi-import.plist"
-PROJECT_DIR="~/Docs/Autonomous_business"
+PLIST_DST_NAME="com.example.kaspi-import-v2.plist"
+LEGACY_PLIST_NAME="com.example.kaspi-import.plist"
+LABEL="com.example.kaspi-import-v2"
+LEGACY_LABEL="com.example.kaspi-import"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+PLIST_SRC="$PROJECT_DIR/config/$PLIST_NAME"
+PLIST_DST="$LAUNCH_AGENTS_DIR/$PLIST_DST_NAME"
+LEGACY_PLIST_DST="$LAUNCH_AGENTS_DIR/$LEGACY_PLIST_NAME"
+RUNTIME_LOG_DIR="$PROJECT_DIR/runtime_logs"
+GUI_DOMAIN="gui/$(id -u)"
 
 echo "========================================"
 echo "  Kaspi Import Scheduler Installation"
@@ -15,39 +25,48 @@ echo ""
 
 # Create directories
 mkdir -p "$LAUNCH_AGENTS_DIR"
-mkdir -p "$PROJECT_DIR/logs"
+mkdir -p "$RUNTIME_LOG_DIR"
 
-# Unload if already loaded
-if launchctl list | grep -q "com.example.kaspi-import"; then
+# Boot out if already loaded
+if launchctl print "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1; then
     echo "Unloading existing scheduler..."
-    launchctl unload "$LAUNCH_AGENTS_DIR/$PLIST_NAME" 2>/dev/null || true
+    launchctl bootout "$GUI_DOMAIN/$LABEL" 2>/dev/null || true
+fi
+if launchctl print "$GUI_DOMAIN/$LEGACY_LABEL" >/dev/null 2>&1; then
+    echo "Unloading legacy scheduler label..."
+    launchctl bootout "$GUI_DOMAIN/$LEGACY_LABEL" 2>/dev/null || true
+fi
+if [ -f "$LEGACY_PLIST_DST" ]; then
+    rm -f "$LEGACY_PLIST_DST"
 fi
 
 # Copy plist to LaunchAgents
 echo "Installing plist..."
-cp "$PROJECT_DIR/config/$PLIST_NAME" "$LAUNCH_AGENTS_DIR/"
+cp "$PLIST_SRC" "$PLIST_DST"
 
-# Load the scheduler
+# Load and explicitly enable the scheduler
 echo "Loading scheduler..."
-launchctl load "$LAUNCH_AGENTS_DIR/$PLIST_NAME"
+launchctl bootstrap "$GUI_DOMAIN" "$PLIST_DST"
+launchctl enable "$GUI_DOMAIN/$LABEL" 2>/dev/null || true
 
 echo ""
 echo "Scheduler installed successfully!"
 echo ""
-echo "Schedule:"
-echo "  - 11:00 GMT+5 (06:00 UTC) - First import"
-echo "  - 16:00 GMT+5 (11:00 UTC) - Second import"
+echo "Schedule (local Asia/Almaty):"
+echo "  - 11:00 - Import (daily)"
+echo "  - 16:05 - Import (daily)"
 echo ""
 echo "Logs will be written to:"
-echo "  - $PROJECT_DIR/logs/import_stdout.log"
-echo "  - $PROJECT_DIR/logs/import_stderr.log"
+echo "  - $RUNTIME_LOG_DIR/kaspi_import_stdout.log"
+echo "  - $RUNTIME_LOG_DIR/kaspi_import_stderr.log"
 echo ""
 echo "Status:"
-launchctl list | grep kaspi || echo "  (not yet running, will start at scheduled time)"
+launchctl print "$GUI_DOMAIN/$LABEL" | grep -E "state =|last exit code|runs =" || echo "  (not yet running, starts at schedule)"
 echo ""
 echo "To test manually:"
-echo "  launchctl start com.example.kaspi-import"
+echo "  launchctl kickstart -k $GUI_DOMAIN/$LABEL"
 echo ""
 echo "To uninstall:"
-echo "  launchctl unload ~/Library/LaunchAgents/$PLIST_NAME"
-echo "  rm ~/Library/LaunchAgents/$PLIST_NAME"
+echo "  launchctl bootout $GUI_DOMAIN/$LABEL"
+echo "  launchctl bootout $GUI_DOMAIN/$LEGACY_LABEL"
+echo "  rm ~/Library/LaunchAgents/$PLIST_DST_NAME"

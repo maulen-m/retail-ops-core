@@ -162,6 +162,46 @@ class TestExtractSkuFromArticle:
         result = extract_sku_from_article(None, None)
         assert result["sku_key"] is None
 
+    def test_acmewear_line61_article_maps_to_canonical_sku(self):
+        """New ACMEWEAR line61 article aliases should map to canonical sku_key."""
+        result = extract_sku_from_article(
+            "OF_SUIT-61_BLK_3XL",
+            "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL черный 3XL",
+        )
+        assert result["sku_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+        assert result["my_size"] == "3XL"
+        assert result["sku_id"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL"
+
+    def test_acmewear_line61_article_maps_xl_numeric_variant(self):
+        """XL numeric variants should normalize to XL for canonical mapping."""
+        result = extract_sku_from_article(
+            "OF_SUIT-61_BLK_XL_48",
+            "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL_48 черный 48",
+        )
+        assert result["sku_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+        assert result["my_size"] == "XL"
+        assert result["sku_id"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL"
+
+    def test_acmewear_line61_article_maps_4xl_numeric_variant(self):
+        """4XL numeric variants should normalize to 4XL for canonical mapping."""
+        result = extract_sku_from_article(
+            "OF_SUIT-61_BLK_4XL_56",
+            "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_4XL_56 черный 56",
+        )
+        assert result["sku_key"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+        assert result["my_size"] == "4XL"
+        assert result["sku_id"] == "CL_NEW-CLO2_MEN_SUIT-61_BLACK_4XL"
+
+    def test_line52_article_with_range_suffix_strips_to_canonical_key(self):
+        """Legacy malformed Kaspi article suffixes must not pollute sku_key."""
+        result = extract_sku_from_article(
+            "CL_OC_MEN_LINE52_BLACK_103217238_56-58/56, 58_(4XL)",
+            "Комплект Antec RASH-921 Рашгард 5 в 1 черный 56, 58",
+        )
+        assert result["sku_key"] == "CL_OC_MEN_LINE52_BLACK"
+        assert result["my_size"] == "4XL"
+        assert result["sku_id"] == "CL_OC_MEN_LINE52_BLACK_4XL"
+
 
 class TestParseActiveOrders:
     """Tests for full file parsing."""

@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-02-03T23:47:56.822722",
+  "url": "https://marketing.kaspi.kz/advertising/campaigns?tab=campaigns&startDate=2026-02-02&endDate=2026-02-02&activeTab=Enabled",
+  "yesterday": "2026-02-02",
+  "login": {
+    "detected": false
+  },
+  "tables": [],
+  "campaign_links": [
+    {
+      "text": "ACMEWEAR_LINE61",
+      "href": "https://marketing.kaspi.kz/advertising/campaigns/2545773"
+    },
+    {
+      "text": "Acmewear_16k",
+      "href": "https://marketing.kaspi.kz/advertising/campaigns/2380614"
+    }
+  ],
+  "detail_table": {
+    "headers": [],
+    "rowCount": 0
+  },
+  "notes": []
+}

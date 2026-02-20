@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-02-03T23:46:15.868378",
+  "url": "https://marketing.kaspi.kz/advertising/campaigns?tab=campaigns&startDate=2026-02-02&endDate=2026-02-02&activeTab=Enabled",
+  "yesterday": "2026-02-02",
+  "login_detected": true,
+  "login_attempted": true,
+  "login_success": true,
+  "download": {
+    "suggested_filename": "2026-02-02 - 2026-02-02 Отчёт по кампаниям.csv",
+    "url": "https://marketing.kaspi.kz/advertising/products/api/v3/merchant/759051/reports/campaigns/csv?dateFrom=2026-02-02&dateTo=2026-02-02",
+    "observed_report_urls": [
+      "https://marketing.kaspi.kz/advertising/products/api/v3/merchant/759051/reports/campaigns/csv?dateFrom=2026-02-02&dateTo=2026-02-02"
+    ]
+  },
+  "campaign_table": {
+    "headers": [],
+    "rowCount": 0
+  },
+  "detail_table": {},
+  "notes": [
+    "Failed to open campaign detail: 'NoneType' object has no attribute 'click'"
+  ]
+}

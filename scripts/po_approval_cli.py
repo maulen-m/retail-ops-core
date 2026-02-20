@@ -23,6 +23,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from core.automation.po_generator import get_draft_summary
+from core.config.business_params import get_fx_rates
 
 
 def list_pending(db_path: str) -> list[dict]:
@@ -70,6 +71,7 @@ def approve_draft(db_path: str, draft_id: int, approved_by: str = 'cli') -> dict
     """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    fx_rates = get_fx_rates(db_path=db_path)
 
     # Check draft exists and is pending
     cursor.execute("""
@@ -110,12 +112,12 @@ def approve_draft(db_path: str, draft_id: int, approved_by: str = 'cli') -> dict
             sku_id,
             my_size,
             quantity,
-            unit_cost_cny * 78,
+            unit_cost_cny * ?,
             date('now'),
             'UNPAID'
         FROM fact_po_draft_lines
         WHERE draft_id = ?
-    """, (po_id, draft_id))
+    """, (po_id, fx_rates.cny_kzt, draft_id))
 
     lines_created = cursor.rowcount
 

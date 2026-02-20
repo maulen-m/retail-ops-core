@@ -199,6 +199,49 @@ def russian_columns_excel(tmp_path):
 
 
 @pytest.fixture
+def delivery_fee_excel(tmp_path):
+    """Create a sample sales Excel file with delivery fee columns."""
+    data = {
+        "OrderID": ["ORD-D01"],
+        "Date": [date.today()],
+        "KASPI_OFFER_NAME": ["Принт 5в1 черный M"],
+        "SKU_ID": ["CL_LINE52_BLACK_M"],
+        "SKU_key": ["CL_LINE52_BLACK"],
+        "MY_SIZE": ["M"],
+        "Quantity": [1],
+        "Sell_price_kzt": [15000],
+        "STORE_NAME": ["Universal"],
+        "Delivery_fee_kzt": [100],
+        "Стоимость доставки для продавца": [200],
+        "Стоимость доставки для покупателя": [300],
+    }
+    df = pd.DataFrame(data)
+    xlsx_path = tmp_path / "delivery_fee_sales.xlsx"
+    df.to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+    return str(xlsx_path)
+
+
+@pytest.fixture
+def missing_sku_id_excel(tmp_path):
+    """Sales Excel missing SKU_ID but with SKU_key + MY_SIZE."""
+    data = {
+        "OrderID": ["ORD-NO-SKUID"],
+        "Date": [date.today()],
+        "KASPI_OFFER_NAME": ["Принт 5в1 черный M"],
+        "SKU_key": ["CL_LINE52_BLACK"],
+        "MY_SIZE": ["M"],
+        "Quantity": [1],
+        "Sell_price_kzt": [15000],
+        "STORE_NAME": ["Universal"],
+        "Return": [0],
+    }
+    df = pd.DataFrame(data)
+    xlsx_path = tmp_path / "missing_sku_id.xlsx"
+    df.to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+    return str(xlsx_path)
+
+
+@pytest.fixture
 def unmapped_sales_excel(tmp_path):
     """Create a sample sales Excel file with unmapped offers."""
     data = {
@@ -275,6 +318,72 @@ class TestParseSalesExcel:
         assert records[0]["sku_id"] == "CL_LINE52_BLACK_S"
         assert records[1]["store_code"] == "ACMEWEAR"
 
+    def test_parse_prefers_seller_delivery_fee(self, delivery_fee_excel):
+        """Seller delivery fee should override legacy column when present."""
+        records = parse_sales_excel(delivery_fee_excel)
+
+        assert len(records) == 1
+        record = records[0]
+        assert record["delivery_fee"] == 200
+        assert record["delivery_fee_seller"] == 200
+        assert record["delivery_fee_buyer"] == 300
+
+    def test_parse_infers_my_size_from_sku_id(self, tmp_path):
+        """Missing MY_SIZE should be inferred from SKU_ID suffix when available."""
+        data = {
+            "OrderID": ["ORD-MISSING"],
+            "Date": [date.today()],
+            "KASPI_OFFER_NAME": ["Принт 5в1 черный XL"],
+            "SKU_ID": ["CL_LINE52_BLACK_XL"],
+            "SKU_key": ["CL_LINE52_BLACK"],
+            "MY_SIZE": [""],
+            "Quantity": [1],
+            "Sell_price_kzt": [15000],
+            "STORE_NAME": ["Universal"],
+            "Return": [0],
+        }
+        df = pd.DataFrame(data)
+        xlsx_path = tmp_path / "missing_size.xlsx"
+        df.to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+        records = parse_sales_excel(str(xlsx_path))
+        assert records[0]["my_size"] == "XL"
+
+    def test_parse_normalizes_dirty_size_tokens(self, tmp_path):
+        data = {
+            "OrderID": ["ORD-D1", "ORD-D2", "ORD-D3", "ORD-D4"],
+            "Date": [date.today(), date.today(), date.today(), date.today()],
+            "KASPI_OFFER_NAME": [
+                "Принт 5в1 черный 3XL",
+                "Рашгард 5 в 1 черный 128",
+                "Принт 5в1 черный M",
+                "Принт 5в1 черный XL",
+            ],
+            "SKU_ID": [
+                "CL_LINE52_BLACK_3XL",
+                "CL_NEW-CLO_KID_ROMBIK_BLACK_26",
+                "CL_LINE52_BLACK_M",
+                "CL_LINE52_BLACK_XL",
+            ],
+            "SKU_key": [
+                "CL_LINE52_BLACK",
+                "CL_NEW-CLO_KID_ROMBIK_BLACK",
+                "CL_LINE52_BLACK",
+                "CL_LINE52_BLACK",
+            ],
+            "MY_SIZE": ["3XL?", "26.0", "М", "NAN"],
+            "Quantity": [1, 1, 1, 1],
+            "Sell_price_kzt": [15000, 9000, 15000, 15000],
+            "STORE_NAME": ["Universal", "Universal", "Universal", "Universal"],
+            "Return": [0, 0, 0, 0],
+        }
+        df = pd.DataFrame(data)
+        xlsx_path = tmp_path / "dirty_size.xlsx"
+        df.to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+        records = parse_sales_excel(str(xlsx_path))
+        assert [r["my_size"] for r in records] == ["3XL", "26", "M", "XL"]
+
 
 class TestIngestSales:
     """Tests for ingest_sales function."""
@@ -298,8 +407,23 @@ class TestIngestSales:
 
         assert len(sales) == 4
 
+    def test_ingest_resolves_missing_sku_id(self, test_db, missing_sku_id_excel):
+        """SKU_ID should resolve from SKU_key + MY_SIZE via dim_sku_size."""
+        result = ingest_sales(
+            xlsx_path=missing_sku_id_excel,
+            db_path=test_db,
+        )
+
+        assert result["inserted"] == 1
+        conn = sqlite3.connect(str(test_db))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT sku_id FROM sales_fact_v2").fetchone()
+        conn.close()
+
+        assert row["sku_id"] == "CL_LINE52_BLACK_M"
+
     def test_ingest_dedup_exact_key(self, test_db, sample_sales_excel):
-        """Test deduplication on exact key (order_id, sku_id, store_code, kaspi_offer_name)."""
+        """Test deduplication on exact key (order_id, store_code, kaspi_offer_name, sku_key, my_size)."""
         # First ingest
         result1 = ingest_sales(xlsx_path=sample_sales_excel, db_path=test_db)
         assert result1["inserted"] == 4

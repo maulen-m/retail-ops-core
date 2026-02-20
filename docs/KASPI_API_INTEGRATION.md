@@ -5,6 +5,18 @@ Phase 9.5 — Kaspi Order Automation
 ## Overview
 
 This document describes the integration with Kaspi Shop API for automated order management, waybill downloads, and order status tracking.
+Price/stock sync via price list is documented separately: `docs/api_docs/formatted/KASPI_PRICE_STOCK_SYNC_VIA_PRICELIST.md`.
+
+IMPORTANT: Lifecycle contract (single source of truth) lives at
+`docs/KASPI_ORDER_LIFECYCLE_AND_STATUS_CONTRACT.md`.
+Do not mix raw API state/status in logic. Always derive StageCode via
+`core/integrations/kaspi_order_stage.py` and use StageCode for selection/interpretation.
+
+Agent task framing for price/stock sync:
+- Implement generator + validators + tests first.
+- Add safe publishing workflow only after tests: dry‑run → diff → enable flag.
+
+Gap plan: see `docs/KASPI_API_INTEGRATION_GAP_PLAN.md`.
 
 ## Architecture
 
@@ -71,6 +83,22 @@ python scripts/sync_kaspi_orders.py --store UNIVERSAL
 python scripts/sync_kaspi_orders.py --all
 ```
 
+### 4. Optional enrichment stage (entries + cached lookups)
+
+Enrichment is **disabled by default** and only runs when:
+- `config/kaspi_enrichment.yaml` → `enabled: true`
+- `ENABLE_KASPI_ENRICHMENT=1`
+- `--enrich` flag is provided
+
+Example:
+```bash
+ENABLE_KASPI_ENRICHMENT=1 python scripts/sync_kaspi_orders.py --all --enrich
+```
+
+This stage populates:
+- `fact_order_entries_kaspi` (line items)
+- `dim_point_of_service`, `dim_masterproduct`, `dim_merchantproduct` (cached lookups)
+
 ### 4. Download Waybills
 
 ```bash
@@ -107,19 +135,47 @@ response = client.get_order('123456789')
 waybill = client.download_waybill('https://kaspi.kz/waybill/xxx.pdf')
 ```
 
-#### Order States
+#### Query filters (supported)
 
-| Kaspi State | Internal Status | Description |
-|-------------|-----------------|-------------|
-| NEW | NEW | Order just placed |
-| ACCEPTED_BY_MERCHANT | ACCEPTED | Order accepted |
-| ASSEMBLY | READY | Order assembled, ready for shipment |
-| KASPI_DELIVERY | SHIPPED | Handed to Kaspi delivery |
-| DELIVERY | SHIPPED | In transit |
-| COMPLETED | COMPLETED | Delivered to customer |
-| CANCELLED | CANCELLED | Order cancelled |
-| RETURNING | RETURNING | Customer returning |
-| RETURNED | RETURNED | Returned to seller |
+```python
+# Optional filters for list_orders/list_all_orders
+orders = client.list_all_orders(
+    state='KASPI_DELIVERY',
+    since='2025-12-01',
+    delivery_type='DELIVERY',
+    signature_required=False,
+    include_orders='user',
+)
+```
+
+#### Order state vs status (canonical)
+
+Do not mix API **state** and API **status**. The full contract and Seller Cabinet mapping lives in:
+
+- `docs/KASPI_ORDER_LIFECYCLE_AND_STATUS_CONTRACT.md`
+
+Quick reference:
+
+- API `state`: NEW, SIGN_REQUIRED, PICKUP, DELIVERY, KASPI_DELIVERY, ARCHIVE
+- API `status`: APPROVED_BY_BANK, ACCEPTED_BY_MERCHANT, COMPLETED, CANCELLED, CANCELLING,
+  KASPI_DELIVERY_RETURN_REQUESTED, RETURNED
+
+Some Seller Cabinet stages are **composites** of state + status + flags (assembled, preOrder, signatureRequired, etc.).
+Always derive internal StageCode via `core/integrations/kaspi_order_stage.py`.
+
+#### Extended API fields captured (fact_orders_kaspi)
+
+The API sync now stores additional attributes from the order payload:
+
+- `kaspi_status_detail` (API status: APPROVED_BY_BANK, ACCEPTED_BY_MERCHANT, etc.)
+- `planned_delivery_date`, `courier_transmission_planning_date`, `courier_transmission_date`
+- `delivery_mode`, `payment_mode`, `signature_required`, `credit_term`, `pre_order`
+- `approved_by_bank_date`, `reservation_date`
+- `delivery_cost`, `delivery_cost_for_seller`, `delivery_address`
+- `is_imei_required`, `express`, `returned_to_warehouse`, `category`
+- `customer_first_name`, `customer_last_name`, `customer_phone`
+
+Migration: `python scripts/migrate_014_kaspi_api_fields.py`
 
 #### Write Operations
 

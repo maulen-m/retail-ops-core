@@ -9,6 +9,9 @@ Handles mapping between different SKU key conventions:
 This prevents mismatches when joining data from different sources.
 """
 
+import re
+
+
 # Mapping from source convention to canonical convention
 SKU_PREFIX_MAPPINGS = {
     'CL_NK_': 'CL_OC_',  # Stock file -> Anchor/Target convention
@@ -70,8 +73,89 @@ VALID_SIZES = {
     'ONE_SIZE', 'ONESIZE', 'OS',
 }
 
+SIZE_SYNONYMS = {
+    'ONESIZE': 'ONE_SIZE',
+    'ONE SIZE': 'ONE_SIZE',
+    'OS': 'ONE_SIZE',
+    'O/S': 'ONE_SIZE',
+    'XXL': '2XL',
+    'XXXL': '3XL',
+    'XXXXL': '4XL',
+    '2XLB': '2XL',
+    '2XL\u0411': '2XL',
+    '3XLB': '3XL',
+    '3XL\u0411': '3XL',
+    '4XLB': '4XL',
+    '4XL\u0411': '4XL',
+}
 
-def normalize_size(size, product_type: str = None) -> str:
+NULL_SIZE_TOKENS = {
+    '',
+    '0',
+    'NONE',
+    'NULL',
+    'NAN',
+    'N/A',
+    'NA',
+    '-',
+}
+
+_CYRILLIC_SIZE_TRANSLATION = str.maketrans({
+    '\u041c': 'M',
+    '\u043c': 'M',
+    '\u0425': 'X',
+    '\u0445': 'X',
+    '\u0421': 'S',
+    '\u0441': 'S',
+    '\u041b': 'L',
+    '\u043b': 'L',
+    '\u0411': 'B',
+    '\u0431': 'B',
+})
+
+ADULT_CL_NUMERIC_SYNONYMS = {
+    '42': 'S',
+    '44': 'M',
+    '46': 'L',
+    '48': 'XL',
+    '50': 'XL',
+    '52': '2XL',
+    '54': '3XL',
+    '56': '4XL',
+    '58': '4XL',
+    '60': '4XL',
+}
+
+
+def _sanitize_size_token(raw: object) -> str:
+    """Normalize raw size token formatting before semantic mapping."""
+    token = str(raw).strip()
+    if not token:
+        return ""
+
+    token = token.translate(_CYRILLIC_SIZE_TRANSLATION)
+    token = token.upper().replace("\u00a0", " ")
+    token = token.strip().rstrip("?.!,;:")
+
+    # Numeric floats from Excel often appear as "26.0" -> "26".
+    if re.fullmatch(r"\d+\.0+", token):
+        token = token.split(".", 1)[0]
+    elif re.fullmatch(r"\d+\.\d+", token):
+        # Non-integer decimal sizes are not valid for our catalog.
+        return ""
+
+    # Keep slash for O/S before removing general punctuation.
+    token = token.replace(" ", "")
+    token = token.replace("-", "")
+    token = token.replace("(", "").replace(")", "")
+
+    # Collapse leading zeros in pure numeric tokens: 004 -> 4.
+    if re.fullmatch(r"\d+", token):
+        token = str(int(token))
+    return token
+
+
+def normalize_size(size, product_type: str = None, synonyms: dict[str, str] | None = None) -> str:
     """
     Normalize size value to standard format.
 
@@ -88,23 +172,81 @@ def normalize_size(size, product_type: str = None) -> str:
         Normalized size string or None if invalid
     """
     # Handle None/empty for electronics
-    if size is None or str(size).strip() in ('', '0', 'None', 'nan'):
+    if size is None:
         if product_type and product_type.upper() in ('ELS', 'ELEC', 'ELECTRONICS'):
             return 'ONE_SIZE'
         return None
 
-    size_str = str(size).strip().upper()
+    size_clean = _sanitize_size_token(size)
+    if size_clean in NULL_SIZE_TOKENS:
+        if product_type and product_type.upper() in ('ELS', 'ELEC', 'ELECTRONICS'):
+            return 'ONE_SIZE'
+        return None
 
-    # Check if valid
-    if size_str in VALID_SIZES:
-        return size_str
+    if synonyms and size_clean in synonyms:
+        size_clean = _sanitize_size_token(synonyms[size_clean])
+    if product_type and product_type.upper().startswith("CL"):
+        if size_clean in ADULT_CL_NUMERIC_SYNONYMS:
+            size_clean = ADULT_CL_NUMERIC_SYNONYMS[size_clean]
+    if size_clean in SIZE_SYNONYMS:
+        size_clean = SIZE_SYNONYMS[size_clean]
 
-    # Try without upper (for numeric)
-    size_orig = str(size).strip()
-    if size_orig in VALID_SIZES:
-        return size_orig
+    if size_clean in {'ONESIZE', 'OS'}:
+        size_clean = 'ONE_SIZE'
+
+    if size_clean in VALID_SIZES:
+        return size_clean
 
     return None
+
+
+def infer_size_from_sku_id(sku_id: str | None) -> str | None:
+    """
+    Infer size token from a sku_id suffix.
+
+    Example: CL_LINE52_BLACK_M -> M
+    """
+    if not sku_id:
+        return None
+    raw = str(sku_id).strip()
+    if "_" not in raw:
+        return None
+    _, suffix = raw.rsplit("_", 1)
+    suffix = suffix.strip()
+    normalized = normalize_size(suffix)
+    if not normalized:
+        return None
+    if normalized not in VALID_SIZES:
+        return None
+    return normalized
+
+
+def normalize_sku_id(sku_id: str | None, sku_key_hint: str | None = None) -> str | None:
+    """
+    Normalize sku_id to canonical form: <normalized_sku_key>_<normalized_size>.
+
+    If size cannot be inferred, returns normalized sku_key only.
+    """
+    if not sku_id and not sku_key_hint:
+        return None
+
+    raw = str(sku_id).strip() if sku_id else ""
+    raw = " ".join(raw.split())
+    raw = raw.upper()
+
+    size = infer_size_from_sku_id(raw)
+    base = raw
+    if size and "_" in raw:
+        base = raw.rsplit("_", 1)[0]
+
+    if sku_key_hint:
+        base = normalize_sku_key(str(sku_key_hint).strip())
+    else:
+        base = normalize_sku_key(base)
+
+    if size:
+        return f"{base}_{size}"
+    return base
 
 
 if __name__ == "__main__":

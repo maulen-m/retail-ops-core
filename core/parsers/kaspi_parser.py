@@ -24,6 +24,9 @@ from datetime import datetime
 
 import pandas as pd
 
+from core.utils.sku_normalize import normalize_size
+from core.utils.sku_map import lookup_sku_from_offer
+
 
 # Russian column names from Kaspi ActiveOrders export
 COLUMN_MAP_RUSSIAN = {
@@ -79,6 +82,69 @@ SIZE_PATTERNS = {
     r"\b(\d{2})\b(?![\d/])": lambda m: m.group(1),  # standalone 48, 50, etc.
 }
 
+SIZE_TOKENS = {
+    "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL",
+    "ONE_SIZE", "ONESIZE", "OS",
+}
+
+ACMEWEAR_LINE61_ARTICLE_RE = re.compile(r"^OF_SUIT-?61_BLK(?:_(.+))?$", re.IGNORECASE)
+
+
+def _map_acmewear_line61_size(size_tokens: list[str]) -> Optional[str]:
+    """Map ACMEWEAR line61 article suffix tokens to canonical MY_SIZE."""
+    if not size_tokens:
+        return None
+    first = str(size_tokens[0] or "").strip().upper()
+    if not first:
+        return None
+    if first in {"S", "M", "L", "XL", "2XL", "3XL", "4XL"}:
+        return first
+    # Numeric suffixes may appear without explicit token; map common cases.
+    if first in {"42", "44", "46"}:
+        return "S" if first == "42" else ("M" if first == "44" else "L")
+    if first in {"48", "50"}:
+        return "XL"
+    if first in {"52", "54"}:
+        return "2XL"
+    if first == "56":
+        return "4XL"
+    if first in {"58", "60"}:
+        return "4XL"
+    return None
+
+
+def _strip_article_prefix(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    return re.sub(r"^[\\d\\s]+", "", text).strip()
+
+
+def _looks_like_size_token(token: str) -> bool:
+    """Heuristic for suffix tokens that encode size info in Артикул."""
+    if not token:
+        return False
+    t = token.strip().strip("()")
+    if not t:
+        return False
+    t_upper = t.upper()
+    if t_upper in SIZE_TOKENS:
+        return True
+    if "/" in t_upper:
+        if any(size in t_upper for size in SIZE_TOKENS):
+            return True
+        if re.fullmatch(r"[0-9\s,./()-]+", t_upper):
+            return True
+        if any(ch.isdigit() for ch in t_upper) and any(ch.isalpha() for ch in t_upper):
+            return True
+    if t_upper.isdigit() and len(t_upper) in (2, 3):
+        return True
+    if "-" in t_upper:
+        parts = [p for p in t_upper.split("-") if p]
+        if parts and all(p.isdigit() for p in parts):
+            return True
+    return False
+
 
 def extract_sku_from_article(
     kaspi_article: str,
@@ -114,12 +180,26 @@ def extract_sku_from_article(
     if not kaspi_article:
         return result
 
-    article = str(kaspi_article).strip().upper()
+    article_raw = _strip_article_prefix(kaspi_article)
+    article = article_raw.upper()
     offer_text = str(kaspi_offer or "").upper()
 
-    # Try to extract size from article or offer
-    my_size = _extract_size(article) or _extract_size(offer_text)
-    result["my_size"] = my_size
+    # Special-case: ACMEWEAR line61 merchant article aliases.
+    # Keep canonical sku_key stable while allowing new Kaspi offer ids.
+    acmewear_match = ACMEWEAR_LINE61_ARTICLE_RE.match(article)
+    if acmewear_match:
+        suffix = acmewear_match.group(1) or ""
+        tokens = [t for t in suffix.split("_") if t]
+        size = _map_acmewear_line61_size(tokens)
+        if not size:
+            # Fallback to offer text if suffix is ambiguous.
+            size = normalize_size(_extract_size(offer_text), product_type="CL")
+        result["product_type"] = "CL"
+        result["sku_key"] = "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+        result["my_size"] = size
+        if size:
+            result["sku_id"] = f"{result['sku_key']}_{size}"
+        return result
 
     # Try to detect product type from article patterns
     if "CL" in article or "КОМПЛЕКТ" in offer_text or "PRINT" in article:
@@ -131,14 +211,67 @@ def extract_sku_from_article(
     elif "FUR" in article:
         result["product_type"] = "FUR"
 
+    # Try to extract size from article or offer, then normalize
+    my_size_raw = _extract_size(article) or _extract_size(offer_text)
+    my_size = normalize_size(my_size_raw, product_type=result["product_type"]) or my_size_raw
+    result["my_size"] = my_size
+
+    # SKU_key is embedded at the beginning of Артикул
+    raw_tokens = [t for t in article_raw.split("_") if t]
+    upper_tokens = [t.upper() for t in raw_tokens]
+    size_token = None
+    while upper_tokens:
+        token = upper_tokens[-1].strip()
+        if not token:
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        token_stripped = token.strip("()")
+        if _looks_like_size_token(token_stripped):
+            size_token = raw_tokens[-1]
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        if token_stripped.isdigit() and len(token_stripped) >= 4:
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
+        break
+
+    if raw_tokens and len(raw_tokens) >= 2:
+        candidate = "_".join(raw_tokens)
+        result["sku_key"] = candidate
+        if not result["my_size"] and size_token:
+            size_norm = normalize_size(size_token, product_type=result["product_type"])
+            result["my_size"] = size_norm or size_token
+        if result["my_size"]:
+            result["sku_id"] = f"{result['sku_key']}_{result['my_size']}"
+        return result
+
+    # Fallback: lookup by Kaspi_name_core mapping
+    if offer_text:
+        sku_key, map_size = lookup_sku_from_offer(offer_text)
+        if sku_key:
+            result["sku_key"] = sku_key
+            if not result["my_size"] and map_size:
+                size_norm = normalize_size(map_size, product_type=result["product_type"])
+                result["my_size"] = size_norm or map_size
+            if result["my_size"]:
+                result["sku_id"] = f"{result['sku_key']}_{result['my_size']}"
+            return result
+
     # If the article looks like our SKU format, use it directly
-    sku_pattern = r"^([A-Z]+_[A-Z]+_[A-Z]+_[A-Z0-9]+_[A-Z]+)(?:_([A-Z0-9]+))?$"
-    sku_match = re.match(sku_pattern, article)
+    sku_pattern = r"^([A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+_[A-Za-z0-9-]+)(?:_([A-Za-z0-9-]+))?$"
+    sku_match = re.match(sku_pattern, article_raw)
     if sku_match:
         result["sku_key"] = sku_match.group(1)
         if sku_match.group(2):
-            result["my_size"] = sku_match.group(2)
-            result["sku_id"] = article
+            size_norm = normalize_size(sku_match.group(2), product_type=result["product_type"])
+            result["my_size"] = size_norm or sku_match.group(2)
+            if size_norm:
+                result["sku_id"] = f"{result['sku_key']}_{size_norm}"
+            else:
+                result["sku_id"] = article_raw
         elif my_size:
             result["sku_id"] = f"{result['sku_key']}_{my_size}"
         return result
@@ -256,36 +389,8 @@ def _detect_gender(text: str) -> str:
     return "MEN"  # Default
 
 
-def parse_active_orders(
-    file_path: str | Path,
-    store_code: str,
-    validate: bool = True,
-) -> list[dict]:
-    """
-    Parse Kaspi ActiveOrders Excel file into list of dicts for DB insert.
-
-    Args:
-        file_path: Path to ActiveOrders_*.xlsx file
-        store_code: Store code (e.g., 'UNIVERSAL', 'ACMEWEAR')
-        validate: If True, raise on missing required columns
-
-    Returns:
-        List of dicts with DB-ready column names, ready for fact_sales_raw insert.
-        Each dict includes: order_id, store_code, order_date, kaspi_offer,
-        kaspi_article, sku_id, sku_key, my_size, quantity, sell_price_kzt,
-        delivery_fee_seller, delivery_fee_buyer, order_status, channel,
-        product_type, source_file
-
-    Raises:
-        ValueError: If required columns missing and validate=True
-        FileNotFoundError: If file doesn't exist
-    """
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(f"File not found: {path}")
-
-    # Read Excel file
-    df = pd.read_excel(path)
+def _normalize_columns(df: pd.DataFrame, validate: bool = True) -> pd.DataFrame:
+    """Normalize ActiveOrders columns to internal names."""
     columns = list(df.columns)
 
     # Detect which column format we have (Russian or English)
@@ -323,7 +428,52 @@ def parse_active_orders(
             column_renames[old] = new
             target_names_used.add(new)
 
-    df = df.rename(columns=column_renames)
+    return df.rename(columns=column_renames)
+
+
+def parse_active_orders_df(
+    df: pd.DataFrame,
+    store_code: str,
+    source_file: str,
+    validate: bool = True,
+) -> list[dict]:
+    """
+    Parse Kaspi ActiveOrders DataFrame into list of dicts for DB insert.
+
+    Args:
+        df: DataFrame with ActiveOrders-style columns
+        store_code: Store code (e.g., 'UNIVERSAL', 'ACMEWEAR')
+        source_file: Source label for traceability
+        validate: If True, raise on missing required columns
+
+    Returns:
+        List of dicts ready for fact_sales_raw insert.
+    """
+    df = _normalize_columns(df, validate=validate)
+
+    records = []
+    for _, row in df.iterrows():
+        record = _process_row(row, store_code, source_file)
+        if record:
+            records.append(record)
+
+    return records
+
+
+def parse_active_orders(
+    file_path: str | Path,
+    store_code: str,
+    validate: bool = True,
+) -> list[dict]:
+    """
+    Parse Kaspi ActiveOrders Excel file into list of dicts for DB insert.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    df = pd.read_excel(path)
+    return parse_active_orders_df(df, store_code=store_code, source_file=path.name, validate=validate)
 
     # Process each row
     records = []

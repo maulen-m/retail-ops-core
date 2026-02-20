@@ -1,0 +1,81 @@
+{
+  "timestamp": "2026-02-03T23:44:58.957131",
+  "url": "https://marketing.kaspi.kz/advertising/campaigns?tab=campaigns&startDate=2026-02-02&endDate=2026-02-02&activeTab=Enabled",
+  "yesterday": "2026-02-02",
+  "title": "Войти в кабинет – Маркетинг",
+  "nav_links": [
+    {
+      "text": "Реклама товаров",
+      "href": "https://marketing.kaspi.kz/advertising"
+    },
+    {
+      "text": "Бонусы от продавца",
+      "href": "https://marketing.kaspi.kz/bonuses/products/"
+    },
+    {
+      "text": "Бонусы за отзыв",
+      "href": "https://marketing.kaspi.kz/bonuses/reviews/"
+    },
+    {
+      "text": "Акции Магазина",
+      "href": "https://marketing.kaspi.kz/shop-promotions?started_from=title"
+    },
+    {
+      "text": "Акции с Kaspi QR",
+      "href": "https://marketing.kaspi.kz/qr-promotions?started_from=title"
+    },
+    {
+      "text": "Вход",
+      "href": "https://marketing.kaspi.kz/sign-in"
+    }
+  ],
+  "buttons": [
+    {
+      "text": "Реклама товаров",
+      "tag": "A",
+      "href": "https://marketing.kaspi.kz/advertising"
+    },
+    {
+      "text": "Бонусы от продавца",
+      "tag": "A",
+      "href": "https://marketing.kaspi.kz/bonuses/products/"
+    },
+    {
+      "text": "Бонусы за отзыв",
+      "tag": "A",
+      "href": "https://marketing.kaspi.kz/bonuses/reviews/"
+    },
+    {
+      "text": "Акции Магазина",
+      "tag": "A",
+      "href": "https://marketing.kaspi.kz/shop-promotions?started_from=title"
+    },
+    {
+      "text": "Акции с Kaspi QR",
+      "tag": "A",
+      "href": "https://marketing.kaspi.kz/qr-promotions?started_from=title"
+    },
+    {
+      "text": "Вход",
+      "tag": "A",
+      "href": "https://marketing.kaspi.kz/sign-in"
+    },
+    {
+      "text": "Забыли пароль?",
+      "tag": "BUTTON",
+      "href": null
+    },
+    {
+      "text": "Войти",
+      "tag": "BUTTON",
+      "href": null
+    }
+  ],
+  "tabs": [],
+  "campaign_table": {
+    "headers": [],
+    "rowCount": 0
+  },
+  "detail_table": {},
+  "notes": []
+}

@@ -21,7 +21,8 @@ Usage:
 import logging
 import yaml
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+import json
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +34,13 @@ from core.integrations.kaspi_api_client import (
     get_client,
     STORE_TOKEN_MAP,
 )
+from core.integrations.kaspi_order_stage import (
+    classify_kaspi_order_stage,
+    classify_kaspi_stage_from_db_row,
+    StageCode,
+    stage_to_internal_status,
+)
+from core.utils.kaspi_dates import planned_date_from_order
 
 
 logger = logging.getLogger(__name__)
@@ -126,6 +134,63 @@ class OrderSyncEngine:
         """Get API client for a store."""
         return get_client(store_code)
 
+    def _ensure_sync_log_table(self, conn) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kaspi_order_sync_log (
+                store_code TEXT PRIMARY KEY,
+                last_success_ts TEXT NOT NULL,
+                min_date_seen TEXT,
+                max_date_seen TEXT,
+                orders_fetched INTEGER,
+                orders_inserted INTEGER,
+                orders_updated INTEGER,
+                run_id TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+
+    def _extract_order_date(self, api_order: dict) -> Optional[date]:
+        attrs = api_order.get("attributes", {})
+        if attrs.get("creationDate"):
+            try:
+                return datetime.fromtimestamp(attrs["creationDate"] / 1000).date()
+            except Exception:
+                return None
+        return None
+
+    def _record_sync_log(
+        self,
+        conn,
+        store_code: str,
+        orders: list[dict],
+        result: SyncResult,
+        run_id: str,
+    ) -> None:
+        self._ensure_sync_log_table(conn)
+        dates = [d for d in (self._extract_order_date(o) for o in orders) if d]
+        min_date = min(dates).isoformat() if dates else None
+        max_date = max(dates).isoformat() if dates else None
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO kaspi_order_sync_log (
+                store_code, last_success_ts, min_date_seen, max_date_seen,
+                orders_fetched, orders_inserted, orders_updated, run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                store_code,
+                datetime.now().isoformat(timespec="seconds"),
+                min_date,
+                max_date,
+                result.orders_fetched,
+                result.orders_inserted,
+                result.orders_updated,
+                run_id,
+            ),
+        )
+
     # =========================================================================
     # SINGLE STORE SYNC
     # =========================================================================
@@ -152,6 +217,7 @@ class OrderSyncEngine:
             SyncResult with counts and status changes
         """
         start_time = datetime.now()
+        run_id = start_time.strftime("%Y%m%d_%H%M%S")
         result = SyncResult(store_code=store_code, success=True)
 
         logger.info(f"Starting sync for {store_code}, since={since}, dry_run={dry_run}")
@@ -189,6 +255,8 @@ class OrderSyncEngine:
                     except Exception as e:
                         logger.error(f"Error saving order {order.get('id')}: {e}")
                         result.errors.append(str(e))
+                if result.success:
+                    self._record_sync_log(conn, store_code, orders, result, run_id)
 
         except KaspiAuthError as e:
             logger.error(f"Auth error for {store_code}: {e}")
@@ -251,6 +319,7 @@ class OrderSyncEngine:
                     state=state,
                     since=since,
                     until=until,
+                    include_orders="user",
                 )
                 all_orders.extend(orders)
             return all_orders
@@ -259,6 +328,7 @@ class OrderSyncEngine:
         return client.list_all_orders(
             since=since,
             until=until,
+            include_orders="user",
         )
 
     def _save_order(
@@ -298,8 +368,9 @@ class OrderSyncEngine:
             # Check for status change
             old_status = existing['internal_status']
             new_status = order_data['internal_status']
+            status_changed = old_status != new_status
 
-            if old_status != new_status:
+            if status_changed:
                 result['status_change'] = StatusChange(
                     order_id=order_id,
                     old_status=old_status,
@@ -308,7 +379,7 @@ class OrderSyncEngine:
                 )
 
             # Update existing
-            self._update_order(conn, existing['id'], order_data)
+            self._update_order(conn, existing['id'], order_data, status_changed=status_changed)
             result['updated'] = True
         else:
             # Insert new
@@ -330,6 +401,15 @@ class OrderSyncEngine:
         """
         attrs = api_order.get('attributes', {})
         delivery = attrs.get('kaspiDelivery', {})
+        customer = attrs.get('customer') or api_order.get('included_user') or {}
+
+        def _ts_to_str(ts: Optional[int]) -> Optional[str]:
+            if ts is None:
+                return None
+            try:
+                return datetime.fromtimestamp(ts / 1000).strftime('%Y-%m-%d %H:%M:%S')
+            except (OSError, ValueError, TypeError):
+                return None
 
         # Parse dates
         created_at = None
@@ -339,52 +419,88 @@ class OrderSyncEngine:
             ).strftime('%Y-%m-%d %H:%M:%S')
 
         planned_date = None
-        if delivery.get('plannedDeliveryDate'):
-            planned_date = datetime.fromtimestamp(
-                delivery['plannedDeliveryDate'] / 1000
-            ).strftime('%Y-%m-%d')
+        effective_planned = planned_date_from_order(api_order)
+        if effective_planned:
+            planned_date = effective_planned.isoformat()
 
-        # Map Kaspi state to internal status
+        planned_delivery_date = _ts_to_str(
+            delivery.get('plannedDeliveryDate') or attrs.get('plannedDeliveryDate')
+        )
+        courier_transmission_planning_date = _ts_to_str(
+            delivery.get('courierTransmissionPlanningDate')
+        )
+        courier_transmission_date = _ts_to_str(
+            delivery.get('courierTransmissionDate')
+        )
+        approved_by_bank_date = _ts_to_str(attrs.get('approvedByBankDate'))
+        reservation_date = _ts_to_str(attrs.get('reservationDate'))
+
+        address = delivery.get('address') or {}
+        delivery_address = (
+            address.get('formattedAddress')
+            or address.get('fullAddress')
+            or address.get('address')
+            or attrs.get('deliveryAddress')
+        )
+
+        # Map Kaspi lifecycle to internal status via StageCode
         kaspi_state = attrs.get('state', 'NEW')
-        internal_status = self._map_state_to_status(kaspi_state)
+        stage = classify_kaspi_order_stage(api_order)
+        internal_status = stage_to_internal_status(stage)
 
         # Extract waybill URL
         waybill_url = delivery.get('waybill')
+        waybill_number = delivery.get('waybillNumber') or attrs.get('waybillNumber')
 
-        return {
+        order_data = {
             'order_id': attrs.get('code', api_order.get('id', '')),
             'store_code': store_code,
             'channel_code': 'KSP',
             'kaspi_status': kaspi_state,
+            'kaspi_status_detail': attrs.get('status'),
             'internal_status': internal_status,
             'unit_price_kzt': attrs.get('totalPrice', 0),
             'quantity': 1,  # Will be updated from entries
             'created_at': created_at,
             'planned_shipment_date': planned_date,
+            'planned_delivery_date': planned_delivery_date,
+            'courier_transmission_planning_date': courier_transmission_planning_date,
+            'courier_transmission_date': courier_transmission_date,
+            'actual_shipment_date': courier_transmission_date,
             'waybill_url': waybill_url,
+            'waybill_number': waybill_number,
+            'delivery_mode': attrs.get('deliveryMode'),
+            'payment_mode': attrs.get('paymentMode'),
+            'signature_required': attrs.get('signatureRequired'),
+            'credit_term': attrs.get('creditTerm'),
+            'pre_order': attrs.get('preOrder'),
+            'approved_by_bank_date': approved_by_bank_date,
+            'reservation_date': reservation_date,
+            'delivery_cost': attrs.get('deliveryCost'),
+            'delivery_cost_for_seller': (
+                attrs.get('deliveryCostForSeller')
+                or delivery.get('deliveryCostForSeller')
+            ),
+            'delivery_address': delivery_address,
+            'is_imei_required': attrs.get('isImeiRequired'),
+            'express': delivery.get('express') or attrs.get('express'),
+            'returned_to_warehouse': (
+                delivery.get('returnedToWarehouse')
+                or attrs.get('returnedToWarehouse')
+            ),
+            'category': attrs.get('category'),
+            'customer_first_name': customer.get('firstName'),
+            'customer_last_name': customer.get('lastName'),
+            'customer_phone': customer.get('cellPhone'),
             'source': 'API',
         }
 
-    def _map_state_to_status(self, kaspi_state: str) -> str:
-        """Map Kaspi state to internal status."""
-        state_map = self.config.get('order_states', {})
+        def _sanitize_value(value):
+            if isinstance(value, (dict, list)):
+                return json.dumps(value, ensure_ascii=False)
+            return value
 
-        if kaspi_state in state_map:
-            return state_map[kaspi_state].get('internal_status', 'NEW')
-
-        # Default mapping
-        default_map = {
-            'NEW': 'NEW',
-            'ACCEPTED_BY_MERCHANT': 'ACCEPTED',
-            'ASSEMBLY': 'READY',
-            'KASPI_DELIVERY': 'SHIPPED',
-            'DELIVERY': 'SHIPPED',
-            'COMPLETED': 'COMPLETED',
-            'CANCELLED': 'CANCELLED',
-            'RETURNING': 'RETURNING',
-            'RETURNED': 'RETURNED',
-        }
-        return default_map.get(kaspi_state, 'NEW')
+        return {key: _sanitize_value(value) for key, value in order_data.items()}
 
     def _insert_order(self, conn, order_data: dict):
         """Insert new order into database."""
@@ -392,48 +508,145 @@ class OrderSyncEngine:
             """
             INSERT INTO fact_orders_kaspi (
                 order_id, store_code, channel_code,
-                kaspi_status, internal_status,
+                kaspi_status, kaspi_status_detail, internal_status,
                 unit_price_kzt, quantity,
-                created_at, planned_shipment_date,
-                waybill_url, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, planned_shipment_date, planned_delivery_date,
+                courier_transmission_planning_date, courier_transmission_date,
+                actual_shipment_date,
+                waybill_url, waybill_number,
+                delivery_mode, payment_mode,
+                signature_required, credit_term, pre_order,
+                approved_by_bank_date, reservation_date,
+                delivery_cost, delivery_cost_for_seller,
+                delivery_address, is_imei_required,
+                express, returned_to_warehouse, category,
+                customer_first_name, customer_last_name, customer_phone,
+                source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order_data['order_id'],
                 order_data['store_code'],
                 order_data['channel_code'],
                 order_data['kaspi_status'],
+                order_data.get('kaspi_status_detail'),
                 order_data['internal_status'],
                 order_data['unit_price_kzt'],
                 order_data['quantity'],
                 order_data['created_at'],
                 order_data['planned_shipment_date'],
+                order_data.get('planned_delivery_date'),
+                order_data.get('courier_transmission_planning_date'),
+                order_data.get('courier_transmission_date'),
+                order_data.get('actual_shipment_date'),
                 order_data['waybill_url'],
+                order_data.get('waybill_number'),
+                order_data.get('delivery_mode'),
+                order_data.get('payment_mode'),
+                order_data.get('signature_required'),
+                order_data.get('credit_term'),
+                order_data.get('pre_order'),
+                order_data.get('approved_by_bank_date'),
+                order_data.get('reservation_date'),
+                order_data.get('delivery_cost'),
+                order_data.get('delivery_cost_for_seller'),
+                order_data.get('delivery_address'),
+                order_data.get('is_imei_required'),
+                order_data.get('express'),
+                order_data.get('returned_to_warehouse'),
+                order_data.get('category'),
+                order_data.get('customer_first_name'),
+                order_data.get('customer_last_name'),
+                order_data.get('customer_phone'),
                 order_data['source'],
             )
         )
 
-    def _update_order(self, conn, row_id: int, order_data: dict):
+    @staticmethod
+    def _column_exists(conn, table: str, column: str) -> bool:
+        """Return True when a column exists on a table."""
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(row[1] == column for row in rows)
+
+    def _update_order(
+        self,
+        conn,
+        row_id: int,
+        order_data: dict,
+        *,
+        status_changed: bool,
+    ):
         """Update existing order in database."""
+        has_synced_at = self._column_exists(conn, "fact_orders_kaspi", "synced_at")
+        synced_at_clause = ", synced_at = CURRENT_TIMESTAMP" if has_synced_at else ""
+
         conn.execute(
-            """
+            f"""
             UPDATE fact_orders_kaspi SET
                 kaspi_status = ?,
+                kaspi_status_detail = COALESCE(?, kaspi_status_detail),
                 internal_status = ?,
                 unit_price_kzt = ?,
                 planned_shipment_date = ?,
+                planned_delivery_date = COALESCE(?, planned_delivery_date),
+                courier_transmission_planning_date = COALESCE(?, courier_transmission_planning_date),
+                courier_transmission_date = COALESCE(?, courier_transmission_date),
+                actual_shipment_date = COALESCE(?, actual_shipment_date),
                 waybill_url = ?,
-                status_updated_at = CURRENT_TIMESTAMP
+                waybill_number = COALESCE(?, waybill_number),
+                delivery_mode = COALESCE(?, delivery_mode),
+                payment_mode = COALESCE(?, payment_mode),
+                signature_required = COALESCE(?, signature_required),
+                credit_term = COALESCE(?, credit_term),
+                pre_order = COALESCE(?, pre_order),
+                approved_by_bank_date = COALESCE(?, approved_by_bank_date),
+                reservation_date = COALESCE(?, reservation_date),
+                delivery_cost = COALESCE(?, delivery_cost),
+                delivery_cost_for_seller = COALESCE(?, delivery_cost_for_seller),
+                delivery_address = COALESCE(?, delivery_address),
+                is_imei_required = COALESCE(?, is_imei_required),
+                express = COALESCE(?, express),
+                returned_to_warehouse = COALESCE(?, returned_to_warehouse),
+                category = COALESCE(?, category),
+                customer_first_name = COALESCE(?, customer_first_name),
+                customer_last_name = COALESCE(?, customer_last_name),
+                customer_phone = COALESCE(?, customer_phone),
+                status_updated_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE status_updated_at END
+                {synced_at_clause}
             WHERE id = ?
             """,
             (
                 order_data['kaspi_status'],
+                order_data.get('kaspi_status_detail'),
                 order_data['internal_status'],
                 order_data['unit_price_kzt'],
                 order_data['planned_shipment_date'],
+                order_data.get('planned_delivery_date'),
+                order_data.get('courier_transmission_planning_date'),
+                order_data.get('courier_transmission_date'),
+                order_data.get('actual_shipment_date'),
                 order_data['waybill_url'],
+                order_data.get('waybill_number'),
+                order_data.get('delivery_mode'),
+                order_data.get('payment_mode'),
+                order_data.get('signature_required'),
+                order_data.get('credit_term'),
+                order_data.get('pre_order'),
+                order_data.get('approved_by_bank_date'),
+                order_data.get('reservation_date'),
+                order_data.get('delivery_cost'),
+                order_data.get('delivery_cost_for_seller'),
+                order_data.get('delivery_address'),
+                order_data.get('is_imei_required'),
+                order_data.get('express'),
+                order_data.get('returned_to_warehouse'),
+                order_data.get('category'),
+                order_data.get('customer_first_name'),
+                order_data.get('customer_last_name'),
+                order_data.get('customer_phone'),
+                1 if status_changed else 0,
                 row_id,
-            )
+            ),
         )
 
     # =========================================================================
@@ -593,9 +806,9 @@ class OrderSyncEngine:
         with get_db(self.db_path) as conn:
             query = """
                 SELECT * FROM fact_orders_kaspi
-                WHERE internal_status = ?
+                WHERE 1=1
             """
-            params = [status]
+            params = []
 
             if store_code:
                 query += " AND store_code = ?"
@@ -604,7 +817,16 @@ class OrderSyncEngine:
             query += " ORDER BY created_at ASC"
 
             rows = conn.execute(query, params).fetchall()
-            return [dict(row) for row in rows]
+            results = []
+            for row in rows:
+                stage = classify_kaspi_stage_from_db_row(row)
+                if stage in {
+                    StageCode.NEW_APPROVED,
+                    StageCode.SIGN_REQUIRED,
+                    StageCode.PREORDER_IN_TRANSIT,
+                }:
+                    results.append(dict(row))
+            return results
 
     def get_ready_for_shipment(
         self,
@@ -622,8 +844,7 @@ class OrderSyncEngine:
         with get_db(self.db_path) as conn:
             query = """
                 SELECT * FROM fact_orders_kaspi
-                WHERE internal_status = 'READY'
-                  AND waybill_url IS NOT NULL
+                WHERE 1=1
             """
             params = []
 
@@ -634,7 +855,14 @@ class OrderSyncEngine:
             query += " ORDER BY planned_shipment_date ASC"
 
             rows = conn.execute(query, params).fetchall()
-            return [dict(row) for row in rows]
+            results = []
+            for row in rows:
+                if not row["waybill_url"]:
+                    continue
+                stage = classify_kaspi_stage_from_db_row(row)
+                if stage == StageCode.ASSEMBLED_PENDING_HANDOVER:
+                    results.append(dict(row))
+            return results
 
     def get_sync_stats(self) -> dict:
         """

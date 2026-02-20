@@ -40,8 +40,8 @@ class BlackoutPeriod:
 # Pre-defined blackout periods
 CNY_2026 = BlackoutPeriod(
     name="CNY_2026",
-    start_date=date(2026, 1, 27),
-    end_date=date(2026, 2, 20),
+    start_date=date(2026, 1, 28),
+    end_date=date(2026, 3, 1),
     reason="Chinese New Year 2026 factory/shipping blackout"
 )
 
@@ -200,15 +200,8 @@ def adjust_po_dates(
         est_arrival = adjusted_ship + timedelta(days=original_transit)
         ship_date = adjusted_ship
 
-    # Check and adjust est_arrival (customs may be affected)
-    adjusted_arrival, blocked_period = manager.skip_blackout(est_arrival)
-    if blocked_period:
-        warnings.append(
-            f"Est arrival {est_arrival} falls in {blocked_period.name} blackout. "
-            f"Adjusted to {adjusted_arrival}"
-        )
-        blackout_adjusted = True
-        est_arrival = adjusted_arrival
+    # NOTE: Arrival should NOT be independently adjusted.
+    # ETA is derived from ship_date; only ship_date gets blackout treatment.
 
     # PO date usually doesn't need adjustment (ordering can happen anytime)
     # But check if it's too close to blackout for meaningful processing

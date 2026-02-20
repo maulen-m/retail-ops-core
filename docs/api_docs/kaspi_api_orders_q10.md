@@ -1,0 +1,129 @@
+10. Как с помощью API в Магазине на Kaspi.kz изменить вес товаров в заказе?
+Для этого отправьте API-запрос. Можно использовать любой сервис, например, Postman, Insomnia, Paw, Swagger, SoapUI или настроить интеграцию с вашей системой учета.
+
+ 
+
+Параметр
+
+Значение
+
+remainedWeight
+
+Сколько весит товар
+
+ 
+
+Если указать 0, товар удалится из заказа
+
+remainedQuantity
+
+Сколько единиц товара должно быть в заказе
+
+reason
+
+Причина изменений
+
+ 
+
+PRODUCT_UNDERWEIGHT
+
+недовес по товару
+
+notes
+
+Комментарий продавца об изменениях
+
+id
+
+Уникальный код заказа
+
+ 
+
+Чтобы его узнать:
+
+с помощью API в Магазине на Kaspi.kz получите информацию о товарах в заказе;
+скопируйте значение атрибута «id» для "type": "orderentries".
+ 
+
+ Посмотреть пример запроса
+
+request PUT
+url: https://kaspi.kz/shop/api/orderPartialCancel/MDAwOTIwMDA
+Content-Type: application/vnd.api+json
+X-Auth-Token: token
+   
+[
+  {
+    "entry": {
+      "id": "orderentriesId"
+    },
+    "remainedWeight": 1000,
+    "remainedQuantity":1,
+    "reason": "PRODUCT_UNDERWEIGHT",
+    "notes": "Недовес по товару"
+  }
+]
+ 
+
+В ответе вы получите обновленную информацию о количестве товаров в заказе и их весе.
+
+ 
+
+Параметр
+
+Значение
+
+remainedQuantity
+
+Сколько единиц товара должно быть в заказе
+
+remainedWeight
+
+Сколько весит товар
+
+ 
+
+Если указать 0, товар удалится из заказа
+
+reason
+
+Причина изменений
+
+ 
+
+PRODUCT_UNDERWEIGHT
+
+недовес по товару
+
+notes
+
+Комментарий продавца об изменениях
+
+id
+
+Уникальный код заказа
+
+ 
+
+Чтобы его узнать:
+
+с помощью API в Магазине на Kaspi.kz получите информацию о товарах в заказе;
+скопируйте значение атрибута «id» для "type": "orderentries".
+ 
+
+ Посмотреть пример ответа
+
+ {
+    "orderCancelEntries": [
+        {
+            "id": "Mjc0ODI0MzEwMjkyOTQ",
+            "notes": "Недовес по товару",
+            "entry": {
+                "id": "orderentriesId"
+            },
+            "remainedQuantity": 1,
+            "remainedWeight": 1000.0
+        }
+    ],
+    "status": "INPROGRESS"
+}

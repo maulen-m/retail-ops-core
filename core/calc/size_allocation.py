@@ -19,6 +19,7 @@ Data structures defined here:
 
 from dataclasses import dataclass, field
 from enum import Enum
+from math import ceil
 from typing import Optional
 
 
@@ -647,6 +648,37 @@ def calc_order_qty_for_size(
     return max(0, round(order))
 
 
+def calc_deficit_capped_order_qty(
+    d_size: float,
+    t_post: float,
+    pre_arrival_stock: float,
+    *,
+    eps: float = 1e-9,
+) -> int:
+    """
+    Calculate order quantity with deficit-capped logic.
+
+    Rule: if pre_arrival >= target, order MUST be 0 (no cross-size netting).
+    Uses ceil(deficit - eps) to avoid rounding a zero deficit up to 1.
+    """
+    if d_size <= 0:
+        return 0
+
+    target = d_size * t_post
+    deficit = target - pre_arrival_stock
+    if deficit <= 0:
+        return 0
+
+    return max(0, int(ceil(deficit - eps)))
+
+
+def round_qty_to_5_up(qty: int) -> int:
+    """Round order qty up to the nearest 5 (0 stays 0)."""
+    if qty <= 0:
+        return 0
+    return int(ceil(qty / 5.0) * 5)
+
+
 # =============================================================================
 # TASK-160: New SKU adjustments
 # =============================================================================
@@ -1059,13 +1091,21 @@ def generate_po_draft(
     # ==========================================================================
     size_allocations: dict[str, int] = {}
 
+    is_cl = sku_key.startswith("CL")
     if should_order:
         for size, data in size_data.items():
-            qty = calc_order_qty_for_size(
-                d_size=data.d_size,
-                t_post=data.t_post,
-                pre_arrival_stock=data.pre_arrival_stock
-            )
+            if is_cl:
+                qty = calc_deficit_capped_order_qty(
+                    d_size=data.d_size,
+                    t_post=data.t_post,
+                    pre_arrival_stock=data.pre_arrival_stock,
+                )
+            else:
+                qty = calc_order_qty_for_size(
+                    d_size=data.d_size,
+                    t_post=data.t_post,
+                    pre_arrival_stock=data.pre_arrival_stock
+                )
             size_allocations[size] = qty
     else:
         # No order needed, all allocations are 0
@@ -1075,7 +1115,7 @@ def generate_po_draft(
     # ==========================================================================
     # Step 7: Apply low demand insurance
     # ==========================================================================
-    if should_order:
+    if should_order and not is_cl:
         total_before_insurance = sum(size_allocations.values())
         size_allocations = apply_low_demand_insurance(
             size_allocations=size_allocations,
@@ -1095,6 +1135,15 @@ def generate_po_draft(
         size_allocations_adjusted[size] = adj_qty
         if factor < 1.0:
             draft.new_sku_factor = factor
+
+    # ==========================================================================
+    # Step 8.5: Round apparel size quantities to nearest 5 (ceiling)
+    # ==========================================================================
+    if should_order and is_cl:
+        rounded_allocations: dict[str, int] = {}
+        for size, qty in size_allocations_adjusted.items():
+            rounded_allocations[size] = round_qty_to_5_up(qty)
+        size_allocations_adjusted = rounded_allocations
 
     # ==========================================================================
     # Step 9: Build totals and SizeAllocation objects

@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='utf-8'?>
+<kaspi_catalog date="2026-01-27" xmlns="kaspiShopping" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="kaspiShopping http://kaspi.kz/kaspishopping.xsd">
+  <company>TestCo</company>
+  <merchantid>123</merchantid>
+  <offers>
+    <offer sku="SKU1">
+      <model>Model A</model>
+      <brand>BrandA</brand>
+      <availabilities>
+        <availability available="yes" storeId="PP1" preOrder="3" stockCount="5" />
+      </availabilities>
+      <price>10000</price>
+    </offer>
+    <offer sku="SKU2">
+      <model>Model B</model>
+      <brand>BrandB</brand>
+      <availabilities>
+        <availability available="no" storeId="PP1" stockCount="0" />
+      </availabilities>
+      <cityprices>
+        <cityprice cityId="750000000">11000</cityprice>
+      </cityprices>
+    </offer>
+  </offers>
+</kaspi_catalog>

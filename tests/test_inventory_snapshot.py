@@ -15,6 +15,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.ingest_inventory_snapshot import parse_inventory_excel, save_snapshot
 from core.db import get_db
 
+DB_PATH = Path(__file__).parent.parent / "db" / "app.db"
+REQUIRES_DB = pytest.mark.skipif(
+    not DB_PATH.exists(),
+    reason="db/app.db missing; integration checks require seeded DB",
+)
+
 
 class TestParseInventoryExcel:
     """Tests for Excel parsing."""
@@ -108,6 +114,7 @@ class TestSaveSnapshot:
 class TestInventoryIntegration:
     """Integration tests."""
 
+    @REQUIRES_DB
     def test_inventory_loaded_correctly(self):
         """Verify Dec 6 inventory is in DB."""
         with get_db() as conn:

@@ -107,7 +107,7 @@ def migrate():
             total_places INTEGER,                        -- * Number of bags/boxes
 
             -- Costs - CNY (supplier payment)
-            fx_rate_cny_plan REAL DEFAULT 78.0,          -- Planned CNY/KZT rate
+            fx_rate_cny_plan REAL DEFAULT 75.0,          -- Planned CNY/KZT rate
             fx_rate_cny_actual REAL,                     -- * Actual CNY/KZT at payment
             payment_date_cny DATE,                       -- * When CNY payment completed
             total_cost_cny REAL DEFAULT 0,               -- Auto: sum of po_line costs

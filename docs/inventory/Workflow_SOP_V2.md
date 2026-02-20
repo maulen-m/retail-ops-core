@@ -1,8 +1,8 @@
 # Workflow SOP v2.0
-## Inventory Core — Simplified Operations (V15_FINAL)
+## Inventory Core — Simplified Operations (V18.1_V2)
 **Created:** December 3, 2025  
 **Updated:** December 4, 2025  
-**Effective with:** Inventory_Core_V15_FINAL.xlsx
+**Effective with:** Inventory_Core_V18.1_V2.xlsx
 
 ---
 
@@ -12,7 +12,7 @@
 
 | File | Purpose | Update Frequency |
 |------|---------|------------------|
-| **Inventory_Core_V15_FINAL.xlsx** | Frozen UI — ABC_View, status flags | Weekly review |
+| **Inventory_Core_V18.1_V2.xlsx** | Frozen UI — ABC_View, status flags | Weekly review |
 | **Kaspi_Export_[DATE].xlsx** | Raw daily export from Kaspi | Daily (download) |
 | **Stock_Count_[DATE].xlsx** | Physical count snapshots | When reconciling |
 
@@ -28,7 +28,7 @@
 
 ### Project 3 (CRM) Takes Over
 
-| Task | V15 Excel | Project 3 Python |
+| Task | Excel UI | Project 3 Python |
 |------|-----------|------------------|
 | Sales ingestion | Manual paste | **Automated** |
 | Daily aggregation | SUMIFS | **SQL/Python** |
@@ -41,7 +41,7 @@
 
 ### Step 1: Open ABC_View (2 min)
 
-1. Open `Inventory_Core_V15_FINAL.xlsx`
+1. Open `Inventory_Core_V18.1_V2.xlsx`
 2. Navigate to `ABC_View` sheet
 3. Let formulas recalculate (wait for status bar)
 
@@ -102,7 +102,7 @@ For REORDER SKUs, check:
 | ❌ Process sales through SALES_KSP_CRM_V3 | Bypassed; direct to Fact_Sales |
 | ❌ Open PO_storing.xlsx for new POs | Use Fact_PO_Lines |
 | ❌ Edit formula columns in Fact_Sales | J-P are all formulas |
-| ❌ Worry about Dim_PO_Header | Deleted in V15 |
+| ❌ Worry about Dim_PO_Header | Deprecated in current Excel |
 
 ---
 
@@ -128,56 +128,21 @@ Where:
 
 ## 5. Key Formulas (Reference)
 
-All formulas live in `ABC_View`. Do not change them without updating `Master_Inventory_Rules_v5.3.md` first.
-
-| Metric | Column | Formula |
-|--------|--------|---------|
-| D_30 | J | `SUMIFS(Fact_Sales!$F:$F, ...) / 30` |
-| Sigma | K | `D_30 × 0.4` |
-| SS_total | T | SS_demand + SS_floor + SS_mix |
-| ROP | U | `D_30 × L + SS_total` |
-| Suggested_Order | AC | `MAX(0, T_post × D_30 - Total_stock)` |
-| Status | AD | `IF(Total<ROP, "REORDER", ...)` |
+All formulas live in `inventory/Master_Inventory_Rules_v8.md`.  
+Do not change Excel formulas without updating v8 first.
 
 ---
 
-## 6. Fact_Sales Column Map (V15)
+## 6. Fact_Sales Column Map (V16)
 
-If you ever need to add sales data manually:
-
-| Col | Header | Type |
-|-----|--------|------|
-| A | Date | Data |
-| B | OrderID | Data |
-| C | Kaspi_Offer_name | Data |
-| D | SKU_key | Data |
-| E | SKU_ID | Data |
-| F | Quantity | Data |
-| G | Sell_price_kzt | Data |
-| H | Product_Type | Data |
-| I | Channel | Data |
-| J | Delivery_fee | **Formula** |
-| K | Net_rev_unit | **Formula** |
-| L | Line_NetRev | **Formula** |
-| M | COGS_unit | **Formula** |
-| N | COGS_line | **Formula** |
-| O | Profit_unit | **Formula** |
-| P | Profit_line | **Formula** |
-
-**Rule:** Only paste data into columns A-I. Columns J-P auto-calculate.
+For column layouts, use `inventory/Sales_Data_Model_V16.md`.  
+If manual entry is required, only fill **data columns**; formula columns auto-calc.
 
 ---
 
 ## 7. Fact_Sales_Daily — DO NOT EDIT
 
-Fact_Sales_Daily is a **derived view**. It is 100% formulas.
-
-| Col | Source | Fact_Sales Column |
-|-----|--------|-------------------|
-| C (Units) | SUMIFS | F (Quantity) |
-| D (Revenue) | SUMIFS | L (Line_NetRev) |
-| E (Delivery) | SUMIFS | J (Delivery_fee) |
-| F (COGS) | SUMIFS | N (COGS_line) |
+Fact_Sales_Daily is a **derived view**. See `inventory/Sales_Data_Model_V16.md`.
 | G (Profit) | SUMIFS | P (Profit_line) |
 
 **If you see hard-coded numbers here, it's a bug.** Report it.
@@ -216,4 +181,4 @@ Excel becomes a backup/validation tool. Python is the brain.
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-12-03 | Initial SOP for V14 workflow |
-| **2.0** | **2025-12-04** | **Updated for V15_FINAL:** New Fact_Sales column layout (A-I data, J-P formula). Clarified Fact_Sales_Daily is 100% derived. Added Project 3 handoff notes. |
+| **2.0** | **2026-01-05** | **Aligned to V18.1_V2:** References v8 + Sales_Data_Model_V16. |

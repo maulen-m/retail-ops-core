@@ -35,6 +35,11 @@ from core.alerts.telegram import (
     check_cooldown,
 )
 from core.db import get_db
+from core.integrations.kaspi_order_stage import (
+    StageCode,
+    classify_kaspi_stage_from_db_row,
+    stage_to_internal_status,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -250,15 +255,35 @@ def alert_new_orders(
     # Get NEW orders
     rows = conn.execute(
         """
-        SELECT order_id, internal_status, unit_price_kzt, created_at
+        SELECT
+            order_id,
+            unit_price_kzt,
+            created_at,
+            kaspi_status,
+            kaspi_status_detail,
+            signature_required,
+            pre_order,
+            waybill_url,
+            delivery_mode,
+            returned_to_warehouse,
+            courier_transmission_date,
+            actual_shipment_date,
+            courier_transmission_planning_date
         FROM fact_orders_kaspi
-        WHERE store_code = ? AND internal_status = 'NEW'
+        WHERE store_code = ?
         ORDER BY created_at DESC
         """,
         (store_code,)
     ).fetchall()
 
-    orders = [dict(r) for r in rows]
+    orders = []
+    for row in rows:
+        stage = classify_kaspi_stage_from_db_row(row)
+        if stage_to_internal_status(stage) != "NEW":
+            continue
+        order = dict(row)
+        order["internal_status"] = stage_to_internal_status(stage)
+        orders.append(order)
 
     if not orders:
         return {
@@ -430,18 +455,37 @@ def alert_shipment_ready(
     # Get READY orders with waybills
     rows = conn.execute(
         """
-        SELECT order_id, internal_status, unit_price_kzt,
-               planned_shipment_date, waybill_url
+        SELECT
+            order_id,
+            unit_price_kzt,
+            planned_shipment_date,
+            waybill_url,
+            kaspi_status,
+            kaspi_status_detail,
+            signature_required,
+            pre_order,
+            delivery_mode,
+            returned_to_warehouse,
+            courier_transmission_date,
+            actual_shipment_date,
+            courier_transmission_planning_date
         FROM fact_orders_kaspi
         WHERE store_code = ?
-          AND internal_status = 'READY'
-          AND waybill_url IS NOT NULL
         ORDER BY planned_shipment_date ASC
         """,
         (store_code,)
     ).fetchall()
 
-    orders = [dict(r) for r in rows]
+    orders = []
+    for row in rows:
+        stage = classify_kaspi_stage_from_db_row(row)
+        if stage != StageCode.ASSEMBLED_PENDING_HANDOVER:
+            continue
+        if not row["waybill_url"]:
+            continue
+        order = dict(row)
+        order["internal_status"] = stage_to_internal_status(stage)
+        orders.append(order)
 
     if not orders:
         return {

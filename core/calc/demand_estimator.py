@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Optional
 import math
 import statistics
+import sqlite3
+import warnings
 
 import pandas as pd
 
@@ -69,11 +71,11 @@ class DemandEstimatorConfig:
     medium_conf_days: int = 30
     low_conf_days: int = 14
 
-    # Anchor weights by confidence level
-    high_conf_anchor_weight: float = 0.1    # 10% anchor when high conf
-    medium_conf_anchor_weight: float = 0.3  # 30% anchor when medium
-    low_conf_anchor_weight: float = 0.5     # 50% anchor when low
-    anchor_only_weight: float = 0.8         # 80% anchor when very low
+    # Anchor weights by confidence level (force anchor-only for size mix)
+    high_conf_anchor_weight: float = 1.0
+    medium_conf_anchor_weight: float = 1.0
+    low_conf_anchor_weight: float = 1.0
+    anchor_only_weight: float = 1.0
 
     # Confidence uplift factors
     marginal_uplift: float = 1.2   # 20% uplift for 14-29 good days
@@ -148,8 +150,11 @@ class SKUDemandResult:
     calendar_days: int = 0
     sales_coverage_days: int = 0
     stock_coverage_days: int = 0
+    eligible_days: int = 0
+    unknown_days: int = 0
     good_days: int = 0
     coverage_pct: float = 0.0
+    availability_score: float = 0.0
 
     # Confidence and weight
     confidence: ConfidenceLevel = ConfidenceLevel.ANCHOR_ONLY
@@ -171,6 +176,10 @@ class SKUDemandResult:
     warnings: list[str] = field(default_factory=list)
     skip_reason: Optional[str] = None
 
+    # Store aggregation metadata
+    store_codes: list[str] = field(default_factory=list)
+    store_aggregation_mode: str = "SINGLE"
+
 
 # =============================================================================
 # DemandEstimator Class
@@ -191,19 +200,24 @@ class DemandEstimator:
     def __init__(
         self,
         db_path: Path,
-        anchor_file: Path,
-        config: Optional[DemandEstimatorConfig] = None
+        anchor_file: Optional[Path] = None,
+        config: Optional[DemandEstimatorConfig] = None,
+        use_db_anchors: bool = True,
     ):
         """Initialize estimator with database and anchor file paths."""
         self.db_path = Path(db_path)
-        self.anchor_file = Path(anchor_file)
+        self.anchor_file = Path(anchor_file) if anchor_file else None
         self.config = config or DemandEstimatorConfig()
+        self.use_db_anchors = use_db_anchors
 
         # Lazy-loaded data
         self._anchor_data: Optional[dict[str, AnchorData]] = None
         self._cutoff_date: Optional[date] = None
         self._global_sales_calendar: Optional[set[str]] = None
         self._global_stock_calendar: Optional[set[str]] = None
+        self._stock_timeline: Optional[dict[tuple[str, str], int]] = None
+        self._stock_diagnostics: Optional[list] = None
+        self._stock_timeline_range: Optional[tuple[date, date]] = None
 
     # =========================================================================
     # Properties
@@ -229,6 +243,27 @@ class DemandEstimator:
     # =========================================================================
 
     def _load_anchor_data(self) -> dict[str, AnchorData]:
+        """Load anchor data with DB-first policy and Excel fallback."""
+        if self.use_db_anchors:
+            anchor_data = self._load_anchor_data_from_db()
+            if anchor_data:
+                return anchor_data
+            warnings.warn(
+                "dim_anchor missing or empty; falling back to Excel anchors",
+                RuntimeWarning,
+            )
+
+        if self.anchor_file is None:
+            warnings.warn(
+                "No anchor data available: dim_anchor missing/empty and no anchor_file provided; "
+                "running data-only",
+                RuntimeWarning,
+            )
+            return {}
+
+        return self._load_anchor_data_from_excel()
+
+    def _load_anchor_data_from_excel(self) -> dict[str, AnchorData]:
         """Load D_size_mix_reference.xlsx into memory."""
         if not self.anchor_file.exists():
             raise FileNotFoundError(f"Anchor file not found: {self.anchor_file}")
@@ -295,6 +330,70 @@ class DemandEstimator:
 
         return result
 
+    def _load_anchor_data_from_db(self) -> dict[str, AnchorData]:
+        """Load anchor data from dim_anchor table."""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_anchor'"
+            ).fetchone()
+            if not table:
+                return {}
+
+            columns = [row["name"] for row in conn.execute("PRAGMA table_info(dim_anchor)")]
+            size_share_cols = [c for c in columns if c.endswith("_share")]
+            size_demand_cols = [
+                c for c in columns if c.endswith("_D") and c.lower() != "d_active"
+            ]
+
+            rows = conn.execute("SELECT * FROM dim_anchor").fetchall()
+            if not rows:
+                return {}
+
+            result: dict[str, AnchorData] = {}
+            for row in rows:
+                if "sku_key" in row.keys():
+                    sku_key = str(row["sku_key"] or "").strip()
+                elif "SKU_key" in row.keys():
+                    sku_key = str(row["SKU_key"] or "").strip()
+                else:
+                    continue
+
+                if not sku_key:
+                    continue
+
+                d_active = 0.0
+                if "d_active" in row.keys() and row["d_active"] is not None:
+                    d_active = float(row["d_active"])
+                elif "D_active" in row.keys() and row["D_active"] is not None:
+                    d_active = float(row["D_active"])
+
+                sigma = 0.0
+                if "sigma" in row.keys() and row["sigma"] is not None:
+                    sigma = float(row["sigma"])
+
+                size_shares = {
+                    c.replace("_share", ""): float(row[c] or 0)
+                    for c in size_share_cols
+                }
+                size_demands = {
+                    c.replace("_D", ""): float(row[c] or 0)
+                    for c in size_demand_cols
+                }
+
+                result[sku_key] = AnchorData(
+                    sku_key=sku_key,
+                    d_active=d_active,
+                    sigma=sigma,
+                    size_shares=size_shares,
+                    size_demands=size_demands,
+                )
+
+            return result
+        finally:
+            conn.close()
+
     # =========================================================================
     # Global Calendars
     # =========================================================================
@@ -318,6 +417,107 @@ class DemandEstimator:
         return self._global_stock_calendar
 
     # =========================================================================
+    # Store and Stock Helpers
+    # =========================================================================
+
+    def _get_store_codes_for_sku(self, sku_key: str, start_date: date, end_date: date) -> list[str]:
+        """Get distinct store codes for a SKU within the date range."""
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            rows = conn.execute("""
+                SELECT DISTINCT store_code
+                FROM sales_fact_v2
+                WHERE sku_key = ?
+                  AND order_date >= ?
+                  AND order_date <= ?
+            """, (sku_key, start_date.isoformat(), end_date.isoformat())).fetchall()
+        finally:
+            conn.close()
+
+        codes = [r[0] for r in rows if r and r[0]]
+        return sorted(set(codes))
+
+    def _normalize_store_codes(
+        self,
+        store_codes: Optional[list[str]] | str,
+        sku_key: str,
+        start_date: date,
+        end_date: date
+    ) -> list[str]:
+        """Normalize store codes to a sorted unique list."""
+        if store_codes is None:
+            codes = self._get_store_codes_for_sku(sku_key, start_date, end_date)
+        elif isinstance(store_codes, str):
+            codes = [store_codes]
+        else:
+            codes = list(store_codes)
+
+        return sorted({c for c in codes if c})
+
+    def _get_sku_daily_sales(
+        self,
+        sku_key: str,
+        start_date: date,
+        end_date: date,
+        store_codes: list[str]
+    ) -> dict[str, dict[str, int]]:
+        """Aggregate daily sales by size across store codes."""
+        from core.db.queries import get_sku_daily_sales_v2
+
+        aggregated: dict[str, dict[str, int]] = {}
+        for store_code in store_codes:
+            daily = get_sku_daily_sales_v2(
+                sku_key, start_date, end_date, store_code, self.db_path
+            )
+            for date_str, size_units in daily.items():
+                if date_str not in aggregated:
+                    aggregated[date_str] = {}
+                for size, units in size_units.items():
+                    aggregated[date_str][size] = aggregated[date_str].get(size, 0) + units
+
+        return aggregated
+
+    def _get_size_sales_90d(
+        self,
+        sku_key: str,
+        store_codes: list[str]
+    ) -> dict[str, int]:
+        """Aggregate 90-day sales by size across store codes."""
+        from core.db.queries import get_size_sales_90d
+
+        aggregated: dict[str, int] = {}
+        for store_code in store_codes:
+            size_sales = get_size_sales_90d(sku_key, store_code, self.db_path)
+            for size, units in size_sales.items():
+                aggregated[size] = aggregated.get(size, 0) + int(units or 0)
+
+        return aggregated
+
+    def _ensure_stock_timeline(self, start_date: date, end_date: date) -> None:
+        """Build and cache stock timeline for the current window."""
+        if self._stock_timeline_range == (start_date, end_date) and self._stock_timeline is not None:
+            return
+
+        try:
+            from core.calc.stock_timeline import StockTimelineBuilder
+            builder = StockTimelineBuilder(self.db_path, lookback_days=self.config.lookback_days)
+            try:
+                # Use cutoff+1 (today) to align with morning stock snapshots
+                timeline_end = end_date + timedelta(days=1)
+                timeline, diagnostics = builder.rebuild_timeline(timeline_end, start_date)
+            finally:
+                builder.close()
+
+            self._stock_timeline = timeline
+            self._stock_diagnostics = diagnostics
+            self._stock_timeline_range = (start_date, end_date)
+        except Exception as exc:
+            warnings.warn(f"Stock timeline rebuild failed: {exc}", RuntimeWarning)
+            self._stock_timeline = {}
+            self._stock_diagnostics = []
+            self._stock_timeline_range = (start_date, end_date)
+
+    # =========================================================================
     # Coverage Mask Building
     # =========================================================================
 
@@ -326,7 +526,7 @@ class DemandEstimator:
         sku_key: str,
         start_date: date,
         end_date: date,
-        store_code: str = "UNIVERSAL"
+        store_codes: Optional[list[str]] = None
     ) -> list[CoverageDay]:
         """
         Build coverage mask for each day in the analysis window.
@@ -336,19 +536,28 @@ class DemandEstimator:
         - Days with global data but no SKU data (treat as ZERO for SKU)
         - Days with SKU data (use actual values)
         """
-        from core.db.queries import get_sku_daily_sales_v2, get_sku_daily_stock
+        from core.db.queries import get_sku_daily_stock, get_sku_sizes
+
+        store_codes = store_codes or []
 
         # Get global calendars
         global_sales = self._get_global_sales_calendar(start_date, end_date)
         global_stock = self._get_global_stock_calendar(start_date, end_date)
 
-        # Get SKU-specific data (only days that have records)
-        sku_sales = get_sku_daily_sales_v2(
-            sku_key, start_date, end_date, store_code, self.db_path
+        # Get SKU-specific sales (aggregated across stores)
+        sku_sales = self._get_sku_daily_sales(
+            sku_key, start_date, end_date, store_codes
         )
         sku_stock = get_sku_daily_stock(
             sku_key, start_date, end_date, self.db_path
         )
+
+        # Attempt to use stock timeline reconstruction if available
+        self._ensure_stock_timeline(start_date, end_date)
+        timeline = self._stock_timeline or {}
+
+        sizes = get_sku_sizes(sku_key, self.db_path)
+        sku_ids = [s.get('sku_id') or f"{sku_key}_{s['my_size']}" for s in sizes] if sizes else []
 
         # Build coverage for each calendar day
         coverage: list[CoverageDay] = []
@@ -365,11 +574,23 @@ class DemandEstimator:
                 # Sum all sizes
                 sku_sales_today = sum(sku_sales[date_str].values())
 
-            # Get SKU stock for this day (None if no snapshot)
+            # Get SKU stock for this day (None if unknown)
             sku_stock_today: Optional[int] = None
-            if date_str in sku_stock:
-                # Sum all sizes
-                sku_stock_today = sum(sku_stock[date_str].values())
+            if timeline and sku_ids:
+                total = 0
+                any_known = False
+                for sku_id in sku_ids:
+                    key = (sku_id, date_str)
+                    if key in timeline:
+                        any_known = True
+                        total += timeline[key]
+                if any_known:
+                    sku_stock_today = total
+                    has_global_stock = True
+            else:
+                if date_str in sku_stock:
+                    # Sum all sizes
+                    sku_stock_today = sum(sku_stock[date_str].values())
 
             # Determine OOS status
             # OOS = confirmed zero sales AND confirmed zero stock
@@ -380,8 +601,8 @@ class DemandEstimator:
                     is_oos = True
 
             # Determine if this is a valid day for demand calculation
-            # Valid = we have global coverage (so zero means actual zero, not missing data)
-            is_valid = has_global_sales
+            # Valid if we have sales coverage or known stock for this SKU
+            is_valid = has_global_sales or sku_stock_today is not None
 
             coverage.append(CoverageDay(
                 date_str=date_str,
@@ -446,7 +667,7 @@ class DemandEstimator:
         anchor: Optional[AnchorData],
         start_date: date,
         end_date: date,
-        store_code: str = "UNIVERSAL",
+        store_codes: Optional[list[str]] = None,
         size_current_stock: Optional[dict[str, int]] = None
     ) -> list[str]:
         """
@@ -466,7 +687,7 @@ class DemandEstimator:
         Returns:
             List of suppressed size codes
         """
-        from core.db.queries import get_sku_daily_sales_v2, get_sku_sizes
+        from core.db.queries import get_sku_sizes
 
         if anchor is None or not anchor.size_shares:
             return []
@@ -480,8 +701,9 @@ class DemandEstimator:
         size_names = list(dict.fromkeys(s['my_size'] for s in sizes))
 
         # Get daily sales by size
-        sku_sales = get_sku_daily_sales_v2(
-            sku_key, start_date, end_date, store_code, self.db_path
+        store_codes = store_codes or []
+        sku_sales = self._get_sku_daily_sales(
+            sku_key, start_date, end_date, store_codes
         )
 
         # Aggregate sales by size
@@ -604,18 +826,18 @@ class DemandEstimator:
 
     def _calc_confidence(
         self,
-        good_days: int,
+        sales_days: int,
         oos_type: OOSType
     ) -> ConfidenceLevel:
-        """Determine confidence level based on data quality."""
+        """Determine confidence level based on sales coverage."""
         cfg = self.config
 
-        # Base confidence from good days
-        if good_days >= cfg.high_conf_days:
+        # Base confidence from sales days
+        if sales_days >= cfg.high_conf_days:
             base = ConfidenceLevel.HIGH
-        elif good_days >= cfg.medium_conf_days:
+        elif sales_days >= cfg.medium_conf_days:
             base = ConfidenceLevel.MEDIUM
-        elif good_days >= cfg.low_conf_days:
+        elif sales_days >= cfg.low_conf_days:
             base = ConfidenceLevel.LOW
         else:
             base = ConfidenceLevel.ANCHOR_ONLY
@@ -647,6 +869,10 @@ class DemandEstimator:
         if not has_anchor:
             return 0.0  # No anchor available, use data only
 
+        # If no usable data, trust anchor fully
+        if d_data <= 0 and d_anchor > 0:
+            return 1.0
+
         # Base weight from confidence
         if confidence == ConfidenceLevel.HIGH:
             w = cfg.high_conf_anchor_weight
@@ -676,10 +902,6 @@ class DemandEstimator:
                 # One size suppressed: possible stockout
                 w = max(w, 0.5)
 
-        # Still handle zero-data edge case
-        if has_anchor and d_data <= 0 and d_anchor > 0:
-            w = max(w, 0.8)
-
         return w
 
     # =========================================================================
@@ -708,7 +930,7 @@ class DemandEstimator:
 
         # Handle no data case
         if d_data <= 0:
-            return d_anchor * w  # Scaled by confidence
+            return d_anchor
 
         # Blend
         d_final = w * d_anchor + (1 - w) * d_data
@@ -733,7 +955,7 @@ class DemandEstimator:
         partial_oos_sizes: list[str],
         start_date: date,
         end_date: date,
-        store_code: str = "UNIVERSAL"
+        store_codes: Optional[list[str]] = None
     ) -> dict[str, SizeDemandResult]:
         """
         Calculate size-level demand with share blending.
@@ -745,7 +967,7 @@ class DemandEstimator:
         4. Apply 3%/40% guardrails
         5. Renormalize to sum = 1.0
         """
-        from core.db.queries import get_sku_sizes, get_size_sales_90d
+        from core.db.queries import get_sku_sizes
 
         cfg = self.config
 
@@ -756,8 +978,10 @@ class DemandEstimator:
 
         size_names = [s['my_size'] for s in sizes]
 
-        # Get 90-day sales by size
-        size_sales = get_size_sales_90d(sku_key, store_code, self.db_path)
+        store_codes = store_codes or []
+
+        # Get 90-day sales by size (aggregated across stores)
+        size_sales = self._get_size_sales_90d(sku_key, store_codes)
         total_sales = sum(size_sales.values())
 
         # Calculate data-driven shares
@@ -780,10 +1004,8 @@ class DemandEstimator:
             a_share = anchor_shares.get(size, 0.0)
             d_share = data_shares.get(size, 0.0)
 
-            # Adjust weight for partial OOS sizes (trust anchor more)
-            local_w = anchor_weight
-            if size in partial_oos_sizes and anchor:
-                local_w = min(0.95, local_w + 0.3)
+            # Force anchor-only size shares when anchors are present
+            local_w = 1.0 if anchor and anchor.size_shares else anchor_weight
 
             # Blend
             if a_share > 0 or d_share > 0:
@@ -793,8 +1015,14 @@ class DemandEstimator:
 
             blended_shares[size] = blended
 
-        # Apply guardrails and renormalize
-        final_shares = self._apply_size_guardrails(blended_shares)
+        # Apply guardrails only when not using anchor-only shares
+        if anchor and anchor.size_shares and local_w >= 1.0:
+            total = sum(blended_shares.values())
+            final_shares = (
+                {s: v / total for s, v in blended_shares.items()} if total > 0 else blended_shares
+            )
+        else:
+            final_shares = self._apply_size_guardrails(blended_shares)
 
         # Build results
         results: dict[str, SizeDemandResult] = {}
@@ -848,7 +1076,7 @@ class DemandEstimator:
     def estimate_demand(
         self,
         sku_key: str,
-        store_code: str = "UNIVERSAL"
+        store_codes: Optional[list[str]] = None
     ) -> SKUDemandResult:
         """
         Estimate demand for a single SKU.
@@ -864,6 +1092,16 @@ class DemandEstimator:
             calendar_days=self.config.lookback_days
         )
 
+        # Normalize store codes for aggregation
+        store_codes_used = self._normalize_store_codes(store_codes, sku_key, start_date, cutoff)
+        result.store_codes = store_codes_used
+        if store_codes is None:
+            result.store_aggregation_mode = "ALL"
+        elif len(store_codes_used) <= 1:
+            result.store_aggregation_mode = "SINGLE"
+        else:
+            result.store_aggregation_mode = "FILTERED"
+
         # Check for anchor data
         anchor = self.anchor_data.get(sku_key)
         result.has_anchor = anchor is not None
@@ -875,11 +1113,13 @@ class DemandEstimator:
             result.warnings.append("No anchor data - using data only")
 
         # Build coverage mask
-        coverage = self._build_coverage_mask(sku_key, start_date, cutoff, store_code)
+        coverage = self._build_coverage_mask(sku_key, start_date, cutoff, store_codes_used)
 
         # Coverage metrics
-        result.sales_coverage_days = len([c for c in coverage if c.has_global_sales])
-        result.stock_coverage_days = len([c for c in coverage if c.has_global_stock])
+        result.sales_coverage_days = len([c for c in coverage if c.sku_sales > 0])
+        result.stock_coverage_days = len([c for c in coverage if c.sku_stock is not None])
+        result.good_days = len([c for c in coverage if c.is_valid])
+        result.coverage_pct = result.good_days / len(coverage) if coverage else 0
 
         # Detect OOS
         oos_type, oos_total, oos_streak, _ = self._detect_oos(coverage)
@@ -891,13 +1131,14 @@ class DemandEstimator:
         size_current_stock = {}
         try:
             from core.db.queries import get_size_current_stock
-            size_current_stock = get_size_current_stock(sku_key, store_code, self.db_path)
+            store_for_stock = store_codes_used[0] if store_codes_used else "UNIVERSAL"
+            size_current_stock = get_size_current_stock(sku_key, store_for_stock, self.db_path)
         except Exception:
             pass  # Graceful degradation if stock data unavailable
 
         # Detect partial OOS at size level (Rule 1: sales drift, Rule 2: zero stock)
         partial_oos = self._detect_partial_oos(
-            sku_key, anchor, start_date, cutoff, store_code,
+            sku_key, anchor, start_date, cutoff, store_codes_used,
             size_current_stock=size_current_stock
         )
         result.partial_oos_sizes = partial_oos
@@ -913,16 +1154,20 @@ class DemandEstimator:
             )
 
         # Calculate data-driven demand
-        d_data, good_days = self._calc_d_data(coverage)
+        d_data, eligible_days = self._calc_d_data(coverage)
         result.d_data = d_data
-        result.good_days = good_days
-        result.coverage_pct = good_days / len(coverage) if coverage else 0
+        result.eligible_days = eligible_days
+        result.unknown_days = max(0, result.calendar_days - result.good_days)
+        result.availability_score = (
+            result.good_days / result.calendar_days if result.calendar_days else 0.0
+        )
 
         # Calculate data-driven sigma
         result.sigma_data = self._calc_sigma_data(coverage)
 
         # Calculate confidence and weight
-        result.confidence = self._calc_confidence(good_days, result.oos_type)
+        sales_days = len([c for c in coverage if c.sku_sales > 0])
+        result.confidence = self._calc_confidence(sales_days, result.oos_type)
         result.anchor_weight = self._calc_blend_weight(
             result.confidence, result.oos_type, result.has_anchor,
             d_anchor=result.d_anchor, d_data=result.d_data,
@@ -946,7 +1191,7 @@ class DemandEstimator:
         # Calculate size-level results
         result.size_results = self._calc_size_shares(
             sku_key, anchor, result.d_final, result.anchor_weight,
-            partial_oos, start_date, cutoff, store_code
+            partial_oos, start_date, cutoff, store_codes_used
         )
 
         # Validate size shares sum to 1
@@ -959,7 +1204,7 @@ class DemandEstimator:
 
     def estimate_all(
         self,
-        store_code: str = "UNIVERSAL"
+        store_codes: Optional[list[str]] = None
     ) -> tuple[list[SKUDemandResult], list[dict]]:
         """
         Estimate demand for all active SKUs.
@@ -988,7 +1233,7 @@ class DemandEstimator:
 
             # Estimate demand
             try:
-                result = self.estimate_demand(sku_key, store_code)
+                result = self.estimate_demand(sku_key, store_codes)
 
                 # Check for skip conditions
                 if result.d_final <= 0 and not result.has_anchor:
@@ -1028,8 +1273,11 @@ class DemandEstimator:
                 "calendar_days": r.calendar_days,
                 "sales_coverage_days": r.sales_coverage_days,
                 "stock_coverage_days": r.stock_coverage_days,
+                "eligible_days": r.eligible_days,
+                "unknown_days": r.unknown_days,
                 "good_days": r.good_days,
                 "coverage_pct": round(r.coverage_pct, 3),
+                "availability_score": round(r.availability_score, 3),
                 "d_anchor": round(r.d_anchor, 2),
                 "d_data": round(r.d_data, 2),
                 "d_final": round(r.d_final, 2),
@@ -1044,6 +1292,8 @@ class DemandEstimator:
                 "oos_extended_streak": r.oos_extended_streak,
                 "partial_oos_sizes": ",".join(r.partial_oos_sizes),
                 "suppression_count": r.suppression_count,
+                "store_codes": ",".join(r.store_codes),
+                "store_aggregation_mode": r.store_aggregation_mode,
                 "warnings": "; ".join(r.warnings),
                 "skip_reason": r.skip_reason or "",
             }

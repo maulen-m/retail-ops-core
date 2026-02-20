@@ -1,0 +1,8 @@
+pytest
+pandas
+openpyxl
+python-dateutil
+PyYAML
+requests
+pypdf
+python-dotenv

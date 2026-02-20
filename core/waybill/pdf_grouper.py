@@ -385,9 +385,15 @@ def merge_pdfs(pdf_paths: list[Path], output_path: Path) -> Path:
         Path to merged PDF
     """
     try:
-        from PyPDF2 import PdfMerger
+        from pypdf import PdfMerger
     except ImportError:
-        raise ImportError("PyPDF2 is required for PDF merging. Install with: pip install PyPDF2")
+        try:
+            from PyPDF2 import PdfMerger
+        except ImportError:
+            raise ImportError(
+                "pypdf (preferred) or PyPDF2 is required for PDF merging. "
+                "Install with: python3 -m pip install pypdf"
+            )
 
     if not pdf_paths:
         raise ValueError("No PDF paths provided for merging")

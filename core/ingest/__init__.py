@@ -8,6 +8,7 @@ Provides:
 from .sales_ingest import (
     parse_sales_excel,
     ingest_sales,
+    ingest_sales_to_fact_sales,
     get_unmapped_offers,
     update_returns_from_api,
 )
@@ -15,6 +16,7 @@ from .sales_ingest import (
 __all__ = [
     "parse_sales_excel",
     "ingest_sales",
+    "ingest_sales_to_fact_sales",
     "get_unmapped_offers",
     "update_returns_from_api",
 ]

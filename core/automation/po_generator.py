@@ -29,6 +29,7 @@ from core.db.queries import (
     get_size_sales_90d,
     get_sku_age_days
 )
+from core.config.business_params import get_fx_rates
 
 
 def calc_order_quantity(
@@ -181,6 +182,38 @@ def get_confidence_score(sku_key: str, db_path: str) -> float:
         return 0.5
 
 
+def calc_confidence_score(sku_key: str, db_path: str) -> float:
+    """Backward-compatible alias for get_confidence_score."""
+    return get_confidence_score(sku_key, db_path)
+
+
+def _summarize_roic_action(lines: list[dict]) -> str:
+    actions = set()
+    for line in lines:
+        action = line.get("roic_action")
+        if action:
+            actions.add(str(action))
+            continue
+        pct = line.get("roic_pct")
+        if pct is None:
+            continue
+        try:
+            pct_val = float(pct)
+        except (TypeError, ValueError):
+            continue
+        if pct_val >= 20:
+            actions.add("ORDER_FULL")
+        elif pct_val >= 10:
+            actions.add("ORDER_WITH_FLAG")
+        else:
+            actions.add("REVIEW_REQUIRED")
+    if not actions:
+        return "UNKNOWN"
+    if len(actions) == 1:
+        return next(iter(actions))
+    return "MIXED"
+
+
 def generate_po_draft(
     db_path: str,
     trigger: str = 'ROP',
@@ -281,8 +314,10 @@ def generate_po_draft(
         conn.close()
         return 0
 
-    # Calculate KZT cost (CNY × 78 exchange rate)
-    total_cost_kzt = total_cost_cny * 78
+    # Calculate KZT cost with current FX defaults/rates.
+    fx_rates = get_fx_rates(db_path=db_path)
+    cny_kzt = fx_rates.cny_kzt
+    total_cost_kzt = total_cost_cny * cny_kzt
 
     # Calculate average confidence
     avg_confidence = sum(
@@ -292,17 +327,28 @@ def generate_po_draft(
 
     # Create draft header
     expires_at = (datetime.now() + timedelta(hours=48)).isoformat()
+    total_po_value_kzt = total_cost_kzt
+    total_order_qty = total_units
+    skus_count = len({line["sku_key"] for line in lines})
+    roic_action_summary = _summarize_roic_action(lines)
+    guardrail_status = "PENDING"
 
     cursor.execute("""
         INSERT INTO fact_po_draft (
             status, supplier_code, total_units, total_cost_cny, total_cost_kzt,
+            total_po_value_kzt, total_order_qty, skus_count, roic_action_summary, guardrail_status,
             expires_at, generation_reason, confidence_score
-        ) VALUES (?, 'DEFAULT', ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, 'DEFAULT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         'PENDING',
         total_units,
         round(total_cost_cny, 2),
         round(total_cost_kzt, 2),
+        round(total_po_value_kzt, 2),
+        total_order_qty,
+        skus_count,
+        roic_action_summary,
+        guardrail_status,
         expires_at,
         f'{trigger} trigger',
         round(avg_confidence, 2)
@@ -484,13 +530,44 @@ def generate_po_draft_with_validation(
                 """, (adjusted_qty, draft_id, sku_key))
 
         # Recalculate totals
-        cursor.execute("""
+        fx_rates = get_fx_rates(db_path=db_path)
+        cny_kzt = fx_rates.cny_kzt
+        new_total_units = cursor.execute(
+            "SELECT COALESCE(SUM(quantity), 0) FROM fact_po_draft_lines WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchone()[0]
+        new_total_cost_cny = cursor.execute(
+            "SELECT COALESCE(SUM(quantity * unit_cost_cny), 0) FROM fact_po_draft_lines WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchone()[0]
+        new_skus_count = cursor.execute(
+            "SELECT COUNT(DISTINCT sku_key) FROM fact_po_draft_lines WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchone()[0]
+        new_total_cost_kzt = new_total_cost_cny * cny_kzt
+
+        cursor.execute(
+            """
             UPDATE fact_po_draft
-            SET total_units = (SELECT SUM(quantity) FROM fact_po_draft_lines WHERE draft_id = ?),
-                total_cost_cny = (SELECT SUM(quantity * unit_cost_cny) FROM fact_po_draft_lines WHERE draft_id = ?),
+            SET total_units = ?,
+                total_order_qty = ?,
+                total_cost_cny = ?,
+                total_cost_kzt = ?,
+                total_po_value_kzt = ?,
+                skus_count = ?,
                 notes = COALESCE(notes, '') || ' | Adjusted for 20% concentration rule'
             WHERE draft_id = ?
-        """, (draft_id, draft_id, draft_id))
+            """,
+            (
+                new_total_units,
+                new_total_units,
+                new_total_cost_cny,
+                new_total_cost_kzt,
+                new_total_cost_kzt,
+                new_skus_count,
+                draft_id,
+            ),
+        )
 
         conn.commit()
         conn.close()
@@ -566,7 +643,8 @@ def generate_po_draft_size_aware(
     weight_kg = sku_row["weight_kg"] or 0.5
 
     # Cost calculation (CNY to KZT with shipping)
-    cny_to_kzt = 78
+    fx_rates = get_fx_rates(db_path=db_path)
+    cny_to_kzt = fx_rates.cny_kzt
     shipping_per_kg = 150  # KZT per kg
     unit_cogs = base_cost_cny * cny_to_kzt + weight_kg * shipping_per_kg
 
@@ -669,6 +747,9 @@ def generate_batch_po_drafts_size_aware(
         conn.close()
         return 0
 
+    fx_rates = get_fx_rates(db_path=db)
+    cny_kzt = fx_rates.cny_kzt
+
     # Generate drafts for each SKU
     all_lines = []
     total_units = 0
@@ -695,7 +776,7 @@ def generate_batch_po_drafts_size_aware(
                 'sku_id': sku_id,
                 'my_size': size,
                 'quantity': alloc.order_qty_adjusted,
-                'unit_cost_cny': draft.cogs_unit / 78,  # Convert KZT back to CNY
+                'unit_cost_cny': draft.cogs_unit / cny_kzt,  # Convert KZT back to CNY
                 'current_stock': draft.allocations[size].target_stock,
                 'rop': draft.rop_sku,
                 'd_forecast': draft.d_sku,
@@ -706,7 +787,7 @@ def generate_batch_po_drafts_size_aware(
             })
 
             total_units += alloc.order_qty_adjusted
-            total_cost_cny += alloc.order_qty_adjusted * (draft.cogs_unit / 78)
+            total_cost_cny += alloc.order_qty_adjusted * (draft.cogs_unit / cny_kzt)
 
     if not all_lines:
         conn.close()
@@ -714,18 +795,29 @@ def generate_batch_po_drafts_size_aware(
 
     # Create draft header
     expires_at = (datetime.now() + timedelta(hours=48)).isoformat()
-    total_cost_kzt = total_cost_cny * 78
+    total_cost_kzt = total_cost_cny * cny_kzt
+    total_po_value_kzt = total_cost_kzt
+    total_order_qty = total_units
+    skus_count = len({line["sku_key"] for line in all_lines})
+    roic_action_summary = _summarize_roic_action(all_lines)
+    guardrail_status = "PENDING"
 
     cursor.execute("""
         INSERT INTO fact_po_draft (
             status, supplier_code, total_units, total_cost_cny, total_cost_kzt,
+            total_po_value_kzt, total_order_qty, skus_count, roic_action_summary, guardrail_status,
             expires_at, generation_reason, confidence_score, notes
-        ) VALUES (?, 'DEFAULT', ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, 'DEFAULT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         'PENDING',
         total_units,
         round(total_cost_cny, 2),
         round(total_cost_kzt, 2),
+        round(total_po_value_kzt, 2),
+        total_order_qty,
+        skus_count,
+        roic_action_summary,
+        guardrail_status,
         expires_at,
         f'{trigger} trigger (Phase 9.6 Size-Aware)',
         0.8,  # Default confidence

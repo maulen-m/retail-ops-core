@@ -8,24 +8,77 @@
 
 ## Overview
 
-This system automates inventory management for a multi-channel retail operation on Kaspi.kz and Wildberries (WB), selling clothing (CL), belts (ELS), and furs (FUR). It provides demand forecasting, safety stock calculation, automatic PO generation, portfolio analytics, and cross-channel optimization.
+This system automates inventory management for a **Kaspi-only** retail operation (CL/ELS/FUR). It provides demand forecasting, safety stock calculation, automatic PO generation, portfolio analytics, and PO lifecycle management.
+
+## Single-Truth Path (PO, Inventory, Cashflow)
+
+The operational truth chain is enforced as:
+
+1. `fact_inventory_snapshot_size` message-date baseline (latest snapshot on or before row message date).
+2. PO dashboard generation (`scripts/generate_po_dashboard_data.py`) computes PLAN and REAL_ARCHIVE rows from canonical math and DB facts.
+   - Plan schedule is configured by `config/po_schedule.yaml` (PLAN-0 anchor + reorder cycle).
+   - Archive ordering is chronological by cargo-send date (oldest first).
+   - Prep lanes are explicit: `CORE_PRINT_SUIT`, `GENERAL_CL`, `ELS`.
+3. REAL PO archive/lifecycle is part-grain when `po_part` exists (`po_part_id` keys in `archived_pos` and `real_pos`).
+4. Inbound payment truth is sourced from `po_part` (`is_paid_base`, `is_paid_dlv`, `to_pay_*`) loaded from `PO_part_id_Totals`.
+5. Cashflow paid-capital view is anchored to bank cash + paid inventory components only.
+   - `scripts/update_cashflow_dashboard.py` defaults to `PAID_TRUTH` lens.
+   - `MODEL LEDGER` remains an explicit toggle for diagnostics.
+3. Dashboard validators (`scripts/validate_po_dashboard_invariants.py`, `scripts/validate_single_truth_alignment.py`) assert PLAN/REAL separation, qty identity vs `po_line`, and formula consistency.
+6. Cashflow and inventory gates (`scripts/validate_cashflow_invariants.py`, `scripts/validate_inventory_cost_drift.py`) must remain aligned with the same underlying facts.
+7. On-delivery freeze integrity is validated by `scripts/validate_on_delivery_freeze.py`.
+8. OPEX commitments are canonicalized from protocol workbook into repo artifacts and DB:
+   - `scripts/sync_opex_schedule.py`
+   - `config/opex/opex_schedule.yaml`
+   - `config/opex/opex_commitments.csv`
+9. Business-insides snapshots are generated from paid capital + delivered sales truth:
+   - `scripts/generate_business_insides.py`
+   - validator: `scripts/validate_business_insides.py`
+10. Published sales truth is exposed only through:
+   - `view_sales_line_truth`
+   - `view_sales_daily_truth`
+   Revenue/units are v2-authoritative for overlap windows; `fact_sales` is historical fallback.
+   - Static consumer gate: `scripts/validate_sales_truth_consumers.py`
+   - Runtime SQL guard module: `core/db/sales_truth_query_guard.py` (strict paths)
+11. Published COGS/profit are valid only when full landed formula inputs exist (`base + delivery`).
+   - strict gates: `scripts/validate_cogs_integrity.py`, `scripts/validate_dim_sku_light_alignment.py`
+   - publication gate: `scripts/validate_profit_publication_integrity.py`
+12. `dim_sku.weight_kg` single-truth restore/write path:
+   - parser: `core/excel/dim_sku_light_parser.py`
+   - guarded sync: `scripts/sync_dim_sku_from_dim_sku_light.py`
+   - inbound PO sync must not overwrite existing `dim_sku.weight_kg` unless explicit override flag is used.
+   - unresolved rows are surfaced explicitly and fail strict validation.
+13. Strict daily ops preflight wrapper:
+   - `scripts/run_strict_daily_preflight.py`
+   - fail-closed workbook anchor (`AB_CRM_WORKBOOK_PATH`) with freshness threshold (default 36h)
+   - fail-closed on future workbook mtime beyond skew (default 120s)
+   - fail-closed workbook content-lag threshold (`AB_CRM_WORKBOOK_MAX_LAG_DAYS`, default 1)
+   - best-effort alerting on strict failures (`--send-alert-on-fail`)
+   - auto-generates missing daily `BUSINESS_INSIDES_<as_of>.md` with `--strict-cogs` before `validate_params --strict`
+   - emits single-truth drift pack after strict PASS (`exports/validation/<date>/single_truth_drift_pack.{md,json}`)
+   - bootstraps to repo `.venv/bin/python` when available for deterministic scheduler runtime
+   - launchd entrypoint: `config/com.example.single-truth-preflight.plist`
+
+Rules:
+- `PLAN-*` rows are recommendations only.
+- Non-PLAN rows in dashboard `pos` are `po_kind="REAL_ARCHIVE"` and are recomputed from real PO timeline state.
+- DOC presentation uses half-up rounding to 1 decimal across PLAN and REAL_ARCHIVE output.
 
 ---
 
 ## Architecture Diagram
 
 ```
-     ┌─────────────────┐                  ┌─────────────────┐
-     │   Kaspi.kz      │                  │   Wildberries   │
-     │  Excel Exports  │                  │  Excel Exports  │
-     └────────┬────────┘                  └────────┬────────┘
-              │                                    │
-              └──────────────┬─────────────────────┘
-                             │
-                    ┌────────▼────────┐
-                    │   Ingestion     │
-                    │   Pipeline      │
-                    └────────┬────────┘
+     ┌─────────────────┐
+     │   Kaspi.kz      │
+     │  Excel Exports  │
+     └────────┬────────┘
+              │
+              ▼
+     ┌───────────────────┐
+     │   Ingestion       │
+     │   Pipeline        │
+     └────────┬──────────┘
                              │
     ┌────────────────────────┼────────────────────────┐
     │                        │                        │
@@ -72,8 +125,7 @@ Autonomous_business/
 │   │   └── inventory_params.py # Inventory parameters dataclass
 │   ├── calc/                  # Calculation modules
 │   │   ├── __init__.py        # Module exports
-│   │   ├── economics.py       # Kaspi revenue, COGS, profit
-│   │   ├── wb_economics.py    # WB revenue, fees, profit (Phase 8)
+│   │   ├── economics.py       # Kaspi revenue, fees, profit
 │   │   ├── inventory.py       # SS, ROP, ROIC, order qty
 │   │   ├── size_allocation.py # Size-aware PO allocation (Phase 9.6)
 │   │   ├── forecast.py        # Demand forecasting
@@ -81,15 +133,10 @@ Autonomous_business/
 │   │   ├── dow_patterns.py    # Day-of-week patterns
 │   │   ├── portfolio.py       # Portfolio analytics
 │   │   ├── status.py          # Inventory status logic
-│   │   ├── channel_metrics.py # Per-channel metrics (Phase 8)
-│   │   ├── channel_comparison.py # Cross-channel comparison (Phase 8)
-│   │   ├── expansion_scorer.py # WB expansion scoring (Phase 8)
-│   │   ├── transfer_recommender.py # Inventory transfer (Phase 8)
 │   │   ├── landed_cost.py     # Landed cost calculator (Phase 10)
 │   │   └── demand_estimator.py # Anchor blending, OOS detection (Phase 13)
 │   ├── parsers/
 │   │   ├── kaspi_parser.py    # Kaspi Excel parser
-│   │   └── wb_parser.py       # WB Excel parser (Phase 8)
 │   ├── ingest/                # Data ingestion modules (Phase 10)
 │   │   └── sales_ingest.py    # Sales ingest with dedup
 │   ├── po/                    # PO lifecycle management (Phase 10)
@@ -110,7 +157,6 @@ Autonomous_business/
 │   ├── Ingestion
 │   │   ├── ingest_active_orders.py
 │   │   ├── ingest_inventory_snapshot.py
-│   │   ├── ingest_channel_sales.py  # Unified Kaspi/WB ingestion (Phase 8)
 │   │   ├── ingest_sales_v2.py       # Sales ingest with dedup (Phase 10)
 │   │   └── import_historical_sales.py
 │   ├── Transformation
@@ -137,10 +183,6 @@ Autonomous_business/
 │   │   ├── validate_size_allocation.py  # 7 validation checks
 │   │   ├── validate_ledger.py          # Stock ledger validation (Phase 10)
 │   │   └── compare_old_vs_new_allocation.py  # Allocation comparison
-│   ├── Multi-Channel (Phase 8)
-│   │   ├── build_channel_metrics.py  # Daily channel metrics
-│   │   ├── run_expansion_analysis.py # WB expansion scoring
-│   │   └── run_transfer_analysis.py  # Cross-channel transfers
 │   ├── Stock Ledger (Phase 10)
 │   │   ├── bootstrap_ledger.py      # Initialize stock from Excel
 │   │   └── rebuild_snapshot.py      # Rebuild snapshot from ledger
@@ -164,9 +206,6 @@ Autonomous_business/
 │   ├── test_portfolio.py
 │   ├── test_data_quality.py
 │   ├── test_integration.py
-│   ├── test_wb_economics.py   # WB economics (Phase 8)
-│   ├── test_channel_metrics.py # Channel metrics (Phase 8)
-│   ├── test_expansion_scorer.py # Expansion scoring (Phase 8)
 │   ├── test_size_allocation.py # Size allocation (Phase 9.6) - 86 tests
 │   ├── test_stock_ledger.py   # Stock ledger operations (Phase 10) - 23 tests
 │   ├── test_po_lifecycle.py   # PO lifecycle (Phase 10) - 19 tests
@@ -199,7 +238,6 @@ Autonomous_business/
 | `dim_sku` | Product master | sku_key, product_type, base_cost_cny |
 | `dim_sku_size` | Size variants | sku_id, sku_key, my_size |
 | `dim_store` | Store locations | store_code, channel |
-| `dim_channel` | Channel config (Phase 8) | channel_code, commission_pct, logistics_fee |
 | `dim_seasonality` | Seasonal multipliers | month, product_type, multiplier |
 | `dim_sku_lifecycle` | SKU lifecycle status | sku_key, lifecycle_status |
 
@@ -219,9 +257,6 @@ Autonomous_business/
 | `fact_po_draft_lines` | PO line items | draft_id, sku_key, quantity, size_qty |
 | `fact_po_execution` | PO execution tracking | po_id, ordered_qty, received_qty |
 | `fact_alert_log` | Alert history | sku_key, alert_type, sent_at |
-| `fact_channel_metrics` | Per-channel metrics (Phase 8) | sku_key, channel_code, units_30d, roic |
-| `fact_channel_inventory` | Channel stock levels (Phase 8) | sku_key, channel_code, on_hand, days_cover |
-| `fact_expansion_scores` | WB expansion scores (Phase 8) | sku_key, expansion_score, recommendation |
 | `fact_input_audit` | Audit trail (Phase 10) | table_name, record_id, change_type, old/new_value |
 
 ### Phase 10 Tables (Event-Sourced)
@@ -231,7 +266,8 @@ Autonomous_business/
 | `stock_ledger` | Event-sourced stock changes | event_date, event_type, sku_id, qty_change, running_balance |
 | `sales_fact_v2` | Deduplicated sales records | order_id, sku_id, store_code, kaspi_offer_name, quantity |
 | `po_header` | PO header records | po_id, supplier_code, status, arrival dates, fx rates, costs |
-| `po_line` | PO line items | po_id, sku_id, order_qty, received_qty, unit_cost_cny |
+| `po_part` | Split-shipment PO parts | po_part_id, po_id, supplier_id, cargo_send_date, status, totals |
+| `po_line` | PO line items | po_id, po_part_id, sku_id, order_qty, received_qty, unit_cost_cny |
 
 **stock_ledger Event Types:**
 - `INITIAL` - Bootstrap/opening balance
@@ -253,10 +289,10 @@ Autonomous_business/
 Calculates financial metrics per transaction.
 
 ```python
-calc_delivery_fee(sell_price_kzt) -> float
+calc_delivery_fee(sell_price_kzt, weight_kg=None, delivery_type="city") -> float
 calc_cogs(base_cost_cny, weight_kg, ...) -> float
-calc_net_rev(sell_price_kzt, quantity, ...) -> float
-calc_profit(sell_price_kzt, quantity, efficiency) -> float
+calc_net_rev(sell_price_kzt, delivery_fee=None, ...) -> float
+calc_profit(sell_price_kzt, base_cost_cny, weight_kg, ...) -> float
 ```
 
 ### inventory.py
@@ -368,47 +404,6 @@ class InventoryParams:
 get_params() -> InventoryParams  # Singleton pattern
 ```
 
-### wb_economics.py (Phase 8)
-
-WB-specific economics calculations.
-
-```python
-calc_wb_net_revenue(seller_price_rub, fx_rub_kzt, logistics_fee_rub, commission_pct, tax_pct) -> tuple
-calc_wb_profit(seller_price_rub, cogs_kzt, ...) -> float
-calc_wb_breakeven_price(cogs_kzt, target_margin_pct, ...) -> float
-compare_kaspi_vs_wb(kaspi_price_kzt, wb_price_rub, cogs_kzt, ...) -> dict
-```
-
-### channel_metrics.py (Phase 8)
-
-Per-channel metrics calculations.
-
-```python
-calc_channel_metrics_for_date(db_path, metric_date) -> list[ChannelMetrics]
-save_channel_metrics(db_path, metrics) -> int
-get_latest_channel_metrics(db_path, sku_key, channel_code) -> ChannelMetrics
-```
-
-### expansion_scorer.py (Phase 8)
-
-Score SKUs for WB expansion potential.
-
-```python
-score_sku_for_expansion(db_path, sku_key, target_channel) -> ExpansionScore
-score_all_skus_for_expansion(db_path, source_channel, target_channel) -> list
-# Returns recommendation: EXPAND, TEST, HOLD, SKIP
-```
-
-### transfer_recommender.py (Phase 8)
-
-Recommend inventory transfers between channels.
-
-```python
-recommend_transfers(db_path, min_days_cover, max_days_cover) -> list[TransferRecommendation]
-get_critical_imbalances(db_path) -> list[TransferRecommendation]
-get_transfer_summary(recommendations) -> dict
-```
-
 ### ledger.py (Phase 10)
 
 Event-sourced stock tracking and audit logging.
@@ -505,15 +500,14 @@ get_stock_movement_summary(sku_key, store_code, days, db_path) -> dict
 
 ### Daily Pipeline
 
-1. **Ingest** - Parse Kaspi/WB Excel exports
+1. **Ingest** - Parse Kaspi Excel exports
 2. **Transform** - Calculate economics (COGS, NetRev, Profit)
 3. **Aggregate** - Build daily summaries
 4. **Calculate** - Compute D30, SS, ROP, ROIC
 5. **Forecast** - Generate demand predictions
 6. **Capital Snapshot** - Build capital allocation
-7. **Channel Metrics** - Build per-channel metrics (Phase 8)
-8. **Alert** - Send Telegram notifications
-9. **Export** - Generate reports and PO suggestions
+7. **Alert** - Send Telegram notifications
+8. **Export** - Generate reports and PO suggestions
 
 ### Auto-PO Flow
 
@@ -569,19 +563,7 @@ DEFAULT_PARAMS = {
 4. **24-Hour Alert Cooldown**
    - Same SKU alert only once per 24 hours
 
-5. **WB Economics (Phase 8)**
-   - Commission: 24.5% (clothing category)
-   - Logistics: 408₽ per unit (proxy)
-   - Tax: 3% (Kazakhstan)
-   - FX: 6.6 RUB/KZT
-
-6. **Expansion Scoring (Phase 8)**
-   - Demand score: 40% weight (based on units_30d)
-   - Margin score: 40% weight (WB margin vs Kaspi)
-   - Competition score: 20% weight (competitor count)
-   - Recommendations: EXPAND (75+), TEST (50-74), HOLD (30-49), SKIP (<30)
-
-7. **Size-Aware Allocation (Phase 9.6)**
+5. **Size-Aware Allocation (Phase 9.6)**
    - OOS-filtered demand: Excludes stockout days from calculation
    - Size mix guardrails: 3% floor, 40% cap
    - Demand confidence uplifts: MARGINAL (1.2×), FALLBACK (1.5×)
@@ -589,30 +571,30 @@ DEFAULT_PARAMS = {
    - New SKU factors: 0.75 (<30d), 0.85 (30-60d), 0.95 (60-90d)
    - Low demand insurance: D < 0.1 AND mix ≥ 5% → add 1% of PO
 
-8. **ROIC Gate (Phase 9.6)**
+6. **ROIC Gate (Phase 9.6)**
    - ORDER_FULL: ROIC ≥ 20% (auto-approve)
    - ORDER_WITH_FLAG: 10-20% ROIC (approve with review)
    - REVIEW_REQUIRED: < 10% ROIC (manual approval needed)
 
-9. **Event-Sourced Stock Tracking (Phase 10)**
+7. **Event-Sourced Stock Tracking (Phase 10)**
    - All stock changes recorded as immutable events in `stock_ledger`
    - Balance = SUM(qty_change) for all events
    - Snapshot rebuilt from ledger on demand
    - Audit trail for all modifications in `fact_input_audit`
 
-10. **PO Lifecycle State Machine (Phase 10)**
+8. **PO Lifecycle State Machine (Phase 10)**
     - Status flow: DRAFT → SENT → PREPARING → SHIPPED_SELLER → SHIPPED_CARGO → IN_TRANSIT → ARRIVED_ALM → ARRIVED_AST → RECEIVED → CLOSED
     - INBOUND events created on arrival confirmation
     - Immutable fields: archive_alm_arrival, archive_ast_arrival (once set)
     - ETA calculation: L=21 days from ship_date_cargo
 
-11. **Sales Deduplication (Phase 10)**
+9. **Sales Deduplication (Phase 10)**
     - Dedup key: (order_id, sku_id, store_code, kaspi_offer_name)
     - Same order with different offers → separate records
     - SALE events created for each new sale
     - RETURN events created for returned items
 
-12. **Landed Cost Calculation (Phase 10)**
+10. **Landed Cost Calculation (Phase 10)**
     - Supplier cost: qty × unit_cost_cny × fx_rate_cny_kzt
     - Cargo cost: weight_kg × cargo_rate_usd_kg × fx_rate_usd_kzt
     - Default cargo rate: 2.66 USD/kg
@@ -649,5 +631,4 @@ Python 3.11+
 - Real-time Kaspi API connection
 - Mobile app for PO approval
 - Automated supplier ordering
-- Full WB tariff integration (per-SKU, per-warehouse fees)
-- Container fill optimizer for multi-channel shipments
+- Container fill optimizer for shipments

@@ -20,6 +20,12 @@ from core.alerts.telegram import (
 )
 from core.db import get_db
 
+DB_PATH = Path(__file__).parent.parent / "db" / "app.db"
+REQUIRES_DB = pytest.mark.skipif(
+    not DB_PATH.exists(),
+    reason="db/app.db missing; integration checks require seeded DB",
+)
+
 
 class TestFormatReorderAlert:
     """Tests for alert message formatting."""
@@ -174,6 +180,7 @@ class TestLogAlert:
         assert "cooldown" in row[1].lower()
 
 
+@REQUIRES_DB
 class TestIntegration:
     """Integration tests."""
 

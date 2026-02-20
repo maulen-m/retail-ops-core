@@ -30,8 +30,9 @@ Environment Variables:
 
 import argparse
 import logging
+import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 
 # Add project root to path
@@ -41,6 +42,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.sync.order_sync_engine import OrderSyncEngine, SyncResult, MultiSyncResult
+from core.sync.kaspi_order_enrichment import enrich_orders, _load_config as _load_enrichment_config
 
 
 def setup_logging(verbose: bool = False):
@@ -75,6 +77,34 @@ def print_sync_result(result: SyncResult):
         print("\n  Errors:")
         for error in result.errors:
             print(f"    - {error}")
+
+
+
+
+
+def _run_enrichment(stores, since, until, dry_run):
+    if dry_run:
+        return
+    cfg_path = Path(__file__).parent.parent / "config" / "kaspi_enrichment.yaml"
+    cfg = _load_enrichment_config(cfg_path)
+    if not cfg.get("enabled"):
+        print("Enrichment disabled in config; skipping.")
+        return
+    if os.environ.get("ENABLE_KASPI_ENRICHMENT") != "1":
+        print("ENABLE_KASPI_ENRICHMENT not set; skipping enrichment.")
+        return
+    lookback_days = int(cfg.get("default_lookback_days") or 0) or 7
+    resolved_since = since or (date.today() - timedelta(days=lookback_days - 1)).isoformat()
+    resolved_until = until or date.today().isoformat()
+    for store in stores:
+        enrich_orders(
+            db_path=Path(__file__).parent.parent / "db" / "app.db",
+            store_code=store,
+            since=resolved_since,
+            until=resolved_until,
+            apply=True,
+            config_path=cfg_path,
+        )
 
 
 def print_multi_result(result: MultiSyncResult):
@@ -200,6 +230,11 @@ def main():
         help='Fetch orders but do not save to database',
     )
     parser.add_argument(
+        '--enrich',
+        action='store_true',
+        help='Run optional enrichment stage (requires config enabled)',
+    )
+    parser.add_argument(
         '-v', '--verbose',
         action='store_true',
         help='Enable verbose logging',
@@ -210,10 +245,38 @@ def main():
     setup_logging(args.verbose)
     engine = OrderSyncEngine()
 
+    max_lookback_days = 13
+
+    def parse_date(value: str) -> date:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+
     # Parse states if provided
     states = None
     if args.states:
         states = [s.strip() for s in args.states.split(',')]
+
+    if args.since:
+        try:
+            since_date = parse_date(args.since)
+        except ValueError:
+            print(f"ERROR: invalid --since date: {args.since} (expected YYYY-MM-DD)")
+            return 2
+
+        end_date = datetime.now().date()
+        if args.until:
+            try:
+                end_date = parse_date(args.until)
+            except ValueError:
+                print(f"ERROR: invalid --until date: {args.until} (expected YYYY-MM-DD)")
+                return 2
+
+        max_since = end_date - timedelta(days=max_lookback_days)
+        if since_date < max_since:
+            print(
+                f"WARNING: since={args.since} exceeds max lookback {max_lookback_days} days; "
+                f"clamping to {max_since.isoformat()}."
+            )
+            args.since = max_since.isoformat()
 
     print(f"\n{'=' * 60}")
     print("KASPI ORDER SYNC")

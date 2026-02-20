@@ -1,7 +1,32 @@
 # Daily Standard Operating Procedure (SOP)
 
 ## Overview
-This document outlines the daily routine for operating the Autonomous Inventory/PO System.
+This document outlines the daily routine for operating the Autonomous Inventory/PO System.  
+Scope: Kaspi-only.
+
+### Single-Truth Strict Gate (Workbook Anchored)
+
+Anchor path and symlink contract authority: `config/anchors/README.md` is authoritative.
+Write-side apply contract authority: `docs/WRITE_SIDE_GATING_CONTRACT.md` and `docs/WRITE_APPLY_RUNBOOK.md`.
+
+Run strict validation with workbook anchor enabled before operator decisions:
+
+```bash
+AB_CRM_WORKBOOK_PATH="config/anchors/SALES_KSP_CRM_LATEST.xlsx" \
+AB_INBOUND_WORKBOOK_PATH="config/anchors/INBOUND_CALENDAR_LATEST.xlsx" \
+./.venv/bin/python scripts/validate_params.py --strict
+```
+
+Notes:
+- `AB_CRM_WORKBOOK_PATH` gate is optional by design; if unset, workbook anchor check is skipped.
+- In production operations, set it explicitly so daily published sales truth cannot exceed workbook anchor tolerance.
+- Content freshness guard also enforces workbook max-date lag/future windows:
+  - `AB_CRM_WORKBOOK_MAX_LAG_DAYS` (default `1`)
+  - `AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS` (default `0`)
+- Canonical workbook location is `excel_ui/SALES_KSP_CRM_V3.xlsx`;
+  `config/anchors/SALES_KSP_CRM_LATEST.xlsx` must symlink to that file.
+- Canonical inbound/payment truth pointer is `config/anchors/INBOUND_CALENDAR_LATEST.xlsx`
+  (or set `AB_INBOUND_WORKBOOK_PATH` directly).
 
 ---
 
@@ -16,6 +41,56 @@ python scripts/test_schema.py
 sqlite3 db/app.db "SELECT COUNT(*), MIN(order_date), MAX(order_date) FROM fact_sales;"
 ```
 
+### 1.1 Run strict daily preflight (fail closed)
+Use the wrapper so workbook-anchor validation is mandatory for operator runs.
+
+```bash
+./.venv/bin/python scripts/run_strict_daily_preflight.py \
+  --workbook "config/anchors/SALES_KSP_CRM_LATEST.xlsx" \
+  --emit-lineage \
+  --send-alert-on-fail \
+  --ensure-business-insides
+```
+
+Behavior:
+- Fails closed when workbook path is missing.
+- Fails closed when workbook is stale (default max age: 36h, configurable).
+- Fails closed when workbook mtime is in the future beyond allowed skew (default 120s).
+- Fails closed when workbook **content** is stale beyond allowed lag (`AB_CRM_WORKBOOK_MAX_LAG_DAYS`, default `1` day).
+- Auto-generates missing daily `BUSINESS_INSIDES_<as_of>.md` before strict validation.
+- Business-insides auto-generation runs with `--strict-cogs` (unresolved COGS blocks publication).
+- Runs `validate_params.py --strict`.
+- Optionally emits lineage JSON under `exports/lineage/`.
+- Emits drift pack artifact under `exports/validation/<YYYY-MM-DD>/single_truth_drift_pack.{md,json}` after strict PASS.
+- If repo `.venv/bin/python` exists, preflight re-execs under it for deterministic dependencies.
+
+### 1.1.1 Run deterministic ops status check
+Run this before launchd smoke/manual starts to verify anchor health + scheduler validate-only together:
+
+```bash
+./.venv/bin/python scripts/ops_status.py --project-root .
+```
+
+Expected outcome:
+- `OPS_STATUS PASS` with zero exit code.
+
+### 1.2 Run on-delivery residual dry-run check
+Run this daily before any write-side cashflow reconciliation:
+
+```bash
+./.venv/bin/python scripts/check_on_delivery_residuals.py \
+  --since 2026-01-01 \
+  --until "$(date +%F)"
+```
+
+Optional alert mode:
+
+```bash
+./.venv/bin/python scripts/check_on_delivery_residuals.py \
+  --since 2026-01-01 \
+  --until "$(date +%F)" \
+  --send-alert
+```
 ### 2. Download Today's Inventory
 1. Export current stock from Kaspi seller dashboard
 2. Save as `excel/Current_stock_YYYY-MM-DD.xlsx`
@@ -66,99 +141,6 @@ python scripts/po_approval_cli.py approve <draft_id>
 2. Filter for `status = REORDER`
 3. Review suggested quantities and size splits
 4. Place orders as needed
-
----
-
-## Phase 8: Multi-Channel Operations
-
-### WB (Wildberries) Sales Ingestion
-
-**When to Run:** After receiving WB weekly sales reports
-
-```bash
-# Download WB sales report from WB seller portal
-# Save as: data_raw/WB_Sales_YYYY-MM-DD.xlsx
-
-# Ingest WB sales
-python scripts/ingest_channel_sales.py data_raw/WB_Sales_2025-12-06.xlsx --channel WB
-
-# Or with verbose output
-python scripts/ingest_channel_sales.py data_raw/WB_Sales_2025-12-06.xlsx --channel WB --verbose
-```
-
-**Expected Columns (Russian):**
-- `Артикул продавца` → sku_key
-- `Дата продажи` → order_date
-- `Цена розничная` → seller_price (RUB)
-- `Кол-во` → quantity
-- `Вайлдберриз реализовал` → net_revenue (RUB)
-
-### Channel Metrics Build
-
-```bash
-# Build channel metrics for today
-python scripts/build_channel_metrics.py
-
-# Backfill historical metrics (run once after initial WB data import)
-python scripts/build_channel_metrics.py --backfill --days 30
-```
-
-### Expansion Analysis (Weekly)
-
-```bash
-# Score Kaspi SKUs for WB expansion potential
-python scripts/run_expansion_analysis.py
-
-# Filter by minimum score
-python scripts/run_expansion_analysis.py --min-score 60
-
-# Show only EXPAND recommendations
-python scripts/run_expansion_analysis.py --recommendation EXPAND
-
-# Export to CSV
-python scripts/run_expansion_analysis.py --export
-```
-
-**Recommendation Meanings:**
-
-| Recommendation | Score Range | Action |
-|----------------|-------------|--------|
-| **EXPAND** | 75+ | Launch on WB immediately |
-| **TEST** | 50-74 | Small test batch (10-20 units) |
-| **HOLD** | 30-49 | Monitor, revisit next quarter |
-| **SKIP** | <30 | Not suitable for WB |
-
-### Transfer Analysis
-
-```bash
-# Check for inventory imbalances between channels
-python scripts/run_transfer_analysis.py
-
-# Only critical/high urgency
-python scripts/run_transfer_analysis.py --critical-only
-
-# Send Telegram alert for critical transfers
-python scripts/run_transfer_analysis.py --alert
-
-# Export recommendations to CSV
-python scripts/run_transfer_analysis.py --export
-```
-
-### WB Economics Reference
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Commission | 24.5% | Clothing category |
-| Logistics | 408₽ | Per-unit proxy (actual varies by warehouse) |
-| Tax | 3% | Kazakhstan tax on net revenue |
-| FX Rate | 6.6 | RUB/KZT (update in wb_economics.py if needed) |
-
-**Breakeven Calculation:**
-```
-WB Net Revenue = Price × (1 - 24.5%) - 408₽
-KZT Revenue = WB Net Revenue × 6.6 × (1 - 3%)
-Profit = KZT Revenue - COGS
-```
 
 ---
 
@@ -325,12 +307,12 @@ python scripts/validate_size_allocation.py --sku CL_OC_MEN_LINE52_BLACK --verbos
 ```
 
 **Checks performed:**
-1. Parameters match Master_Inventory_Rules_v5.3.md
+1. Parameters match Master_Inventory_Rules_v8.md
 2. Size mix bounds (3%-40%)
 3. Safety stock formula
 4. ROP calculation
 5. Status logic (Check Total FIRST)
-6. ROIC gate (3-tier)
+6. ROIC gate (v8 delivery matrix)
 7. Total equals sum of sizes
 
 ### Comparison Report
@@ -1007,7 +989,7 @@ python scripts/ship_orders_api.py --store UNIVERSAL --verbose
 
 ### Step 2: Download Waybills via API
 
-Downloads waybill PDFs for TODAY's batch only (exact date match).
+Downloads waybill PDFs for TODAY's batch only (exact date match) unless overdue is included.
 
 ```bash
 # Download today's waybills
@@ -1021,6 +1003,9 @@ python scripts/download_waybills_api.py --date 2025-12-10
 
 # All historical orders (not just today)
 python scripts/download_waybills_api.py --all-dates
+
+# Include overdue orders (planned_date <= today, bounded by lookback)
+python scripts/download_waybills_api.py --include-overdue
 ```
 
 **Output:**
@@ -1034,11 +1019,14 @@ excel_ui/ActiveOrders/waybills/
 **Filtering:**
 - Only downloads for orders with MY_SIZE filled in CRM
 - Default: Only orders where `planned_date == today`
-- Use `--all-dates` for `planned_date <= today`
+- Use `--include-overdue` for `planned_date <= today` (bounded by lookback)
+- Use `--all-dates` for `planned_date <= today` with no lower bound
 
 ### Step 3: Build Waybill Bundles
 
 Groups PDFs by store and type. Same as Phase 11, but uses API-downloaded waybills.
+When overdue is included, output is split into:
+`excel_ui/Kaspi_orders/Today/TODAY/` and `excel_ui/Kaspi_orders/Today/OVERDUE/`.
 
 ```bash
 python scripts/build_daily_waybills.py --verbose
@@ -1047,6 +1035,43 @@ python scripts/build_daily_waybills.py --verbose
 **Waybill Sources (priority order):**
 1. API downloads: `excel_ui/ActiveOrders/waybills/*.pdf`
 2. ZIP files: `excel_ui/ActiveOrders/waybill*.zip`
+
+### Step 4: Archive and Retention Rules (Current Policy)
+
+`excel_ui/run_build_waybills.command` now calls `scripts/archive_waybill_inputs.py` after build.
+
+**Archive scope:**
+- Local run archive (`excel_ui/Archive/input_*`) includes:
+- CRM workbook snapshot
+- only selected-order waybill PDFs from the current selection cache
+- optional `waybill*.zip` inputs
+- It does **not** copy the full historical `ActiveOrders/waybills` cache each run.
+
+**Retention:**
+- Local waybill cache retention: 30 days
+- Local run archive retention: 14 days
+
+**Cold storage (External_database):**
+- Old local cache PDFs are migrated to:
+- `<EXTERNAL_DB_ROOT>/Autonomous_business/kaspi_waybills/by_order/{order_id}.pdf`
+- Deduplication is by order ID filename, so shipped waybill PDFs are never duplicated.
+
+**Workbook backups:**
+- Google Drive backup remains workbook-only per run.
+- External_database also receives workbook snapshots under:
+- `.../Autonomous_business/kaspi_waybills/workbooks/`
+
+**Google Drive snapshot rule:**
+- `repo_backups_G/External_database/snapshots/*` must not include
+  `Autonomous_business/kaspi_waybills/by_order/` PDFs.
+- Source of truth for by-order waybill PDFs is local External_database:
+  `<EXTERNAL_DB_ROOT>/Autonomous_business/kaspi_waybills/by_order/`
+
+**Config env vars:**
+- `KASPI_WAYBILL_CACHE_RETENTION_DAYS` (default `30`)
+- `KASPI_ARCHIVE_RETENTION_DAYS` (default `14`)
+- `KASPI_EXTERNAL_DB_ROOT`
+- `KASPI_EXTERNAL_DB_REPO_LABEL` (default `Autonomous_business`)
 
 ### Full Workflow Example
 
@@ -1157,6 +1182,36 @@ tail -50 logs/crm_sync_stderr.log
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.example.crm-db-sync.plist
 launchctl load ~/Library/LaunchAgents/com.example.crm-db-sync.plist
+```
+
+### Single-Truth Hardening Jobs (21:00/21:05 local)
+
+Install/update schedulers:
+
+```bash
+chmod +x scripts/install_single_truth_ops_scheduler.sh
+./scripts/install_single_truth_ops_scheduler.sh
+```
+
+Anchor workbook paths (symlinks):
+
+```bash
+REPO_PATH="$(pwd)"
+CRM_SOURCE_PATH="$REPO_PATH/excel_ui/SALES_KSP_CRM_V3.xlsx"
+INBOUND_SOURCE_PATH="<set from config/anchors/README.md>"
+ln -sfn "$CRM_SOURCE_PATH" "$REPO_PATH/config/anchors/SALES_KSP_CRM_LATEST.xlsx"
+ln -sfn "$INBOUND_SOURCE_PATH" "$REPO_PATH/config/anchors/INBOUND_CALENDAR_LATEST.xlsx"
+```
+
+Jobs:
+- `com.example.single-truth-preflight` (21:00): runs strict preflight with lineage output and auto-generates missing daily `BUSINESS_INSIDES`.
+- `com.example.on-delivery-residuals` (21:05): runs residual dry-run and sends alert when residuals exist.
+
+Manual trigger:
+
+```bash
+launchctl start com.example.single-truth-preflight
+launchctl start com.example.on-delivery-residuals
 ```
 
 ---

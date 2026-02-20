@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Validate vs Excel: Compare Python calculations to Excel V15 values.
+Validate vs Excel: Compare Python calculations to Excel v8 values.
 
-This script validates that Python calculations match Excel V15 within tolerances:
+This script validates that Python calculations match Excel v8 within tolerances:
 - D30: ±1%
 - SS_total: ±1%
 - ROIC: ±2%
@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
@@ -31,13 +32,13 @@ from core.calc.status import calc_status
 
 @dataclass
 class ExcelTestCase:
-    """Known values from Excel V15 for validation."""
+    """Known values from Excel v8 for validation."""
     sku_key: str
     base_cost_cny: float
     weight_kg: float
     sell_price_kzt: float
     d30: float  # From Excel
-    # Expected values from Excel V15 (with defined tolerances)
+    # Expected values from Excel v8 (with defined tolerances)
     expected_cogs: float
     expected_net_rev: float
     expected_profit: float
@@ -49,9 +50,8 @@ class ExcelTestCase:
     total_stock: int = 0
 
 
-# Test cases from Master_Inventory_Rules and requirements
-# LINE52 @ 12,000 KZT → COGS=5,005, NetRev=9,355, Profit=4,350
-# LINE51 @ 12,000 KZT → COGS=6,019
+# Test cases from Master_Inventory_Rules_v8
+# LINE52 @ 12,000 KZT (city, 0.95kg): NetRev ≈ 9,024.83
 
 EXCEL_TEST_CASES = [
     ExcelTestCase(
@@ -61,8 +61,8 @@ EXCEL_TEST_CASES = [
         sell_price_kzt=12000.0,
         d30=5.0,  # Assumed D30 for formula testing
         expected_cogs=5005,
-        expected_net_rev=9355,
-        expected_profit=4350,
+        expected_net_rev=9024.83,
+        expected_profit=4019.83,
         # Expected SS_total for D30=5 with default params
         # ss_demand = 1.65 * (5*0.4) * sqrt(21) = 1.65 * 2 * 4.58 = 15.12
         # ss_floor = 5 * 14 = 70
@@ -87,8 +87,8 @@ EXCEL_TEST_CASES = [
         sell_price_kzt=12000.0,
         d30=3.0,  # Assumed D30 for formula testing
         expected_cogs=6019,
-        expected_net_rev=9355,  # Same price, same net rev
-        expected_profit=3336,  # 9355 - 6019
+        expected_net_rev=9024.83,  # Same price, same net rev
+        expected_profit=3005.83,  # 9024.83 - 6019
         expected_ss_total=None,  # Will be calculated
         expected_rop=None,
         expected_roic=None,
@@ -128,11 +128,30 @@ def validate_economics(case: ExcelTestCase) -> list[ValidationResult]:
     ))
 
     # Delivery fee
-    python_delivery = calc_delivery_fee(case.sell_price_kzt)
-    # Delivery should be exact since it's a simple tiered calculation
-    expected_delivery = 856 if case.sell_price_kzt <= 14999 else 1259
-    if case.sell_price_kzt <= 4999:
-        expected_delivery = 0
+    python_delivery = calc_delivery_fee(case.sell_price_kzt, weight_kg=case.weight_kg, delivery_type="city")
+    # Delivery should be exact since it's a table-based calculation
+    if case.sell_price_kzt <= 1000:
+        expected_delivery = 49.14
+    elif case.sell_price_kzt <= 3000:
+        expected_delivery = 149.14
+    elif case.sell_price_kzt <= 5000:
+        expected_delivery = 199.14
+    elif case.sell_price_kzt <= 10000:
+        expected_delivery = 699.14
+    else:
+        # Weight-based (city)
+        if case.weight_kg <= 5:
+            expected_delivery = 1099.14
+        elif case.weight_kg <= 15:
+            expected_delivery = 1349.14
+        elif case.weight_kg <= 30:
+            expected_delivery = 2299.14
+        elif case.weight_kg <= 60:
+            expected_delivery = 2899.14
+        elif case.weight_kg <= 100:
+            expected_delivery = 4149.14
+        else:
+            expected_delivery = 6449.14
     results.append(ValidationResult(
         metric="Delivery Fee",
         python_value=python_delivery,
@@ -143,7 +162,11 @@ def validate_economics(case: ExcelTestCase) -> list[ValidationResult]:
     ))
 
     # Net Revenue
-    python_net_rev = calc_net_rev(case.sell_price_kzt)
+    python_net_rev = calc_net_rev(
+        case.sell_price_kzt,
+        delivery_fee=python_delivery,
+        as_of_date=date(2026, 1, 1),
+    )
     diff = abs(python_net_rev - case.expected_net_rev) / case.expected_net_rev * 100
     results.append(ValidationResult(
         metric="Net Revenue",
@@ -155,7 +178,13 @@ def validate_economics(case: ExcelTestCase) -> list[ValidationResult]:
     ))
 
     # Profit
-    python_profit = calc_profit(case.sell_price_kzt, case.base_cost_cny, case.weight_kg)
+    python_profit = calc_profit(
+        case.sell_price_kzt,
+        case.base_cost_cny,
+        case.weight_kg,
+        delivery_fee=python_delivery,
+        as_of_date=date(2026, 1, 1),
+    )
     diff = abs(python_profit - case.expected_profit) / case.expected_profit * 100
     results.append(ValidationResult(
         metric="Profit",

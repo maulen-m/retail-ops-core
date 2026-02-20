@@ -4,15 +4,26 @@ kaspi:
     - name: "UNIVERSAL"
       account_id: "30000001"
       auth: "${KASPI_TOKEN_UNIVERSAL}"
+      warehouses:
+        - "30000001_PP1"
     - name: "ACMEWEAR"
       account_id: "30137883"
       auth: "${KASPI_TOKEN_ACMEWEAR}"
+      warehouses:
+        - "30137883_PP1"
     - name: "11KZ"
       account_id: "30290083"
       auth: "${KASPI_TOKEN_11KZ}"
+      warehouses:
+        - "30290083_PP1"
     - name: "MELVIS"
       account_id: "30362323"
       auth: "${KASPI_TOKEN_MELVIS}"
+      warehouses:
+        - "30362323_PP1"
     - name: "STORE-B"
       account_id: "30000002"
       auth: "${KASPI_TOKEN_STOREB}"
+      warehouses:
+        - "30000002_PP1"
+        - "30000002_PP2"

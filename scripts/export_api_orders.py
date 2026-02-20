@@ -19,7 +19,8 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -39,9 +40,23 @@ from core.integrations.kaspi_api_client import (
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_bool(value: Optional[str]) -> Optional[bool]:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected boolean: true/false")
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
+
+# Kaspi API dates are in Asia/Almaty timezone
+ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
 # Excel column headers (must match Kaspi export exactly)
 # NOTE: Some columns are MANUAL entry fields (not from API):
@@ -143,7 +158,7 @@ STORE_WAREHOUSE_MAP = {
     'ACMEWEAR': '30137883_PP1',
     '11KZ': '30290083_PP1',
     'STOREB': '30000002_PP1',
-    'MELVIS': '30000002_PP1',  # Same as STOREB
+    'MELVIS': '30362323_PP1',
 }
 
 
@@ -152,11 +167,11 @@ STORE_WAREHOUSE_MAP = {
 # =============================================================================
 
 def timestamp_to_date(ts_ms: Optional[int]) -> Optional[str]:
-    """Convert milliseconds timestamp to DD.MM.YYYY string."""
+    """Convert milliseconds timestamp to DD.MM.YYYY string (Asia/Almaty)."""
     if ts_ms is None:
         return None
     try:
-        dt = datetime.fromtimestamp(ts_ms / 1000)
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=ALMATY_TZ)
         return dt.strftime('%d.%m.%Y')
     except (ValueError, OSError):
         return None
@@ -171,6 +186,63 @@ def get_nested(d: dict, *keys, default=None) -> Any:
         if d is None:
             return default
     return d
+
+
+def _extract_delivery_costs(order: dict) -> tuple[Optional[float], Optional[float]]:
+    """Extract buyer/seller delivery costs if present (None if missing)."""
+    attrs = order.get('attributes', {}) if isinstance(order, dict) else {}
+    delivery = attrs.get('kaspiDelivery', {}) if isinstance(attrs.get('kaspiDelivery', {}), dict) else {}
+
+    buyer_cost = delivery.get('customerDeliveryCost')
+    if buyer_cost is None:
+        buyer_cost = attrs.get('deliveryCost')
+
+    seller_cost = attrs.get('deliveryCostForSeller')
+    if seller_cost is None:
+        seller_cost = delivery.get('deliveryCostForSeller')
+
+    return buyer_cost, seller_cost
+
+
+def _maybe_refetch_order_details(
+    client: KaspiAPIClient,
+    order: dict,
+    verbose: bool = False,
+    force: bool = False,
+) -> dict:
+    """
+    Refetch full order details by ID when delivery cost fields may be stale.
+
+    Some list responses return deliveryCostForSeller=0 even when the detail
+    endpoint has a non-zero value, so allow forcing a refresh.
+    """
+    if not force:
+        buyer_cost, seller_cost = _extract_delivery_costs(order)
+        if buyer_cost is not None and seller_cost is not None:
+            return order
+
+    order_id = order.get('id')
+    order_code = order.get('attributes', {}).get('code', '')
+
+    resp = None
+    if order_id:
+        resp = client.get_order_by_id(order_id)
+    elif order_code:
+        resp = client.get_order(order_code)
+
+    if not resp or not resp.success or not resp.data:
+        if verbose:
+            logger.warning(f"Refetch failed for order {order_code or order_id}")
+        return order
+
+    data = resp.data
+    # JSON:API response might be {"data": {...}}
+    if isinstance(data, dict) and isinstance(data.get('data'), dict):
+        return data['data']
+    if isinstance(data, dict) and data.get('type') == 'orders':
+        return data
+
+    return order
 
 
 # =============================================================================
@@ -336,6 +408,13 @@ def order_to_rows(
     # Cancellation reason
     cancel_reason = attrs.get('cancellationReason', '')
 
+    # Delivery costs
+    buyer_delivery_cost, seller_delivery_cost = _extract_delivery_costs(order)
+    if buyer_delivery_cost is None:
+        buyer_delivery_cost = 0
+    if seller_delivery_cost is None:
+        seller_delivery_cost = 0
+
     rows = []
 
     if not entries:
@@ -363,8 +442,8 @@ def order_to_rows(
             'Дата публикации отзыва': '',
             'Оформил': '',
             'Количество': 1,
-            'Стоимость доставки для покупателя': delivery.get('customerDeliveryCost', 0),
-            'Стоимость доставки для продавца': attrs.get('deliveryCost', 0),
+            'Стоимость доставки для покупателя': buyer_delivery_cost or 0,
+            'Стоимость доставки для продавца': seller_delivery_cost or 0,
             'Компенсация за доставку': delivery.get('deliveryCostCompensation', 0),
             'Требуется подписание': signature_required,
             'Плановая дата передачи курьеру': planned_date,
@@ -410,8 +489,8 @@ def order_to_rows(
                 'Дата публикации отзыва': '',
                 'Оформил': '',
                 'Количество': entry_attrs.get('quantity', 1),
-                'Стоимость доставки для покупателя': delivery.get('customerDeliveryCost', 0),
-                'Стоимость доставки для продавца': attrs.get('deliveryCost', 0),
+                'Стоимость доставки для покупателя': buyer_delivery_cost or 0,
+                'Стоимость доставки для продавца': seller_delivery_cost or 0,
                 'Компенсация за доставку': delivery.get('deliveryCostCompensation', 0),
                 'Требуется подписание': signature_required,
                 'Плановая дата передачи курьеру': planned_date,
@@ -433,6 +512,12 @@ def export_store_orders(
     days: int = 14,
     verbose: bool = False,
     include_archive: bool = True,
+    refetch_missing_costs: bool = False,
+    db_direct: bool = False,
+    db_direct_dry_run: bool = False,
+    delivery_type: Optional[str] = None,
+    signature_required: Optional[bool] = None,
+    include_orders: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from a single store.
@@ -453,13 +538,19 @@ def export_store_orders(
         logger.warning(f"Skipping {store_code}: {e}")
         return []
 
-    since = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    since = (datetime.now(ALMATY_TZ) - timedelta(days=days)).strftime('%Y-%m-%d')
 
     if verbose:
         print(f"  Fetching orders from {store_code} (since {since})...")
 
     # Fetch active orders
-    orders = client.list_all_orders(state=state, since=since)
+    orders = client.list_all_orders(
+        state=state,
+        since=since,
+        delivery_type=delivery_type,
+        signature_required=signature_required,
+        include_orders=include_orders,
+    )
 
     if verbose:
         print(f"    Found {len(orders)} active orders")
@@ -468,7 +559,13 @@ def export_store_orders(
     if include_archive and state != 'ARCHIVE':
         if verbose:
             print(f"    Fetching ARCHIVE orders...")
-        archive_orders = client.list_all_orders(state='ARCHIVE', since=since)
+        archive_orders = client.list_all_orders(
+            state='ARCHIVE',
+            since=since,
+            delivery_type=delivery_type,
+            signature_required=signature_required,
+            include_orders=include_orders,
+        )
         if verbose:
             print(f"    Found {len(archive_orders)} archive orders")
 
@@ -486,6 +583,14 @@ def export_store_orders(
     all_rows = []
 
     for i, order in enumerate(orders):
+        if refetch_missing_costs:
+            order = _maybe_refetch_order_details(
+                client,
+                order,
+                verbose=verbose,
+                force=True,
+            )
+
         order_code = order.get('attributes', {}).get('code', '')
 
         # Fetch entries for this order
@@ -501,6 +606,23 @@ def export_store_orders(
     if verbose:
         print(f"    Generated {len(all_rows)} rows")
 
+    if db_direct:
+        try:
+            stats = ingest_rows_to_db(
+                all_rows,
+                store_code=store_code,
+                dry_run=db_direct_dry_run,
+            )
+            if verbose:
+                logger.info(
+                    f"{store_code}: DB direct ingest "
+                    f"inserted={stats.get('inserted', 0)} "
+                    f"updated={stats.get('updated', 0)} "
+                    f"errors={stats.get('errors', 0)}"
+                )
+        except Exception as e:
+            logger.warning(f"{store_code}: DB direct ingest failed: {e}")
+
     return all_rows
 
 
@@ -509,6 +631,12 @@ def export_all_stores(
     days: int = 14,
     verbose: bool = False,
     include_archive: bool = True,
+    refetch_missing_costs: bool = False,
+    db_direct: bool = False,
+    db_direct_dry_run: bool = False,
+    delivery_type: Optional[str] = None,
+    signature_required: Optional[bool] = None,
+    include_orders: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from all configured stores.
@@ -531,16 +659,79 @@ def export_all_stores(
             days=days,
             verbose=verbose,
             include_archive=include_archive,
+            refetch_missing_costs=refetch_missing_costs,
+            db_direct=db_direct,
+            db_direct_dry_run=db_direct_dry_run,
+            delivery_type=delivery_type,
+            signature_required=signature_required,
+            include_orders=include_orders,
         )
         all_rows.extend(rows)
 
     return all_rows
 
 
+def ingest_rows_to_db(
+    rows: List[Dict[str, Any]],
+    store_code: str,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Ingest ActiveOrders-format rows directly into fact_orders_kaspi.
+
+    Args:
+        rows: ActiveOrders-style rows (Russian column headers)
+        store_code: Store code (UNIVERSAL, ACMEWEAR, etc.)
+        dry_run: If True, do not write to DB
+
+    Returns:
+        Stats dict from ingest_records
+    """
+    if not rows:
+        return {"inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
+
+    # Lazy imports to avoid circular deps
+    from core.db import get_db
+    from core.parsers.kaspi_export_parser import parse_active_orders_df, load_column_config
+    from scripts.ingest_kaspi_export import ingest_orders
+
+    df = pd.DataFrame(rows)
+    source_file = f"API_DIRECT_{store_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    parsed = parse_active_orders_df(df, source_file=source_file, config=load_column_config())
+
+    if dry_run:
+        return {"inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
+
+    with get_db() as conn:
+        stats = ingest_orders(parsed.orders, conn)
+
+    return stats
+
+
+def _parse_planned_date(value: Any) -> Optional[date]:
+    """Parse planned date from known formats."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    value_str = str(value).strip()
+    if not value_str:
+        return None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value_str, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def filter_rows_by_planned_date(
     rows: List[Dict[str, Any]],
     target_date: Optional[str] = None,
     verbose: bool = False,
+    include_overdue: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Filter rows by planned courier transmission date.
@@ -558,16 +749,29 @@ def filter_rows_by_planned_date(
 
     # Default to today
     if not target_date:
-        target_date = datetime.now().strftime('%d.%m.%Y')
+        target_date = datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
+    target_dt = _parse_planned_date(target_date) if include_overdue else None
 
     filtered = []
     for row in rows:
         planned = row.get('Плановая дата передачи курьеру', '')
-        if planned == target_date:
-            filtered.append(row)
+        if include_overdue:
+            planned_dt = _parse_planned_date(planned)
+            if planned_dt and target_dt and planned_dt <= target_dt:
+                filtered.append(row)
+        else:
+            if planned == target_date:
+                filtered.append(row)
 
     if verbose:
-        print(f"    Filtered: {len(filtered)}/{len(rows)} orders have planned date = {target_date}")
+        if include_overdue:
+            print(
+                f"    Filtered: {len(filtered)}/{len(rows)} orders have planned date <= {target_date}"
+            )
+        else:
+            print(
+                f"    Filtered: {len(filtered)}/{len(rows)} orders have planned date = {target_date}"
+            )
 
     return filtered
 
@@ -628,6 +832,23 @@ def main():
         help='Filter by order state (default: KASPI_DELIVERY)'
     )
     parser.add_argument(
+        '--delivery-type',
+        type=str,
+        choices=['DELIVERY', 'PICKUP'],
+        help='Filter by delivery type (use only when state != PICKUP)'
+    )
+    parser.add_argument(
+        '--signature-required',
+        type=_parse_bool,
+        help='Filter by signatureRequired (true/false)'
+    )
+    parser.add_argument(
+        '--include-orders',
+        type=str,
+        default='user',
+        help='Include extra order data (comma-separated). Use \"none\" to disable.'
+    )
+    parser.add_argument(
         '--days',
         type=int,
         default=14,
@@ -656,6 +877,11 @@ def main():
         help='Only export orders with planned delivery date = today (default: True)'
     )
     parser.add_argument(
+        '--include-overdue',
+        action='store_true',
+        help='Include orders with planned delivery date <= target date (today by default)'
+    )
+    parser.add_argument(
         '--all-dates',
         action='store_true',
         help='Export orders regardless of planned delivery date (overrides --today-only)'
@@ -669,6 +895,21 @@ def main():
         '--no-archive',
         action='store_true',
         help='Skip fetching ARCHIVE orders (completed/cancelled/returned)'
+    )
+    parser.add_argument(
+        '--refetch-missing-costs',
+        action='store_true',
+        help='Refetch full order details to get accurate delivery costs'
+    )
+    parser.add_argument(
+        '--db-direct',
+        action='store_true',
+        help='Ingest API rows directly into DB (fact_orders_kaspi)'
+    )
+    parser.add_argument(
+        '--db-direct-dry-run',
+        action='store_true',
+        help='Dry run for --db-direct (no DB writes)'
     )
 
     args = parser.parse_args()
@@ -694,17 +935,35 @@ def main():
 
     # Determine date filter for planned delivery date
     # Default: today only (unless --all-dates is specified)
-    apply_date_filter = not args.all_dates
+    if args.all_dates and args.include_overdue:
+        logger.warning("Both --all-dates and --include-overdue set; using --all-dates.")
+        args.include_overdue = False
+    if args.all_dates:
+        date_mode = "all"
+    elif args.include_overdue:
+        date_mode = "overdue"
+    else:
+        date_mode = "exact"
+    apply_date_filter = date_mode != "all"
     target_date = args.planned_date  # Custom date or None (will default to today)
 
     include_archive = not args.no_archive
+    include_orders = None
+    if args.include_orders:
+        if args.include_orders.strip().lower() != 'none':
+            include_orders = [s.strip() for s in args.include_orders.split(',') if s.strip()]
 
     print(f"  State filter: {state_filter or 'ALL'}")
     print(f"  Lookback: {args.days} days")
     print(f"  Include archive: {include_archive}")
+    print(f"  Refetch missing costs: {args.refetch_missing_costs}")
+    print(f"  DB direct ingest: {args.db_direct}")
     if apply_date_filter:
-        display_date = target_date or datetime.now().strftime('%d.%m.%Y')
-        print(f"  Planned date filter: {display_date}")
+        display_date = target_date or datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
+        if date_mode == "overdue":
+            print(f"  Planned date filter: <= {display_date}")
+        else:
+            print(f"  Planned date filter: {display_date}")
     else:
         print(f"  Planned date filter: ALL dates")
     print(f"  Output: {args.output}")
@@ -718,6 +977,12 @@ def main():
             days=args.days,
             verbose=args.verbose,
             include_archive=include_archive,
+            refetch_missing_costs=args.refetch_missing_costs,
+            db_direct=args.db_direct,
+            db_direct_dry_run=args.db_direct_dry_run,
+            delivery_type=args.delivery_type,
+            signature_required=args.signature_required,
+            include_orders=include_orders,
         )
     else:
         print(f"Exporting from {args.store}...")
@@ -727,6 +992,12 @@ def main():
             days=args.days,
             verbose=args.verbose,
             include_archive=include_archive,
+            refetch_missing_costs=args.refetch_missing_costs,
+            db_direct=args.db_direct,
+            db_direct_dry_run=args.db_direct_dry_run,
+            delivery_type=args.delivery_type,
+            signature_required=args.signature_required,
+            include_orders=include_orders,
         )
 
     print(f"\nTotal rows from API: {len(rows)}")
@@ -739,7 +1010,12 @@ def main():
 
     # Apply planned date filter (Phase 12 Part 3 - only pending orders for today)
     if apply_date_filter and rows:
-        rows = filter_rows_by_planned_date(rows, target_date, verbose=args.verbose)
+        rows = filter_rows_by_planned_date(
+            rows,
+            target_date,
+            verbose=args.verbose,
+            include_overdue=(date_mode == "overdue"),
+        )
         print(f"Rows after date filter: {len(rows)}")
 
     if not rows:

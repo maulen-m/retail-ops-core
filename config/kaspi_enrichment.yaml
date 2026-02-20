@@ -1,0 +1,10 @@
+enabled: true
+stores_allowlist: []
+fetch_entries: true
+fetch_entry_detail: false
+fetch_entry_product: false
+fetch_masterproduct: false
+fetch_merchantproduct: false
+fetch_point_of_service: false
+max_orders_per_run: 1500
+default_lookback_days: 7

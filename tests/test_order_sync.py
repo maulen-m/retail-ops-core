@@ -29,6 +29,7 @@ from core.sync.order_sync_engine import (
     MultiSyncResult,
 )
 from core.integrations.kaspi_api_client import APIResponse
+from core.integrations.kaspi_order_stage import StageCode, stage_to_internal_status
 
 
 # =============================================================================
@@ -52,15 +53,39 @@ def temp_db():
             store_code TEXT NOT NULL,
             channel_code TEXT DEFAULT 'KSP',
             kaspi_status TEXT,
+            kaspi_status_detail TEXT,
             internal_status TEXT,
             unit_price_kzt REAL,
             quantity INTEGER DEFAULT 1,
             created_at TEXT,
             planned_shipment_date TEXT,
+            planned_delivery_date TEXT,
+            courier_transmission_planning_date TEXT,
+            courier_transmission_date TEXT,
+            actual_shipment_date TEXT,
             waybill_url TEXT,
+            waybill_number TEXT,
+            delivery_mode TEXT,
+            payment_mode TEXT,
+            signature_required INTEGER,
+            credit_term INTEGER,
+            pre_order INTEGER,
+            approved_by_bank_date TEXT,
+            reservation_date TEXT,
+            delivery_cost REAL,
+            delivery_cost_for_seller REAL,
+            delivery_address TEXT,
+            is_imei_required INTEGER,
+            express INTEGER,
+            returned_to_warehouse INTEGER,
+            category TEXT,
+            customer_first_name TEXT,
+            customer_last_name TEXT,
+            customer_phone TEXT,
             source TEXT DEFAULT 'API',
             imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
             status_updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
             assigned_size TEXT,
             size_source TEXT,
             size_confidence TEXT,
@@ -142,20 +167,46 @@ def sample_api_orders():
             'attributes': {
                 'code': '111111',
                 'state': 'NEW',
+                'status': 'APPROVED_BY_BANK',
                 'totalPrice': 10000,
                 'deliveryCost': 0,
+                'deliveryCostForSeller': 150,
+                'deliveryMode': 'DELIVERY_LOCAL',
+                'paymentMode': 'PREPAID',
+                'signatureRequired': False,
+                'creditTerm': 12,
+                'preOrder': False,
+                'approvedByBankDate': int(datetime(2025, 12, 7, 10, 5).timestamp() * 1000),
+                'reservationDate': int(datetime(2025, 12, 9, 12, 0).timestamp() * 1000),
+                'isImeiRequired': False,
+                'category': 'Sportswear',
                 'creationDate': int(datetime(2025, 12, 7, 10, 0).timestamp() * 1000),
                 'kaspiDelivery': {
                     'waybill': None,
+                    'waybillNumber': 'WB-111',
                     'plannedDeliveryDate': int(datetime(2025, 12, 10).timestamp() * 1000),
+                    'courierTransmissionPlanningDate': int(datetime(2025, 12, 8, 9, 0).timestamp() * 1000),
+                    'courierTransmissionDate': int(datetime(2025, 12, 8, 15, 30).timestamp() * 1000),
+                    'deliveryCostForSeller': 140,
+                    'express': False,
+                    'returnedToWarehouse': False,
+                    'address': {
+                        'formattedAddress': 'Almaty, Abay 1'
+                    },
                 }
-            }
+            },
+            'included_user': {
+                'firstName': 'Ivan',
+                'lastName': 'Ivanov',
+                'cellPhone': '77001234567',
+            },
         },
         {
             'id': 'order-002',
             'attributes': {
                 'code': '222222',
                 'state': 'ACCEPTED_BY_MERCHANT',
+                'status': 'ACCEPTED_BY_MERCHANT',
                 'totalPrice': 15000,
                 'deliveryCost': 500,
                 'creationDate': int(datetime(2025, 12, 6, 14, 30).timestamp() * 1000),
@@ -170,6 +221,7 @@ def sample_api_orders():
             'attributes': {
                 'code': '333333',
                 'state': 'KASPI_DELIVERY',
+                'status': 'ACCEPTED_BY_MERCHANT',
                 'totalPrice': 20000,
                 'deliveryCost': 1000,
                 'creationDate': int(datetime(2025, 12, 5, 9, 0).timestamp() * 1000),
@@ -252,9 +304,16 @@ class TestOrderParsing:
         assert parsed['order_id'] == '111111'
         assert parsed['store_code'] == 'UNIVERSAL'
         assert parsed['kaspi_status'] == 'NEW'
+        assert parsed['kaspi_status_detail'] == 'APPROVED_BY_BANK'
         assert parsed['internal_status'] == 'NEW'
         assert parsed['unit_price_kzt'] == 10000
         assert parsed['waybill_url'] is None
+        assert parsed['delivery_mode'] == 'DELIVERY_LOCAL'
+        assert parsed['payment_mode'] == 'PREPAID'
+        assert parsed['signature_required'] is False
+        assert parsed['customer_first_name'] == 'Ivan'
+        assert parsed['customer_last_name'] == 'Ivanov'
+        assert parsed['customer_phone'] == '77001234567'
 
     def test_parse_accepted_order(self, engine, sample_api_orders):
         """Test parsing ACCEPTED_BY_MERCHANT order."""
@@ -271,7 +330,7 @@ class TestOrderParsing:
         parsed = engine._parse_api_order(order, 'UNIVERSAL')
 
         assert parsed['kaspi_status'] == 'KASPI_DELIVERY'
-        assert parsed['internal_status'] == 'SHIPPED'
+        assert parsed['internal_status'] == 'READY'
 
     def test_parse_dates(self, engine, sample_api_orders):
         """Test date parsing."""
@@ -286,43 +345,29 @@ class TestOrderParsing:
 # STATE MAPPING TESTS
 # =============================================================================
 
-class TestStateMapping:
-    """Tests for Kaspi state to internal status mapping."""
+class TestStageMapping:
+    """Tests for StageCode to internal status mapping."""
 
-    def test_map_new_state(self, engine):
-        """Test mapping NEW state."""
-        status = engine._map_state_to_status('NEW')
-        assert status == 'NEW'
+    def test_stage_new_mapping(self):
+        assert stage_to_internal_status(StageCode.NEW_APPROVED) == 'NEW'
 
-    def test_map_accepted_state(self, engine):
-        """Test mapping ACCEPTED_BY_MERCHANT state."""
-        status = engine._map_state_to_status('ACCEPTED_BY_MERCHANT')
-        assert status == 'ACCEPTED'
+    def test_stage_accepted_mapping(self):
+        assert stage_to_internal_status(StageCode.ACCEPTED_PENDING_ASSEMBLY) == 'ACCEPTED'
 
-    def test_map_assembly_state(self, engine):
-        """Test mapping ASSEMBLY state."""
-        status = engine._map_state_to_status('ASSEMBLY')
-        assert status == 'READY'
+    def test_stage_ready_mapping(self):
+        assert stage_to_internal_status(StageCode.ASSEMBLED_PENDING_HANDOVER) == 'READY'
 
-    def test_map_delivery_state(self, engine):
-        """Test mapping KASPI_DELIVERY state."""
-        status = engine._map_state_to_status('KASPI_DELIVERY')
-        assert status == 'SHIPPED'
+    def test_stage_shipped_mapping(self):
+        assert stage_to_internal_status(StageCode.IN_DELIVERY) == 'SHIPPED'
 
-    def test_map_completed_state(self, engine):
-        """Test mapping COMPLETED state."""
-        status = engine._map_state_to_status('COMPLETED')
-        assert status == 'COMPLETED'
+    def test_stage_completed_mapping(self):
+        assert stage_to_internal_status(StageCode.ISSUED_COMPLETED) == 'COMPLETED'
 
-    def test_map_cancelled_state(self, engine):
-        """Test mapping CANCELLED state."""
-        status = engine._map_state_to_status('CANCELLED')
-        assert status == 'CANCELLED'
+    def test_stage_cancelled_mapping(self):
+        assert stage_to_internal_status(StageCode.CANCELLED) == 'CANCELLED'
 
-    def test_map_unknown_state(self, engine):
-        """Test mapping unknown state defaults to NEW."""
-        status = engine._map_state_to_status('UNKNOWN_STATE')
-        assert status == 'NEW'
+    def test_stage_unknown_mapping(self):
+        assert stage_to_internal_status(StageCode.UNKNOWN) == 'NEW'
 
 
 # =============================================================================
@@ -366,8 +411,11 @@ class TestDatabaseOperations:
         engine._save_order(conn, 'UNIVERSAL', order)
         conn.commit()
 
-        # Update with new state
-        order['attributes']['state'] = 'ACCEPTED_BY_MERCHANT'
+        # Update with new state/status
+        order['attributes']['state'] = 'KASPI_DELIVERY'
+        order['attributes']['status'] = 'ACCEPTED_BY_MERCHANT'
+        order['attributes'].setdefault('kaspiDelivery', {})['courierTransmissionDate'] = None
+        order['attributes'].setdefault('kaspiDelivery', {})['waybillNumber'] = None
         result = engine._save_order(conn, 'UNIVERSAL', order)
 
         assert result['inserted'] is False
@@ -393,6 +441,79 @@ class TestDatabaseOperations:
         result = engine._save_order(conn, 'UNIVERSAL', order)
 
         assert result['status_change'] is None
+
+        conn.close()
+
+    def test_same_status_does_not_restamp_status_timestamp(self, engine, temp_db, sample_api_orders):
+        """Same-status refresh must keep status timestamp but refresh synced timestamp."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+
+        order = sample_api_orders[0]
+        engine._save_order(conn, 'UNIVERSAL', order)
+        conn.commit()
+
+        conn.execute(
+            """
+            UPDATE fact_orders_kaspi
+            SET status_updated_at = ?, synced_at = ?
+            WHERE order_id = ? AND store_code = ?
+            """,
+            ('2026-01-01 00:00:00', '2026-01-01 00:00:00', '111111', 'UNIVERSAL'),
+        )
+        conn.commit()
+
+        result = engine._save_order(conn, 'UNIVERSAL', order)
+        assert result['status_change'] is None
+
+        row = conn.execute(
+            """
+            SELECT status_updated_at, synced_at
+            FROM fact_orders_kaspi
+            WHERE order_id = ? AND store_code = ?
+            """,
+            ('111111', 'UNIVERSAL'),
+        ).fetchone()
+        assert row['status_updated_at'] == '2026-01-01 00:00:00'
+        assert row['synced_at'] != '2026-01-01 00:00:00'
+
+        conn.close()
+
+    def test_status_change_restamps_status_timestamp_and_synced_at(self, engine, temp_db, sample_api_orders):
+        """Material status change must restamp status_updated_at and synced_at."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+
+        order = sample_api_orders[0]
+        engine._save_order(conn, 'UNIVERSAL', order)
+        conn.commit()
+
+        conn.execute(
+            """
+            UPDATE fact_orders_kaspi
+            SET status_updated_at = ?, synced_at = ?
+            WHERE order_id = ? AND store_code = ?
+            """,
+            ('2026-01-01 00:00:00', '2026-01-01 00:00:00', '111111', 'UNIVERSAL'),
+        )
+        conn.commit()
+
+        order['attributes']['state'] = 'ACCEPTED_BY_MERCHANT'
+        order['attributes']['status'] = 'ACCEPTED_BY_MERCHANT'
+        result = engine._save_order(conn, 'UNIVERSAL', order)
+        assert result['status_change'] is not None
+
+        row = conn.execute(
+            """
+            SELECT status_updated_at, synced_at, internal_status
+            FROM fact_orders_kaspi
+            WHERE order_id = ? AND store_code = ?
+            """,
+            ('111111', 'UNIVERSAL'),
+        ).fetchone()
+        assert row['internal_status'] == 'ACCEPTED'
+        assert row['status_updated_at'] != '2026-01-01 00:00:00'
+        assert row['synced_at'] != '2026-01-01 00:00:00'
 
         conn.close()
 
@@ -449,8 +570,11 @@ class TestSyncStore:
         # First sync
         engine.sync_store(store_code='UNIVERSAL', dry_run=False)
 
-        # Update order state
-        sample_api_orders[0]['attributes']['state'] = 'ACCEPTED_BY_MERCHANT'
+        # Update order state/status
+        sample_api_orders[0]['attributes']['state'] = 'KASPI_DELIVERY'
+        sample_api_orders[0]['attributes']['status'] = 'ACCEPTED_BY_MERCHANT'
+        sample_api_orders[0]['attributes'].setdefault('kaspiDelivery', {})['courierTransmissionDate'] = None
+        sample_api_orders[0]['attributes'].setdefault('kaspiDelivery', {})['waybillNumber'] = None
         mock_client.list_all_orders.return_value = sample_api_orders
 
         # Second sync
@@ -574,7 +698,8 @@ class TestUtilityMethods:
         mock_client = MagicMock()
 
         # Make one order READY with waybill
-        sample_api_orders[1]['attributes']['state'] = 'ASSEMBLY'
+        sample_api_orders[1]['attributes']['state'] = 'KASPI_DELIVERY'
+        sample_api_orders[1]['attributes']['assembled'] = True
         mock_client.list_all_orders.return_value = sample_api_orders
         mock_get_client.return_value = mock_client
 
@@ -582,9 +707,8 @@ class TestUtilityMethods:
 
         orders = engine.get_ready_for_shipment(store_code='UNIVERSAL')
 
-        # Order 222222 should be READY with waybill
-        assert len(orders) == 1
-        assert orders[0]['order_id'] == '222222'
+        # Orders with waybills should be returned
+        assert {order['order_id'] for order in orders} == {'222222', '333333'}
 
     @patch.object(OrderSyncEngine, '_get_client')
     def test_get_sync_stats(self, mock_get_client, engine, sample_api_orders):

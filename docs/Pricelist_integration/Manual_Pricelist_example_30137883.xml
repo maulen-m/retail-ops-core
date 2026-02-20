@@ -1,0 +1,1346 @@
+<?xml version="1.0" encoding="UTF-8"?><kaspi_catalog xmlns="kaspiShopping" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://kaspi.kz/kaspishopping.xsd" date="2026-01-26 11:01">
+    <company>30137883</company>
+    <merchantid>30137883</merchantid>
+    <offers>
+        <offer sku="108381956_872156561">
+            <model/>
+            <brand>podium</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9900</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="119697070_143058892">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8888</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE51_WHITE_S_134547500">
+            <model>Line51_мужской_42_134547500_(134547486)_(LINE51)_(S)</model>
+            <brand>acmewear1</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9996.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_L">
+            <model>Принт 5в1  черный мужской 46-48 135894685 (Line52) (L)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="298.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">13989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="108381956_504112257">
+            <model/>
+            <brand>podium</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9671</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="117193721_563820792">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8888</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_2XL">
+            <model>Принт 5в1  черный мужской 52-54 135894681 (Line52) (2XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="283.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9000</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_XL_102792057">
+            <model>Костюм_мужской_Хус_мужской_48_102792057_(102792061)_(Hus)_(XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9999.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_62_(4XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="528.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14979</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_52-2XL_(2XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="551.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_XL">
+            <model>Принт 5в1  черный мужской 50-52 135894680 (Line52) (XL)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="299.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">12989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_XL_102792061">
+            <model>Костюм_мужской_Хус_мужской_50_102792061_(102792061)_(Hus)_(XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE51_WHITE_XL_134547486">
+            <model>Line51_мужской_50_134547486_(134547486)_(LINE51)_(XL)</model>
+            <brand>acmewear1</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9953.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_L_147852828">
+            <model>Костюм_мужской_Хус_мужской_46_147852828_(102792061)_(Hus)_(L)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116155651_44-46_(M)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="522.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8988</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="109780811_708318003">
+            <model/>
+            <brand>airlife</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8888</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_3XL_102792066">
+            <model>Костюм_мужской_Хус_мужской_54_102792066_(102792061)_(Hus)_(3XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="108381956_808884428">
+            <model>Комплект Podium RASH-32 комплект 5в1 черный 42</model>
+            <brand>podium</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">18990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_105133574_42-44_(M)">
+            <model/>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="555.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9699</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_M_131516382">
+            <model>Костюм_мужской_Хус_мужской_44_131516382_(102792061)_(Hus)_(M)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE51_WHITE_3XL_134547477">
+            <model>Line51_мужской_54_134547477_(134547486)_(LINE51)_(3XL)</model>
+            <brand>acmewear1</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9961.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_52_(2XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="525.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8900</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE51_WHITE_2XL_134547481">
+            <model>Line51_мужской_52_134547481_(134547486)_(LINE51)_(2XL)</model>
+            <brand>acmewear1</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9949.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE51_WHITE_4XL_134547472">
+            <model>Line51_мужской_56_134547472_(134547486)_(LINE51)_(4XL)</model>
+            <brand>acmewear1</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9979.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_S_131516381">
+            <model>Костюм_мужской_Хус_мужской_42_131516381_(102792061)_(Hus)_(S)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="112128130_165443835">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9499</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE51_WHITE_L_134547493">
+            <model>Line51_мужской_46_134547493_(134547486)_(LINE51)_(L)</model>
+            <brand>acmewear1</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9975.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE51_WHITE_XL_134547490">
+            <model>Line51_мужской_48_134547490_(134547486)_(LINE51)_(XL)</model>
+            <brand>acmewear1</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9957.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE51_WHITE_M_134547494">
+            <model>Line51_мужской_44_134547494_(134547486)_(LINE51)_(M)</model>
+            <brand>acmewear1</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9994.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_46/L_(L)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8924</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE51_WHITE_4XL_134547465">
+            <model>Line51_мужской_58_134547465_(134547486)_(LINE51)_(4XL)</model>
+            <brand>acmewear1</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="9979.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_2XL_102792063">
+            <model>Костюм_мужской_Хус_мужской_52_102792063_(102792061)_(Hus)_(2XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_50_(XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_M">
+            <model>Принт 5в1  черный мужской 44-46 135894693 (Line52) (M)</model>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="299.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_NEW-CLO2_MEN_HUS_GREEN_4XL_102792068">
+            <model>Костюм_мужской_Хус_мужской_56_102792068_(102792061)_(Hus)_(4XL)</model>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="10000.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="108381956_698355771">
+            <model/>
+            <brand>podium</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_48/XL_(XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8975</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_46_(L)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="531.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9000</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_105133574_54-56_(3XL)">
+            <model/>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="534.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11289</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_42_(S)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="273.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10354</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_50/2XL_(2XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="566.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_48_(XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8919</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_52/3XL_(3XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="577.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9000</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117193721_56_(3XL)">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="363.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9341</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117193721_62_(4XL)">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="365.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9629</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117193721_58_(4XL)">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="366.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9913</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117193721_64_(4XL)">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="364.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9731</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117193721_66_(4XL)">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="364.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9781</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_42_(S)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="266.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9067</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_50/52, 54_(3XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="581.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116155651_54-56_(3XL)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="478.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8930</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="109953090_497612609">
+            <model/>
+            <brand>sports</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9520</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_52-54/52-54_(3XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="561.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8983</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_44/M_(M)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8888</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_46/48, 50_(XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="541.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8990</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_42-S_(S)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="276.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">13000</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_44/46, 48_(XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="582.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9000</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_48_(XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9799</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_105133574_48-50_(XL)">
+            <model/>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="519.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9490</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_56_(3XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="587.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="108381956_888082755">
+            <model/>
+            <brand>podium</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="112128130_755487589">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="108381956_861448789">
+            <model/>
+            <brand>podium</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_60_(4XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="570.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_60-6XL_(4XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="551.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116155651_52-54_(2XL)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="448.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9485</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="Принт 5в1  черный мужской 52 109953157 (Line52) (2XL)">
+            <model>CL_OC_MEN_LINE52_BLACK_109953157_52_(2XL)</model>
+            <brand>sports</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="299.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_109953019_48_(XL)">
+            <model/>
+            <brand>sports</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="363.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14980</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_105133574_50-52_(XL)">
+            <model/>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9888</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_48_(XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="545.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_60_(4XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="589.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">13999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_109953056_46_(L)">
+            <model/>
+            <brand>sports</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="365.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9575</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_46_(L)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="550.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9997</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116515378_44-46_(M)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="359.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11909</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_105133574_52-54_(2XL)">
+            <model/>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="504.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_105133574_46-48_(L)">
+            <model/>
+            <brand>s-sport</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="514.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_56-4XL_(4XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="551.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11997</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_54_(3XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="550.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9498</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_44_(M)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="550.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_60_(4XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="545.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14160</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_110686476_54_(3XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="543.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_110686476_50_(XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="540.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9808</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116155651_50-52_(XL)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="503.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8939</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116515378_50-52_(XL)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="342.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8989</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_42_(S)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="266.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_50_(XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="594.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">12898</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_110686476_46_(L)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="545.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_110686476_52_(2XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="542.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9929</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_54_(3XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="551.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9498</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_52_(2XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="551.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9497</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_48/50, 52_(2XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="565.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10897</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_56_(4XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="547.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14113</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_42_(S)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="289.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11887</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116155651_46-48_(L)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="205.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8996</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_52_(2XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="600.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">12998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116155651_48-50_(XL)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9068</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_44_(M)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8984</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_50_(XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9427</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_56-58/56, 58_(4XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="550.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10666</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116515378_46-48_(L)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="345.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11909</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_56-2XL_(3XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="547.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9699</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116515378_52-54_(2XL)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="359.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_56_(3XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="563.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_44_(M)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_42/44, 46_(L)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="570.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9997</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_109952859_46_(L)">
+            <model/>
+            <brand>sports-avto</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="360.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8899</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_54_(3XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="583.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_50_(XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="549.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117193721_52_(2XL)">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9497</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_58_(4XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="543.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14120</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116515378_48-50_(XL)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8949</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_58_(4XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="590.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">10999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_46_(L)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="568.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11886</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_120939888_58_(4XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="569.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11999</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_116515378_54-56_(3XL)">
+            <model/>
+            <brand>pro-combat</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="358.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_42/S_(S)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="277.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9889</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_44_(M)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="538.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9067</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_108382478_52_(2XL)">
+            <model/>
+            <brand>alpika</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="581.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9636</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_103217238_54_(3XL)">
+            <model/>
+            <brand>antec-odezda</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="567.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8957</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_110686476_56_(3XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="540.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">8998</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_110686476_48_(XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="542.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9890</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_46_(L)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9795</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_110686476_58_(4XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="546.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14976</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117193721_54_(3XL)">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14934</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_50-52_(XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9858</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_54-56_(3XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="536.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11105</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_62-7XL_(4XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="548.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14940</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117193721_48_(XL)">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="364.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14936</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_110686476_60_(4XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="542.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14932</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_58-5XL_(4XL)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="551.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14940</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117193721_50_(XL)">
+            <model/>
+            <brand>fashion</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14934</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_117313518_52-54_(2XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="527.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">11101</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_110686476_62_(4XL)">
+            <model/>
+            <brand/>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="543.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">14940</cityprice>
+            </cityprices>
+        </offer>
+        <offer sku="CL_OC_MEN_LINE52_BLACK_112128130_46-M_(L)">
+            <model/>
+            <brand>imperial</brand>
+            <availabilities>
+                <availability available="yes" storeId="30137883_PP1" preOrder="0" stockCount="551.0"/>
+            </availabilities>
+            <cityprices>
+                <cityprice cityId="710000000">9167</cityprice>
+            </cityprices>
+        </offer>
+    </offers>
+</kaspi_catalog>

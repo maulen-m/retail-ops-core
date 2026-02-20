@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.db import get_db
-from core.calc.economics import calc_line_values
+from core.calc.economics import calc_cogs, calc_delivery_fee, calc_net_rev
 
 
 def get_raw_sales_with_sku_data(conn, limit: int | None = None) -> list[dict]:
@@ -42,6 +42,7 @@ def get_raw_sales_with_sku_data(conn, limit: int | None = None) -> list[dict]:
             r.sku_id,
             r.quantity,
             r.sell_price_kzt,
+            r.delivery_fee_seller,
             r.channel,
             s.sku_key,
             s.my_size,
@@ -72,13 +73,24 @@ def transform_to_fact_sales(raw_row: dict) -> dict:
     Returns:
         Dict ready for fact_sales insert
     """
-    # Calculate all economics
-    econ = calc_line_values(
-        sell_price_kzt=raw_row["sell_price_kzt"],
-        base_cost_cny=raw_row["base_cost_cny"],
+    # Use seller delivery fee when available; fallback to matrix
+    delivery_fee = raw_row.get("delivery_fee_seller")
+    if delivery_fee is None or delivery_fee == 0:
+        delivery_fee = calc_delivery_fee(
+            raw_row["sell_price_kzt"],
+            weight_kg=raw_row["weight_kg"],
+            delivery_type="city",
+        )
+
+    cogs_unit = calc_cogs(raw_row["base_cost_cny"], raw_row["weight_kg"])
+    net_rev_unit = calc_net_rev(
+        raw_row["sell_price_kzt"],
+        delivery_fee=delivery_fee,
         weight_kg=raw_row["weight_kg"],
-        quantity=raw_row["quantity"],
+        delivery_type="city",
+        as_of_date=raw_row["order_date"],
     )
+    profit_unit = net_rev_unit - cogs_unit
 
     return {
         "order_id": raw_row["order_id"],
@@ -90,13 +102,13 @@ def transform_to_fact_sales(raw_row: dict) -> dict:
         "sell_price_kzt": raw_row["sell_price_kzt"],
         "product_type": raw_row["product_type"],
         "channel": raw_row["channel"] or "kaspi",
-        "delivery_fee": econ["delivery_fee"],
-        "net_rev_unit": econ["net_rev_unit"],
-        "line_net_rev": econ["line_net_rev"],
-        "cogs_unit": econ["cogs_unit"],
-        "cogs_line": econ["cogs_line"],
-        "profit_unit": econ["profit_unit"],
-        "profit_line": econ["profit_line"],
+        "delivery_fee": delivery_fee,
+        "net_rev_unit": net_rev_unit,
+        "line_net_rev": net_rev_unit * raw_row["quantity"],
+        "cogs_unit": cogs_unit,
+        "cogs_line": cogs_unit * raw_row["quantity"],
+        "profit_unit": profit_unit,
+        "profit_line": profit_unit * raw_row["quantity"],
     }
 
 

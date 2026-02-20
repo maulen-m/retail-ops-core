@@ -36,14 +36,19 @@ column_aliases:
   status:
     - "Статус"
     - "Status"
+  product_name:
+    - "Название товара"
+    - "Название товара в Kaspi Магазине"
   price:
     - "Цена"
     - "Стоимость"
     - "Price"
+    - "Сумма"
   store:
     - "Склад"
     - "Warehouse"
     - "Точка выдачи"
+    - "Склад передачи КД"
 
 # Status filter values
 status_filters:

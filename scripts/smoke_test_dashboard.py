@@ -11,9 +11,11 @@ Runs the dashboard generator and validates:
 Usage:
     python scripts/smoke_test_dashboard.py
     python scripts/smoke_test_dashboard.py --skip-generate  # Just run validations
+    python scripts/smoke_test_dashboard.py --fixture tests/fixtures/po_golden/po_contract_cases.json
 """
 
 import argparse
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -23,6 +25,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
+
+from core.validation.dashboard_contract import (
+    DEFAULT_FIXTURE,
+    DEFAULT_PO_CONTRACT,
+    load_cases,
+    build_drafts,
+    generate_dashboard_output,
+    validate_dashboard_output,
+    hash_output,
+)
+from core.validation.tolerances import parse_po_contract_tolerances
+from core.validation.production_readiness import (
+    DEFAULT_DASHBOARD_PATH,
+    evaluate_production_readiness,
+)
 
 
 def run_dashboard_generation():
@@ -225,6 +242,63 @@ def validate_consistency():
     return errors, warnings
 
 
+def validate_production_readiness_output():
+    """Validate coverage requirements using dashboard output + DB."""
+    print("\n" + "=" * 60)
+    print("STEP 4: Validating production readiness...")
+    print("=" * 60)
+
+    errors = []
+    warnings = []
+
+    if not DEFAULT_DASHBOARD_PATH.exists():
+        errors.append(f"Dashboard output missing: {DEFAULT_DASHBOARD_PATH}")
+        return errors, warnings
+
+    try:
+        payload = json.loads(DEFAULT_DASHBOARD_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        errors.append(f"Invalid dashboard JSON: {exc}")
+        return errors, warnings
+
+    report = evaluate_production_readiness(payload, db_path=DB_PATH)
+
+    for key, value in report.details.items():
+        print(f"  {key}: {value}")
+
+    if report.blockers:
+        for blocker in report.blockers:
+            errors.append(blocker)
+    if report.warnings:
+        for warning in report.warnings:
+            warnings.append(warning)
+
+    return errors, warnings
+
+
+def run_fixture_smoke_test(fixture_path: Path, contract_path: Path) -> bool:
+    """Run deterministic dashboard contract validation on fixture input."""
+    print("\n" + "=" * 60)
+    print("FIXTURE DASHBOARD CONTRACT TEST")
+    print("=" * 60)
+
+    cases = load_cases(fixture_path)
+    drafts = build_drafts(cases)
+    output = generate_dashboard_output(cases)
+    tolerances = parse_po_contract_tolerances(contract_path)
+
+    errors = validate_dashboard_output(output, drafts, tolerances)
+    if errors:
+        print(f"\nERRORS ({len(errors)}):")
+        for err in errors:
+            print(f"  ❌ {err}")
+        return False
+
+    print("\n✅ FIXTURE CONTRACT PASSED")
+    print(f"  Output hash: {hash_output(output)}")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Smoke test for PO dashboard")
     parser.add_argument(
@@ -232,11 +306,27 @@ def main():
         action="store_true",
         help="Skip generation, just run validations"
     )
+    parser.add_argument(
+        "--fixture",
+        type=str,
+        help="Run deterministic contract test using fixture JSON"
+    )
+    parser.add_argument(
+        "--po-contract",
+        type=str,
+        help="Override PO_CONTRACT.md path for tolerances"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
     print("PO Dashboard Smoke Test")
     print("=" * 60)
+
+    if args.fixture:
+        fixture_path = Path(args.fixture) if args.fixture else DEFAULT_FIXTURE
+        contract_path = Path(args.po_contract) if args.po_contract else DEFAULT_PO_CONTRACT
+        ok = run_fixture_smoke_test(fixture_path, contract_path)
+        sys.exit(0 if ok else 1)
 
     all_errors = []
     all_warnings = []
@@ -256,6 +346,11 @@ def main():
 
     # Step 3: Validate consistency
     errors, warnings = validate_consistency()
+    all_errors.extend(errors)
+    all_warnings.extend(warnings)
+
+    # Step 4: Validate production readiness (coverage requirements)
+    errors, warnings = validate_production_readiness_output()
     all_errors.extend(errors)
     all_warnings.extend(warnings)
 
