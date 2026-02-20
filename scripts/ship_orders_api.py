@@ -782,28 +782,33 @@ def ship_orders(
                 shipped += 1
                 continue
 
-            # Helper: verify assemble state (handles delayed state updates)
-            def _wait_for_assembled(order_code: str, base64_hint: Optional[str] = None) -> bool:
-                for attempt in range(ASSEMBLE_VERIFY_RETRIES):
-                    try:
-                        detail = None
-                        if base64_hint:
-                            detail = client.get_order_by_id(base64_hint)
-                            if detail.success:
-                                attrs = detail.data.get('attributes', {})
-                                if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
-                                    if verbose:
-                                        print("      -> Already assembled, skipping")
-                                    return True
-                        detail = client.get_order(order_code)
+            def _is_assembled_now(order_code: str, base64_hint: Optional[str] = None) -> bool:
+                try:
+                    if base64_hint and hasattr(client, "get_order_by_id"):
+                        detail = client.get_order_by_id(base64_hint)
                         if detail.success:
                             attrs = detail.data.get('attributes', {})
                             if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
-                                if verbose:
-                                    print("      -> Already assembled, skipping")
                                 return True
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
+                try:
+                    detail = client.get_order(order_code)
+                    if detail.success:
+                        attrs = detail.data.get('attributes', {})
+                        if attrs.get('assembled') is True or client.get_waybill_url(detail.data):
+                            return True
+                except Exception:
+                    pass
+                return False
+
+            # Helper: verify assemble state (handles delayed state updates)
+            def _wait_for_assembled(order_code: str, base64_hint: Optional[str] = None) -> bool:
+                for attempt in range(ASSEMBLE_VERIFY_RETRIES):
+                    if _is_assembled_now(order_code, base64_hint):
+                        if verbose:
+                            print("      -> Assembled confirmed")
+                        return True
                     if attempt < ASSEMBLE_VERIFY_RETRIES - 1:
                         time.sleep(ASSEMBLE_VERIFY_DELAY)
                 return False
@@ -819,9 +824,12 @@ def ship_orders(
                 try:
                     result_fallback = client.assemble_order(order_id, parcel_count=parcel_count)
                     if result_fallback.success:
-                        if verbose:
-                            print("      -> Shipped OK (fallback)")
-                        return True
+                        if _wait_for_assembled(order_id, base64_hint):
+                            if verbose:
+                                print("      -> Shipped OK (fallback)")
+                            return True
+                        _queue_retry(order_id, parcel_count)
+                        return False
                     err_text = str(result_fallback.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
                         if _wait_for_assembled(order_id, base64_hint):
@@ -854,9 +862,14 @@ def ship_orders(
             try:
                 result = client.assemble_order_by_id(base64_id, order_id, parcel_count=parcel_count)
                 if result.success:
-                    shipped += 1
-                    if verbose:
-                        print("      -> Shipped OK")
+                    if _is_assembled_now(order_id, base64_id):
+                        shipped += 1
+                        if verbose:
+                            print("      -> Shipped OK")
+                    elif _fallback_assemble("Assemble accepted but not confirmed", base64_id):
+                        shipped += 1
+                    else:
+                        _queue_retry(order_id, parcel_count)
                 else:
                     # Some API errors return 404-equivalent errors without raising.
                     err_text = str(result.error or "")
@@ -919,9 +932,12 @@ def ship_orders(
                         continue
                     result = client.assemble_order_by_id(base64_id, order_code, parcel_count=parcels)
                     if result.success:
-                        shipped += 1
-                        if verbose:
-                            print(f"      {order_code}: Shipped OK (refresh)")
+                        if _is_assembled_now(order_code, base64_id):
+                            shipped += 1
+                            if verbose:
+                                print(f"      {order_code}: Shipped OK (refresh)")
+                        else:
+                            still_retry[order_code] = parcels
                         continue
                     err_text = str(result.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
@@ -938,7 +954,10 @@ def ship_orders(
                     break
             if retry_queue:
                 for order_code in retry_queue:
-                    errors.append(f"{order_code}: Resource not found after refresh")
+                    errors.append(f"{order_code}: Assemble not confirmed after refresh")
+        elif retry_queue:
+            for order_code in retry_queue:
+                errors.append(f"{order_code}: Assemble not confirmed (refresh disabled)")
 
     return {
         'shipped': shipped,

@@ -289,3 +289,191 @@ def test_derive_dynamic_since_days_expands_window_for_stale_backlog(tmp_path):
     )
 
     assert days >= 29
+
+
+def test_ship_orders_does_not_count_unconfirmed_assemble(monkeypatch):
+    class _FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def assemble_order_by_id(self, base64_id, order_code, parcel_count=1):
+            return APIResponse(success=True, data={"ok": True}, status_code=200)
+
+        def assemble_order(self, order_code, parcel_count=1):
+            return APIResponse(success=True, data={"ok": True}, status_code=200)
+
+        def get_order_by_id(self, base64_id):
+            return APIResponse(
+                success=True,
+                data={"attributes": {"assembled": False, "kaspiDelivery": {"waybill": None}}},
+                status_code=200,
+            )
+
+        def get_order(self, order_code):
+            return APIResponse(
+                success=True,
+                data={"attributes": {"assembled": False, "kaspiDelivery": {"waybill": None}}},
+                status_code=200,
+            )
+
+        def get_waybill_url(self, order):
+            return None
+
+        def get_pending_assembly_orders(self, since=None):
+            return APIResponse(success=True, data={"data": []}, status_code=200)
+
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _FakeClient)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_RETRIES", 1)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_DELAY", 0)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_REFRESH_RETRIES", 0)
+    monkeypatch.setattr(ship_mod, "STORE_NAME_TO_API_CODE", {"Universal": "UNIVERSAL"})
+
+    orders_by_id = {
+        "829336594": [
+            ship_mod.OrderItem(
+                order_id="829336594",
+                store_name="Universal",
+                kaspi_name_core="Принт_5в1_черный",
+                my_size="XL",
+                sku_key="CL_OC_MEN_LINE52_BLACK",
+                sku_id="CL_OC_MEN_LINE52_BLACK_XL",
+                quantity=1,
+                planned_date=date(2026, 2, 20),
+            )
+        ]
+    }
+    pending_orders = {"UNIVERSAL": {"829336594"}}
+    order_id_to_base64 = {"UNIVERSAL": {"829336594": "ODI5MzM2NTk0"}}
+
+    result = ship_mod.ship_orders(
+        orders_by_id=orders_by_id,
+        pending_orders=pending_orders,
+        order_id_to_base64=order_id_to_base64,
+        dry_run=False,
+        verbose=False,
+        since_days=1,
+    )
+
+    assert result["shipped"] == 0
+    assert any("829336594" in err for err in result["errors"])
+
+
+def test_ship_orders_counts_when_assemble_is_confirmed(monkeypatch):
+    class _FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def assemble_order_by_id(self, base64_id, order_code, parcel_count=1):
+            return APIResponse(success=True, data={"ok": True}, status_code=200)
+
+        def get_order_by_id(self, base64_id):
+            return APIResponse(
+                success=True,
+                data={"attributes": {"assembled": True, "kaspiDelivery": {"waybill": "https://example"}}},
+                status_code=200,
+            )
+
+        def get_order(self, order_code):
+            return APIResponse(
+                success=True,
+                data={"attributes": {"assembled": True, "kaspiDelivery": {"waybill": "https://example"}}},
+                status_code=200,
+            )
+
+        def get_waybill_url(self, order):
+            return "https://example"
+
+        def get_pending_assembly_orders(self, since=None):
+            return APIResponse(success=True, data={"data": []}, status_code=200)
+
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _FakeClient)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_RETRIES", 1)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_DELAY", 0)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_REFRESH_RETRIES", 0)
+    monkeypatch.setattr(ship_mod, "STORE_NAME_TO_API_CODE", {"Universal": "UNIVERSAL"})
+
+    orders_by_id = {
+        "829336594": [
+            ship_mod.OrderItem(
+                order_id="829336594",
+                store_name="Universal",
+                kaspi_name_core="Принт_5в1_черный",
+                my_size="XL",
+                sku_key="CL_OC_MEN_LINE52_BLACK",
+                sku_id="CL_OC_MEN_LINE52_BLACK_XL",
+                quantity=1,
+                planned_date=date(2026, 2, 20),
+            )
+        ]
+    }
+    pending_orders = {"UNIVERSAL": {"829336594"}}
+    order_id_to_base64 = {"UNIVERSAL": {"829336594": "ODI5MzM2NTk0"}}
+
+    result = ship_mod.ship_orders(
+        orders_by_id=orders_by_id,
+        pending_orders=pending_orders,
+        order_id_to_base64=order_id_to_base64,
+        dry_run=False,
+        verbose=False,
+        since_days=1,
+    )
+
+    assert result["shipped"] == 1
+    assert result["errors"] == []
+
+
+def test_ship_orders_confirm_check_falls_back_to_get_order_when_no_get_order_by_id(monkeypatch):
+    class _FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def assemble_order_by_id(self, base64_id, order_code, parcel_count=1):
+            return APIResponse(success=True, data={"ok": True}, status_code=200)
+
+        def get_order(self, order_code):
+            return APIResponse(
+                success=True,
+                data={"attributes": {"assembled": True, "kaspiDelivery": {"waybill": "https://example"}}},
+                status_code=200,
+            )
+
+        def get_waybill_url(self, order):
+            return "https://example"
+
+        def get_pending_assembly_orders(self, since=None):
+            return APIResponse(success=True, data={"data": []}, status_code=200)
+
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _FakeClient)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_RETRIES", 1)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_DELAY", 0)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_REFRESH_RETRIES", 0)
+    monkeypatch.setattr(ship_mod, "STORE_NAME_TO_API_CODE", {"Universal": "UNIVERSAL"})
+
+    orders_by_id = {
+        "829336594": [
+            ship_mod.OrderItem(
+                order_id="829336594",
+                store_name="Universal",
+                kaspi_name_core="Принт_5в1_черный",
+                my_size="XL",
+                sku_key="CL_OC_MEN_LINE52_BLACK",
+                sku_id="CL_OC_MEN_LINE52_BLACK_XL",
+                quantity=1,
+                planned_date=date(2026, 2, 20),
+            )
+        ]
+    }
+    pending_orders = {"UNIVERSAL": {"829336594"}}
+    order_id_to_base64 = {"UNIVERSAL": {"829336594": "ODI5MzM2NTk0"}}
+
+    result = ship_mod.ship_orders(
+        orders_by_id=orders_by_id,
+        pending_orders=pending_orders,
+        order_id_to_base64=order_id_to_base64,
+        dry_run=False,
+        verbose=False,
+        since_days=1,
+    )
+
+    assert result["shipped"] == 1
+    assert result["errors"] == []
