@@ -11,9 +11,12 @@ import pytest
 from scripts.run_strict_daily_preflight import run_preflight
 
 
-def test_preflight_fails_closed_when_workbook_missing(tmp_path: Path) -> None:
+def test_preflight_fails_closed_when_workbook_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = tmp_path / "app.db"
     db_path.write_text("", encoding="utf-8")
+    monkeypatch.delenv("AB_CRM_WORKBOOK_PATH", raising=False)
 
     code, summary = run_preflight(
         db_path=db_path,
@@ -23,6 +26,24 @@ def test_preflight_fails_closed_when_workbook_missing(tmp_path: Path) -> None:
 
     assert code != 0
     assert "AB_CRM_WORKBOOK_PATH" in summary
+
+
+def test_preflight_uses_env_workbook_path_when_not_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    db_path.write_text("", encoding="utf-8")
+    missing_workbook = tmp_path / "missing.xlsx"
+    monkeypatch.setenv("AB_CRM_WORKBOOK_PATH", str(missing_workbook))
+
+    code, summary = run_preflight(
+        db_path=db_path,
+        workbook_path=None,
+        emit_lineage=False,
+    )
+
+    assert code != 0
+    assert str(missing_workbook) in summary
 
 
 def test_preflight_propagates_strict_validation_result(
