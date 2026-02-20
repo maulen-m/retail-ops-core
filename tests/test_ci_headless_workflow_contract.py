@@ -7,6 +7,7 @@ WORKFLOW = Path(".github/workflows/single_truth_headless.yml")
 
 
 REQUIRED_SNIPPETS = [
+    "DIM_SKU_LIGHT_WORKBOOK_PATH: config/anchors/fixtures/DIM_SKU_LIGHT_V5.fixture.xlsx",
     "python3 scripts/validate_params.py --strict",
     "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q",
     "python3 scripts/run_contract_suite.py --fixture small",
@@ -32,3 +33,4 @@ def test_ci_headless_workflow_runs_required_jobs() -> None:
 def test_ci_headless_workflow_bootstraps_fixture_before_gates() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "scripts/prepare_ci_headless_fixture.py" in text
+    assert "ls -l db/app.db" in text
