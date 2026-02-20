@@ -35,6 +35,11 @@ REQUIRED_HEADLESS_PYTEST_TARGETS = [
     "tests/test_import_orders_to_crm.py::test_load_sku_meta_for_keys_handles_missing_dim_sku_table",
 ]
 
+REQUIRED_TOOLCHAIN_SNIPPETS = [
+    "sudo apt-get update",
+    "sudo apt-get install -y ripgrep",
+]
+
 
 def test_ci_headless_workflow_exists() -> None:
     assert WORKFLOW.exists(), "missing .github/workflows/single_truth_headless.yml"
@@ -57,3 +62,9 @@ def test_ci_headless_workflow_uses_curated_pytest_bucket() -> None:
     assert 'AB_HEADLESS_FIXTURE: "1"' in text
     for target in REQUIRED_HEADLESS_PYTEST_TARGETS:
         assert target in text, f"missing headless pytest target: {target}"
+
+
+def test_ci_headless_workflow_installs_required_tooling() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    for snippet in REQUIRED_TOOLCHAIN_SNIPPETS:
+        assert snippet in text, f"missing tooling install command: {snippet}"
