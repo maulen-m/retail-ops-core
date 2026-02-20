@@ -30,7 +30,10 @@ def dashboard_data():
     if not JSON_PATH.exists():
         pytest.skip("po_dashboard_data.json not found - run generate_po_dashboard_data.py first")
     with open(JSON_PATH) as f:
-        return json.load(f)
+        data = json.load(f)
+    if "PLAN-0" not in data.get("pos", {}):
+        pytest.skip("PLAN-0 missing in po_dashboard_data.json - run full dashboard generation")
+    return data
 
 
 class TestDemandOverrides:
