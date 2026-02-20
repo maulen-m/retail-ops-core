@@ -444,7 +444,7 @@ def _run_po_dashboard_invariants(db_path: Path) -> dict:
 
 
 def _run_stagecode_waybill(db_path: Path) -> dict:
-    expected = {"UNIVERSAL": {"1001"}}
+    expected = {"UNIVERSAL": {"1001", "1002", "1003"}}
     actual = download_waybills_api.get_target_order_ids_from_db(
         db_path=db_path,
         target_date=STAGECODE_TARGET_DATE,
@@ -456,6 +456,8 @@ def _run_stagecode_waybill(db_path: Path) -> dict:
         lookback_days=None,
     )
     order_ids = {o.order_id for o in orders}
+    # API-target selection includes all READY-stage rows for the date.
+    # Waybill builder keeps only size-resolved actionable rows.
     ok = actual == expected and order_ids == {"1001"}
     return {
         "ok": ok,

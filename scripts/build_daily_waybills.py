@@ -37,7 +37,7 @@ from typing import Any, Optional
 # Re-exec with venv python if available (ensures dependencies)
 PROJECT_ROOT = Path(__file__).parent.parent
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
-if os.environ.get("VIRTUAL_ENV") is None and VENV_PYTHON.exists():
+if __name__ == "__main__" and os.environ.get("VIRTUAL_ENV") is None and VENV_PYTHON.exists():
     if Path(sys.executable).resolve() != VENV_PYTHON.resolve():
         os.execv(str(VENV_PYTHON), [str(VENV_PYTHON)] + sys.argv)
 

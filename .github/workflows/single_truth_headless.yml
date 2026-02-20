@@ -14,6 +14,7 @@ jobs:
       AB_CRM_WORKBOOK_MAX_LAG_DAYS: "1"
       AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS: "0"
       AB_CRM_WORKBOOK_MAX_FUTURE_SKEW_SECONDS: "120"
+      DIM_SKU_LIGHT_WORKBOOK_PATH: config/anchors/fixtures/DIM_SKU_LIGHT_V5.fixture.xlsx
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,6 +35,7 @@ jobs:
       - name: Prepare headless anchor fixtures
         run: |
           python3 scripts/prepare_ci_headless_fixture.py --project-root "$GITHUB_WORKSPACE" --as-of "$(date -u +%F)"
+          ls -l db/app.db
           ls -l config/anchors/SALES_KSP_CRM_LATEST.xlsx
           ls -l config/anchors/INBOUND_CALENDAR_LATEST.xlsx
 
