@@ -82,6 +82,7 @@ STORE_MAP = {
     '30000001_PP1': 'Universal',
     '30290083_PP1': '11KZ',
     '30000002_PP1': 'STORE-B',
+    '30362323_PP1': 'Store-C',
 }
 
 # Reverse mapping: display name -> API store code
@@ -90,6 +91,7 @@ STORE_NAME_TO_API_CODE = {
     'Universal': 'UNIVERSAL',
     '11KZ': '11KZ',
     'STORE-B': 'STOREB',
+    'Store-C': 'MELVIS',
 }
 
 # DB/CRM store values -> API store code
@@ -101,11 +103,13 @@ DB_STORE_TO_API = {
     'MELVIS': 'MELVIS',
     'STOREB': 'STOREB',
     'STORE-B': 'STOREB',
+    'MELVIS': 'MELVIS',
     # CRM/Excel codes
     '30137883_PP1': 'ACMEWEAR',
     '30000001_PP1': 'UNIVERSAL',
     '30290083_PP1': '11KZ',
     '30000002_PP1': 'STOREB',
+    '30362323_PP1': 'MELVIS',
     # Internal store codes
     'PP1': 'ACMEWEAR',
     'PP2': 'ACMEWEAR',
@@ -1017,7 +1021,7 @@ def main():
     )
     parser.add_argument(
         '--store',
-        choices=['AcmeWear', 'Universal', '11KZ', 'STORE-B'],
+        choices=['AcmeWear', 'Universal', '11KZ', 'STORE-B', 'Store-C'],
         help='Filter by store (optional)'
     )
     parser.add_argument(
@@ -1052,6 +1056,11 @@ def main():
         help='Only include orders with planned_date == target_date'
     )
     parser.add_argument(
+        '--include-overdue',
+        action='store_true',
+        help='Include planned dates <= target date within lookback window (legacy compatibility)'
+    )
+    parser.add_argument(
         '--fallback-crm',
         action='store_true',
         help='Fallback to DB/CRM selection if API returns no orders'
@@ -1069,6 +1078,9 @@ def main():
 
     if args.all_dates and args.exact_date:
         logger.warning("Both --all-dates and --exact-date set; using --all-dates.")
+        args.exact_date = False
+    if args.include_overdue and args.exact_date:
+        logger.warning("Both --include-overdue and --exact-date set; using overdue mode.")
         args.exact_date = False
 
     # Parse target date
@@ -1088,6 +1100,8 @@ def main():
     print(f"  Target date: {target_date}")
     if args.all_dates:
         date_mode_str = "all dates <= target"
+    elif args.include_overdue:
+        date_mode_str = "planned <= target within lookback"
     elif args.exact_date:
         date_mode_str = "exact date only (today's batch)"
     else:
@@ -1113,7 +1127,7 @@ def main():
         dry_run=args.dry_run,
         verbose=args.verbose,
         all_dates=args.all_dates,
-        exact_date=args.exact_date,
+        exact_date=(False if args.include_overdue else args.exact_date),
         fallback_crm=args.fallback_crm,
     )
 

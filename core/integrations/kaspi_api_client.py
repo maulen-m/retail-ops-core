@@ -426,6 +426,7 @@ class KaspiAPIClient:
         since: Optional[str] = None,
         until: Optional[str] = None,
         signature_required: Optional[bool] = None,
+        include_orders: Optional[str] = None,
         max_pages: int = 100,
     ) -> list[dict]:
         """
@@ -450,6 +451,7 @@ class KaspiAPIClient:
                 since=since,
                 until=until,
                 signature_required=signature_required,
+                include_orders=include_orders,
                 page_number=page,
                 page_size=100,
             )

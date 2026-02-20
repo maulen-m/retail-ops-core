@@ -66,6 +66,7 @@ STORE_MAP = {
     '30000001_PP1': 'Universal',
     '30290083_PP1': '11KZ',
     '30000002_PP1': 'STORE-B',
+    '30362323_PP1': 'Store-C',
 }
 
 # Reverse mapping: display name -> store code for API
@@ -74,6 +75,7 @@ STORE_NAME_TO_API_CODE = {
     'Universal': 'UNIVERSAL',
     '11KZ': '11KZ',
     'STORE-B': 'STOREB',
+    'Store-C': 'MELVIS',
 }
 API_CODE_TO_STORE_NAME = {v: k for k, v in STORE_NAME_TO_API_CODE.items()}
 
@@ -962,7 +964,7 @@ def main():
     )
     parser.add_argument(
         '--store',
-        choices=['AcmeWear', 'Universal', '11KZ', 'STORE-B'],
+        choices=['AcmeWear', 'Universal', '11KZ', 'STORE-B', 'Store-C'],
         help='Filter by store (optional)'
     )
     parser.add_argument(
