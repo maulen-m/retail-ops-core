@@ -37,10 +37,13 @@ def test_prepare_ci_headless_fixture_creates_anchors_and_workbooks(tmp_path: Pat
 
     crm_anchor = project_root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
     inbound_anchor = project_root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+    stock_anchor = project_root / "config" / "anchors" / "STOCK_SNAPSHOT_LATEST.xlsx"
     assert crm_anchor.is_symlink()
     assert inbound_anchor.is_symlink()
+    assert stock_anchor.is_symlink()
     assert crm_anchor.resolve(strict=True).exists()
     assert inbound_anchor.resolve(strict=True).exists()
+    assert stock_anchor.resolve(strict=True).exists()
 
     wb = load_workbook(crm_anchor.resolve(strict=True), read_only=True, data_only=True)
     try:
