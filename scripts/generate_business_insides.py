@@ -7,17 +7,20 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime, timedelta
+import os
 from pathlib import Path
 import sqlite3
 import sys
 from typing import Any
 
 import pandas as pd
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.cashflow.paid_capital_truth import compute_paid_capital_truth
+from core.ads.sidecar_contract import resolve_ads_db_path, validate_ads_source
 from core.db.sales_truth_query_guard import (
     install_sales_truth_query_guard,
     remove_sales_truth_query_guard,
@@ -72,17 +75,99 @@ def _load_ads_daily(
     start_date: date,
     end_date: date,
 ) -> tuple[dict[str, float], dict[str, float]]:
+    ads_source_path = resolve_ads_db_path(require_exists=False)
+    ads_max_age_hours = float(os.environ.get("AB_ADS_DB_MAX_AGE_HOURS", "36"))
+    ads_source_status = validate_ads_source(ads_source_path, max_age_hours=ads_max_age_hours)
+    if not ads_source_status.get("ok", False):
+        return {}, {
+            "status": "unavailable",
+            "reason": str(ads_source_status.get("reason") or "unknown"),
+            "source_path": str(ads_source_status.get("path") or ads_source_path),
+            "mapped_rows": None,
+            "unmapped_rows": None,
+            "mapped_cost_kzt": None,
+            "unmapped_cost_kzt": None,
+            "total_cost_kzt": None,
+            "mapping_coverage_pct": None,
+        }
+
+    effective_cost_mode = os.environ.get("AB_ADS_EFFECTIVE_COST_MODE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }
+    effective_policy_path = Path(
+        os.environ.get(
+            "AB_ADS_EFFECTIVE_COST_POLICY_PATH",
+            str(PROJECT_ROOT / "config" / "kaspi_ads_cost_adjustments.yaml"),
+        )
+    ).expanduser()
+
+    policy: dict[str, Any] | None = None
+    default_multiplier = 1.0
+    date_overrides: list[dict[str, Any]] = []
+    if effective_cost_mode:
+        if not effective_policy_path.exists():
+            return {}, {
+                "status": "unavailable",
+                "reason": "policy_missing",
+                "source_path": str(ads_source_path),
+                "policy_path": str(effective_policy_path),
+                "mapped_rows": None,
+                "unmapped_rows": None,
+                "mapped_cost_kzt": None,
+                "unmapped_cost_kzt": None,
+                "total_cost_kzt": None,
+                "mapping_coverage_pct": None,
+            }
+        try:
+            policy = yaml.safe_load(effective_policy_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return {}, {
+                "status": "unavailable",
+                "reason": "policy_parse_error",
+                "source_path": str(ads_source_path),
+                "policy_path": str(effective_policy_path),
+                "mapped_rows": None,
+                "unmapped_rows": None,
+                "mapped_cost_kzt": None,
+                "unmapped_cost_kzt": None,
+                "total_cost_kzt": None,
+                "mapping_coverage_pct": None,
+            }
+        default_multiplier = float(policy.get("default_multiplier", 1.0) or 1.0)
+        date_overrides = list(policy.get("date_overrides") or [])
+
+    def _multiplier_for_day(day_iso: str) -> float:
+        if not effective_cost_mode:
+            return 1.0
+        multiplier = default_multiplier
+        for row in date_overrides:
+            start = str(row.get("start_date") or "").strip()
+            end = str(row.get("end_date") or "").strip()
+            if start and day_iso < start:
+                continue
+            if end and day_iso > end:
+                continue
+            candidate = float(row.get("multiplier", multiplier) or multiplier)
+            multiplier = candidate
+        return multiplier
+
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
         if not _table_exists(conn, "ads_spend_sidecar_daily"):
             return {}, {
-                "mapped_rows": 0.0,
-                "unmapped_rows": 0.0,
-                "mapped_cost_kzt": 0.0,
-                "unmapped_cost_kzt": 0.0,
-                "total_cost_kzt": 0.0,
-                "mapping_coverage_pct": 0.0,
+                "status": "unavailable",
+                "reason": "sidecar_table_missing",
+                "source_path": str(ads_source_path),
+                "mapped_rows": None,
+                "unmapped_rows": None,
+                "mapped_cost_kzt": None,
+                "unmapped_cost_kzt": None,
+                "total_cost_kzt": None,
+                "mapping_coverage_pct": None,
             }
         rows = conn.execute(
             """
@@ -104,6 +189,12 @@ def _load_ads_daily(
 
     by_date: dict[str, float] = {}
     totals = {
+        "status": "available",
+        "reason": "effective_cost_policy" if effective_cost_mode else "ok",
+        "source_path": str(ads_source_path),
+        "policy_path": str(effective_policy_path) if effective_cost_mode else None,
+        "effective_cost_mode": bool(effective_cost_mode),
+        "default_multiplier": float(default_multiplier) if effective_cost_mode else 1.0,
         "mapped_rows": 0.0,
         "unmapped_rows": 0.0,
         "mapped_cost_kzt": 0.0,
@@ -113,12 +204,15 @@ def _load_ads_daily(
     }
     for row in rows:
         d = str(row["date"])
-        cost = float(row["total_cost_kzt"] or 0.0)
+        multiplier = _multiplier_for_day(d)
+        cost = float(row["total_cost_kzt"] or 0.0) * multiplier
+        mapped_cost = float(row["mapped_cost_kzt"] or 0.0) * multiplier
+        unmapped_cost = float(row["unmapped_cost_kzt"] or 0.0) * multiplier
         by_date[d] = round(cost, 2)
         totals["mapped_rows"] += float(row["mapped_rows"] or 0.0)
         totals["unmapped_rows"] += float(row["unmapped_rows"] or 0.0)
-        totals["mapped_cost_kzt"] += float(row["mapped_cost_kzt"] or 0.0)
-        totals["unmapped_cost_kzt"] += float(row["unmapped_cost_kzt"] or 0.0)
+        totals["mapped_cost_kzt"] += mapped_cost
+        totals["unmapped_cost_kzt"] += unmapped_cost
         totals["total_cost_kzt"] += cost
     total_rows = totals["mapped_rows"] + totals["unmapped_rows"]
     totals["mapping_coverage_pct"] = (
@@ -204,10 +298,15 @@ def compute_sales_metrics(
         }
 
     ads_by_date, ads_totals = _load_ads_daily(db_path, start_30, as_of_date)
+    ads_available = ads_totals.get("status") == "available"
     for day, day_row in by_date.items():
-        ads_cost = float(ads_by_date.get(day, 0.0))
-        day_row["ads_spend_kzt"] = round(ads_cost, 2)
-        day_row["profit_after_ads_kzt"] = round(day_row["profit_kzt"] - ads_cost, 2)
+        if ads_available:
+            ads_cost = float(ads_by_date.get(day, 0.0))
+            day_row["ads_spend_kzt"] = round(ads_cost, 2)
+            day_row["profit_after_ads_kzt"] = round(day_row["profit_kzt"] - ads_cost, 2)
+        else:
+            day_row["ads_spend_kzt"] = None
+            day_row["profit_after_ads_kzt"] = None
 
     last_7_list: list[dict[str, Any]] = []
     for i in range(max(1, int(last_7_days))):
@@ -221,7 +320,7 @@ def compute_sales_metrics(
                 "net_rev_kzt": None,
                 "cogs_kzt": None,
                 "profit_kzt": None,
-                "ads_spend_kzt": round(float(ads_by_date.get(day, 0.0)), 2),
+                "ads_spend_kzt": round(float(ads_by_date.get(day, 0.0)), 2) if ads_available else None,
                 "profit_after_ads_kzt": None,
             }
         last_7_list.append(item)
@@ -236,14 +335,29 @@ def compute_sales_metrics(
     series_7_net = [r["net_rev_kzt"] for r in last_7_list if r["net_rev_kzt"] is not None]
     series_7_cogs = [r["cogs_kzt"] for r in last_7_list if r["cogs_kzt"] is not None]
     series_7_profit = [r["profit_kzt"] for r in last_7_list if r["profit_kzt"] is not None]
-    series_30_ads = [by_date[d]["ads_spend_kzt"] for d in window_30_days if d in by_date]
-    series_30_profit_after_ads = [by_date[d]["profit_after_ads_kzt"] for d in window_30_days if d in by_date]
-    series_7_ads = [r["ads_spend_kzt"] for r in last_7_list if r["profit_kzt"] is not None]
-    series_7_profit_after_ads = [r["profit_after_ads_kzt"] for r in last_7_list if r["profit_after_ads_kzt"] is not None]
+    series_30_ads = [
+        by_date[d]["ads_spend_kzt"]
+        for d in window_30_days
+        if d in by_date and by_date[d]["ads_spend_kzt"] is not None
+    ]
+    series_30_profit_after_ads = [
+        by_date[d]["profit_after_ads_kzt"]
+        for d in window_30_days
+        if d in by_date and by_date[d]["profit_after_ads_kzt"] is not None
+    ]
+    series_7_ads = [r["ads_spend_kzt"] for r in last_7_list if r["ads_spend_kzt"] is not None]
+    series_7_profit_after_ads = [
+        r["profit_after_ads_kzt"] for r in last_7_list if r["profit_after_ads_kzt"] is not None
+    ]
 
     def _avg(values: list[float]) -> float:
         if not values:
             return 0.0
+        return round(sum(values) / len(values), 2)
+
+    def _avg_or_none(values: list[float]) -> float | None:
+        if not values:
+            return None
         return round(sum(values) / len(values), 2)
 
     return {
@@ -252,13 +366,13 @@ def compute_sales_metrics(
         "avg_30d_net_rev_kzt": _avg(series_30_net),
         "avg_30d_cogs_kzt": _avg(series_30_cogs),
         "avg_30d_profit_kzt": _avg(series_30_profit),
-        "avg_30d_ads_spend_kzt": _avg(series_30_ads),
-        "avg_30d_profit_after_ads_kzt": _avg(series_30_profit_after_ads),
+        "avg_30d_ads_spend_kzt": _avg_or_none(series_30_ads),
+        "avg_30d_profit_after_ads_kzt": _avg_or_none(series_30_profit_after_ads),
         "avg_7d_net_rev_kzt": _avg(series_7_net),
         "avg_7d_cogs_kzt": _avg(series_7_cogs),
         "avg_7d_profit_kzt": _avg(series_7_profit),
-        "avg_7d_ads_spend_kzt": _avg(series_7_ads),
-        "avg_7d_profit_after_ads_kzt": _avg(series_7_profit_after_ads),
+        "avg_7d_ads_spend_kzt": _avg_or_none(series_7_ads),
+        "avg_7d_profit_after_ads_kzt": _avg_or_none(series_7_profit_after_ads),
         "fallback_rows": fallback_rows,
         "unresolved_rows": unresolved_rows,
         "unresolved_sku_count": len(unresolved_skus),
@@ -372,6 +486,10 @@ def _render_markdown(
         ]
         for row in sales_metrics["last_7_days"]
     ]
+    ads_coverage_raw = sales_metrics["ads"].get("mapping_coverage_pct")
+    ads_coverage_text = (
+        "N/A" if ads_coverage_raw is None else f"{float(ads_coverage_raw):.2f}%"
+    )
 
     lines = [
         "# Business Insides Snapshot",
@@ -409,7 +527,9 @@ def _render_markdown(
         f"({sales_metrics['cogs_fallback_coverage_pct']:.2f}%).",
         f"- Unresolved COGS rows: `{sales_metrics['unresolved_rows']}`.",
         f"- Unresolved SKU count: `{sales_metrics['unresolved_sku_count']}`.",
-        f"- Ads mapping coverage: `{sales_metrics['ads'].get('mapping_coverage_pct', 0):.2f}%`.",
+        f"- Ads source status: `{sales_metrics['ads'].get('status')}` "
+        f"(reason: `{sales_metrics['ads'].get('reason')}`).",
+        f"- Ads mapping coverage: `{ads_coverage_text}`.",
         f"- Ads mapped/unmapped cost: `{_fmt_kzt(sales_metrics['ads'].get('mapped_cost_kzt'))}` / "
         f"`{_fmt_kzt(sales_metrics['ads'].get('unmapped_cost_kzt'))}`.",
         "",
