@@ -48,6 +48,10 @@ def _write_inbound_workbook(path: Path, *, as_of: date) -> None:
         ]
     )
     ws.append(["PO-1.0", "Transit", as_of.isoformat(), "YES", "YES", 0.0, 0.0, 12.5, 5, 14])
+
+    ws_inbounds = wb.create_sheet("Inbounds_sheet")
+    ws_inbounds.append(["PO_part_id", "SKU_key", "Qty", "Actual_qty", "Status", "Actual_Arrival_date"])
+    ws_inbounds.append(["PO-1.0", "CL_FIX_SKU", 14, 14, "Transit", as_of.isoformat()])
     wb.save(path)
 
 
