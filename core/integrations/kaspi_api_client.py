@@ -425,6 +425,7 @@ class KaspiAPIClient:
         status: Optional[str] = None,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        delivery_type: Optional[str] = None,
         signature_required: Optional[bool] = None,
         include_orders: Optional[str] = None,
         max_pages: int = 100,
@@ -450,6 +451,7 @@ class KaspiAPIClient:
                 status=status,
                 since=since,
                 until=until,
+                delivery_type=delivery_type,
                 signature_required=signature_required,
                 include_orders=include_orders,
                 page_number=page,
@@ -507,6 +509,18 @@ class KaspiAPIClient:
                 status_code=404
             )
         return result
+
+    def get_order_by_id(self, order_id: str) -> APIResponse:
+        """
+        Get single order by Kaspi Base64 order ID.
+
+        Args:
+            order_id: Base64 order id from Kaspi payload `id` field.
+
+        Returns:
+            APIResponse with order data.
+        """
+        return self._request('GET', f'orders/{order_id}')
 
     def _get_order_base64_id(self, order_code: str) -> str:
         """
