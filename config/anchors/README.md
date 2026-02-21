@@ -7,6 +7,7 @@ This folder stores local anchor pointers for daily strict validation.
 Canonical workbook source (refresh daily):
 
 - `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`
+- `~/Docs/Autonomous_business/excel/stock_snapshot_19.2.2026.xlsx` (single stock truth; previous stock snapshots are deprecated)
 - `~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx` (inbound/payment truth)
 
 Create/update symlink pointer:
@@ -34,6 +35,20 @@ Strict single-truth validator uses inbound pointer via:
 
 - `AB_INBOUND_WORKBOOK_PATH` (if set), otherwise
 - `~/Docs/Autonomous_business/config/anchors/INBOUND_CALENDAR_LATEST.xlsx`
+
+Create/update stock truth pointer:
+
+```bash
+ln -sfn "~/Docs/Autonomous_business/excel/stock_snapshot_19.2.2026.xlsx" \
+  "~/Docs/Autonomous_business/config/anchors/STOCK_SNAPSHOT_LATEST.xlsx"
+```
+
+Stock sync entrypoint (dry-run default; apply is gated):
+
+```bash
+python3 ~/Docs/Autonomous_business/scripts/sync_current_stock.py
+ENABLE_STOCK_SNAPSHOT_WRITE=1 python3 ~/Docs/Autonomous_business/scripts/sync_current_stock.py --apply
+```
 
 ## Authority + operator checks
 

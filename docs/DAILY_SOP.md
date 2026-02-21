@@ -93,9 +93,19 @@ Optional alert mode:
   --send-alert
 ```
 ### 2. Download Today's Inventory
-1. Export current stock from Kaspi seller dashboard
-2. Save as `excel/Current_stock_YYYY-MM-DD.xlsx`
-3. Verify file has columns: SKU_ID, SKU_key, MY_SIZE, Current_stock
+1. Use the canonical stock snapshot workbook:
+   - `config/anchors/STOCK_SNAPSHOT_LATEST.xlsx`
+   - Current single-truth source: `excel/stock_snapshot_19.2.2026.xlsx`
+2. Previous `excel/Current_stock_*.xlsx` snapshots are deprecated (contaminated).
+3. Sync stock snapshot column + inbound transit truth:
+
+```bash
+# Dry-run (default)
+python3 scripts/sync_current_stock.py
+
+# Apply to DB (guarded)
+ENABLE_STOCK_SNAPSHOT_WRITE=1 python3 scripts/sync_current_stock.py --apply
+```
 
 ### 3. Run Daily Pipeline
 ```bash
