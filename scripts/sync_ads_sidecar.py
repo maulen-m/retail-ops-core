@@ -8,9 +8,15 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.ads.sidecar_contract import resolve_ads_db_path, validate_ads_source
+
 DEFAULT_APP_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_ADS_DB = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/"
@@ -301,12 +307,40 @@ def sync_ads_sidecar(
             "rows_total": mapped_rows + unmapped_rows,
             "rows_mapped": mapped_rows,
             "rows_unmapped": unmapped_rows,
+            "mapping_coverage_pct": round(
+                (mapped_rows / (mapped_rows + unmapped_rows) * 100.0)
+                if (mapped_rows + unmapped_rows)
+                else 0.0,
+                2,
+            ),
             "days_total": len(daily_rows),
             "apply": bool(apply),
+            "ads_db": str(ads_db),
         }
     finally:
         ext.close()
         app.close()
+
+
+def _build_coverage_report(summary: dict[str, Any], source_status: dict[str, Any]) -> str:
+    rows_total = int(summary.get("rows_total", 0) or 0)
+    rows_mapped = int(summary.get("rows_mapped", 0) or 0)
+    rows_unmapped = int(summary.get("rows_unmapped", 0) or 0)
+    coverage = float(summary.get("mapping_coverage_pct", 0.0) or 0.0)
+    return "\n".join(
+        [
+            "# Ads Sidecar Coverage Report",
+            "",
+            f"- Source DB: `{summary.get('ads_db')}`",
+            f"- Source status: `{source_status.get('reason')}`",
+            f"- Source age hours: `{source_status.get('age_hours', 'n/a')}`",
+            f"- Rows total: `{rows_total}`",
+            f"- Rows mapped: `{rows_mapped}`",
+            f"- Rows unmapped: `{rows_unmapped}`",
+            f"- Mapping coverage: `{coverage:.2f}%`",
+            f"- Days materialized: `{int(summary.get('days_total', 0) or 0)}`",
+        ]
+    )
 
 
 def run_sync_ads_sidecar(
@@ -316,18 +350,42 @@ def run_sync_ads_sidecar(
     since: str | None,
     until: str | None,
     apply: bool,
+    report_path: Path | None = None,
 ) -> int:
     if apply and os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
         print("ERROR: ENABLE_CASHFLOW_WRITE=1 is required with --apply")
         return 1
-    summary = sync_ads_sidecar(
-        app_db=app_db,
-        ads_db=ads_db,
-        since=since,
-        until=until,
-        apply=apply,
-    )
+    try:
+        resolved_ads_db = resolve_ads_db_path(explicit=ads_db, require_exists=True)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        return 1
+
+    max_age_hours = float(os.environ.get("AB_ADS_DB_MAX_AGE_HOURS", "36"))
+    source_status = validate_ads_source(resolved_ads_db, max_age_hours=max_age_hours)
+    if not source_status.get("ok", False):
+        print(
+            "ERROR: ads source validation failed: "
+            f"reason={source_status.get('reason')} path={source_status.get('path')}"
+        )
+        return 1
+
+    try:
+        summary = sync_ads_sidecar(
+            app_db=app_db,
+            ads_db=resolved_ads_db,
+            since=since,
+            until=until,
+            apply=apply,
+        )
+    except sqlite3.OperationalError as exc:
+        print(f"ERROR: ads source schema/query failure: {exc}")
+        return 1
+
     print(summary)
+    if report_path is not None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(_build_coverage_report(summary, source_status), encoding="utf-8")
     return 0
 
 
@@ -338,6 +396,7 @@ def main() -> int:
     parser.add_argument("--since", type=str, default=None)
     parser.add_argument("--until", type=str, default=None)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--report-path", type=Path, default=None)
     args = parser.parse_args()
     return run_sync_ads_sidecar(
         app_db=args.app_db,
@@ -345,6 +404,7 @@ def main() -> int:
         since=args.since,
         until=args.until,
         apply=args.apply,
+        report_path=args.report_path,
     )
 
 

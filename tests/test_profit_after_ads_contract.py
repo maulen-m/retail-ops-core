@@ -1,9 +1,11 @@
+from __future__ import annotations
+
+import os
 import sqlite3
+import time
 from pathlib import Path
 
-import yaml
-
-from scripts.generate_business_insides import generate_business_insides
+from scripts.generate_business_insides import compute_sales_metrics
 
 
 def _init_db(path: Path) -> None:
@@ -32,22 +34,6 @@ def _init_db(path: Path) -> None:
             sku_key TEXT NOT NULL,
             my_size TEXT
         );
-        CREATE TABLE fact_inventory_snapshot_size (
-            snapshot_date TEXT,
-            sku_key TEXT,
-            current_stock REAL
-        );
-        CREATE TABLE po_part (
-            po_part_id TEXT PRIMARY KEY,
-            po_id TEXT,
-            status TEXT,
-            base_cost_kzt REAL,
-            est_delivery_kzt REAL,
-            is_paid_base INTEGER,
-            is_paid_dlv INTEGER,
-            to_pay_base_kzt REAL,
-            to_pay_dlv_kzt REAL
-        );
         CREATE TABLE ads_spend_sidecar_daily (
             date TEXT,
             store_code TEXT,
@@ -61,14 +47,9 @@ def _init_db(path: Path) -> None:
         """
     )
     conn.execute(
-        "INSERT INTO dim_sku (sku_key, cogs_kzt, base_cost_cny, weight_kg) VALUES ('SKU_A', 0, 28, 0.9)"
+        "INSERT INTO dim_sku (sku_key, cogs_kzt, base_cost_cny, weight_kg) VALUES ('SKU_A', 2000, 28, 0.9)"
     )
     conn.execute("INSERT INTO dim_sku_size (sku_id, sku_key, my_size) VALUES ('SKU_A_M', 'SKU_A', 'M')")
-    conn.execute("INSERT INTO fact_inventory_snapshot_size (snapshot_date, sku_key, current_stock) VALUES ('2026-02-07', 'SKU_A', 5)")
-    conn.execute(
-        "INSERT INTO po_part (po_part_id, po_id, status, base_cost_kzt, est_delivery_kzt, is_paid_base, is_paid_dlv, to_pay_base_kzt, to_pay_dlv_kzt) "
-        "VALUES ('PO-1.1', 'PO-1', 'IN_TRANSIT', 1000, 100, 1, 1, 0, 0)"
-    )
     conn.execute(
         """
         INSERT INTO sales_fact_v2
@@ -87,36 +68,37 @@ def _init_db(path: Path) -> None:
     conn.close()
 
 
-def _write_bank(path: Path) -> None:
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "as_of": "2026-02-08 10:00:00 GMT+5",
-                "stores": {"ACMEWEAR": {"accounts": {"kaspi_gold": {"balance_kzt": 1_000_000}}}},
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-
-def test_business_insides_reports_profit_after_ads_and_mapping_coverage(tmp_path: Path, monkeypatch) -> None:
+def test_profit_after_ads_is_na_when_ads_source_stale(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "app.db"
-    bank = tmp_path / "bank.yaml"
     ads_source = tmp_path / "ads_source.db"
     _init_db(db_path)
-    _write_bank(bank)
     ads_source.write_text("stub", encoding="utf-8")
+    stale_epoch = time.time() - (80 * 3600)
+    os.utime(ads_source, (stale_epoch, stale_epoch))
+
     monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
     monkeypatch.setenv("AB_ADS_DB_MAX_AGE_HOURS", "36")
 
-    result = generate_business_insides(
-        db_path=db_path,
-        bank_accounts_path=bank,
-        as_of="2026-02-08",
-        output_dir=tmp_path / "business_insides",
-    )
-    perf = result["performance"]
-    assert perf["avg_7d_profit_kzt"] > perf["avg_7d_profit_after_ads_kzt"]
-    assert perf["avg_7d_ads_spend_kzt"] > 0
-    assert result["ads"]["mapping_coverage_pct"] == 50.0
+    metrics = compute_sales_metrics(db_path=db_path, as_of="2026-02-08")
+
+    assert metrics["avg_7d_ads_spend_kzt"] is None
+    assert metrics["avg_7d_profit_after_ads_kzt"] is None
+    assert metrics["ads"]["status"] == "unavailable"
+    assert metrics["ads"]["reason"] == "stale"
+
+
+def test_profit_after_ads_is_numeric_when_ads_source_fresh(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "app.db"
+    ads_source = tmp_path / "ads_source.db"
+    _init_db(db_path)
+    ads_source.write_text("stub", encoding="utf-8")
+
+    monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
+    monkeypatch.setenv("AB_ADS_DB_MAX_AGE_HOURS", "36")
+
+    metrics = compute_sales_metrics(db_path=db_path, as_of="2026-02-08")
+
+    assert metrics["avg_7d_ads_spend_kzt"] == 142.86
+    assert metrics["avg_7d_profit_after_ads_kzt"] is not None
+    assert metrics["avg_7d_profit_after_ads_kzt"] < metrics["avg_7d_profit_kzt"]
+    assert metrics["ads"]["status"] == "available"

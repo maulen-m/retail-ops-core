@@ -44,6 +44,7 @@ from core.integrations.kaspi_api_client import (
 )
 from core.integrations.kaspi_order_stage import StageCode, api_state_filter_for_stage
 from core.paths import data_path, get_data_root
+from core.ops.shipment_health import classify_waybill_health
 
 # Configure logging
 logging.basicConfig(
@@ -992,7 +993,7 @@ def download_all_waybills(
     }
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Download Kaspi waybills via API (CRM-aligned)"
     )
@@ -1161,7 +1162,10 @@ def main():
         print(f"\n  [DRY RUN] Would download {result['downloaded']} waybills.")
     else:
         print(f"\n  Waybills saved to: {args.output}")
+    health = classify_waybill_health(result)
+    print(f"  Health: {health.code} ({health.message})")
+    return health.exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
