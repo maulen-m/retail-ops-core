@@ -37,6 +37,7 @@ from scripts.validate_single_truth_system import (
     validate_system as validate_single_truth_system,
     DEFAULT_DASHBOARD as DEFAULT_SINGLE_TRUTH_DASHBOARD,
 )
+from scripts.validate_inbound_sheet_consistency import validate_inbound_sheet_consistency
 from scripts.validate_on_delivery_freeze import validate_on_delivery_freeze
 from scripts.validate_business_insides import validate_business_insides
 from scripts.validate_sales_truth_reconciliation import reconcile_sales_truth
@@ -361,6 +362,22 @@ def main():
                 )
             else:
                 result.add_info(f"single_truth_system workbook: {single_truth_workbook}")
+                inbound_consistency = validate_inbound_sheet_consistency(
+                    workbook_path=single_truth_workbook,
+                    tolerance=0.0,
+                )
+                if not inbound_consistency["ok"]:
+                    for mismatch in inbound_consistency.get("mismatches", []):
+                        result.add_error(
+                            "inbound_sheet_consistency: "
+                            f"{mismatch.get('type')} "
+                            f"po_part_id={mismatch.get('po_part_id')} "
+                            f"sku_key={mismatch.get('sku_key')} "
+                            f"expected={mismatch.get('expected_qty')} "
+                            f"observed={mismatch.get('observed_qty')}"
+                        )
+                else:
+                    result.add_info("inbound_sheet_consistency: OK")
                 system_errors = validate_single_truth_system(
                     db_path=db_path,
                     workbook_path=single_truth_workbook,
