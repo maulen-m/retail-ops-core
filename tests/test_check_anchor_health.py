@@ -25,13 +25,17 @@ def _prepare_repo(tmp_path: Path, *, venv_script: str) -> tuple[Path, Path, Path
     project = tmp_path / "repo"
     crm_workbook = project / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
     inbound_workbook = project / "inbound" / "Inbound_calendar_V10.002.xlsx"
+    stock_workbook = project / "excel" / "stock_snapshot_19.2.2026.xlsx"
     inbound_workbook.parent.mkdir(parents=True, exist_ok=True)
     inbound_workbook.write_bytes(b"inbound-fixture")
+    stock_workbook.parent.mkdir(parents=True, exist_ok=True)
+    stock_workbook.write_bytes(b"stock-fixture")
 
     anchors = project / "config" / "anchors"
     anchors.mkdir(parents=True, exist_ok=True)
     os.symlink(crm_workbook, anchors / "SALES_KSP_CRM_LATEST.xlsx")
     os.symlink(inbound_workbook, anchors / "INBOUND_CALENDAR_LATEST.xlsx")
+    os.symlink(stock_workbook, anchors / "STOCK_SNAPSHOT_LATEST.xlsx")
 
     venv_python = project / ".venv" / "bin" / "python"
     venv_python.parent.mkdir(parents=True, exist_ok=True)
@@ -159,6 +163,28 @@ def test_anchor_health_passes_when_symlinks_and_runtime_are_healthy(tmp_path: Pa
     )
     assert rc == 0
     assert any("anchor health PASS" in line for line in lines)
+
+
+def test_anchor_health_fails_when_stock_anchor_symlink_missing(tmp_path: Path) -> None:
+    project, crm_workbook, _venv = _prepare_repo(
+        tmp_path, venv_script="#!/bin/bash\nif [ \"$1\" = \"-c\" ]; then exit 0; fi\nexit 0\n"
+    )
+    (project / "config" / "anchors" / "STOCK_SNAPSHOT_LATEST.xlsx").unlink()
+    as_of = date(2026, 2, 19)
+    _write_sales_workbook(crm_workbook, as_of - timedelta(days=1))
+    now = 1_760_000_000.0
+    os.utime(crm_workbook, (now, now))
+
+    rc, lines = check_anchor_health(
+        project_root=project,
+        now_ts=now,
+        max_age_hours=72,
+        max_future_skew_seconds=120,
+        max_lag_days=1,
+        as_of=as_of,
+    )
+    assert rc != 0
+    assert any("stock_anchor" in line for line in lines)
 
 
 def test_anchor_health_cli_runs_from_external_cwd_without_module_error(tmp_path: Path) -> None:

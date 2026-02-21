@@ -54,12 +54,17 @@ def step_ingest_inventory(
     from scripts.ingest_inventory_snapshot import ingest_inventory
 
     if inventory_file is None:
-        # Find latest inventory file
-        pattern = "excel/Current_stock_*.xlsx"
-        files = sorted(glob.glob(pattern), reverse=True)
-        if not files:
-            return {"skipped": True, "reason": "No inventory file found"}
-        inventory_file = files[0]
+        # Single-truth default: anchored stock snapshot
+        anchor_file = "config/anchors/STOCK_SNAPSHOT_LATEST.xlsx"
+        if os.path.exists(anchor_file):
+            inventory_file = anchor_file
+        else:
+            # Legacy fallback (deprecated)
+            pattern = "excel/Current_stock_*.xlsx"
+            files = sorted(glob.glob(pattern), reverse=True)
+            if not files:
+                return {"skipped": True, "reason": "No inventory file found"}
+            inventory_file = files[0]
 
     if not os.path.exists(inventory_file):
         return {"skipped": True, "reason": f"File not found: {inventory_file}"}

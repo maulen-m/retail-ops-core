@@ -14,6 +14,9 @@ scripts:
   - path: scripts/sync_dim_sku_from_dim_sku_light.py
     env_gate: ENABLE_DIM_SKU_SYNC_WRITE
     apply_flag: --apply
+  - path: scripts/sync_current_stock.py
+    env_gate: ENABLE_STOCK_SNAPSHOT_WRITE
+    apply_flag: --apply
   - path: scripts/migrate_022_po_execution_tables.py
     env_gate: ENABLE_SCHEMA_WRITE
     apply_flag: --apply

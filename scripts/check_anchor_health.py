@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 DEFAULT_CRM_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
 DEFAULT_INBOUND_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+DEFAULT_STOCK_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "STOCK_SNAPSHOT_LATEST.xlsx"
 DEFAULT_VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
 DEFAULT_MAX_AGE_HOURS = 36.0
 DEFAULT_MAX_FUTURE_SKEW_SECONDS = 120.0
@@ -153,6 +154,7 @@ def check_anchor_health(
     project_root: Path = PROJECT_ROOT,
     crm_anchor: Path | None = None,
     inbound_anchor: Path | None = None,
+    stock_anchor: Path | None = None,
     venv_python: Path | None = None,
     max_age_hours: float | None = None,
     max_future_skew_seconds: float | None = None,
@@ -164,6 +166,7 @@ def check_anchor_health(
     root = project_root.resolve()
     crm_anchor_path = crm_anchor or (root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx")
     inbound_anchor_path = inbound_anchor or (root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx")
+    stock_anchor_path = stock_anchor or (root / "config" / "anchors" / "STOCK_SNAPSHOT_LATEST.xlsx")
     venv_path = venv_python or (root / ".venv" / "bin" / "python")
     now = float(now_ts if now_ts is not None else time.time())
     current_day = as_of or date.today()
@@ -185,8 +188,10 @@ def check_anchor_health(
 
     crm_target, crm_errors = _validate_anchor_symlink(crm_anchor_path, name="crm_anchor")
     inbound_target, inbound_errors = _validate_anchor_symlink(inbound_anchor_path, name="inbound_anchor")
+    stock_target, stock_errors = _validate_anchor_symlink(stock_anchor_path, name="stock_anchor")
     errors.extend(crm_errors)
     errors.extend(inbound_errors)
+    errors.extend(stock_errors)
 
     if crm_target is not None:
         errors.extend(
@@ -208,6 +213,8 @@ def check_anchor_health(
         lines.append(f"crm_anchor={crm_anchor_path} -> {crm_target}")
     if inbound_target is not None:
         lines.append(f"inbound_anchor={inbound_anchor_path} -> {inbound_target}")
+    if stock_target is not None:
+        lines.append(f"stock_anchor={stock_anchor_path} -> {stock_target}")
 
     errors.extend(_validate_venv_imports(venv_path))
     lines.append(
@@ -235,6 +242,7 @@ def main() -> int:
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT, help="Repository root path")
     parser.add_argument("--crm-anchor", type=Path, default=None, help="CRM anchor symlink")
     parser.add_argument("--inbound-anchor", type=Path, default=None, help="Inbound anchor symlink")
+    parser.add_argument("--stock-anchor", type=Path, default=None, help="Stock snapshot anchor symlink")
     parser.add_argument("--venv-python", type=Path, default=None, help="Repo venv python path")
     parser.add_argument("--max-age-hours", type=float, default=None, help="Override workbook max age hours")
     parser.add_argument(
@@ -258,6 +266,7 @@ def main() -> int:
         project_root=args.project_root,
         crm_anchor=args.crm_anchor,
         inbound_anchor=args.inbound_anchor,
+        stock_anchor=args.stock_anchor,
         venv_python=args.venv_python,
         max_age_hours=args.max_age_hours,
         max_future_skew_seconds=args.max_future_skew_seconds,
