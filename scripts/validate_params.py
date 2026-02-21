@@ -37,6 +37,7 @@ from scripts.validate_single_truth_system import (
     validate_system as validate_single_truth_system,
     DEFAULT_DASHBOARD as DEFAULT_SINGLE_TRUTH_DASHBOARD,
 )
+from scripts.validate_inbound_sheet_consistency import validate_inbound_sheet_consistency
 from scripts.validate_on_delivery_freeze import validate_on_delivery_freeze
 from scripts.validate_business_insides import validate_business_insides
 from scripts.validate_sales_truth_reconciliation import reconcile_sales_truth
@@ -47,6 +48,7 @@ from scripts.validate_sales_vs_workbook_anchor import (
 from scripts.validate_sales_truth_consumers import validate_sales_truth_consumers
 from scripts.validate_cogs_integrity import validate_cogs_integrity
 from scripts.validate_profit_publication_integrity import validate_profit_publication_integrity
+from scripts.validate_offer_linkage import validate_offer_linkage
 from scripts.validate_dim_sku_light_alignment import (
     validate_dim_sku_light_alignment,
     DEFAULT_WORKBOOK as DEFAULT_DIM_SKU_LIGHT_WORKBOOK,
@@ -361,6 +363,22 @@ def main():
                 )
             else:
                 result.add_info(f"single_truth_system workbook: {single_truth_workbook}")
+                inbound_consistency = validate_inbound_sheet_consistency(
+                    workbook_path=single_truth_workbook,
+                    tolerance=0.0,
+                )
+                if not inbound_consistency["ok"]:
+                    for mismatch in inbound_consistency.get("mismatches", []):
+                        result.add_error(
+                            "inbound_sheet_consistency: "
+                            f"{mismatch.get('type')} "
+                            f"po_part_id={mismatch.get('po_part_id')} "
+                            f"sku_key={mismatch.get('sku_key')} "
+                            f"expected={mismatch.get('expected_qty')} "
+                            f"observed={mismatch.get('observed_qty')}"
+                        )
+                else:
+                    result.add_info("inbound_sheet_consistency: OK")
                 system_errors = validate_single_truth_system(
                     db_path=db_path,
                     workbook_path=single_truth_workbook,
@@ -427,6 +445,34 @@ def main():
                 )
         except Exception as exc:
             result.add_error(f"sales_truth_consumers error: {exc}")
+
+        try:
+            offer_linkage = validate_offer_linkage(db_path=db_path)
+            require_offer_linkage = (
+                os.environ.get("AB_REQUIRE_OFFER_LINKAGE_STRICT", "").strip().lower()
+                in {"1", "true", "yes", "y"}
+            )
+            if not offer_linkage["ok"]:
+                if require_offer_linkage:
+                    for err in offer_linkage["errors"]:
+                        result.add_error(f"offer_linkage: {err}")
+                else:
+                    result.add_info(
+                        "offer_linkage: non-blocking by default "
+                        "(set AB_REQUIRE_OFFER_LINKAGE_STRICT=1 to fail closed)"
+                    )
+                    for err in offer_linkage["errors"]:
+                        result.add_info(f"offer_linkage detail: {err}")
+            else:
+                metrics = offer_linkage.get("metrics", {})
+                result.add_info(
+                    "offer_linkage: "
+                    f"OK (resolved={metrics.get('resolved_rows', 0)}, "
+                    f"unresolved={metrics.get('unresolved_rows', 0)}, "
+                    f"ambiguous={metrics.get('ambiguous_rows', 0)})"
+                )
+        except Exception as exc:
+            result.add_error(f"offer_linkage error: {exc}")
 
         try:
             workbook_anchor_raw = os.environ.get("AB_CRM_WORKBOOK_PATH", "").strip()

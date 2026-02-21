@@ -37,10 +37,13 @@ def test_prepare_ci_headless_fixture_creates_anchors_and_workbooks(tmp_path: Pat
 
     crm_anchor = project_root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
     inbound_anchor = project_root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+    stock_anchor = project_root / "config" / "anchors" / "STOCK_SNAPSHOT_LATEST.xlsx"
     assert crm_anchor.is_symlink()
     assert inbound_anchor.is_symlink()
+    assert stock_anchor.is_symlink()
     assert crm_anchor.resolve(strict=True).exists()
     assert inbound_anchor.resolve(strict=True).exists()
+    assert stock_anchor.resolve(strict=True).exists()
 
     wb = load_workbook(crm_anchor.resolve(strict=True), read_only=True, data_only=True)
     try:
@@ -83,3 +86,35 @@ def test_prepare_ci_headless_fixture_creates_strict_gate_artifacts(tmp_path: Pat
 
     dim_sku_light = project_root / "config" / "anchors" / "fixtures" / "DIM_SKU_LIGHT_V5.fixture.xlsx"
     assert dim_sku_light.exists(), "fixture must create dim-sku-light workbook for alignment validator"
+
+
+def test_prepare_ci_headless_fixture_creates_inbounds_sheet_for_strict_validators(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    (project_root / "config" / "anchors").mkdir(parents=True, exist_ok=True)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--project-root",
+            str(project_root),
+            "--as-of",
+            "2026-02-20",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    inbound_anchor = project_root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+    wb = load_workbook(inbound_anchor.resolve(strict=True), read_only=True, data_only=True)
+    try:
+        assert "Inbounds_sheet" in wb.sheetnames
+        ws = wb["Inbounds_sheet"]
+        header = [cell.value for cell in ws[1]]
+    finally:
+        wb.close()
+
+    assert {"PO_part_id", "SKU_key"}.issubset(set(header))
+    assert ("Qty" in header) or ("Actual_qty" in header)

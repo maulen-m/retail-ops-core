@@ -44,6 +44,20 @@ def _parse_unresolved_markers(text: str) -> tuple[int | None, int | None]:
     return rows_value, sku_value
 
 
+def _extract_business_insides_profit_values(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for metric in (
+        "Avg 30d Profit",
+        "Avg 7d Profit",
+        "Avg 30d Profit After Ads",
+        "Avg 7d Profit After Ads",
+    ):
+        match = re.search(rf"\|\s*{re.escape(metric)}\s*\|\s*([^|]+)\|", text, flags=re.IGNORECASE)
+        if match:
+            values[metric] = str(match.group(1)).strip()
+    return values
+
+
 def _load_unresolved_from_db(
     conn: sqlite3.Connection,
     *,
@@ -118,6 +132,16 @@ def validate_profit_publication_integrity(
                 "business_insides unresolved sku mismatch: "
                 f"snapshot={sku_marker} db={unresolved_sku_total}"
             )
+
+        if unresolved_rows_total > 0:
+            metric_values = _extract_business_insides_profit_values(text)
+            for metric_name, metric_value in metric_values.items():
+                normalized = metric_value.strip().upper()
+                if normalized not in {"N/A", "-", "NA"}:
+                    errors.append(
+                        "business_insides profit metric must be N/A when unresolved COGS exist: "
+                        f"{metric_name}={metric_value}"
+                    )
     else:
         errors.append(f"business_insides snapshot missing: {resolved_business_insides}")
 

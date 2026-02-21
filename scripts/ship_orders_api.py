@@ -45,6 +45,7 @@ from core.integrations.kaspi_api_client import (
     STORE_TOKEN_MAP,
 )
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
+from core.ops.shipment_health import classify_ship_health
 
 # Configure logging
 logging.basicConfig(
@@ -966,7 +967,7 @@ def ship_orders(
     }
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Ship Kaspi orders - set package count and move to 'Передача'"
     )
@@ -1045,7 +1046,7 @@ def main():
     total_pending = sum(len(ids) for ids in pending_orders.values())
     if total_pending == 0:
         print("No orders pending assembly in Kaspi (Упаковка stage).")
-        return
+        return 0
 
     print(f"  Found {total_pending} orders pending assembly across all stores")
 
@@ -1149,7 +1150,7 @@ def main():
 
     if not orders_by_id and not missing_in_crm:
         print("No eligible orders in CRM/DB.")
-        return
+        return 0
     if args.allow_missing_size:
         print(f"  Found {len(orders_by_id)} orders (size optional)")
     else:
@@ -1193,7 +1194,10 @@ def main():
 
     if args.dry_run:
         print("\n  [DRY RUN] No API calls were made.")
+    health = classify_ship_health(result)
+    print(f"  Health: {health.code} ({health.message})")
+    return health.exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

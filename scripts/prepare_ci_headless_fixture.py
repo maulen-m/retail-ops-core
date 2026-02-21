@@ -48,6 +48,10 @@ def _write_inbound_workbook(path: Path, *, as_of: date) -> None:
         ]
     )
     ws.append(["PO-1.0", "Transit", as_of.isoformat(), "YES", "YES", 0.0, 0.0, 12.5, 5, 14])
+
+    ws_inbounds = wb.create_sheet("Inbounds_sheet")
+    ws_inbounds.append(["PO_part_id", "SKU_key", "Qty", "Actual_qty", "Status", "Actual_Arrival_date"])
+    ws_inbounds.append(["PO-1.0", "CL_FIX_SKU", 14, 14, "Transit", as_of.isoformat()])
     wb.save(path)
 
 
@@ -58,6 +62,16 @@ def _write_dim_sku_light_workbook(path: Path) -> None:
     ws.title = "DIM_SKU_light_v5"
     ws.append(["SKU_key", "CNY", "Wt (kg)", "AvgPrc", "Active"])
     ws.append(["CL_FIX_SKU", 10.0, 1.0, 10000.0, 1])
+    wb.save(path)
+
+
+def _write_stock_snapshot_workbook(path: Path, *, as_of: date) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Inventory_snapshots"
+    ws.append(["SKU_key", "MY_SIZE", "Snapshot_date", "Stock_snapshot", "Inbound_transit"])
+    ws.append(["CL_FIX_SKU", "M", as_of.isoformat(), 100, 14])
     wb.save(path)
 
 
@@ -412,10 +426,12 @@ def prepare_ci_headless_fixture(*, project_root: Path, as_of: date) -> dict[str,
     fixture_dir = root / "config" / "anchors" / "fixtures"
     sales_target = fixture_dir / "SALES_KSP_CRM_V3.fixture.xlsx"
     inbound_target = fixture_dir / "INBOUND_CALENDAR_V10.002.fixture.xlsx"
+    stock_target = fixture_dir / "STOCK_SNAPSHOT.fixture.xlsx"
     dim_sku_light_target = fixture_dir / "DIM_SKU_LIGHT_V5.fixture.xlsx"
     db_target = root / "db" / "app.db"
     crm_anchor = root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
     inbound_anchor = root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+    stock_anchor = root / "config" / "anchors" / "STOCK_SNAPSHOT_LATEST.xlsx"
     dashboard_path = root / "exports" / "po_dashboard_data.json"
     business_insides_path = root / "config" / "business_insides" / f"BUSINESS_INSIDES_{as_of.isoformat()}.md"
     business_insides_snapshot = (
@@ -424,6 +440,7 @@ def prepare_ci_headless_fixture(*, project_root: Path, as_of: date) -> dict[str,
 
     _write_sales_workbook(sales_target, as_of=as_of)
     _write_inbound_workbook(inbound_target, as_of=as_of)
+    _write_stock_snapshot_workbook(stock_target, as_of=as_of)
     _write_dim_sku_light_workbook(dim_sku_light_target)
     _init_headless_db(db_target, as_of=as_of)
     _write_po_dashboard_payload(dashboard_path)
@@ -431,18 +448,21 @@ def prepare_ci_headless_fixture(*, project_root: Path, as_of: date) -> dict[str,
     _write_business_insides_snapshot(business_insides_snapshot, as_of=as_of)
     _replace_with_symlink(crm_anchor, sales_target)
     _replace_with_symlink(inbound_anchor, inbound_target)
+    _replace_with_symlink(stock_anchor, stock_target)
 
     return {
         "project_root": str(root),
         "fixture_dir": str(fixture_dir),
         "sales_target": str(sales_target),
         "inbound_target": str(inbound_target),
+        "stock_target": str(stock_target),
         "dim_sku_light_target": str(dim_sku_light_target),
         "db_target": str(db_target),
         "dashboard_path": str(dashboard_path),
         "business_insides_path": str(business_insides_path),
         "crm_anchor": str(crm_anchor),
         "inbound_anchor": str(inbound_anchor),
+        "stock_anchor": str(stock_anchor),
     }
 
 
