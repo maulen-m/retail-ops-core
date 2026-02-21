@@ -29,6 +29,28 @@ def test_list_all_orders_accepts_include_orders_passthrough() -> None:
     assert captured.get("include_orders") == "entries"
 
 
+def test_list_all_orders_accepts_delivery_type_passthrough() -> None:
+    captured: dict[str, object] = {}
+
+    client = KaspiAPIClient.__new__(KaspiAPIClient)
+
+    def _fake_list_orders(**kwargs):
+        captured.update(kwargs)
+        return APIResponse(success=True, data={"data": []}, status_code=200)
+
+    client.list_orders = _fake_list_orders  # type: ignore[attr-defined]
+
+    rows = KaspiAPIClient.list_all_orders(  # type: ignore[misc]
+        client,
+        state="KASPI_DELIVERY",
+        since="2026-02-17",
+        delivery_type="PICKUP",
+    )
+
+    assert rows == []
+    assert captured.get("delivery_type") == "PICKUP"
+
+
 def test_download_waybills_cli_accepts_include_overdue(monkeypatch) -> None:
     monkeypatch.setattr(
         download_waybills_api,
@@ -79,4 +101,3 @@ def test_ship_orders_cli_accepts_store-c_store(monkeypatch) -> None:
     )
 
     ship_orders_api.main()
-
