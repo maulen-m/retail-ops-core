@@ -137,6 +137,19 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
+echo "Preflight: shipment hard gates..."
+echo "----------------------------------------"
+python scripts/preflight_shipment.py --project-root "${DATA_ROOT}"
+
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "ERROR: Shipment hard preflight failed. Fix issues above and retry."
+    echo "Press Enter to close..."
+    read
+    exit 1
+fi
+
+echo ""
 
 # Sync DB from API + ActiveOrders (order lifecycle + line items)
 echo "Sync: API -> DB (order lifecycle)..."
