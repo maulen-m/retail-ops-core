@@ -510,6 +510,18 @@ class KaspiAPIClient:
             )
         return result
 
+    def get_order_by_id(self, order_id: str) -> APIResponse:
+        """
+        Get single order by Kaspi Base64 order ID.
+
+        Args:
+            order_id: Base64 order id from Kaspi payload `id` field.
+
+        Returns:
+            APIResponse with order data.
+        """
+        return self._request('GET', f'orders/{order_id}')
+
     def _get_order_base64_id(self, order_code: str) -> str:
         """
         Get Base64 order ID from order code.

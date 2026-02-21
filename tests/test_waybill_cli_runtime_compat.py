@@ -51,6 +51,27 @@ def test_list_all_orders_accepts_delivery_type_passthrough() -> None:
     assert captured.get("delivery_type") == "PICKUP"
 
 
+def test_get_order_by_id_calls_orders_endpoint() -> None:
+    captured: dict[str, object] = {}
+
+    client = KaspiAPIClient.__new__(KaspiAPIClient)
+
+    def _fake_request(method, endpoint, params=None, json_data=None, timeout=None):
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        return APIResponse(success=True, data={"id": "ODI5MzM2NTk0"}, status_code=200)
+
+    client._request = _fake_request  # type: ignore[attr-defined]
+
+    response = KaspiAPIClient.get_order_by_id(client, "ODI5MzM2NTk0")  # type: ignore[misc]
+
+    assert response.success is True
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "orders/ODI5MzM2NTk0"
+    assert captured["params"] is None
+
+
 def test_download_waybills_cli_accepts_include_overdue(monkeypatch) -> None:
     monkeypatch.setattr(
         download_waybills_api,
