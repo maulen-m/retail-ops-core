@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import zipfile
 from datetime import date, datetime
 from typing import Optional
@@ -432,3 +433,56 @@ def test_download_waybills_for_store_processes_fallback_targets_not_in_prefetch(
     assert result["missing_waybill"] == 0
     assert (output_dir / "7001.pdf").exists()
     assert (output_dir / "7002.pdf").exists()
+
+
+def test_download_all_waybills_writes_selection_cache(tmp_path, monkeypatch):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    target_date = date(2026, 2, 22)
+    fake_order = _make_order(
+        code="8801",
+        status="ACCEPTED_BY_MERCHANT",
+        signature=False,
+        planned=target_date,
+        assembled=True,
+    )
+
+    def _fake_get_target_orders_from_api(*args, **kwargs):
+        return ([fake_order], False)
+
+    def _fake_download_waybills_for_store(**kwargs):
+        return {
+            "downloaded": 1,
+            "skipped_not_target": 0,
+            "missing_waybill": 0,
+            "already_exists": 0,
+            "invalid_pdf": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
+    monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
+
+    result = download_waybills_api.download_all_waybills(
+        output_dir=output_dir,
+        crm_path=tmp_path / "missing.xlsx",
+        sheet_name="Sheet1",
+        target_date=target_date,
+        db_path=None,
+        store_filter="UNIVERSAL",
+        since_days=3,
+        download_timeout=20,
+        dry_run=False,
+        verbose=False,
+        all_dates=False,
+        exact_date=True,
+        fallback_crm=False,
+    )
+
+    assert result["downloaded"] == 1
+    cache_path = output_dir / "_waybill_selection_orders.json"
+    assert cache_path.exists()
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["target_date"] == target_date.isoformat()
+    assert payload["stores"]["UNIVERSAL"] == ["8801"]

@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -1045,6 +1046,25 @@ def download_all_waybills(
         selection_status = "API_ERRORS"
 
     if not dry_run and output_dir.exists():
+        selection_orders_path = output_dir / "_waybill_selection_orders.json"
+        try:
+            cache_payload = {
+                "target_date": target_date.isoformat(),
+                "exact_date": bool(exact_date),
+                "include_overdue": bool(not exact_date and not all_dates),
+                "all_dates": bool(all_dates),
+                "stores": {
+                    store: sorted(order_ids)
+                    for store, order_ids in sorted(target_orders_by_store.items())
+                },
+            }
+            selection_orders_path.write_text(
+                json.dumps(cache_payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to write selection orders cache: {exc}")
+
         status_path = output_dir / "_waybill_selection_status.txt"
         lines = [
             f"selection={selection_status}",
