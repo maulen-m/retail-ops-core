@@ -151,6 +151,9 @@ fi
 
 echo ""
 
+# Track hard gate failures and exit non-zero at end.
+HARD_FAIL=0
+
 # Sync DB from API + ActiveOrders (order lifecycle + line items)
 echo "Sync: API -> DB (order lifecycle)..."
 echo "----------------------------------------"
@@ -243,6 +246,7 @@ if [ "${SHIPPING_ENABLED}" -eq 1 ]; then
         if [ $? -ne 0 ]; then
             echo ""
             echo "WARNING: Ship orders encountered errors for ${STORE_LABEL} (see above)"
+            HARD_FAIL=1
             echo "Continuing to next store..."
         fi
     done
@@ -265,6 +269,7 @@ python scripts/download_waybills_api.py --verbose --days "${LOOKBACK_DAYS}" ${DA
 if [ $? -ne 0 ]; then
     echo ""
     echo "WARNING: Download waybills encountered errors (see above)"
+    HARD_FAIL=1
     echo "Continuing to next step..."
 fi
 
@@ -274,6 +279,11 @@ echo ""
 echo "Step 3: Building waybill bundles..."
 echo "----------------------------------------"
 python scripts/build_daily_waybills.py --verbose --lookback-days "${LOOKBACK_DAYS}" ${DATE_FLAG}
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "WARNING: Build waybill bundles encountered errors (see above)"
+    HARD_FAIL=1
+fi
 
 echo ""
 # Archive inputs (CRM + waybill PDFs) for backup
@@ -333,10 +343,22 @@ echo ""
 echo "Final Report: waybill health"
 echo "----------------------------------------"
 if [ "${INCLUDE_OVERDUE}" = "1" ]; then
-    python scripts/report_waybill_status.py --since-days "${LOOKBACK_DAYS}" --include-overdue
+    python scripts/report_waybill_status.py --since-days "${LOOKBACK_DAYS}" --include-overdue --strict-stopline
 else
-    python scripts/report_waybill_status.py --since-days "${LOOKBACK_DAYS}"
+    python scripts/report_waybill_status.py --since-days "${LOOKBACK_DAYS}" --strict-stopline
 fi
+if [ $? -ne 0 ]; then
+    HARD_FAIL=1
+fi
+
+if [ "${HARD_FAIL}" -ne 0 ]; then
+    echo ""
+    echo "STOP-LINE: workflow completed with hard failures. See warnings above."
+    echo "Press Enter to close..."
+    read
+    exit 1
+fi
+
 echo ""
 echo "Press Enter to close..."
 read

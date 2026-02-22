@@ -408,6 +408,25 @@ def format_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
+def compute_stopline_exit_code(
+    *,
+    strict_stopline: bool,
+    api_errors: set[str],
+    totals: dict[str, int],
+) -> int:
+    if not strict_stopline:
+        return 0
+    if api_errors:
+        return 1
+    if int(totals.get("MISS_SIZE", 0)) > 0:
+        return 1
+    if int(totals.get("MISS_PDF", 0)) > 0:
+        return 1
+    if int(totals.get("MISS_BUNDLE", 0)) > 0:
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Report waybill health for a given date")
     parser.add_argument("--date", help="Target date (YYYY-MM-DD, default: today)")
@@ -421,6 +440,7 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--include-overdue", action="store_true")
     parser.add_argument("--no-selection-cache", action="store_true")
+    parser.add_argument("--strict-stopline", action="store_true")
     args = parser.parse_args()
 
     load_dotenv(PROJECT_ROOT / ".env")
@@ -627,7 +647,14 @@ def main() -> int:
         show_missing("Missing PDF", missing_pdf_ids)
         show_missing("Missing in bundles", missing_bundle_ids)
 
-    return 0
+    exit_code = compute_stopline_exit_code(
+        strict_stopline=args.strict_stopline,
+        api_errors=api_errors,
+        totals=totals,
+    )
+    if args.strict_stopline and exit_code != 0:
+        print("STOP-LINE: strict waybill health gate failed")
+    return exit_code
 
 
 if __name__ == "__main__":
