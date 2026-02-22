@@ -3,6 +3,8 @@
 ## Purpose
 Provide one copy/paste-safe process for any write-side script protected by env + `--apply`.
 
+Promotion guardrail: `docs/ops/PROMOTION_MINIMUM_STANDARD.md` is mandatory before merge/promotion.
+
 ## Contract
 1. Default mode is dry-run.
 2. Apply is allowed only when both are true:

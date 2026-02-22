@@ -10,6 +10,11 @@ Anchor path and symlink contract authority: `config/anchors/README.md` is author
 Write-side apply contract authority: `docs/WRITE_SIDE_GATING_CONTRACT.md` and `docs/WRITE_APPLY_RUNBOOK.md`.
 Promotion evidence policy authority: `docs/OPS_ROLLOUT_EVIDENCE_V2_9_PROMOTION_POLICY_2026-02-20.md`.
 Daily import + waybill workflow contract authority: `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`.
+Promotion minimum merge standard authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.
+
+Current daily scheduler contract (GMT+5):
+- import jobs: `11:00` and `16:03`
+- waybill deadline job: `18:30`
 
 Run strict validation with workbook anchor enabled before operator decisions:
 

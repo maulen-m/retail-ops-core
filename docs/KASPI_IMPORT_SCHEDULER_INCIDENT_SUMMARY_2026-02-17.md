@@ -95,3 +95,10 @@
 - Oracle pack contract now explicitly includes workbook-anchor comparator chain for external analysis:
   - `scripts/validate_sales_vs_workbook_anchor.py`
   - `scripts/validate_sales_against_workbook.py`
+
+## Current authoritative schedule (supersedes incident-time 16:05)
+- This document records incident-time recovery on `2026-02-17`.
+- Current production contract is owned by `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`.
+- Current authoritative schedule:
+  - import: `11:00`, `16:03`
+  - waybill deadline: `18:30`

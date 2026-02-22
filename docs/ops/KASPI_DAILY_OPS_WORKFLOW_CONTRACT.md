@@ -44,6 +44,13 @@ updating this contract and corresponding tests before merge.
 - keep fallback selection path in waybill download (`--fallback-crm`) to avoid missing PDFs for non-prefetched target IDs
 - keep scheduler timings in sync with this contract and launchd plists
 
+## Promotion Governance
+- Promotion checklist authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.
+- Any timing/contract change to this workflow must update:
+  - this contract doc
+  - matching launchd plist(s)
+  - matching scheduler contract tests
+
 ## Test Gate Ownership
 - `tests/test_kaspi_import_scheduler_contract.py`
 - `tests/test_kaspi_waybill_deadline_scheduler_contract.py`
