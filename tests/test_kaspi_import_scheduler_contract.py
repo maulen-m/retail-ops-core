@@ -12,7 +12,7 @@ def test_kaspi_import_plist_schedule_is_expected() -> None:
     plist = _read_kaspi_import_plist()
     intervals = plist.get("StartCalendarInterval", [])
     pairs = sorted((int(item["Hour"]), int(item["Minute"])) for item in intervals)
-    assert pairs == [(11, 0), (16, 5)]
+    assert pairs == [(11, 0), (16, 3)]
 
 
 def test_kaspi_import_plist_uses_v2_label() -> None:
@@ -48,4 +48,4 @@ def test_install_scheduler_script_uses_bootstrap_and_enable() -> None:
     assert "com.example.kaspi-import-v2" in script
     assert "runtime_logs" in script
     assert "11:00" in script
-    assert "16:05" in script
+    assert "16:03" in script

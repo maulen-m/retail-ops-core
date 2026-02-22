@@ -9,6 +9,7 @@ Scope: Kaspi-only.
 Anchor path and symlink contract authority: `config/anchors/README.md` is authoritative.
 Write-side apply contract authority: `docs/WRITE_SIDE_GATING_CONTRACT.md` and `docs/WRITE_APPLY_RUNBOOK.md`.
 Promotion evidence policy authority: `docs/OPS_ROLLOUT_EVIDENCE_V2_9_PROMOTION_POLICY_2026-02-20.md`.
+Daily import + waybill workflow contract authority: `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`.
 
 Run strict validation with workbook anchor enabled before operator decisions:
 
