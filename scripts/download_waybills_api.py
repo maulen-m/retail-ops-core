@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -587,6 +588,8 @@ def download_waybills_for_store(
     already_exists = 0
     invalid_pdf = 0
     errors = []
+    processed_order_ids: set[str] = set()
+    circuit_open = False
 
     if not target_order_ids:
         return {
@@ -640,6 +643,7 @@ def download_waybills_for_store(
         if order_code not in target_order_ids:
             skipped_not_target += 1
             continue
+        processed_order_ids.add(order_code)
 
         # Check if already downloaded
         output_path = output_dir / f"{order_code}.pdf"
@@ -703,7 +707,83 @@ def download_waybills_for_store(
             logger.warning(f"Circuit breaker: {consecutive_errors} consecutive errors for {store_code}, skipping remaining orders")
             if verbose:
                 print(f"      ⚠️ Stopping {store_code}: too many consecutive failures")
+            circuit_open = True
             break
+
+    # If fallback selection added target IDs not present in prefetched API orders,
+    # fetch detail directly so those orders are still downloadable.
+    if not circuit_open:
+        remaining_target_ids = sorted(target_order_ids - processed_order_ids)
+        for order_code in remaining_target_ids:
+            output_path = output_dir / f"{order_code}.pdf"
+            if output_path.exists():
+                already_exists += 1
+                if verbose:
+                    print(f"      {order_code}: Already exists, skipping (fallback target)")
+                continue
+
+            detail = client.get_order(order_code)
+            if not detail.success:
+                errors.append(f"{order_code}: detail fetch failed - {detail.error}")
+                missing_orders.append(order_code)
+                consecutive_errors += 1
+                if verbose:
+                    print(f"      {order_code}: Detail fetch failed - {detail.error}")
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    logger.warning(
+                        f"Circuit breaker: {consecutive_errors} consecutive errors for {store_code}, "
+                        "stopping fallback target processing"
+                    )
+                    circuit_open = True
+                    break
+                continue
+
+            waybill_url = client.get_waybill_url(detail.data)
+            if not waybill_url:
+                missing_orders.append(order_code)
+                if verbose:
+                    print(f"      {order_code}: No waybill URL yet (fallback target)")
+                continue
+
+            if dry_run:
+                downloaded += 1
+                if verbose:
+                    print(f"      {order_code}: Would download (fallback target)")
+                continue
+
+            try:
+                result = client.download_waybill(waybill_url, timeout=download_timeout)
+                if result.success:
+                    if not _is_pdf_bytes(result.data):
+                        invalid_pdf += 1
+                        errors.append(f"{order_code}: Invalid PDF payload")
+                        consecutive_errors += 1
+                        if verbose:
+                            print(f"      {order_code}: Invalid PDF payload")
+                    else:
+                        output_path.write_bytes(result.data)
+                        downloaded += 1
+                        consecutive_errors = 0
+                        if verbose:
+                            print(f"      {order_code}: Downloaded OK (fallback target)")
+                else:
+                    errors.append(f"{order_code}: {result.error}")
+                    consecutive_errors += 1
+                    if verbose:
+                        print(f"      {order_code}: Download failed - {result.error}")
+            except Exception as e:
+                errors.append(f"{order_code}: {str(e)}")
+                consecutive_errors += 1
+                if verbose:
+                    print(f"      {order_code}: Exception - {e}")
+
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                logger.warning(
+                    f"Circuit breaker: {consecutive_errors} consecutive errors for {store_code}, "
+                    "stopping fallback target processing"
+                )
+                circuit_open = True
+                break
 
     retry_delay, retry_passes = _retry_settings_for_store(store_code)
     # Retry missing waybills (async generation after assemble)
@@ -966,6 +1046,25 @@ def download_all_waybills(
         selection_status = "API_ERRORS"
 
     if not dry_run and output_dir.exists():
+        selection_orders_path = output_dir / "_waybill_selection_orders.json"
+        try:
+            cache_payload = {
+                "target_date": target_date.isoformat(),
+                "exact_date": bool(exact_date),
+                "include_overdue": bool(not exact_date and not all_dates),
+                "all_dates": bool(all_dates),
+                "stores": {
+                    store: sorted(order_ids)
+                    for store, order_ids in sorted(target_orders_by_store.items())
+                },
+            }
+            selection_orders_path.write_text(
+                json.dumps(cache_payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to write selection orders cache: {exc}")
+
         status_path = output_dir / "_waybill_selection_status.txt"
         lines = [
             f"selection={selection_status}",

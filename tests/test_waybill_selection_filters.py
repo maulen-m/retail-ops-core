@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import zipfile
 from datetime import date, datetime
 from typing import Optional
@@ -6,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from core.integrations.kaspi_api_client import APIResponse
 from scripts import build_daily_waybills
 from scripts import download_waybills_api
 from scripts import validate_pending_orders
@@ -367,3 +369,120 @@ def test_build_zip_loader_respects_order_id_filter(tmp_path):
     )
 
     assert set(loaded.keys()) == {"2001"}
+
+
+def test_download_waybills_for_store_processes_fallback_targets_not_in_prefetch(
+    tmp_path, monkeypatch
+):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    prefetched_orders = [
+        _make_order(
+            code="7001",
+            status="ACCEPTED_BY_MERCHANT",
+            signature=False,
+            planned=date(2026, 2, 22),
+            assembled=True,
+        )
+    ]
+    prefetched_orders[0]["attributes"]["kaspiDelivery"]["waybill"] = (
+        "https://example.local/7001.pdf"
+    )
+
+    def _detail_order(code: str) -> dict:
+        order = _make_order(
+            code=code,
+            status="ACCEPTED_BY_MERCHANT",
+            signature=False,
+            planned=date(2026, 2, 22),
+            assembled=True,
+        )
+        order["attributes"]["kaspiDelivery"]["waybill"] = (
+            f"https://example.local/{code}.pdf"
+        )
+        return order
+
+    class FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def get_waybill_url(self, order: dict) -> Optional[str]:
+            return order.get("attributes", {}).get("kaspiDelivery", {}).get("waybill")
+
+        def get_order(self, order_code: str) -> APIResponse:
+            return APIResponse(success=True, data=_detail_order(order_code), status_code=200)
+
+        def download_waybill(self, waybill_url: str, timeout: Optional[int] = None) -> APIResponse:
+            return APIResponse(success=True, data=b"%PDF-1.4 test\n", status_code=200)
+
+    monkeypatch.setattr(download_waybills_api, "KaspiAPIClient", FakeClient)
+
+    result = download_waybills_api.download_waybills_for_store(
+        store_code="UNIVERSAL",
+        target_order_ids={"7001", "7002"},
+        output_dir=output_dir,
+        since_days=1,
+        download_timeout=10,
+        dry_run=False,
+        verbose=False,
+        prefetched_orders=prefetched_orders,
+    )
+
+    assert result["downloaded"] == 2
+    assert result["missing_waybill"] == 0
+    assert (output_dir / "7001.pdf").exists()
+    assert (output_dir / "7002.pdf").exists()
+
+
+def test_download_all_waybills_writes_selection_cache(tmp_path, monkeypatch):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    target_date = date(2026, 2, 22)
+    fake_order = _make_order(
+        code="8801",
+        status="ACCEPTED_BY_MERCHANT",
+        signature=False,
+        planned=target_date,
+        assembled=True,
+    )
+
+    def _fake_get_target_orders_from_api(*args, **kwargs):
+        return ([fake_order], False)
+
+    def _fake_download_waybills_for_store(**kwargs):
+        return {
+            "downloaded": 1,
+            "skipped_not_target": 0,
+            "missing_waybill": 0,
+            "already_exists": 0,
+            "invalid_pdf": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
+    monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
+
+    result = download_waybills_api.download_all_waybills(
+        output_dir=output_dir,
+        crm_path=tmp_path / "missing.xlsx",
+        sheet_name="Sheet1",
+        target_date=target_date,
+        db_path=None,
+        store_filter="UNIVERSAL",
+        since_days=3,
+        download_timeout=20,
+        dry_run=False,
+        verbose=False,
+        all_dates=False,
+        exact_date=True,
+        fallback_crm=False,
+    )
+
+    assert result["downloaded"] == 1
+    cache_path = output_dir / "_waybill_selection_orders.json"
+    assert cache_path.exists()
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["target_date"] == target_date.isoformat()
+    assert payload["stores"]["UNIVERSAL"] == ["8801"]

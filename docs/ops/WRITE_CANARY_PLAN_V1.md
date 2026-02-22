@@ -7,7 +7,9 @@ Define a reversible write-side canary process without enabling writes by default
 - All strict gates green.
 - Write-side manifest validator green:
   - `python3 scripts/validate_write_side_gating.py`
+  - `config/write_side_gating_manifest.yaml` contains every write-capable command.
 - Rollback operator is available.
+- Board V5 policy: **No apply execution is allowed in board V5**.
 
 ## Safety model
 - Dual gate required for every write path:
@@ -18,6 +20,7 @@ Define a reversible write-side canary process without enabling writes by default
 
 ## Canary steps
 1. Validate contracts and strict chain in dry-run mode.
+   - `python3 scripts/validate_write_side_gating.py`
 2. Run canary command in dry-run and store artifact logs.
 3. Review output diff and rollback readiness.
 4. Execute apply only if explicitly approved and gated.

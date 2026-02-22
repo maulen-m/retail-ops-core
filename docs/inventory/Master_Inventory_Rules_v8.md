@@ -3,7 +3,7 @@
 **Effective date:** 2026-01-01  
 **Last updated:** 2026-01-05  
 **Scope:** Kaspi (Kazakhstan) inventory + PO decision logic  
-**Implementation reference:** `Inventory_Core_V18.1_V2.xlsx` + Project 3 (Python/DB)
+**Implementation reference:**   Project 3 (Python/DB)
 
 ---
 
