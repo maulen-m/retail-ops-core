@@ -3,6 +3,8 @@
 ## Overview
 
 This document describes the daily workflow for processing Kaspi orders, from import to courier handover.
+Authoritative schedule/source-of-truth for automation timing:
+`docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`.
 
 ## Schedule (GMT+5 Kazakhstan Time)
 
@@ -10,12 +12,12 @@ This document describes the daily workflow for processing Kaspi orders, from imp
 |------|----------|------------|
 | 11:00 | First order import | Automated (launchd) |
 | 11:00-15:45 | Order processing, waybill generation | Manual |
-| 15:45-16:00 | Final check, late orders | Manual |
+| 15:45-16:03 | Final check, late orders | Manual |
 | 16:00 | SLA cutoff (same-day orders) | - |
-| 16:00 | Second order import | Automated (launchd) |
-| 16:00-17:00 | Next-day order prep | Manual |
+| 16:03 | Second order import | Automated (launchd) |
+| 16:03-17:00 | Next-day order prep | Manual |
 | 17:00-18:00 | Package preparation | Manual |
-| 18:00-18:40 | Courier handover | Manual |
+| 18:00-18:30 | Courier handover + deadline check | Manual |
 
 ## Detailed Steps
 
@@ -73,7 +75,7 @@ Check for late orders:
 - Any order with `planned_delivery_date` = today
 - Status still "Ожидает передачи курьеру"
 
-### 6. Afternoon Import (16:00)
+### 6. Afternoon Import (16:03)
 
 Second automated import captures:
 - Orders received after 11:00
@@ -147,7 +149,7 @@ logs/
 
 | Script | Purpose | Schedule |
 |--------|---------|----------|
-| `run_full_import.command` | Import orders from API | 11:00, 16:00 (launchd) |
+| `run_full_import.command` | Import orders from API | 11:00, 16:03 (launchd) |
 | `run_build_waybills_v2.command` | Generate waybill PDFs (V2 - optimized) | Manual |
 | `run_send_whatsapp.command` | Send PDFs to WhatsApp | Manual |
 

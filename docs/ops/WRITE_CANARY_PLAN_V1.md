@@ -3,6 +3,8 @@
 ## Purpose
 Define a reversible write-side canary process without enabling writes by default.
 
+Next execution draft (apply-enabled, bounded): `docs/ops/WRITE_CANARY_V6_APPLY_BOARD.md`.
+
 ## Preconditions
 - All strict gates green.
 - Write-side manifest validator green:

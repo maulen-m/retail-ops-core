@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -23,6 +24,32 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.integrations.kaspi_api_client import KaspiAPIClient, validate_all_tokens
+
+
+def _is_assemble_transition_confirmed(client: KaspiAPIClient, order_code: str, verbose: bool = False) -> bool:
+    """Confirm assemble call produced real state transition, not just HTTP success."""
+    for attempt in range(3):
+        detail = client.get_order(order_code)
+        if detail.success:
+            attrs = detail.data.get('attributes', {})
+            waybill_url = client.get_waybill_url(detail.data)
+            if attrs.get('assembled') is True or waybill_url:
+                if verbose:
+                    print(
+                        f"   - confirm attempt {attempt + 1}: assembled={attrs.get('assembled')} "
+                        f"waybill={'yes' if waybill_url else 'no'}"
+                    )
+                return True
+            if verbose:
+                print(
+                    f"   - confirm attempt {attempt + 1}: assembled={attrs.get('assembled')} "
+                    f"waybill={'yes' if waybill_url else 'no'}"
+                )
+        elif verbose:
+            print(f"   - confirm attempt {attempt + 1}: get_order failed: {detail.error}")
+        if attempt < 2:
+            time.sleep(1.0)
+    return False
 
 
 def validate_token(store_code: str, verbose: bool = False) -> bool:
@@ -292,8 +319,11 @@ def validate_assemble_order(store_code: str, verbose: bool = False) -> bool:
         result = client.assemble_order(test_order)
 
         if result.success:
-            print(f"✅ PASS - Order {test_order} assembled")
-            return True
+            if _is_assemble_transition_confirmed(client, test_order, verbose=verbose):
+                print(f"✅ PASS - Order {test_order} assembled (state transition confirmed)")
+                return True
+            print(f"❌ FAIL - Order {test_order} assemble call succeeded but state transition not confirmed")
+            return False
         else:
             print(f"❌ FAIL - {result.error}")
             return False

@@ -32,6 +32,7 @@ REQUIRED_HEADLESS_PYTEST_TARGETS = [
     "tests/test_validate_sales_vs_workbook_anchor.py",
     "tests/test_sales_workbook_anchor_parser.py",
     "tests/test_validate_sales_truth_consumers.py",
+    "tests/test_promotion_minimum_standard_contract.py",
     "tests/test_import_orders_to_crm.py::test_load_sku_meta_for_keys_handles_missing_dim_sku_table",
 ]
 
