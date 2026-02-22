@@ -56,6 +56,7 @@ def mock_env():
         'KASPI_TOKEN_UNIVERSAL': 'test-token-universal',
         'KASPI_TOKEN_ACMEWEAR': 'test-token-acmewear',
         'KASPI_TOKEN_11KZ': 'test-token-store-d',
+        'KASPI_MERCHANT_UID_UNIVERSAL': '30000001',
         'ENABLE_KASPI_WRITE': '0',
     }
     with patch.dict(os.environ, env_vars, clear=False):
@@ -67,6 +68,7 @@ def mock_env_with_write():
     """Set up mock environment with writes enabled."""
     env_vars = {
         'KASPI_TOKEN_UNIVERSAL': 'test-token-universal',
+        'KASPI_MERCHANT_UID_UNIVERSAL': '30000001',
         'ENABLE_KASPI_WRITE': '1',
     }
     with patch.dict(os.environ, env_vars, clear=False):
@@ -233,6 +235,12 @@ class TestRequestBuilding:
         headers = client._get_headers()
         assert headers['Content-Type'] == 'application/vnd.api+json'
         assert headers['Accept'] == 'application/vnd.api+json'
+
+    def test_headers_include_merchant_uid_when_configured(self, mock_env):
+        """Write header should include merchant UID when configured."""
+        client = KaspiAPIClient(store_code='UNIVERSAL')
+        headers = client._get_headers()
+        assert headers.get('X-Merchant-Uid') == '30000001'
 
 
 # =============================================================================
@@ -982,7 +990,7 @@ class TestWriteOperationsBase64ID:
 
     @patch('requests.Session.request')
     def test_assemble_order_uses_base64_id(self, mock_request, mock_env_with_write):
-        """Test assemble_order uses Base64 ID in assemble endpoint."""
+        """Test assemble_order posts update to /orders with Base64 ID payload."""
         lookup_response = MagicMock()
         lookup_response.ok = True
         lookup_response.status_code = 200
@@ -1000,14 +1008,14 @@ class TestWriteOperationsBase64ID:
         client = KaspiAPIClient('UNIVERSAL')
         client.assemble_order('738784236')
 
-        # Verify Base64 ID in assemble URL
+        # Verify write goes through /orders endpoint
         write_call = mock_request.call_args_list[1]
         url = write_call[1]['url']
-        assert 'orders/NzM4Nzg0MjM2/assemble' in url
+        assert url.endswith('/orders')
 
     @patch('requests.Session.request')
     def test_assemble_order_uses_correct_format(self, mock_request, mock_env_with_write):
-        """Test assemble_order uses numberOfSpace payload for assemble endpoint."""
+        """Test assemble_order uses status+numberOfSpace payload for /orders update."""
         lookup_response = MagicMock()
         lookup_response.ok = True
         lookup_response.status_code = 200
@@ -1017,18 +1025,43 @@ class TestWriteOperationsBase64ID:
 
         write_response = MagicMock()
         write_response.ok = True
-        write_response.status_code = 200
-        write_response.json.return_value = {'data': {}}
+        write_response.status_code = 201
+        write_response.json.return_value = {'data': {'id': 'ABC123'}}
 
         mock_request.side_effect = [lookup_response, write_response]
 
         client = KaspiAPIClient('UNIVERSAL')
         client.assemble_order('12345', parcel_count=2)
 
-        # Verify correct format for assemble endpoint
+        # Verify correct payload format for /orders update
         write_call = mock_request.call_args_list[1]
         json_data = write_call[1]['json']
-        assert json_data['data']['numberOfSpace'] == '2'  # API requires STRING, not int
+        assert json_data['data']['id'] == 'ABC123'
+        assert json_data['data']['attributes']['status'] == 'ASSEMBLE'
+        assert json_data['data']['attributes']['numberOfSpace'] == '2'  # API requires STRING
+
+
+class TestWaybillDownload:
+    """Tests for waybill download call contract."""
+
+    @patch('requests.Session.get')
+    def test_download_waybill_accepts_timeout_override(self, mock_get, mock_env):
+        """download_waybill should accept per-call timeout override used by downloader script."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.content = b'%PDF-test'
+        mock_get.return_value = mock_response
+
+        client = KaspiAPIClient('UNIVERSAL')
+        result = client.download_waybill('https://kaspi.kz/waybill/test.pdf', timeout=12)
+
+        assert result.success
+        mock_get.assert_called_once()
+        assert mock_get.call_args[1]['timeout'] == 12
+        sent_headers = mock_get.call_args[1]['headers']
+        assert sent_headers['User-Agent'].startswith('Mozilla/')
+        assert sent_headers['X-Auth-Token'] == 'test-token-universal'
 
     @patch('requests.Session.request')
     def test_ship_order_uses_base64_id(self, mock_request, mock_env_with_write):

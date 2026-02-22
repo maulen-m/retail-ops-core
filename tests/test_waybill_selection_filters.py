@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from core.integrations.kaspi_api_client import APIResponse
 from scripts import build_daily_waybills
 from scripts import download_waybills_api
 from scripts import validate_pending_orders
@@ -367,3 +368,67 @@ def test_build_zip_loader_respects_order_id_filter(tmp_path):
     )
 
     assert set(loaded.keys()) == {"2001"}
+
+
+def test_download_waybills_for_store_processes_fallback_targets_not_in_prefetch(
+    tmp_path, monkeypatch
+):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    prefetched_orders = [
+        _make_order(
+            code="7001",
+            status="ACCEPTED_BY_MERCHANT",
+            signature=False,
+            planned=date(2026, 2, 22),
+            assembled=True,
+        )
+    ]
+    prefetched_orders[0]["attributes"]["kaspiDelivery"]["waybill"] = (
+        "https://example.local/7001.pdf"
+    )
+
+    def _detail_order(code: str) -> dict:
+        order = _make_order(
+            code=code,
+            status="ACCEPTED_BY_MERCHANT",
+            signature=False,
+            planned=date(2026, 2, 22),
+            assembled=True,
+        )
+        order["attributes"]["kaspiDelivery"]["waybill"] = (
+            f"https://example.local/{code}.pdf"
+        )
+        return order
+
+    class FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def get_waybill_url(self, order: dict) -> Optional[str]:
+            return order.get("attributes", {}).get("kaspiDelivery", {}).get("waybill")
+
+        def get_order(self, order_code: str) -> APIResponse:
+            return APIResponse(success=True, data=_detail_order(order_code), status_code=200)
+
+        def download_waybill(self, waybill_url: str, timeout: Optional[int] = None) -> APIResponse:
+            return APIResponse(success=True, data=b"%PDF-1.4 test\n", status_code=200)
+
+    monkeypatch.setattr(download_waybills_api, "KaspiAPIClient", FakeClient)
+
+    result = download_waybills_api.download_waybills_for_store(
+        store_code="UNIVERSAL",
+        target_order_ids={"7001", "7002"},
+        output_dir=output_dir,
+        since_days=1,
+        download_timeout=10,
+        dry_run=False,
+        verbose=False,
+        prefetched_orders=prefetched_orders,
+    )
+
+    assert result["downloaded"] == 2
+    assert result["missing_waybill"] == 0
+    assert (output_dir / "7001.pdf").exists()
+    assert (output_dir / "7002.pdf").exists()

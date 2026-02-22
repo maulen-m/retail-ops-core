@@ -79,6 +79,14 @@ STORE_TOKEN_MAP = {
     'STOREB': 'KASPI_TOKEN_STOREB',
 }
 
+STORE_MERCHANT_UID_MAP = {
+    'UNIVERSAL': 'KASPI_MERCHANT_UID_UNIVERSAL',
+    'ACMEWEAR': 'KASPI_MERCHANT_UID_ACMEWEAR',
+    '11KZ': 'KASPI_MERCHANT_UID_11KZ',
+    'MELVIS': 'KASPI_MERCHANT_UID_MELVIS',
+    'STOREB': 'KASPI_MERCHANT_UID_STOREB',
+}
+
 
 class OrderState(str, Enum):
     """Kaspi order states."""
@@ -189,6 +197,7 @@ class KaspiAPIClient:
         self.store_code = store_code.upper()
         self.timeout = timeout
         self._token = token or self._load_token(self.store_code)
+        self._merchant_uid = self._load_merchant_uid(self.store_code)
         self._last_request_time = 0.0
 
         # Write operations guard
@@ -240,15 +249,29 @@ class KaspiAPIClient:
 
         return session
 
+    def _load_merchant_uid(self, store_code: str) -> Optional[str]:
+        """Load merchant UID from environment (optional, but required by some write endpoints)."""
+        env_var = STORE_MERCHANT_UID_MAP.get(store_code)
+        if not env_var:
+            return None
+        raw = os.environ.get(env_var)
+        if raw is None:
+            return None
+        value = str(raw).strip()
+        return value or None
+
     def _get_headers(self) -> dict:
         """Get request headers with authorization."""
-        return {
+        headers = {
             'Authorization': self._token,
             'X-Auth-Token': self._token,
             'Accept': 'application/vnd.api+json',
             'Content-Type': 'application/vnd.api+json',
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
+        if self._merchant_uid:
+            headers['X-Merchant-Uid'] = self._merchant_uid
+        return headers
 
     def _rate_limit(self):
         """Apply rate limiting between requests."""
@@ -594,12 +617,13 @@ class KaspiAPIClient:
         except (KeyError, TypeError):
             return None
 
-    def download_waybill(self, waybill_url: str) -> APIResponse:
+    def download_waybill(self, waybill_url: str, timeout: Optional[int] = None) -> APIResponse:
         """
         Download waybill PDF from URL.
 
         Args:
             waybill_url: Direct waybill URL
+            timeout: Optional per-call timeout override (seconds)
 
         Returns:
             APIResponse with PDF binary in data
@@ -609,8 +633,8 @@ class KaspiAPIClient:
         try:
             response = self._session.get(
                 waybill_url,
-                headers={'Authorization': self._token},
-                timeout=DOWNLOAD_TIMEOUT,
+                headers=self._get_headers(),
+                timeout=timeout or DOWNLOAD_TIMEOUT,
             )
 
             if response.ok:
@@ -717,23 +741,8 @@ class KaspiAPIClient:
         self._require_write_enabled()
         logger.info(f"Assembling order {order_code} (ID: {base64_id}) with {parcel_count} parcels")
 
-        # Preferred endpoint (works for Universal + other stores)
-        assemble_payload = {'data': {'numberOfSpace': str(parcel_count)}}
-        try:
-            result = self._request(
-                'POST',
-                f'orders/{base64_id}/assemble',
-                json_data=assemble_payload,
-            )
-            if result.success:
-                return result
-        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError):
-            # Fall back to legacy endpoint below
-            pass
-        except Exception as exc:
-            logger.warning(f"Assemble via /orders/{base64_id}/assemble failed: {exc}")
-
-        # Legacy fallback (some stores still accept status update on /orders)
+        # Primary endpoint: explicit order update.
+        # In production, this path applies status transition when merchant UID is provided.
         data = {
             'data': {
                 'type': 'orders',
@@ -744,8 +753,23 @@ class KaspiAPIClient:
                 }
             }
         }
+        try:
+            result = self._request('POST', 'orders', json_data=data)
+            if result.success:
+                return result
+        except (KaspiNotFoundError, KaspiAuthError, KaspiRateLimitError):
+            # Fall back to alternate endpoint below.
+            pass
+        except Exception as exc:
+            logger.warning(f"Assemble via /orders failed for {order_code}: {exc}")
 
-        return self._request('POST', 'orders', json_data=data)
+        # Fallback endpoint kept for compatibility.
+        assemble_payload = {'data': {'numberOfSpace': str(parcel_count)}}
+        return self._request(
+            'POST',
+            f'orders/{base64_id}/assemble',
+            json_data=assemble_payload,
+        )
 
     def ship_order(self, order_code: str) -> APIResponse:
         """
