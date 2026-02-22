@@ -17,6 +17,16 @@ This contract is fail-closed: workflow regressions must surface as test failures
   - `18:30` daily waybill deadline run
 - installer: `scripts/install_scheduler.sh`
 
+## Multi-Store Scale Roster
+- Universal
+- AcmeWear
+- 11KZ
+- Store-C
+- STORE-B
+
+All daily import/waybill logic must preserve this roster. Any store mapping change requires
+updating this contract and corresponding tests before merge.
+
 ## Workflow-Critical Components (Do Not Drift)
 - API client write/read behavior:
   - `core/integrations/kaspi_api_client.py`
@@ -44,3 +54,12 @@ This contract is fail-closed: workflow regressions must surface as test failures
 - `tests/test_kaspi_daily_ops_workflow_contract_doc.py`
 
 If any of the files above is changed, run the relevant targeted tests before merge.
+
+## Production Dry-Run Checks
+Run these before operational runs when validating environment/health without applying write-side actions:
+
+```bash
+bash scripts/install_single_truth_ops_scheduler.sh --validate-only
+python3 scripts/check_anchor_health.py --project-root <REPO_PATH>
+python3 scripts/ops_status.py --project-root <REPO_PATH>
+```
