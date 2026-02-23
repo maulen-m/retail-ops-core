@@ -978,15 +978,16 @@ def download_all_waybills(
             fallback_ids = fallback_orders_by_store.get(store_code, set())
 
             if api_ids:
-                merged = set(api_ids)
+                # Fail-closed selection contract:
+                # keep API as source-of-truth when API already returned targets
+                # for a store. Fallback is only for stores where API is empty/failed.
                 extra = fallback_ids - api_ids
                 if extra:
                     logger.warning(
-                        f"{store_code}: {len(extra)} fallback orders not in API selection; "
-                        "including due to --fallback-crm"
+                        f"{store_code}: ignoring {len(extra)} fallback-only orders "
+                        "because API already returned targets for this store"
                     )
-                    merged |= extra
-                merged_orders_by_store[store_code] = merged
+                merged_orders_by_store[store_code] = set(api_ids)
             else:
                 if fallback_ids:
                     merged_orders_by_store[store_code] = set(fallback_ids)
