@@ -45,6 +45,7 @@ from scripts.import_orders_to_crm import (
     _normalize_conditional_formatting_ranges,
     _verify_appended_rows_integrity,
     _xlwings_open_timeout_sec,
+    _temporary_manual_calculation,
     _build_xlwings_write_plan,
     excel_append_xlwings,
     _excel_automation_preflight,
@@ -926,6 +927,49 @@ def test_xlwings_append_timeout_sec_respects_env(monkeypatch):
 def test_xlwings_append_timeout_sec_uses_safer_default(monkeypatch):
     monkeypatch.delenv("CRM_XLWINGS_APPEND_TIMEOUT_SEC", raising=False)
     assert _xlwings_append_timeout_sec() == 420
+
+
+def test_temporary_manual_calculation_switches_and_restores():
+    class DummyApp:
+        def __init__(self):
+            self.calculation = "automatic"
+            self.calculate_calls = 0
+
+        def calculate(self):
+            self.calculate_calls += 1
+
+    app = DummyApp()
+    with _temporary_manual_calculation(app):
+        assert app.calculation == "manual"
+    assert app.calculation == "automatic"
+    assert app.calculate_calls == 1
+
+
+def test_temporary_manual_calculation_restores_on_exception():
+    class DummyApp:
+        def __init__(self):
+            self.calculation = "automatic"
+            self.calculate_calls = 0
+
+        def calculate(self):
+            self.calculate_calls += 1
+
+    app = DummyApp()
+    with pytest.raises(RuntimeError, match="boom"):
+        with _temporary_manual_calculation(app):
+            assert app.calculation == "manual"
+            raise RuntimeError("boom")
+    assert app.calculation == "automatic"
+    assert app.calculate_calls == 1
+
+
+def test_temporary_manual_calculation_degrades_gracefully():
+    class DummyApp:
+        pass
+
+    app = DummyApp()
+    with _temporary_manual_calculation(app):
+        assert True
 
 
 def test_build_xlwings_write_plan_coerces_order_ids_and_skips_empty_columns():
