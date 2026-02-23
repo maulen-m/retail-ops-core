@@ -35,7 +35,12 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
-def dedupe_order_events(db_path: Path, apply: bool, run_id: str | None) -> int:
+def dedupe_order_events(
+    db_path: Path,
+    apply: bool,
+    run_id: str | None,
+    max_new_events: int = 200,
+) -> int:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
 
@@ -118,6 +123,12 @@ def dedupe_order_events(db_path: Path, apply: bool, run_id: str | None) -> int:
             ).fetchall()
         }
         new_events = [e for e in reversals if e["event_hash"] not in existing_hashes]
+        if max_new_events < 0:
+            raise RuntimeError("max_new_events must be >= 0")
+        if len(new_events) > max_new_events:
+            raise RuntimeError(
+                f"Refusing to continue: max_new_events exceeded ({len(new_events)} > {max_new_events})"
+            )
 
         if apply and new_events:
             conn.executemany(
@@ -144,9 +155,23 @@ def main() -> int:
     parser.add_argument("--db", default=str(DB_PATH))
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--max-new-events",
+        type=int,
+        default=200,
+        help="Fail closed if proposed reversals exceed this bound.",
+    )
     args = parser.parse_args()
 
-    added = dedupe_order_events(Path(args.db), apply=args.apply, run_id=args.run_id)
+    if args.max_new_events < 0:
+        raise RuntimeError("--max-new-events must be >= 0")
+
+    added = dedupe_order_events(
+        Path(args.db),
+        apply=args.apply,
+        run_id=args.run_id,
+        max_new_events=args.max_new_events,
+    )
     print(f"Dedup reversal events added: {added}")
     if not args.apply:
         print("DRY RUN: no changes written")
