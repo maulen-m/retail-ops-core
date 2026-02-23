@@ -23,6 +23,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from copy import copy
 from dataclasses import dataclass
@@ -549,6 +550,52 @@ def _coerce_phone_numeric(value: Any) -> Any:
         return int(digits)
     except (TypeError, ValueError):
         return digits
+
+
+def _clear_my_size_range(
+    sheet: Any,
+    top_row: int,
+    bottom_row: int,
+    my_size_col_abs: int,
+) -> None:
+    """
+    Clear MY_SIZE cells with resilient fallbacks.
+
+    Primary path uses clear_contents (small AppleEvent payload).
+    Falls back to bulk write, then row-by-row writes only on expected timeout
+    conditions to avoid aborting an otherwise successful append.
+    """
+    target = sheet.range((top_row, my_size_col_abs), (bottom_row, my_size_col_abs))
+
+    clear_contents = getattr(target, "clear_contents", None)
+    if callable(clear_contents):
+        try:
+            clear_contents()
+            return
+        except Exception as exc:
+            if not _is_expected_xlwings_timeout(exc):
+                raise
+
+    try:
+        target.value = [[None] for _ in range(bottom_row - top_row + 1)]
+        return
+    except Exception as exc:
+        if not _is_expected_xlwings_timeout(exc):
+            raise
+
+    # Last resort: row-by-row write with tiny retry backoff.
+    for row_idx in range(top_row, bottom_row + 1):
+        for attempt in range(2):
+            try:
+                cell = sheet.range((row_idx, my_size_col_abs), (row_idx, my_size_col_abs))
+                cell.value = [[None]]
+                break
+            except Exception as exc:
+                if not _is_expected_xlwings_timeout(exc):
+                    raise
+                if attempt == 1:
+                    raise
+                time.sleep(0.2)
 
 
 def _open_workbook_xlwings_without_timeout_kwarg(
@@ -2992,7 +3039,12 @@ def excel_append_xlwings(
             my_size_col_abs = None
             my_size_col_abs = header_to_col.get("MY_SIZE")
             if my_size_col_abs:
-                sh.range((top_row, my_size_col_abs), (bottom_row, my_size_col_abs)).value = [[""] for _ in range(n)]
+                _clear_my_size_range(
+                    sheet=sh,
+                    top_row=top_row,
+                    bottom_row=bottom_row,
+                    my_size_col_abs=my_size_col_abs,
+                )
 
             wb.save()
         wb.close()

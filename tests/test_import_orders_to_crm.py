@@ -47,6 +47,7 @@ from scripts.import_orders_to_crm import (
     _xlwings_open_timeout_sec,
     _temporary_manual_calculation,
     _build_xlwings_write_plan,
+    _clear_my_size_range,
     excel_append_xlwings,
     _excel_automation_preflight,
     _excel_open_probe,
@@ -970,6 +971,87 @@ def test_temporary_manual_calculation_degrades_gracefully():
     app = DummyApp()
     with _temporary_manual_calculation(app):
         assert True
+
+
+def test_clear_my_size_range_prefers_clear_contents():
+    calls = {"clear": 0, "value": 0}
+
+    class DummyRange:
+        @property
+        def value(self):
+            return None
+
+        @value.setter
+        def value(self, _value):
+            calls["value"] += 1
+
+        def clear_contents(self):
+            calls["clear"] += 1
+
+    class DummySheet:
+        def range(self, *_args, **_kwargs):
+            return DummyRange()
+
+    _clear_my_size_range(DummySheet(), 10, 12, 9)
+    assert calls["clear"] == 1
+    assert calls["value"] == 0
+
+
+def test_clear_my_size_range_falls_back_to_bulk_value_on_timeout():
+    calls = {"clear": 0, "value": 0}
+
+    class DummyRange:
+        @property
+        def value(self):
+            return None
+
+        @value.setter
+        def value(self, _value):
+            calls["value"] += 1
+
+        def clear_contents(self):
+            calls["clear"] += 1
+            raise TimeoutError("operation timed out")
+
+    class DummySheet:
+        def range(self, *_args, **_kwargs):
+            return DummyRange()
+
+    _clear_my_size_range(DummySheet(), 10, 12, 9)
+    assert calls["clear"] == 1
+    assert calls["value"] == 1
+
+
+def test_clear_my_size_range_uses_row_fallback_when_bulk_times_out():
+    calls = {"clear": 0, "value": 0}
+
+    class DummyRange:
+        def __init__(self, start_row: int, end_row: int):
+            self.start_row = start_row
+            self.end_row = end_row
+
+        @property
+        def value(self):
+            return None
+
+        @value.setter
+        def value(self, _value):
+            calls["value"] += 1
+            if self.start_row != self.end_row:
+                raise TimeoutError("operation timed out")
+
+        def clear_contents(self):
+            calls["clear"] += 1
+            raise TimeoutError("operation timed out")
+
+    class DummySheet:
+        def range(self, start, end):
+            return DummyRange(start[0], end[0])
+
+    _clear_my_size_range(DummySheet(), 10, 12, 9)
+    assert calls["clear"] == 1
+    # 1 bulk attempt + 3 row writes
+    assert calls["value"] == 4
 
 
 def test_build_xlwings_write_plan_coerces_order_ids_and_skips_empty_columns():
