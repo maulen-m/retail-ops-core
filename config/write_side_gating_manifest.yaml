@@ -68,3 +68,6 @@ scripts:
   - path: scripts/update_cashflow_dashboard.py
     env_gate: ENABLE_CASHFLOW_WRITE
     apply_flag: --apply
+  - path: scripts/build_fact_sales_v16_from_api.py
+    env_gate: ENABLE_FACT_SALES_V16_WRITE
+    apply_flag: --apply
