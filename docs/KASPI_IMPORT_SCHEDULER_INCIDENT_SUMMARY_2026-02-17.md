@@ -1,5 +1,8 @@
 # Kaspi Import Scheduler Incident Summary (2026-02-17)
 
+> ARCHIVED — schedule references preserved for incident history.
+> Current runtime authority: `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`.
+
 ## Context
 - Incident: scheduled import/append flow did not reliably place today's orders into `excel_ui/SALES_KSP_CRM_V3.xlsx`.
 - Impact: operational uncertainty (schedule seemed missed), false hard-fail outcomes, and delayed confidence in workbook completeness.
