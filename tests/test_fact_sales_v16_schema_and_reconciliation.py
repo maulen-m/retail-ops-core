@@ -217,3 +217,88 @@ def test_builder_apply_reconciles_totals_when_mappings_exist(
     assert total_rev == 30000.0
     assert total_fee == 500.0
     assert total_net == 29500.0
+
+
+def test_builder_closes_multi_line_gaps_via_offer_history_fallback(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(str(db))
+    _init_base_tables(conn)
+    conn.executemany(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, kaspi_offer_name, sku_key, sku_id, delivery_cost_for_seller, delivery_cost
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("ORD_NEW", "STOREB", "Offer New", None, None, 0.0, 0.0),
+            ("ORD_A", "STOREB", "Offer A", "SKU_KEY_A", "SKU_ID_A", 0.0, 0.0),
+            ("ORD_B", "STOREB", "Offer B", "SKU_KEY_B", "SKU_ID_B", 0.0, 0.0),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fact_order_entries_kaspi (
+            entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("E_NEW_A", "ORD_NEW", "STOREB", "ARTICLE-A", 1.0, 10000.0, 10000.0),
+            ("E_NEW_B", "ORD_NEW", "STOREB", "ARTICLE-B", 1.0, 12000.0, 12000.0),
+            ("E_HIST_A", "ORD_A", "STOREB", "ARTICLE-A", 1.0, 10000.0, 10000.0),
+            ("E_HIST_B", "ORD_B", "STOREB", "ARTICLE-B", 1.0, 12000.0, 12000.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    migrate(db)
+    result = build_fact_sales_v16_from_api(
+        db_path=db,
+        apply=False,
+        run_id="TEST",
+        gaps_json_path=tmp_path / "gaps.json",
+        strict=True,
+    )
+    assert result["missing"] == 0
+
+
+def test_builder_offer_history_fallback_stops_on_ambiguous_offer(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(str(db))
+    _init_base_tables(conn)
+    conn.executemany(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, kaspi_offer_name, sku_key, sku_id, delivery_cost_for_seller, delivery_cost
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("ORD_NEW", "STOREB", "Offer New", None, None, 0.0, 0.0),
+            ("ORD_A", "STOREB", "Offer A", "SKU_KEY_A", "SKU_ID_A", 0.0, 0.0),
+            ("ORD_A2", "STOREB", "Offer A2", "SKU_KEY_A2", "SKU_ID_A2", 0.0, 0.0),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fact_order_entries_kaspi (
+            entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("E_NEW_A", "ORD_NEW", "STOREB", "ARTICLE-A", 1.0, 10000.0, 10000.0),
+            ("E_HIST_A", "ORD_A", "STOREB", "ARTICLE-A", 1.0, 10000.0, 10000.0),
+            ("E_HIST_A2", "ORD_A2", "STOREB", "ARTICLE-A", 1.0, 10000.0, 10000.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    migrate(db)
+    with pytest.raises(RuntimeError, match="missing mappings"):
+        build_fact_sales_v16_from_api(
+            db_path=db,
+            apply=False,
+            run_id="TEST",
+            gaps_json_path=tmp_path / "gaps.json",
+            strict=True,
+        )

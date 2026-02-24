@@ -24,6 +24,21 @@ def _write_workbook(path: Path) -> None:
     df.to_excel(path, index=False)
 
 
+def _write_already_correct_workbook(path: Path) -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "Артикул": "OF_SUIT-61_BLK_XL_48",
+                "Название товара в Kaspi Магазине": "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL_48",
+                "SKU_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+                "Kaspi_name_core": "6в1_Черный_+Сумка",
+                "Product_Type": "CL",
+            }
+        ]
+    )
+    df.to_excel(path, index=False)
+
+
 def test_validate_kaspi_parsing_integrity_reports_line61_core_mismatch(tmp_path: Path) -> None:
     workbook = tmp_path / "crm.xlsx"
     _write_workbook(workbook)
@@ -78,3 +93,28 @@ def test_patch_kaspi_parsed_fields_blocks_apply_without_env_gate(
             only_line61=True,
             apply=True,
         )
+
+
+def test_patch_kaspi_parsed_fields_apply_always_creates_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workbook = tmp_path / "crm.xlsx"
+    _write_already_correct_workbook(workbook)
+    report = tmp_path / "report.csv"
+    backup_dir = tmp_path / "backups"
+
+    monkeypatch.setenv("ENABLE_KASPI_PARSING_PATCH_WRITE", "1")
+    stats = patch_mod.run_patch(
+        workbook=workbook,
+        sheet_name="Sheet1",
+        report=report,
+        backup_dir=backup_dir,
+        only_line61=True,
+        apply=True,
+    )
+
+    assert stats["mode"] == "APPLY"
+    assert stats["rows_updated"] == 0
+    assert stats["backup_path"], "apply mode must always produce a rollback backup"
+    assert Path(stats["backup_path"]).exists()

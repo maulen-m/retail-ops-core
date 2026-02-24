@@ -15,11 +15,16 @@ Promotion minimum merge standard authority: `docs/ops/PROMOTION_MINIMUM_STANDARD
 Current daily scheduler contract (GMT+5):
 - import jobs: `11:00` and `16:03`
 - waybill deadline job: `18:30`
+- daily ops report job: `19:10`
 
 Daily ops orchestrator profile contract:
 - `today-fast` for strict current-day checks
 - `catch-up` for overdue-inclusive recovery checks
 Authority: `docs/ops/KASPI_DAILY_OPS_ORCHESTRATOR_RUNBOOK.md`
+
+Daily report contract:
+- `scripts/generate_daily_ops_report.py`
+- `scripts/validate_daily_ops_report.py --strict`
 
 Run strict validation with workbook anchor enabled before operator decisions:
 

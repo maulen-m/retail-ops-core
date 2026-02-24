@@ -21,7 +21,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.stores.roster import load_active_store_codes
 
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "board_v6_runtime"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "board_v8_runtime"
+DEFAULT_CACHE_ROOT = PROJECT_ROOT / "runtime_cache" / "daily_ops"
 Runner = Callable[[str, Path], tuple[int, str]]
 
 PROFILE_CONFIG = {
@@ -57,6 +58,8 @@ def _append_step(
     output: str,
     duration_sec: float,
     allow_failure: bool = False,
+    from_checkpoint: bool = False,
+    from_cache: bool = False,
 ) -> bool:
     ok = rc == 0 or (allow_failure and rc != 0)
     summary = output.splitlines()[-1] if output else ""
@@ -68,10 +71,21 @@ def _append_step(
             "ok": bool(ok),
             "duration_sec": float(duration_sec),
             "allow_failure": bool(allow_failure),
+            "from_checkpoint": bool(from_checkpoint),
+            "from_cache": bool(from_cache),
             "summary": summary,
         }
     )
     return ok
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _render_markdown(report: dict[str, Any]) -> str:
@@ -84,6 +98,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
         f"- dry_run: `{report['dry_run']}`",
         f"- status: `{'PASS' if report['ok'] else 'FAIL'}`",
         f"- total_duration_sec: `{report['total_duration_sec']}`",
+        f"- red_stores: `{','.join(report.get('red_stores', []))}`",
         "",
         "## Steps",
     ]
@@ -105,6 +120,10 @@ def run_kaspi_daily_ops(
     allow_store_failures: set[str],
     profile: str = "catch-up",
     stores_config: Path | None = None,
+    checkpoint_path: Path | None = None,
+    resume: bool = False,
+    enable_cache: bool = False,
+    cache_dir: Path | None = None,
     runner: Runner | None = None,
     dry_run: bool = True,
 ) -> dict[str, Any]:
@@ -116,10 +135,114 @@ def run_kaspi_daily_ops(
     stores_cfg_path = Path(stores_config) if stores_config else (root / "config" / "stores.yaml")
     stores = load_active_store_codes(stores_cfg_path)
     allowed = {store.upper() for store in allow_store_failures}
+    checkpoint = Path(checkpoint_path) if checkpoint_path else (output_root / as_of / "daily_ops_checkpoint.json")
+    cache_root = Path(cache_dir) if cache_dir else DEFAULT_CACHE_ROOT
+
+    checkpoint_rows: dict[str, dict[str, Any]] = {}
+    if resume and checkpoint.exists():
+        checkpoint_payload = _load_json(checkpoint)
+        if checkpoint_payload.get("as_of") != as_of:
+            raise RuntimeError("checkpoint as_of mismatch")
+        if checkpoint_payload.get("profile") != profile:
+            raise RuntimeError("checkpoint profile mismatch")
+        if checkpoint_payload.get("stores_config") != str(stores_cfg_path):
+            raise RuntimeError("checkpoint stores_config mismatch")
+        for row in checkpoint_payload.get("steps", []):
+            if isinstance(row, dict) and row.get("ok") is True and row.get("step"):
+                checkpoint_rows[str(row["step"])] = row
 
     steps: list[dict[str, Any]] = []
+    store_results: dict[str, dict[str, Any]] = {}
     overall_ok = True
     started = time.perf_counter()
+
+    def _persist_checkpoint() -> None:
+        payload = {
+            "as_of": as_of,
+            "profile": profile,
+            "stores_config": str(stores_cfg_path),
+            "steps": [
+                checkpoint_rows[name]
+                for name in sorted(checkpoint_rows.keys())
+            ],
+        }
+        _write_json(checkpoint, payload)
+
+    def _record_step(
+        *,
+        step: str,
+        cmd: str,
+        allow_failure: bool = False,
+        cache_key: str | None = None,
+    ) -> bool:
+        if step in checkpoint_rows:
+            prev = checkpoint_rows[step]
+            return _append_step(
+                steps=steps,
+                step=step,
+                cmd=cmd,
+                rc=int(prev.get("rc", 0)),
+                output=str(prev.get("summary", "")),
+                duration_sec=0.0,
+                allow_failure=allow_failure,
+                from_checkpoint=True,
+            )
+
+        cache_path = None
+        if enable_cache and cache_key:
+            safe_step = step.replace("/", "_").replace(" ", "_")
+            cache_path = cache_root / as_of / profile / f"{safe_step}.json"
+            if cache_path.exists():
+                cached_payload = _load_json(cache_path)
+                if str(cached_payload.get("cmd", "")) == cmd:
+                    return _append_step(
+                        steps=steps,
+                        step=step,
+                        cmd=cmd,
+                        rc=int(cached_payload.get("rc", 1)),
+                        output=str(cached_payload.get("output", "")),
+                        duration_sec=0.0,
+                        allow_failure=allow_failure,
+                        from_cache=True,
+                    )
+
+        step_started = time.perf_counter()
+        rc, output = run(cmd, root)
+        duration = round(time.perf_counter() - step_started, 3)
+        ok = _append_step(
+            steps=steps,
+            step=step,
+            cmd=cmd,
+            rc=rc,
+            output=output,
+            duration_sec=duration,
+            allow_failure=allow_failure,
+        )
+
+        checkpoint_rows[step] = {
+            "step": step,
+            "cmd": cmd,
+            "rc": int(rc),
+            "ok": bool(ok),
+            "summary": output.splitlines()[-1] if output else "",
+            "duration_sec": float(duration),
+            "allow_failure": bool(allow_failure),
+        }
+        _persist_checkpoint()
+
+        if enable_cache and cache_path is not None:
+            _write_json(
+                cache_path,
+                {
+                    "step": step,
+                    "cmd": cmd,
+                    "rc": int(rc),
+                    "output": output,
+                    "as_of": as_of,
+                    "profile": profile,
+                },
+            )
+        return ok
 
     static_checks = [
         (
@@ -141,17 +264,7 @@ def run_kaspi_daily_ops(
     ]
 
     for step, cmd in static_checks:
-        step_started = time.perf_counter()
-        rc, output = run(cmd, root)
-        duration = round(time.perf_counter() - step_started, 3)
-        if not _append_step(
-            steps=steps,
-            step=step,
-            cmd=cmd,
-            rc=rc,
-            output=output,
-            duration_sec=duration,
-        ):
+        if not _record_step(step=step, cmd=cmd):
             overall_ok = False
 
     for store in stores:
@@ -161,20 +274,24 @@ def run_kaspi_daily_ops(
             f"--date {shlex.quote(as_of)} --since-days {profile_cfg['since_days']} "
             f"--store {shlex.quote(store)}{include_overdue_flag} --strict-stopline"
         )
-        step_started = time.perf_counter()
-        rc, output = run(cmd, root)
-        duration = round(time.perf_counter() - step_started, 3)
         allow_failure = store in allowed
-        if not _append_step(
-            steps=steps,
-            step=f"waybill_status_{store}",
+        step_name = f"waybill_status_{store}"
+        if not _record_step(
+            step=step_name,
             cmd=cmd,
-            rc=rc,
-            output=output,
-            duration_sec=duration,
             allow_failure=allow_failure,
+            cache_key=step_name,
         ):
             overall_ok = False
+        current = steps[-1]
+        store_results[store] = {
+            "ok": bool(current["ok"]),
+            "rc": int(current["rc"]),
+            "allow_failure": bool(allow_failure),
+            "from_checkpoint": bool(current.get("from_checkpoint", False)),
+            "from_cache": bool(current.get("from_cache", False)),
+            "summary": str(current.get("summary", "")),
+        }
 
     drift_commands = [
         (
@@ -187,17 +304,7 @@ def run_kaspi_daily_ops(
         ),
     ]
     for step, cmd in drift_commands:
-        step_started = time.perf_counter()
-        rc, output = run(cmd, root)
-        duration = round(time.perf_counter() - step_started, 3)
-        if not _append_step(
-            steps=steps,
-            step=step,
-            cmd=cmd,
-            rc=rc,
-            output=output,
-            duration_sec=duration,
-        ):
+        if not _record_step(step=step, cmd=cmd):
             overall_ok = False
 
     run_dir = output_root / as_of
@@ -213,7 +320,13 @@ def run_kaspi_daily_ops(
         "profile": profile,
         "stores_config": str(stores_cfg_path),
         "stores": stores,
+        "store_results": store_results,
+        "red_stores": sorted([store for store, meta in store_results.items() if not bool(meta.get("ok", False))]),
         "allow_store_failures": sorted(allowed),
+        "checkpoint_path": str(checkpoint),
+        "resume": bool(resume),
+        "cache_enabled": bool(enable_cache),
+        "cache_dir": str(cache_root),
         "ok": bool(overall_ok),
         "exit_code": 0 if overall_ok else 1,
         "total_duration_sec": round(time.perf_counter() - started, 3),
@@ -245,6 +358,28 @@ def main() -> int:
         help="Optional override for store roster YAML path.",
     )
     parser.add_argument(
+        "--checkpoint-path",
+        type=Path,
+        default=None,
+        help="Optional checkpoint JSON path for resume support.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from checkpointed successful steps.",
+    )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Enable opt-in cache for per-store waybill status steps.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=DEFAULT_CACHE_ROOT,
+        help="Cache root for waybill status results when --cache is set.",
+    )
+    parser.add_argument(
         "--allow-store-failure",
         action="append",
         default=[],
@@ -267,6 +402,10 @@ def main() -> int:
         allow_store_failures={str(s).upper() for s in args.allow_store_failure},
         profile=args.profile,
         stores_config=args.stores_config,
+        checkpoint_path=args.checkpoint_path,
+        resume=bool(args.resume),
+        enable_cache=bool(args.cache),
+        cache_dir=args.cache_dir,
         dry_run=True,
     )
     print(report["summary_md"])

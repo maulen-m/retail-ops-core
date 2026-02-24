@@ -43,6 +43,8 @@ def run_patch(
         backup_dir=Path(backup_dir),
         only_line61=bool(only_line61),
     )
+    if apply and not str(stats.get("backup_path", "")).strip():
+        raise RuntimeError("apply mode requires backup_path for rollback")
     return {
         "mode": "APPLY" if apply else "DRY_RUN",
         "rows_scanned": int(stats.get("rows_scanned", 0)),

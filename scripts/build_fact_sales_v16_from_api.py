@@ -46,6 +46,46 @@ def _load_article_map(conn: sqlite3.Connection) -> dict[tuple[str, str], dict[st
     return {(row[0], row[1]): {"sku_key": row[2], "sku_id": row[3]} for row in rows}
 
 
+def _load_offer_history_map(conn: sqlite3.Connection) -> dict[tuple[str, str], dict[str, Any]]:
+    if not _table_exists(conn, "fact_order_entries_kaspi") or not _table_exists(conn, "fact_orders_kaspi"):
+        return {}
+
+    rows = conn.execute(
+        """
+        SELECT e.store_code, e.offer_id, o.sku_key, o.sku_id
+        FROM fact_order_entries_kaspi e
+        JOIN fact_orders_kaspi o
+          ON o.order_id = e.order_id
+         AND o.store_code = e.store_code
+        WHERE o.sku_key IS NOT NULL
+          AND TRIM(o.sku_key) <> ''
+        """
+    ).fetchall()
+
+    candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row[0], row[1])
+        sku_key = str(row[2] or "").strip()
+        if not sku_key:
+            continue
+        sku_id = str(row[3] or "").strip() or None
+        slot = candidates.setdefault(key, {"sku_keys": set(), "sku_id_by_key": {}})
+        slot["sku_keys"].add(sku_key)
+        slot["sku_id_by_key"][sku_key] = sku_id
+
+    resolved: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, payload in candidates.items():
+        sku_keys = payload["sku_keys"]
+        if len(sku_keys) != 1:
+            continue
+        resolved_key = next(iter(sku_keys))
+        resolved[key] = {
+            "sku_key": resolved_key,
+            "sku_id": payload["sku_id_by_key"].get(resolved_key),
+        }
+    return resolved
+
+
 def _write_gap_reports(
     *,
     gaps_json_path: Path,
@@ -91,6 +131,7 @@ def build_fact_sales_v16_from_api(
     gaps_md_path: Path = DEFAULT_GAPS_MD,
     strict: bool = True,
     max_missing: int = 0,
+    use_offer_history_fallback: bool = True,
 ) -> dict[str, Any]:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
@@ -109,6 +150,7 @@ def build_fact_sales_v16_from_api(
             raise RuntimeError("fact_sales_v16 missing; run migrate_021_fact_sales_v16.py")
 
         article_map = _load_article_map(conn)
+        offer_history_map = _load_offer_history_map(conn) if use_offer_history_fallback else {}
         entries = conn.execute(
             """
             SELECT entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt
@@ -141,6 +183,7 @@ def build_fact_sales_v16_from_api(
 
         rows_to_upsert: list[dict[str, Any]] = []
         missing_rows: list[dict[str, Any]] = []
+        offer_history_hits = 0
 
         for row in entries:
             order_key = (row["order_id"], row["store_code"])
@@ -167,6 +210,13 @@ def build_fact_sales_v16_from_api(
             if not sku_key and order is not None and counts_by_order.get(order_key, 0) == 1:
                 sku_key = order["sku_key"]
                 sku_id = order["sku_id"]
+
+            if not sku_key and use_offer_history_fallback:
+                mapped = offer_history_map.get((row["store_code"], row["offer_id"]))
+                if mapped:
+                    sku_key = mapped.get("sku_key")
+                    sku_id = mapped.get("sku_id")
+                    offer_history_hits += 1
 
             if not sku_key:
                 missing_rows.append(
@@ -233,6 +283,7 @@ def build_fact_sales_v16_from_api(
     return {
         "inserted": inserted,
         "missing": len(missing_rows),
+        "offer_history_hits": offer_history_hits,
         "gaps_json_path": str(gaps_json_path),
         "gaps_md_path": str(gaps_md_path),
     }
@@ -247,6 +298,7 @@ def main() -> int:
     parser.add_argument("--gaps-md", type=Path, default=DEFAULT_GAPS_MD)
     parser.add_argument("--strict", action="store_true", default=False)
     parser.add_argument("--max-missing", type=int, default=0)
+    parser.add_argument("--no-offer-history-fallback", action="store_true")
     args = parser.parse_args()
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -258,9 +310,11 @@ def main() -> int:
         gaps_md_path=args.gaps_md,
         strict=args.strict,
         max_missing=args.max_missing,
+        use_offer_history_fallback=not args.no_offer_history_fallback,
     )
     print(f"inserted={result['inserted']}")
     print(f"missing={result['missing']}")
+    print(f"offer_history_hits={result['offer_history_hits']}")
     print(f"gaps_json_path={result['gaps_json_path']}")
     print(f"gaps_md_path={result['gaps_md_path']}")
     return 0
