@@ -17,6 +17,15 @@ This contract is fail-closed: workflow regressions must surface as test failures
   - `18:30` daily waybill deadline run
 - installer: `scripts/install_scheduler.sh`
 
+### Optional Completion Popup (Import Scheduler)
+- Entry point: `scripts/run_kaspi_import_scheduler.py`
+- Optional env flag: `KASPI_IMPORT_POPUP_TERMINAL=1`
+- Behavior:
+  - after each scheduled `run_full_import.command` completion, scheduler writes
+    `runtime_logs/import_reports/kaspi_import_report_<timestamp>.txt`
+  - when popup flag is enabled, a Terminal window opens with that run report
+- Default: popup disabled (headless-only behavior unchanged unless flag is explicitly enabled)
+
 ## Multi-Store Scale Roster
 - Universal
 - AcmeWear
