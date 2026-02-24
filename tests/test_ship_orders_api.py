@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+import sys
 
 import pandas as pd
 import pytest
@@ -356,6 +357,37 @@ def test_ship_orders_does_not_count_unconfirmed_assemble(monkeypatch):
 
     assert result["shipped"] == 0
     assert any("829336594" in err for err in result["errors"])
+
+
+def test_main_limits_pending_fetch_scope_when_store_filter_is_set(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_get_pending_assembly_orders(*, target_date, since_days, store_codes=None, fallback_since_days=30):
+        captured["target_date"] = target_date
+        captured["since_days"] = since_days
+        captured["store_codes"] = store_codes
+        captured["fallback_since_days"] = fallback_since_days
+        return {"UNIVERSAL": set()}, {}, {}, {}
+
+    monkeypatch.setattr(ship_mod, "get_pending_assembly_orders", fake_get_pending_assembly_orders)
+    monkeypatch.setattr(ship_mod, "load_dotenv", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ship_orders_api.py",
+            "--store",
+            "Universal",
+            "--crm-file",
+            str(tmp_path / "unused.xlsx"),
+            "--dry-run",
+        ],
+    )
+
+    rc = ship_mod.main()
+
+    assert rc == 0
+    assert captured["store_codes"] == {"UNIVERSAL"}
 
 
 def test_ship_orders_counts_when_assemble_is_confirmed(monkeypatch):

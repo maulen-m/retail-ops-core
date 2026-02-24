@@ -1038,9 +1038,14 @@ def main() -> int:
 
     # Step 1: Get pending assembly orders from API
     print("Step 1: Fetching pending assembly orders from API...")
+    selected_store_codes: Optional[set[str]] = None
+    if args.store:
+        selected_code = STORE_NAME_TO_API_CODE.get(args.store, args.store.upper())
+        selected_store_codes = {selected_code}
     pending_orders, order_id_to_base64, _planned_map, _pending_meta = get_pending_assembly_orders(
         target_date=target_date,
         since_days=args.since_days,
+        store_codes=selected_store_codes,
     )
 
     total_pending = sum(len(ids) for ids in pending_orders.values())

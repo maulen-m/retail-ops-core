@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from collections import OrderedDict
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from copy import copy
 from dataclasses import dataclass
@@ -405,6 +407,37 @@ def _xlwings_append_timeout_sec(default_sec: int = 420) -> int:
     return max(parsed, 10)
 
 
+@contextmanager
+def _temporary_manual_calculation(app: Any):
+    """
+    Reduce append latency by disabling auto-recalc while writing rows.
+    Always restore original calculation mode on exit.
+    """
+    switched = False
+    original_mode = None
+    try:
+        try:
+            original_mode = getattr(app, "calculation")
+            setattr(app, "calculation", "manual")
+            switched = True
+        except Exception:
+            switched = False
+        yield
+    finally:
+        if not switched:
+            return
+        try:
+            recalc = getattr(app, "calculate", None)
+            if callable(recalc):
+                recalc()
+        except Exception:
+            pass
+        try:
+            setattr(app, "calculation", original_mode)
+        except Exception:
+            pass
+
+
 def _run_with_posix_alarm_timeout(timeout_sec: int, func, *args, **kwargs):
     """
     Execute callable with SIGALRM timeout on POSIX; no-op timeout on other OSes.
@@ -517,6 +550,52 @@ def _coerce_phone_numeric(value: Any) -> Any:
         return int(digits)
     except (TypeError, ValueError):
         return digits
+
+
+def _clear_my_size_range(
+    sheet: Any,
+    top_row: int,
+    bottom_row: int,
+    my_size_col_abs: int,
+) -> None:
+    """
+    Clear MY_SIZE cells with resilient fallbacks.
+
+    Primary path uses clear_contents (small AppleEvent payload).
+    Falls back to bulk write, then row-by-row writes only on expected timeout
+    conditions to avoid aborting an otherwise successful append.
+    """
+    target = sheet.range((top_row, my_size_col_abs), (bottom_row, my_size_col_abs))
+
+    clear_contents = getattr(target, "clear_contents", None)
+    if callable(clear_contents):
+        try:
+            clear_contents()
+            return
+        except Exception as exc:
+            if not _is_expected_xlwings_timeout(exc):
+                raise
+
+    try:
+        target.value = [[None] for _ in range(bottom_row - top_row + 1)]
+        return
+    except Exception as exc:
+        if not _is_expected_xlwings_timeout(exc):
+            raise
+
+    # Last resort: row-by-row write with tiny retry backoff.
+    for row_idx in range(top_row, bottom_row + 1):
+        for attempt in range(2):
+            try:
+                cell = sheet.range((row_idx, my_size_col_abs), (row_idx, my_size_col_abs))
+                cell.value = [[None]]
+                break
+            except Exception as exc:
+                if not _is_expected_xlwings_timeout(exc):
+                    raise
+                if attempt == 1:
+                    raise
+                time.sleep(0.2)
 
 
 def _open_workbook_xlwings_without_timeout_kwarg(
@@ -2837,132 +2916,137 @@ def excel_append_xlwings(
     try:
         wb = _open_workbook_xlwings(app, out_wb, update_links=False, read_only=False)
         sh = wb.sheets[sheet_name]
+        with _temporary_manual_calculation(app):
+            # Find the table
+            try:
+                tbl = sh.tables[table_name]
+            except KeyError:
+                tables = list(sh.tables)
+                if not tables:
+                    raise RuntimeError(f"No table found on sheet {sheet_name}")
+                tbl = tables[0]
 
-        # Find the table
-        try:
-            tbl = sh.tables[table_name]
-        except KeyError:
-            tables = list(sh.tables)
-            if not tables:
-                raise RuntimeError(f"No table found on sheet {sheet_name}")
-            tbl = tables[0]
+            # Calculate where new rows go
+            total_rows_before = tbl.range.rows.count
+            header_row = tbl.range.row
+            data_rows_before = total_rows_before - 1
 
-        # Calculate where new rows go
-        total_rows_before = tbl.range.rows.count
-        header_row = tbl.range.row
-        data_rows_before = total_rows_before - 1
+            top_row = header_row + data_rows_before + 1
+            bottom_row = top_row + n - 1
 
-        top_row = header_row + data_rows_before + 1
-        bottom_row = top_row + n - 1
+            print(f"  Appending {n} rows starting at row {top_row}")
 
-        print(f"  Appending {n} rows starting at row {top_row}")
-
-        # CRITICAL: Resize table FIRST to include new rows
-        # This prevents Excel table corruption (XML errors)
-        tbl_start_col = tbl.range.column
-        tbl_end_col = tbl.range.columns.count + tbl_start_col - 1
-        new_table_range = sh.range(
-            (header_row, tbl_start_col),
-            (bottom_row, tbl_end_col)
-        )
-        tbl.resize(new_table_range)
-        print(f"  Table resized to include rows up to {bottom_row}")
-
-        # Write date column
-        date_vals = [[set_date] for _ in range(n)]
-        date_range = sh.range((top_row, date_col_abs), (bottom_row, date_col_abs))
-        date_range.value = date_vals
-        date_range.number_format = "dd.mm.yyyy"
-
-        # Write "Новый" marker to HEIGHT column (D = 4) for visual identification
-        # Phase 12 Part 3: Helps employees see which orders were added in second import
-        height_col = 4  # Column D
-        height_range = sh.range((top_row, height_col), (bottom_row, height_col))
-        height_range.value = [["Новый"] for _ in range(n)]
-        print(f"  'Новый' marker written to column D for {n} rows")
-
-        # Write phone column (Phase 12)
-        if phone_col_abs and phone_values:
-            normalized_phones = [_coerce_phone_numeric(v) for v in phone_values]
-            has_phones = any(v not in (None, "") for v in normalized_phones)
-            if has_phones:
-                phone_range = sh.range((top_row, phone_col_abs), (bottom_row, phone_col_abs))
-                phone_range.value = [[v if v not in (None, "") else None] for v in normalized_phones]
-                phone_range.number_format = "0"
-                print(f"  Phone data written to column {phone_col_abs}")
-
-        # Write data using contiguous segments to reduce AppleEvent round-trips.
-        col_values_by_offset, write_segments, order_offsets = _build_xlwings_write_plan(
-            stage_block=stage_block,
-            slice_headers=slice_headers,
-        )
-        for seg_start, seg_end in write_segments:
-            block = [
-                [col_values_by_offset[offset][row_idx] for offset in range(seg_start, seg_end + 1)]
-                for row_idx in range(n)
-            ]
-            target = sh.range(
-                (top_row, start_col_abs + seg_start),
-                (bottom_row, start_col_abs + seg_end),
+            # CRITICAL: Resize table FIRST to include new rows
+            # This prevents Excel table corruption (XML errors)
+            tbl_start_col = tbl.range.column
+            tbl_end_col = tbl.range.columns.count + tbl_start_col - 1
+            new_table_range = sh.range(
+                (header_row, tbl_start_col),
+                (bottom_row, tbl_end_col)
             )
-            target.value = block
+            tbl.resize(new_table_range)
+            print(f"  Table resized to include rows up to {bottom_row}")
 
-        for order_offset in order_offsets:
-            col_values = col_values_by_offset[order_offset]
-            if all((v is None) or (isinstance(v, str) and v == "") for v in col_values):
-                continue
-            order_target = sh.range(
-                (top_row, start_col_abs + order_offset),
-                (bottom_row, start_col_abs + order_offset),
+            # Write date column
+            date_vals = [[set_date] for _ in range(n)]
+            date_range = sh.range((top_row, date_col_abs), (bottom_row, date_col_abs))
+            date_range.value = date_vals
+            date_range.number_format = "dd.mm.yyyy"
+
+            # Write "Новый" marker to HEIGHT column (D = 4) for visual identification
+            # Phase 12 Part 3: Helps employees see which orders were added in second import
+            height_col = 4  # Column D
+            height_range = sh.range((top_row, height_col), (bottom_row, height_col))
+            height_range.value = [["Новый"] for _ in range(n)]
+            print(f"  'Новый' marker written to column D for {n} rows")
+
+            # Write phone column (Phase 12)
+            if phone_col_abs and phone_values:
+                normalized_phones = [_coerce_phone_numeric(v) for v in phone_values]
+                has_phones = any(v not in (None, "") for v in normalized_phones)
+                if has_phones:
+                    phone_range = sh.range((top_row, phone_col_abs), (bottom_row, phone_col_abs))
+                    phone_range.value = [[v if v not in (None, "") else None] for v in normalized_phones]
+                    phone_range.number_format = "0"
+                    print(f"  Phone data written to column {phone_col_abs}")
+
+            # Write data using contiguous segments to reduce AppleEvent round-trips.
+            col_values_by_offset, write_segments, order_offsets = _build_xlwings_write_plan(
+                stage_block=stage_block,
+                slice_headers=slice_headers,
             )
-            order_target.number_format = "0"
-
-        table_header = sh.range(
-            (header_row, tbl_start_col),
-            (header_row, tbl_end_col),
-        ).value
-        header_to_col = {
-            str(name).strip(): tbl_start_col + i
-            for i, name in enumerate(table_header or [])
-            if str(name or "").strip()
-        }
-
-        # Optional low-risk override: write only Kaspi_name_core on appended rows.
-        if kaspi_name_core_values is not None:
-            kaspi_name_core_col = header_to_col.get("Kaspi_name_core")
-            if kaspi_name_core_col:
-                core_vals = list(kaspi_name_core_values)
-                if len(core_vals) < n:
-                    core_vals.extend([""] * (n - len(core_vals)))
-                core_vals = core_vals[:n]
-                sh.range((top_row, kaspi_name_core_col), (bottom_row, kaspi_name_core_col)).value = [
-                    [v if v is not None else ""]
-                    for v in core_vals
+            for seg_start, seg_end in write_segments:
+                block = [
+                    [col_values_by_offset[offset][row_idx] for offset in range(seg_start, seg_end + 1)]
+                    for row_idx in range(n)
                 ]
+                target = sh.range(
+                    (top_row, start_col_abs + seg_start),
+                    (bottom_row, start_col_abs + seg_end),
+                )
+                target.value = block
 
-        # Write fixed-value columns for appended rows (excluding human-owned fields).
-        if fixed_values:
-            for col_name in FIXED_APPEND_COLUMNS:
-                if col_name in PROTECTED_HUMAN_COLUMNS:
+            for order_offset in order_offsets:
+                col_values = col_values_by_offset[order_offset]
+                if all((v is None) or (isinstance(v, str) and v == "") for v in col_values):
                     continue
-                col_abs = header_to_col.get(col_name)
-                if not col_abs:
-                    continue
-                col_vals = []
-                for row_vals in fixed_values:
-                    value = row_vals.get(col_name)
-                    col_vals.append([value if value is not None else ""])
-                target = sh.range((top_row, col_abs), (bottom_row, col_abs))
-                target.value = col_vals
+                order_target = sh.range(
+                    (top_row, start_col_abs + order_offset),
+                    (bottom_row, start_col_abs + order_offset),
+                )
+                order_target.number_format = "0"
 
-        # MY_SIZE is human-owned; always clear for newly appended rows to
-        # prevent Excel table formula autofill from writing pseudo sizes.
-        my_size_col_abs = None
-        my_size_col_abs = header_to_col.get("MY_SIZE")
-        if my_size_col_abs:
-            sh.range((top_row, my_size_col_abs), (bottom_row, my_size_col_abs)).value = [[""] for _ in range(n)]
+            table_header = sh.range(
+                (header_row, tbl_start_col),
+                (header_row, tbl_end_col),
+            ).value
+            header_to_col = {
+                str(name).strip(): tbl_start_col + i
+                for i, name in enumerate(table_header or [])
+                if str(name or "").strip()
+            }
 
-        wb.save()
+            # Optional low-risk override: write only Kaspi_name_core on appended rows.
+            if kaspi_name_core_values is not None:
+                kaspi_name_core_col = header_to_col.get("Kaspi_name_core")
+                if kaspi_name_core_col:
+                    core_vals = list(kaspi_name_core_values)
+                    if len(core_vals) < n:
+                        core_vals.extend([""] * (n - len(core_vals)))
+                    core_vals = core_vals[:n]
+                    sh.range((top_row, kaspi_name_core_col), (bottom_row, kaspi_name_core_col)).value = [
+                        [v if v is not None else ""]
+                        for v in core_vals
+                    ]
+
+            # Write fixed-value columns for appended rows (excluding human-owned fields).
+            if fixed_values:
+                for col_name in FIXED_APPEND_COLUMNS:
+                    if col_name in PROTECTED_HUMAN_COLUMNS:
+                        continue
+                    col_abs = header_to_col.get(col_name)
+                    if not col_abs:
+                        continue
+                    col_vals = []
+                    for row_vals in fixed_values:
+                        value = row_vals.get(col_name)
+                        col_vals.append([value if value is not None else ""])
+                    target = sh.range((top_row, col_abs), (bottom_row, col_abs))
+                    target.value = col_vals
+
+            # MY_SIZE is human-owned; always clear for newly appended rows to
+            # prevent Excel table formula autofill from writing pseudo sizes.
+            my_size_col_abs = None
+            my_size_col_abs = header_to_col.get("MY_SIZE")
+            if my_size_col_abs:
+                _clear_my_size_range(
+                    sheet=sh,
+                    top_row=top_row,
+                    bottom_row=bottom_row,
+                    my_size_col_abs=my_size_col_abs,
+                )
+
+            wb.save()
         wb.close()
         wb = None
         print(f"  ✅ Saved {out_wb.name}")

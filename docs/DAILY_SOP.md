@@ -16,6 +16,11 @@ Current daily scheduler contract (GMT+5):
 - import jobs: `11:00` and `16:03`
 - waybill deadline job: `18:30`
 
+Daily ops orchestrator profile contract:
+- `today-fast` for strict current-day checks
+- `catch-up` for overdue-inclusive recovery checks
+Authority: `docs/ops/KASPI_DAILY_OPS_ORCHESTRATOR_RUNBOOK.md`
+
 Run strict validation with workbook anchor enabled before operator decisions:
 
 ```bash

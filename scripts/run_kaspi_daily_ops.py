@@ -11,6 +11,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import time
 from typing import Any, Callable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -22,6 +23,17 @@ from core.stores.roster import load_active_store_codes
 
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "board_v6_runtime"
 Runner = Callable[[str, Path], tuple[int, str]]
+
+PROFILE_CONFIG = {
+    "today-fast": {
+        "since_days": 1,
+        "include_overdue": False,
+    },
+    "catch-up": {
+        "since_days": 3,
+        "include_overdue": True,
+    },
+}
 
 
 def _run_shell(cmd: str, cwd: Path) -> tuple[int, str]:
@@ -43,6 +55,7 @@ def _append_step(
     cmd: str,
     rc: int,
     output: str,
+    duration_sec: float,
     allow_failure: bool = False,
 ) -> bool:
     ok = rc == 0 or (allow_failure and rc != 0)
@@ -53,6 +66,7 @@ def _append_step(
             "cmd": cmd,
             "rc": int(rc),
             "ok": bool(ok),
+            "duration_sec": float(duration_sec),
             "allow_failure": bool(allow_failure),
             "summary": summary,
         }
@@ -66,15 +80,20 @@ def _render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- generated_at: `{report['generated_at']}`",
         f"- as_of: `{report['as_of']}`",
+        f"- profile: `{report['profile']}`",
         f"- dry_run: `{report['dry_run']}`",
         f"- status: `{'PASS' if report['ok'] else 'FAIL'}`",
+        f"- total_duration_sec: `{report['total_duration_sec']}`",
         "",
         "## Steps",
     ]
     for row in report["steps"]:
         status = "OK" if row["ok"] else "FAIL"
         allow = " (allowed)" if row.get("allow_failure") and row["rc"] != 0 else ""
-        lines.append(f"- `{row['step']}`: {status}{allow} rc={row['rc']} | {row['summary']}")
+        lines.append(
+            f"- `{row['step']}`: {status}{allow} rc={row['rc']} "
+            f"duration={row.get('duration_sec', 0.0)}s | {row['summary']}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -84,16 +103,23 @@ def run_kaspi_daily_ops(
     as_of: str,
     output_root: Path,
     allow_store_failures: set[str],
+    profile: str = "catch-up",
+    stores_config: Path | None = None,
     runner: Runner | None = None,
     dry_run: bool = True,
 ) -> dict[str, Any]:
     root = Path(project_root).resolve()
     run = runner or _run_shell
-    stores = load_active_store_codes(root / "config" / "stores.yaml")
+    if profile not in PROFILE_CONFIG:
+        raise RuntimeError(f"unknown daily ops profile: {profile}")
+    profile_cfg = PROFILE_CONFIG[profile]
+    stores_cfg_path = Path(stores_config) if stores_config else (root / "config" / "stores.yaml")
+    stores = load_active_store_codes(stores_cfg_path)
     allowed = {store.upper() for store in allow_store_failures}
 
     steps: list[dict[str, Any]] = []
     overall_ok = True
+    started = time.perf_counter()
 
     static_checks = [
         (
@@ -115,16 +141,29 @@ def run_kaspi_daily_ops(
     ]
 
     for step, cmd in static_checks:
+        step_started = time.perf_counter()
         rc, output = run(cmd, root)
-        if not _append_step(steps=steps, step=step, cmd=cmd, rc=rc, output=output):
+        duration = round(time.perf_counter() - step_started, 3)
+        if not _append_step(
+            steps=steps,
+            step=step,
+            cmd=cmd,
+            rc=rc,
+            output=output,
+            duration_sec=duration,
+        ):
             overall_ok = False
 
     for store in stores:
+        include_overdue_flag = " --include-overdue" if profile_cfg["include_overdue"] else ""
         cmd = (
             "python3 scripts/report_waybill_status.py "
-            f"--date {shlex.quote(as_of)} --since-days 3 --store {shlex.quote(store)} --strict-stopline"
+            f"--date {shlex.quote(as_of)} --since-days {profile_cfg['since_days']} "
+            f"--store {shlex.quote(store)}{include_overdue_flag} --strict-stopline"
         )
+        step_started = time.perf_counter()
         rc, output = run(cmd, root)
+        duration = round(time.perf_counter() - step_started, 3)
         allow_failure = store in allowed
         if not _append_step(
             steps=steps,
@@ -132,6 +171,7 @@ def run_kaspi_daily_ops(
             cmd=cmd,
             rc=rc,
             output=output,
+            duration_sec=duration,
             allow_failure=allow_failure,
         ):
             overall_ok = False
@@ -147,8 +187,17 @@ def run_kaspi_daily_ops(
         ),
     ]
     for step, cmd in drift_commands:
+        step_started = time.perf_counter()
         rc, output = run(cmd, root)
-        if not _append_step(steps=steps, step=step, cmd=cmd, rc=rc, output=output):
+        duration = round(time.perf_counter() - step_started, 3)
+        if not _append_step(
+            steps=steps,
+            step=step,
+            cmd=cmd,
+            rc=rc,
+            output=output,
+            duration_sec=duration,
+        ):
             overall_ok = False
 
     run_dir = output_root / as_of
@@ -161,10 +210,13 @@ def run_kaspi_daily_ops(
         "as_of": as_of,
         "project_root": str(root),
         "dry_run": bool(dry_run),
+        "profile": profile,
+        "stores_config": str(stores_cfg_path),
         "stores": stores,
         "allow_store_failures": sorted(allowed),
         "ok": bool(overall_ok),
         "exit_code": 0 if overall_ok else 1,
+        "total_duration_sec": round(time.perf_counter() - started, 3),
         "steps": steps,
         "summary_json": str(summary_json),
         "summary_md": str(summary_md),
@@ -180,6 +232,18 @@ def main() -> int:
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--as-of", type=str, default=date.today().isoformat())
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILE_CONFIG.keys()),
+        default="catch-up",
+        help="today-fast = strict current-day; catch-up = include-overdue window.",
+    )
+    parser.add_argument(
+        "--stores-config",
+        type=Path,
+        default=None,
+        help="Optional override for store roster YAML path.",
+    )
     parser.add_argument(
         "--allow-store-failure",
         action="append",
@@ -201,6 +265,8 @@ def main() -> int:
         as_of=args.as_of,
         output_root=args.output_root,
         allow_store_failures={str(s).upper() for s in args.allow_store_failure},
+        profile=args.profile,
+        stores_config=args.stores_config,
         dry_run=True,
     )
     print(report["summary_md"])

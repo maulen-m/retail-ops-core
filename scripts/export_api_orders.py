@@ -204,6 +204,12 @@ def _extract_delivery_costs(order: dict) -> tuple[Optional[float], Optional[floa
     return buyer_cost, seller_cost
 
 
+def _order_missing_delivery_costs(order: dict) -> bool:
+    """Return True when delivery fields required for export are missing."""
+    buyer_cost, seller_cost = _extract_delivery_costs(order)
+    return buyer_cost is None or seller_cost is None
+
+
 def _maybe_refetch_order_details(
     client: KaspiAPIClient,
     order: dict,
@@ -315,19 +321,30 @@ def fetch_masterproduct_name(client: KaspiAPIClient, entry: dict) -> Optional[st
     return ''
 
 
-def fetch_order_entries(client: KaspiAPIClient, order_code: str) -> List[dict]:
+def fetch_order_entries(
+    client: KaspiAPIClient,
+    order_code: str,
+    *,
+    order_id: Optional[str] = None,
+) -> List[dict]:
     """
     Fetch order entries (line items) for an order.
 
     Args:
         client: KaspiAPIClient instance
         order_code: Order code
+        order_id: Optional Base64 order ID from list response
 
     Returns:
         List of entry dicts
     """
     try:
-        response = client.get_order_entries(order_code)
+        # Fast path: when list response already includes Base64 order ID, skip
+        # the extra get-order lookup used by get_order_entries(order_code).
+        if order_id and hasattr(client, "get_order_entries_by_id"):
+            response = client.get_order_entries_by_id(order_id)
+        else:
+            response = client.get_order_entries(order_code)
         if response.success:
             return response.data.get('data', [])
     except KaspiNotFoundError:
@@ -583,18 +600,19 @@ def export_store_orders(
     all_rows = []
 
     for i, order in enumerate(orders):
-        if refetch_missing_costs:
+        if refetch_missing_costs and _order_missing_delivery_costs(order):
             order = _maybe_refetch_order_details(
                 client,
                 order,
                 verbose=verbose,
-                force=True,
+                force=False,
             )
 
         order_code = order.get('attributes', {}).get('code', '')
+        order_id = order.get('id')
 
         # Fetch entries for this order
-        entries = fetch_order_entries(client, order_code)
+        entries = fetch_order_entries(client, order_code, order_id=order_id)
 
         # Convert to Excel rows (pass client for masterproduct name fetching)
         rows = order_to_rows(order, entries, store_code, client=client)

@@ -272,7 +272,7 @@ def _strip_article_prefix(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return text
-    return re.sub(r"^[\\d\\s]+", "", text).strip()
+    return re.sub(r"^[\d\s]+", "", text).strip()
 
 
 def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:

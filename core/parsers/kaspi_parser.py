@@ -117,7 +117,7 @@ def _strip_article_prefix(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return text
-    return re.sub(r"^[\\d\\s]+", "", text).strip()
+    return re.sub(r"^[\d\s]+", "", text).strip()
 
 
 def _looks_like_size_token(token: str) -> bool:
