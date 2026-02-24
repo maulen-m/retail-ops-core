@@ -154,8 +154,9 @@ def patch_workbook(
             )
 
     backup_path = None
-    if apply and updates:
+    if apply:
         backup_path = _backup_file(workbook, backup_dir)
+    if apply and updates:
         wb = load_workbook(workbook)
         try:
             sh = wb[sheet]

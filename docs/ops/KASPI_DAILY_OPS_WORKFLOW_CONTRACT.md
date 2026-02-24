@@ -17,6 +17,8 @@ This contract is fail-closed: workflow regressions must surface as test failures
   - `16:03` daily import run
 - `config/com.example.kaspi-waybill-deadline.plist`
   - `18:30` daily waybill deadline run
+- `config/com.example.kaspi-daily-ops-report.plist`
+  - `19:10` daily daily-ops report run
 - installer: `scripts/install_scheduler.sh`
 
 ## Multi-Store Scale Roster
@@ -48,6 +50,9 @@ updating this contract and corresponding tests before merge.
   - `today-fast`: `report_waybill_status.py --since-days 1` (no `--include-overdue`)
   - `catch-up`: `report_waybill_status.py --since-days 3 --include-overdue`
 - keep scheduler timings in sync with this contract and launchd plists
+- keep daily report contract fail-closed:
+  - `scripts/generate_daily_ops_report.py`
+  - `scripts/validate_daily_ops_report.py --strict`
 
 ## Promotion Governance
 - Promotion checklist authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.
@@ -59,6 +64,7 @@ updating this contract and corresponding tests before merge.
 ## Test Gate Ownership
 - `tests/test_kaspi_import_scheduler_contract.py`
 - `tests/test_kaspi_waybill_deadline_scheduler_contract.py`
+- `tests/test_kaspi_daily_ops_report_scheduler_contract.py`
 - `tests/test_run_full_import_command_step2.py`
 - `tests/test_run_build_waybills_command_stopline.py`
 - `tests/test_waybill_selection_filters.py`

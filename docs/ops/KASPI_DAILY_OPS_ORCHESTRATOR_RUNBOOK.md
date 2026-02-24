@@ -25,7 +25,7 @@ Store roster source:
 
 ## Output Artifacts
 Default output root:
-- `exports/validation/board_v6_runtime/<YYYY-MM-DD>/`
+- `exports/validation/board_v8_runtime/<YYYY-MM-DD>/`
 
 Files:
 - `daily_ops_summary.json`
@@ -36,6 +36,25 @@ Summary artifact fields include:
 - `stores_config`
 - `steps[].duration_sec`
 - `total_duration_sec`
+- `store_results`
+- `red_stores`
+
+Checkpoint/resume:
+- `--checkpoint-path <path>` writes step-level checkpoint state.
+- `--resume` reuses successful checkpointed steps; mismatched checkpoint metadata fails closed.
+
+Opt-in cache:
+- `--cache` enables waybill-status step cache.
+- `--cache-dir <path>` overrides cache root (default `runtime_cache/daily_ops`).
+- Cache is disabled by default.
+
+Daily report generation (GREEN/RED):
+
+```bash
+python3 scripts/generate_daily_ops_report.py --as-of <YYYY-MM-DD>
+python3 scripts/validate_daily_ops_report.py --strict \
+  --path exports/daily/<YYYY-MM-DD>/daily_ops_report.json
+```
 
 ## Benchmark + Timing Validation
 Generate benchmark timing artifacts:
@@ -62,6 +81,7 @@ Timing policy authority:
 - Any failed step exits non-zero.
 - Store-level waybill failure stops the run unless explicitly overridden with:
   - `--allow-store-failure <STORE_CODE>` (repeatable)
+- Partial artifacts are still emitted on failures (`daily_ops_summary.json` and `daily_ops_summary.md`).
 
 ## Safety Contract
 - Dry-run default.
