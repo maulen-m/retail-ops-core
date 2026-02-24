@@ -585,6 +585,17 @@ class KaspiAPIClient:
         base64_id = self._get_order_base64_id(order_code)
         return self._request('GET', f'orders/{base64_id}/entries')
 
+    def get_order_entries_by_id(self, order_id: str) -> APIResponse:
+        """
+        Get order line items (entries) directly by Base64 order ID.
+
+        This avoids an extra get-order lookup when callers already have the
+        Base64 `id` field from list endpoints.
+        """
+        if not order_id:
+            return APIResponse(success=False, error="order_id is required", status_code=400)
+        return self._request('GET', f'orders/{order_id}/entries')
+
     def get_masterproduct(self, masterproduct_id: str) -> APIResponse:
         """
         Get masterproduct details (Kaspi's official product info).

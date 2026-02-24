@@ -8,6 +8,8 @@ This contract is fail-closed: workflow regressions must surface as test failures
 ## Canonical Entrypoints
 - `excel_ui/run_full_import.command`
 - `excel_ui/run_build_waybills.command`
+- `scripts/run_kaspi_daily_ops.py`
+- `scripts/benchmark_kaspi_daily_ops.py`
 
 ## Canonical Scheduler Contracts
 - `config/com.example.kaspi-import.plist`
@@ -42,6 +44,9 @@ updating this contract and corresponding tests before merge.
 - keep fail-closed behavior in `run_build_waybills.command` (`HARD_FAIL` -> non-zero exit)
 - keep strict stop-line report (`--strict-stopline`)
 - keep fallback selection path in waybill download (`--fallback-crm`) to avoid missing PDFs for non-prefetched target IDs
+- keep profile contract in daily ops orchestrator:
+  - `today-fast`: `report_waybill_status.py --since-days 1` (no `--include-overdue`)
+  - `catch-up`: `report_waybill_status.py --since-days 3 --include-overdue`
 - keep scheduler timings in sync with this contract and launchd plists
 
 ## Promotion Governance
