@@ -21,6 +21,8 @@ def _extract_cli_flags(step2_block: str) -> set[str]:
 def test_step2_uses_unattended_safe_xlwings_first_mode():
     script_path = Path("excel_ui/run_full_import.command")
     text = script_path.read_text(encoding="utf-8")
+    assert "Preflight: validating local app DB..." in text
+    assert "python3 scripts/check_local_app_db.py --db-path \"${PROJECT_ROOT}/db/app.db\"" in text
     step2_block = _extract_step2_block(text)
     flags = _extract_cli_flags(step2_block)
 

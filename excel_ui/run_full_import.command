@@ -42,6 +42,19 @@ if [ -z "${AB_DATA_DIR:-}" ] && [ -z "${DATA_DIR:-}" ]; then
 fi
 DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-${PROJECT_ROOT}}}"
 
+echo "Preflight: validating local app DB..."
+echo "----------------------------------------"
+python3 scripts/check_local_app_db.py --db-path "${PROJECT_ROOT}/db/app.db"
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "ERROR: local DB preflight failed."
+    echo "Fix: ensure db/app.db is a local regular SQLite file (not iCloud symlink/dataless)."
+    echo "Press Enter to close..."
+    [[ -t 0 ]] && read
+    exit 1
+fi
+echo ""
+
 if [ -z "${AB_GDRIVE_KASPI_SALES_PATH:-}" ]; then
     export AB_GDRIVE_KASPI_SALES_PATH="${HOME}/Library/CloudStorage/GoogleDrive-maintainer@example.com/My Drive/Business/Shared/Kaspi/Kaspi orders/Kaspi_drive_sales_v1.xlsx"
 fi
