@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from scripts.system_doctor import run_system_doctor
+
+
+def test_system_doctor_fails_closed_on_runtime_layer() -> None:
+    calls: list[str] = []
+
+    def fake_runner(cmd: str, _cwd: Path) -> tuple[int, str]:
+        calls.append(cmd)
+        if "install_single_truth_ops_scheduler.sh" in cmd:
+            return 1, "validate-only fail"
+        return 0, "ok"
+
+    report = run_system_doctor(
+        project_root=Path(".").resolve(),
+        as_of="2026-02-25",
+        output_dir=Path("exports/diagnostics/2026-02-25"),
+        strict=True,
+        runner=fake_runner,
+    )
+
+    assert report["ok"] is False
+    assert report["blocked_layer"] == "runtime"
+    assert report["exit_code"] == 1
+    assert all(
+        "validate_params.py --strict" not in cmd
+        for cmd in calls
+    ), "truth layer must not run after runtime failure"
+
+
+def test_system_doctor_writes_required_artifacts(tmp_path: Path) -> None:
+    report = run_system_doctor(
+        project_root=Path(".").resolve(),
+        as_of="2026-02-25",
+        output_dir=tmp_path,
+        strict=True,
+        runner=lambda _cmd, _cwd: (0, "ok"),
+    )
+
+    assert report["ok"] is True
+    assert report["exit_code"] == 0
+
+    system_health = tmp_path / "system_health.json"
+    system_health_md = tmp_path / "system_health.md"
+    system_checks = tmp_path / "system_health_checks.json"
+    assert system_health.exists()
+    assert system_health_md.exists()
+    assert system_checks.exists()
+
+    payload = json.loads(system_health.read_text(encoding="utf-8"))
+    assert payload["ok"] is True
+    assert payload["status"] == "GREEN"
+    assert payload["as_of"] == "2026-02-25"
+
