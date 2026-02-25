@@ -56,3 +56,24 @@ def test_system_doctor_writes_required_artifacts(tmp_path: Path) -> None:
     assert payload["status"] == "GREEN"
     assert payload["as_of"] == "2026-02-25"
 
+
+def test_system_doctor_includes_v10_contract_checks() -> None:
+    calls: list[str] = []
+
+    def fake_runner(cmd: str, _cwd: Path) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, "ok"
+
+    report = run_system_doctor(
+        project_root=Path(".").resolve(),
+        as_of="2026-02-25",
+        output_dir=Path("exports/diagnostics/2026-02-25"),
+        strict=True,
+        runner=fake_runner,
+    )
+    assert report["ok"] is True
+    joined = "\n".join(calls)
+    assert "validate_schema.py" in joined
+    assert "validate_dashboard_plan_real_contract.py" in joined
+    assert "validate_cashfloor.py" in joined
+    assert "translate_transfer_ledger_to_cashflow.py" in joined

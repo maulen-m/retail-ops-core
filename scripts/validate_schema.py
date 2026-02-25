@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from pathlib import Path
 import sys
@@ -72,6 +73,35 @@ REQUIRED_TABLES: dict[str, set[str]] = {
     },
 }
 
+OPTIONAL_TABLES: dict[str, set[str]] = {
+    "po_header": {
+        "po_id",
+        "supplier_code",
+        "status",
+        "message_date",
+        "ship_date_seller",
+        "ship_date_cargo",
+        "alm_arrival_nom",
+        "ast_arrival_nom",
+        "units_total",
+        "units_received",
+        "weight_nom_kg",
+        "total_places",
+    },
+    "po_part": {
+        "po_part_id",
+        "po_id",
+        "status",
+        "est_weight_kg",
+        "total_bags",
+        "total_units",
+        "is_paid_base",
+        "is_paid_dlv",
+        "to_pay_base_kzt",
+        "to_pay_dlv_kzt",
+    },
+}
+
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
@@ -97,6 +127,13 @@ def validate_schema(db_path: Path) -> list[str]:
             missing = sorted(col for col in required_cols if col not in cols)
             if missing:
                 errors.append(f"{table} missing columns: {', '.join(missing)}")
+        for table, required_cols in OPTIONAL_TABLES.items():
+            if not _table_exists(conn, table):
+                continue
+            cols = _table_columns(conn, table)
+            missing = sorted(col for col in required_cols if col not in cols)
+            if missing:
+                errors.append(f"{table} missing columns: {', '.join(missing)}")
     finally:
         conn.close()
     return errors
@@ -110,20 +147,30 @@ def main() -> int:
         default=DEFAULT_DB_PATH,
         help="DB path (default: db/app.db)",
     )
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args()
 
     if not args.db.exists():
-        print(f"ERROR: Database not found: {args.db}")
+        if args.json:
+            print(json.dumps({"ok": False, "errors": [f"Database not found: {args.db}"]}, ensure_ascii=False))
+        else:
+            print(f"ERROR: Database not found: {args.db}")
         return 1
 
     errors = validate_schema(args.db)
     if errors:
-        print("SCHEMA FAILURES:")
-        for err in errors:
-            print(f"  - {err}")
+        if args.json:
+            print(json.dumps({"ok": False, "errors": errors}, ensure_ascii=False))
+        else:
+            print("SCHEMA FAILURES:")
+            for err in errors:
+                print(f"  - {err}")
         return 1
 
-    print("OK: PO execution schema valid")
+    if args.json:
+        print(json.dumps({"ok": True, "errors": []}, ensure_ascii=False))
+    else:
+        print("OK: PO execution schema valid")
     return 0
 
 

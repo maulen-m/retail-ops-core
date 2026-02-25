@@ -14,6 +14,8 @@ def test_cashflow_scorecard_fail_closed_in_strict_mode(tmp_path: Path) -> None:
             return 0, "PASS: inventory cost drift within tolerance"
         if "validate_cashflow_invariants.py" in cmd:
             return 1, "FAIL: invariant breach"
+        if "build_portfolio_completeness_report.py" in cmd:
+            return 0, "status=PASS"
         if "build_ops_drift_pack.py" in cmd:
             return 0, "json_path=exports/validation/2026-02-25/single_truth_drift_pack.json"
         if "validate_drift_pack_slo.py" in cmd:
@@ -34,4 +36,3 @@ def test_cashflow_scorecard_fail_closed_in_strict_mode(tmp_path: Path) -> None:
     payload = json.loads(cash_json.read_text(encoding="utf-8"))
     assert payload["domain"] == "cashflow"
     assert payload["status"] == "RED"
-

@@ -6,6 +6,9 @@ Run a deterministic, fail-closed daily ops chain with one command.
 Primary entrypoint:
 - `python3 scripts/run_kaspi_daily_ops.py --as-of <YYYY-MM-DD>`
 
+Board V10 daily-autopilot entrypoint:
+- `python3 scripts/run_daily_autopilot.py --as-of <YYYY-MM-DD> --strict`
+
 Supported profiles:
 - `--profile today-fast`: strict current-day waybill checks (`--since-days 1`, no overdue expansion)
 - `--profile catch-up`: overdue-inclusive window (`--since-days 3 --include-overdue`)
@@ -55,6 +58,10 @@ python3 scripts/generate_daily_ops_report.py --as-of <YYYY-MM-DD>
 python3 scripts/validate_daily_ops_report.py --strict \
   --path exports/daily/<YYYY-MM-DD>/daily_ops_report.json
 ```
+
+Exception queue (Board V10):
+- `exports/exceptions/<YYYY-MM-DD>/exceptions.json`
+- `exports/exceptions/<YYYY-MM-DD>/exceptions.md`
 
 ## Benchmark + Timing Validation
 Generate benchmark timing artifacts:

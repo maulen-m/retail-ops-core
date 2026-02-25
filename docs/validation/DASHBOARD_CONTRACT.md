@@ -10,6 +10,7 @@ Source of truth:
 - Input fixture: `tests/fixtures/po_golden/po_contract_cases.json`
 - Gate command (deterministic):
   - `python3 scripts/smoke_test_dashboard.py --fixture tests/fixtures/po_golden/po_contract_cases.json`
+  - `python3 scripts/validate_dashboard_plan_real_contract.py --strict`
 
 ## Required output schema (minimal)
 Top-level keys:
@@ -69,6 +70,12 @@ Each `sku_level` entry must include:
 - `units_received` (int)
 - `weight_nom_kg` (number)
 - `total_places` (int)
+
+PLAN vs REAL labeling rules:
+- Keys starting with `PLAN-` must always have `po_kind=PLAN`.
+- Non-PLAN keys in `pos` must always have `po_kind=REAL_ARCHIVE`.
+- Non-PLAN keys must be listed in `archived_pos`.
+- `real_pos.po_id` entries must refer to materialized real PO identities (or documented legacy archive keys where applicable).
 
 ## Invariants vs PO engine (same fixture input)
 For each SKU in the fixture:

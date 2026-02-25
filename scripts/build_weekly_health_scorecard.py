@@ -34,6 +34,9 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- daily_green_rate_pct: `{payload['daily_green_rate_pct']}`",
         f"- avg_steps_failed: `{payload['avg_steps_failed']}`",
         f"- avg_stores_red: `{payload['avg_stores_red']}`",
+        f"- green_streak_days: `{payload['green_streak_days']}`",
+        f"- green_streak_target_days: `{payload['green_streak_target_days']}`",
+        f"- green_streak_status: `{payload['green_streak_status']}`",
         "",
         "## Days",
     ]
@@ -101,6 +104,13 @@ def build_weekly_health_scorecard(
     avg_steps_failed = round(sum(row["steps_failed"] for row in day_rows) / days_evaluated, 3) if day_rows else 0.0
     avg_stores_red = round(sum(row["stores_red"] for row in day_rows) / days_evaluated, 3) if day_rows else 0.0
     green_rate = round((green_days / days_evaluated) * 100.0, 2) if day_rows else 0.0
+    streak_target_days = 14
+    streak_days = 0
+    for row in sorted(day_rows, key=lambda item: item["date"], reverse=True):
+        if row["daily_ok"] and row["doctor_ok"]:
+            streak_days += 1
+            continue
+        break
 
     ok = (len(errors) == 0)
     payload = {
@@ -113,6 +123,9 @@ def build_weekly_health_scorecard(
         "daily_green_rate_pct": green_rate,
         "avg_steps_failed": avg_steps_failed,
         "avg_stores_red": avg_stores_red,
+        "green_streak_days": streak_days,
+        "green_streak_target_days": streak_target_days,
+        "green_streak_status": "GREEN" if streak_days >= streak_target_days else "RED",
         "days": day_rows,
         "ok": ok,
         "errors": errors,

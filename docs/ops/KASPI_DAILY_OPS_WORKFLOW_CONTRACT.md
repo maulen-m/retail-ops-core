@@ -9,6 +9,7 @@ This contract is fail-closed: workflow regressions must surface as test failures
 - `excel_ui/run_full_import.command`
 - `excel_ui/run_build_waybills.command`
 - `scripts/run_kaspi_daily_ops.py`
+- `scripts/run_daily_autopilot.py`
 - `scripts/benchmark_kaspi_daily_ops.py`
 
 ## Canonical Scheduler Contracts
@@ -53,6 +54,9 @@ updating this contract and corresponding tests before merge.
 - keep daily report contract fail-closed:
   - `scripts/generate_daily_ops_report.py`
   - `scripts/validate_daily_ops_report.py --strict`
+- keep autopilot exception queue contract fail-closed:
+  - `scripts/run_daily_autopilot.py --strict`
+  - `exports/exceptions/<YYYY-MM-DD>/exceptions.{json,md}`
 
 ## Promotion Governance
 - Promotion checklist authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.

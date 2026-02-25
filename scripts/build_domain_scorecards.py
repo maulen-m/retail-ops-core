@@ -106,6 +106,15 @@ def build_domain_scorecards(
         ("po", f"python3 scripts/validate_po_money_gate.py --project-root {quoted_root} --json"),
         ("inventory", "python3 scripts/validate_inventory_cost_drift.py"),
         ("cashflow", "python3 scripts/validate_cashflow_invariants.py"),
+        (
+            "portfolio",
+            (
+                "python3 scripts/build_portfolio_completeness_report.py "
+                f"--strict --as-of {quoted_as_of} "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--output-root {shlex.quote(str(out_dir.parent))}"
+            ),
+        ),
     ]
     for domain, cmd in specs:
         rc, output = run(cmd, root)
@@ -181,4 +190,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -47,4 +47,6 @@ def test_weekly_health_scorecard_contract(tmp_path: Path) -> None:
     assert payload["days_evaluated"] == 3
     assert payload["green_days"] == 2
     assert payload["red_days"] == 1
-
+    assert "green_streak_days" in payload
+    assert payload["green_streak_target_days"] == 14
+    assert payload["green_streak_status"] in {"GREEN", "RED"}
