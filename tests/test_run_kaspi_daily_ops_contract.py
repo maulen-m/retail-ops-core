@@ -68,3 +68,4 @@ def test_orchestrator_writes_deterministic_summary_artifacts(tmp_path: Path) -> 
     payload = json.loads(summary_json.read_text(encoding="utf-8"))
     assert payload["as_of"] == "2026-02-23"
     assert payload["ok"] is True
+    assert any(step["step"] == "validate_schema" for step in payload["steps"])

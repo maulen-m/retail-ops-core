@@ -104,6 +104,16 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "truth",
+            "check": "validate_schema",
+            "cmd": "python3 scripts/validate_schema.py --json",
+        },
+        {
+            "layer": "truth",
+            "check": "validate_dashboard_plan_real_contract",
+            "cmd": "python3 scripts/validate_dashboard_plan_real_contract.py --strict",
+        },
+        {
+            "layer": "truth",
             "check": "validate_daily_ops_report",
             "cmd": f"python3 scripts/validate_daily_ops_report.py --strict --path {report_path}",
         },
@@ -114,6 +124,26 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 "python3 scripts/build_domain_scorecards.py "
                 f"--strict --as-of {quoted_as_of} "
                 f"--project-root {quoted_root} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))}"
+            ),
+        },
+        {
+            "layer": "domain",
+            "check": "validate_cashfloor",
+            "cmd": (
+                "python3 scripts/validate_cashfloor.py "
+                f"--strict --as-of {quoted_as_of} "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))}"
+            ),
+        },
+        {
+            "layer": "domain",
+            "check": "translate_transfer_ledger_to_cashflow",
+            "cmd": (
+                "python3 scripts/translate_transfer_ledger_to_cashflow.py "
+                f"--strict --as-of {quoted_as_of} "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))}"
             ),
         },

@@ -246,6 +246,10 @@ def run_kaspi_daily_ops(
 
     static_checks = [
         (
+            "validate_schema",
+            "python3 scripts/validate_schema.py",
+        ),
+        (
             "scheduler_validate_only",
             "bash scripts/install_single_truth_ops_scheduler.sh --validate-only",
         ),

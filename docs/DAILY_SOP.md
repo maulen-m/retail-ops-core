@@ -26,6 +26,10 @@ Daily report contract:
 - `scripts/generate_daily_ops_report.py`
 - `scripts/validate_daily_ops_report.py --strict`
 
+Board V10 autopilot contract:
+- `scripts/run_daily_autopilot.py --as-of <YYYY-MM-DD> --strict`
+- exception queue output: `exports/exceptions/<YYYY-MM-DD>/exceptions.{json,md}`
+
 Run strict validation with workbook anchor enabled before operator decisions:
 
 ```bash

@@ -26,3 +26,9 @@ If any check in a layer fails, later layers do not execute.
 - `--strict` returns non-zero on any failed check.
 - Default mode is read-only.
 - Missing required artifacts (for example daily report or timing artifacts) are treated as failures.
+- Layered strict checks include:
+  - `validate_schema`
+  - `validate_dashboard_plan_real_contract`
+  - `build_domain_scorecards` (now includes portfolio completeness scorecard)
+  - `validate_cashfloor`
+  - `translate_transfer_ledger_to_cashflow` (dry-run idempotence proof)

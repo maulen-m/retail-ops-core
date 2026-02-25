@@ -22,6 +22,13 @@ python3 scripts/validate_daily_ops_timing_artifact.py exports/perf/<YYYY-MM-DD>/
 - Any non-zero run exit code fails the timing contract.
 - Any parity mismatch between repeated runs fails the timing contract.
 
+## V10 Scale Rule
+- Throughput changes are valid only when parity remains intact for:
+  - selected order IDs,
+  - assemble success/failure sets,
+  - waybill download/existing/missing sets,
+  - bundle grouping counts.
+
 ## Promotion Rule
 Do not claim performance improvement without:
 1. parity passing,
