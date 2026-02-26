@@ -102,7 +102,7 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         {
             "layer": "truth",
             "check": "validate_params_strict",
-            "cmd": "python3 scripts/validate_params.py --strict",
+            "cmd": f"python3 scripts/validate_params.py --strict --as-of {quoted_as_of}",
         },
         {
             "layer": "truth",

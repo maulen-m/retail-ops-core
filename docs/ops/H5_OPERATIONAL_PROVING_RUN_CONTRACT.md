@@ -16,15 +16,31 @@ Define the production proving window contract for final autonomy closure:
 - `exports/exceptions/<day>/exceptions.json`
 - `exports/diagnostics/<day>/system_health.json`
 - `exports/perf/<day>/daily_ops_timings.json`
-- `exports/validation/<day>/single_truth_drift_pack.json`
+- `exports/daily/<day>/truth_drift_report.json`
 
 ## Weekly Artifacts
-- `exports/health/weekly/weekly/<YYYY-W##>/weekly_health_scorecard.json`
+- `exports/health/weekly/<YYYY-W##>/weekly_health_scorecard.json`
 
 ## Hard Gates (daily)
 - `python3 scripts/system_doctor.py --strict --project-root <REPO_PATH>`
 - `python3 scripts/validate_as_of_consistency.py --strict --project-root <REPO_PATH> --as-of <day>`
 - `python3 scripts/triage_exceptions.py --strict --exceptions exports/exceptions/<day>/exceptions.json`
+- `python3 scripts/validate_h5_artifact_set.py --strict --project-root <REPO_PATH> --as-of <day>`
+
+## Day-0 Kickoff Commands (copy/paste)
+```bash
+cd <REPO_PATH>
+DAY="<YYYY-MM-DD>"
+
+python3 scripts/system_doctor.py --strict --project-root . --as-of "$DAY"
+python3 scripts/validate_as_of_consistency.py --strict --project-root . --as-of "$DAY"
+python3 scripts/triage_exceptions.py \
+  --exceptions "exports/exceptions/$DAY/exceptions.json" \
+  --playbook docs/ops/EXCEPTION_PLAYBOOK.md \
+  --allowlist config/exceptions_allowlist.json \
+  --strict
+python3 scripts/validate_h5_artifact_set.py --strict --project-root . --as-of "$DAY"
+```
 
 ## Stop-the-Line
 - Any hard gate failure.

@@ -326,3 +326,27 @@ def test_business_insides_markdown_includes_units_shipped_column(tmp_path: Path)
     )
     content = Path(result["latest_path"]).read_text(encoding="utf-8")
     assert "Units Shipped" in content
+
+
+def test_business_insides_reports_stale_recent_window_with_observed_history(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    bank = tmp_path / "bank_accounts.yaml"
+    _init_db(db_path)
+    _write_bank_yaml(bank)
+
+    result = generate_business_insides(
+        db_path=db_path,
+        bank_accounts_path=bank,
+        as_of="2026-02-20",
+        output_dir=tmp_path / "business_insides",
+    )
+    perf = result["performance"]
+    assert perf["observed_days_last_7_calendar"] == 0
+    assert perf["latest_sale_date_available"] == "2026-02-08"
+    assert perf["sales_truth_freshness_days"] == 12
+
+    content = Path(result["latest_path"]).read_text(encoding="utf-8")
+    assert "## Sales Truth Freshness" in content
+    assert "Sales truth is stale for recent 7-day calendar window." in content
+    assert "## Latest Observed Sales Days (Truth)" in content
+    assert "2026-02-08" in content

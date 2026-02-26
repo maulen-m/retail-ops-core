@@ -59,6 +59,7 @@ from scripts.validate_write_side_gating import (
     validate_manifest as validate_write_side_manifest,
     DEFAULT_MANIFEST as DEFAULT_WRITE_SIDE_MANIFEST,
 )
+from scripts.resolve_as_of_date import resolve_as_of_date
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_INBOUND_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
@@ -116,11 +117,11 @@ class ValidationResult:
         }
 
 
-def validate_fx_rates(conn: sqlite3.Connection, result: ValidationResult):
+def validate_fx_rates(conn: sqlite3.Connection, result: ValidationResult, *, as_of: str | None = None):
     """Validate dim_fx_rates has current effective data."""
     cursor = conn.cursor()
 
-    today = date.today().isoformat()
+    today = as_of or date.today().isoformat()
     seed_cmd = (
         "python3 scripts/upsert_fx_rates.py "
         f"--effective-date {today} "
@@ -258,7 +259,7 @@ def validate_budget_caps(conn: sqlite3.Connection, result: ValidationResult):
         result.add_info("Per-draft budget cap: unlimited")
 
 
-def validate_demand_overrides(conn: sqlite3.Connection, result: ValidationResult):
+def validate_demand_overrides(conn: sqlite3.Connection, result: ValidationResult, *, as_of: str | None = None):
     """Report on active demand overrides (info only)."""
     cursor = conn.cursor()
 
@@ -273,7 +274,7 @@ def validate_demand_overrides(conn: sqlite3.Connection, result: ValidationResult
 
     cursor.execute("PRAGMA table_info(dim_demand_overrides)")
     columns = {row[1] for row in cursor.fetchall()}
-    today = date.today().isoformat()
+    today = as_of or date.today().isoformat()
 
     if "start_date" in columns and "end_date" in columns:
         cursor.execute("""
@@ -327,8 +328,34 @@ def main():
     parser = argparse.ArgumentParser(description="Validate parameter tables")
     parser.add_argument("--strict", action="store_true", help="Fail on warnings too")
     parser.add_argument("--db", type=str, default=str(DB_PATH), help="Database path")
+    parser.add_argument("--as-of", type=str, default=None, help="As-of date YYYY-MM-DD (default: today)")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     args = parser.parse_args()
+
+    if args.as_of:
+        as_of_iso = args.as_of
+        as_of_source = "explicit"
+    else:
+        try:
+            resolution = resolve_as_of_date(
+                project_root=PROJECT_ROOT,
+                explicit_as_of=None,
+                strict=False,
+                daily_root=PROJECT_ROOT / "exports" / "daily",
+            )
+            as_of_iso = resolution.as_of
+            as_of_source = resolution.source
+        except Exception:
+            as_of_iso = date.today().isoformat()
+            as_of_source = "today_fallback"
+    try:
+        date.fromisoformat(as_of_iso)
+    except Exception:
+        if args.json:
+            print(json.dumps({"status": "FAIL", "errors": [f"Invalid --as-of date: {as_of_iso}"]}))
+        else:
+            print(f"Error: Invalid --as-of date: {as_of_iso}")
+        sys.exit(1)
 
     db_path = Path(args.db)
     if not db_path.exists():
@@ -339,16 +366,17 @@ def main():
         sys.exit(1)
 
     result = ValidationResult()
+    result.add_info(f"as_of_resolved: {as_of_iso} (source={as_of_source})")
     schema_errors = validate_schema(db_path)
     for err in schema_errors:
         result.add_error(f"schema: {err}")
 
     conn = sqlite3.connect(str(db_path))
     try:
-        validate_fx_rates(conn, result)
+        validate_fx_rates(conn, result, as_of=as_of_iso)
         validate_params(conn, result)
         validate_budget_caps(conn, result)
-        validate_demand_overrides(conn, result)
+        validate_demand_overrides(conn, result, as_of=as_of_iso)
         validate_runs_table(conn, result)
     finally:
         conn.close()
@@ -405,7 +433,7 @@ def main():
         try:
             business_errors = validate_business_insides(
                 db_path=db_path,
-                as_of=date.today().isoformat(),
+                as_of=as_of_iso,
             )
             if business_errors:
                 for err in business_errors:
@@ -419,7 +447,7 @@ def main():
             sales_truth = reconcile_sales_truth(
                 db_path=db_path,
                 days=30,
-                as_of=date.today().isoformat(),
+                as_of=as_of_iso,
             )
             result.add_info(
                 "sales_truth_reconciliation: "
@@ -491,7 +519,7 @@ def main():
                         sheet_name=workbook_sheet,
                         days=14,
                         tol_pct=5.0,
-                        as_of=date.today().isoformat(),
+                        as_of=as_of_iso,
                         min_overlap_days=7,
                         max_lag_days=workbook_max_lag_days,
                     )
@@ -512,7 +540,7 @@ def main():
         try:
             cogs_report = validate_cogs_integrity(
                 db_path=db_path,
-                as_of=date.today().isoformat(),
+                as_of=as_of_iso,
                 days=30,
                 max_unresolved_rows=0,
                 max_unresolved_skus=0,
@@ -532,7 +560,7 @@ def main():
         try:
             profit_publication = validate_profit_publication_integrity(
                 db_path=db_path,
-                as_of=date.today().isoformat(),
+                as_of=as_of_iso,
                 days=30,
             )
             if not profit_publication["ok"]:

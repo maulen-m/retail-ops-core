@@ -325,6 +325,21 @@ def compute_sales_metrics(
             }
         last_7_list.append(item)
 
+    observed_days_last_7_calendar = sum(
+        1 for row in last_7_list if row["net_rev_kzt"] is not None
+    )
+
+    available_days_sorted = sorted(by_date.keys())
+    latest_sale_date_available = available_days_sorted[-1] if available_days_sorted else None
+    sales_truth_freshness_days = (
+        (as_of_date - date.fromisoformat(latest_sale_date_available)).days
+        if latest_sale_date_available
+        else None
+    )
+    latest_7_observed_days: list[dict[str, Any]] = []
+    for day in available_days_sorted[-7:]:
+        latest_7_observed_days.append({"date": day, **by_date[day]})
+
     window_30_days = [
         (start_30 + timedelta(days=i)).isoformat() for i in range(max(1, int(last_30_days)))
     ]
@@ -363,6 +378,7 @@ def compute_sales_metrics(
     return {
         "as_of_date": as_of_date.isoformat(),
         "last_7_days": last_7_list,
+        "latest_7_observed_days": latest_7_observed_days,
         "avg_30d_net_rev_kzt": _avg(series_30_net),
         "avg_30d_cogs_kzt": _avg(series_30_cogs),
         "avg_30d_profit_kzt": _avg(series_30_profit),
@@ -373,6 +389,9 @@ def compute_sales_metrics(
         "avg_7d_profit_kzt": _avg(series_7_profit),
         "avg_7d_ads_spend_kzt": _avg_or_none(series_7_ads),
         "avg_7d_profit_after_ads_kzt": _avg_or_none(series_7_profit_after_ads),
+        "observed_days_last_7_calendar": observed_days_last_7_calendar,
+        "latest_sale_date_available": latest_sale_date_available,
+        "sales_truth_freshness_days": sales_truth_freshness_days,
         "fallback_rows": fallback_rows,
         "unresolved_rows": unresolved_rows,
         "unresolved_sku_count": len(unresolved_skus),
@@ -462,17 +481,27 @@ def _render_markdown(
             _fmt_kzt(capital["total_capital_paid_kzt"] + capital["inbound_unpaid_obligations_kzt"]),
         ],
     ]
+    observed_days_last_7 = int(sales_metrics.get("observed_days_last_7_calendar") or 0)
+    latest_sale_date_available = sales_metrics.get("latest_sale_date_available")
+    sales_truth_freshness_days = sales_metrics.get("sales_truth_freshness_days")
+    freshness_status = "unknown"
+    if sales_truth_freshness_days is not None:
+        freshness_status = "fresh" if int(sales_truth_freshness_days) <= 2 else "stale"
+
     perf_rows = [
         ["Avg 30d Net Rev", _fmt_kzt(sales_metrics["avg_30d_net_rev_kzt"])],
         ["Avg 30d COGS", _fmt_kzt(sales_metrics["avg_30d_cogs_kzt"])],
         ["Avg 30d Profit", _fmt_kzt(sales_metrics["avg_30d_profit_kzt"])],
         ["Avg 30d Ads Spend", _fmt_kzt(sales_metrics["avg_30d_ads_spend_kzt"])],
         ["Avg 30d Profit After Ads", _fmt_kzt(sales_metrics["avg_30d_profit_after_ads_kzt"])],
-        ["Avg 7d Net Rev", _fmt_kzt(sales_metrics["avg_7d_net_rev_kzt"])],
-        ["Avg 7d COGS", _fmt_kzt(sales_metrics["avg_7d_cogs_kzt"])],
-        ["Avg 7d Profit", _fmt_kzt(sales_metrics["avg_7d_profit_kzt"])],
-        ["Avg 7d Ads Spend", _fmt_kzt(sales_metrics["avg_7d_ads_spend_kzt"])],
-        ["Avg 7d Profit After Ads", _fmt_kzt(sales_metrics["avg_7d_profit_after_ads_kzt"])],
+        ["Avg 7d Net Rev", _fmt_kzt(sales_metrics["avg_7d_net_rev_kzt"] if observed_days_last_7 > 0 else None)],
+        ["Avg 7d COGS", _fmt_kzt(sales_metrics["avg_7d_cogs_kzt"] if observed_days_last_7 > 0 else None)],
+        ["Avg 7d Profit", _fmt_kzt(sales_metrics["avg_7d_profit_kzt"] if observed_days_last_7 > 0 else None)],
+        ["Avg 7d Ads Spend", _fmt_kzt(sales_metrics["avg_7d_ads_spend_kzt"] if observed_days_last_7 > 0 else None)],
+        [
+            "Avg 7d Profit After Ads",
+            _fmt_kzt(sales_metrics["avg_7d_profit_after_ads_kzt"] if observed_days_last_7 > 0 else None),
+        ],
     ]
     daily_rows = [
         [
@@ -485,6 +514,18 @@ def _render_markdown(
             _fmt_kzt(row["profit_after_ads_kzt"]),
         ]
         for row in sales_metrics["last_7_days"]
+    ]
+    observed_rows = [
+        [
+            row["date"],
+            str(int(round(float(row["units_shipped"])))) if row["units_shipped"] is not None else "N/A",
+            _fmt_kzt(row["net_rev_kzt"]),
+            _fmt_kzt(row["cogs_kzt"]),
+            _fmt_kzt(row["ads_spend_kzt"]),
+            _fmt_kzt(row["profit_kzt"]),
+            _fmt_kzt(row["profit_after_ads_kzt"]),
+        ]
+        for row in sales_metrics.get("latest_7_observed_days") or []
     ]
     ads_coverage_raw = sales_metrics["ads"].get("mapping_coverage_pct")
     ads_coverage_text = (
@@ -520,6 +561,34 @@ def _render_markdown(
         ),
         "```",
         "",
+        "## Sales Truth Freshness",
+        "",
+        f"- Latest observed sale date (truth): `{latest_sale_date_available or 'N/A'}`",
+        f"- Freshness lag (days): `{sales_truth_freshness_days if sales_truth_freshness_days is not None else 'N/A'}`",
+        f"- Freshness status: `{freshness_status}`",
+        f"- Observed rows in last 7 calendar days: `{observed_days_last_7}`",
+    ]
+    if observed_days_last_7 == 0:
+        lines.extend(
+            [
+                "- Sales truth is stale for recent 7-day calendar window.",
+                "",
+            ]
+        )
+    else:
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Latest Observed Sales Days (Truth)",
+            "",
+            "```text",
+            _ascii_table(
+                ["Date", "Units Shipped", "Net Rev", "COGS", "Ads Spend", "Profit", "Profit After Ads"],
+                observed_rows or [["N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A"]],
+            ),
+            "```",
+            "",
         "## Data Quality",
         "",
         f"- Sales source: `view_sales_line_truth` / `view_sales_daily_truth` (canonical interface over staging).",
@@ -538,7 +607,8 @@ def _render_markdown(
         f"- Status: `{external_check.get('status')}`",
         f"- Details: `{external_check}`",
         "",
-    ]
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -607,8 +677,12 @@ def generate_business_insides(
             "avg_7d_profit_kzt": sales_metrics["avg_7d_profit_kzt"],
             "avg_7d_ads_spend_kzt": sales_metrics["avg_7d_ads_spend_kzt"],
             "avg_7d_profit_after_ads_kzt": sales_metrics["avg_7d_profit_after_ads_kzt"],
+            "observed_days_last_7_calendar": sales_metrics["observed_days_last_7_calendar"],
+            "latest_sale_date_available": sales_metrics["latest_sale_date_available"],
+            "sales_truth_freshness_days": sales_metrics["sales_truth_freshness_days"],
         },
         "last_7_days": sales_metrics["last_7_days"],
+        "latest_7_observed_days": sales_metrics["latest_7_observed_days"],
         "fallback_rows": sales_metrics["fallback_rows"],
         "total_rows": sales_metrics["total_rows"],
         "unresolved_rows": sales_metrics["unresolved_rows"],
