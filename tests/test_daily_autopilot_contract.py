@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from scripts import run_daily_autopilot as autopilot
@@ -39,6 +40,8 @@ def test_daily_autopilot_writes_exception_artifacts_on_success(tmp_path: Path, m
     assert report["exit_code"] == 0
     assert Path(report["exceptions_json"]).exists()
     assert Path(report["exceptions_md"]).exists()
+    payload = json.loads(Path(report["exceptions_json"]).read_text(encoding="utf-8"))
+    assert payload["exceptions"] == []
 
 
 def test_daily_autopilot_fails_closed_and_records_exception(tmp_path: Path, monkeypatch) -> None:
@@ -74,4 +77,9 @@ def test_daily_autopilot_fails_closed_and_records_exception(tmp_path: Path, monk
     assert report["ok"] is False
     assert report["exit_code"] == 1
     exceptions = report["payload"]["exceptions"]
-    assert any(row["step"] == "build_domain_scorecards" for row in exceptions)
+    target = next(row for row in exceptions if row["step"] == "build_domain_scorecards")
+    assert target["domain"] == "domain"
+    assert target["severity"] == "critical"
+    assert target["owner"] == "ops-codex"
+    assert target["recommended_action"]
+    assert target["evidence_paths"]

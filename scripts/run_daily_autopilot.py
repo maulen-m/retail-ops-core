@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
@@ -21,10 +21,130 @@ from scripts.build_green_streak_tracker import build_green_streak_tracker
 from scripts.build_weekly_health_scorecard import build_weekly_health_scorecard
 from scripts.generate_daily_ops_report import generate_daily_ops_report
 from scripts.run_kaspi_daily_ops import run_kaspi_daily_ops
+from scripts.resolve_as_of_date import resolve_as_of_date
 from scripts.system_doctor import run_system_doctor
 from scripts.translate_transfer_ledger_to_cashflow import translate_transfer_ledger_to_cashflow
 from scripts.validate_cashfloor import validate_cashfloor
 from scripts.validate_daily_ops_report import validate_daily_ops_report
+
+EXCEPTION_POLICY: dict[str, dict[str, str]] = {
+    "run_kaspi_daily_ops": {
+        "domain": "execution",
+        "severity": "critical",
+        "owner": "ops-codex",
+        "recommended_action": "Inspect daily ops summary and rerun run_kaspi_daily_ops with strict profile.",
+    },
+    "generate_daily_ops_report": {
+        "domain": "governance",
+        "severity": "high",
+        "owner": "ops-codex",
+        "recommended_action": "Regenerate daily_ops_report and validate schema before publication.",
+    },
+    "validate_daily_ops_report": {
+        "domain": "governance",
+        "severity": "critical",
+        "owner": "ops-codex",
+        "recommended_action": "Fix report schema violations and rerun strict report validator.",
+    },
+    "build_domain_scorecards": {
+        "domain": "domain",
+        "severity": "critical",
+        "owner": "ops-codex",
+        "recommended_action": "Resolve failing domain scorecards before decisions or publish.",
+    },
+    "validate_cashfloor": {
+        "domain": "cashflow",
+        "severity": "critical",
+        "owner": "ops-codex",
+        "recommended_action": "Fix cashfloor breach and rerun strict cashfloor validator.",
+    },
+    "translate_transfer_ledger_to_cashflow": {
+        "domain": "cashflow",
+        "severity": "high",
+        "owner": "ops-codex",
+        "recommended_action": "Repair transfer-ledger translation errors and rerun strict translation.",
+    },
+    "build_daily_ops_timings": {
+        "domain": "execution",
+        "severity": "high",
+        "owner": "ops-codex",
+        "recommended_action": "Investigate timing/parity failures and rerun timing benchmark.",
+    },
+    "build_weekly_health_scorecard": {
+        "domain": "governance",
+        "severity": "medium",
+        "owner": "ops-codex",
+        "recommended_action": "Repair weekly health scorecard inputs and rebuild artifacts.",
+    },
+    "build_green_streak_tracker": {
+        "domain": "governance",
+        "severity": "high",
+        "owner": "ops-codex",
+        "recommended_action": "Restore missing day reports/gate transcripts and rerun streak tracker.",
+    },
+    "system_doctor": {
+        "domain": "diagnostics",
+        "severity": "critical",
+        "owner": "ops-codex",
+        "recommended_action": "Fix blocked layer checks and rerun system_doctor --strict.",
+    },
+}
+
+
+def _exception_meta(step: str) -> dict[str, str]:
+    base = {
+        "domain": "operations",
+        "severity": "high",
+        "owner": "ops-codex",
+        "recommended_action": "Inspect step failure and rerun strict gates.",
+    }
+    base.update(EXCEPTION_POLICY.get(step, {}))
+    return base
+
+
+def _collect_evidence_paths(meta: dict[str, Any] | None) -> list[str]:
+    if not meta:
+        return []
+    paths: list[str] = []
+    for value in meta.values():
+        if isinstance(value, str) and ("/" in value or value.endswith(".json") or value.endswith(".md")):
+            paths.append(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and ("/" in item or item.endswith(".json") or item.endswith(".md")):
+                    paths.append(item)
+    deduped: list[str] = []
+    for path in paths:
+        if path not in deduped:
+            deduped.append(path)
+    return deduped
+
+
+def _build_exception_row(
+    *,
+    index: int,
+    step: str,
+    rc: int,
+    reason: str,
+    meta: dict[str, Any] | None,
+    fallback_evidence: str,
+) -> dict[str, Any]:
+    policy = _exception_meta(step)
+    evidence_paths = _collect_evidence_paths(meta)
+    if not evidence_paths:
+        evidence_paths = [fallback_evidence]
+    return {
+        "id": f"{step}:{int(rc)}:{index}",
+        "step": step,
+        "domain": policy["domain"],
+        "severity": policy["severity"],
+        "owner": policy["owner"],
+        "recommended_action": policy["recommended_action"],
+        "evidence_paths": evidence_paths,
+        "rc": int(rc),
+        "reason": str(reason or "unknown failure"),
+    }
+
 
 def _render_exceptions_md(payload: dict[str, Any]) -> str:
     lines = [
@@ -39,7 +159,10 @@ def _render_exceptions_md(payload: dict[str, Any]) -> str:
     if payload["exceptions"]:
         lines.append("## Exceptions")
         for row in payload["exceptions"]:
-            lines.append(f"- `{row['step']}` rc={row['rc']} reason={row['reason']}")
+            lines.append(
+                f"- `{row['id']}` `{row['step']}` severity={row['severity']} owner={row['owner']} "
+                f"rc={row['rc']} reason={row['reason']}"
+            )
     else:
         lines.append("No exceptions.")
     return "\n".join(lines) + "\n"
@@ -75,7 +198,16 @@ def run_daily_autopilot(
             row["meta"] = meta
         steps.append(row)
         if not ok:
-            exceptions.append({"step": step, "rc": int(rc), "reason": reason})
+            exceptions.append(
+                _build_exception_row(
+                    index=len(exceptions) + 1,
+                    step=step,
+                    rc=int(rc),
+                    reason=reason,
+                    meta=meta,
+                    fallback_evidence=str(root / "exports" / "validation" / "board_v10_runtime" / as_of / "daily_ops_summary.md"),
+                )
+            )
 
     try:
         daily_ops = run_kaspi_daily_ops(
@@ -201,8 +333,10 @@ def run_daily_autopilot(
         "as_of": as_of,
         "status": "GREEN" if ok else "RED",
         "ok": ok,
+        "schema_version": "v1",
         "steps": steps,
         "exceptions": exceptions,
+        "critical_count": sum(1 for row in exceptions if str(row.get("severity", "")).lower() == "critical"),
     }
 
     exceptions_json = exceptions_root / "exceptions.json"
@@ -222,7 +356,7 @@ def run_daily_autopilot(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run daily autopilot chain")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    parser.add_argument("--as-of", default=date.today().isoformat())
+    parser.add_argument("--as-of", default=None)
     parser.add_argument("--profile", choices=["today-fast", "catch-up"], default="catch-up")
     parser.add_argument("--strict", action="store_true")
     return parser
@@ -230,12 +364,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
+    resolution = resolve_as_of_date(
+        project_root=args.project_root,
+        explicit_as_of=args.as_of,
+        strict=bool(args.strict),
+        daily_root=args.project_root / "exports" / "daily",
+    )
     report = run_daily_autopilot(
         project_root=args.project_root,
-        as_of=args.as_of,
+        as_of=resolution.as_of,
         profile=args.profile,
         strict=bool(args.strict),
     )
+    print(f"as_of_source={resolution.source}")
     print(f"exceptions_json={report['exceptions_json']}")
     print(f"exceptions_md={report['exceptions_md']}")
     print(f"status={'PASS' if report['ok'] else 'FAIL'}")

@@ -4,15 +4,21 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 from typing import Any, Callable
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from scripts.resolve_as_of_date import resolve_as_of_date
+
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "daily"
 Runner = Callable[[str, Path], tuple[int, str]]
 
@@ -167,20 +173,28 @@ def build_domain_scorecards(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build daily domain scorecards (PO/inventory/cashflow/truth)")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    parser.add_argument("--as-of", default=date.today().isoformat())
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--as-of", default=None)
+    parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--strict", action="store_true")
     return parser
 
 
 def main() -> int:
     args = _build_parser().parse_args()
+    output_root = args.output_root or (args.project_root / "exports" / "daily")
+    resolution = resolve_as_of_date(
+        project_root=args.project_root,
+        explicit_as_of=args.as_of,
+        strict=bool(args.strict),
+        daily_root=output_root,
+    )
     report = build_domain_scorecards(
         project_root=args.project_root,
-        as_of=args.as_of,
-        output_root=args.output_root,
+        as_of=resolution.as_of,
+        output_root=output_root,
         strict=bool(args.strict),
     )
+    print(f"as_of_source={resolution.source}")
     print(f"output_dir={report['output_dir']}")
     print(f"status={'PASS' if report['ok'] else 'FAIL'}")
     for domain, payload in report["scorecards"].items():

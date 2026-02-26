@@ -7,10 +7,16 @@ import argparse
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from scripts.resolve_as_of_date import resolve_as_of_date
+
 DEFAULT_DAILY_ROOT = PROJECT_ROOT / "exports" / "daily"
 DEFAULT_VALIDATION_ROOT = PROJECT_ROOT / "exports" / "validation"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "health" / "streak"
@@ -120,10 +126,11 @@ def build_green_streak_tracker(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build hard-gates green streak artifact")
-    parser.add_argument("--as-of", default=date.today().isoformat())
-    parser.add_argument("--daily-root", type=Path, default=DEFAULT_DAILY_ROOT)
-    parser.add_argument("--validation-root", type=Path, default=DEFAULT_VALIDATION_ROOT)
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
+    parser.add_argument("--as-of", default=None)
+    parser.add_argument("--daily-root", type=Path, default=None)
+    parser.add_argument("--validation-root", type=Path, default=None)
+    parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--target-days", type=int, default=14)
     parser.add_argument("--strict", action="store_true")
     return parser
@@ -131,14 +138,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
+    daily_root = args.daily_root or (args.project_root / "exports" / "daily")
+    validation_root = args.validation_root or (args.project_root / "exports" / "validation")
+    output_root = args.output_root or (args.project_root / "exports" / "health" / "streak")
+    resolution = resolve_as_of_date(
+        project_root=args.project_root,
+        explicit_as_of=args.as_of,
+        strict=bool(args.strict),
+        daily_root=daily_root,
+    )
     report = build_green_streak_tracker(
-        as_of=args.as_of,
-        daily_root=args.daily_root,
-        validation_root=args.validation_root,
-        output_root=args.output_root,
+        as_of=resolution.as_of,
+        daily_root=daily_root,
+        validation_root=validation_root,
+        output_root=output_root,
         target_days=args.target_days,
         strict=bool(args.strict),
     )
+    print(f"as_of_source={resolution.source}")
     print(f"green_streak_json={report['json_path']}")
     print(f"green_streak_md={report['md_path']}")
     print(f"status={'PASS' if report['ok'] else 'FAIL'}")

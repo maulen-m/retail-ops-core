@@ -71,3 +71,6 @@ scripts:
   - path: scripts/build_fact_sales_v16_from_api.py
     env_gate: ENABLE_FACT_SALES_V16_WRITE
     apply_flag: --apply
+  - path: scripts/run_write_canary.py
+    env_gate: ENABLE_WRITE_CANARY_APPLY
+    apply_flag: --apply
