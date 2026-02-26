@@ -26,6 +26,20 @@ If any check fails, the day is not complete.
 - `scripts/build_daily_ops_timings.py`
 - `scripts/build_green_streak_tracker.py`
 - `scripts/run_daily_autopilot.py`
+- `scripts/validate_as_of_consistency.py`
+
+## No Mixed-Date Writes
+- Required daily artifacts for one run must all resolve to the same `as_of`.
+- Mixed `as_of` payloads inside `exports/daily/<as_of>/` are forbidden.
+- Required convergence set:
+  - `exports/daily/<as_of>/daily_ops_report.json`
+  - `exports/daily/<as_of>/po_scorecard.json`
+  - `exports/daily/<as_of>/inventory_scorecard.json`
+  - `exports/daily/<as_of>/cashflow_scorecard.json`
+  - `exports/daily/<as_of>/truth_drift_report.json`
+  - `exports/perf/<as_of>/daily_ops_timings.json`
+  - `exports/diagnostics/<as_of>/system_health.json`
+  - `exports/exceptions/<as_of>/exceptions.json`
 
 All scripts above must use `scripts/resolve_as_of_date.py`.
 
@@ -36,3 +50,4 @@ All scripts above must use `scripts/resolve_as_of_date.py`.
 ## Validation Contract
 - `tests/test_as_of_date_authority_contract.py` must pass.
 - Contract is considered broken if any enforced script resolves a different `as_of` for the same inputs.
+- `tests/test_as_of_consistency_contract.py` must pass.

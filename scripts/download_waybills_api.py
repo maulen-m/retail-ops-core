@@ -978,16 +978,26 @@ def download_all_waybills(
             fallback_ids = fallback_orders_by_store.get(store_code, set())
 
             if api_ids:
-                # Fail-closed selection contract:
-                # keep API as source-of-truth when API already returned targets
-                # for a store. Fallback is only for stores where API is empty/failed.
                 extra = fallback_ids - api_ids
-                if extra:
+                if extra and exact_date:
+                    # Keep strict-today behavior deterministic in exact-date mode:
+                    # API is source-of-truth when it already returned store targets.
                     logger.warning(
                         f"{store_code}: ignoring {len(extra)} fallback-only orders "
-                        "because API already returned targets for this store"
+                        "because API already returned targets for this store "
+                        "(exact-date mode)"
                     )
-                merged_orders_by_store[store_code] = set(api_ids)
+                    merged_orders_by_store[store_code] = set(api_ids)
+                else:
+                    # In overdue/all-dates modes include fallback carry-over IDs
+                    # so previous-day missed pending orders remain processable.
+                    merged_orders_by_store[store_code] = set(api_ids) | set(fallback_ids)
+                    if extra:
+                        mode_label = "all-dates" if all_dates else "include-overdue"
+                        logger.warning(
+                            f"{store_code}: including {len(extra)} fallback-only orders "
+                            f"not in API selection ({mode_label} mode)"
+                        )
             else:
                 if fallback_ids:
                     merged_orders_by_store[store_code] = set(fallback_ids)

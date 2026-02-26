@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a bounded DB-only write canary with backup, diff summary, and rollback proof."""
+"""Run bounded write canaries with explicit gating, backup, and rollback proof."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ from typing import Any, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "canary"
-ENV_GATE = "ENABLE_WRITE_CANARY_APPLY"
+ENV_GATE_DB_ONLY = "ENABLE_WRITE_CANARY_APPLY"
+ENV_GATE_PROD_DB = "ENABLE_PROD_DB_CANARY_WRITE"
 APPLY_FLAG = "--apply"
 DEFAULT_MAX_ROWS = 5
 MAX_ROWS_LIMIT = 100
@@ -30,6 +31,15 @@ def _sha256(path: Path) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _create_backup_or_raise(source: Path, target: Path) -> None:
+    try:
+        shutil.copy2(source, target)
+    except Exception as exc:  # pragma: no cover - defensive filesystem failure path
+        raise RuntimeError(f"backup creation failed: {target}") from exc
+    if not target.exists():
+        raise RuntimeError(f"backup required before canary apply: {target}")
 
 
 def _count_markers(conn: sqlite3.Connection, idempotence_key: str) -> int:
@@ -88,7 +98,7 @@ def _render_report_md(payload: dict[str, Any]) -> str:
         f"- as_of: `{payload['as_of']}`",
         f"- status: `{payload['status']}`",
         f"- mode: `{payload['mode']}`",
-        f"- env_gate: `{ENV_GATE}`",
+        f"- env_gate: `{payload['env_gate']}`",
         f"- apply_flag: `{APPLY_FLAG}`",
         f"- source_db: `{payload['source_db']}`",
         f"- canary_db: `{payload['canary_db']}`",
@@ -101,7 +111,7 @@ def _render_report_md(payload: dict[str, Any]) -> str:
         "",
         "## Rollback",
         "",
-        f"- `cp {payload['backup_path']} {payload['canary_db']}`",
+        f"- `cp {payload['backup_path']} {payload['rollback_target']}`",
         "- Re-run `python3 scripts/run_write_canary.py --strict` for verification.",
     ]
     return "\n".join(lines) + "\n"
@@ -112,33 +122,50 @@ def run_write_canary(
     db_path: Path,
     output_root: Path,
     as_of: str,
+    mode: str = "db_only",
     apply: bool,
     strict: bool,
     max_rows: int = DEFAULT_MAX_ROWS,
     idempotence_key: str = "V12_CANARY",
+    prod_backup_path: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     target_db = Path(db_path).resolve()
     if not target_db.exists():
         raise RuntimeError(f"db path does not exist: {target_db}")
+    if mode not in {"db_only", "prod_db"}:
+        raise RuntimeError(f"unsupported mode: {mode}")
     if max_rows < 1 or max_rows > MAX_ROWS_LIMIT:
         raise RuntimeError(f"max_rows out of bounds: {max_rows} (allowed 1..{MAX_ROWS_LIMIT})")
 
     env_map = dict(env or os.environ)
-    if apply and env_map.get(ENV_GATE) != "1":
-        raise RuntimeError(f"{ENV_GATE}=1 is required when {APPLY_FLAG} is used")
 
     out_dir = Path(output_root).resolve() / as_of
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    backup_path = out_dir / "db_backup_pre_canary.sqlite"
-    shutil.copy2(target_db, backup_path)
+    if mode == "db_only":
+        env_gate = ENV_GATE_DB_ONLY
+        if apply and env_map.get(env_gate) != "1":
+            raise RuntimeError(f"{env_gate}=1 is required when {APPLY_FLAG} is used")
+        backup_path = out_dir / "db_backup_pre_canary.sqlite"
+        _create_backup_or_raise(target_db, backup_path)
+        canary_db = out_dir / "db_canary.sqlite"
+        if not canary_db.exists():
+            _create_backup_or_raise(backup_path, canary_db)
+        write_target = canary_db
+        rollback_target = str(canary_db)
+    else:
+        env_gate = ENV_GATE_PROD_DB
+        if apply and env_map.get(env_gate) != "1":
+            raise RuntimeError(f"{env_gate}=1 is required when {APPLY_FLAG} is used")
+        backup_path = Path(prod_backup_path).resolve() if prod_backup_path else (out_dir / "db_backup_pre_prod_apply.sqlite")
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        _create_backup_or_raise(target_db, backup_path)
+        canary_db = target_db
+        write_target = target_db
+        rollback_target = str(target_db)
 
-    canary_db = out_dir / "db_canary.sqlite"
-    if not canary_db.exists():
-        shutil.copy2(backup_path, canary_db)
-
-    with sqlite3.connect(canary_db) as conn:
+    with sqlite3.connect(write_target) as conn:
         before_count = _count_markers(conn, idempotence_key)
         inserted_rows = 0
         if apply:
@@ -147,7 +174,7 @@ def run_write_canary(
 
     diff_payload = {
         "as_of": as_of,
-        "mode": "apply" if apply else "dry-run",
+        "mode": mode,
         "idempotence_key": idempotence_key,
         "max_rows": int(max_rows),
         "before_count": int(before_count),
@@ -161,7 +188,8 @@ def run_write_canary(
     diff_json.write_text(json.dumps(diff_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     diff_md.write_text(_render_diff_md(diff_payload), encoding="utf-8")
 
-    rollback_copy = out_dir / "db_canary_restored.sqlite"
+    rollback_copy_name = "db_canary_restored.sqlite" if mode == "db_only" else "db_prod_rollback_reference.sqlite"
+    rollback_copy = out_dir / rollback_copy_name
     shutil.copy2(backup_path, rollback_copy)
     rollback_hash_match = _sha256(backup_path) == _sha256(rollback_copy)
 
@@ -182,9 +210,12 @@ def run_write_canary(
         "as_of": as_of,
         "status": status,
         "ok": bool(ok),
-        "mode": "apply" if apply else "dry-run",
+        "mode": mode,
+        "apply_mode": "apply" if apply else "dry-run",
         "source_db": str(target_db),
         "canary_db": str(canary_db),
+        "rollback_target": rollback_target,
+        "env_gate": env_gate,
         "backup_path": str(backup_path),
         "rollback_copy_path": str(rollback_copy),
         "rollback_hash_match": bool(rollback_hash_match),
@@ -194,7 +225,7 @@ def run_write_canary(
         "after_count": int(after_count),
         "inserted_rows": int(inserted_rows),
         "apply_executed": bool(apply),
-        "env_gate_enabled": env_map.get(ENV_GATE) == "1",
+        "env_gate_enabled": env_map.get(env_gate) == "1",
         "diff_json_path": str(diff_json),
         "diff_md_path": str(diff_md),
         "rollback_proof_path": str(rollback_proof_path),
@@ -211,7 +242,8 @@ def run_write_canary(
     return {
         "ok": bool(ok),
         "status": status,
-        "mode": report_payload["mode"],
+        "mode": mode,
+        "apply_mode": report_payload["apply_mode"],
         "inserted_rows": int(inserted_rows),
         "before_count": int(before_count),
         "after_count": int(after_count),
@@ -226,10 +258,12 @@ def run_write_canary(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run DB-only write canary with backup and rollback proof")
+    parser = argparse.ArgumentParser(description="Run write canary with backup and rollback proof")
     parser.add_argument("--db", type=Path, default=PROJECT_ROOT / "db" / "app.db")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--as-of", default=date.today().isoformat())
+    parser.add_argument("--mode", choices=["db_only", "prod_db"], default="db_only")
+    parser.add_argument("--prod-backup-path", type=Path, default=None)
     parser.add_argument("--max-rows", type=int, default=DEFAULT_MAX_ROWS)
     parser.add_argument("--idempotence-key", default="V12_CANARY")
     parser.add_argument(APPLY_FLAG, dest="apply", action="store_true")
@@ -243,16 +277,19 @@ def main() -> int:
         db_path=args.db,
         output_root=args.output_root,
         as_of=args.as_of,
+        mode=str(args.mode),
         apply=bool(args.apply),
         strict=bool(args.strict),
         max_rows=int(args.max_rows),
         idempotence_key=str(args.idempotence_key),
+        prod_backup_path=args.prod_backup_path,
         env=os.environ,
     )
     print(f"write_canary_report_json={report['report_json_path']}")
     print(f"write_canary_report_md={report['report_md_path']}")
     print(f"status={report['status']}")
     print(f"mode={report['mode']}")
+    print(f"apply_mode={report['apply_mode']}")
     print(f"inserted_rows={report['inserted_rows']}")
     return 0 if report["ok"] else 1
 

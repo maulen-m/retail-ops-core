@@ -39,7 +39,8 @@ def test_write_canary_dry_run_is_default_and_read_only(tmp_path: Path) -> None:
     )
 
     assert report["ok"] is True
-    assert report["mode"] == "dry-run"
+    assert report["mode"] == "db_only"
+    assert report["apply_mode"] == "dry-run"
     assert report["inserted_rows"] == 0
     assert Path(report["backup_path"]).exists()
 
@@ -86,8 +87,11 @@ def test_write_canary_apply_creates_backup_and_is_idempotent(tmp_path: Path, mon
     )
 
     assert report_1["ok"] is True
+    assert report_1["mode"] == "db_only"
+    assert report_1["apply_mode"] == "apply"
     assert report_1["inserted_rows"] == 3
     assert report_2["ok"] is True
+    assert report_2["mode"] == "db_only"
     assert report_2["inserted_rows"] == 0
     assert Path(report_1["backup_path"]).exists()
     assert Path(report_1["rollback_proof_path"]).exists()

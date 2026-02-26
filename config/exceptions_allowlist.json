@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "codes": {
+    "run_kaspi_daily_ops": {
+      "reason": "Known external API/waybill volatility while catch-up profile remains strict.",
+      "expires_on": "2026-03-15"
+    },
+    "system_doctor": {
+      "reason": "Downstream strict dependency chain can redline on operational exceptions already tracked upstream.",
+      "expires_on": "2026-03-15"
+    }
+  }
+}

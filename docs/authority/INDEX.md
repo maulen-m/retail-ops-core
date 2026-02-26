@@ -9,7 +9,10 @@ This file is the active-doc authority map. Use these links first; treat archived
 - `docs/ops/PROMOTION_MINIMUM_STANDARD.md`
 - `docs/ops/AS_OF_DATE_AUTHORITY_CONTRACT.md`
 - `docs/ops/EXCEPTIONS_SCHEMA_CONTRACT.md`
+- `docs/ops/EXCEPTION_PLAYBOOK.md`
 - `docs/ops/WRITE_CANARY_RUNBOOK_V2.md`
+- `docs/ops/WRITE_CANARY_RUNBOOK_V3.md`
+- `docs/ops/H5_OPERATIONAL_PROVING_RUN_CONTRACT.md`
 
 ## Inventory
 - `docs/inventory/Master_Inventory_Rules_v8.md`

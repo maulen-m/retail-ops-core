@@ -78,3 +78,5 @@ def test_system_doctor_includes_v10_contract_checks() -> None:
     assert "validate_cashfloor.py" in joined
     assert "translate_transfer_ledger_to_cashflow.py" in joined
     assert "validate_exceptions_schema.py" in joined
+    assert "validate_as_of_consistency.py" in joined
+    assert "triage_exceptions.py" in joined

@@ -80,6 +80,8 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
     quoted_as_of = shlex.quote(as_of)
     report_path = shlex.quote(str(root / "exports" / "daily" / as_of / "daily_ops_report.json"))
     exceptions_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions.json"))
+    triage_json_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions_triage.json"))
+    triage_md_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions_triage.md"))
 
     return [
         {
@@ -171,6 +173,29 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
             "layer": "governance",
             "check": "validate_exceptions_schema",
             "cmd": f"python3 scripts/validate_exceptions_schema.py {exceptions_path} --strict",
+        },
+        {
+            "layer": "governance",
+            "check": "validate_as_of_consistency",
+            "cmd": (
+                "python3 scripts/validate_as_of_consistency.py "
+                f"--strict --project-root {quoted_root} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'diagnostics'))}"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "triage_exceptions",
+            "cmd": (
+                "python3 scripts/triage_exceptions.py "
+                f"--exceptions {exceptions_path} "
+                "--playbook docs/ops/EXCEPTION_PLAYBOOK.md "
+                "--allowlist config/exceptions_allowlist.json "
+                f"--output-json {triage_json_path} "
+                f"--output-md {triage_md_path} "
+                "--strict"
+            ),
         },
         {
             "layer": "governance",
