@@ -24,3 +24,5 @@ External_database/
 ## Notes
 - Keep timestamps in local time.
 - If a ZIP is regenerated, create a new timestamped folder (do not overwrite).
+- Run pre-upload hard gate before ZIP storage/upload:
+  - `python3 scripts/validate_kaspi_offer_template.py --xlsm <FILE> --category <CATEGORY> --store <STORE>`

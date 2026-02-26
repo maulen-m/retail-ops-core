@@ -4,6 +4,10 @@
 
 **Scope:** Kaspi batch XLSM uploads + images ZIP packaging. Templates vary by category; always respect the current template’s `attributes` + `values` sheets.
 
+Primary contract docs:
+- `docs/offer_creation/KASPI_TEMPLATE_FIELD_MAPPING_CONTRACT.md`
+- `docs/offer_creation/KASPI_SKU_ALIGNMENT_GATE.md`
+
 ---
 
 ## ✅ What worked (V10 success)
@@ -76,12 +80,14 @@ Kaspi’s validation report often embeds **error messages as cell comments** ins
 
 1) **Start from the latest accepted template** (not old cached files).
 2) **Fill product data** and validate against `values` sheet.
-3) **Ensure `merchant_sku` uniqueness**.
-4) **Normalize delimiters** for multi‑value fields.
-5) **Package ZIP correctly**:
+3) **Run hard gate (mandatory before ZIP):**
+   - `python3 scripts/validate_kaspi_offer_template.py --xlsm <FILE> --category <CATEGORY> --store <STORE>`
+4) **Ensure `merchant_sku` uniqueness**.
+5) **Normalize delimiters** for multi‑value fields.
+6) **Package ZIP correctly**:
    - XLSM root
    - images in `images/<merchant_sku>/1.png`
-6) **Upload** and read error comments if rejected.
+7) **Upload** and read error comments if rejected.
 
 ---
 
