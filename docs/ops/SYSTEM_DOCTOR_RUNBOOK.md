@@ -30,6 +30,8 @@ If any check in a layer fails, later layers do not execute.
   - `validate_schema`
   - `validate_dashboard_plan_real_contract`
   - `validate_exceptions_schema` (critical exceptions queue contract)
+  - `validate_as_of_consistency` (no mixed-date artifacts)
+  - `triage_exceptions` (playbook + allowlist closure loop)
   - `build_domain_scorecards` (now includes portfolio completeness scorecard)
   - `validate_cashfloor`
   - `translate_transfer_ledger_to_cashflow` (dry-run idempotence proof)
