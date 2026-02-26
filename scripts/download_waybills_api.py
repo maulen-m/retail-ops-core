@@ -863,6 +863,7 @@ def download_all_waybills(
     all_dates: bool = False,
     exact_date: bool = False,
     fallback_crm: bool = False,
+    fallback_carryover_days: int = 1,
 ) -> dict:
     """
     Download waybills for pending orders from CRM.
@@ -926,6 +927,7 @@ def download_all_waybills(
 
     # Optional fallback to DB/CRM per store if API failed or returned no orders
     fallback_orders_by_store: dict[str, set[str]] = {}
+    carryover_orders_by_store: dict[str, set[str]] = {}
     if fallback_crm:
         resolved_db_path = resolve_db_path(db_path)
         if resolved_db_path:
@@ -938,6 +940,14 @@ def download_all_waybills(
             )
             if fallback_orders_by_store:
                 source_label = f"Kaspi API (planned date) + DB fallback"
+            if not exact_date and fallback_carryover_days >= 0:
+                carryover_orders_by_store = get_target_order_ids_from_db(
+                    resolved_db_path,
+                    target_date,
+                    store_filter,
+                    exact_date=False,
+                    lookback_days=fallback_carryover_days,
+                )
 
         if crm_path:
             crm_orders = get_target_order_ids_from_crm(
@@ -952,6 +962,17 @@ def download_all_waybills(
                 source_label = "Kaspi API (planned date) + CRM/DB fallback"
                 for store_code, ids in crm_orders.items():
                     fallback_orders_by_store.setdefault(store_code, set()).update(ids)
+            if not exact_date and fallback_carryover_days >= 0:
+                carryover_crm_orders = get_target_order_ids_from_crm(
+                    crm_path,
+                    sheet_name,
+                    target_date,
+                    store_filter,
+                    exact_date=False,
+                    lookback_days=fallback_carryover_days,
+                )
+                for store_code, ids in carryover_crm_orders.items():
+                    carryover_orders_by_store.setdefault(store_code, set()).update(ids)
 
     if not target_orders_by_store and not fallback_orders_by_store:
         print("  No orders found for the target date.")
@@ -978,16 +999,46 @@ def download_all_waybills(
             fallback_ids = fallback_orders_by_store.get(store_code, set())
 
             if api_ids:
-                # Fail-closed selection contract:
-                # keep API as source-of-truth when API already returned targets
-                # for a store. Fallback is only for stores where API is empty/failed.
                 extra = fallback_ids - api_ids
                 if extra:
-                    logger.warning(
-                        f"{store_code}: ignoring {len(extra)} fallback-only orders "
-                        "because API already returned targets for this store"
-                    )
-                merged_orders_by_store[store_code] = set(api_ids)
+                    if exact_date:
+                        # Keep exact-date runs strict to today's API-planned batch.
+                        logger.warning(
+                            f"{store_code}: ignoring {len(extra)} fallback-only orders "
+                            "because exact-date mode is enabled and API already returned targets"
+                        )
+                        merged_orders_by_store[store_code] = set(api_ids)
+                    else:
+                        eligible_extra = set(extra)
+                        if fallback_carryover_days >= 0:
+                            eligible_extra &= carryover_orders_by_store.get(store_code, set())
+                        # In overdue/all-dates modes, include fallback carry-over to avoid
+                        # dropping pending backlog orders when API returns only today's subset.
+                        merged_orders_by_store[store_code] = set(api_ids) | set(eligible_extra)
+                        if eligible_extra:
+                            if fallback_carryover_days >= 0:
+                                logger.warning(
+                                    f"{store_code}: including {len(eligible_extra)} fallback-only carry-over orders "
+                                    f"(last {fallback_carryover_days}d) in addition to API targets"
+                                )
+                            else:
+                                logger.warning(
+                                    f"{store_code}: including {len(eligible_extra)} fallback-only carry-over orders "
+                                    "in addition to API targets"
+                                )
+                        ignored_extra = set(extra) - set(eligible_extra)
+                        if ignored_extra:
+                            if fallback_carryover_days >= 0:
+                                logger.warning(
+                                    f"{store_code}: ignoring {len(ignored_extra)} older fallback-only orders "
+                                    f"(outside {fallback_carryover_days}d carry-over window)"
+                                )
+                            else:
+                                logger.warning(
+                                    f"{store_code}: ignoring {len(ignored_extra)} fallback-only orders"
+                                )
+                else:
+                    merged_orders_by_store[store_code] = set(api_ids)
             else:
                 if fallback_ids:
                     merged_orders_by_store[store_code] = set(fallback_ids)
@@ -1167,6 +1218,12 @@ def main() -> int:
         help='Fallback to DB/CRM selection if API returns no orders'
     )
     parser.add_argument(
+        '--fallback-carryover-days',
+        type=int,
+        default=1,
+        help='In overdue mode, include fallback-only carry-over for last N days when API already has targets (default: 1, use -1 for unlimited)'
+    )
+    parser.add_argument(
         '--verbose', '-v',
         action='store_true',
         help='Verbose output'
@@ -1210,6 +1267,7 @@ def main() -> int:
     print(f"  Date mode: {date_mode_str}")
     print(f"  API since: {args.days} days")
     print(f"  Download timeout: {args.download_timeout}s")
+    print(f"  Fallback carry-over days: {args.fallback_carryover_days}")
     if args.store:
         print(f"  Store filter: {args.store}")
     if args.dry_run:
@@ -1230,6 +1288,7 @@ def main() -> int:
         all_dates=args.all_dates,
         exact_date=(False if args.include_overdue else args.exact_date),
         fallback_crm=args.fallback_crm,
+        fallback_carryover_days=args.fallback_carryover_days,
     )
 
     # Summary
