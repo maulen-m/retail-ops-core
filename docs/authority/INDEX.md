@@ -13,6 +13,7 @@ This file is the active-doc authority map. Use these links first; treat archived
 - `docs/ops/WRITE_CANARY_RUNBOOK_V2.md`
 - `docs/ops/WRITE_CANARY_RUNBOOK_V3.md`
 - `docs/ops/H5_OPERATIONAL_PROVING_RUN_CONTRACT.md`
+- `docs/ops/H5_DAILY_EXECUTION_RUNBOOK.md`
 
 ## Inventory
 - `docs/inventory/Master_Inventory_Rules_v8.md`
