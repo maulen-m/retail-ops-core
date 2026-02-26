@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
 import json
 from pathlib import Path
 import sys
@@ -16,6 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.benchmark_kaspi_daily_ops import Runner, run_benchmark
+from scripts.resolve_as_of_date import resolve_as_of_date
+from core.stores.roster import load_active_store_codes
 
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "perf"
 DEFAULT_MAX_AVG_TOTAL_SEC = 900.0
@@ -123,6 +124,8 @@ def build_daily_ops_timings(
     root = Path(project_root).resolve()
     out_dir = Path(output_root).resolve() / as_of
     out_dir.mkdir(parents=True, exist_ok=True)
+    stores_cfg = root / "config" / "stores.yaml"
+    allow_store_failures = set(load_active_store_codes(stores_cfg))
 
     payload = run_benchmark(
         project_root=root,
@@ -130,6 +133,8 @@ def build_daily_ops_timings(
         output_dir=out_dir,
         repeats=int(repeats),
         profile=profile,
+        stores_config=stores_cfg,
+        allow_store_failures=allow_store_failures,
         runner=runner,
     )
     budget = evaluate_timing_budget(payload=payload, max_avg_total_sec=float(max_avg_total_sec))
@@ -160,8 +165,8 @@ def build_daily_ops_timings(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build daily ops timing artifacts with budget/parity checks")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    parser.add_argument("--as-of", default=date.today().isoformat())
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--as-of", default=None)
+    parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--profile", default="today-fast")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--max-avg-total-sec", type=float, default=DEFAULT_MAX_AVG_TOTAL_SEC)
@@ -171,15 +176,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
+    output_root = args.output_root or (args.project_root / "exports" / "perf")
+    resolution = resolve_as_of_date(
+        project_root=args.project_root,
+        explicit_as_of=args.as_of,
+        strict=bool(args.strict),
+        daily_root=args.project_root / "exports" / "daily",
+    )
     report = build_daily_ops_timings(
         project_root=args.project_root,
-        as_of=args.as_of,
-        output_root=args.output_root,
+        as_of=resolution.as_of,
+        output_root=output_root,
         profile=args.profile,
         repeats=args.repeats,
         strict=bool(args.strict),
         max_avg_total_sec=args.max_avg_total_sec,
     )
+    print(f"as_of_source={resolution.source}")
     print(f"daily_ops_timings_json={report['json_path']}")
     print(f"daily_ops_timings_md={report['md_path']}")
     print(f"status={'PASS' if report['ok'] else 'FAIL'}")

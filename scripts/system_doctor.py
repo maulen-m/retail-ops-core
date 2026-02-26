@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shlex
@@ -17,6 +17,10 @@ from typing import Any, Callable
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 Runner = Callable[[str, Path], tuple[int, str]]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.resolve_as_of_date import resolve_as_of_date
 
 
 def _run_shell(cmd: str, cwd: Path) -> tuple[int, str]:
@@ -75,6 +79,7 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
     quoted_root = shlex.quote(str(root))
     quoted_as_of = shlex.quote(as_of)
     report_path = shlex.quote(str(root / "exports" / "daily" / as_of / "daily_ops_report.json"))
+    exceptions_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions.json"))
 
     return [
         {
@@ -164,6 +169,11 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_exceptions_schema",
+            "cmd": f"python3 scripts/validate_exceptions_schema.py {exceptions_path} --strict",
+        },
+        {
+            "layer": "governance",
             "check": "lint_docs",
             "cmd": "bash scripts/lint_docs.sh",
         },
@@ -173,21 +183,6 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
             "cmd": f"python3 scripts/lint_docs_active_scope.py --strict --project-root {quoted_root}",
         },
     ]
-
-
-def _resolve_as_of(root: Path, explicit: str | None) -> str:
-    if explicit:
-        return explicit
-    daily_root = root / "exports" / "daily"
-    if daily_root.exists():
-        dates = sorted(
-            child.name
-            for child in daily_root.iterdir()
-            if child.is_dir() and (child / "daily_ops_report.json").exists()
-        )
-        if dates:
-            return dates[-1]
-    return date.today().isoformat()
 
 
 def run_system_doctor(
@@ -298,7 +293,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
-    as_of = _resolve_as_of(args.project_root.resolve(), args.as_of)
+    resolution = resolve_as_of_date(
+        project_root=args.project_root.resolve(),
+        explicit_as_of=args.as_of,
+        strict=bool(args.strict),
+        daily_root=args.project_root.resolve() / "exports" / "daily",
+    )
+    as_of = resolution.as_of
     output_dir = args.output_dir or (args.project_root / "exports" / "diagnostics" / as_of)
     report = run_system_doctor(
         project_root=args.project_root,
@@ -311,6 +312,7 @@ def main() -> int:
     print(f"system_health_json={report['json_path']}")
     print(f"system_health_md={report['md_path']}")
     print(f"system_health_checks={report['checks_path']}")
+    print(f"as_of_source={resolution.source}")
     print(f"status={report['status']}")
     if report["blocked_layer"]:
         print(f"blocked_layer={report['blocked_layer']}")

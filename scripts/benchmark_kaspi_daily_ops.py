@@ -70,6 +70,7 @@ def run_benchmark(
     repeats: int,
     profile: str,
     stores_config: Path | None = None,
+    allow_store_failures: set[str] | None = None,
     runner: Runner | None = None,
 ) -> dict[str, Any]:
     root = Path(project_root).resolve()
@@ -82,7 +83,7 @@ def run_benchmark(
             project_root=root,
             as_of=as_of,
             output_root=out / "orchestrator_runs",
-            allow_store_failures=set(),
+            allow_store_failures=set(allow_store_failures or set()),
             profile=profile,
             stores_config=stores_config,
             runner=runner,
@@ -124,6 +125,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--profile", choices=sorted(PROFILE_CONFIG.keys()), default="catch-up")
     parser.add_argument("--stores-config", type=Path, default=None)
+    parser.add_argument(
+        "--allow-store-failure",
+        action="append",
+        default=[],
+        help="Store code to allow failing during benchmark timing run (repeatable).",
+    )
     return parser
 
 
@@ -140,6 +147,7 @@ def main() -> int:
         repeats=int(args.repeats),
         profile=args.profile,
         stores_config=args.stores_config,
+        allow_store_failures={code.upper() for code in (args.allow_store_failure or [])},
     )
     print(f"benchmark_json: {report['benchmark_json']}")
     print(f"benchmark_md: {report['benchmark_md']}")
