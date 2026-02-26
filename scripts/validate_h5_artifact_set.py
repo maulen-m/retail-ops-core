@@ -63,6 +63,7 @@ def validate_h5_artifact_set(
 
     required_files: list[tuple[str, Path, bool]] = [
         ("daily_ops_report", root / "exports" / "daily" / as_of / "daily_ops_report.json", True),
+        ("sales_vs_waybill_parity", root / "exports" / "daily" / as_of / "sales_vs_waybill_parity.json", True),
         ("exceptions", root / "exports" / "exceptions" / as_of / "exceptions.json", True),
         ("system_health", root / "exports" / "diagnostics" / as_of / "system_health.json", True),
         ("daily_ops_timings", root / "exports" / "perf" / as_of / "daily_ops_timings.json", True),

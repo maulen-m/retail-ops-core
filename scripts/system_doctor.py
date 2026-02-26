@@ -186,6 +186,16 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_sales_vs_waybill_parity",
+            "cmd": (
+                "python3 scripts/validate_sales_vs_waybill_parity.py "
+                f"--strict --project-root {quoted_root} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))}"
+            ),
+        },
+        {
+            "layer": "governance",
             "check": "triage_exceptions",
             "cmd": (
                 "python3 scripts/triage_exceptions.py "

@@ -95,6 +95,8 @@ config/anchors/INBOUND_CALENDAR_LATEST.xlsx
 # Generated business-insides snapshots (daily)
 config/business_insides/BUSINESS_INSIDES_*.md
 config/business_insides/snapshots/BUSINESS_INSIDES_*.md
+config/business_insides/BUSINESS_INSIDES_*.json
+config/business_insides/snapshots/BUSINESS_INSIDES_*.json
 
 # Kaspi offer creation references (track only the canonical reference)
 docs/offer_creation/*.xlsm

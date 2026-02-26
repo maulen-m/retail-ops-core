@@ -54,6 +54,20 @@ def _init_db(db_path: Path) -> None:
             profit_accrual_kzt REAL,
             inventory_on_delivery_close REAL
         );
+        CREATE TABLE fact_orders_kaspi (
+            order_id TEXT,
+            store_code TEXT,
+            sku_key TEXT,
+            sku_id TEXT,
+            assigned_size TEXT,
+            my_size TEXT,
+            quantity REAL,
+            unit_price_kzt REAL,
+            internal_status TEXT,
+            returned_to_warehouse INTEGER,
+            status_updated_at TEXT,
+            planned_shipment_date TEXT
+        );
         """
     )
     conn.executemany(
@@ -312,6 +326,39 @@ def test_business_insides_works_with_fact_sales_only_via_canonical_views(tmp_pat
     assert any(row["units_shipped"] for row in result["last_7_days"] if row["units_shipped"] is not None)
 
 
+def test_business_insides_uses_completed_fact_orders_when_sales_tables_are_stale(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    bank = tmp_path / "bank_accounts.yaml"
+    _init_db(db_path)
+    _write_bank_yaml(bank)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.executemany(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, sku_key, sku_id, assigned_size, my_size,
+            quantity, unit_price_kzt, internal_status, returned_to_warehouse, status_updated_at, planned_shipment_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("ORD-API-1", "ACMEWEAR", "SKU_A", "SKU_A_M", "XL", "", 2, 5000, "COMPLETED", 0, None, "2026-02-25"),
+            ("ORD-API-2", "ACMEWEAR", "SKU_A", "SKU_A_M", "L", "", 1, 7000, "READY", 0, "2026-02-25 11:00:00", "2026-02-25"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    result = generate_business_insides(
+        db_path=db_path,
+        bank_accounts_path=bank,
+        as_of="2026-02-26",
+        output_dir=tmp_path / "business_insides",
+    )
+    last7 = {r["date"]: r for r in result["last_7_days"]}
+    assert last7["2026-02-25"]["net_rev_kzt"] == 10000.0
+    assert result["performance"]["latest_sale_date_available"] == "2026-02-25"
+
+
 def test_business_insides_markdown_includes_units_shipped_column(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     bank = tmp_path / "bank_accounts.yaml"
@@ -325,7 +372,7 @@ def test_business_insides_markdown_includes_units_shipped_column(tmp_path: Path)
         output_dir=tmp_path / "business_insides",
     )
     content = Path(result["latest_path"]).read_text(encoding="utf-8")
-    assert "Units Shipped" in content
+    assert "Units Delivered (COMPLETED)" in content
 
 
 def test_business_insides_reports_stale_recent_window_with_observed_history(tmp_path: Path) -> None:

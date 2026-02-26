@@ -15,6 +15,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _seed_daily_artifacts(root: Path, as_of: str) -> None:
     _write_json(root / "exports" / "daily" / as_of / "daily_ops_report.json", {"as_of": as_of})
+    _write_json(root / "exports" / "daily" / as_of / "sales_vs_waybill_parity.json", {"as_of": as_of})
     _write_json(root / "exports" / "exceptions" / as_of / "exceptions.json", {"as_of": as_of})
     _write_json(root / "exports" / "diagnostics" / as_of / "system_health.json", {"as_of": as_of})
     _write_json(root / "exports" / "perf" / as_of / "daily_ops_timings.json", {"as_of": as_of})

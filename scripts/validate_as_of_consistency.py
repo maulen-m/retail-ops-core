@@ -71,6 +71,11 @@ def validate_as_of_consistency(
         root / "exports" / "diagnostics" / as_of / "system_health.json",
         root / "exports" / "exceptions" / as_of / "exceptions.json",
     ]
+    business_insides_candidates = [
+        root / "config" / "business_insides" / f"BUSINESS_INSIDES_{as_of}.json",
+        root / "config" / "business_insides" / "snapshots" / f"BUSINESS_INSIDES_{as_of}.json",
+    ]
+    waybill_selection_path = root / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json"
 
     checks: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -93,6 +98,65 @@ def validate_as_of_consistency(
             errors.append(f"missing or invalid JSON: {path}")
         elif artifact_as_of != as_of:
             errors.append(f"as_of mismatch in {path}: expected {as_of}, got {artifact_as_of}")
+
+    business_payload = None
+    business_payload_path = None
+    for candidate in business_insides_candidates:
+        payload = _read_json(candidate)
+        if payload is None:
+            continue
+        business_payload = payload
+        business_payload_path = candidate
+        break
+    business_as_of = ""
+    business_ok = business_payload is not None
+    if business_payload is not None:
+        business_as_of = str(
+            business_payload.get("as_of")
+            or business_payload.get("as_of_date")
+            or ""
+        ).strip()
+        business_ok = business_as_of == as_of
+        if not business_ok:
+            errors.append(
+                "as_of mismatch in BUSINESS_INSIDES snapshot: "
+                f"expected {as_of}, got {business_as_of or '<missing>'}"
+            )
+    else:
+        errors.append(
+            "missing BUSINESS_INSIDES JSON snapshot: "
+            f"tried {business_insides_candidates[0]} and {business_insides_candidates[1]}"
+        )
+    checks.append(
+        {
+            "artifact": str(business_payload_path or business_insides_candidates[0]),
+            "required": True,
+            "exists": business_payload is not None,
+            "artifact_as_of": business_as_of or "<missing>",
+            "ok": bool(business_ok),
+        }
+    )
+
+    waybill_payload = _read_json(waybill_selection_path)
+    waybill_target_date = ""
+    waybill_ok = True
+    if waybill_payload is not None:
+        waybill_target_date = str(waybill_payload.get("target_date") or "").strip()
+        waybill_ok = waybill_target_date == as_of
+        if not waybill_ok:
+            errors.append(
+                "mixed as_of in waybill selection cache: "
+                f"{waybill_selection_path} has target_date={waybill_target_date or '<missing>'}, expected {as_of}"
+            )
+    checks.append(
+        {
+            "artifact": str(waybill_selection_path),
+            "required": False,
+            "exists": waybill_payload is not None,
+            "artifact_as_of": waybill_target_date or "<missing>",
+            "ok": bool(waybill_ok),
+        }
+    )
 
     # Guardrail: no mixed-date as_of values in daily artifact folder.
     daily_dir = root / "exports" / "daily" / as_of

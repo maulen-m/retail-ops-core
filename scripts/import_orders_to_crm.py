@@ -1625,7 +1625,10 @@ def filter_for_shipping(
     df: pd.DataFrame, 
     status_wanted: str, 
     signature_wanted: Optional[str], 
-    end_date: date
+    end_date: date,
+    *,
+    include_overdue: bool = False,
+    overdue_lookback_days: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, Dict]:
     """Filter orders for shipping readiness."""
     colmap = map_headers(df)
@@ -1641,11 +1644,20 @@ def filter_for_shipping(
         sig_col = df[colmap["signature"]].astype(str).str.strip().str.lower()
         ok &= ~sig_col.isin(['да', 'yes', 'true', '1', 'требуется'])
     
-    # Date filter: planned_date == end_date (exact match for TODAY only)
-    # Phase 12 Part 3: Changed from <= to == for TODAY-only filtering
+    # Date filter:
+    # - default: planned_date == end_date (today-only append)
+    # - include_overdue: planned_date <= end_date within optional lookback window
     if "handover" in colmap:
         handover = df[colmap["handover"]].apply(parse_kz_date)
-        ok &= handover.apply(lambda d: d is not None and d == end_date)
+        if include_overdue:
+            min_date: Optional[date] = None
+            if overdue_lookback_days is not None:
+                min_date = end_date - timedelta(days=max(int(overdue_lookback_days), 0))
+            ok &= handover.apply(
+                lambda d: d is not None and d <= end_date and (min_date is None or d >= min_date)
+            )
+        else:
+            ok &= handover.apply(lambda d: d is not None and d == end_date)
     
     df_filtered = df[ok].copy()
     
@@ -1654,6 +1666,10 @@ def filter_for_shipping(
         "rows_in_files": int(len(df)),
         "rows_after_filters": int(len(df_filtered)),
         "target_end_date": end_date.isoformat(),
+        "include_overdue": bool(include_overdue),
+        "overdue_lookback_days": (
+            int(overdue_lookback_days) if overdue_lookback_days is not None else None
+        ),
     }
     
     return df_filtered, stats
@@ -3699,6 +3715,8 @@ def main(
     table_name=_UNSET,
     date_end=_UNSET,
     append_date=_UNSET,
+    include_overdue=_UNSET,
+    overdue_lookback_days=_UNSET,
     status=_UNSET,
     dry_run=_UNSET,
     verbose=_UNSET,
@@ -3760,6 +3778,17 @@ def main(
         "--append-date", 
         default="today",
         help="Date to stamp into CRM Date column"
+    )
+    parser.add_argument(
+        "--include-overdue",
+        action="store_true",
+        help="Include overdue planned dates (<= --date-end) within --overdue-lookback-days window.",
+    )
+    parser.add_argument(
+        "--overdue-lookback-days",
+        type=int,
+        default=5,
+        help="Lookback window (days) for --include-overdue mode (default: 5).",
     )
     parser.add_argument(
         "--status", 
@@ -3915,6 +3944,8 @@ def main(
         and table_name is _UNSET
         and date_end is _UNSET
         and append_date is _UNSET
+        and include_overdue is _UNSET
+        and overdue_lookback_days is _UNSET
         and status is _UNSET
         and dry_run is _UNSET
         and verbose is _UNSET
@@ -3957,6 +3988,10 @@ def main(
             args.date_end = date_end
         if append_date is not _UNSET:
             args.append_date = append_date
+        if include_overdue is not _UNSET:
+            args.include_overdue = bool(include_overdue)
+        if overdue_lookback_days is not _UNSET:
+            args.overdue_lookback_days = int(overdue_lookback_days)
         if status is not _UNSET:
             args.status = status
         if dry_run is not _UNSET:
@@ -4147,7 +4182,14 @@ def main(
             "  WARNING: --crm-file is not the canonical automation workbook "
             f"({canonical_crm_path})"
         )
-    print(f"  Date filter: == {end_date} (TODAY only)")
+    if args.include_overdue:
+        min_date = end_date - timedelta(days=max(int(args.overdue_lookback_days), 0))
+        print(
+            f"  Date filter: {min_date} <= planned date <= {end_date} "
+            f"(include-overdue, lookback={int(args.overdue_lookback_days)}d)"
+        )
+    else:
+        print(f"  Date filter: == {end_date} (TODAY only)")
     print(f"  Append date: {append_date}")
     if args.verbose and args.fixed_values:
         print(f"  Fixed append columns: {', '.join(FIXED_APPEND_COLUMNS)}")
@@ -4169,7 +4211,14 @@ def main(
 
     # Read and filter
     df_all, source_files = read_active_orders(args.orders_dir)
-    df_filt, stats = filter_for_shipping(df_all, args.status, None, end_date)
+    df_filt, stats = filter_for_shipping(
+        df_all,
+        args.status,
+        None,
+        end_date,
+        include_overdue=bool(args.include_overdue),
+        overdue_lookback_days=int(args.overdue_lookback_days),
+    )
 
     print(f"\nFiltered: {stats['rows_in_files']} → {stats['rows_after_filters']} rows")
     order_summary = summarize_order_rows(df_filt)

@@ -40,6 +40,9 @@ If any check fails, the day is not complete.
   - `exports/perf/<as_of>/daily_ops_timings.json`
   - `exports/diagnostics/<as_of>/system_health.json`
   - `exports/exceptions/<as_of>/exceptions.json`
+  - `config/business_insides/BUSINESS_INSIDES_<as_of>.json` (or snapshot mirror)
+  - `exports/daily/<as_of>/sales_vs_waybill_parity.json`
+- If `excel_ui/ActiveOrders/waybills/_waybill_selection_orders.json` exists, `target_date` must equal `<as_of>`.
 
 All scripts above must use `scripts/resolve_as_of_date.py`.
 

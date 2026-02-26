@@ -13,6 +13,7 @@ Define the production proving window contract for final autonomy closure:
 
 ## Required Daily Artifacts
 - `exports/daily/<day>/daily_ops_report.json`
+- `exports/daily/<day>/sales_vs_waybill_parity.json`
 - `exports/exceptions/<day>/exceptions.json`
 - `exports/diagnostics/<day>/system_health.json`
 - `exports/perf/<day>/daily_ops_timings.json`
@@ -22,10 +23,12 @@ Define the production proving window contract for final autonomy closure:
 - `exports/health/weekly/<YYYY-W##>/weekly_health_scorecard.json`
 
 ## Hard Gates (daily)
-- `python3 scripts/system_doctor.py --strict --project-root <REPO_PATH>`
-- `python3 scripts/validate_as_of_consistency.py --strict --project-root <REPO_PATH> --as-of <day>`
-- `python3 scripts/triage_exceptions.py --strict --exceptions exports/exceptions/<day>/exceptions.json`
-- `python3 scripts/validate_h5_artifact_set.py --strict --project-root <REPO_PATH> --as-of <day>`
+- `python3 scripts/run_h5_proving_day.py --strict --project-root <REPO_PATH> --as-of <day>`
+- Equivalent expanded chain (for debugging):
+  - `python3 scripts/system_doctor.py --strict --project-root <REPO_PATH> --as-of <day>`
+  - `python3 scripts/validate_as_of_consistency.py --strict --project-root <REPO_PATH> --as-of <day>`
+  - `python3 scripts/triage_exceptions.py --strict --exceptions exports/exceptions/<day>/exceptions.json`
+  - `python3 scripts/validate_h5_artifact_set.py --strict --project-root <REPO_PATH> --as-of <day>`
 
 ## Day-0 Kickoff Commands (copy/paste)
 ```bash
@@ -40,6 +43,9 @@ python3 scripts/triage_exceptions.py \
   --allowlist config/exceptions_allowlist.json \
   --strict
 python3 scripts/validate_h5_artifact_set.py --strict --project-root . --as-of "$DAY"
+
+# One-command deterministic proving run (preferred)
+python3 scripts/run_h5_proving_day.py --strict --project-root . --as-of "$DAY"
 ```
 
 ## Stop-the-Line

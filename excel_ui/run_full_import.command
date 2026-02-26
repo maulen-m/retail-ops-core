@@ -67,6 +67,10 @@ DATE_FLAG=""
 if [ "${INCLUDE_OVERDUE}" = "1" ]; then
     DATE_FLAG="--include-overdue"
 fi
+IMPORT_DATE_FLAGS=""
+if [ "${INCLUDE_OVERDUE}" = "1" ]; then
+    IMPORT_DATE_FLAGS="--include-overdue --overdue-lookback-days ${LOOKBACK_DAYS}"
+fi
 
 WARNINGS=()
 HARD_FAIL=0
@@ -335,6 +339,7 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
         --no-strict-excel \
         --no-append-integrity-check \
         --kaspi-core-override \
+        ${IMPORT_DATE_FLAGS} \
         --no-gdrive-sync \
         --skip-fixed-backfill
 STEP2_RC=$?

@@ -61,6 +61,7 @@ from scripts.import_orders_to_crm import (
     compute_fixed_value_columns,
     deduplicate_orders,
     filter_orders_for_shipment,
+    filter_for_shipping,
     find_active_orders_files,
     load_existing_order_ids,
     main,
@@ -356,6 +357,52 @@ def test_filter_orders_for_shipment():
 
     assert len(filtered) == 1
     assert filtered[0]['_order_id'] == '111'
+
+
+def test_filter_for_shipping_default_keeps_today_only():
+    today = date(2026, 2, 26)
+    df = pd.DataFrame(
+        {
+            "Статус": [READY_STATUS, READY_STATUS],
+            "Требуется подписание": [NO_SIGNATURE, NO_SIGNATURE],
+            "Плановая дата передачи курьеру": ["26.02.2026", "25.02.2026"],
+        }
+    )
+
+    filtered, stats = filter_for_shipping(
+        df,
+        status_wanted=READY_STATUS,
+        signature_wanted=None,
+        end_date=today,
+    )
+
+    assert len(filtered) == 1
+    assert stats["include_overdue"] is False
+
+
+def test_filter_for_shipping_include_overdue_honors_lookback_window():
+    today = date(2026, 2, 26)
+    df = pd.DataFrame(
+        {
+            "Статус": [READY_STATUS, READY_STATUS, READY_STATUS],
+            "Требуется подписание": [NO_SIGNATURE, NO_SIGNATURE, NO_SIGNATURE],
+            "Плановая дата передачи курьеру": ["26.02.2026", "25.02.2026", "20.02.2026"],
+        }
+    )
+
+    filtered, stats = filter_for_shipping(
+        df,
+        status_wanted=READY_STATUS,
+        signature_wanted=None,
+        end_date=today,
+        include_overdue=True,
+        overdue_lookback_days=2,
+    )
+
+    planned_dates = set(filtered["Плановая дата передачи курьеру"].astype(str))
+    assert planned_dates == {"26.02.2026", "25.02.2026"}
+    assert stats["include_overdue"] is True
+    assert stats["overdue_lookback_days"] == 2
 
 
 # ============================================================================

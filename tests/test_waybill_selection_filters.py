@@ -228,6 +228,28 @@ def test_get_target_order_ids_from_db_filters_status_signature(tmp_path):
     assert result == {"UNIVERSAL": {"2001", "2003", "2004", "2006"}}
 
 
+def test_get_target_order_ids_from_db_include_overdue_uses_lookback_window(tmp_path):
+    db_path = tmp_path / "app.db"
+    _init_fact_orders_db(db_path)
+    target_date = date(2026, 1, 27)
+
+    rows = [
+        ("2101", "ACMEWEAR", "Item", "SKU", "SKU-1", 1, "XL", "", "2026-01-27", "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 0, None),
+        ("2102", "ACMEWEAR", "Item", "SKU", "SKU-2", 1, "XL", "", "2026-01-26", "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 0, None),
+        ("2103", "ACMEWEAR", "Item", "SKU", "SKU-3", 1, "XL", "", "2026-01-22", "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 0, None),
+    ]
+    _insert_fact_orders(db_path, rows)
+
+    result = download_waybills_api.get_target_order_ids_from_db(
+        db_path=db_path,
+        target_date=target_date,
+        exact_date=False,
+        lookback_days=2,
+    )
+
+    assert result == {"ACMEWEAR": {"2101", "2102"}}
+
+
 def test_get_target_order_ids_from_crm_filters_status_signature(tmp_path):
     target_date = date(2026, 1, 27)
     crm_path = tmp_path / "crm.xlsx"

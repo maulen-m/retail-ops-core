@@ -23,6 +23,10 @@ def _seed_required_artifacts(root: Path, as_of: str) -> None:
     _write_json(root / "exports" / "perf" / as_of / "daily_ops_timings.json", {"as_of": as_of})
     _write_json(root / "exports" / "diagnostics" / as_of / "system_health.json", {"as_of": as_of, "ok": True, "status": "GREEN"})
     _write_json(root / "exports" / "exceptions" / as_of / "exceptions.json", {"as_of": as_of, "exceptions": [], "ok": True, "status": "GREEN"})
+    _write_json(
+        root / "config" / "business_insides" / f"BUSINESS_INSIDES_{as_of}.json",
+        {"as_of": as_of, "waybill_snapshot": {"status": "available", "target_date": as_of, "stores": {}}},
+    )
 
 
 def test_as_of_consistency_passes_when_all_required_artifacts_match(tmp_path: Path) -> None:
@@ -69,3 +73,20 @@ def test_system_doctor_includes_as_of_consistency_check() -> None:
     )
     assert report["ok"] is True
     assert any("validate_as_of_consistency.py" in cmd for cmd in calls)
+
+
+def test_as_of_consistency_fails_on_waybill_selection_date_mismatch(tmp_path: Path) -> None:
+    as_of = "2026-02-26"
+    _seed_required_artifacts(tmp_path, as_of)
+    _write_json(
+        tmp_path / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json",
+        {"target_date": "2026-02-25", "stores": {"ACMEWEAR": ["1"]}},
+    )
+    with pytest.raises(RuntimeError, match="as-of consistency validation failed"):
+        validate_as_of_consistency(
+            project_root=tmp_path,
+            as_of=as_of,
+            as_of_source="explicit",
+            output_root=tmp_path / "exports" / "diagnostics",
+            strict=True,
+        )
