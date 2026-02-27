@@ -94,14 +94,16 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     - COGS/profit policy: published COGS is valid only when full landed formula inputs
       (base_cost_cny + weight_kg + FX) are present.
     """
-    has_sales_ref = _table_exists(conn, "fact_sales_external_ref")
     has_sales_v2 = _table_exists(conn, "sales_fact_v2")
     has_fact_sales = _table_exists(conn, "fact_sales")
-    if not has_sales_ref and not has_sales_v2 and not has_fact_sales:
+    has_sales_ref = _table_exists(conn, "fact_sales_external_ref")
+    if not has_sales_v2 and not has_fact_sales:
         raise RuntimeError(
-            "Missing staging sales tables: fact_sales_external_ref, sales_fact_v2, fact_sales"
+            "Missing internal staging sales tables: sales_fact_v2, fact_sales"
         )
 
+    conn.execute("DROP VIEW IF EXISTS view_sales_daily_reference")
+    conn.execute("DROP VIEW IF EXISTS view_sales_line_reference")
     conn.execute("DROP VIEW IF EXISTS view_sales_daily_truth")
     conn.execute("DROP VIEW IF EXISTS view_sales_line_truth")
 
@@ -112,9 +114,7 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         ref_store = "store_code" if _column_exists(conn, "fact_sales_external_ref", "store_code") else "'UNKNOWN'"
         ref_size = "my_size" if _column_exists(conn, "fact_sales_external_ref", "my_size") else "''"
         ref_status = "status" if _column_exists(conn, "fact_sales_external_ref", "status") else "'DELIVERED'"
-        ref_return = (
-            "return_flag" if _column_exists(conn, "fact_sales_external_ref", "return_flag") else "0"
-        )
+        ref_return = "return_flag" if _column_exists(conn, "fact_sales_external_ref", "return_flag") else "0"
         ref_net = (
             "net_rev_kzt"
             if _column_exists(conn, "fact_sales_external_ref", "net_rev_kzt")
@@ -222,14 +222,6 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         )
 
     ctes: list[str] = []
-    if ref_select:
-        ctes.append(f"sales_ref AS ({ref_select})")
-    else:
-        ctes.append(
-            "sales_ref AS (SELECT NULL AS order_id, NULL AS sale_date, NULL AS store_code, NULL AS sku_key, "
-            "NULL AS sku_id, NULL AS my_size, 0.0 AS units, 0.0 AS net_rev_kzt, NULL AS cogs_kzt, NULL AS profit_kzt, "
-            "NULL AS status, 0 AS return_flag, NULL AS source_table WHERE 0)"
-        )
     if v2_select:
         ctes.append(f"sales_v2 AS ({v2_select})")
     else:
@@ -248,14 +240,6 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         )
     ctes.append(
         """
-        ref_day_store AS (
-            SELECT DISTINCT date(sale_date) AS sale_date, UPPER(COALESCE(store_code, '')) AS store_code
-            FROM sales_ref
-        )
-        """
-    )
-    ctes.append(
-        """
         v2_bounds AS (
             SELECT MIN(date(sale_date)) AS v2_min_sale_date
             FROM sales_v2
@@ -265,28 +249,13 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     ctes.append(
         """
         base_lines AS (
-            SELECT * FROM sales_ref
-            UNION ALL
-            SELECT sv2.*
-            FROM sales_v2 sv2
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM ref_day_store r
-                WHERE date(r.sale_date) = date(sv2.sale_date)
-                  AND UPPER(COALESCE(sv2.store_code, '')) = r.store_code
-            )
+            SELECT * FROM sales_v2
             UNION ALL
             SELECT sf.*
             FROM sales_fact sf
             WHERE (
                 (SELECT v2_min_sale_date FROM v2_bounds) IS NULL
                 OR date(sf.sale_date) < date((SELECT v2_min_sale_date FROM v2_bounds))
-            )
-              AND NOT EXISTS (
-                SELECT 1
-                FROM ref_day_store r
-                WHERE date(r.sale_date) = date(sf.sale_date)
-                  AND UPPER(COALESCE(sf.store_code, '')) = r.store_code
             )
         )
         """
@@ -470,3 +439,189 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         GROUP BY sale_date, store_code, sku_key
     """
     conn.execute(daily_view_sql)
+
+    if ref_select:
+        ref_ctes: list[str] = [f"sales_ref AS ({ref_select})"]
+        if _table_exists(conn, "dim_kaspi_article_map"):
+            has_active_flag = _column_exists(conn, "dim_kaspi_article_map", "active_flag")
+            if has_active_flag:
+                sku_key_expr = (
+                    "COALESCE("
+                    "MAX(CASE WHEN COALESCE(active_flag, 1) = 1 THEN COALESCE(sku_key, '') END), "
+                    "MAX(COALESCE(sku_key, ''))"
+                    ") AS sku_key"
+                )
+                sku_id_expr = (
+                    "COALESCE("
+                    "MAX(CASE WHEN COALESCE(active_flag, 1) = 1 THEN COALESCE(sku_id, '') END), "
+                    "MAX(COALESCE(sku_id, ''))"
+                    ") AS sku_id"
+                )
+            else:
+                sku_key_expr = "MAX(COALESCE(sku_key, '')) AS sku_key"
+                sku_id_expr = "MAX(COALESCE(sku_id, '')) AS sku_id"
+            ref_ctes.append(
+                f"""
+                article_store_map AS (
+                    SELECT
+                        UPPER(TRIM(COALESCE(kaspi_article, ''))) AS article_norm,
+                        UPPER(TRIM(COALESCE(store_code, ''))) AS store_norm,
+                        {sku_key_expr},
+                        {sku_id_expr}
+                    FROM dim_kaspi_article_map
+                    GROUP BY 1, 2
+                )
+                """
+            )
+            ref_ctes.append(
+                """
+                article_any_map AS (
+                    SELECT
+                        article_norm,
+                        MAX(COALESCE(sku_key, '')) AS sku_key,
+                        MAX(COALESCE(sku_id, '')) AS sku_id
+                    FROM article_store_map
+                    GROUP BY 1
+                )
+                """
+            )
+        else:
+            ref_ctes.append(
+                """
+                article_store_map AS (
+                    SELECT '' AS article_norm, '' AS store_norm, '' AS sku_key, '' AS sku_id WHERE 0
+                )
+                """
+            )
+            ref_ctes.append(
+                """
+                article_any_map AS (
+                    SELECT '' AS article_norm, '' AS sku_key, '' AS sku_id WHERE 0
+                )
+                """
+            )
+        ref_ctes.append(
+            """
+            resolved_ref_lines AS (
+                SELECT
+                    b.order_id,
+                    b.sale_date,
+                    b.store_code,
+                    COALESCE(
+                        NULLIF(am_key_store.sku_key, ''),
+                        NULLIF(am_id_store.sku_key, ''),
+                        NULLIF(am_key_any.sku_key, ''),
+                        NULLIF(am_id_any.sku_key, ''),
+                        b.sku_key
+                    ) AS canonical_sku_key,
+                    COALESCE(
+                        NULLIF(am_key_store.sku_id, ''),
+                        NULLIF(am_id_store.sku_id, ''),
+                        NULLIF(am_key_any.sku_id, ''),
+                        NULLIF(am_id_any.sku_id, ''),
+                        b.sku_id
+                    ) AS canonical_sku_id,
+                    b.my_size,
+                    b.units,
+                    b.net_rev_kzt,
+                    b.cogs_kzt AS source_cogs_kzt,
+                    b.profit_kzt AS source_profit_kzt,
+                    b.source_table,
+                    b.sku_key AS source_sku_key,
+                    b.sku_id AS source_sku_id,
+                    b.units AS source_units,
+                    b.net_rev_kzt AS source_net_rev_kzt
+                FROM sales_ref b
+                LEFT JOIN article_store_map am_key_store
+                  ON am_key_store.article_norm = UPPER(TRIM(COALESCE(b.sku_key, '')))
+                 AND am_key_store.store_norm = UPPER(TRIM(COALESCE(b.store_code, '')))
+                LEFT JOIN article_store_map am_id_store
+                  ON am_id_store.article_norm = UPPER(TRIM(COALESCE(b.sku_id, '')))
+                 AND am_id_store.store_norm = UPPER(TRIM(COALESCE(b.store_code, '')))
+                LEFT JOIN article_any_map am_key_any
+                  ON am_key_any.article_norm = UPPER(TRIM(COALESCE(b.sku_key, '')))
+                LEFT JOIN article_any_map am_id_any
+                  ON am_id_any.article_norm = UPPER(TRIM(COALESCE(b.sku_id, '')))
+            )
+            """
+        )
+        ref_cte_sql = ",\n".join(ref_ctes)
+        line_ref_sql = f"""
+            CREATE VIEW view_sales_line_reference AS
+            WITH {ref_cte_sql}
+            SELECT
+                rl.order_id,
+                rl.sale_date,
+                rl.store_code,
+                rl.canonical_sku_key AS sku_key,
+                rl.canonical_sku_id AS sku_id,
+                rl.my_size,
+                rl.units,
+                rl.net_rev_kzt,
+                CASE
+                    WHEN {formula_ready_expr}
+                        THEN ROUND(({formula_unit_expr}) * rl.units, 2)
+                    ELSE NULL
+                END AS cogs_kzt,
+                CASE
+                    WHEN {formula_ready_expr}
+                        THEN ROUND(rl.net_rev_kzt - ROUND(({formula_unit_expr}) * rl.units, 2), 2)
+                    ELSE NULL
+                END AS profit_kzt,
+                CASE
+                    WHEN {formula_ready_expr} THEN 'formula_full'
+                    ELSE 'unresolved'
+                END AS cogs_source,
+                rl.source_table,
+                rl.source_sku_key,
+                rl.source_sku_id,
+                rl.source_units,
+                rl.source_net_rev_kzt,
+                rl.source_cogs_kzt,
+                rl.source_profit_kzt
+            FROM resolved_ref_lines rl
+            {dim_join}
+        """
+        conn.execute(line_ref_sql)
+    else:
+        conn.execute(
+            """
+            CREATE VIEW view_sales_line_reference AS
+            SELECT
+                CAST(NULL AS TEXT) AS order_id,
+                CAST(NULL AS TEXT) AS sale_date,
+                CAST(NULL AS TEXT) AS store_code,
+                CAST(NULL AS TEXT) AS sku_key,
+                CAST(NULL AS TEXT) AS sku_id,
+                CAST(NULL AS TEXT) AS my_size,
+                CAST(NULL AS REAL) AS units,
+                CAST(NULL AS REAL) AS net_rev_kzt,
+                CAST(NULL AS REAL) AS cogs_kzt,
+                CAST(NULL AS REAL) AS profit_kzt,
+                CAST(NULL AS TEXT) AS cogs_source,
+                CAST(NULL AS TEXT) AS source_table,
+                CAST(NULL AS TEXT) AS source_sku_key,
+                CAST(NULL AS TEXT) AS source_sku_id,
+                CAST(NULL AS REAL) AS source_units,
+                CAST(NULL AS REAL) AS source_net_rev_kzt,
+                CAST(NULL AS REAL) AS source_cogs_kzt,
+                CAST(NULL AS REAL) AS source_profit_kzt
+            WHERE 0
+            """
+        )
+
+    daily_ref_sql = """
+        CREATE VIEW view_sales_daily_reference AS
+        SELECT
+            sale_date,
+            store_code,
+            sku_key,
+            SUM(COALESCE(units, 0)) AS units,
+            SUM(COALESCE(net_rev_kzt, 0)) AS revenue_kzt,
+            SUM(COALESCE(cogs_kzt, 0)) AS cogs_kzt,
+            SUM(COALESCE(profit_kzt, 0)) AS profit_kzt,
+            COUNT(*) AS line_count
+        FROM view_sales_line_reference
+        GROUP BY sale_date, store_code, sku_key
+    """
+    conn.execute(daily_ref_sql)

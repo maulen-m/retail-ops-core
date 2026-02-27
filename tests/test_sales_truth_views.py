@@ -398,7 +398,7 @@ def test_truth_view_preserves_source_columns_for_audit(tmp_path: Path) -> None:
     assert row == ("SKU_A", "SKU_A_XL", 1.0, 8000.0, 1234.0, "sales_fact_v2")
 
 
-def test_view_sales_truth_prefers_external_reference_by_day_store(tmp_path: Path) -> None:
+def test_view_sales_truth_keeps_internal_source_when_external_reference_exists(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     conn = sqlite3.connect(db)
     _seed_schema(conn)
@@ -439,7 +439,7 @@ def test_view_sales_truth_prefers_external_reference_by_day_store(tmp_path: Path
     conn.commit()
 
     ensure_sales_truth_views(conn)
-    rows = conn.execute(
+    truth_rows = conn.execute(
         """
         SELECT store_code, SUM(units) AS units, SUM(revenue_kzt) AS rev
         FROM view_sales_daily_truth
@@ -448,7 +448,16 @@ def test_view_sales_truth_prefers_external_reference_by_day_store(tmp_path: Path
         ORDER BY store_code
         """
     ).fetchall()
+    reference_rows = conn.execute(
+        """
+        SELECT store_code, SUM(units) AS units, SUM(revenue_kzt) AS rev
+        FROM view_sales_daily_reference
+        WHERE sale_date='2026-02-25'
+        GROUP BY store_code
+        ORDER BY store_code
+        """
+    ).fetchall()
     conn.close()
 
-    # ACMEWEAR from external ref should override V2 day/store row.
-    assert rows == [("ACMEWEAR", 3.0, 5000.0), ("UNIVERSAL", 1.0, 2000.0)]
+    assert truth_rows == [("ACMEWEAR", 1.0, 1000.0), ("UNIVERSAL", 1.0, 2000.0)]
+    assert reference_rows == [("ACMEWEAR", 3.0, 5000.0)]
