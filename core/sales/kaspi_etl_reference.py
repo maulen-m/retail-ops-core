@@ -8,11 +8,14 @@ import glob
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
 import warnings
 
 import pandas as pd
+
+from core.parsers.kaspi_parser import extract_sku_from_article
 
 
 REQUIRED_ARCHIVE_COLS = {
@@ -32,6 +35,20 @@ DEFAULT_STORE_MAP = {
     "30000001_PP1": "UNIVERSAL",
     "30000002_PP1": "STOREB",
 }
+
+
+def _resolve_identity_from_article(article: Any, offer_name: Any) -> tuple[str, str, str]:
+    article_text = str(article or "").strip().upper()
+    offer_text = str(offer_name or "").strip()
+    parsed = extract_sku_from_article(article_text, offer_text)
+    sku_key = str(parsed.get("sku_key") or "").strip().upper()
+    sku_id = str(parsed.get("sku_id") or "").strip().upper()
+    my_size = str(parsed.get("my_size") or "").strip().upper()
+    if not sku_key:
+        sku_key = article_text
+    if not sku_id:
+        sku_id = sku_key
+    return sku_key, sku_id, my_size
 
 
 def _to_number(value: Any) -> float:
@@ -73,13 +90,15 @@ def _file_sha256(path: Path) -> str:
 
 
 def _load_archive_frames(archive_dir: Path) -> tuple[pd.DataFrame, list[Path]]:
+    # Accept both canonical ArchiveOrders exports and store-specific exports
+    # (e.g. store-b.xlsx, store-c.xlsx, store-d.xlsx) as long as required columns exist.
     files = sorted(
         Path(match).resolve()
-        for match in glob.glob(str(archive_dir / "**" / "ArchiveOrders*.xlsx"), recursive=True)
+        for match in glob.glob(str(archive_dir / "**" / "*.xlsx"), recursive=True)
         if Path(match).is_file() and not Path(match).name.startswith("~$")
     )
     if not files:
-        raise FileNotFoundError(f"No ArchiveOrders*.xlsx files found under: {archive_dir}")
+        raise FileNotFoundError(f"No .xlsx files found under: {archive_dir}")
 
     frames: list[pd.DataFrame] = []
     for path in files:
@@ -164,6 +183,103 @@ def _resolve_store_map_from_db(
     return mapping, sorted(set(unresolved))
 
 
+def _load_offer_identity_map_from_db(
+    *,
+    db_path: Path | None,
+) -> tuple[
+    dict[tuple[str, str], tuple[str, str]],
+    dict[tuple[str, str], tuple[str, str]],
+    set[str],
+]:
+    out: dict[tuple[str, str], tuple[str, str]] = {}
+    article_token_map: dict[tuple[str, str], tuple[str, str]] = {}
+    valid_sku_keys: set[str] = set()
+    if db_path is None or not db_path.exists():
+        return out, article_token_map, valid_sku_keys
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        has_map = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dim_kaspi_article_map'"
+        ).fetchone()
+        if not has_map:
+            return out, article_token_map, valid_sku_keys
+
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(dim_kaspi_article_map)").fetchall()}
+        has_active = "active_flag" in cols
+        if has_active:
+            sku_key_expr = (
+                "COALESCE("
+                "MAX(CASE WHEN COALESCE(active_flag, 1) = 1 THEN NULLIF(TRIM(COALESCE(sku_key, '')), '') END), "
+                "MAX(NULLIF(TRIM(COALESCE(sku_key, '')), ''))"
+                ")"
+            )
+            sku_id_expr = (
+                "COALESCE("
+                "MAX(CASE WHEN COALESCE(active_flag, 1) = 1 THEN NULLIF(TRIM(COALESCE(sku_id, '')), '') END), "
+                "MAX(NULLIF(TRIM(COALESCE(sku_id, '')), ''))"
+                ")"
+            )
+        else:
+            sku_key_expr = "MAX(NULLIF(TRIM(COALESCE(sku_key, '')), ''))"
+            sku_id_expr = "MAX(NULLIF(TRIM(COALESCE(sku_id, '')), ''))"
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                UPPER(TRIM(COALESCE(store_code, ''))) AS store_norm,
+                UPPER(TRIM(COALESCE(kaspi_offer_name, ''))) AS offer_norm,
+                {sku_key_expr} AS sku_key,
+                {sku_id_expr} AS sku_id
+            FROM dim_kaspi_article_map
+            WHERE TRIM(COALESCE(kaspi_offer_name, '')) <> ''
+            GROUP BY 1, 2
+            """
+        ).fetchall()
+        for store_norm, offer_norm, sku_key, sku_id in rows:
+            store = str(store_norm or "").strip().upper()
+            offer = str(offer_norm or "").strip().upper()
+            key = str(sku_key or "").strip().upper()
+            sid = str(sku_id or "").strip().upper()
+            if store and offer and key:
+                out[(store, offer)] = (key, sid or key)
+
+        token_rows = conn.execute(
+            f"""
+            SELECT
+                UPPER(TRIM(COALESCE(store_code, ''))) AS store_norm,
+                UPPER(TRIM(COALESCE(kaspi_article, ''))) AS article_norm,
+                {sku_key_expr} AS sku_key,
+                {sku_id_expr} AS sku_id
+            FROM dim_kaspi_article_map
+            WHERE TRIM(COALESCE(kaspi_article, '')) <> ''
+            GROUP BY 1, 2
+            """
+        ).fetchall()
+        for store_norm, article_norm, sku_key, sku_id in token_rows:
+            store = str(store_norm or "").strip().upper()
+            article = str(article_norm or "").strip().upper()
+            key = str(sku_key or "").strip().upper()
+            sid = str(sku_id or "").strip().upper()
+            if not store or not article or not key:
+                continue
+            for token in re.findall(r"\d{6,}", article):
+                article_token_map[(store, token)] = (key, sid or key)
+
+        has_dim_sku = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dim_sku'"
+        ).fetchone()
+        if has_dim_sku:
+            valid_sku_keys = {
+                str(row[0] or "").strip().upper()
+                for row in conn.execute("SELECT sku_key FROM dim_sku")
+                if str(row[0] or "").strip()
+            }
+    finally:
+        conn.close()
+    return out, article_token_map, valid_sku_keys
+
+
 def build_reference_from_archive_dir(
     *,
     archive_dir: Path,
@@ -183,6 +299,13 @@ def build_reference_from_archive_dir(
     raw_df["kd_warehouse"] = raw_df["Склад передачи КД"].astype(str).str.strip().str.upper()
     raw_df["article"] = raw_df.get("Артикул", "").astype(str).str.strip().str.upper()
     raw_df["offer_name"] = raw_df.get("Название товара в Kaspi Магазине", "").astype(str).str.strip()
+    identities = raw_df.apply(
+        lambda row: _resolve_identity_from_article(row.get("article"), row.get("offer_name")),
+        axis=1,
+        result_type="expand",
+    )
+    identities.columns = ["resolved_sku_key", "resolved_sku_id", "resolved_my_size"]
+    raw_df = pd.concat([raw_df, identities], axis=1)
 
     end_date = as_of.isoformat() if include_as_of_day else (as_of - timedelta(days=1)).isoformat()
     raw_df = raw_df[(raw_df["sale_date"].notna()) & (raw_df["sale_date"] <= end_date)].copy()
@@ -215,6 +338,52 @@ def build_reference_from_archive_dir(
     )
     raw_df["store_code"] = raw_df["kd_warehouse"].map(store_map).fillna("UNKNOWN").astype(str).str.upper()
 
+    offer_identity_map, article_token_map, valid_sku_keys = _load_offer_identity_map_from_db(db_path=db_path)
+    if offer_identity_map or article_token_map:
+        raw_df["offer_name_norm"] = raw_df["offer_name"].astype(str).str.strip().str.upper()
+
+        def _apply_offer_fallback(row: pd.Series) -> tuple[str, str, str]:
+            current_key = str(row.get("resolved_sku_key") or "").strip().upper()
+            current_id = str(row.get("resolved_sku_id") or "").strip().upper()
+            current_size = str(row.get("resolved_my_size") or "").strip().upper()
+            if current_key and (not valid_sku_keys or current_key in valid_sku_keys):
+                return current_key, (current_id or current_key), current_size
+
+            mapped = offer_identity_map.get(
+                (str(row.get("store_code") or "").strip().upper(), str(row.get("offer_name_norm") or "").strip().upper())
+            )
+            if not mapped:
+                store_code = str(row.get("store_code") or "").strip().upper()
+                article = str(row.get("article") or "").strip().upper()
+                for token in re.findall(r"\d{6,}", article):
+                    mapped = article_token_map.get((store_code, token))
+                    if mapped:
+                        break
+                if not mapped:
+                    # last-resort cross-store lookup by token
+                    for token in re.findall(r"\d{6,}", article):
+                        candidates = [v for (s, t), v in article_token_map.items() if t == token]
+                        if candidates:
+                            mapped = candidates[0]
+                            break
+            if not mapped:
+                return current_key, (current_id or current_key), current_size
+
+            mapped_key, mapped_id = mapped
+            resolved_key = mapped_key
+            if current_size:
+                resolved_id = f"{resolved_key}_{current_size}"
+            else:
+                resolved_id = mapped_id or resolved_key
+            return resolved_key, resolved_id, current_size
+
+        fallback_values = raw_df.apply(_apply_offer_fallback, axis=1, result_type="expand")
+        fallback_values.columns = ["resolved_sku_key", "resolved_sku_id", "resolved_my_size"]
+        raw_df["resolved_sku_key"] = fallback_values["resolved_sku_key"]
+        raw_df["resolved_sku_id"] = fallback_values["resolved_sku_id"]
+        raw_df["resolved_my_size"] = fallback_values["resolved_my_size"]
+        raw_df = raw_df.drop(columns=["offer_name_norm"])
+
     raw_df["line_id"] = raw_df[
         ["store_code", "order_id", "article", "offer_name", "sale_date", "quantity", "gross_rev_kzt"]
     ].astype(str).agg("|".join, axis=1).apply(lambda x: hashlib.sha256(x.encode("utf-8")).hexdigest())
@@ -227,6 +396,9 @@ def build_reference_from_archive_dir(
             "kd_warehouse",
             "order_id",
             "article",
+            "resolved_sku_key",
+            "resolved_sku_id",
+            "resolved_my_size",
             "offer_name",
             "quantity",
             "gross_rev_kzt",

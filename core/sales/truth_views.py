@@ -294,17 +294,31 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
 
     if _table_exists(conn, "dim_kaspi_article_map"):
         has_active_flag = _column_exists(conn, "dim_kaspi_article_map", "active_flag")
-        active_filter = "WHERE COALESCE(active_flag, 1) = 1" if has_active_flag else ""
+        if has_active_flag:
+            sku_key_expr = (
+                "COALESCE("
+                "MAX(CASE WHEN COALESCE(active_flag, 1) = 1 THEN COALESCE(sku_key, '') END), "
+                "MAX(COALESCE(sku_key, ''))"
+                ") AS sku_key"
+            )
+            sku_id_expr = (
+                "COALESCE("
+                "MAX(CASE WHEN COALESCE(active_flag, 1) = 1 THEN COALESCE(sku_id, '') END), "
+                "MAX(COALESCE(sku_id, ''))"
+                ") AS sku_id"
+            )
+        else:
+            sku_key_expr = "MAX(COALESCE(sku_key, '')) AS sku_key"
+            sku_id_expr = "MAX(COALESCE(sku_id, '')) AS sku_id"
         ctes.append(
             f"""
             article_store_map AS (
                 SELECT
                     UPPER(TRIM(COALESCE(kaspi_article, ''))) AS article_norm,
                     UPPER(TRIM(COALESCE(store_code, ''))) AS store_norm,
-                    MAX(COALESCE(sku_key, '')) AS sku_key,
-                    MAX(COALESCE(sku_id, '')) AS sku_id
+                    {sku_key_expr},
+                    {sku_id_expr}
                 FROM dim_kaspi_article_map
-                {active_filter}
                 GROUP BY 1, 2
             )
             """

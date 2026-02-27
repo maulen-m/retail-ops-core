@@ -256,6 +256,47 @@ def test_truth_view_maps_offer_article_to_canonical_line61(tmp_path: Path) -> No
     )
 
 
+def test_truth_view_uses_inactive_article_map_when_no_active_row_exists(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO dim_kaspi_article_map (store_code, kaspi_article, sku_key, sku_id, active_flag)
+        VALUES ('ACMEWEAR', '108381956_872156561', 'CL_OC_MEN_LINE52_BLACK', 'CL_OC_MEN_LINE52_BLACK', 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('CL_OC_MEN_LINE52_BLACK', 47, 0.95, 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-INACTIVE-MAP', '2026-02-08', '108381956_872156561', '108381956_872156561', '', 'ACMEWEAR', 1, 9900, 0, 0, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    row = conn.execute(
+        """
+        SELECT sku_key, cogs_source, cogs_kzt
+        FROM view_sales_line_truth
+        WHERE order_id='ORD-INACTIVE-MAP'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row[0] == "CL_OC_MEN_LINE52_BLACK"
+    assert row[1] == "formula_full"
+    assert row[2] is not None and row[2] > 0
+
+
 def test_truth_view_cogs_uses_full_formula_not_partial_source_cogs(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     conn = sqlite3.connect(db)
