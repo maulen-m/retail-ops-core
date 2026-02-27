@@ -196,6 +196,18 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_sales_truth_external_reference",
+            "cmd": (
+                "python3 scripts/validate_sales_truth_external_reference.py "
+                f"--project-root {quoted_root} "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))} "
+                "--strict-if-configured"
+            ),
+        },
+        {
+            "layer": "governance",
             "check": "triage_exceptions",
             "cmd": (
                 "python3 scripts/triage_exceptions.py "

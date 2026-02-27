@@ -128,6 +128,7 @@ def test_business_insides_fails_when_unresolved_cogs_present(tmp_path: Path) -> 
             as_of="2026-02-08",
             output_dir=tmp_path / "out",
             strict_cogs=True,
+            archive_orders_globs=[],
         )
 
 
@@ -143,6 +144,7 @@ def test_business_insides_reports_unresolved_rows_and_sku_count(tmp_path: Path) 
         as_of="2026-02-08",
         output_dir=tmp_path / "out",
         strict_cogs=False,
+        archive_orders_globs=[],
     )
 
     assert result["unresolved_rows"] == 1
@@ -161,6 +163,7 @@ def test_business_insides_uses_formula_cogs_series(tmp_path: Path) -> None:
         as_of="2026-02-08",
         output_dir=tmp_path / "out",
         strict_cogs=False,
+        archive_orders_globs=[],
     )
     day = {r["date"]: r for r in result["last_7_days"]}["2026-02-08"]
 
@@ -180,6 +183,7 @@ def test_business_insides_formula_cogs_is_not_base_only(tmp_path: Path) -> None:
         as_of="2026-02-08",
         output_dir=tmp_path / "out",
         strict_cogs=False,
+        archive_orders_globs=[],
     )
     day = {r["date"]: r for r in result["last_7_days"]}["2026-02-08"]
 

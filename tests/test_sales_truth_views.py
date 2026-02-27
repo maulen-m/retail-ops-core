@@ -355,3 +355,59 @@ def test_truth_view_preserves_source_columns_for_audit(tmp_path: Path) -> None:
     conn.close()
 
     assert row == ("SKU_A", "SKU_A_XL", 1.0, 8000.0, 1234.0, "sales_fact_v2")
+
+
+def test_view_sales_truth_prefers_external_reference_by_day_store(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        CREATE TABLE fact_sales_external_ref (
+            line_id TEXT PRIMARY KEY,
+            sale_date TEXT,
+            store_code TEXT,
+            order_id TEXT,
+            sku_key TEXT,
+            sku_id TEXT,
+            quantity REAL,
+            net_rev_kzt REAL,
+            status TEXT,
+            return_flag INTEGER
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("ORD-V2-OF", "2026-02-25", "SKU_A", "SKU_A", "L", "ACMEWEAR", 1, 1000, 0, 0, "DELIVERED", 0),
+            ("ORD-V2-UNI", "2026-02-25", "SKU_B", "SKU_B", "L", "UNIVERSAL", 1, 2000, 0, 0, "DELIVERED", 0),
+        ],
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_sales_external_ref
+        (line_id, sale_date, store_code, order_id, sku_key, sku_id, quantity, net_rev_kzt, status, return_flag)
+        VALUES ('ref-1', '2026-02-25', 'ACMEWEAR', 'ORD-REF-OF', 'SKU_X', 'SKU_X', 3, 5000, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    rows = conn.execute(
+        """
+        SELECT store_code, SUM(units) AS units, SUM(revenue_kzt) AS rev
+        FROM view_sales_daily_truth
+        WHERE sale_date='2026-02-25'
+        GROUP BY store_code
+        ORDER BY store_code
+        """
+    ).fetchall()
+    conn.close()
+
+    # ACMEWEAR from external ref should override V2 day/store row.
+    assert rows == [("ACMEWEAR", 3.0, 5000.0), ("UNIVERSAL", 1.0, 2000.0)]

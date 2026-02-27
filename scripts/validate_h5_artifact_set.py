@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timezone
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,11 @@ def validate_h5_artifact_set(
         ("system_health", root / "exports" / "diagnostics" / as_of / "system_health.json", True),
         ("daily_ops_timings", root / "exports" / "perf" / as_of / "daily_ops_timings.json", True),
         ("truth_drift_report", root / "exports" / "daily" / as_of / "truth_drift_report.json", True),
+        (
+            "sales_truth_external_reference_parity",
+            root / "exports" / "daily" / as_of / "sales_truth_external_reference_parity.json",
+            bool(os.environ.get("AB_KASPI_ETL_ARCHIVE_DIR") or os.environ.get("AB_KASPI_ETL_REFERENCE_DIR")),
+        ),
         (
             "weekly_health_scorecard",
             root / "exports" / "health" / "weekly" / week_key / "weekly_health_scorecard.json",

@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime, timedelta
+import glob
 import json
 import os
 from pathlib import Path
 import sqlite3
 import sys
 from typing import Any
+import warnings
 
 import pandas as pd
 import yaml
@@ -34,6 +36,19 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "config" / "business_insides"
 DEFAULT_WAYBILL_SELECTION_CACHE = (
     PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json"
 )
+DEFAULT_ARCHIVE_ORDERS_GLOBS = [
+    str(PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "**" / "ArchiveOrders*.xlsx"),
+    str(
+        PROJECT_ROOT.parent
+        / "kaspi_etl"
+        / "docs"
+        / "ops"
+        / "kaspi"
+        / "ActiveOrders"
+        / "**"
+        / "ArchiveOrders*.xlsx"
+    ),
+]
 
 
 def _parse_as_of(value: str | date | None) -> date:
@@ -77,6 +92,175 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(str(row[1]) == column for row in rows)
+
+
+def _resolve_archive_orders_files(
+    archive_orders_globs: list[str] | None = None,
+) -> list[Path]:
+    patterns: list[str] = []
+    if archive_orders_globs is not None:
+        patterns.extend(str(item).strip() for item in archive_orders_globs if str(item).strip())
+    else:
+        env_value = str(os.environ.get("AB_ARCHIVE_ORDERS_GLOBS") or "").strip()
+        if env_value:
+            patterns.extend(part.strip() for part in env_value.split(os.pathsep) if part.strip())
+        else:
+            patterns.extend(DEFAULT_ARCHIVE_ORDERS_GLOBS)
+
+    files: list[Path] = []
+    for pattern in patterns:
+        for match in sorted(glob.glob(pattern, recursive=True)):
+            path = Path(match)
+            if path.is_file() and path.name.endswith(".xlsx") and not path.name.startswith("~$"):
+                files.append(path.resolve())
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in files:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _parse_archive_number(value: Any) -> float:
+    if value is None:
+        return 0.0
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none"}:
+        return 0.0
+    cleaned = text.replace(" ", "").replace("\u00a0", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
+def _parse_archive_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none"}:
+        return None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:10], fmt).date()
+        except ValueError:
+            continue
+    try:
+        parsed = pd.to_datetime(text, dayfirst=True, errors="coerce")
+    except Exception:  # pragma: no cover - defensive
+        parsed = None
+    if parsed is None or pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def _load_archive_orders_daily(
+    *,
+    as_of_date: date,
+    start_date: date,
+    archive_orders_globs: list[str] | None = None,
+) -> dict[str, Any]:
+    files = _resolve_archive_orders_files(archive_orders_globs)
+    if not files:
+        return {
+            "status": "missing",
+            "reason": "no_archive_files",
+            "files": [],
+            "days": {},
+        }
+
+    required_cols = {
+        "№ заказа",
+        "Дата изменения статуса",
+        "Статус",
+        "Количество",
+        "Сумма",
+        "Склад передачи КД",
+    }
+    delivered_statuses = {"ВЫДАН", "COMPLETED", "DELIVERED"}
+    rows_by_line: dict[tuple[Any, ...], dict[str, Any]] = {}
+    used_files: list[str] = []
+
+    for file_path in files:
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Workbook contains no default style, apply openpyxl's default",
+                    category=UserWarning,
+                )
+                df = pd.read_excel(file_path, dtype=str)
+        except Exception:
+            continue
+        if not required_cols.issubset(set(df.columns)):
+            continue
+        used_files.append(str(file_path))
+        for _, row in df.iterrows():
+            order_id = str(row.get("№ заказа") or "").strip()
+            store_code = str(row.get("Склад передачи КД") or "").strip().upper()
+            status_raw = str(row.get("Статус") or "").strip()
+            status = status_raw.upper()
+            if not order_id or not store_code or status not in delivered_statuses:
+                continue
+            status_date = _parse_archive_date(row.get("Дата изменения статуса"))
+            if status_date is None or status_date < start_date or status_date > as_of_date:
+                continue
+            quantity = _parse_archive_number(row.get("Количество"))
+            amount = _parse_archive_number(row.get("Сумма"))
+            article = str(row.get("Артикул") or "").strip().upper()
+            offer_name = str(row.get("Название товара в Kaspi Магазине") or "").strip().upper()
+            stable_line_key = (
+                store_code,
+                order_id,
+                article,
+                offer_name,
+                round(quantity if quantity > 0 else 1.0, 6),
+                round(amount, 6),
+            )
+            current = rows_by_line.get(stable_line_key)
+            candidate = {
+                "status_date": status_date,
+                "order_id": order_id,
+                "quantity": quantity if quantity > 0 else 1.0,
+                "amount": amount,
+            }
+            if current is None or candidate["status_date"] >= current["status_date"]:
+                rows_by_line[stable_line_key] = candidate
+
+    if not rows_by_line:
+        return {
+            "status": "missing",
+            "reason": "no_delivered_rows_in_window",
+            "files": used_files,
+            "days": {},
+        }
+
+    by_day: dict[str, dict[str, float]] = {}
+    day_orders: dict[str, set[str]] = {}
+    for row in rows_by_line.values():
+        day = row["status_date"].isoformat()
+        agg = by_day.setdefault(day, {"units_delivered": 0.0, "net_rev_kzt": 0.0, "orders": 0.0})
+        day_orders.setdefault(day, set()).add(str(row.get("order_id") or ""))
+        agg["units_delivered"] += float(row["quantity"])
+        agg["net_rev_kzt"] += float(row["amount"])
+
+    for day in list(by_day.keys()):
+        by_day[day] = {
+            "units_delivered": round(float(by_day[day]["units_delivered"]), 2),
+            "net_rev_kzt": round(float(by_day[day]["net_rev_kzt"]), 2),
+            "orders": len({oid for oid in day_orders.get(day, set()) if oid}),
+        }
+
+    return {
+        "status": "available",
+        "reason": "ok",
+        "files": used_files,
+        "days": by_day,
+        "row_count": len(rows_by_line),
+    }
 
 
 def load_waybill_selection_snapshot(
@@ -371,6 +555,7 @@ def compute_sales_metrics(
     last_30_days: int = 30,
     enforce_query_guard: bool = False,
     waybill_selection_cache_path: Path = DEFAULT_WAYBILL_SELECTION_CACHE,
+    archive_orders_globs: list[str] | None = None,
 ) -> dict[str, Any]:
     as_of_date = _parse_as_of(as_of)
     start_30 = as_of_date - timedelta(days=max(1, int(last_30_days)) - 1)
@@ -494,6 +679,7 @@ def compute_sales_metrics(
             "cogs_kzt": round(float(row["cogs_kzt"] or 0.0), 2),
             "profit_kzt": round(float(row["profit_kzt"] or 0.0), 2),
         }
+    canonical_days = set(by_date.keys())
 
     fallback_revenue_days = 0
     for row in fallback_completed_daily_rows:
@@ -510,6 +696,33 @@ def compute_sales_metrics(
             "profit_kzt": None,
         }
         fallback_revenue_days += 1
+
+    archive_orders = {
+        "status": "disabled",
+        "reason": "disabled_by_default",
+        "files": [],
+        "days": {},
+    }
+    archive_override_days = 0
+    if archive_orders_globs:
+        archive_orders = _load_archive_orders_daily(
+            as_of_date=as_of_date,
+            start_date=start_30,
+            archive_orders_globs=archive_orders_globs,
+        )
+    if archive_orders.get("status") == "available":
+        for day, day_row in (archive_orders.get("days") or {}).items():
+            if day in canonical_days:
+                continue
+            units_delivered = round(float(day_row.get("units_delivered") or 0.0), 2)
+            by_date[day] = {
+                "units_delivered": units_delivered,
+                "units_shipped": units_delivered,
+                "net_rev_kzt": round(float(day_row.get("net_rev_kzt") or 0.0), 2),
+                "cogs_kzt": None,
+                "profit_kzt": None,
+            }
+            archive_override_days += 1
 
     ads_by_date, ads_totals = _load_ads_daily(db_path, start_30, as_of_date)
     ads_available = ads_totals.get("status") == "available"
@@ -614,30 +827,38 @@ def compute_sales_metrics(
         as_of_date=as_of_date,
         selection_cache_path=selection_cache_path,
     )
+    profit_publication_locked = unresolved_rows > 0
 
     return {
         "as_of_date": as_of_date.isoformat(),
         "last_7_days": last_7_list,
         "latest_7_observed_days": latest_7_observed_days,
         "avg_30d_net_rev_kzt": _avg(series_30_net),
-        "avg_30d_cogs_kzt": _avg(series_30_cogs),
-        "avg_30d_profit_kzt": _avg(series_30_profit),
+        "avg_30d_cogs_kzt": (None if profit_publication_locked else _avg(series_30_cogs)),
+        "avg_30d_profit_kzt": (None if profit_publication_locked else _avg(series_30_profit)),
         "avg_30d_ads_spend_kzt": _avg_or_none(series_30_ads),
-        "avg_30d_profit_after_ads_kzt": _avg_or_none(series_30_profit_after_ads),
+        "avg_30d_profit_after_ads_kzt": (
+            None if profit_publication_locked else _avg_or_none(series_30_profit_after_ads)
+        ),
         "avg_7d_net_rev_kzt": _avg(series_7_net),
-        "avg_7d_cogs_kzt": _avg_or_none(series_7_cogs),
-        "avg_7d_profit_kzt": _avg_or_none(series_7_profit),
+        "avg_7d_cogs_kzt": (None if profit_publication_locked else _avg_or_none(series_7_cogs)),
+        "avg_7d_profit_kzt": (None if profit_publication_locked else _avg_or_none(series_7_profit)),
         "avg_7d_ads_spend_kzt": _avg_or_none(series_7_ads),
-        "avg_7d_profit_after_ads_kzt": _avg_or_none(series_7_profit_after_ads),
+        "avg_7d_profit_after_ads_kzt": (
+            None if profit_publication_locked else _avg_or_none(series_7_profit_after_ads)
+        ),
         "observed_days_last_7_calendar": observed_days_last_7_calendar,
         "latest_sale_date_available": latest_sale_date_available,
         "sales_truth_freshness_days": sales_truth_freshness_days,
         "revenue_fallback_days": fallback_revenue_days,
+        "archive_orders_fallback_days": archive_override_days,
+        "archive_orders": archive_orders,
         "fallback_rows": fallback_rows,
         "unresolved_rows": unresolved_rows,
         "unresolved_sku_count": len(unresolved_skus),
         "total_rows": total_rows,
         "cogs_fallback_coverage_pct": round((fallback_rows / total_rows * 100.0), 2) if total_rows else 0.0,
+        "profit_publication_locked": profit_publication_locked,
         "ads": ads_totals,
         "waybill_snapshot": waybill_snapshot,
     }
@@ -800,6 +1021,8 @@ def _render_markdown(
         "N/A" if ads_coverage_raw is None else f"{float(ads_coverage_raw):.2f}%"
     )
     revenue_fallback_days = int(sales_metrics.get("revenue_fallback_days") or 0)
+    archive_orders_fallback_days = int(sales_metrics.get("archive_orders_fallback_days") or 0)
+    archive_orders_meta = sales_metrics.get("archive_orders") or {}
     sales_source_line = (
         "view_sales_line_truth / view_sales_daily_truth "
         "(canonical interface over staging)"
@@ -808,6 +1031,11 @@ def _render_markdown(
         sales_source_line += (
             " + fact_orders_kaspi COMPLETED revenue-only fallback "
             f"(days added: {revenue_fallback_days})"
+        )
+    if archive_orders_fallback_days > 0:
+        sales_source_line += (
+            " + ArchiveOrders delivered-status fallback "
+            f"(days overlaid: {archive_orders_fallback_days})"
         )
 
     lines = [
@@ -913,6 +1141,9 @@ def _render_markdown(
         f"- Ads mapping coverage: `{ads_coverage_text}`.",
         f"- Ads mapped/unmapped cost: `{_fmt_kzt(sales_metrics['ads'].get('mapped_cost_kzt'))}` / "
         f"`{_fmt_kzt(sales_metrics['ads'].get('unmapped_cost_kzt'))}`.",
+        f"- ArchiveOrders source status: `{archive_orders_meta.get('status')}` "
+        f"(reason: `{archive_orders_meta.get('reason')}`).",
+        f"- ArchiveOrders files used: `{len(archive_orders_meta.get('files') or [])}`.",
         "",
         "## External Reference Check",
         "",
@@ -933,6 +1164,7 @@ def generate_business_insides(
     external_sales_csv: Path | None = None,
     strict_cogs: bool = False,
     waybill_selection_cache_path: Path = DEFAULT_WAYBILL_SELECTION_CACHE,
+    archive_orders_globs: list[str] | None = None,
 ) -> dict[str, Any]:
     as_of_date = _parse_as_of(as_of)
     generated_at = datetime.now()
@@ -946,6 +1178,7 @@ def generate_business_insides(
         as_of=as_of_date,
         enforce_query_guard=bool(strict_cogs),
         waybill_selection_cache_path=waybill_selection_cache_path,
+        archive_orders_globs=archive_orders_globs,
     )
     if strict_cogs and int(sales_metrics["unresolved_rows"]) > 0:
         raise RuntimeError(
@@ -1004,6 +1237,7 @@ def generate_business_insides(
         "unresolved_sku_count": sales_metrics["unresolved_sku_count"],
         "ads": sales_metrics["ads"],
         "waybill_snapshot": sales_metrics.get("waybill_snapshot"),
+        "archive_orders": sales_metrics.get("archive_orders"),
         "external_check": external_check,
     }
     payload_json = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
@@ -1026,6 +1260,7 @@ def generate_business_insides(
         "unresolved_sku_count": sales_metrics["unresolved_sku_count"],
         "ads": sales_metrics["ads"],
         "waybill_snapshot": sales_metrics.get("waybill_snapshot"),
+        "archive_orders": sales_metrics.get("archive_orders"),
         "external_check": external_check,
     }
 
@@ -1039,6 +1274,15 @@ def main() -> int:
     parser.add_argument("--external-sales-csv", type=Path, default=None)
     parser.add_argument("--strict-cogs", action="store_true")
     parser.add_argument("--waybill-selection-cache", type=Path, default=DEFAULT_WAYBILL_SELECTION_CACHE)
+    parser.add_argument(
+        "--archive-orders-glob",
+        action="append",
+        default=None,
+        help=(
+            "Glob pattern(s) for ArchiveOrders XLSX files used as delivered-date fallback. "
+            "Repeat flag to provide multiple patterns."
+        ),
+    )
     args = parser.parse_args()
 
     result = generate_business_insides(
@@ -1049,6 +1293,7 @@ def main() -> int:
         external_sales_csv=args.external_sales_csv,
         strict_cogs=args.strict_cogs,
         waybill_selection_cache_path=args.waybill_selection_cache,
+        archive_orders_globs=args.archive_orders_glob,
     )
     def _fmt_metric(value: Any) -> str:
         if value is None:

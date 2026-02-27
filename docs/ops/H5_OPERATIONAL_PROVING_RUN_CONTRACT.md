@@ -14,6 +14,7 @@ Define the production proving window contract for final autonomy closure:
 ## Required Daily Artifacts
 - `exports/daily/<day>/daily_ops_report.json`
 - `exports/daily/<day>/sales_vs_waybill_parity.json`
+- `exports/daily/<day>/sales_truth_external_reference_parity.json` *(required when `AB_KASPI_ETL_ARCHIVE_DIR` or `AB_KASPI_ETL_REFERENCE_DIR` is configured)*
 - `exports/exceptions/<day>/exceptions.json`
 - `exports/diagnostics/<day>/system_health.json`
 - `exports/perf/<day>/daily_ops_timings.json`
@@ -27,6 +28,7 @@ Define the production proving window contract for final autonomy closure:
 - Equivalent expanded chain (for debugging):
   - `python3 scripts/system_doctor.py --strict --project-root <REPO_PATH> --as-of <day>`
   - `python3 scripts/validate_as_of_consistency.py --strict --project-root <REPO_PATH> --as-of <day>`
+  - `python3 scripts/validate_sales_truth_external_reference.py --strict-if-configured --project-root <REPO_PATH> --as-of <day>`
   - `python3 scripts/triage_exceptions.py --strict --exceptions exports/exceptions/<day>/exceptions.json`
   - `python3 scripts/validate_h5_artifact_set.py --strict --project-root <REPO_PATH> --as-of <day>`
 

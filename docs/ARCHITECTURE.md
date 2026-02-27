@@ -37,7 +37,13 @@ The operational truth chain is enforced as:
 10. Published sales truth is exposed only through:
    - `view_sales_line_truth`
    - `view_sales_daily_truth`
-   Revenue/units are v2-authoritative for overlap windows; `fact_sales` is historical fallback.
+   Revenue/units are resolved with this precedence:
+   - `fact_sales_external_ref` (when populated from external ArchiveOrders reference)
+   - `sales_fact_v2` (authoritative staging for overlap windows)
+   - `fact_sales` (historical fallback)
+   External reference must be loaded upstream (DB/view layer), not overlaid in report rendering.
+   - reference sync: `scripts/build_kaspi_etl_sales_reference.py` (dry-run by default; gated apply)
+   - strict parity gate: `scripts/validate_sales_truth_external_reference.py`
    - Static consumer gate: `scripts/validate_sales_truth_consumers.py`
    - Runtime SQL guard module: `core/db/sales_truth_query_guard.py` (strict paths)
 11. Published COGS/profit are valid only when full landed formula inputs exist (`base + delivery`).

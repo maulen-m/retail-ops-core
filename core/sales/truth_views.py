@@ -94,15 +94,63 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     - COGS/profit policy: published COGS is valid only when full landed formula inputs
       (base_cost_cny + weight_kg + FX) are present.
     """
+    has_sales_ref = _table_exists(conn, "fact_sales_external_ref")
     has_sales_v2 = _table_exists(conn, "sales_fact_v2")
     has_fact_sales = _table_exists(conn, "fact_sales")
-    if not has_sales_v2 and not has_fact_sales:
-        raise RuntimeError("Missing staging sales tables: sales_fact_v2 and fact_sales")
+    if not has_sales_ref and not has_sales_v2 and not has_fact_sales:
+        raise RuntimeError(
+            "Missing staging sales tables: fact_sales_external_ref, sales_fact_v2, fact_sales"
+        )
 
     conn.execute("DROP VIEW IF EXISTS view_sales_daily_truth")
     conn.execute("DROP VIEW IF EXISTS view_sales_line_truth")
 
     cny_kzt, usd_kzt, dlv_rate_usd_kg = _resolve_fx_rates(conn)
+
+    ref_select = None
+    if has_sales_ref:
+        ref_store = "store_code" if _column_exists(conn, "fact_sales_external_ref", "store_code") else "'UNKNOWN'"
+        ref_size = "my_size" if _column_exists(conn, "fact_sales_external_ref", "my_size") else "''"
+        ref_status = "status" if _column_exists(conn, "fact_sales_external_ref", "status") else "'DELIVERED'"
+        ref_return = (
+            "return_flag" if _column_exists(conn, "fact_sales_external_ref", "return_flag") else "0"
+        )
+        ref_net = (
+            "net_rev_kzt"
+            if _column_exists(conn, "fact_sales_external_ref", "net_rev_kzt")
+            else ("gross_rev_kzt" if _column_exists(conn, "fact_sales_external_ref", "gross_rev_kzt") else "0")
+        )
+        ref_qty = (
+            "quantity"
+            if _column_exists(conn, "fact_sales_external_ref", "quantity")
+            else ("units" if _column_exists(conn, "fact_sales_external_ref", "units") else "0")
+        )
+        ref_sale_date = (
+            "sale_date"
+            if _column_exists(conn, "fact_sales_external_ref", "sale_date")
+            else ("order_date" if _column_exists(conn, "fact_sales_external_ref", "order_date") else "NULL")
+        )
+        ref_sku_key = "sku_key" if _column_exists(conn, "fact_sales_external_ref", "sku_key") else "''"
+        ref_sku_id = "sku_id" if _column_exists(conn, "fact_sales_external_ref", "sku_id") else "''"
+        ref_select = f"""
+            SELECT
+                CAST(order_id AS TEXT) AS order_id,
+                date({ref_sale_date}) AS sale_date,
+                CAST(COALESCE({ref_store}, 'UNKNOWN') AS TEXT) AS store_code,
+                CAST(COALESCE({ref_sku_key}, '') AS TEXT) AS sku_key,
+                CAST(COALESCE({ref_sku_id}, '') AS TEXT) AS sku_id,
+                CAST(COALESCE({ref_size}, '') AS TEXT) AS my_size,
+                CAST(COALESCE({ref_qty}, 0) AS REAL) AS units,
+                CAST(COALESCE({ref_net}, 0) AS REAL) AS net_rev_kzt,
+                NULL AS cogs_kzt,
+                NULL AS profit_kzt,
+                CAST(COALESCE({ref_status}, 'DELIVERED') AS TEXT) AS status,
+                CAST(COALESCE({ref_return}, 0) AS INTEGER) AS return_flag,
+                'fact_sales_external_ref' AS source_table
+            FROM fact_sales_external_ref
+            WHERE UPPER(COALESCE({ref_status}, 'DELIVERED')) IN ('DELIVERED', 'COMPLETED', 'ВЫДАН')
+              AND COALESCE({ref_return}, 0) = 0
+        """
 
     v2_select = None
     if has_sales_v2:
@@ -174,6 +222,14 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         )
 
     ctes: list[str] = []
+    if ref_select:
+        ctes.append(f"sales_ref AS ({ref_select})")
+    else:
+        ctes.append(
+            "sales_ref AS (SELECT NULL AS order_id, NULL AS sale_date, NULL AS store_code, NULL AS sku_key, "
+            "NULL AS sku_id, NULL AS my_size, 0.0 AS units, 0.0 AS net_rev_kzt, NULL AS cogs_kzt, NULL AS profit_kzt, "
+            "NULL AS status, 0 AS return_flag, NULL AS source_table WHERE 0)"
+        )
     if v2_select:
         ctes.append(f"sales_v2 AS ({v2_select})")
     else:
@@ -192,6 +248,14 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         )
     ctes.append(
         """
+        ref_day_store AS (
+            SELECT DISTINCT date(sale_date) AS sale_date, UPPER(COALESCE(store_code, '')) AS store_code
+            FROM sales_ref
+        )
+        """
+    )
+    ctes.append(
+        """
         v2_bounds AS (
             SELECT MIN(date(sale_date)) AS v2_min_sale_date
             FROM sales_v2
@@ -201,13 +265,28 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     ctes.append(
         """
         base_lines AS (
-            SELECT * FROM sales_v2
+            SELECT * FROM sales_ref
+            UNION ALL
+            SELECT sv2.*
+            FROM sales_v2 sv2
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM ref_day_store r
+                WHERE date(r.sale_date) = date(sv2.sale_date)
+                  AND UPPER(COALESCE(sv2.store_code, '')) = r.store_code
+            )
             UNION ALL
             SELECT sf.*
             FROM sales_fact sf
             WHERE (
                 (SELECT v2_min_sale_date FROM v2_bounds) IS NULL
                 OR date(sf.sale_date) < date((SELECT v2_min_sale_date FROM v2_bounds))
+            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM ref_day_store r
+                WHERE date(r.sale_date) = date(sf.sale_date)
+                  AND UPPER(COALESCE(sf.store_code, '')) = r.store_code
             )
         )
         """

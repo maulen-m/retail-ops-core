@@ -127,6 +127,7 @@ def test_business_insides_separates_delivered_and_waybill_metrics(tmp_path: Path
         as_of="2026-02-26",
         output_dir=output_dir,
         waybill_selection_cache_path=selection_cache,
+        archive_orders_globs=[],
     )
     content = Path(result["latest_path"]).read_text(encoding="utf-8")
     assert "Units Delivered (COMPLETED)" in content

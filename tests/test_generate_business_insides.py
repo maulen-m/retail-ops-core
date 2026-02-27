@@ -229,6 +229,7 @@ def test_business_insides_uses_sales_fact_v2_not_cashflow_daily_sales_accrued(tm
         bank_accounts_path=bank,
         as_of="2026-02-08",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
 
     assert result["performance"]["avg_7d_net_rev_kzt"] > 0
@@ -246,6 +247,7 @@ def test_business_insides_last_7_days_no_false_zero_on_dates_with_delivered_rows
         bank_accounts_path=bank,
         as_of="2026-02-08",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
     last7 = {r["date"]: r for r in result["last_7_days"]}
     assert last7["2026-02-05"]["net_rev_kzt"] > 0
@@ -265,6 +267,7 @@ def test_business_insides_marks_missing_day_as_na_when_no_rows(tmp_path: Path) -
         bank_accounts_path=bank,
         as_of="2026-02-08",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
     last7 = {r["date"]: r for r in result["last_7_days"]}
     assert last7["2026-02-06"]["net_rev_kzt"] is None
@@ -283,6 +286,7 @@ def test_business_insides_capital_components_match_paid_capital_truth(tmp_path: 
         bank_accounts_path=bank,
         as_of="2026-02-08",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
     expected = compute_paid_capital_truth(
         db_path=db_path,
@@ -305,6 +309,7 @@ def test_business_insides_includes_unpaid_inbound_obligations(tmp_path: Path) ->
         bank_accounts_path=bank,
         as_of="2026-02-08",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
     assert result["capital"]["inbound_unpaid_obligations_kzt"] > 0
 
@@ -320,6 +325,7 @@ def test_business_insides_works_with_fact_sales_only_via_canonical_views(tmp_pat
         bank_accounts_path=bank,
         as_of="2026-02-08",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
     assert result["performance"]["avg_7d_net_rev_kzt"] > 0
     assert result["performance"]["avg_7d_cogs_kzt"] > 0
@@ -353,10 +359,106 @@ def test_business_insides_uses_completed_fact_orders_when_sales_tables_are_stale
         bank_accounts_path=bank,
         as_of="2026-02-26",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
     last7 = {r["date"]: r for r in result["last_7_days"]}
     assert last7["2026-02-25"]["net_rev_kzt"] == 10000.0
     assert result["performance"]["latest_sale_date_available"] == "2026-02-25"
+
+
+def test_business_insides_can_overlay_stale_days_from_archive_orders(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    bank = tmp_path / "bank_accounts.yaml"
+    _init_db(db_path)
+    _write_bank_yaml(bank)
+
+    archive_file = tmp_path / "ArchiveOrders.xlsx"
+    import pandas as pd
+
+    pd.DataFrame(
+        [
+            {
+                "№ заказа": "835100001",
+                "Дата изменения статуса": "25.02.2026",
+                "Статус": "Выдан",
+                "Количество": "2",
+                "Сумма": "10000",
+                "Склад передачи КД": "30000001_PP1",
+            },
+            {
+                "№ заказа": "835100002",
+                "Дата изменения статуса": "25.02.2026",
+                "Статус": "Выдан",
+                "Количество": "1",
+                "Сумма": "7000",
+                "Склад передачи КД": "30137883_PP1",
+            },
+        ]
+    ).to_excel(archive_file, index=False)
+
+    result = generate_business_insides(
+        db_path=db_path,
+        bank_accounts_path=bank,
+        as_of="2026-02-26",
+        output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[str(archive_file)],
+    )
+    last7 = {r["date"]: r for r in result["last_7_days"]}
+    assert last7["2026-02-25"]["units_delivered"] == 3.0
+    assert last7["2026-02-25"]["net_rev_kzt"] == 17000.0
+    assert result["archive_orders"]["status"] == "available"
+    assert result["archive_orders"]["row_count"] == 2
+
+
+def test_archive_orders_fallback_keeps_multi_line_orders_and_dedupes_duplicate_lines(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    bank = tmp_path / "bank_accounts.yaml"
+    _init_db(db_path)
+    _write_bank_yaml(bank)
+
+    archive_a = tmp_path / "ArchiveOrders_a.xlsx"
+    archive_b = tmp_path / "ArchiveOrders_b.xlsx"
+    import pandas as pd
+
+    rows = [
+        {
+            "№ заказа": "835200001",
+            "Дата изменения статуса": "25.02.2026",
+            "Статус": "Выдан",
+            "Количество": "1",
+            "Сумма": "1500",
+            "Склад передачи КД": "30000001_PP1",
+            "Артикул": "SKU-A",
+            "Название товара в Kaspi Магазине": "Item A",
+        },
+        {
+            "№ заказа": "835200001",
+            "Дата изменения статуса": "25.02.2026",
+            "Статус": "Выдан",
+            "Количество": "2",
+            "Сумма": "3500",
+            "Склад передачи КД": "30000001_PP1",
+            "Артикул": "SKU-B",
+            "Название товара в Kaspi Магазине": "Item B",
+        },
+    ]
+    pd.DataFrame(rows).to_excel(archive_a, index=False)
+    # Duplicate first line across another file should not double count.
+    pd.DataFrame([rows[0]]).to_excel(archive_b, index=False)
+
+    result = generate_business_insides(
+        db_path=db_path,
+        bank_accounts_path=bank,
+        as_of="2026-02-26",
+        output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[str(archive_a), str(archive_b)],
+    )
+
+    last7 = {r["date"]: r for r in result["last_7_days"]}
+    assert last7["2026-02-25"]["units_delivered"] == 3.0
+    assert last7["2026-02-25"]["net_rev_kzt"] == 5000.0
+    assert result["archive_orders"]["days"]["2026-02-25"]["orders"] == 1
+    assert result["archive_orders"]["row_count"] == 2
 
 
 def test_business_insides_markdown_includes_units_shipped_column(tmp_path: Path) -> None:
@@ -370,6 +472,7 @@ def test_business_insides_markdown_includes_units_shipped_column(tmp_path: Path)
         bank_accounts_path=bank,
         as_of="2026-02-08",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
     content = Path(result["latest_path"]).read_text(encoding="utf-8")
     assert "Units Delivered (COMPLETED)" in content
@@ -386,6 +489,7 @@ def test_business_insides_reports_stale_recent_window_with_observed_history(tmp_
         bank_accounts_path=bank,
         as_of="2026-02-20",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
     perf = result["performance"]
     assert perf["observed_days_last_7_calendar"] == 0
