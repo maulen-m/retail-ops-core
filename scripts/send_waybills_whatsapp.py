@@ -881,30 +881,46 @@ class WhatsAppSender:
         if not text.strip():
             return
 
-        self._assert_active_target_chat()
-        composer = self.page.locator("footer div[contenteditable='true'][role='textbox']").first
-        composer.wait_for(timeout=self.action_timeout_ms)
-        composer.click()
-
-        try:
-            composer.press("Control+A")
-            composer.press("Backspace")
-        except Exception:
-            pass
-
         lines = text.splitlines()
         if not lines:
             return
 
-        for idx, line in enumerate(lines):
-            if line:
-                self.page.keyboard.insert_text(line)
-            if idx < len(lines) - 1:
-                self.page.keyboard.press("Shift+Enter")
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 5):
+            try:
+                self._assert_active_target_chat()
+                composer = self.page.locator("footer div[contenteditable='true'][role='textbox']").first
+                composer.wait_for(timeout=self.action_timeout_ms)
+                composer.click()
 
-        self.page.keyboard.press("Enter")
-        self.page.wait_for_timeout(900)
-        self._assert_active_target_chat()
+                try:
+                    composer.press("Control+A")
+                    composer.press("Backspace")
+                except Exception:
+                    pass
+
+                for idx, line in enumerate(lines):
+                    if line:
+                        self.page.keyboard.insert_text(line)
+                    if idx < len(lines) - 1:
+                        self.page.keyboard.press("Shift+Enter")
+
+                self.page.keyboard.press("Enter")
+                self.page.wait_for_timeout(900)
+                self._assert_active_target_chat()
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= 4:
+                    break
+                if self.verbose:
+                    print(f"      text send retry {attempt}/4 due to: {exc}")
+                self._wait_for_chat_list_ready()
+                self.open_chat(self.chat_title)
+                self.page.wait_for_timeout(800)
+
+        if last_error:
+            raise last_error
 
     def send_document(self, pdf_path: Path) -> None:
         if not pdf_path.exists():
