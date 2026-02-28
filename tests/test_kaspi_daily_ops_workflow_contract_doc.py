@@ -7,7 +7,7 @@ def test_daily_ops_workflow_contract_doc_exists_and_maps_critical_paths() -> Non
 
     text = doc_path.read_text(encoding="utf-8")
     assert "excel_ui/run_full_import.command" in text
-    assert "excel_ui/run_build_waybills.command" in text
+    assert "excel_ui/run_merged_build_waybills.command" in text
     assert "config/com.example.kaspi-import.plist" in text
     assert "config/com.example.kaspi-waybill-deadline.plist" in text
     assert "11:00" in text

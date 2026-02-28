@@ -7,7 +7,7 @@ Sends waybill PDFs to a specific WhatsApp chat using WhatsApp Web automation.
 
 Key behavior:
 - Uses MERGED bundles first (fallback to PER_STORE/legacy)
-- Orders files by category, then by size, while interleaving families for diversity
+- Orders files by category, then by contiguous SKU blocks with size-rising order
 - Tracks sent files in sent_pdfs.json to avoid duplicates
 - Strict chat safety gate: only send to configured chat title
 """
@@ -23,7 +23,7 @@ import shutil
 import sys
 import tempfile
 import time
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -105,22 +105,6 @@ NOISE_TOKENS = {
     "CL", "NEW", "CLO", "MEN", "MAN", "WOMEN", "WOMAN", "KID", "KIDS",
     "MESTOVAYA", "PROD", "SKU", "COLOR", "SIZE", "PP1",
 }
-HIGH_SIMILAR_HINTS = (
-    "ФУТБОЛК",
-    "T-SHIRT",
-    "TSHIRT",
-    "РАШГАРД",
-    "RUSH",
-    "LONGSLEEVE",
-    "LONG_SLEEVE",
-    "LONG-SLEEVE",
-    "ДЛИННЫЙ_РАШГАРД",
-    "ДЛИННЫЙ РАШГАРД",
-    "ДЛИННЫЙ_РУКАВ",
-    "ДЛИННЫЙ РУКАВ",
-)
-RISK_HIGH_SIMILAR = "HIGH_SIMILAR"
-RISK_DIVERSIFIER = "DIVERSIFIER"
 
 # Delay between sends (seconds)
 SEND_DELAY = 2.0
@@ -236,6 +220,35 @@ def collect_pdfs_from_category(store_folder: Path, category: str) -> List[Path]:
     )
 
 
+def _build_manifest_output_index(store_folder: Path) -> tuple[Dict[str, Dict[str, str]], Dict[str, List[Dict[str, str]]]]:
+    """
+    Build lookup maps from manifest output paths to row metadata.
+
+    Returns:
+      - exact output path map: "NORMAL_singles/file.pdf" -> row
+      - basename map: "file.pdf" -> [rows...]
+    """
+    exact_map: Dict[str, Dict[str, str]] = {}
+    basename_map: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+
+    for manifest_path in sorted(store_folder.glob("manifest_*.csv")):
+        with manifest_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                output_raw = str(row.get("output") or "").strip()
+                if not output_raw:
+                    continue
+                output_norm = output_raw.replace("\\", "/").lstrip("./")
+                row_meta = {
+                    "sku_key": str(row.get("sku_key") or "").strip(),
+                    "sku_id": str(row.get("sku_id") or "").strip(),
+                }
+                exact_map[output_norm] = row_meta
+                basename_map[Path(output_norm).name].append(row_meta)
+
+    return exact_map, basename_map
+
+
 def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List[Dict[str, Any]]:
     """
     Collect all PDFs in correct sending order.
@@ -250,8 +263,22 @@ def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List
     store_folders = find_store_folders(today_folder, source_mode=source_mode)
 
     for store_folder in store_folders:
+        output_exact_map, output_basename_map = _build_manifest_output_index(store_folder)
         for category in PDF_CATEGORIES:
             for pdf_path in collect_pdfs_from_category(store_folder, category):
+                rel_store_path = str(pdf_path.relative_to(store_folder)).replace("\\", "/")
+                row_meta = output_exact_map.get(rel_store_path)
+                if row_meta is None:
+                    by_name = output_basename_map.get(pdf_path.name, [])
+                    if len(by_name) == 1:
+                        row_meta = by_name[0]
+                    else:
+                        row_meta = {}
+
+                item_core = _extract_item_core(pdf_path.name)
+                family_key = _family_key(item_core)
+                sku_key = str(row_meta.get("sku_key") or "").strip() or family_key
+
                 all_pdfs.append(
                     {
                         "path": pdf_path,
@@ -259,11 +286,12 @@ def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List
                         "store_label": _store_label_from_folder_name(store_folder.name),
                         "category": category,
                         "filename": pdf_path.name,
-                        "item_core": _extract_item_core(pdf_path.name),
+                        "item_core": item_core,
                         "size_token": _extract_size_token(pdf_path.name),
                         "size_rank": _size_rank(_extract_size_token(pdf_path.name)),
-                        "family_key": _family_key(_extract_item_core(pdf_path.name)),
-                        "risk_group": _risk_group(_extract_item_core(pdf_path.name)),
+                        "family_key": family_key,
+                        "sku_key": sku_key,
+                        "sku_id": str(row_meta.get("sku_id") or "").strip(),
                         "relative": _relative_for_tracker(pdf_path, today_folder),
                     }
                 )
@@ -338,81 +366,40 @@ def _family_key(item_core: str) -> str:
     return "_".join(cleaned[:3])
 
 
-def _risk_group(item_core: str) -> str:
-    normalized = re.sub(r"[^0-9A-Za-zА-Яа-я]+", "_", item_core).upper()
-    compact = normalized.replace("_", "")
-    for hint in HIGH_SIMILAR_HINTS:
-        token = hint.upper()
-        if token in normalized or token.replace("_", "").replace("-", "") in compact:
-            return RISK_HIGH_SIMILAR
-    return RISK_DIVERSIFIER
-
-
-def _schedule_category_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _order_category_entries_by_sku(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Schedule one category with packer-safe sequencing.
+    Order one category by SKU blocks.
 
-    Rules:
-    - Preserve size-rising order within each family.
-    - If previous sent item is HIGH_SIMILAR and any DIVERSIFIER exists, pick a
-      DIVERSIFIER next (gap>=1 when possible).
-    - Avoid same-family adjacency when alternatives exist.
+    Once a SKU block starts, all its sizes are sent contiguously in rising
+    size order before moving to next SKU.
     """
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for entry in entries:
-        grouped[str(entry.get("family_key") or "UNKNOWN")].append(entry)
+    first_seen: Dict[str, int] = {}
+    for idx, entry in enumerate(entries):
+        sku_key = str(entry.get("sku_key") or entry.get("family_key") or "UNKNOWN")
+        grouped[sku_key].append(entry)
+        if sku_key not in first_seen:
+            first_seen[sku_key] = idx
 
-    buckets: Dict[str, deque[Dict[str, Any]]] = {}
-    for family, items in grouped.items():
-        items.sort(key=lambda x: (x.get("size_rank", 999), str(x.get("filename", "")).lower()))
-        buckets[family] = deque(items)
-
-    result: List[Dict[str, Any]] = []
-    last_family = ""
-    last_risk = ""
-    while True:
-        alive = [family for family, queue in buckets.items() if queue]
-        if not alive:
-            break
-
-        risk_by_family = {
-            family: str(buckets[family][0].get("risk_group") or RISK_DIVERSIFIER)
-            for family in alive
-        }
-        diversifier_alive = any(risk != RISK_HIGH_SIMILAR for risk in risk_by_family.values())
-        must_split_similar = last_risk == RISK_HIGH_SIMILAR and diversifier_alive
-
-        candidates = [family for family in alive if family != last_family]
-        if not candidates:
-            candidates = alive
-
-        if must_split_similar:
-            split_candidates = [family for family in candidates if risk_by_family[family] != RISK_HIGH_SIMILAR]
-            if split_candidates:
-                candidates = split_candidates
-
-        candidates.sort(
-            key=lambda family: (
-                0 if risk_by_family[family] != last_risk else 1,
-                -len(buckets[family]),
-                family,
+    for sku_key, items in grouped.items():
+        items.sort(
+            key=lambda x: (
+                int(x.get("size_rank", 999)),
+                str(x.get("size_token", "")).upper(),
+                str(x.get("filename", "")).lower(),
             )
         )
-        chosen = candidates[0]
 
-        item = buckets[chosen].popleft()
-        result.append(item)
-        last_family = chosen
-        last_risk = str(item.get("risk_group") or RISK_DIVERSIFIER)
-
+    ordered_skus = sorted(grouped.keys(), key=lambda key: (first_seen[key], key))
+    result: List[Dict[str, Any]] = []
+    for sku_key in ordered_skus:
+        result.extend(grouped[sku_key])
     return result
 
 
 def order_pdfs_for_sending(pdfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Order PDFs by category, then by size-rising sequence with family diversity.
-
-    Keeps legacy category priority while improving packer-friendly ordering.
+    Order PDFs by category, then by contiguous SKU blocks with rising sizes.
     """
     category_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for pdf in pdfs:
@@ -421,7 +408,7 @@ def order_pdfs_for_sending(pdfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ordered: List[Dict[str, Any]] = []
     for category in PDF_CATEGORIES:
         if category_groups.get(category):
-            ordered.extend(_schedule_category_entries(category_groups[category]))
+            ordered.extend(_order_category_entries_by_sku(category_groups[category]))
 
     unknown: List[Dict[str, Any]] = []
     for category, items in category_groups.items():

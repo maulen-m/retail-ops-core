@@ -751,7 +751,7 @@ Two `.command` files are provided for non-technical users:
 
 ```
 excel_ui/run_import_orders.command   -- Import new orders
-excel_ui/run_build_waybills.command  -- Build waybill bundles
+excel_ui/run_merged_build_waybills.command  -- Build waybill bundles
 ```
 
 Double-click to run. Terminal will show progress and results.
@@ -812,7 +812,7 @@ After importing orders, open CRM and fill the `MY_SIZE` column:
 **Run Builder:**
 ```bash
 # Using .command file
-Double-click: excel_ui/run_build_waybills.command
+Double-click: excel_ui/run_merged_build_waybills.command
 
 # Using CLI
 python scripts/build_daily_waybills.py --verbose
@@ -938,7 +938,7 @@ Each store folder contains 3 manifest files:
 - [ ] Run import: `run_import_orders.command`
 - [ ] Open CRM, fill MY_SIZE for new orders
 - [ ] Save CRM
-- [ ] Run builder: `run_build_waybills.command`
+- [ ] Run builder: `run_merged_build_waybills.command`
 - [ ] Print manifests from each store folder
 - [ ] Pack orders according to manifests
 
@@ -1069,7 +1069,7 @@ python scripts/build_daily_waybills.py --verbose
 
 ### Step 4: Archive and Retention Rules (Current Policy)
 
-`excel_ui/run_build_waybills.command` now calls `scripts/archive_waybill_inputs.py` after build.
+`excel_ui/run_merged_build_waybills.command` now calls `scripts/archive_waybill_inputs.py` after build.
 
 **Archive scope:**
 - Local run archive (`excel_ui/Archive/input_*`) includes:

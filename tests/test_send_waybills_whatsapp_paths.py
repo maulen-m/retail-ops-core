@@ -3,8 +3,6 @@ from pathlib import Path
 import pytest
 
 from scripts.send_waybills_whatsapp import (
-    RISK_DIVERSIFIER,
-    RISK_HIGH_SIMILAR,
     SOURCE_MERGED,
     WhatsAppSender,
     _normalize_chat_key,
@@ -91,6 +89,26 @@ def test_collect_all_pdfs_recurses_nested_category_folders(tmp_path: Path) -> No
     assert all(x["relative"].startswith("MERGED/") for x in pdfs)
 
 
+def test_collect_all_pdfs_reads_sku_key_from_manifest_output_mapping(tmp_path: Path) -> None:
+    today_root = tmp_path / "Today"
+    store = today_root / "TODAY" / "28.02.26_Universal_qnt1"
+    store.mkdir(parents=True, exist_ok=True)
+    (store / "manifest_normal_singles.csv").write_text(
+        "type,store,order_id,sku_key,sku_id,output\n"
+        "NORMAL,Universal,100,LINE52_BLACK,LINE52_BLACK_XL,NORMAL_singles/Принт_5в1_черный_XL-1.pdf\n",
+        encoding="utf-8",
+    )
+    pdf_path = store / "NORMAL_singles" / "Принт_5в1_черный_XL-1.pdf"
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.write_bytes(b"%PDF-1.0\n")
+
+    pdfs = collect_all_pdfs(today_root)
+
+    assert len(pdfs) == 1
+    assert pdfs[0]["sku_key"] == "LINE52_BLACK"
+    assert pdfs[0]["sku_id"] == "LINE52_BLACK_XL"
+
+
 def test_ordering_size_rises_within_same_item_family() -> None:
     pdfs = [
         {
@@ -122,24 +140,27 @@ def test_ordering_size_rises_within_same_item_family() -> None:
     ]
 
 
-def test_ordering_interleaves_same_family_with_other_items() -> None:
+def test_ordering_keeps_sku_block_contiguous_with_rising_sizes() -> None:
     pdfs = [
         {
             "filename": "CL_NEW-CLO_MEN_RUSH_WHITE_S-1.pdf",
             "category": "NORMAL_singles",
             "family_key": "RUSH",
+            "sku_key": "LINE52_BLACK",
             "size_rank": 10,
         },
         {
             "filename": "CL_NEW-CLO_MEN_RUSH-PRO_BLACK_M-1.pdf",
             "category": "NORMAL_singles",
             "family_key": "RUSH",
+            "sku_key": "LINE52_BLACK",
             "size_rank": 11,
         },
         {
             "filename": "CL_NEW-CLO_MEN_TAICI_BLACK_M-1.pdf",
             "category": "NORMAL_singles",
             "family_key": "TAICI",
+            "sku_key": "TAICI_BLACK",
             "size_rank": 11,
         },
     ]
@@ -148,31 +169,31 @@ def test_ordering_interleaves_same_family_with_other_items() -> None:
     names = [x["filename"] for x in ordered]
 
     assert names[0] == "CL_NEW-CLO_MEN_RUSH_WHITE_S-1.pdf"
-    assert names[1] == "CL_NEW-CLO_MEN_TAICI_BLACK_M-1.pdf"
-    assert names[2] == "CL_NEW-CLO_MEN_RUSH-PRO_BLACK_M-1.pdf"
+    assert names[1] == "CL_NEW-CLO_MEN_RUSH-PRO_BLACK_M-1.pdf"
+    assert names[2] == "CL_NEW-CLO_MEN_TAICI_BLACK_M-1.pdf"
 
 
-def test_ordering_splits_high_similarity_when_diversifier_exists() -> None:
+def test_ordering_uses_sku_key_not_family_for_grouping() -> None:
     pdfs = [
         {
             "filename": "Rush_white_S-1.pdf",
             "category": "NORMAL_singles",
-            "family_key": "RUSH_WHITE",
-            "risk_group": RISK_HIGH_SIMILAR,
+            "family_key": "RUSH",
+            "sku_key": "RUSH_WHITE",
             "size_rank": 10,
         },
         {
             "filename": "Tshirt_black_M-1.pdf",
             "category": "NORMAL_singles",
-            "family_key": "TSHIRT_BLACK",
-            "risk_group": RISK_HIGH_SIMILAR,
+            "family_key": "RUSH",
+            "sku_key": "RUSH_BLACK",
             "size_rank": 11,
         },
         {
             "filename": "Taici_black_M-1.pdf",
             "category": "NORMAL_singles",
             "family_key": "TAICI",
-            "risk_group": RISK_DIVERSIFIER,
+            "sku_key": "RUSH_WHITE",
             "size_rank": 11,
         },
     ]
@@ -182,31 +203,6 @@ def test_ordering_splits_high_similarity_when_diversifier_exists() -> None:
     assert names == [
         "Rush_white_S-1.pdf",
         "Taici_black_M-1.pdf",
-        "Tshirt_black_M-1.pdf",
-    ]
-
-
-def test_ordering_allows_high_similarity_neighbors_if_no_diversifier_left() -> None:
-    pdfs = [
-        {
-            "filename": "Rush_white_S-1.pdf",
-            "category": "NORMAL_singles",
-            "family_key": "RUSH_WHITE",
-            "risk_group": RISK_HIGH_SIMILAR,
-            "size_rank": 10,
-        },
-        {
-            "filename": "Tshirt_black_M-1.pdf",
-            "category": "NORMAL_singles",
-            "family_key": "TSHIRT_BLACK",
-            "risk_group": RISK_HIGH_SIMILAR,
-            "size_rank": 11,
-        },
-    ]
-
-    ordered = order_pdfs_for_sending(pdfs)
-    assert [x["filename"] for x in ordered] == [
-        "Rush_white_S-1.pdf",
         "Tshirt_black_M-1.pdf",
     ]
 

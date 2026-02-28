@@ -17,7 +17,7 @@ Purpose: fail-closed blocker before shipping/waybill workflow so shipment cannot
 - Exit `1`: any check failed.
 
 ## Workflow integration
-- `excel_ui/run_build_waybills.command` runs this preflight immediately after `scripts/ops_preflight.py --shipping`.
+- `excel_ui/run_merged_build_waybills.command` runs this preflight immediately after `scripts/ops_preflight.py --shipping`.
 - If preflight fails, workflow stops before API shipping and waybill download steps.
 
 ## Output

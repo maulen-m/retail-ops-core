@@ -7,7 +7,7 @@ This contract is fail-closed: workflow regressions must surface as test failures
 
 ## Canonical Entrypoints
 - `excel_ui/run_full_import.command`
-- `excel_ui/run_build_waybills.command`
+- `excel_ui/run_merged_build_waybills.command`
 - `scripts/run_kaspi_daily_ops.py`
 - `scripts/run_daily_autopilot.py`
 - `scripts/benchmark_kaspi_daily_ops.py`
@@ -44,7 +44,7 @@ updating this contract and corresponding tests before merge.
   - `scripts/report_waybill_status.py`
 
 ## Non-Negotiable Runtime Rules
-- keep fail-closed behavior in `run_build_waybills.command` (`HARD_FAIL` -> non-zero exit)
+- keep fail-closed behavior in `run_merged_build_waybills.command` (`HARD_FAIL` -> non-zero exit)
 - keep strict stop-line report (`--strict-stopline`)
 - keep fallback selection path in waybill download (`--fallback-crm`) to avoid missing PDFs for non-prefetched target IDs
 - keep profile contract in daily ops orchestrator:
