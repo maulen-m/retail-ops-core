@@ -69,6 +69,15 @@ WAYBILL_RETRY_PASSES_UNIVERSAL = int(os.environ.get("KASPI_WAYBILL_RETRY_PASSES_
 DELIVERY_STATE = api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY) or ""
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.environ.get(name, "")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _retry_settings_for_store(store_code: str) -> tuple[int, int]:
     """Return retry delay/passes tuned per store for waybill readiness."""
     retry_delay = WAYBILL_RETRY_DELAY
@@ -1212,6 +1221,12 @@ def main() -> int:
         help='Fallback to DB/CRM selection if API returns no orders'
     )
     parser.add_argument(
+        '--allow-partial-health',
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("KASPI_ALLOW_PARTIAL_WAYBILL_HEALTH", False),
+        help='Treat partial/delayed waybill health as soft-warning (exit 0) so bundling can proceed.'
+    )
+    parser.add_argument(
         '--verbose', '-v',
         action='store_true',
         help='Verbose output'
@@ -1309,6 +1324,9 @@ def main() -> int:
         print(f"\n  Waybills saved to: {args.output}")
     health = classify_waybill_health(result)
     print(f"  Health: {health.code} ({health.message})")
+    if args.allow_partial_health and health.code in {"partial", "delayed"}:
+        print("  Health override: allow-partial-health enabled (continuing with exit code 0)")
+        return 0
     return health.exit_code
 
 

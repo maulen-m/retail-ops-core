@@ -273,6 +273,12 @@ class TestDateConversion:
         with pytest.raises(ValueError, match="Invalid date format"):
             client._to_timestamp_ms('not-a-date')
 
+    def test_date_only_end_of_day_conversion(self, client):
+        """Date-only end_of_day conversion should include full day."""
+        start_ts = client._to_timestamp_ms('2025-12-07')
+        end_ts = client._to_timestamp_ms('2025-12-07', end_of_day=True)
+        assert end_ts - start_ts == 86_399_999
+
 
 # =============================================================================
 # ORDER PARSING TESTS
@@ -435,6 +441,10 @@ class TestMockedAPICalls:
         params = call_kwargs.get('params', {})
         assert 'filter[orders][creationDate][$ge]' in params
         assert 'filter[orders][creationDate][$le]' in params
+        # $le should be inclusive end-of-day when date-only string is provided
+        assert params['filter[orders][creationDate][$le]'] - params['filter[orders][creationDate][$ge]'] == (
+            (7 * 86_400_000) - 1
+        )
 
     @patch('requests.Session.request')
     def test_get_order_success(self, mock_request, client, sample_api_order):

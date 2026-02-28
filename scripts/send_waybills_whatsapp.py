@@ -23,11 +23,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
+import webbrowser
+from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -51,6 +54,53 @@ PDF_CATEGORIES = [
     "SPECIAL_multi_qty",
     "NORMAL_singles",
 ]
+CATEGORY_PRIORITY = {name: idx for idx, name in enumerate(PDF_CATEGORIES)}
+
+# Source roots under Today
+SOURCE_AUTO = "auto"
+SOURCE_MERGED = "merged"
+SOURCE_PER_STORE = "per-store"
+SOURCE_LEGACY = "legacy"
+SOURCE_CHOICES = [SOURCE_AUTO, SOURCE_MERGED, SOURCE_PER_STORE, SOURCE_LEGACY]
+
+# Size ordering for send priority
+SIZE_ORDER = {
+    # Kids
+    "22": 1,
+    "24": 2,
+    "26": 3,
+    "28": 4,
+    "30": 5,
+    "32": 6,
+    "34": 7,
+    # Adult
+    "S": 10,
+    "M": 11,
+    "L": 12,
+    "XL": 13,
+    "2XL": 14,
+    "3XL": 15,
+    "4XL": 16,
+}
+SIZE_TOKEN_RE = re.compile(r"(22|24|26|28|30|32|34|2XL|3XL|4XL|XL|S|M|L)", re.IGNORECASE)
+TRAILING_SIZE_RE = re.compile(
+    r"_(22|24|26|28|30|32|34|2XL|3XL|4XL|XL|S|M|L)-\d+$",
+    re.IGNORECASE,
+)
+MESSY_MULTI_SIZE_RE = re.compile(
+    r"-(22|24|26|28|30|32|34|2XL|3XL|4XL|XL|S|M|L)-\d+\(",
+    re.IGNORECASE,
+)
+COLOR_TOKENS = {
+    "BLACK", "WHITE", "GRAY", "GREY", "RED", "BLUE", "GREEN", "BROWN", "BEIGE",
+    "PINK", "PURPLE", "YELLOW", "ORANGE",
+    "ЧЕРНЫЙ", "ЧЕРНАЯ", "БЕЛЫЙ", "БЕЛАЯ", "СЕРЫЙ", "СЕРАЯ", "КРАСНЫЙ", "СИНИЙ",
+    "ЗЕЛЕНЫЙ", "КОРИЧНЕВЫЙ", "БЕЖЕВЫЙ", "РОЗОВЫЙ", "ФИОЛЕТОВЫЙ", "ЖЕЛТЫЙ",
+}
+NOISE_TOKENS = {
+    "CL", "NEW", "CLO", "MEN", "MAN", "WOMEN", "WOMAN", "KID", "KIDS",
+    "MESTOVAYA", "PROD", "SKU", "COLOR", "SIZE", "PP1",
+}
 
 # Delay between sends (seconds)
 SEND_DELAY = 10
@@ -84,9 +134,8 @@ def save_sent_tracker(tracker_path: Path, tracker: Dict) -> None:
 # PDF COLLECTION
 # =============================================================================
 
-def find_store_folders(today_folder: Path) -> List[Path]:
-    """Find all store folders in Today directory (legacy or PER_STORE layout)."""
-    scan_root = today_folder / "PER_STORE" if (today_folder / "PER_STORE").is_dir() else today_folder
+def _collect_store_folders(scan_root: Path) -> List[Path]:
+    """Collect store folders under a specific root."""
     if not scan_root.exists():
         return []
 
@@ -108,8 +157,36 @@ def find_store_folders(today_folder: Path) -> List[Path]:
     else:
         folders = collect_from(scan_root)
 
-    # Sort by name (date_store format)
     return sorted(folders, key=lambda x: x.name)
+
+
+def _has_store_folders(scan_root: Path) -> bool:
+    return bool(_collect_store_folders(scan_root))
+
+
+def resolve_send_root(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Path:
+    """Resolve which bundle root to use under Today/."""
+    merged_root = today_folder / "MERGED"
+    per_store_root = today_folder / "PER_STORE"
+
+    if source_mode == SOURCE_MERGED:
+        return merged_root
+    if source_mode == SOURCE_PER_STORE:
+        return per_store_root
+    if source_mode == SOURCE_LEGACY:
+        return today_folder
+
+    # Auto mode: prefer merged, then per-store, then legacy.
+    for candidate in (merged_root, per_store_root, today_folder):
+        if _has_store_folders(candidate):
+            return candidate
+    return today_folder
+
+
+def find_store_folders(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List[Path]:
+    """Find all store folders in Today directory for selected source mode."""
+    scan_root = resolve_send_root(today_folder, source_mode=source_mode)
+    return _collect_store_folders(scan_root)
 
 
 def collect_pdfs_from_category(store_folder: Path, category: str) -> List[Path]:
@@ -124,7 +201,7 @@ def collect_pdfs_from_category(store_folder: Path, category: str) -> List[Path]:
     return sorted(pdfs, key=lambda x: x.name.lower())
 
 
-def collect_all_pdfs(today_folder: Path) -> List[Dict]:
+def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List[Dict]:
     """
     Collect all PDFs in correct sending order.
 
@@ -136,7 +213,7 @@ def collect_all_pdfs(today_folder: Path) -> List[Dict]:
     """
     all_pdfs = []
 
-    store_folders = find_store_folders(today_folder)
+    store_folders = find_store_folders(today_folder, source_mode=source_mode)
 
     for store_folder in store_folders:
         store_name = store_folder.name
@@ -150,6 +227,10 @@ def collect_all_pdfs(today_folder: Path) -> List[Dict]:
                     "store": store_name,
                     "category": category,
                     "filename": pdf_path.name,
+                    "item_core": _extract_item_core(pdf_path.name),
+                    "size_token": _extract_size_token(pdf_path.name),
+                    "size_rank": _size_rank(_extract_size_token(pdf_path.name)),
+                    "family_key": _family_key(_extract_item_core(pdf_path.name)),
                     "relative": _relative_for_tracker(pdf_path, today_folder),
                 })
 
@@ -173,6 +254,116 @@ def filter_unsent_pdfs(all_pdfs: List[Dict], sent_list: List[str]) -> List[Dict]
     """Filter out PDFs that have already been sent."""
     sent_set = set(sent_list)
     return [pdf for pdf in all_pdfs if pdf["relative"] not in sent_set]
+
+
+def _extract_size_token(filename: str) -> str:
+    stem = Path(filename).stem.upper()
+
+    trailing = TRAILING_SIZE_RE.search(stem)
+    if trailing:
+        return trailing.group(1).upper()
+
+    messy = MESSY_MULTI_SIZE_RE.search(stem)
+    if messy:
+        return messy.group(1).upper()
+
+    any_match = SIZE_TOKEN_RE.search(stem)
+    if any_match:
+        return any_match.group(1).upper()
+
+    return ""
+
+
+def _size_rank(size_token: str) -> int:
+    if not size_token:
+        return 999
+    return SIZE_ORDER.get(size_token.upper(), 999)
+
+
+def _extract_item_core(filename: str) -> str:
+    stem = Path(filename).stem
+    stem = re.sub(r"^Местовая-\d+_", "", stem, flags=re.IGNORECASE)
+    stem = TRAILING_SIZE_RE.sub("", stem)
+    return stem
+
+
+def _family_key(item_core: str) -> str:
+    text = re.sub(r"[^0-9A-Za-zА-Яа-я]+", "_", item_core).strip("_").upper()
+    if not text:
+        return "UNKNOWN"
+    tokens = [tok for tok in re.split(r"[_\-]+", text) if tok]
+
+    cleaned: list[str] = []
+    for tok in tokens:
+        if tok in COLOR_TOKENS or tok in NOISE_TOKENS:
+            continue
+        if tok == "PRO":
+            continue
+        cleaned.append(tok)
+
+    if not cleaned:
+        return text
+    return "_".join(cleaned[:3])
+
+
+def _interleave_by_family(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Interleave entries by family key to avoid near-neighbor duplicates.
+
+    Within each family bucket, keep size-rising order.
+    """
+    buckets: dict[str, deque[Dict[str, Any]]] = {}
+    grouped: dict[str, list[Dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        grouped[str(entry.get("family_key") or "UNKNOWN")].append(entry)
+
+    for family, items in grouped.items():
+        items.sort(key=lambda x: (x.get("size_rank", 999), str(x.get("filename", "")).lower()))
+        buckets[family] = deque(items)
+
+    result: list[Dict[str, Any]] = []
+    last_family = ""
+    while True:
+        alive = [family for family, queue in buckets.items() if queue]
+        if not alive:
+            break
+
+        candidates = [family for family in alive if family != last_family]
+        if not candidates:
+            candidates = alive
+        candidates.sort(key=lambda family: (-len(buckets[family]), family))
+        chosen = candidates[0]
+
+        result.append(buckets[chosen].popleft())
+        last_family = chosen
+
+    return result
+
+
+def order_pdfs_for_sending(pdfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Order PDFs by category, then by size-rising sequence with family diversity.
+
+    This keeps legacy category priority while improving packer-friendly ordering.
+    """
+    category_groups: dict[str, list[Dict[str, Any]]] = defaultdict(list)
+    for pdf in pdfs:
+        category_groups[str(pdf.get("category", ""))].append(pdf)
+
+    ordered: list[Dict[str, Any]] = []
+    for category in PDF_CATEGORIES:
+        if category_groups.get(category):
+            ordered.extend(_interleave_by_family(category_groups[category]))
+
+    # Unknown categories (if any) go last, stable by filename.
+    unknown = []
+    for category, items in category_groups.items():
+        if category not in CATEGORY_PRIORITY:
+            unknown.extend(items)
+    unknown.sort(key=lambda x: str(x.get("filename", "")).lower())
+    ordered.extend(unknown)
+
+    return ordered
 
 
 # =============================================================================
@@ -226,6 +417,7 @@ def run_sender(
     group_id: Optional[str],
     dry_run: bool = False,
     resume: bool = True,
+    bundle_source: str = SOURCE_AUTO,
     verbose: bool = False,
 ) -> Dict:
     """
@@ -236,6 +428,7 @@ def run_sender(
         group_id: WhatsApp group ID
         dry_run: Preview only, don't send
         resume: Skip already-sent PDFs
+        bundle_source: Which Today sub-layout to use
         verbose: Print progress
 
     Returns:
@@ -261,15 +454,18 @@ def run_sender(
         print("Install with: pip install pywhatkit")
         return results
 
+    source_root = resolve_send_root(today_folder, source_mode=bundle_source)
+
     # Load tracker
     tracker_path = today_folder / SENT_TRACKER_FILE
     tracker = load_sent_tracker(tracker_path) if resume else {"sent": [], "last_updated": None}
 
     # Collect PDFs
-    all_pdfs = collect_all_pdfs(today_folder)
+    all_pdfs = collect_all_pdfs(today_folder, source_mode=bundle_source)
     results["total"] = len(all_pdfs)
 
     if verbose:
+        print(f"Bundle source: {source_root}")
         print(f"Found {len(all_pdfs)} PDFs total")
 
     if not all_pdfs:
@@ -286,6 +482,14 @@ def run_sender(
     if not pdfs_to_send:
         print("All PDFs already sent!")
         return results
+
+    pdfs_to_send = order_pdfs_for_sending(pdfs_to_send)
+
+    try:
+        browser_backend = str(webbrowser.get())
+    except Exception:
+        browser_backend = "system default browser"
+    print(f"Sender browser/profile: {browser_backend} (WhatsApp Web logged-in session)")
 
     print(f"\n{'[DRY RUN] ' if dry_run else ''}PDFs to send: {len(pdfs_to_send)}")
     print("-" * 50)
@@ -366,6 +570,16 @@ def main():
         help="Don't skip already-sent PDFs"
     )
     parser.add_argument(
+        "--bundle-source",
+        choices=SOURCE_CHOICES,
+        default=SOURCE_AUTO,
+        help=(
+            "Which bundle layout to send from: "
+            "auto (prefer MERGED, then PER_STORE, then legacy), "
+            "merged, per-store, or legacy."
+        ),
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Verbose output"
@@ -377,6 +591,7 @@ def main():
     print("  WhatsApp PDF Sender")
     print("=" * 60)
     print(f"  Folder: {args.today_folder}")
+    print(f"  Bundle source: {args.bundle_source}")
     print(f"  Mode: {'DRY RUN' if args.dry_run else 'LIVE'}")
     print(f"  Resume: {'No' if args.no_resume else 'Yes'}")
     print()
@@ -386,6 +601,7 @@ def main():
         group_id=args.group_id,
         dry_run=args.dry_run,
         resume=not args.no_resume,
+        bundle_source=args.bundle_source,
         verbose=args.verbose,
     )
 

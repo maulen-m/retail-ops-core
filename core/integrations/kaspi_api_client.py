@@ -428,7 +428,8 @@ class KaspiAPIClient:
             params['filter[orders][creationDate][$ge]'] = since_ts
 
         if until:
-            until_ts = self._to_timestamp_ms(until)
+            # Date-only upper bounds should include the full day.
+            until_ts = self._to_timestamp_ms(until, end_of_day=True)
             params['filter[orders][creationDate][$le]'] = until_ts
 
         if delivery_type is not None:
@@ -941,20 +942,35 @@ class KaspiAPIClient:
             status_code=200
         )
 
-    def _to_timestamp_ms(self, date_str: str) -> int:
+    def _to_timestamp_ms(self, date_str: str, *, end_of_day: bool = False) -> int:
         """Convert date string to milliseconds timestamp."""
         if isinstance(date_str, int):
             return date_str
 
+        is_date_only = False
         try:
-            # Try ISO8601 with time
-            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            # Date-only string should keep explicit day-boundary semantics.
+            if (
+                isinstance(date_str, str)
+                and len(date_str) == 10
+                and date_str[4] == "-"
+                and date_str[7] == "-"
+            ):
+                dt = datetime.strptime(date_str, '%Y-%m-%d')
+                is_date_only = True
+            else:
+                # Try ISO8601 with time
+                dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
         except ValueError:
             try:
                 # Try date only
                 dt = datetime.strptime(date_str, '%Y-%m-%d')
+                is_date_only = True
             except ValueError:
                 raise ValueError(f"Invalid date format: {date_str}")
+
+        if end_of_day and is_date_only:
+            dt = dt + timedelta(days=1) - timedelta(milliseconds=1)
 
         return int(dt.timestamp() * 1000)
 

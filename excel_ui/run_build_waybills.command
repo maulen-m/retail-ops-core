@@ -265,7 +265,12 @@ DATE_FLAG="--exact-date"
 if [ "${INCLUDE_OVERDUE}" = "1" ]; then
     DATE_FLAG="--include-overdue"
 fi
-python scripts/download_waybills_api.py --verbose --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --fallback-crm
+ALLOW_PARTIAL_WAYBILL_HEALTH="${KASPI_ALLOW_PARTIAL_WAYBILL_HEALTH:-1}"
+PARTIAL_HEALTH_FLAG=""
+if [ "${ALLOW_PARTIAL_WAYBILL_HEALTH}" = "1" ]; then
+    PARTIAL_HEALTH_FLAG="--allow-partial-health"
+fi
+python scripts/download_waybills_api.py --verbose --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --fallback-crm ${PARTIAL_HEALTH_FLAG}
 
 if [ $? -ne 0 ]; then
     echo ""

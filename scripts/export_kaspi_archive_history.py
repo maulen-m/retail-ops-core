@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -48,14 +48,26 @@ MAX_PAGES = 1000
 class StoreResult:
     store_code: str
     success: bool
+    date_mode: str
     windows_total: int
     windows_ok: int
     orders_raw: int
     orders_dedup: int
+    orders_selected: int
     rows_exported: int
     entry_fetch_failures: int
+    status_change_missing_completed: int
+    status_change_hydration_attempted: int
+    status_change_hydration_success: int
+    status_change_hydration_skipped_after_probe: int
     output_dir: str
     errors: List[str]
+
+
+DATE_MODE_CREATION = "creationDate"
+DATE_MODE_STATUS_CHANGE = "statusChangeDate"
+DATE_MODE_CHOICES = (DATE_MODE_CREATION, DATE_MODE_STATUS_CHANGE)
+COMPLETED_STATUS = "COMPLETED"
 
 
 def now_kz_iso() -> str:
@@ -97,6 +109,114 @@ def _timestamp_to_iso(ts: Any) -> str:
 
 def _json_dumps(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True)
+
+
+def _timestamp_to_date(ts: Any) -> Optional[date]:
+    if ts in (None, ""):
+        return None
+    try:
+        v = int(ts)
+        if v > 10_000_000_000:  # ms
+            return datetime.fromtimestamp(v / 1000).date()
+        return datetime.fromtimestamp(v).date()
+    except Exception:
+        return None
+
+
+def _extract_order_from_response(payload: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            for row in data:
+                if isinstance(row, dict) and row.get("attributes"):
+                    return row
+        if payload.get("attributes"):
+            return payload
+    return None
+
+
+def _copy_status_change_date(order: Dict[str, Any], detail_order: Optional[Dict[str, Any]]) -> bool:
+    if not detail_order:
+        return False
+    detail_attrs = detail_order.get("attributes", {}) or {}
+    status_change = detail_attrs.get("statusChangeDate")
+    if status_change in (None, ""):
+        return False
+    attrs = order.setdefault("attributes", {}) or {}
+    attrs["statusChangeDate"] = status_change
+    order["attributes"] = attrs
+    return True
+
+
+def _order_matches_date_mode(order: Dict[str, Any], mode: str, since: date, until: date) -> bool:
+    attrs = order.get("attributes", {}) or {}
+    if mode == DATE_MODE_STATUS_CHANGE:
+        target_date = _timestamp_to_date(attrs.get("statusChangeDate"))
+    else:
+        target_date = _timestamp_to_date(attrs.get("creationDate"))
+    if not target_date:
+        return False
+    return since <= target_date <= until
+
+
+def _hydrate_missing_status_change_dates(
+    orders: List[Dict[str, Any]],
+    fetch_order_detail: Callable[[str, str], Optional[Dict[str, Any]]],
+    max_workers: int = 8,
+    probe_limit: int = 25,
+) -> Dict[str, int]:
+    missing_indices: List[int] = []
+    for idx, order in enumerate(orders):
+        attrs = order.get("attributes", {}) or {}
+        if attrs.get("statusChangeDate") in (None, ""):
+            missing_indices.append(idx)
+
+    stats = {
+        "attempted": 0,
+        "hydrated": 0,
+        "skipped_after_probe": 0,
+    }
+    if not missing_indices:
+        return stats
+
+    def _fetch_and_apply(idx: int) -> bool:
+        order = orders[idx]
+        attrs = order.get("attributes", {}) or {}
+        order_id = str(order.get("id") or "")
+        order_code = str(attrs.get("code") or "")
+        detail_order = fetch_order_detail(order_id, order_code)
+        return _copy_status_change_date(order, detail_order)
+
+    probe_hits = 0
+    probe_count = min(len(missing_indices), max(0, int(probe_limit)))
+    for idx in missing_indices[:probe_count]:
+        stats["attempted"] += 1
+        if _fetch_and_apply(idx):
+            stats["hydrated"] += 1
+            probe_hits += 1
+
+    remaining = missing_indices[probe_count:]
+    if remaining and probe_count > 0 and probe_hits == 0:
+        stats["skipped_after_probe"] = len(remaining)
+        return stats
+
+    max_workers = max(1, int(max_workers))
+    if max_workers == 1:
+        for idx in remaining:
+            stats["attempted"] += 1
+            if _fetch_and_apply(idx):
+                stats["hydrated"] += 1
+        return stats
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        fut_map = {pool.submit(_fetch_and_apply, idx): idx for idx in remaining}
+        for fut in as_completed(fut_map):
+            stats["attempted"] += 1
+            if fut.result():
+                stats["hydrated"] += 1
+    return stats
 
 
 def _flatten_order(order: Dict[str, Any], store_code: str) -> Dict[str, Any]:
@@ -184,6 +304,30 @@ def _fetch_orders_window(
     raise RuntimeError(last_error or "unknown window fetch error")
 
 
+def _fetch_order_detail_with_retry(
+    client: KaspiAPIClient,
+    order_id: str,
+    order_code: str,
+    retries: int,
+    retry_sleep: float,
+) -> Optional[Dict[str, Any]]:
+    last_error: Optional[str] = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = client.get_order_by_id(order_id) if order_id else client.get_order(order_code)
+            if not resp.success:
+                raise RuntimeError(resp.error or "order detail request failed")
+            detail_order = _extract_order_from_response(resp.data)
+            return detail_order
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            if attempt >= retries:
+                break
+            time.sleep(retry_sleep * (2 ** (attempt - 1)))
+
+    raise RuntimeError(last_error or "unknown order detail fetch error")
+
+
 def _fetch_entries_with_retry(
     client: KaspiAPIClient,
     order_id: str,
@@ -265,6 +409,8 @@ Generated: {now_kz_iso()}
 ## Implemented Efficiency Strategy
 - Use API in 14-day windows (strict coverage, no gaps).
 - Deduplicate globally by `(store_code, order_id)`.
+- Default date cutoff mode is `statusChangeDate` for transaction-aligned exports.
+- Hydrate missing `statusChangeDate` via order-detail fetch only for missing rows.
 - Persist raw JSONL + normalized CSV/XLSX + manifests for replay.
 - Optional per-order line enrichment via entries endpoint.
 - Strict mode fails on any store/window failure.
@@ -282,10 +428,16 @@ Generated: {now_kz_iso()}
 def process_store(
     store_code: str,
     windows: List[Tuple[date, date]],
+    since: date,
+    until: date,
     out_root: Path,
     fetch_entries: bool,
     entry_workers: int,
+    detail_workers: int,
     fetch_masterproduct: bool,
+    date_mode: str,
+    hydrate_missing_status_change_date: bool,
+    require_status_change_date_for_completed: bool,
     retries: int,
     retry_sleep: float,
     strict: bool,
@@ -302,12 +454,18 @@ def process_store(
         return StoreResult(
             store_code=store_code,
             success=False,
+            date_mode=date_mode,
             windows_total=len(windows),
             windows_ok=0,
             orders_raw=0,
             orders_dedup=0,
+            orders_selected=0,
             rows_exported=0,
             entry_fetch_failures=0,
+            status_change_missing_completed=0,
+            status_change_hydration_attempted=0,
+            status_change_hydration_success=0,
+            status_change_hydration_skipped_after_probe=0,
             output_dir=str(store_dir),
             errors=[msg],
         )
@@ -390,6 +548,45 @@ def process_store(
         ({"store_code": store_code, "order": o} for o in dedup_orders),
     )
 
+    status_hydration_stats = {
+        "attempted": 0,
+        "hydrated": 0,
+        "skipped_after_probe": 0,
+    }
+    if date_mode == DATE_MODE_STATUS_CHANGE and hydrate_missing_status_change_date and dedup_orders:
+        def _detail_fetcher(order_id: str, order_code: str) -> Optional[Dict[str, Any]]:
+            try:
+                return _fetch_order_detail_with_retry(
+                    client=client,
+                    order_id=order_id,
+                    order_code=order_code,
+                    retries=retries,
+                    retry_sleep=retry_sleep,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"detail {order_code or order_id}: {exc}")
+                return None
+
+        status_hydration_stats = _hydrate_missing_status_change_dates(
+            orders=dedup_orders,
+            fetch_order_detail=_detail_fetcher,
+            max_workers=detail_workers,
+            probe_limit=25,
+        )
+
+    selected_orders = [o for o in dedup_orders if _order_matches_date_mode(o, date_mode, since, until)]
+
+    missing_status_change_completed = 0
+    if require_status_change_date_for_completed:
+        for order in selected_orders:
+            attrs = order.get("attributes", {}) or {}
+            status = str(attrs.get("status") or "").upper()
+            if status == COMPLETED_STATUS and attrs.get("statusChangeDate") in (None, ""):
+                missing_status_change_completed += 1
+                if missing_status_change_completed <= 50:
+                    code = attrs.get("code") or order.get("id") or ""
+                    errors.append(f"missing statusChangeDate for COMPLETED order {code}")
+
     flattened = [_flatten_order(o, store_code=store_code) for o in dedup_orders]
     df_flat = pd.DataFrame(flattened)
     df_flat.to_csv(store_dir / "archive_orders_flat.csv", index=False, encoding="utf-8")
@@ -399,11 +596,11 @@ def process_store(
     raw_entries_lines: List[Dict[str, Any]] = []
     entries_by_key: Dict[str, List[Dict[str, Any]]] = {}
 
-    if fetch_entries and dedup_orders:
+    if fetch_entries and selected_orders:
         # Masterproduct lookups add an extra API call per line-item and are kept
         # sequential for reliability. Fast path uses parallel entry fetching only.
         if fetch_masterproduct:
-            for i, order in enumerate(dedup_orders, start=1):
+            for i, order in enumerate(selected_orders, start=1):
                 attrs = order.get("attributes", {}) or {}
                 order_id = str(order.get("id") or "")
                 order_code = str(attrs.get("code") or "")
@@ -430,7 +627,7 @@ def process_store(
                     errors.append(f"entries {order_code or order_id}: {exc}")
                 if i % 500 == 0:
                     print(
-                        f"[{store_code}] entries progress {i}/{len(dedup_orders)} "
+                        f"[{store_code}] entries progress {i}/{len(selected_orders)} "
                         f"(failures={entry_failures})"
                     )
         else:
@@ -462,7 +659,7 @@ def process_store(
 
             max_workers = max(1, int(entry_workers))
             with ThreadPoolExecutor(max_workers=max_workers) as entry_pool:
-                fut_map = {entry_pool.submit(_fetch_one, order): order for order in dedup_orders}
+                fut_map = {entry_pool.submit(_fetch_one, order): order for order in selected_orders}
                 processed = 0
                 for fut in as_completed(fut_map):
                     key, order_id, order_code, entries, err = fut.result()
@@ -482,13 +679,13 @@ def process_store(
                         )
                     if processed % 500 == 0:
                         print(
-                            f"[{store_code}] entries progress {processed}/{len(dedup_orders)} "
+                            f"[{store_code}] entries progress {processed}/{len(selected_orders)} "
                             f"(failures={entry_failures}, workers={max_workers})"
                         )
 
         _write_jsonl(store_dir / "archive_order_entries_raw.jsonl", raw_entries_lines)
 
-    for i, order in enumerate(dedup_orders, start=1):
+    for i, order in enumerate(selected_orders, start=1):
         attrs = order.get("attributes", {}) or {}
         order_code = str(attrs.get("code") or "")
         key = str(order.get("id") or f"CODE::{order_code}")
@@ -504,7 +701,7 @@ def process_store(
         )
 
         if i % 1000 == 0:
-            print(f"[{store_code}] row build progress {i}/{len(dedup_orders)}")
+            print(f"[{store_code}] row build progress {i}/{len(selected_orders)}")
 
     # Ensure stable columns matching existing ArchiveOrders-style schema
     df_rows = pd.DataFrame(rows_export)
@@ -539,12 +736,19 @@ def process_store(
         f"# Store Integrity Report: {store_code}",
         "",
         f"- Generated: {now_kz_iso()}",
+        f"- Date mode: {date_mode}",
+        f"- Target period: {since.isoformat()} -> {until.isoformat()}",
         f"- Windows total: {len(windows)}",
         f"- Windows ok: {windows_ok}",
         f"- Raw orders (window sum): {len(raw_orders_lines)}",
         f"- Dedup orders: {len(dedup_orders)}",
+        f"- Selected orders ({date_mode} in period): {len(selected_orders)}",
         f"- Export rows: {len(df_rows)}",
         f"- Entry fetch failures: {entry_failures}",
+        f"- Status-change hydration attempted: {status_hydration_stats['attempted']}",
+        f"- Status-change hydration success: {status_hydration_stats['hydrated']}",
+        f"- Status-change hydration skipped after probe: {status_hydration_stats['skipped_after_probe']}",
+        f"- Missing statusChangeDate for COMPLETED in selection: {missing_status_change_completed}",
         f"- Success: {success}",
     ]
     if errors:
@@ -557,12 +761,18 @@ def process_store(
     return StoreResult(
         store_code=store_code,
         success=success,
+        date_mode=date_mode,
         windows_total=len(windows),
         windows_ok=windows_ok,
         orders_raw=len(raw_orders_lines),
         orders_dedup=len(dedup_orders),
+        orders_selected=len(selected_orders),
         rows_exported=len(df_rows),
         entry_fetch_failures=entry_failures,
+        status_change_missing_completed=missing_status_change_completed,
+        status_change_hydration_attempted=status_hydration_stats["attempted"],
+        status_change_hydration_success=status_hydration_stats["hydrated"],
+        status_change_hydration_skipped_after_probe=status_hydration_stats["skipped_after_probe"],
         output_dir=str(store_dir),
         errors=errors,
     )
@@ -606,6 +816,30 @@ def main() -> int:
         help="Fetch masterproduct names (slower; many extra API calls)",
     )
     parser.add_argument(
+        "--date-mode",
+        choices=DATE_MODE_CHOICES,
+        default=DATE_MODE_STATUS_CHANGE,
+        help="Date cutoff mode for exported rows.",
+    )
+    parser.add_argument(
+        "--detail-workers",
+        type=int,
+        default=8,
+        help="Parallel workers for order-detail hydration when statusChangeDate is missing",
+    )
+    parser.add_argument(
+        "--hydrate-missing-status-change-date",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Hydrate missing statusChangeDate from order details in statusChangeDate mode",
+    )
+    parser.add_argument(
+        "--require-status-change-date-for-completed",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Fail strict runs when COMPLETED orders in selection have missing statusChangeDate",
+    )
+    parser.add_argument(
         "--strict",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -637,7 +871,10 @@ def main() -> int:
     print(f"Stores: {stores}")
     print(f"Windows: {len(windows)} x {WINDOW_DAYS}d(max)")
     print(f"Out root: {out_root}")
+    print(f"Date mode: {args.date_mode}")
     print(f"Fetch entries: {args.fetch_entries}")
+    print(f"Hydrate missing statusChangeDate: {args.hydrate_missing_status_change_date}")
+    print(f"Require statusChangeDate for completed: {args.require_status_change_date_for_completed}")
     print(f"Strict mode: {args.strict}")
 
     if args.dry_run:
@@ -656,6 +893,10 @@ def main() -> int:
         "stores": stores,
         "fetch_entries": bool(args.fetch_entries),
         "fetch_masterproduct": bool(args.fetch_masterproduct),
+        "date_mode": args.date_mode,
+        "hydrate_missing_status_change_date": bool(args.hydrate_missing_status_change_date),
+        "require_status_change_date_for_completed": bool(args.require_status_change_date_for_completed),
+        "detail_workers": int(max(1, args.detail_workers)),
         "strict": bool(args.strict),
         "max_workers": int(max(1, args.max_workers)),
         "windows": [
@@ -677,7 +918,7 @@ def main() -> int:
         journal_path,
         [
             f"[{now_kz_iso()}] START kaspi archive export: since={since} until={until} stores={','.join(stores)} out={out_root}",
-            f"[{now_kz_iso()}] CONFIG strict={args.strict} fetch_entries={args.fetch_entries} fetch_masterproduct={args.fetch_masterproduct} max_workers={args.max_workers} entry_workers={args.entry_workers}",
+            f"[{now_kz_iso()}] CONFIG strict={args.strict} fetch_entries={args.fetch_entries} fetch_masterproduct={args.fetch_masterproduct} max_workers={args.max_workers} entry_workers={args.entry_workers} detail_workers={args.detail_workers} date_mode={args.date_mode}",
         ],
     )
 
@@ -689,10 +930,16 @@ def main() -> int:
                 process_store,
                 store,
                 windows,
+                since,
+                until,
                 out_root,
                 args.fetch_entries,
                 args.entry_workers,
+                args.detail_workers,
                 args.fetch_masterproduct,
+                args.date_mode,
+                args.hydrate_missing_status_change_date,
+                args.require_status_change_date_for_completed,
                 args.retries,
                 args.retry_sleep,
                 args.strict,
@@ -708,19 +955,26 @@ def main() -> int:
                 res = StoreResult(
                     store_code=store,
                     success=False,
+                    date_mode=args.date_mode,
                     windows_total=len(windows),
                     windows_ok=0,
                     orders_raw=0,
                     orders_dedup=0,
+                    orders_selected=0,
                     rows_exported=0,
                     entry_fetch_failures=0,
+                    status_change_missing_completed=0,
+                    status_change_hydration_attempted=0,
+                    status_change_hydration_success=0,
+                    status_change_hydration_skipped_after_probe=0,
                     output_dir=str(out_root / f"store_{store}"),
                     errors=[f"store worker crash: {exc}"],
                 )
             results.append(res)
             print(
                 f"[{res.store_code}] success={res.success} windows={res.windows_ok}/{res.windows_total} "
-                f"orders={res.orders_dedup} rows={res.rows_exported} entry_failures={res.entry_fetch_failures}"
+                f"orders={res.orders_dedup} selected={res.orders_selected} rows={res.rows_exported} "
+                f"entry_failures={res.entry_fetch_failures} hydrated={res.status_change_hydration_success}/{res.status_change_hydration_attempted}"
             )
 
     results = sorted(results, key=lambda r: stores.index(r.store_code))
@@ -729,12 +983,18 @@ def main() -> int:
         {
             "store_code": r.store_code,
             "success": r.success,
+            "date_mode": r.date_mode,
             "windows_total": r.windows_total,
             "windows_ok": r.windows_ok,
             "orders_raw": r.orders_raw,
             "orders_dedup": r.orders_dedup,
+            "orders_selected": r.orders_selected,
             "rows_exported": r.rows_exported,
             "entry_fetch_failures": r.entry_fetch_failures,
+            "status_change_missing_completed": r.status_change_missing_completed,
+            "status_change_hydration_attempted": r.status_change_hydration_attempted,
+            "status_change_hydration_success": r.status_change_hydration_success,
+            "status_change_hydration_skipped_after_probe": r.status_change_hydration_skipped_after_probe,
             "output_dir": r.output_dir,
             "errors": r.errors,
         }
@@ -763,18 +1023,22 @@ def main() -> int:
         f"- Range: `{since}` -> `{until}`",
         f"- Stores requested: `{', '.join(stores)}`",
         f"- Strict mode: `{args.strict}`",
+        f"- Date mode: `{args.date_mode}`",
         f"- Fetch entries: `{args.fetch_entries}`",
+        f"- Hydrate missing statusChangeDate: `{args.hydrate_missing_status_change_date}`",
         f"- Output root: `{out_root}`",
         "",
         "## Store Results",
         "",
-        "| Store | Success | Windows OK/Total | Dedup Orders | Export Rows | Entry Failures |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Store | Success | Windows OK/Total | Dedup Orders | Selected Orders | Export Rows | Hydrated/Attempted | Missing COMPLETED statusDate | Entry Failures |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in results:
         summary_lines.append(
             f"| {r.store_code} | {'YES' if r.success else 'NO'} | {r.windows_ok}/{r.windows_total} "
-            f"| {r.orders_dedup} | {r.rows_exported} | {r.entry_fetch_failures} |"
+            f"| {r.orders_dedup} | {r.orders_selected} | {r.rows_exported} "
+            f"| {r.status_change_hydration_success}/{r.status_change_hydration_attempted} "
+            f"| {r.status_change_missing_completed} | {r.entry_fetch_failures} |"
         )
 
     if total_errors:
