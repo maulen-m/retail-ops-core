@@ -68,6 +68,7 @@ if [ -z "${AB_DATA_DIR:-}" ] && [ -z "${DATA_DIR:-}" ]; then
     export DATA_DIR="~/Docs/Autonomous_business"
 fi
 DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-~/Docs/Autonomous_business}}"
+OUTPUT_TODAY_DIR="${DATA_ROOT}/excel_ui/Kaspi_orders/Today"
 
 # Merchant UID headers (store-specific). Prefer config/kaspi_stores.yaml when available.
 MERCHANT_EXPORTS=$(python3 - <<'PY' 2>/dev/null
@@ -280,6 +281,11 @@ echo "Step 3: Building waybill bundles..."
 echo "----------------------------------------"
 if [ "${HARD_FAIL}" -ne 0 ]; then
     echo "SKIPPED: build step blocked by earlier hard failure."
+    if [ -d "${OUTPUT_TODAY_DIR}" ]; then
+        rm -rf "${OUTPUT_TODAY_DIR}"
+    fi
+    mkdir -p "${OUTPUT_TODAY_DIR}"
+    echo "Cleared stale output folder: ${OUTPUT_TODAY_DIR}"
 else
     python scripts/build_daily_waybills.py --verbose --lookback-days "${LOOKBACK_DAYS}" ${DATE_FLAG}
     if [ $? -ne 0 ]; then
@@ -341,7 +347,7 @@ echo "========================================"
 echo "  Workflow Complete!"
 echo "========================================"
 echo "Output folder: excel_ui/Kaspi_orders/Today/"
-echo "Output folder (resolved): ${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"
+echo "Output folder (resolved): ${OUTPUT_TODAY_DIR}/"
 
 echo ""
 echo "Final Report: waybill health"
