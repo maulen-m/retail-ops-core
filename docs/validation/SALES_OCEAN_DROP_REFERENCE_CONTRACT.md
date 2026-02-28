@@ -30,6 +30,10 @@ Optional identity/date helper columns:
 - `mapped_sku_key`
 - `mapped_size`
 
+Anchor registry (immutable baseline pointer):
+- `config/anchors/ocean_drop_sales_anchor.json`
+- must define `ocean_drop_path`, `as_of_end`, `sha256`.
+
 ## Normalization Rules
 - `order_id` = `№ заказа`
 - `status_internal` normalization:
@@ -52,6 +56,8 @@ python3 scripts/validate_sales_truth_ocean_drop_parity.py \
   --strict
 ```
 
+If `--ocean-drop` is omitted, strict scripts must resolve it from `config/anchors/ocean_drop_sales_anchor.json`.
+
 Strict behavior:
 - Compare published truth vs normalized Ocean Drop reference by `sale_date + store_code`.
 - Enforce both:
@@ -72,3 +78,13 @@ Validator must emit:
 - Unknown warehouse/store mapping in strict mode: hard fail.
 - Missing delivered identity (`sku_key`/`my_size`) in strict mode: hard fail.
 - No silent fallback to external reference inside published truth views.
+
+## Apply Safety (Repair Path)
+- Default repair mode is delta-only (`--apply-delta`).
+- Replace mode (`--apply-replace`) is blocked unless both env gates are set:
+  - `ENABLE_OCEAN_DROP_APPLY=1`
+  - `ENABLE_OCEAN_DROP_DELETE=1`
+- Every apply path must emit deterministic plan artifacts:
+  - `apply_plan.json`
+  - `apply_plan.md`
+- Every apply path must create a DB backup before writes.

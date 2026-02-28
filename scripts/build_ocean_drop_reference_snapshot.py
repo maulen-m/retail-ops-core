@@ -20,6 +20,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.parsers.kaspi_parser import extract_sku_from_article
+from core.sales.ocean_drop_anchor import (
+    DEFAULT_REGISTRY as DEFAULT_ANCHOR_REGISTRY,
+    OceanDropAnchorError,
+    resolve_ocean_drop_path,
+)
 
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
@@ -323,14 +328,302 @@ def _backup_db(db_path: Path, backup_root: Path) -> Path:
     return backup_path
 
 
-def _apply_to_sales_fact_v2(*, db_path: Path, snapshot_df: pd.DataFrame, as_of: date, backup_root: Path) -> dict[str, Any]:
+def _normalize_rows_for_sales_fact_v2(snapshot_df: pd.DataFrame) -> list[dict[str, Any]]:
+    grouped = (
+        snapshot_df.fillna("")
+        .groupby(
+            [
+                "order_id",
+                "sale_date",
+                "store_code",
+                "sku_key",
+                "sku_id",
+                "my_size",
+                "offer_name",
+                "status_internal",
+                "return_flag",
+            ],
+            dropna=False,
+            as_index=False,
+        )
+        .agg(
+            quantity=("quantity", "sum"),
+            gross_rev_kzt=("gross_rev_kzt", "sum"),
+            net_delivery_fee_kzt=("net_delivery_fee_kzt", "sum"),
+        )
+    )
+    rows: list[dict[str, Any]] = []
+    for _, row in grouped.iterrows():
+        status_internal = str(row["status_internal"] or "").strip().upper()
+        if status_internal not in {"DELIVERED", "CANCELLED", "RETURNED"}:
+            continue
+        qty = float(row["quantity"] or 0.0)
+        gross = float(row["gross_rev_kzt"] or 0.0)
+        sell_price = gross / qty if qty > 0 else gross
+        store_code = str(row["store_code"] or "").strip().upper()
+        if not store_code:
+            store_code = "UNKNOWN"
+        sku_key = str(row["sku_key"] or "").strip().upper()
+        sku_id = str(row["sku_id"] or "").strip().upper() or sku_key
+        offer_name = str(row.get("offer_name") or "").strip() or sku_key or sku_id
+        sale_date = str(row["sale_date"] or "").strip()
+        rows.append(
+            {
+                "order_id": str(row["order_id"]).strip(),
+                "order_date": sale_date,
+                "sku_key": sku_key,
+                "sku_id": sku_id,
+                "my_size": str(row.get("my_size") or "").strip().upper(),
+                "kaspi_offer_name": offer_name,
+                "store_code": store_code,
+                "quantity": int(round(qty)),
+                "sell_price_kzt": float(sell_price),
+                "delivery_fee": float(row.get("net_delivery_fee_kzt") or 0.0),
+                "cogs": None,
+                "net_rev": float(gross),
+                "profit": None,
+                "status": status_internal,
+                "return_flag": int(row.get("return_flag") or 0),
+                "return_date": sale_date if status_internal == "RETURNED" else None,
+                "source_file": "OCEAN_DROP_ANCHOR",
+                "api_updated_at": None,
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            r["order_date"],
+            r["store_code"],
+            r["order_id"],
+            r["sku_id"],
+            r["kaspi_offer_name"],
+        )
+    )
+    return rows
+
+
+def _row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row["order_id"]),
+        str(row["sku_id"]),
+        str(row["store_code"]).upper(),
+        str(row["kaspi_offer_name"]),
+    )
+
+
+def _load_existing_rows(conn: sqlite3.Connection, *, stores: list[str], as_of: date) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    if not stores:
+        return {}
+    placeholders = ",".join("?" for _ in stores)
+    rows = conn.execute(
+        f"""
+        SELECT
+            order_id, order_date, sku_key, sku_id, my_size, kaspi_offer_name, store_code,
+            quantity, sell_price_kzt, delivery_fee, cogs, net_rev, profit, status, return_flag, return_date
+        FROM sales_fact_v2
+        WHERE date(order_date) <= ?
+          AND UPPER(COALESCE(store_code, '')) IN ({placeholders})
+        """,
+        (as_of.isoformat(), *stores),
+    ).fetchall()
+    payload: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        item = {
+            "order_id": str(row[0] or "").strip(),
+            "order_date": str(row[1] or "").strip(),
+            "sku_key": str(row[2] or "").strip().upper(),
+            "sku_id": str(row[3] or "").strip().upper(),
+            "my_size": str(row[4] or "").strip().upper(),
+            "kaspi_offer_name": str(row[5] or "").strip(),
+            "store_code": str(row[6] or "").strip().upper(),
+            "quantity": int(round(float(row[7] or 0))),
+            "sell_price_kzt": float(row[8] or 0.0),
+            "delivery_fee": float(row[9] or 0.0),
+            "cogs": row[10],
+            "net_rev": float(row[11] or 0.0),
+            "profit": row[12],
+            "status": str(row[13] or "").strip().upper(),
+            "return_flag": int(row[14] or 0),
+            "return_date": str(row[15] or "").strip() or None,
+            "source_file": "OCEAN_DROP_ANCHOR",
+            "api_updated_at": None,
+        }
+        payload[_row_key(item)] = item
+    return payload
+
+
+def _rows_differ(existing: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    comparable_fields = [
+        "order_date",
+        "sku_key",
+        "my_size",
+        "quantity",
+        "sell_price_kzt",
+        "delivery_fee",
+        "net_rev",
+        "status",
+        "return_flag",
+        "return_date",
+    ]
+    for field in comparable_fields:
+        lhs = existing.get(field)
+        rhs = candidate.get(field)
+        if isinstance(lhs, float) or isinstance(rhs, float):
+            if abs(float(lhs or 0.0) - float(rhs or 0.0)) > 1e-6:
+                return True
+        else:
+            if str(lhs or "") != str(rhs or ""):
+                return True
+    return False
+
+
+def _build_apply_plan(
+    *,
+    conn: sqlite3.Connection,
+    snapshot_df: pd.DataFrame,
+    as_of: date,
+    mode: str,
+) -> dict[str, Any]:
+    if mode not in {"delta", "replace"}:
+        raise SnapshotError(f"unsupported apply mode: {mode}")
+    rows = _normalize_rows_for_sales_fact_v2(snapshot_df)
+    stores = sorted({str(r["store_code"]).upper() for r in rows if str(r["store_code"]).strip()})
+    existing = _load_existing_rows(conn, stores=stores, as_of=as_of)
+    source_by_key = {_row_key(row): row for row in rows}
+
+    insert_rows: list[dict[str, Any]] = []
+    update_rows: list[dict[str, Any]] = []
+    unchanged_rows = 0
+    for key, row in source_by_key.items():
+        current = existing.get(key)
+        if current is None:
+            insert_rows.append(row)
+            continue
+        if _rows_differ(current, row):
+            update_rows.append(row)
+        else:
+            unchanged_rows += 1
+
+    delete_keys: list[tuple[str, str, str, str]] = []
+    if mode == "replace":
+        delete_keys = sorted(existing.keys())
+
+    plan = {
+        "mode": mode,
+        "as_of": as_of.isoformat(),
+        "stores": stores,
+        "source_rows": len(rows),
+        "insert_count": len(insert_rows),
+        "update_count": len(update_rows),
+        "delete_count": len(delete_keys),
+        "unchanged_count": unchanged_rows,
+        "rows_insert": insert_rows,
+        "rows_update": update_rows,
+        "rows_source": rows,
+        "rows_delete_keys": delete_keys,
+    }
+    return plan
+
+
+def _write_apply_plan(plan: dict[str, Any], *, json_path: Path, md_path: Path) -> None:
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    lines = [
+        "# Ocean Drop Apply Plan",
+        "",
+        f"- mode: `{plan['mode']}`",
+        f"- as_of: `{plan['as_of']}`",
+        f"- stores: `{','.join(plan['stores'])}`",
+        f"- source_rows: `{plan['source_rows']}`",
+        f"- insert_count: `{plan['insert_count']}`",
+        f"- update_count: `{plan['update_count']}`",
+        f"- delete_count: `{plan['delete_count']}`",
+        f"- unchanged_count: `{plan['unchanged_count']}`",
+        "",
+        "## Samples",
+        "",
+        f"- inserts_sample: `{[ _row_key(r) for r in plan['rows_insert'][:5] ]}`",
+        f"- updates_sample: `{[ _row_key(r) for r in plan['rows_update'][:5] ]}`",
+        f"- deletes_sample: `{plan['rows_delete_keys'][:5]}`",
+    ]
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _require_apply_gates(*, mode: str) -> None:
     if str(os.environ.get("ENABLE_OCEAN_DROP_APPLY") or "").strip() != "1":
         raise SnapshotError("apply requested, but ENABLE_OCEAN_DROP_APPLY=1 is required")
+    if mode == "replace" and str(os.environ.get("ENABLE_OCEAN_DROP_DELETE") or "").strip() != "1":
+        raise SnapshotError(
+            "replace apply requested, but ENABLE_OCEAN_DROP_DELETE=1 is required in addition to ENABLE_OCEAN_DROP_APPLY=1"
+        )
 
-    if snapshot_df.empty:
-        raise SnapshotError("snapshot is empty, refusing apply")
 
+def _upsert_sales_fact_v2(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    values = [
+        (
+            r["order_id"],
+            r["order_date"],
+            r["sku_key"],
+            r["sku_id"],
+            r["my_size"],
+            r["kaspi_offer_name"],
+            r["store_code"],
+            r["quantity"],
+            r["sell_price_kzt"],
+            r["delivery_fee"],
+            r["cogs"],
+            r["net_rev"],
+            r["profit"],
+            r["status"],
+            r["return_flag"],
+            r["return_date"],
+            r["source_file"],
+            r["api_updated_at"],
+        )
+        for r in rows
+    ]
+    conn.executemany(
+        """
+        INSERT INTO sales_fact_v2 (
+            order_id, order_date, sku_key, sku_id, my_size, kaspi_offer_name, store_code,
+            quantity, sell_price_kzt, delivery_fee, cogs, net_rev, profit,
+            status, return_flag, return_date, source_file, api_updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(order_id, sku_id, store_code, kaspi_offer_name)
+        DO UPDATE SET
+            order_date=excluded.order_date,
+            sku_key=excluded.sku_key,
+            my_size=excluded.my_size,
+            quantity=excluded.quantity,
+            sell_price_kzt=excluded.sell_price_kzt,
+            delivery_fee=excluded.delivery_fee,
+            cogs=excluded.cogs,
+            net_rev=excluded.net_rev,
+            profit=excluded.profit,
+            status=excluded.status,
+            return_flag=excluded.return_flag,
+            return_date=excluded.return_date,
+            source_file=excluded.source_file,
+            api_updated_at=excluded.api_updated_at,
+            ingested_at=CURRENT_TIMESTAMP
+        """,
+        values,
+    )
+    return len(values)
+
+
+def _apply_to_sales_fact_v2(
+    *,
+    db_path: Path,
+    as_of: date,
+    apply_plan: dict[str, Any],
+    backup_root: Path,
+) -> dict[str, Any]:
+    mode = str(apply_plan["mode"])
+    _require_apply_gates(mode=mode)
     backup_path = _backup_db(db_path, backup_root)
+
     conn = sqlite3.connect(str(db_path))
     try:
         has_table = conn.execute(
@@ -339,103 +632,36 @@ def _apply_to_sales_fact_v2(*, db_path: Path, snapshot_df: pd.DataFrame, as_of: 
         if not has_table:
             raise SnapshotError("sales_fact_v2 table missing")
 
-        stores = sorted({str(v).upper() for v in snapshot_df["store_code"].tolist() if str(v).strip()})
-        placeholders = ",".join("?" for _ in stores)
-        delete_sql = f"""
-            DELETE FROM sales_fact_v2
-            WHERE date(order_date) <= ?
-              AND UPPER(COALESCE(store_code, '')) IN ({placeholders})
-        """
-        conn.execute(delete_sql, (as_of.isoformat(), *stores))
-
-        rows = []
-        grouped = (
-            snapshot_df.fillna("")
-            .groupby(
-                [
-                    "order_id",
-                    "sale_date",
-                    "store_code",
-                    "sku_key",
-                    "sku_id",
-                    "my_size",
-                    "offer_name",
-                    "status_internal",
-                    "return_flag",
-                ],
-                dropna=False,
-                as_index=False,
-            )
-            .agg(
-                quantity=("quantity", "sum"),
-                gross_rev_kzt=("gross_rev_kzt", "sum"),
-                net_delivery_fee_kzt=("net_delivery_fee_kzt", "sum"),
-            )
-        )
-
-        for _, r in grouped.iterrows():
-            status_internal = str(r["status_internal"])
-            if status_internal not in {"DELIVERED", "CANCELLED", "RETURNED"}:
-                continue
-            qty = float(r["quantity"])
-            gross = float(r["gross_rev_kzt"])
-            sell_price = gross / qty if qty > 0 else gross
-            rows.append(
-                (
-                    str(r["order_id"]),
-                    str(r["sale_date"]),
-                    str(r["sku_key"]),
-                    str(r["sku_id"]),
-                    str(r.get("my_size") or ""),
-                    str(r.get("offer_name") or r.get("article") or r["sku_key"]),
-                    str(r["store_code"]),
-                    int(round(qty)),
-                    float(sell_price),
-                    float(r.get("net_delivery_fee_kzt") or 0.0),
-                    None,
-                    float(gross),
-                    None,
-                    status_internal,
-                    int(r.get("return_flag") or 0),
-                    str(r["sale_date"]) if status_internal == "RETURNED" else None,
-                    "OCEAN_DROP_ANCHOR",
-                    None,
+        deleted = 0
+        if mode == "replace":
+            stores = apply_plan.get("stores") or []
+            if stores:
+                placeholders = ",".join("?" for _ in stores)
+                cursor = conn.execute(
+                    f"""
+                    DELETE FROM sales_fact_v2
+                    WHERE date(order_date) <= ?
+                      AND UPPER(COALESCE(store_code, '')) IN ({placeholders})
+                    """,
+                    (as_of.isoformat(), *stores),
                 )
-            )
+                deleted = int(cursor.rowcount or 0)
 
-        conn.executemany(
-            """
-            INSERT INTO sales_fact_v2 (
-                order_id, order_date, sku_key, sku_id, my_size, kaspi_offer_name, store_code,
-                quantity, sell_price_kzt, delivery_fee, cogs, net_rev, profit,
-                status, return_flag, return_date, source_file, api_updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(order_id, sku_id, store_code, kaspi_offer_name)
-            DO UPDATE SET
-                order_date=excluded.order_date,
-                quantity=excluded.quantity,
-                sell_price_kzt=excluded.sell_price_kzt,
-                delivery_fee=excluded.delivery_fee,
-                cogs=excluded.cogs,
-                net_rev=excluded.net_rev,
-                profit=excluded.profit,
-                status=excluded.status,
-                return_flag=excluded.return_flag,
-                return_date=excluded.return_date,
-                source_file=excluded.source_file,
-                api_updated_at=excluded.api_updated_at,
-                ingested_at=CURRENT_TIMESTAMP
-            """,
-            rows,
-        )
+        upsert_rows = list(apply_plan.get("rows_insert") or []) + list(apply_plan.get("rows_update") or [])
+        if mode == "replace":
+            upsert_rows = list(apply_plan.get("rows_source") or [])
+
+        rows_applied = _upsert_sales_fact_v2(conn, upsert_rows)
         conn.commit()
     finally:
         conn.close()
 
     return {
         "backup_path": str(backup_path),
-        "rows_applied": int(len(rows)),
+        "rows_applied": int(rows_applied),
+        "rows_deleted": int(deleted),
         "as_of": as_of.isoformat(),
+        "mode": mode,
     }
 
 
@@ -451,6 +677,9 @@ def _render_report_md(report: dict[str, Any]) -> str:
         f"- rows_delivered: `{report['rows_delivered']}`",
         f"- errors_count: `{report['errors_count']}`",
         f"- apply_status: `{report['apply_status']}`",
+        f"- apply_mode: `{report['apply_mode']}`",
+        f"- apply_plan_json: `{report['apply_plan_json']}`",
+        f"- apply_plan_md: `{report['apply_plan_md']}`",
         "",
         "## Outputs",
         f"- snapshot_csv: `{report['snapshot_csv']}`",
@@ -469,7 +698,8 @@ def _render_report_md(report: dict[str, Any]) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Build Ocean Drop reference snapshot")
-    p.add_argument("--ocean-drop", type=Path, required=True)
+    p.add_argument("--ocean-drop", type=Path, default=None)
+    p.add_argument("--anchor-registry", type=Path, default=DEFAULT_ANCHOR_REGISTRY)
     p.add_argument("--crm-archive-lookup", type=Path, default=None)
     p.add_argument("--as-of", type=str, required=True)
     p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
@@ -478,6 +708,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-as-of-day", action="store_true")
     p.add_argument("--strict", action="store_true")
     p.add_argument("--apply", action="store_true")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--apply-delta", action="store_true", help="Use delta apply plan (default)")
+    mode.add_argument("--apply-replace", action="store_true", help="Replace mode (requires ENABLE_OCEAN_DROP_DELETE=1)")
     return p
 
 
@@ -486,9 +719,18 @@ def main() -> int:
     as_of = date.fromisoformat(str(args.as_of))
     out_dir = args.output_root.resolve() / as_of.isoformat()
     out_dir.mkdir(parents=True, exist_ok=True)
+    apply_mode = "replace" if bool(args.apply_replace) else "delta"
+
+    try:
+        ocean_drop_path = resolve_ocean_drop_path(
+            explicit_path=args.ocean_drop,
+            registry_path=args.anchor_registry,
+        )
+    except OceanDropAnchorError as exc:
+        raise SnapshotError(str(exc)) from exc
 
     snapshot_df, meta = build_ocean_drop_snapshot_dataframe(
-        ocean_drop_path=args.ocean_drop.resolve(),
+        ocean_drop_path=ocean_drop_path,
         as_of=as_of,
         crm_archive_lookup_path=args.crm_archive_lookup.resolve() if args.crm_archive_lookup else None,
         include_as_of_day=bool(args.include_as_of_day),
@@ -500,6 +742,8 @@ def main() -> int:
     manifest_json = out_dir / "ocean_drop_reference_snapshot_manifest.json"
     report_json = out_dir / "ocean_drop_reference_snapshot_report.json"
     report_md = out_dir / "ocean_drop_reference_snapshot_report.md"
+    apply_plan_json = out_dir / "apply_plan.json"
+    apply_plan_md = out_dir / "apply_plan.md"
 
     snapshot_df.to_csv(snapshot_csv, index=False, encoding="utf-8")
     delivered_df = snapshot_df[
@@ -511,8 +755,8 @@ def main() -> int:
         "generated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z"),
         "as_of": as_of.isoformat(),
         "include_as_of_day": bool(args.include_as_of_day),
-        "ocean_drop": str(args.ocean_drop.resolve()),
-        "ocean_drop_sha256": _file_sha256(args.ocean_drop.resolve()),
+        "ocean_drop": str(ocean_drop_path),
+        "ocean_drop_sha256": _file_sha256(ocean_drop_path),
         "crm_archive_lookup": str(args.crm_archive_lookup.resolve()) if args.crm_archive_lookup else None,
         "crm_archive_lookup_sha256": _file_sha256(args.crm_archive_lookup.resolve()) if args.crm_archive_lookup else None,
         "rows_snapshot": int(len(snapshot_df)),
@@ -521,19 +765,30 @@ def main() -> int:
     }
     manifest_json.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    with sqlite3.connect(str(args.db.resolve())) as conn:
+        apply_plan = _build_apply_plan(
+            conn=conn,
+            snapshot_df=snapshot_df,
+            as_of=as_of,
+            mode=apply_mode,
+        )
+    _write_apply_plan(apply_plan, json_path=apply_plan_json, md_path=apply_plan_md)
+
     apply_status = "DRY_RUN"
     db_backup_path = None
     rows_applied = 0
+    rows_deleted = 0
     if args.apply:
         apply = _apply_to_sales_fact_v2(
             db_path=args.db.resolve(),
-            snapshot_df=snapshot_df,
             as_of=as_of,
+            apply_plan=apply_plan,
             backup_root=args.backup_root.resolve(),
         )
         apply_status = "APPLIED"
         db_backup_path = apply["backup_path"]
         rows_applied = int(apply["rows_applied"])
+        rows_deleted = int(apply.get("rows_deleted", 0))
 
     status = "PASS"
     if args.strict and meta.get("errors_count", 0):
@@ -552,8 +807,12 @@ def main() -> int:
         "delivered_csv": str(delivered_csv),
         "manifest_json": str(manifest_json),
         "report_json": str(report_json),
+        "apply_plan_json": str(apply_plan_json),
+        "apply_plan_md": str(apply_plan_md),
+        "apply_mode": apply_mode,
         "apply_status": apply_status,
         "rows_applied": rows_applied,
+        "rows_deleted": rows_deleted,
         "db_backup_path": db_backup_path,
     }
     report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -563,6 +822,9 @@ def main() -> int:
     print(f"ocean_drop_snapshot_delivered_csv={delivered_csv}")
     print(f"ocean_drop_snapshot_manifest={manifest_json}")
     print(f"ocean_drop_snapshot_report={report_json}")
+    print(f"apply_plan_json={apply_plan_json}")
+    print(f"apply_plan_md={apply_plan_md}")
+    print(f"apply_mode={apply_mode}")
     print(f"apply_status={apply_status}")
     if db_backup_path:
         print(f"db_backup_path={db_backup_path}")

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "created_at": "2026-02-28T04:00:00+05:00",
+  "as_of_end": "2026-02-26",
+  "source": "kaspi_archive_history_official_mapped",
+  "ocean_drop_path": "~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Sales_archive/mapped_data/ArchiveOrders_ALL_STORES_mapped_20260228_025856.csv",
+  "sha256": "b5b677124c6b7a4f26adc103859fbe783d11ccdb9f5d15f128b12a4facf7048f",
+  "notes": "Validation anchor only. Never union into published truth views."
+}

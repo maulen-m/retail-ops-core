@@ -208,6 +208,30 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_sales_truth_ocean_drop_parity",
+            "cmd": (
+                "python3 scripts/validate_sales_truth_ocean_drop_parity.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'sales_ocean_drop_parity'))} "
+                "--volatility-days 14 "
+                "--strict-if-configured --strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "build_sales_truth_drift_report",
+            "cmd": (
+                "python3 scripts/build_sales_truth_drift_report.py "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))} "
+                f"--parity-root {shlex.quote(str(root / 'exports' / 'validation' / 'sales_ocean_drop_parity'))} "
+                "--lookback-days 14 "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
             "check": "triage_exceptions",
             "cmd": (
                 "python3 scripts/triage_exceptions.py "

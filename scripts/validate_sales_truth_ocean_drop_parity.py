@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timedelta
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -18,6 +19,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.sales import ensure_sales_truth_views
+from core.sales.ocean_drop_anchor import (
+    DEFAULT_REGISTRY as DEFAULT_ANCHOR_REGISTRY,
+    OceanDropAnchorError,
+    resolve_ocean_drop_path,
+)
 from scripts.build_ocean_drop_reference_snapshot import build_ocean_drop_snapshot_dataframe
 
 
@@ -110,9 +116,12 @@ def validate_sales_truth_ocean_drop_parity(
     volatility_days: int,
     strict: bool,
     crm_archive_lookup_path: Path | None,
+    window_days: int | None = None,
 ) -> dict[str, Any]:
     if volatility_days < 0:
         raise RuntimeError("volatility_days must be >= 0")
+    if window_days is not None and window_days <= 0:
+        raise RuntimeError("window_days must be > 0 when provided")
 
     snapshot_df, snapshot_meta = build_ocean_drop_snapshot_dataframe(
         ocean_drop_path=ocean_drop_path.resolve(),
@@ -140,6 +149,12 @@ def validate_sales_truth_ocean_drop_parity(
         .agg(units=("quantity", "sum"), revenue_kzt=("net_rev_kzt", "sum"))
         .reset_index()
     )
+
+    if window_days is not None:
+        start_window = as_of - timedelta(days=window_days - 1)
+        ref_order = ref_order[ref_order["sale_date"] >= start_window.isoformat()].copy()
+        if ref_order.empty:
+            raise RuntimeError(f"no reference rows in requested window_days={window_days}")
 
     start_day = str(ref_order["sale_date"].min())
     end_day = str(min(ref_order["sale_date"].max(), as_of.isoformat()))
@@ -286,6 +301,7 @@ def validate_sales_truth_ocean_drop_parity(
         "strict": bool(strict),
         "volatility_days": int(volatility_days),
         "volatile_start_date": volatile_start.isoformat() if volatility_days else None,
+        "window_days": int(window_days) if window_days is not None else None,
         "status": status,
         "reference_rows_delivered": int(len(ref_df)),
         "reference_rows_total": int(len(snapshot_df)),
@@ -313,25 +329,42 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Validate published sales truth vs ocean drop reference")
     p.add_argument("--db", type=Path, default=DEFAULT_DB)
     p.add_argument("--as-of", type=str, required=True)
-    p.add_argument("--ocean-drop", type=Path, required=True)
+    p.add_argument("--ocean-drop", type=Path, default=None)
+    p.add_argument("--anchor-registry", type=Path, default=DEFAULT_ANCHOR_REGISTRY)
     p.add_argument("--crm-archive-lookup", type=Path, default=DEFAULT_CRM_LOOKUP)
     p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     p.add_argument("--volatility-days", type=int, default=14)
+    p.add_argument("--window-days", type=int, default=None)
     p.add_argument("--strict", action="store_true")
+    p.add_argument("--strict-if-configured", action="store_true")
     return p
 
 
 def main() -> int:
     args = _build_parser().parse_args()
     as_of = date.fromisoformat(str(args.as_of))
+    env_ocean_drop = str(os.environ.get("AB_OCEAN_DROP_SALES_PATH") or "").strip()
+    explicit_path = args.ocean_drop if args.ocean_drop else (Path(env_ocean_drop) if env_ocean_drop else None)
+    try:
+        ocean_drop_path = resolve_ocean_drop_path(
+            explicit_path=explicit_path,
+            registry_path=args.anchor_registry,
+        )
+    except OceanDropAnchorError as exc:
+        if args.strict_if_configured:
+            raise RuntimeError(str(exc)) from exc
+        print(f"ocean_drop_parity_skip={exc}")
+        return 0
+
     report = validate_sales_truth_ocean_drop_parity(
         db_path=args.db,
         as_of=as_of,
-        ocean_drop_path=args.ocean_drop,
+        ocean_drop_path=ocean_drop_path,
         output_root=args.output_root,
         volatility_days=int(args.volatility_days),
         strict=bool(args.strict),
         crm_archive_lookup_path=args.crm_archive_lookup,
+        window_days=args.window_days,
     )
     out_dir = args.output_root.resolve() / as_of.isoformat()
     print(f"ocean_drop_parity_report_json={out_dir / 'parity_report.json'}")

@@ -25,6 +25,7 @@ def test_run_h5_proving_day_runs_required_chain(tmp_path: Path) -> None:
     joined = "\n".join(calls)
     assert "system_doctor.py" in joined
     assert "validate_as_of_consistency.py" in joined
+    assert "run_sales_truth_ocean_drop_cycle.py" in joined
     assert "triage_exceptions.py" in joined
     assert "validate_h5_artifact_set.py" in joined
 

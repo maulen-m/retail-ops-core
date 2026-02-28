@@ -21,6 +21,7 @@ python3 scripts/run_h5_proving_day.py --strict --project-root . --as-of "$DAY"
 
 # Expanded commands (debug mode):
 python3 scripts/system_doctor.py --strict --project-root . --as-of "$DAY"
+python3 scripts/run_sales_truth_ocean_drop_cycle.py --strict --project-root . --as-of "$DAY"
 python3 scripts/validate_as_of_consistency.py --strict --project-root . --as-of "$DAY"
 python3 scripts/triage_exceptions.py \
   --exceptions "exports/exceptions/$DAY/exceptions.json" \
@@ -58,6 +59,9 @@ python3 scripts/build_green_streak_tracker.py --as-of "$DAY" --strict --target-d
 - One-command proving summary:
   - `exports/validation/h5_proving_day/<DAY>/h5_proving_day_summary.json`
   - `exports/validation/h5_proving_day/<DAY>/h5_proving_day_summary.md`
+- Ocean-drop cycle manifest:
+  - `exports/validation/sales_ocean_drop_cycle/<DAY>/sales_truth_ocean_drop_cycle_manifest.json`
+  - `exports/validation/sales_ocean_drop_cycle/<DAY>/sales_truth_ocean_drop_cycle_manifest.md`
 - Streak:
   - `exports/health/streak/<DAY>/green_streak.json`
 - Weekly:

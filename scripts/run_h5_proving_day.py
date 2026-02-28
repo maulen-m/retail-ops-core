@@ -92,6 +92,14 @@ def run_h5_proving_day(
             ),
         },
         {
+            "step": "run_sales_truth_ocean_drop_cycle",
+            "cmd": (
+                "python3 scripts/run_sales_truth_ocean_drop_cycle.py "
+                f"--strict --project-root {quoted_root} "
+                f"--as-of {quoted_as_of}"
+            ),
+        },
+        {
             "step": "triage_exceptions",
             "cmd": (
                 "python3 scripts/triage_exceptions.py "
