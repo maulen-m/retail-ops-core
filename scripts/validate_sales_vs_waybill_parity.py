@@ -109,7 +109,7 @@ def validate_sales_vs_waybill_parity(
     )
     source_status = str(source_waybill.get("status") or "missing")
     source_target_date = str(source_waybill.get("target_date") or "").strip()
-    if source_status != "available":
+    if source_status not in {"available", "available_archive"}:
         errors.append(
             "waybill selection snapshot unavailable for parity validation: "
             f"status={source_status} reason={source_waybill.get('reason')}"

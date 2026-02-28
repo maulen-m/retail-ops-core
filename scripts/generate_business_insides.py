@@ -11,6 +11,7 @@ import glob
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 from typing import Any
@@ -36,6 +37,8 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "config" / "business_insides"
 DEFAULT_WAYBILL_SELECTION_CACHE = (
     PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json"
 )
+DEFAULT_WAYBILL_ARCHIVE_DIR = PROJECT_ROOT / "excel_ui" / "Archive"
+WAYBILL_ORDER_ID_RE = re.compile(r"(\d{6,})")
 DEFAULT_ARCHIVE_ORDERS_GLOBS = [
     str(PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "**" / "ArchiveOrders*.xlsx"),
     str(
@@ -263,6 +266,161 @@ def _load_archive_orders_daily(
     }
 
 
+def _resolve_waybill_archive_root() -> Path:
+    env_value = str(os.environ.get("AB_WAYBILL_ARCHIVE_ROOT") or "").strip()
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+    return DEFAULT_WAYBILL_ARCHIVE_DIR.resolve()
+
+
+def _parse_order_id_from_filename(name: str) -> str | None:
+    match = WAYBILL_ORDER_ID_RE.search(name)
+    if not match:
+        return None
+    return str(match.group(1) or "").strip() or None
+
+
+def _find_waybill_archive_input_dir(*, archive_root: Path, as_of_iso: str) -> Path | None:
+    if not archive_root.exists():
+        return None
+    pattern = f"input_{as_of_iso}_*"
+    matches = [
+        path
+        for path in archive_root.glob(pattern)
+        if path.is_dir()
+    ]
+    if not matches:
+        return None
+    return sorted(matches)[-1]
+
+
+def _query_order_store_quantity(
+    *,
+    db_path: Path,
+    order_ids: set[str],
+) -> dict[str, tuple[str, float]]:
+    if not db_path.exists() or not order_ids:
+        return {}
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if not _table_exists(conn, "fact_orders_kaspi"):
+            return {}
+        has_order_id = _column_exists(conn, "fact_orders_kaspi", "order_id")
+        has_store = _column_exists(conn, "fact_orders_kaspi", "store_code")
+        has_qty = _column_exists(conn, "fact_orders_kaspi", "quantity")
+        if not (has_order_id and has_store and has_qty):
+            return {}
+
+        result: dict[str, tuple[str, float]] = {}
+        order_list = sorted(order_ids)
+        chunk_size = 500
+        for idx in range(0, len(order_list), chunk_size):
+            chunk = order_list[idx : idx + chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            rows = conn.execute(
+                f"""
+                SELECT
+                    CAST(order_id AS TEXT) AS order_id,
+                    UPPER(TRIM(CAST(COALESCE(store_code, 'UNKNOWN') AS TEXT))) AS store_code,
+                    MAX(CASE
+                        WHEN CAST(COALESCE(quantity, 1) AS REAL) > 0
+                            THEN CAST(quantity AS REAL)
+                        ELSE 1
+                    END) AS qty
+                FROM fact_orders_kaspi
+                WHERE CAST(order_id AS TEXT) IN ({placeholders})
+                GROUP BY CAST(order_id AS TEXT), UPPER(TRIM(CAST(COALESCE(store_code, 'UNKNOWN') AS TEXT)))
+                """,
+                chunk,
+            ).fetchall()
+            for row in rows:
+                order_id = str(row["order_id"] or "").strip()
+                if not order_id:
+                    continue
+                store_code = str(row["store_code"] or "UNKNOWN").strip().upper() or "UNKNOWN"
+                qty = float(row["qty"] or 1.0)
+                result[order_id] = (store_code, qty if qty > 0 else 1.0)
+        return result
+    finally:
+        conn.close()
+
+
+def _load_waybill_archive_snapshot(
+    *,
+    db_path: Path,
+    as_of_date: date,
+    selection_cache_path: Path,
+) -> dict[str, Any] | None:
+    archive_root = _resolve_waybill_archive_root()
+    as_of_iso = as_of_date.isoformat()
+    archive_dir = _find_waybill_archive_input_dir(archive_root=archive_root, as_of_iso=as_of_iso)
+    if archive_dir is None:
+        return None
+
+    manifest_path = archive_dir / "archive_manifest.json"
+    waybill_dir = archive_dir / "waybills"
+    if not manifest_path.exists() or not waybill_dir.exists():
+        return None
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(manifest, dict):
+        return None
+
+    pdf_order_ids: set[str] = set()
+    for pdf in sorted(waybill_dir.glob("*.pdf")):
+        order_id = _parse_order_id_from_filename(pdf.name)
+        if order_id:
+            pdf_order_ids.add(order_id)
+
+    order_meta = _query_order_store_quantity(db_path=db_path, order_ids=pdf_order_ids)
+    stores: dict[str, dict[str, float | int]] = {}
+    total_units = 0.0
+    for order_id in sorted(pdf_order_ids):
+        store_code, qty = order_meta.get(order_id, ("UNKNOWN", 1.0))
+        bucket = stores.setdefault(store_code, {"orders": 0, "units": 0.0})
+        bucket["orders"] = int(bucket["orders"]) + 1
+        bucket["units"] = round(float(bucket["units"]) + float(qty), 2)
+        total_units += float(qty)
+
+    selected_count = int(float(manifest.get("selected_count") or 0))
+    copied_waybills = int(float(manifest.get("copied_waybills") or len(pdf_order_ids)))
+    missing_waybills = int(float(manifest.get("missing_waybills") or 0))
+    unresolved_missing = max(0, selected_count - len(pdf_order_ids))
+    if unresolved_missing > 0:
+        missing_bucket = stores.setdefault("_MISSING_WAYBILL_URL", {"orders": 0, "units": 0.0})
+        missing_bucket["orders"] = int(missing_bucket["orders"]) + unresolved_missing
+        missing_bucket["units"] = round(float(missing_bucket["units"]) + float(unresolved_missing), 2)
+        total_units += float(unresolved_missing)
+
+    return {
+        "status": "available_archive",
+        "reason": "archive_input_snapshot",
+        "as_of": as_of_iso,
+        "target_date": as_of_iso,
+        "cache_path": str(selection_cache_path),
+        "include_overdue": True,
+        "all_dates": False,
+        "stores": stores,
+        "totals": {
+            "orders": int(selected_count if selected_count > 0 else len(pdf_order_ids)),
+            "units": round(float(total_units), 2),
+        },
+        "archive_snapshot": {
+            "archive_root": str(archive_root),
+            "archive_input_dir": str(archive_dir),
+            "manifest_path": str(manifest_path),
+            "selected_count": int(selected_count),
+            "copied_waybills": int(copied_waybills),
+            "missing_waybills": int(missing_waybills),
+            "resolved_waybill_pdf_ids": len(pdf_order_ids),
+        },
+    }
+
+
 def load_waybill_selection_snapshot(
     *,
     db_path: Path,
@@ -283,16 +441,39 @@ def load_waybill_selection_snapshot(
     }
 
     if not selection_cache_path.exists():
+        archive_snapshot = _load_waybill_archive_snapshot(
+            db_path=db_path.resolve(),
+            as_of_date=as_of_date,
+            selection_cache_path=selection_cache_path.resolve(),
+        )
+        if archive_snapshot is not None:
+            return archive_snapshot
         return snapshot
 
     try:
         payload = json.loads(selection_cache_path.read_text(encoding="utf-8"))
     except Exception as exc:  # pragma: no cover - defensive
+        archive_snapshot = _load_waybill_archive_snapshot(
+            db_path=db_path.resolve(),
+            as_of_date=as_of_date,
+            selection_cache_path=selection_cache_path.resolve(),
+        )
+        if archive_snapshot is not None:
+            archive_snapshot["reason"] = f"archive_fallback_after_invalid_cache:{exc}"
+            return archive_snapshot
         snapshot["status"] = "invalid"
         snapshot["reason"] = f"invalid_json:{exc}"
         return snapshot
 
     if not isinstance(payload, dict):
+        archive_snapshot = _load_waybill_archive_snapshot(
+            db_path=db_path.resolve(),
+            as_of_date=as_of_date,
+            selection_cache_path=selection_cache_path.resolve(),
+        )
+        if archive_snapshot is not None:
+            archive_snapshot["reason"] = "archive_fallback_after_invalid_payload_type"
+            return archive_snapshot
         snapshot["status"] = "invalid"
         snapshot["reason"] = "invalid_payload_type"
         return snapshot
@@ -301,6 +482,21 @@ def load_waybill_selection_snapshot(
     snapshot["target_date"] = target_date or None
     snapshot["include_overdue"] = bool(payload.get("include_overdue"))
     snapshot["all_dates"] = bool(payload.get("all_dates"))
+
+    if target_date and target_date != target_as_of:
+        archive_snapshot = _load_waybill_archive_snapshot(
+            db_path=db_path.resolve(),
+            as_of_date=as_of_date,
+            selection_cache_path=selection_cache_path.resolve(),
+        )
+        if archive_snapshot is not None:
+            archive_snapshot["cache_target_date"] = target_date
+            archive_snapshot["cache_status"] = "as_of_mismatch"
+            archive_snapshot["cache_reason"] = f"target_date={target_date} expected={target_as_of}"
+            return archive_snapshot
+        snapshot["status"] = "as_of_mismatch"
+        snapshot["reason"] = f"target_date={target_date} expected={target_as_of}"
+        return snapshot
 
     stores_raw = payload.get("stores") or {}
     if not isinstance(stores_raw, dict):
@@ -384,12 +580,8 @@ def load_waybill_selection_snapshot(
         "units": round(float(total_units), 2),
     }
 
-    if target_date and target_date != target_as_of:
-        snapshot["status"] = "as_of_mismatch"
-        snapshot["reason"] = f"target_date={target_date} expected={target_as_of}"
-    else:
-        snapshot["status"] = "available"
-        snapshot["reason"] = "ok"
+    snapshot["status"] = "available"
+    snapshot["reason"] = "ok"
 
     return snapshot
 
@@ -827,10 +1019,46 @@ def compute_sales_metrics(
         as_of_date=as_of_date,
         selection_cache_path=selection_cache_path,
     )
-    profit_publication_locked = unresolved_rows > 0
+    economics_volatility_days = max(0, int(os.environ.get("AB_ECONOMICS_VOLATILITY_DAYS", "14")))
+    economics_missing_days: list[str] = []
+    economics_missing_nonvolatile_days: list[str] = []
+    for day in sorted(by_date.keys()):
+        day_row = by_date[day]
+        if day_row.get("net_rev_kzt") is None:
+            continue
+        if day_row.get("cogs_kzt") is not None and day_row.get("profit_kzt") is not None:
+            continue
+        economics_missing_days.append(day)
+        try:
+            lag_days = (as_of_date - date.fromisoformat(day)).days
+        except ValueError:
+            lag_days = economics_volatility_days + 1
+        if lag_days > economics_volatility_days:
+            economics_missing_nonvolatile_days.append(day)
+
+    profit_publication_locked = unresolved_rows > 0 or len(economics_missing_days) > 0
+
+    window_30_rows: list[dict[str, Any]] = []
+    for day in window_30_days:
+        if day in by_date:
+            window_30_rows.append({"date": day, **by_date[day]})
+        else:
+            window_30_rows.append(
+                {
+                    "date": day,
+                    "units_delivered": None,
+                    "units_shipped": None,
+                    "net_rev_kzt": None,
+                    "cogs_kzt": None,
+                    "profit_kzt": None,
+                    "ads_spend_kzt": round(float(ads_by_date.get(day, 0.0)), 2) if ads_available else None,
+                    "profit_after_ads_kzt": None,
+                }
+            )
 
     return {
         "as_of_date": as_of_date.isoformat(),
+        "window_30_days": window_30_rows,
         "last_7_days": last_7_list,
         "latest_7_observed_days": latest_7_observed_days,
         "avg_30d_net_rev_kzt": _avg(series_30_net),
@@ -856,6 +1084,9 @@ def compute_sales_metrics(
         "fallback_rows": fallback_rows,
         "unresolved_rows": unresolved_rows,
         "unresolved_sku_count": len(unresolved_skus),
+        "economics_volatility_days": economics_volatility_days,
+        "economics_missing_days": economics_missing_days,
+        "economics_missing_nonvolatile_days": economics_missing_nonvolatile_days,
         "total_rows": total_rows,
         "cogs_fallback_coverage_pct": round((fallback_rows / total_rows * 100.0), 2) if total_rows else 0.0,
         "profit_publication_locked": profit_publication_locked,
@@ -1136,6 +1367,12 @@ def _render_markdown(
         f"({sales_metrics['cogs_fallback_coverage_pct']:.2f}%).",
         f"- Unresolved COGS rows: `{sales_metrics['unresolved_rows']}`.",
         f"- Unresolved SKU count: `{sales_metrics['unresolved_sku_count']}`.",
+        f"- Economics volatility window (days): `{sales_metrics['economics_volatility_days']}`.",
+        f"- Economics missing days (COGS/profit): `{len(sales_metrics['economics_missing_days'])}` "
+        f"({', '.join(sales_metrics['economics_missing_days'][:7]) or 'none'}).",
+        f"- Economics missing nonvolatile days: `{len(sales_metrics['economics_missing_nonvolatile_days'])}` "
+        f"({', '.join(sales_metrics['economics_missing_nonvolatile_days'][:7]) or 'none'}).",
+        f"- Profit publication locked: `{str(bool(sales_metrics['profit_publication_locked'])).lower()}`.",
         f"- Ads source status: `{sales_metrics['ads'].get('status')}` "
         f"(reason: `{sales_metrics['ads'].get('reason')}`).",
         f"- Ads mapping coverage: `{ads_coverage_text}`.",
@@ -1230,11 +1467,16 @@ def generate_business_insides(
             "sales_truth_freshness_days": sales_metrics["sales_truth_freshness_days"],
         },
         "last_7_days": sales_metrics["last_7_days"],
+        "window_30_days": sales_metrics["window_30_days"],
         "latest_7_observed_days": sales_metrics["latest_7_observed_days"],
         "fallback_rows": sales_metrics["fallback_rows"],
         "total_rows": sales_metrics["total_rows"],
         "unresolved_rows": sales_metrics["unresolved_rows"],
         "unresolved_sku_count": sales_metrics["unresolved_sku_count"],
+        "economics_volatility_days": sales_metrics["economics_volatility_days"],
+        "economics_missing_days": sales_metrics["economics_missing_days"],
+        "economics_missing_nonvolatile_days": sales_metrics["economics_missing_nonvolatile_days"],
+        "profit_publication_locked": sales_metrics["profit_publication_locked"],
         "ads": sales_metrics["ads"],
         "waybill_snapshot": sales_metrics.get("waybill_snapshot"),
         "archive_orders": sales_metrics.get("archive_orders"),
@@ -1253,11 +1495,16 @@ def generate_business_insides(
         "capital": capital,
         "performance": payload["performance"],
         "last_7_days": sales_metrics["last_7_days"],
+        "window_30_days": sales_metrics["window_30_days"],
         "latest_7_observed_days": sales_metrics["latest_7_observed_days"],
         "fallback_rows": sales_metrics["fallback_rows"],
         "total_rows": sales_metrics["total_rows"],
         "unresolved_rows": sales_metrics["unresolved_rows"],
         "unresolved_sku_count": sales_metrics["unresolved_sku_count"],
+        "economics_volatility_days": sales_metrics["economics_volatility_days"],
+        "economics_missing_days": sales_metrics["economics_missing_days"],
+        "economics_missing_nonvolatile_days": sales_metrics["economics_missing_nonvolatile_days"],
+        "profit_publication_locked": sales_metrics["profit_publication_locked"],
         "ads": sales_metrics["ads"],
         "waybill_snapshot": sales_metrics.get("waybill_snapshot"),
         "archive_orders": sales_metrics.get("archive_orders"),
