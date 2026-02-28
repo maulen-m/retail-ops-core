@@ -85,8 +85,9 @@ def save_sent_tracker(tracker_path: Path, tracker: Dict) -> None:
 # =============================================================================
 
 def find_store_folders(today_folder: Path) -> List[Path]:
-    """Find all store folders in Today directory."""
-    if not today_folder.exists():
+    """Find all store folders in Today directory (legacy or PER_STORE layout)."""
+    scan_root = today_folder / "PER_STORE" if (today_folder / "PER_STORE").is_dir() else today_folder
+    if not scan_root.exists():
         return []
 
     def collect_from(base: Path) -> List[Path]:
@@ -98,14 +99,14 @@ def find_store_folders(today_folder: Path) -> List[Path]:
                     found.append(item)
         return found
 
-    partitions = [today_folder / "TODAY", today_folder / "OVERDUE"]
+    partitions = [scan_root / "TODAY", scan_root / "OVERDUE"]
     if any(p.exists() for p in partitions):
         folders = []
         for partition in partitions:
             if partition.exists():
                 folders.extend(collect_from(partition))
     else:
-        folders = collect_from(today_folder)
+        folders = collect_from(scan_root)
 
     # Sort by name (date_store format)
     return sorted(folders, key=lambda x: x.name)
@@ -149,10 +150,23 @@ def collect_all_pdfs(today_folder: Path) -> List[Dict]:
                     "store": store_name,
                     "category": category,
                     "filename": pdf_path.name,
-                    "relative": str(pdf_path.relative_to(today_folder)),
+                    "relative": _relative_for_tracker(pdf_path, today_folder),
                 })
 
     return all_pdfs
+
+
+def _relative_for_tracker(pdf_path: Path, today_folder: Path) -> str:
+    """
+    Build a stable tracker key.
+
+    Prefer paths relative to Today root so PER_STORE files are namespaced as
+    PER_STORE/... and do not collide with legacy layout entries.
+    """
+    try:
+        return str(pdf_path.relative_to(today_folder))
+    except Exception:
+        return pdf_path.name
 
 
 def filter_unsent_pdfs(all_pdfs: List[Dict], sent_list: List[str]) -> List[Dict]:
