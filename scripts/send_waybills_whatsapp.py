@@ -3,46 +3,50 @@
 """
 Phase 12: WhatsApp PDF Sender for Waybills
 
-Semi-automated sending of waybill PDFs to WhatsApp group.
-Uses pywhatkit for WhatsApp Web automation.
+Sends waybill PDFs to a specific WhatsApp chat using WhatsApp Web automation.
 
-Features:
-- Sends PDFs in correct order: MULTI_LINE → MULTI_QTY → NORMAL
-- Tracks sent files to prevent duplicates
-- Supports --resume to continue after interruption
-- 10-second delay between sends to avoid rate limiting
-
-Usage:
-    python scripts/send_waybills_whatsapp.py --dry-run
-    python scripts/send_waybills_whatsapp.py --verbose
-    python scripts/send_waybills_whatsapp.py --resume
+Key behavior:
+- Uses MERGED bundles first (fallback to PER_STORE/legacy)
+- Orders files by category, then by size, while interleaving families for diversity
+- Tracks sent files in sent_pdfs.json to avoid duplicates
+- Strict chat safety gate: only send to configured chat title
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
-import webbrowser
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-# WhatsApp group ID - PLACEHOLDER: Set this to your actual group ID
-# To find group ID: Open WhatsApp Web, navigate to group, check URL
-WHATSAPP_GROUP_ID = None  # e.g., "AbCdEfGhIjKlMnOp1234567890"
+DEFAULT_WHATSAPP_CHAT_TITLE = "Заказы"
+BLOCKED_CHAT_TITLES_DEFAULT = ("order 2",)
+
+# Browser profile used for WhatsApp Web session
+DEFAULT_CHROME_USER_DATA_DIR = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+DEFAULT_CHROME_PROFILE_DIR = "Profile 2"
+
+# Copy profile to temp to avoid Chrome singleton lock when user's Chrome is open
+COPY_PROFILE_TO_TEMP = True
 
 # Default paths
 TODAY_FOLDER = PROJECT_ROOT / "excel_ui" / "Kaspi_orders" / "Today"
@@ -101,31 +105,54 @@ NOISE_TOKENS = {
     "CL", "NEW", "CLO", "MEN", "MAN", "WOMEN", "WOMAN", "KID", "KIDS",
     "MESTOVAYA", "PROD", "SKU", "COLOR", "SIZE", "PP1",
 }
+HIGH_SIMILAR_HINTS = (
+    "ФУТБОЛК",
+    "T-SHIRT",
+    "TSHIRT",
+    "РАШГАРД",
+    "RUSH",
+    "LONGSLEEVE",
+    "LONG_SLEEVE",
+    "LONG-SLEEVE",
+    "ДЛИННЫЙ_РАШГАРД",
+    "ДЛИННЫЙ РАШГАРД",
+    "ДЛИННЫЙ_РУКАВ",
+    "ДЛИННЫЙ РУКАВ",
+)
+RISK_HIGH_SIMILAR = "HIGH_SIMILAR"
+RISK_DIVERSIFIER = "DIVERSIFIER"
 
 # Delay between sends (seconds)
-SEND_DELAY = 10
+SEND_DELAY = 2.0
+
+WHATSAPP_WEB_URL = "https://web.whatsapp.com"
+CHAT_OPEN_TIMEOUT_MS = 90_000
+ACTION_TIMEOUT_MS = 45_000
 
 
 # =============================================================================
 # TRACKER
 # =============================================================================
 
-def load_sent_tracker(tracker_path: Path) -> Dict:
+
+def load_sent_tracker(tracker_path: Path) -> Dict[str, Any]:
     """Load the sent PDFs tracker file."""
     if tracker_path.exists():
         try:
-            with open(tracker_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            with open(tracker_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+                if isinstance(payload, dict) and isinstance(payload.get("sent", []), list):
+                    return payload
         except (json.JSONDecodeError, IOError):
-            return {"sent": [], "last_updated": None}
+            pass
     return {"sent": [], "last_updated": None}
 
 
-def save_sent_tracker(tracker_path: Path, tracker: Dict) -> None:
+def save_sent_tracker(tracker_path: Path, tracker: Dict[str, Any]) -> None:
     """Save the sent PDFs tracker file atomically."""
     tracker["last_updated"] = datetime.now().isoformat()
-    temp_path = tracker_path.with_suffix('.tmp')
-    with open(temp_path, 'w', encoding='utf-8') as f:
+    temp_path = tracker_path.with_suffix(".tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(tracker, f, indent=2, ensure_ascii=False)
     temp_path.replace(tracker_path)
 
@@ -133,6 +160,7 @@ def save_sent_tracker(tracker_path: Path, tracker: Dict) -> None:
 # =============================================================================
 # PDF COLLECTION
 # =============================================================================
+
 
 def _collect_store_folders(scan_root: Path) -> List[Path]:
     """Collect store folders under a specific root."""
@@ -142,15 +170,14 @@ def _collect_store_folders(scan_root: Path) -> List[Path]:
     def collect_from(base: Path) -> List[Path]:
         found: List[Path] = []
         for item in base.iterdir():
-            if item.is_dir() and not item.name.startswith('.'):
-                # Check if it looks like a store folder (has manifest files)
+            if item.is_dir() and not item.name.startswith("."):
                 if any(item.glob("manifest_*.csv")):
                     found.append(item)
         return found
 
     partitions = [scan_root / "TODAY", scan_root / "OVERDUE"]
     if any(p.exists() for p in partitions):
-        folders = []
+        folders: List[Path] = []
         for partition in partitions:
             if partition.exists():
                 folders.extend(collect_from(partition))
@@ -176,7 +203,6 @@ def resolve_send_root(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Pat
     if source_mode == SOURCE_LEGACY:
         return today_folder
 
-    # Auto mode: prefer merged, then per-store, then legacy.
     for candidate in (merged_root, per_store_root, today_folder):
         if _has_store_folders(candidate):
             return candidate
@@ -189,19 +215,28 @@ def find_store_folders(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Li
     return _collect_store_folders(scan_root)
 
 
+def _store_label_from_folder_name(folder_name: str) -> str:
+    match = re.match(r"^\d{2}\.\d{2}\.\d{2}_(.+?)_qnt\d+$", folder_name)
+    if match:
+        return match.group(1)
+    return folder_name
+
+
 def collect_pdfs_from_category(store_folder: Path, category: str) -> List[Path]:
     """Collect PDFs from a specific category folder."""
     category_path = store_folder / category
     if not category_path.exists():
         return []
+    return sorted(
+        category_path.rglob("*.pdf"),
+        key=lambda x: (
+            str(x.parent).lower(),
+            x.name.lower(),
+        ),
+    )
 
-    pdfs = list(category_path.glob("*.pdf"))
 
-    # Sort by name for consistent ordering
-    return sorted(pdfs, key=lambda x: x.name.lower())
-
-
-def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List[Dict]:
+def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List[Dict[str, Any]]:
     """
     Collect all PDFs in correct sending order.
 
@@ -211,28 +246,27 @@ def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List
     - category: Category (SPECIAL_multi_line, etc.)
     - filename: Just the filename
     """
-    all_pdfs = []
-
+    all_pdfs: List[Dict[str, Any]] = []
     store_folders = find_store_folders(today_folder, source_mode=source_mode)
 
     for store_folder in store_folders:
-        store_name = store_folder.name
-
         for category in PDF_CATEGORIES:
-            pdfs = collect_pdfs_from_category(store_folder, category)
-
-            for pdf_path in pdfs:
-                all_pdfs.append({
-                    "path": pdf_path,
-                    "store": store_name,
-                    "category": category,
-                    "filename": pdf_path.name,
-                    "item_core": _extract_item_core(pdf_path.name),
-                    "size_token": _extract_size_token(pdf_path.name),
-                    "size_rank": _size_rank(_extract_size_token(pdf_path.name)),
-                    "family_key": _family_key(_extract_item_core(pdf_path.name)),
-                    "relative": _relative_for_tracker(pdf_path, today_folder),
-                })
+            for pdf_path in collect_pdfs_from_category(store_folder, category):
+                all_pdfs.append(
+                    {
+                        "path": pdf_path,
+                        "store": store_folder.name,
+                        "store_label": _store_label_from_folder_name(store_folder.name),
+                        "category": category,
+                        "filename": pdf_path.name,
+                        "item_core": _extract_item_core(pdf_path.name),
+                        "size_token": _extract_size_token(pdf_path.name),
+                        "size_rank": _size_rank(_extract_size_token(pdf_path.name)),
+                        "family_key": _family_key(_extract_item_core(pdf_path.name)),
+                        "risk_group": _risk_group(_extract_item_core(pdf_path.name)),
+                        "relative": _relative_for_tracker(pdf_path, today_folder),
+                    }
+                )
 
     return all_pdfs
 
@@ -250,7 +284,7 @@ def _relative_for_tracker(pdf_path: Path, today_folder: Path) -> str:
         return pdf_path.name
 
 
-def filter_unsent_pdfs(all_pdfs: List[Dict], sent_list: List[str]) -> List[Dict]:
+def filter_unsent_pdfs(all_pdfs: List[Dict[str, Any]], sent_list: List[str]) -> List[Dict[str, Any]]:
     """Filter out PDFs that have already been sent."""
     sent_set = set(sent_list)
     return [pdf for pdf in all_pdfs if pdf["relative"] not in sent_set]
@@ -291,13 +325,11 @@ def _family_key(item_core: str) -> str:
     text = re.sub(r"[^0-9A-Za-zА-Яа-я]+", "_", item_core).strip("_").upper()
     if not text:
         return "UNKNOWN"
-    tokens = [tok for tok in re.split(r"[_\-]+", text) if tok]
 
-    cleaned: list[str] = []
+    tokens = [tok for tok in re.split(r"[_\-]+", text) if tok]
+    cleaned: List[str] = []
     for tok in tokens:
-        if tok in COLOR_TOKENS or tok in NOISE_TOKENS:
-            continue
-        if tok == "PRO":
+        if tok in COLOR_TOKENS or tok in NOISE_TOKENS or tok == "PRO":
             continue
         cleaned.append(tok)
 
@@ -306,36 +338,72 @@ def _family_key(item_core: str) -> str:
     return "_".join(cleaned[:3])
 
 
-def _interleave_by_family(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Interleave entries by family key to avoid near-neighbor duplicates.
+def _risk_group(item_core: str) -> str:
+    normalized = re.sub(r"[^0-9A-Za-zА-Яа-я]+", "_", item_core).upper()
+    compact = normalized.replace("_", "")
+    for hint in HIGH_SIMILAR_HINTS:
+        token = hint.upper()
+        if token in normalized or token.replace("_", "").replace("-", "") in compact:
+            return RISK_HIGH_SIMILAR
+    return RISK_DIVERSIFIER
 
-    Within each family bucket, keep size-rising order.
+
+def _schedule_category_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    buckets: dict[str, deque[Dict[str, Any]]] = {}
-    grouped: dict[str, list[Dict[str, Any]]] = defaultdict(list)
+    Schedule one category with packer-safe sequencing.
+
+    Rules:
+    - Preserve size-rising order within each family.
+    - If previous sent item is HIGH_SIMILAR and any DIVERSIFIER exists, pick a
+      DIVERSIFIER next (gap>=1 when possible).
+    - Avoid same-family adjacency when alternatives exist.
+    """
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for entry in entries:
         grouped[str(entry.get("family_key") or "UNKNOWN")].append(entry)
 
+    buckets: Dict[str, deque[Dict[str, Any]]] = {}
     for family, items in grouped.items():
         items.sort(key=lambda x: (x.get("size_rank", 999), str(x.get("filename", "")).lower()))
         buckets[family] = deque(items)
 
-    result: list[Dict[str, Any]] = []
+    result: List[Dict[str, Any]] = []
     last_family = ""
+    last_risk = ""
     while True:
         alive = [family for family, queue in buckets.items() if queue]
         if not alive:
             break
 
+        risk_by_family = {
+            family: str(buckets[family][0].get("risk_group") or RISK_DIVERSIFIER)
+            for family in alive
+        }
+        diversifier_alive = any(risk != RISK_HIGH_SIMILAR for risk in risk_by_family.values())
+        must_split_similar = last_risk == RISK_HIGH_SIMILAR and diversifier_alive
+
         candidates = [family for family in alive if family != last_family]
         if not candidates:
             candidates = alive
-        candidates.sort(key=lambda family: (-len(buckets[family]), family))
+
+        if must_split_similar:
+            split_candidates = [family for family in candidates if risk_by_family[family] != RISK_HIGH_SIMILAR]
+            if split_candidates:
+                candidates = split_candidates
+
+        candidates.sort(
+            key=lambda family: (
+                0 if risk_by_family[family] != last_risk else 1,
+                -len(buckets[family]),
+                family,
+            )
+        )
         chosen = candidates[0]
 
-        result.append(buckets[chosen].popleft())
+        item = buckets[chosen].popleft()
+        result.append(item)
         last_family = chosen
+        last_risk = str(item.get("risk_group") or RISK_DIVERSIFIER)
 
     return result
 
@@ -344,19 +412,18 @@ def order_pdfs_for_sending(pdfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Order PDFs by category, then by size-rising sequence with family diversity.
 
-    This keeps legacy category priority while improving packer-friendly ordering.
+    Keeps legacy category priority while improving packer-friendly ordering.
     """
-    category_groups: dict[str, list[Dict[str, Any]]] = defaultdict(list)
+    category_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for pdf in pdfs:
         category_groups[str(pdf.get("category", ""))].append(pdf)
 
-    ordered: list[Dict[str, Any]] = []
+    ordered: List[Dict[str, Any]] = []
     for category in PDF_CATEGORIES:
         if category_groups.get(category):
-            ordered.extend(_interleave_by_family(category_groups[category]))
+            ordered.extend(_schedule_category_entries(category_groups[category]))
 
-    # Unknown categories (if any) go last, stable by filename.
-    unknown = []
+    unknown: List[Dict[str, Any]] = []
     for category, items in category_groups.items():
         if category not in CATEGORY_PRIORITY:
             unknown.extend(items)
@@ -366,113 +433,592 @@ def order_pdfs_for_sending(pdfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return ordered
 
 
+def _split_order_ids(raw_order_ids: str) -> List[str]:
+    return [token.strip() for token in (raw_order_ids or "").split(";") if token.strip()]
+
+
+def collect_store_order_bundle_stats(store_folders: List[Path]) -> Dict[str, Dict[str, int]]:
+    """
+    Build per-store stats from manifest files.
+
+    Returns:
+      {
+        "StoreName": {"orders": int, "bundles_target": int}
+      }
+    """
+    stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"orders_set": set(), "bundles_target": 0})
+
+    for store_folder in store_folders:
+        fallback_store = _store_label_from_folder_name(store_folder.name)
+        manifest_files = sorted(store_folder.glob("manifest_*.csv"))
+        for manifest_path in manifest_files:
+            with manifest_path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    store_raw = (row.get("store") or "").strip()
+                    store_name = store_raw if store_raw and store_raw.upper() != "MERGED" else fallback_store
+                    if not store_name:
+                        store_name = "UNKNOWN"
+
+                    stats[store_name]["bundles_target"] += 1
+                    for order_id in _split_order_ids(str(row.get("order_id") or "")):
+                        stats[store_name]["orders_set"].add(order_id)
+
+    finalized: Dict[str, Dict[str, int]] = {}
+    for store_name in sorted(stats):
+        finalized[store_name] = {
+            "orders": len(stats[store_name]["orders_set"]),
+            "bundles_target": int(stats[store_name]["bundles_target"]),
+        }
+    return finalized
+
+
+def _build_ascii_table(headers: List[str], rows: List[List[str]]) -> str:
+    all_rows = [headers] + rows
+    widths = [max(len(str(row[col])) for row in all_rows) for col in range(len(headers))]
+
+    def fmt_row(cells: List[str]) -> str:
+        padded = [str(cells[idx]).ljust(widths[idx]) for idx in range(len(widths))]
+        return "| " + " | ".join(padded) + " |"
+
+    sep = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+    lines = [sep, fmt_row(headers), sep]
+    for row in rows:
+        lines.append(fmt_row(row))
+    lines.append(sep)
+    return "\n".join(lines)
+
+
+def format_pre_send_status_table(store_stats: Dict[str, Dict[str, int]]) -> str:
+    ordered_stores = sorted(store_stats)
+    rows: List[List[str]] = []
+    total_orders = 0
+
+    for store in ordered_stores:
+        orders = int(store_stats[store].get("orders", 0))
+        total_orders += orders
+        rows.append([store, str(orders)])
+
+    rows.append(["TOTAL", str(total_orders)])
+    table = _build_ascii_table(["STORE", "Orders"], rows)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"{timestamp}\n{table}"
+
+
+def format_post_send_status_table(
+    store_stats: Dict[str, Dict[str, int]],
+    sent_by_store: Dict[str, int],
+) -> str:
+    ordered_stores = sorted(store_stats)
+    rows: List[List[str]] = []
+    total_orders = 0
+    total_target = 0
+    total_sent = 0
+
+    for store in ordered_stores:
+        orders = int(store_stats[store].get("orders", 0))
+        bundles_target = int(store_stats[store].get("bundles_target", 0))
+        bundles_sent = int(sent_by_store.get(store, 0))
+
+        total_orders += orders
+        total_target += bundles_target
+        total_sent += bundles_sent
+        rows.append([store, str(orders), str(bundles_target), str(bundles_sent)])
+
+    rows.append(["TOTAL", str(total_orders), str(total_target), str(total_sent)])
+    table = _build_ascii_table(["STORE", "Orders", "Bundles Target", "Bundles Sent"], rows)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"{timestamp}\n{table}"
+
+
 # =============================================================================
-# WHATSAPP SENDING
+# WHATSAPP WEB AUTOMATION
 # =============================================================================
 
-def check_pywhatkit() -> bool:
-    """Check if pywhatkit is available."""
+
+def check_playwright() -> bool:
+    """Check if Playwright is available."""
     try:
-        import pywhatkit
+        import playwright  # noqa: F401
+
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
-def send_pdf_to_whatsapp(pdf_path: Path, group_id: str, verbose: bool = False) -> bool:
-    """
-    Send a PDF to WhatsApp group using pywhatkit.
+def _normalize_chat_key(name: str) -> str:
+    return " ".join((name or "").split()).strip().casefold()
 
-    Returns True if successful, False otherwise.
-    """
-    try:
-        import pywhatkit as pwk
 
-        if verbose:
-            print(f"    Sending: {pdf_path.name}")
+def _copy_profile_to_temp(user_data_dir: Path, profile_directory: str, verbose: bool = False) -> Path:
+    """Copy the browser profile into a temp dir to avoid singleton lock conflicts."""
+    profile_src = user_data_dir / profile_directory
+    if not profile_src.exists():
+        raise FileNotFoundError(f"Chrome profile not found: {profile_src}")
 
-        # pywhatkit.sendwhats_image works for files too
-        # It opens WhatsApp Web and sends the file
-        pwk.sendwhats_image(
-            receiver=group_id,
-            img_path=str(pdf_path),
-            caption=pdf_path.stem,  # Use filename without extension as caption
-            wait_time=15,  # Seconds to wait for WhatsApp Web to load
-            tab_close=True,
+    tmp_root = Path(tempfile.mkdtemp(prefix="whatsapp-profile-"))
+
+    local_state = user_data_dir / "Local State"
+    if local_state.exists():
+        shutil.copy2(local_state, tmp_root / "Local State")
+
+    def ignore_cache_dirs(_dir: str, names: Iterable[str]) -> List[str]:
+        skip = {
+            "Cache",
+            "Code Cache",
+            "GPUCache",
+            "DawnCache",
+            "GrShaderCache",
+            "ShaderCache",
+            "Service Worker",
+            "VideoDecodeStats",
+            "blob_storage",
+            "Blob Storage",
+        }
+        return [n for n in names if n in skip]
+
+    shutil.copytree(profile_src, tmp_root / profile_directory, dirs_exist_ok=True, ignore=ignore_cache_dirs)
+
+    for root in (tmp_root, tmp_root / profile_directory):
+        for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            lock_path = root / lock_name
+            if lock_path.exists():
+                lock_path.unlink(missing_ok=True)
+
+    if verbose:
+        print(f"Using temp browser profile: {tmp_root}")
+
+    return tmp_root
+
+
+@dataclass
+class _SendContext:
+    page: Any
+    context: Any
+    playwright: Any
+    temp_profile_root: Optional[Path]
+
+
+class WhatsAppSender:
+    """WhatsApp Web document sender with strict active-chat safety gate."""
+
+    def __init__(
+        self,
+        chat_title: str,
+        user_data_dir: Path,
+        profile_directory: str,
+        blocked_chat_titles: Iterable[str],
+        action_timeout_ms: int = ACTION_TIMEOUT_MS,
+        verbose: bool = False,
+    ) -> None:
+        self.chat_title = chat_title
+        self.chat_key = _normalize_chat_key(chat_title)
+        self.user_data_dir = Path(user_data_dir)
+        self.profile_directory = profile_directory
+        self.blocked_chat_keys = {_normalize_chat_key(x) for x in blocked_chat_titles if x}
+        self.action_timeout_ms = action_timeout_ms
+        self.verbose = verbose
+        self._ctx: Optional[_SendContext] = None
+
+        if not self.chat_title:
+            raise ValueError("chat_title is required")
+        if self.chat_key in self.blocked_chat_keys:
+            raise ValueError(f"Target chat '{self.chat_title}' is blocked by safety policy")
+
+    @property
+    def page(self) -> Any:
+        if not self._ctx:
+            raise RuntimeError("WhatsApp sender not started")
+        return self._ctx.page
+
+    def start(self) -> None:
+        from playwright.sync_api import sync_playwright
+
+        temp_root: Optional[Path] = None
+        if COPY_PROFILE_TO_TEMP:
+            temp_root = _copy_profile_to_temp(self.user_data_dir, self.profile_directory, verbose=self.verbose)
+            launch_user_data_dir = temp_root
+        else:
+            launch_user_data_dir = self.user_data_dir
+
+        playwright = sync_playwright().start()
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(launch_user_data_dir),
+            channel="chrome",
+            headless=False,
+            args=[f"--profile-directory={self.profile_directory}"],
+        )
+        page = context.pages[0] if context.pages else context.new_page()
+        page.set_default_timeout(self.action_timeout_ms)
+        page.goto(WHATSAPP_WEB_URL, wait_until="domcontentloaded")
+
+        self._ctx = _SendContext(
+            page=page,
+            context=context,
+            playwright=playwright,
+            temp_profile_root=temp_root,
         )
 
-        return True
+        self._wait_for_chat_list_ready()
+        self.open_chat(self.chat_title)
 
-    except Exception as e:
-        print(f"    ERROR sending {pdf_path.name}: {e}")
+    def close(self) -> None:
+        if not self._ctx:
+            return
+
+        temp_root = self._ctx.temp_profile_root
+        try:
+            self._ctx.context.close()
+        finally:
+            try:
+                self._ctx.playwright.stop()
+            finally:
+                if temp_root:
+                    shutil.rmtree(temp_root, ignore_errors=True)
+        self._ctx = None
+
+    def __enter__(self) -> "WhatsAppSender":
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def _wait_for_chat_list_ready(self) -> None:
+        self.page.locator("div[aria-label='Chat list']").wait_for(timeout=CHAT_OPEN_TIMEOUT_MS)
+        self.page.locator("div[aria-label='Search input textbox']").wait_for(timeout=CHAT_OPEN_TIMEOUT_MS)
+
+    def _active_chat_title(self) -> str:
+        title = self.page.evaluate(
+            """
+            () => {
+              const clean = (value) => (value || '').trim();
+              const skip = new Set([
+                '',
+                'click here for group info',
+                'profile details',
+                'wa-wordmark-refreshed',
+                'whatsapp',
+                'call',
+              ]);
+
+              // Preferred: selected row in chat list.
+              const selectedRow = document.querySelector(\"div[aria-label='Chat list'] [aria-selected='true']\");
+              if (selectedRow) {
+                const rowName = selectedRow.querySelector(\"span[title], span[dir='auto']\");
+                if (rowName) {
+                  const text = clean(rowName.getAttribute('title') || rowName.textContent || '');
+                  if (!skip.has(text.toLowerCase())) return text;
+                }
+              }
+
+              // Fallback: right panel header title. Scan from last header because left nav header is first.
+              const headers = Array.from(document.querySelectorAll('header')).reverse();
+              for (const header of headers) {
+                const nodes = [
+                  ...header.querySelectorAll(\"span[dir='auto']\"),
+                  ...header.querySelectorAll('span[title]'),
+                  ...header.querySelectorAll('h1, h2'),
+                ];
+                for (const node of nodes) {
+                  const text = clean((node.getAttribute && node.getAttribute('title')) || node.textContent || '');
+                  if (skip.has(text.toLowerCase())) continue;
+                  if (text.length >= 2) return text;
+                }
+              }
+              return '';
+            }
+            """
+        )
+        return str(title or "").strip()
+
+    def _assert_active_target_chat(self) -> None:
+        deadline = time.time() + 12.0
+        last_title = ""
+        while time.time() < deadline:
+            active_title = self._active_chat_title()
+            active_key = _normalize_chat_key(active_title)
+            last_title = active_title
+
+            if not active_key:
+                self.page.wait_for_timeout(250)
+                continue
+
+            if active_key in self.blocked_chat_keys:
+                raise RuntimeError(
+                    f"Safety gate blocked send: active chat is forbidden ({active_title!r})"
+                )
+
+            if active_key == self.chat_key:
+                return
+
+            self.page.wait_for_timeout(250)
+
+        if not _normalize_chat_key(last_title):
+            raise RuntimeError("Could not determine active WhatsApp chat title")
+        raise RuntimeError(
+            f"Safety gate blocked send: active chat mismatch ({last_title!r} != {self.chat_title!r})"
+        )
+
+    def _try_click_candidate(self, candidates: Iterable[Any]) -> bool:
+        for candidate in candidates:
+            if candidate.count() <= 0:
+                continue
+            candidate.first.click()
+            self.page.wait_for_timeout(900)
+            if _normalize_chat_key(self._active_chat_title()) == self.chat_key:
+                return True
         return False
+
+    def open_chat(self, chat_title: str) -> None:
+        if _normalize_chat_key(chat_title) in self.blocked_chat_keys:
+            raise RuntimeError(f"Requested chat is blocked: {chat_title!r}")
+
+        # First attempt: direct click from visible chat list (fastest + safest).
+        chat_list = self.page.locator("div[aria-label='Chat list']")
+        if not self._try_click_candidate(
+            [
+                chat_list.locator(f"span[title='{chat_title}']"),
+                chat_list.locator("span[dir='auto']", has_text=chat_title),
+                chat_list.get_by_text(chat_title, exact=True),
+            ]
+        ):
+            # Fallback: use search box, then click/enter.
+            search = self.page.locator("div[aria-label='Search input textbox']").first
+            search.click()
+            search.fill("")
+            search.fill(chat_title)
+            self.page.wait_for_timeout(1000)
+
+            if not self._try_click_candidate(
+                [
+                    chat_list.locator(f"span[title='{chat_title}']"),
+                    chat_list.locator("span[dir='auto']", has_text=chat_title),
+                    self.page.locator(f"span[title='{chat_title}']"),
+                    self.page.get_by_text(chat_title, exact=True),
+                ]
+            ):
+                self.page.keyboard.press("Enter")
+                self.page.wait_for_timeout(1200)
+
+        self._assert_active_target_chat()
+
+        composer = self.page.locator("footer div[contenteditable='true'][role='textbox']").first
+        composer.wait_for(timeout=self.action_timeout_ms)
+
+        if self.verbose:
+            print(f"WhatsApp active chat: {self._active_chat_title()}")
+
+    def _safe_click_selectors(
+        self,
+        selectors: Iterable[str],
+        label: str,
+        timeout_ms: Optional[int] = None,
+    ) -> None:
+        timeout_ms = timeout_ms if timeout_ms is not None else self.action_timeout_ms
+        deadline = time.time() + (timeout_ms / 1000.0)
+        errors: List[str] = []
+
+        while time.time() < deadline:
+            for selector in selectors:
+                locator = self.page.locator(selector)
+                if locator.count() <= 0:
+                    continue
+                target = locator.first
+                try:
+                    target.click(timeout=1500)
+                    return
+                except Exception as exc:
+                    errors.append(f"{selector} normal: {exc}")
+
+                try:
+                    target.click(timeout=1500, force=True)
+                    return
+                except Exception as exc:
+                    errors.append(f"{selector} force: {exc}")
+
+                try:
+                    target.evaluate("el => el.click()")
+                    return
+                except Exception as exc:
+                    errors.append(f"{selector} js: {exc}")
+
+            self.page.wait_for_timeout(250)
+
+        err_tail = " | ".join(errors[-6:]) if errors else "no matching elements"
+        raise RuntimeError(f"Failed to click {label}. Errors: {err_tail}")
+
+    def _choose_file_via_document_menu(self, pdf_path: Path) -> None:
+        from playwright.sync_api import TimeoutError as PWTimeoutError
+
+        last_error: Optional[Exception] = None
+        for _ in range(3):
+            try:
+                with self.page.expect_file_chooser(timeout=7000) as chooser_info:
+                    self._safe_click_selectors(
+                        [
+                            "div[role='menuitem'][aria-label='Document']",
+                            "div[role='menuitem'][aria-label='Документ']",
+                        ],
+                        "document menu item",
+                        timeout_ms=5000,
+                    )
+                chooser = chooser_info.value
+                chooser.set_files(str(pdf_path))
+                return
+            except PWTimeoutError as exc:
+                last_error = exc
+                self.page.wait_for_timeout(500)
+            except Exception as exc:
+                last_error = exc
+                self.page.wait_for_timeout(500)
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("Failed to open document file chooser")
+
+    def send_text_message(self, text: str) -> None:
+        if not text.strip():
+            return
+
+        self._assert_active_target_chat()
+        composer = self.page.locator("footer div[contenteditable='true'][role='textbox']").first
+        composer.wait_for(timeout=self.action_timeout_ms)
+        composer.click()
+
+        try:
+            composer.press("Control+A")
+            composer.press("Backspace")
+        except Exception:
+            pass
+
+        lines = text.splitlines()
+        if not lines:
+            return
+
+        for idx, line in enumerate(lines):
+            if line:
+                self.page.keyboard.insert_text(line)
+            if idx < len(lines) - 1:
+                self.page.keyboard.press("Shift+Enter")
+
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_timeout(900)
+        self._assert_active_target_chat()
+
+    def send_document(self, pdf_path: Path) -> None:
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, 4):
+            try:
+                self._assert_active_target_chat()
+                self._safe_click_selectors(
+                    [
+                        "button[aria-label='Attach']",
+                        "button[aria-label='Прикрепить']",
+                    ],
+                    "attach button",
+                    timeout_ms=12_000,
+                )
+
+                self._choose_file_via_document_menu(pdf_path)
+                self.page.wait_for_timeout(800)
+
+                self._safe_click_selectors(
+                    [
+                        "button[aria-label='Send']",
+                        "button[aria-label='Отправить']",
+                        "span[data-icon='wds-ic-send-filled']",
+                        "span[data-icon='send']",
+                    ],
+                    "send button",
+                    timeout_ms=15_000,
+                )
+
+                self.page.wait_for_timeout(1500)
+                self._assert_active_target_chat()
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= 3:
+                    break
+                if self.verbose:
+                    print(f"      send retry {attempt}/3 due to: {exc}")
+                self._wait_for_chat_list_ready()
+                self.open_chat(self.chat_title)
+                self.page.wait_for_timeout(1000)
+
+        if last_error:
+            raise last_error
 
 
 # =============================================================================
 # MAIN LOGIC
 # =============================================================================
 
+
 def run_sender(
     today_folder: Path,
-    group_id: Optional[str],
+    chat_title: Optional[str],
     dry_run: bool = False,
     resume: bool = True,
     bundle_source: str = SOURCE_AUTO,
+    status_messages: bool = True,
+    send_delay: float = SEND_DELAY,
+    chrome_user_data_dir: Path = DEFAULT_CHROME_USER_DATA_DIR,
+    chrome_profile_directory: str = DEFAULT_CHROME_PROFILE_DIR,
+    blocked_chat_titles: Iterable[str] = BLOCKED_CHAT_TITLES_DEFAULT,
     verbose: bool = False,
-) -> Dict:
-    """
-    Run the WhatsApp PDF sender.
-
-    Args:
-        today_folder: Path to Today folder
-        group_id: WhatsApp group ID
-        dry_run: Preview only, don't send
-        resume: Skip already-sent PDFs
-        bundle_source: Which Today sub-layout to use
-        verbose: Print progress
-
-    Returns:
-        Dict with results: sent, skipped, failed, total
-    """
-    results = {
+) -> Dict[str, Any]:
+    """Run WhatsApp PDF sender workflow."""
+    results: Dict[str, Any] = {
         "sent": 0,
         "skipped": 0,
         "failed": 0,
         "total": 0,
+        "target_chat": chat_title or "",
+        "source_root": "",
+        "status_message_failed": 0,
     }
 
-    # Check for WhatsApp group ID
-    if not group_id and not dry_run:
-        print("ERROR: WHATSAPP_GROUP_ID not configured.")
-        print("Edit scripts/send_waybills_whatsapp.py and set WHATSAPP_GROUP_ID")
-        print("Or use --dry-run to preview files")
+    if not chat_title and not dry_run:
+        print("ERROR: --chat-title is required for live send.")
         return results
 
-    # Check pywhatkit
-    if not dry_run and not check_pywhatkit():
-        print("ERROR: pywhatkit not installed.")
-        print("Install with: pip install pywhatkit")
+    if not dry_run and not check_playwright():
+        print("ERROR: playwright not installed.")
+        print("Install with: pip install playwright")
         return results
 
     source_root = resolve_send_root(today_folder, source_mode=bundle_source)
+    results["source_root"] = str(source_root)
 
-    # Load tracker
     tracker_path = today_folder / SENT_TRACKER_FILE
     tracker = load_sent_tracker(tracker_path) if resume else {"sent": [], "last_updated": None}
 
-    # Collect PDFs
     all_pdfs = collect_all_pdfs(today_folder, source_mode=bundle_source)
     results["total"] = len(all_pdfs)
+    store_folders = find_store_folders(today_folder, source_mode=bundle_source)
+    store_stats = collect_store_order_bundle_stats(store_folders)
+    if not store_stats:
+        fallback_stats: Dict[str, Dict[str, int]] = defaultdict(lambda: {"orders": 0, "bundles_target": 0})
+        for pdf in all_pdfs:
+            store = str(pdf.get("store_label") or pdf.get("store") or "UNKNOWN")
+            fallback_stats[store]["bundles_target"] += 1
+        store_stats = {name: {"orders": 0, "bundles_target": values["bundles_target"]} for name, values in fallback_stats.items()}
 
     if verbose:
-        print(f"Bundle source: {source_root}")
+        print(f"Bundle source root: {source_root}")
         print(f"Found {len(all_pdfs)} PDFs total")
 
     if not all_pdfs:
         print("No PDFs found in Today folder")
         return results
 
-    # Filter already sent
     pdfs_to_send = filter_unsent_pdfs(all_pdfs, tracker["sent"]) if resume else all_pdfs
     results["skipped"] = len(all_pdfs) - len(pdfs_to_send)
 
@@ -484,57 +1030,94 @@ def run_sender(
         return results
 
     pdfs_to_send = order_pdfs_for_sending(pdfs_to_send)
-
-    try:
-        browser_backend = str(webbrowser.get())
-    except Exception:
-        browser_backend = "system default browser"
-    print(f"Sender browser/profile: {browser_backend} (WhatsApp Web logged-in session)")
+    sent_by_store = Counter()
 
     print(f"\n{'[DRY RUN] ' if dry_run else ''}PDFs to send: {len(pdfs_to_send)}")
     print("-" * 50)
+    pre_status_text = format_pre_send_status_table(store_stats)
+    print("\nPre-send status:")
+    print(pre_status_text)
 
-    # Group by category for display
-    current_store = None
-    current_category = None
+    current_store: Optional[str] = None
+    current_category: Optional[str] = None
 
-    for i, pdf in enumerate(pdfs_to_send):
-        # Print category headers
-        if pdf["store"] != current_store:
-            current_store = pdf["store"]
-            print(f"\nStore: {current_store}")
+    if dry_run:
+        for i, pdf in enumerate(pdfs_to_send, start=1):
+            if pdf["store"] != current_store:
+                current_store = pdf["store"]
+                print(f"\nStore: {current_store}")
 
-        if pdf["category"] != current_category:
-            current_category = pdf["category"]
-            category_display = current_category.replace("_", " ").title()
-            print(f"  [{category_display}]")
+            if pdf["category"] != current_category:
+                current_category = pdf["category"]
+                print(f"  [{current_category.replace('_', ' ').title()}]")
 
-        # Print filename
-        print(f"    {i+1}. {pdf['filename']}")
-
-        if dry_run:
+            print(f"    {i}. {pdf['filename']}")
             results["sent"] += 1
-            continue
+            sent_by_store[str(pdf.get("store_label") or pdf.get("store") or "UNKNOWN")] += 1
 
-        # Actually send
-        success = send_pdf_to_whatsapp(pdf["path"], group_id, verbose)
+        post_status_text = format_post_send_status_table(store_stats, dict(sent_by_store))
+        print("\nPost-send status:")
+        print(post_status_text)
+        return results
 
-        if success:
-            results["sent"] += 1
-            # Track as sent
-            tracker["sent"].append(pdf["relative"])
-            save_sent_tracker(tracker_path, tracker)
+    sender = WhatsAppSender(
+        chat_title=chat_title or "",
+        user_data_dir=Path(chrome_user_data_dir),
+        profile_directory=chrome_profile_directory,
+        blocked_chat_titles=blocked_chat_titles,
+        action_timeout_ms=ACTION_TIMEOUT_MS,
+        verbose=verbose,
+    )
 
-            # Delay before next send
-            if i < len(pdfs_to_send) - 1:
-                if verbose:
-                    print(f"    Waiting {SEND_DELAY}s before next...")
-                time.sleep(SEND_DELAY)
-        else:
-            results["failed"] += 1
-            print(f"\n    STOPPING: Failed to send {pdf['filename']}")
-            print(f"    Use --resume to continue from here")
-            break
+    try:
+        with sender:
+            if status_messages:
+                try:
+                    sender.send_text_message(pre_status_text)
+                except Exception as exc:
+                    results["status_message_failed"] = 1
+                    results["failed"] += 1
+                    print(f"\nSTOPPING: Failed to send pre-send status message: {exc}")
+                    return results
+
+            for i, pdf in enumerate(pdfs_to_send, start=1):
+                if pdf["store"] != current_store:
+                    current_store = pdf["store"]
+                    print(f"\nStore: {current_store}")
+
+                if pdf["category"] != current_category:
+                    current_category = pdf["category"]
+                    print(f"  [{current_category.replace('_', ' ').title()}]")
+
+                print(f"    {i}. {pdf['filename']}")
+
+                try:
+                    sender.send_document(pdf["path"])
+                except Exception as exc:
+                    results["failed"] += 1
+                    print(f"\nSTOPPING: Failed to send {pdf['filename']}: {exc}")
+                    print("Use --resume after fixing WhatsApp UI/session")
+                    break
+
+                results["sent"] += 1
+                sent_by_store[str(pdf.get("store_label") or pdf.get("store") or "UNKNOWN")] += 1
+                tracker["sent"].append(pdf["relative"])
+                save_sent_tracker(tracker_path, tracker)
+
+                if i < len(pdfs_to_send) and send_delay > 0:
+                    time.sleep(send_delay)
+
+            post_status_text = format_post_send_status_table(store_stats, dict(sent_by_store))
+            print("\nPost-send status:")
+            print(post_status_text)
+            if status_messages:
+                try:
+                    sender.send_text_message(post_status_text)
+                except Exception as exc:
+                    results["status_message_failed"] = 1
+                    print(f"\nWARNING: Failed to send post-send status message: {exc}")
+    finally:
+        sender.close()
 
     return results
 
@@ -543,31 +1126,30 @@ def run_sender(
 # CLI
 # =============================================================================
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Send waybill PDFs to WhatsApp group"
-    )
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Send waybill PDFs to WhatsApp chat")
     parser.add_argument(
         "--today-folder",
         type=Path,
         default=TODAY_FOLDER,
-        help="Path to Today folder (default: excel_ui/Kaspi_orders/Today)"
+        help="Path to Today folder (default: excel_ui/Kaspi_orders/Today)",
     )
     parser.add_argument(
-        "--group-id",
+        "--chat-title",
         type=str,
-        default=WHATSAPP_GROUP_ID,
-        help="WhatsApp group ID"
+        default=DEFAULT_WHATSAPP_CHAT_TITLE,
+        help="Exact WhatsApp chat title to send into (default: Заказы)",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview only, don't send"
+        help="Preview only, don't send",
     )
     parser.add_argument(
         "--no-resume",
         action="store_true",
-        help="Don't skip already-sent PDFs"
+        help="Don't skip already-sent PDFs",
     )
     parser.add_argument(
         "--bundle-source",
@@ -580,38 +1162,89 @@ def main():
         ),
     )
     parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Verbose output"
+        "--chrome-user-data-dir",
+        type=Path,
+        default=DEFAULT_CHROME_USER_DATA_DIR,
+        help="Chrome user data dir used to clone logged-in profile",
     )
+    parser.add_argument(
+        "--chrome-profile-directory",
+        type=str,
+        default=DEFAULT_CHROME_PROFILE_DIR,
+        help="Chrome profile directory name (e.g. 'Profile 2')",
+    )
+    parser.add_argument(
+        "--forbid-chat",
+        action="append",
+        default=list(BLOCKED_CHAT_TITLES_DEFAULT),
+        help="Blocked chat title safety gate (repeatable)",
+    )
+    parser.add_argument(
+        "--send-delay",
+        type=float,
+        default=SEND_DELAY,
+        help="Delay between sends in seconds",
+    )
+    parser.add_argument(
+        "--status-messages",
+        dest="status_messages",
+        action="store_true",
+        default=True,
+        help="Send pre/post ASCII status tables to WhatsApp chat (default: on)",
+    )
+    parser.add_argument(
+        "--no-status-messages",
+        dest="status_messages",
+        action="store_false",
+        help="Disable sending pre/post ASCII status tables to WhatsApp chat",
+    )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
+    dedup_blocked: List[str] = []
+    seen_blocked: set[str] = set()
+    for name in args.forbid_chat:
+        key = _normalize_chat_key(name)
+        if key and key not in seen_blocked:
+            seen_blocked.add(key)
+            dedup_blocked.append(name)
 
     print("=" * 60)
     print("  WhatsApp PDF Sender")
     print("=" * 60)
     print(f"  Folder: {args.today_folder}")
     print(f"  Bundle source: {args.bundle_source}")
+    print(f"  Target chat: {args.chat_title}")
+    print(f"  Blocked chats: {', '.join(dedup_blocked)}")
+    print(f"  Browser profile: {args.chrome_user_data_dir} / {args.chrome_profile_directory}")
     print(f"  Mode: {'DRY RUN' if args.dry_run else 'LIVE'}")
+    print(f"  Status messages: {'Yes' if args.status_messages else 'No'}")
     print(f"  Resume: {'No' if args.no_resume else 'Yes'}")
     print()
 
     results = run_sender(
         today_folder=args.today_folder,
-        group_id=args.group_id,
+        chat_title=args.chat_title,
         dry_run=args.dry_run,
         resume=not args.no_resume,
         bundle_source=args.bundle_source,
+        send_delay=float(args.send_delay),
+        status_messages=bool(args.status_messages),
+        chrome_user_data_dir=args.chrome_user_data_dir,
+        chrome_profile_directory=args.chrome_profile_directory,
+        blocked_chat_titles=dedup_blocked,
         verbose=args.verbose,
     )
 
     print()
     print("=" * 60)
-    print(f"  Results:")
+    print("  Results:")
     print(f"    Total PDFs: {results['total']}")
     print(f"    Sent: {results['sent']}")
     print(f"    Skipped (already sent): {results['skipped']}")
     print(f"    Failed: {results['failed']}")
+    print(f"    Status message failures: {results['status_message_failed']}")
+    print(f"    Source root: {results.get('source_root', '')}")
     print("=" * 60)
 
 

@@ -475,8 +475,8 @@ def process_store(
     dedup: Dict[str, Dict[str, Any]] = {}
 
     for idx, (ws, we) in enumerate(windows, start=1):
-        since = ws.isoformat()
-        until = we.isoformat()
+        window_since = ws.isoformat()
+        window_until = we.isoformat()
         started = time.time()
         status = "ok"
         error_msg = ""
@@ -486,21 +486,21 @@ def process_store(
             orders = _fetch_orders_window(
                 client=client,
                 store_code=store_code,
-                since=since,
-                until=until,
+                since=window_since,
+                until=window_until,
                 retries=retries,
                 retry_sleep=retry_sleep,
             )
         except Exception as exc:  # noqa: BLE001
             status = "error"
             error_msg = str(exc)
-            errors.append(f"window {since}..{until}: {error_msg}")
+            errors.append(f"window {window_since}..{window_until}: {error_msg}")
             if strict:
                 windows_rows.append(
                     {
                         "window_index": idx,
-                        "since": since,
-                        "until": until,
+                        "since": window_since,
+                        "until": window_until,
                         "orders_fetched": 0,
                         "status": status,
                         "error": error_msg,
@@ -514,8 +514,8 @@ def process_store(
         windows_rows.append(
             {
                 "window_index": idx,
-                "since": since,
-                "until": until,
+                "since": window_since,
+                "until": window_until,
                 "orders_fetched": len(orders),
                 "status": status,
                 "error": error_msg,
@@ -530,8 +530,8 @@ def process_store(
             raw_orders_lines.append(
                 {
                     "store_code": store_code,
-                    "window_since": since,
-                    "window_until": until,
+                    "window_since": window_since,
+                    "window_until": window_until,
                     "order": order,
                 }
             )

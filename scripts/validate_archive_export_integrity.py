@@ -51,6 +51,18 @@ def validate_archive_export_integrity(
     errors: List[str] = []
     stores: List[Dict[str, Any]] = []
     missing_rows: List[Dict[str, Any]] = []
+    manifest_by_store: Dict[str, Dict[str, Any]] = {}
+
+    manifest_path = export_root / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for row in manifest_payload.get("results") or []:
+                store_code = str(row.get("store_code") or "").strip().upper()
+                if store_code:
+                    manifest_by_store[store_code] = row
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"failed to parse manifest.json: {exc}")
 
     store_dirs = sorted([p for p in export_root.glob("store_*") if p.is_dir()])
     if not store_dirs:
@@ -63,8 +75,24 @@ def validate_archive_export_integrity(
             "coverage_ok": True,
             "completed_missing_status_change_date": 0,
             "rows_total": 0,
+            "manifest_orders_dedup": 0,
+            "manifest_orders_selected": 0,
             "errors": [],
         }
+
+        manifest_row = manifest_by_store.get(store_code.upper(), {})
+        store_report["manifest_orders_dedup"] = int(manifest_row.get("orders_dedup") or 0)
+        store_report["manifest_orders_selected"] = int(manifest_row.get("orders_selected") or 0)
+        date_mode = str(manifest_row.get("date_mode") or "").strip()
+        if (
+            require_status_change_date_for_completed
+            and date_mode == "statusChangeDate"
+            and store_report["manifest_orders_dedup"] > 0
+            and store_report["manifest_orders_selected"] == 0
+        ):
+            store_report["errors"].append(
+                "statusChangeDate mode produced zero selected orders while dedup orders exist (likely missing statusChangeDate coverage)"
+            )
 
         windows_path = store_dir / "windows.csv"
         if not windows_path.exists():
@@ -161,12 +189,13 @@ def validate_archive_export_integrity(
         "",
         "## Store Summary",
         "",
-        "| Store | Coverage OK | Rows | Missing completed status-change-date |",
-        "|---|---:|---:|---:|",
+        "| Store | Coverage OK | Dedup (manifest) | Selected (manifest) | Rows | Missing completed status-change-date |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for store in stores:
         lines.append(
             f"| {store['store_code']} | {'YES' if store['coverage_ok'] else 'NO'} | "
+            f"{store['manifest_orders_dedup']} | {store['manifest_orders_selected']} | "
             f"{store['rows_total']} | {store['completed_missing_status_change_date']} |"
         )
 

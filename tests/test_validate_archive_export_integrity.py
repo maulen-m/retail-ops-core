@@ -59,3 +59,33 @@ def test_validate_archive_export_integrity_strict_fails_missing_completed_status
             strict=True,
             require_status_change_date_for_completed=True,
         )
+
+
+def test_validate_archive_export_integrity_fails_when_status_mode_selects_zero_with_dedup(tmp_path: Path) -> None:
+    export_root = tmp_path / "export"
+    _write_store_fixture(export_root, "UNIVERSAL", completed_missing_status_change=False)
+    # Replace CSV with headers only to emulate zero selected rows.
+    (export_root / "store_UNIVERSAL" / "ArchiveOrders_UNIVERSAL.csv").write_text(
+        "№ заказа,Дата поступления заказа,Дата изменения статуса,Статус\n",
+        encoding="utf-8",
+    )
+    manifest = {
+        "results": [
+            {
+                "store_code": "UNIVERSAL",
+                "date_mode": "statusChangeDate",
+                "orders_dedup": 100,
+                "orders_selected": 0,
+            }
+        ]
+    }
+    (export_root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="archive export integrity validation failed"):
+        validate_archive_export_integrity(
+            export_root=export_root,
+            since="2026-02-20",
+            until="2026-02-26",
+            strict=True,
+            require_status_change_date_for_completed=True,
+        )

@@ -5,6 +5,7 @@ from scripts.export_kaspi_archive_history import (
     _hydrate_missing_status_change_dates,
     _order_matches_date_mode,
     date_windows,
+    process_store,
 )
 
 
@@ -93,3 +94,38 @@ def test_hydrate_missing_status_change_dates_only_fetches_missing():
     assert sorted(calls) == ["A", "C"]
     assert orders[0]["attributes"]["statusChangeDate"] == 1740528000000
     assert orders[2]["attributes"]["statusChangeDate"] == 1740614400000
+
+
+def test_process_store_status_date_mode_no_shadow_crash(tmp_path, monkeypatch):
+    class DummyClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+    monkeypatch.setattr("scripts.export_kaspi_archive_history.KaspiAPIClient", DummyClient)
+    monkeypatch.setattr(
+        "scripts.export_kaspi_archive_history._fetch_orders_window",
+        lambda **_: [],
+    )
+
+    result = process_store(
+        store_code="UNIVERSAL",
+        windows=[(date(2026, 2, 20), date(2026, 2, 26))],
+        since=date(2026, 2, 20),
+        until=date(2026, 2, 26),
+        out_root=tmp_path,
+        fetch_entries=False,
+        entry_workers=1,
+        detail_workers=1,
+        fetch_masterproduct=False,
+        date_mode="statusChangeDate",
+        hydrate_missing_status_change_date=True,
+        require_status_change_date_for_completed=True,
+        retries=1,
+        retry_sleep=0.0,
+        strict=True,
+    )
+
+    assert result.success is True
+    assert result.windows_ok == 1
+    assert result.orders_dedup == 0
+    assert result.rows_exported == 0

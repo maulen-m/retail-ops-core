@@ -9,13 +9,18 @@ echo "========================================"
 echo "  WhatsApp PDF Sender"
 echo "========================================"
 echo ""
-echo "This will send waybill PDFs to WhatsApp."
+echo "This will send waybill PDFs to WhatsApp chat: Заказы."
+echo "Safety gate blocks chat: order 2."
 echo "Make sure WhatsApp Web is logged in before proceeding."
 echo ""
 echo "Press Enter to start or Ctrl+C to cancel..."
 read
 
-python scripts/send_waybills_whatsapp.py --verbose
+python scripts/send_waybills_whatsapp.py \
+  --chat-title "Заказы" \
+  --forbid-chat "order 2" \
+  --status-messages \
+  --verbose
 
 echo ""
 echo "========================================"
