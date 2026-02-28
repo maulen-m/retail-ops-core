@@ -132,6 +132,14 @@ def run_kaspi_daily_ops(
     if profile not in PROFILE_CONFIG:
         raise RuntimeError(f"unknown daily ops profile: {profile}")
     profile_cfg = PROFILE_CONFIG[profile]
+    try:
+        as_of_date = date.fromisoformat(as_of)
+    except ValueError:
+        as_of_date = date.today()
+    historical_future_allowance = max(0, (date.today() - as_of_date).days)
+    env_future_allowance = int(os.environ.get("AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS", "0"))
+    max_future_content_days = max(env_future_allowance, historical_future_allowance)
+
     stores_cfg_path = Path(stores_config) if stores_config else (root / "config" / "stores.yaml")
     stores = load_active_store_codes(stores_cfg_path)
     allowed = {store.upper() for store in allow_store_failures}
@@ -255,7 +263,12 @@ def run_kaspi_daily_ops(
         ),
         (
             "anchor_health",
-            f"python3 scripts/check_anchor_health.py --project-root {shlex.quote(str(root))} --as-of {shlex.quote(as_of)}",
+            (
+                "python3 scripts/check_anchor_health.py "
+                f"--project-root {shlex.quote(str(root))} "
+                f"--as-of {shlex.quote(as_of)} "
+                f"--max-future-content-days {max_future_content_days}"
+            ),
         ),
         (
             "ops_status",

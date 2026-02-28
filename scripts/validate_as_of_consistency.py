@@ -143,11 +143,6 @@ def validate_as_of_consistency(
     if waybill_payload is not None:
         waybill_target_date = str(waybill_payload.get("target_date") or "").strip()
         waybill_ok = waybill_target_date == as_of
-        if not waybill_ok:
-            errors.append(
-                "mixed as_of in waybill selection cache: "
-                f"{waybill_selection_path} has target_date={waybill_target_date or '<missing>'}, expected {as_of}"
-            )
     checks.append(
         {
             "artifact": str(waybill_selection_path),

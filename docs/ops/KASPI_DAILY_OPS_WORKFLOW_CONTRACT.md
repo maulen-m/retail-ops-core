@@ -54,6 +54,10 @@ updating this contract and corresponding tests before merge.
 - keep daily report contract fail-closed:
   - `scripts/generate_daily_ops_report.py`
   - `scripts/validate_daily_ops_report.py --strict`
+- keep post-ocean-drop reliability gates fail-closed:
+  - `scripts/validate_business_insides_economics_ready.py --as-of <YYYY-MM-DD> --strict`
+  - `scripts/validate_ops_selection_parity.py --as-of <YYYY-MM-DD> --strict`
+  - `scripts/validate_scheduler_heartbeat.py --as-of <YYYY-MM-DD> --strict`
 - keep autopilot exception queue contract fail-closed:
   - `scripts/run_daily_autopilot.py --strict`
   - `exports/exceptions/<YYYY-MM-DD>/exceptions.{json,md}`

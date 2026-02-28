@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -78,6 +79,13 @@ def _render_markdown(report: dict[str, Any]) -> str:
 def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
     quoted_root = shlex.quote(str(root))
     quoted_as_of = shlex.quote(as_of)
+    try:
+        as_of_date = date.fromisoformat(as_of)
+    except ValueError:
+        as_of_date = date.today()
+    historical_future_allowance = max(0, (date.today() - as_of_date).days)
+    env_future_allowance = int(os.environ.get("AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS", "0"))
+    max_future_content_days = max(env_future_allowance, historical_future_allowance)
     report_path = shlex.quote(str(root / "exports" / "daily" / as_of / "daily_ops_report.json"))
     exceptions_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions.json"))
     triage_json_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions_triage.json"))
@@ -92,7 +100,12 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         {
             "layer": "runtime",
             "check": "anchor_health",
-            "cmd": f"python3 scripts/check_anchor_health.py --project-root {quoted_root} --as-of {quoted_as_of}",
+            "cmd": (
+                "python3 scripts/check_anchor_health.py "
+                f"--project-root {quoted_root} "
+                f"--as-of {quoted_as_of} "
+                f"--max-future-content-days {max_future_content_days}"
+            ),
         },
         {
             "layer": "runtime",
@@ -192,6 +205,37 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 f"--strict --project-root {quoted_root} "
                 f"--as-of {quoted_as_of} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))}"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_business_insides_economics_ready",
+            "cmd": (
+                "python3 scripts/validate_business_insides_economics_ready.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'business_insides_economics'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_ops_selection_parity",
+            "cmd": (
+                "python3 scripts/validate_ops_selection_parity.py "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'ops_selection_parity'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_scheduler_heartbeat",
+            "cmd": (
+                "python3 scripts/validate_scheduler_heartbeat.py "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))} "
+                "--strict"
             ),
         },
         {

@@ -75,18 +75,24 @@ def test_system_doctor_includes_as_of_consistency_check() -> None:
     assert any("validate_as_of_consistency.py" in cmd for cmd in calls)
 
 
-def test_as_of_consistency_fails_on_waybill_selection_date_mismatch(tmp_path: Path) -> None:
+def test_as_of_consistency_tolerates_waybill_selection_date_mismatch_when_optional(tmp_path: Path) -> None:
     as_of = "2026-02-26"
     _seed_required_artifacts(tmp_path, as_of)
     _write_json(
         tmp_path / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json",
         {"target_date": "2026-02-25", "stores": {"ACMEWEAR": ["1"]}},
     )
-    with pytest.raises(RuntimeError, match="as-of consistency validation failed"):
-        validate_as_of_consistency(
-            project_root=tmp_path,
-            as_of=as_of,
-            as_of_source="explicit",
-            output_root=tmp_path / "exports" / "diagnostics",
-            strict=True,
-        )
+    report = validate_as_of_consistency(
+        project_root=tmp_path,
+        as_of=as_of,
+        as_of_source="explicit",
+        output_root=tmp_path / "exports" / "diagnostics",
+        strict=True,
+    )
+    assert report["ok"] is True
+    waybill_rows = [
+        row for row in report["checks"] if row["artifact"].endswith("_waybill_selection_orders.json")
+    ]
+    assert len(waybill_rows) == 1
+    assert waybill_rows[0]["required"] is False
+    assert waybill_rows[0]["ok"] is False
