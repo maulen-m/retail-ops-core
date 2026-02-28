@@ -35,6 +35,7 @@ NOTE: v2 branch commit SHA for the new engine-integrity work must be captured in
 - New commit SHA recorded in:
   - docs/PLAN_SALES_OCEAN_DROP_ENGINE_CLOSURE_V3_2026-02-28.md (this file)
   - claude/journal.md (append-only, timestamped)
+- Freeze SHA (P0 baseline): `2eca780a380b252e111c3dce5633f83c3c25270f`
 - Fresh evidence transcript:
   - exports/validation/board_sales_ocean_drop_engine_integrity_v3_2026-02-28/full_gates_green_final.md
 - Fresh oracle pack:

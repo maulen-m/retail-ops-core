@@ -82,5 +82,6 @@ def test_system_doctor_includes_v10_contract_checks() -> None:
     assert "validate_sales_vs_waybill_parity.py" in joined
     assert "validate_sales_truth_external_reference.py" in joined
     assert "validate_sales_truth_ocean_drop_parity.py" in joined
+    assert "validate_sales_engine_self_sufficient.py" in joined
     assert "build_sales_truth_drift_report.py" in joined
     assert "triage_exceptions.py" in joined

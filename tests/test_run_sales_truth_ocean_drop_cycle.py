@@ -23,7 +23,9 @@ def test_cycle_runs_all_steps_when_green(tmp_path: Path) -> None:
     )
 
     assert report["ok"] is True
-    assert len(calls) == 6
+    assert len(calls) == 7
+    assert "rebuild_sales_fact_v2_from_kaspi_entries.py" in calls[3]
+    assert "validate_sales_truth_ocean_drop_parity.py" in calls[4]
     assert Path(report["json_path"]).exists()
     assert Path(report["md_path"]).exists()
 
@@ -33,7 +35,7 @@ def test_cycle_fails_closed_on_first_error(tmp_path: Path) -> None:
 
     def fake_runner(cmd: str, _cwd: Path) -> tuple[int, str]:
         calls.append(cmd)
-        if "validate_sales_truth_ocean_drop_parity" in cmd:
+        if "validate_sales_truth_ocean_drop_parity.py" in cmd:
             return 1, "parity fail"
         return 0, "ok"
 
@@ -49,5 +51,5 @@ def test_cycle_fails_closed_on_first_error(tmp_path: Path) -> None:
 
     assert report["ok"] is False
     assert report["status"] == "FAIL"
-    assert report["steps"][1]["ok"] is False
-    assert len(report["steps"]) == 2
+    assert report["steps"][4]["ok"] is False
+    assert len(report["steps"]) == 5

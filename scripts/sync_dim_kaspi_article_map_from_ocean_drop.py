@@ -10,8 +10,13 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.sales.ocean_drop_anchor import (
     DEFAULT_REGISTRY as DEFAULT_ANCHOR_REGISTRY,
@@ -19,7 +24,6 @@ from core.sales.ocean_drop_anchor import (
     resolve_ocean_drop_path,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "identity_coverage"
 DEFAULT_BACKUP_ROOT = PROJECT_ROOT / "runtime" / "backups"

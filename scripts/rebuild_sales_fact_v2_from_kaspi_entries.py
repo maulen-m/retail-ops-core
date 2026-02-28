@@ -72,7 +72,8 @@ def _normalize_status(internal_status: str, kaspi_status: str) -> str:
         return "CANCELLED"
     if raw_internal in {"RETURNED"} or raw_kaspi in {"ВОЗВРАЩЕН", "RETURNED", "RETURN"}:
         return "RETURNED"
-    if raw_internal in {"COMPLETED", "DELIVERED", "SHIPPED"} or raw_kaspi in {"ВЫДАН", "ЗАВЕРШЕН", "DELIVERED", "COMPLETED"}:
+    # SHIPPED is an in-transit state and must not be counted as delivered sales truth.
+    if raw_internal in {"COMPLETED", "DELIVERED"} or raw_kaspi in {"ВЫДАН", "ЗАВЕРШЕН", "DELIVERED", "COMPLETED"}:
         return "DELIVERED"
     return "OPEN"
 
@@ -131,6 +132,11 @@ def build_sales_fact_v2_rows_from_entries(
     if "offer_id" not in entry_cols:
         raise RebuildError("fact_order_entries_kaspi missing offer_id")
 
+    assigned_size_sql = (
+        "COALESCE(assigned_size, '') AS assigned_size,"
+        if "assigned_size" in order_cols
+        else "'' AS assigned_size,"
+    )
     orders = conn.execute(
         """
         SELECT
@@ -139,6 +145,9 @@ def build_sales_fact_v2_rows_from_entries(
             COALESCE(kaspi_offer_name, '') AS kaspi_offer_name,
             COALESCE(sku_key, '') AS sku_key,
             COALESCE(sku_id, '') AS sku_id,
+            """
+        + assigned_size_sql
+        + """
             COALESCE(my_size, '') AS my_size,
             COALESCE(quantity, 1) AS quantity,
             COALESCE(delivery_cost_for_seller, delivery_cost, 0) AS delivery_fee,
@@ -161,6 +170,7 @@ def build_sales_fact_v2_rows_from_entries(
                 "kaspi_offer_name",
                 "sku_key",
                 "sku_id",
+                "assigned_size",
                 "my_size",
                 "quantity",
                 "delivery_fee",
@@ -273,12 +283,20 @@ def build_sales_fact_v2_rows_from_entries(
         if not sku_id:
             sku_id = sku_key
 
+        assigned_size_candidates = {
+            str(r.get("assigned_size") or "").strip().upper()
+            for r in order_rows
+            if str(r.get("assigned_size") or "").strip()
+        }
+        if assigned_size_candidates:
+            my_size = sorted(assigned_size_candidates)[0]
+
         size_candidates = {
             str(r.get("my_size") or "").strip().upper()
             for r in order_rows
             if str(r.get("my_size") or "").strip()
         }
-        if size_candidates:
+        if not my_size and size_candidates:
             my_size = sorted(size_candidates)[0]
 
         order_total = totals_by_order.get(pair, 0.0)

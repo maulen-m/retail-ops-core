@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,14 @@ DEFAULT_REGISTRY = PROJECT_ROOT / "config" / "anchors" / "ocean_drop_sales_ancho
 
 class OceanDropAnchorError(RuntimeError):
     """Raised when Ocean Drop anchor registry is invalid or missing."""
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def load_ocean_drop_anchor(registry_path: Path = DEFAULT_REGISTRY) -> dict[str, Any]:
@@ -33,9 +42,21 @@ def load_ocean_drop_anchor(registry_path: Path = DEFAULT_REGISTRY) -> dict[str, 
     if not sha256:
         raise OceanDropAnchorError("ocean drop anchor registry missing 'sha256'")
 
+    ocean_drop_resolved = Path(ocean_drop_path).expanduser().resolve()
+    if not ocean_drop_resolved.exists():
+        raise OceanDropAnchorError(f"ocean drop file missing from anchor registry: {ocean_drop_resolved}")
+    computed_sha = _sha256_file(ocean_drop_resolved)
+    if computed_sha.lower() != sha256.lower():
+        raise OceanDropAnchorError(
+            "ocean drop anchor sha256 mismatch: "
+            f"expected={sha256.lower()} actual={computed_sha.lower()} path={ocean_drop_resolved}"
+        )
+
     payload["ocean_drop_path"] = ocean_drop_path
     payload["as_of_end"] = as_of_end
-    payload["sha256"] = sha256
+    payload["sha256"] = sha256.lower()
+    payload["ocean_drop_path_resolved"] = str(ocean_drop_resolved)
+    payload["sha256_computed"] = computed_sha.lower()
     payload["registry_path"] = str(path)
     return payload
 
@@ -45,14 +66,18 @@ def resolve_ocean_drop_path(
     explicit_path: Path | None,
     registry_path: Path = DEFAULT_REGISTRY,
 ) -> Path:
+    payload = load_ocean_drop_anchor(registry_path)
+    anchor_path = Path(payload["ocean_drop_path_resolved"]).resolve()
+
     if explicit_path is not None:
         path = explicit_path.resolve()
         if not path.exists():
             raise OceanDropAnchorError(f"ocean drop file missing: {path}")
-        return path
+        if path != anchor_path:
+            raise OceanDropAnchorError(
+                "explicit ocean drop path does not match locked anchor registry path: "
+                f"explicit={path} anchor={anchor_path}"
+            )
+        return anchor_path
 
-    payload = load_ocean_drop_anchor(registry_path)
-    path = Path(payload["ocean_drop_path"]).expanduser().resolve()
-    if not path.exists():
-        raise OceanDropAnchorError(f"ocean drop file missing from anchor registry: {path}")
-    return path
+    return anchor_path

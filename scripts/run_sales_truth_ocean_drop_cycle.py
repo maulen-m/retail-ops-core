@@ -74,22 +74,6 @@ def run_sales_truth_ocean_drop_cycle(
             ),
         },
         {
-            "step": "validate_sales_truth_ocean_drop_parity",
-            "cmd": (
-                "python3 scripts/validate_sales_truth_ocean_drop_parity.py "
-                f"--as-of {quoted_as_of} --strict --volatility-days 14"
-                f"{ocean_drop_part}{crm_part}"
-            ),
-        },
-        {
-            "step": "build_sales_truth_drift_report",
-            "cmd": (
-                "python3 scripts/build_sales_truth_drift_report.py "
-                f"--as-of {quoted_as_of} --lookback-days 14 --strict"
-                f"{ocean_drop_part}{crm_part}"
-            ),
-        },
-        {
             "step": "sync_dim_kaspi_article_map_from_ocean_drop",
             "cmd": (
                 "python3 scripts/sync_dim_kaspi_article_map_from_ocean_drop.py "
@@ -101,7 +85,7 @@ def run_sales_truth_ocean_drop_cycle(
             "step": "sync_order_size_overrides_from_ocean_drop",
             "cmd": (
                 "python3 scripts/sync_order_size_overrides_from_ocean_drop.py "
-                f"--as-of {quoted_as_of} --strict"
+                f"--as-of {quoted_as_of}"
                 f"{ocean_drop_part}"
             ),
         },
@@ -109,6 +93,29 @@ def run_sales_truth_ocean_drop_cycle(
             "step": "rebuild_sales_fact_v2_from_kaspi_entries",
             "cmd": (
                 "python3 scripts/rebuild_sales_fact_v2_from_kaspi_entries.py "
+                f"--as-of {quoted_as_of} --strict"
+            ),
+        },
+        {
+            "step": "validate_sales_truth_ocean_drop_parity_post_rebuild",
+            "cmd": (
+                "python3 scripts/validate_sales_truth_ocean_drop_parity.py "
+                f"--as-of {quoted_as_of} --strict --volatility-days 14"
+                f"{ocean_drop_part}{crm_part}"
+            ),
+        },
+        {
+            "step": "build_sales_truth_drift_report_post_rebuild",
+            "cmd": (
+                "python3 scripts/build_sales_truth_drift_report.py "
+                f"--as-of {quoted_as_of} --lookback-days 14 --strict"
+                f"{ocean_drop_part}{crm_part}"
+            ),
+        },
+        {
+            "step": "validate_no_missing_identity_in_delivered_window",
+            "cmd": (
+                "python3 scripts/validate_no_missing_identity_in_delivered_window.py "
                 f"--as-of {quoted_as_of} --strict"
             ),
         },

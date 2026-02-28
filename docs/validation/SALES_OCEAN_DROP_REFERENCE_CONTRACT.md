@@ -57,6 +57,7 @@ python3 scripts/validate_sales_truth_ocean_drop_parity.py \
 ```
 
 If `--ocean-drop` is omitted, strict scripts must resolve it from `config/anchors/ocean_drop_sales_anchor.json`.
+The resolved file must match the locked anchor path and its sha256.
 
 Strict behavior:
 - Compare published truth vs normalized Ocean Drop reference by `sale_date + store_code`.
@@ -64,6 +65,27 @@ Strict behavior:
   - aggregate parity (units, revenue, orders)
   - order-id set parity
 - Any mismatch outside volatility window is hard fail (non-zero exit).
+
+## Volatility Window Semantics
+- Default volatility window is 14 days (`--volatility-days 14`).
+- Non-volatile days are older than `as_of - 13 days`.
+- Decision-grade PASS requires:
+  - `nonvolatile_mismatch_count == 0`
+  - strict parity command exits 0
+- Volatile mismatches are diagnostic only unless promoted to explicit blocker in an owning board.
+
+## Engine Self-Sufficiency Gate
+Command:
+```bash
+python3 scripts/validate_sales_engine_self_sufficient.py \
+  --as-of YYYY-MM-DD \
+  --strict
+```
+Contract:
+- Copies DB to a temporary validation DB.
+- Wipes/rebuilds `sales_fact_v2` from internal order/order-entry facts only.
+- Runs parity against Ocean Drop on the rebuilt temp DB.
+- Hard-fails when nonvolatile mismatch count is non-zero for configured window.
 
 ## Artifacts
 Validator must emit:
@@ -88,3 +110,27 @@ Validator must emit:
   - `apply_plan.json`
   - `apply_plan.md`
 - Every apply path must create a DB backup before writes.
+
+## Anchor Refresh Protocol (P5)
+1. Export refreshed Ocean Drop source and place it in controlled archive storage.
+2. Compute file checksum:
+```bash
+python3 - <<'PY'
+import hashlib, pathlib
+p=pathlib.Path(\"<new_ocean_drop_csv>\")
+print(hashlib.sha256(p.read_bytes()).hexdigest())
+PY
+```
+3. Update `config/anchors/ocean_drop_sales_anchor.json` with:
+  - `ocean_drop_path`
+  - `as_of_end`
+  - `sha256`
+4. Re-run strict gates:
+  - `python3 scripts/validate_sales_truth_ocean_drop_parity.py --strict --as-of <as_of>`
+  - `python3 scripts/validate_sales_engine_self_sufficient.py --strict --as-of <as_of>`
+5. Archive prior registry snapshot and reference it in journal/evidence.
+
+## Stop-The-Line Rules
+- Any attempt to bypass anchor sha256 validation.
+- Any reintroduction of reference data into published truth views.
+- Any strict parity/self-sufficiency failure on non-volatile window.

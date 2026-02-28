@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -23,13 +24,14 @@ def test_load_ocean_drop_anchor_requires_required_fields(tmp_path: Path) -> None
 def test_resolve_ocean_drop_path_uses_registry_when_explicit_missing(tmp_path: Path) -> None:
     ocean = tmp_path / "ocean.csv"
     ocean.write_text("a,b\n1,2\n", encoding="utf-8")
+    sha = hashlib.sha256(ocean.read_bytes()).hexdigest()
     registry = tmp_path / "anchor.json"
     registry.write_text(
         json.dumps(
             {
                 "ocean_drop_path": str(ocean),
                 "as_of_end": "2026-02-26",
-                "sha256": "abc",
+                "sha256": sha,
             }
         ),
         encoding="utf-8",

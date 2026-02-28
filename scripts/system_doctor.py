@@ -220,6 +220,17 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_sales_engine_self_sufficient",
+            "cmd": (
+                "python3 scripts/validate_sales_engine_self_sufficient.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'sales_engine_self_sufficient'))} "
+                "--strict-if-configured --strict"
+            ),
+        },
+        {
+            "layer": "governance",
             "check": "build_sales_truth_drift_report",
             "cmd": (
                 "python3 scripts/build_sales_truth_drift_report.py "
