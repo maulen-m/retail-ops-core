@@ -397,6 +397,26 @@ def _order_category_entries_by_sku(entries: List[Dict[str, Any]]) -> List[Dict[s
     return result
 
 
+def _category_rank(category: str) -> int:
+    """
+    Stable category priority for sending sequence.
+
+    Rule: all multi-line and multi-qty bundles are sent before normal singles.
+    """
+    raw = str(category or "").strip()
+    if not raw:
+        return 99
+
+    normalized = re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_")
+    if "multi_line" in normalized:
+        return 0
+    if "multi_qty" in normalized:
+        return 1
+    if "normal" in normalized and "single" in normalized:
+        return 2
+    return CATEGORY_PRIORITY.get(raw, 99)
+
+
 def order_pdfs_for_sending(pdfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Order PDFs by category, then by contiguous SKU blocks with rising sizes.
@@ -406,16 +426,8 @@ def order_pdfs_for_sending(pdfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         category_groups[str(pdf.get("category", ""))].append(pdf)
 
     ordered: List[Dict[str, Any]] = []
-    for category in PDF_CATEGORIES:
-        if category_groups.get(category):
-            ordered.extend(_order_category_entries_by_sku(category_groups[category]))
-
-    unknown: List[Dict[str, Any]] = []
-    for category, items in category_groups.items():
-        if category not in CATEGORY_PRIORITY:
-            unknown.extend(items)
-    unknown.sort(key=lambda x: str(x.get("filename", "")).lower())
-    ordered.extend(unknown)
+    for category in sorted(category_groups.keys(), key=lambda c: (_category_rank(c), c.lower())):
+        ordered.extend(_order_category_entries_by_sku(category_groups[category]))
 
     return ordered
 

@@ -207,6 +207,61 @@ def test_ordering_uses_sku_key_not_family_for_grouping() -> None:
     ]
 
 
+def test_ordering_sends_multi_bundles_before_normal_singles() -> None:
+    pdfs = [
+        {
+            "filename": "normal_singles.pdf",
+            "category": "NORMAL_singles",
+            "family_key": "NORMAL",
+            "sku_key": "NORMAL_SKU",
+            "size_rank": 10,
+        },
+        {
+            "filename": "multi_qty.pdf",
+            "category": "SPECIAL_multi_qty",
+            "family_key": "MQTY",
+            "sku_key": "MQTY_SKU",
+            "size_rank": 10,
+        },
+        {
+            "filename": "multi_line.pdf",
+            "category": "SPECIAL_multi_line",
+            "family_key": "MLINE",
+            "sku_key": "MLINE_SKU",
+            "size_rank": 10,
+        },
+    ]
+
+    ordered = order_pdfs_for_sending(pdfs)
+    assert [x["filename"] for x in ordered] == [
+        "multi_line.pdf",
+        "multi_qty.pdf",
+        "normal_singles.pdf",
+    ]
+
+
+def test_ordering_treats_category_aliases_as_multi_priority() -> None:
+    pdfs = [
+        {
+            "filename": "normal.pdf",
+            "category": "NORMAL_singles",
+            "family_key": "NORMAL",
+            "sku_key": "NORMAL_SKU",
+            "size_rank": 10,
+        },
+        {
+            "filename": "alias_mqty.pdf",
+            "category": "special-multi-qty",
+            "family_key": "MQTY",
+            "sku_key": "MQTY_SKU",
+            "size_rank": 10,
+        },
+    ]
+
+    ordered = order_pdfs_for_sending(pdfs)
+    assert [x["filename"] for x in ordered] == ["alias_mqty.pdf", "normal.pdf"]
+
+
 def test_ordering_kids_sizes_before_adult_sizes() -> None:
     pdfs = [
         {
