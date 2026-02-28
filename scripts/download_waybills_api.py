@@ -970,6 +970,21 @@ def download_all_waybills(
     fallback_used = bool(fallback_orders_by_store)
     fallback_stores = sorted(fallback_orders_by_store.keys())
 
+    def _exclude_cached_waybills(order_ids: set[str]) -> tuple[set[str], set[str]]:
+        """Return (kept, excluded_cached_pdf) using local waybill cache files."""
+        if all_dates:
+            # Explicit all-dates mode is intentionally unbounded.
+            return set(order_ids), set()
+        kept: set[str] = set()
+        excluded: set[str] = set()
+        for oid in order_ids:
+            pdf_path = output_dir / f"{oid}.pdf"
+            if pdf_path.exists():
+                excluded.add(oid)
+            else:
+                kept.add(oid)
+        return kept, excluded
+
     if fallback_orders_by_store:
         merged_orders_by_store: dict[str, set[str]] = {}
         store_union = set(target_orders_by_store) | set(fallback_orders_by_store)
@@ -991,20 +1006,40 @@ def download_all_waybills(
                 else:
                     # In overdue/all-dates modes include fallback carry-over IDs
                     # so previous-day missed pending orders remain processable.
-                    merged_orders_by_store[store_code] = set(api_ids) | set(fallback_ids)
+                    allowed_extra, excluded_cached = _exclude_cached_waybills(extra)
+                    merged_orders_by_store[store_code] = set(api_ids) | allowed_extra
                     if extra:
                         mode_label = "all-dates" if all_dates else "include-overdue"
-                        logger.warning(
-                            f"{store_code}: including {len(extra)} fallback-only orders "
-                            f"not in API selection ({mode_label} mode)"
-                        )
+                        if excluded_cached:
+                            logger.warning(
+                                f"{store_code}: excluding {len(excluded_cached)} fallback-only "
+                                f"orders with cached waybill PDFs ({mode_label} mode)"
+                            )
+                        if allowed_extra:
+                            logger.warning(
+                                f"{store_code}: including {len(allowed_extra)} fallback-only orders "
+                                f"not in API selection ({mode_label} mode)"
+                            )
             else:
                 if fallback_ids:
-                    merged_orders_by_store[store_code] = set(fallback_ids)
-                    logger.warning(
-                        f"{store_code}: API selection empty or failed; "
-                        f"using fallback ({len(fallback_ids)} orders)"
-                    )
+                    allowed_fallback, excluded_cached = _exclude_cached_waybills(fallback_ids)
+                    if excluded_cached:
+                        mode_label = "all-dates" if all_dates else "include-overdue"
+                        logger.warning(
+                            f"{store_code}: excluding {len(excluded_cached)} fallback-only "
+                            f"orders with cached waybill PDFs ({mode_label} mode)"
+                        )
+                    if allowed_fallback:
+                        merged_orders_by_store[store_code] = allowed_fallback
+                        logger.warning(
+                            f"{store_code}: API selection empty or failed; "
+                            f"using fallback ({len(allowed_fallback)} orders)"
+                        )
+                    else:
+                        logger.warning(
+                            f"{store_code}: API selection empty or failed; fallback reduced to 0 "
+                            "after cached-waybill filter"
+                        )
         target_orders_by_store = merged_orders_by_store
     elif api_errors:
         logger.warning(

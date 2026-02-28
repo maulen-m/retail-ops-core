@@ -278,11 +278,15 @@ echo ""
 # Step 3: Build waybill bundles
 echo "Step 3: Building waybill bundles..."
 echo "----------------------------------------"
-python scripts/build_daily_waybills.py --verbose --lookback-days "${LOOKBACK_DAYS}" ${DATE_FLAG}
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "WARNING: Build waybill bundles encountered errors (see above)"
-    HARD_FAIL=1
+if [ "${HARD_FAIL}" -ne 0 ]; then
+    echo "SKIPPED: build step blocked by earlier hard failure."
+else
+    python scripts/build_daily_waybills.py --verbose --lookback-days "${LOOKBACK_DAYS}" ${DATE_FLAG}
+    if [ $? -ne 0 ]; then
+        echo ""
+        echo "WARNING: Build waybill bundles encountered errors (see above)"
+        HARD_FAIL=1
+    fi
 fi
 
 echo ""

@@ -11,3 +11,9 @@ def test_waybill_command_tracks_hard_fail_and_exits_nonzero() -> None:
 def test_waybill_command_uses_strict_stopline_report_flag() -> None:
     text = Path("excel_ui/run_build_waybills.command").read_text(encoding="utf-8")
     assert "--strict-stopline" in text
+
+
+def test_waybill_command_skips_build_after_hard_fail() -> None:
+    text = Path("excel_ui/run_build_waybills.command").read_text(encoding="utf-8")
+    assert 'if [ "${HARD_FAIL}" -ne 0 ]; then' in text
+    assert "SKIPPED: build step blocked by earlier hard failure." in text
