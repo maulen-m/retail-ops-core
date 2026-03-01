@@ -6,6 +6,7 @@ from scripts.send_waybills_whatsapp import (
     SOURCE_MERGED,
     WhatsAppSender,
     _normalize_chat_key,
+    _recover_missing_pdf_path,
     collect_store_order_bundle_stats,
     collect_all_pdfs,
     find_store_folders,
@@ -87,6 +88,31 @@ def test_collect_all_pdfs_recurses_nested_category_folders(tmp_path: Path) -> No
 
     assert names == ["nested.pdf", "top_level.pdf"]
     assert all(x["relative"].startswith("MERGED/") for x in pdfs)
+
+
+def test_recover_missing_pdf_path_finds_moved_file_with_same_name(tmp_path: Path) -> None:
+    today_root = tmp_path / "Today"
+    store = today_root / "MERGED" / "TODAY" / "01.03.26_MERGED_qnt1"
+    category = store / "NORMAL_singles"
+    category.mkdir(parents=True, exist_ok=True)
+
+    old_path = category / "Sample_L-1.pdf"
+    moved_path = category / "New Folder With Items" / "Sample_L-1.pdf"
+    moved_path.parent.mkdir(parents=True, exist_ok=True)
+    moved_path.write_bytes(b"%PDF-1.0\n")
+
+    entry = {
+        "path": old_path,
+        "store": "01.03.26_MERGED_qnt1",
+        "category": "NORMAL_singles",
+        "filename": "Sample_L-1.pdf",
+        "relative": "MERGED/TODAY/01.03.26_MERGED_qnt1/NORMAL_singles/Sample_L-1.pdf",
+    }
+
+    recovered = _recover_missing_pdf_path(entry, today_root)
+    assert recovered == moved_path
+    assert entry["path"] == moved_path
+    assert "New Folder With Items" in entry["relative"]
 
 
 def test_collect_all_pdfs_reads_sku_key_from_manifest_output_mapping(tmp_path: Path) -> None:

@@ -312,6 +312,50 @@ def _relative_for_tracker(pdf_path: Path, today_folder: Path) -> str:
         return pdf_path.name
 
 
+def _recover_missing_pdf_path(
+    pdf_entry: Dict[str, Any],
+    today_folder: Path,
+) -> Optional[Path]:
+    """
+    Recover a moved PDF by filename inside the same store/category tree.
+
+    This handles real-world cases where operators manually re-folder bundles
+    (e.g., "New Folder With Items") after build, without changing filenames.
+    """
+    target_name = str(pdf_entry.get("filename") or "").strip()
+    if not target_name:
+        return None
+
+    original_path = pdf_entry.get("path")
+    if not isinstance(original_path, Path):
+        return None
+
+    # Find store root by folder name token captured at collection time.
+    store_name = str(pdf_entry.get("store") or "").strip()
+    store_root: Optional[Path] = None
+    if store_name:
+        for parent in original_path.parents:
+            if parent.name == store_name:
+                store_root = parent
+                break
+    if store_root is None:
+        return None
+
+    category = str(pdf_entry.get("category") or "").strip()
+    category_root = store_root / category if category else store_root
+    if not category_root.exists():
+        category_root = store_root
+
+    matches = sorted(category_root.rglob(target_name), key=lambda p: str(p).lower())
+    if not matches:
+        return None
+
+    recovered = matches[0]
+    pdf_entry["path"] = recovered
+    pdf_entry["relative"] = _relative_for_tracker(recovered, today_folder)
+    return recovered
+
+
 def filter_unsent_pdfs(all_pdfs: List[Dict[str, Any]], sent_list: List[str]) -> List[Dict[str, Any]]:
     """Filter out PDFs that have already been sent."""
     sent_set = set(sent_list)
@@ -688,49 +732,106 @@ class WhatsAppSender:
         self.page.locator("div[aria-label='Chat list']").wait_for(timeout=CHAT_OPEN_TIMEOUT_MS)
         self.page.locator("div[aria-label='Search input textbox']").wait_for(timeout=CHAT_OPEN_TIMEOUT_MS)
 
-    def _active_chat_title(self) -> str:
-        title = self.page.evaluate(
-            """
-            () => {
-              const clean = (value) => (value || '').trim();
-              const skip = new Set([
-                '',
-                'click here for group info',
-                'profile details',
-                'wa-wordmark-refreshed',
-                'whatsapp',
-                'call',
-              ]);
-
-              // Preferred: selected row in chat list.
-              const selectedRow = document.querySelector(\"div[aria-label='Chat list'] [aria-selected='true']\");
-              if (selectedRow) {
-                const rowName = selectedRow.querySelector(\"span[title], span[dir='auto']\");
-                if (rowName) {
-                  const text = clean(rowName.getAttribute('title') || rowName.textContent || '');
-                  if (!skip.has(text.toLowerCase())) return text;
-                }
-              }
-
-              // Fallback: right panel header title. Scan from last header because left nav header is first.
-              const headers = Array.from(document.querySelectorAll('header')).reverse();
-              for (const header of headers) {
-                const nodes = [
-                  ...header.querySelectorAll(\"span[dir='auto']\"),
-                  ...header.querySelectorAll('span[title]'),
-                  ...header.querySelectorAll('h1, h2'),
-                ];
-                for (const node of nodes) {
-                  const text = clean((node.getAttribute && node.getAttribute('title')) || node.textContent || '');
-                  if (skip.has(text.toLowerCase())) continue;
-                  if (text.length >= 2) return text;
-                }
-              }
-              return '';
-            }
-            """
+    @staticmethod
+    def _is_navigation_context_error(exc: Exception) -> bool:
+        msg = str(exc or "").lower()
+        return (
+            "execution context was destroyed" in msg
+            or "most likely because of a navigation" in msg
+            or "cannot find context with specified id" in msg
+            or "target closed" in msg
         )
-        return str(title or "").strip()
+
+    def _composer_candidates(self) -> List[Any]:
+        return [
+            self.page.locator("footer div[contenteditable='true'][role='textbox']").first,
+            self.page.locator("footer div[contenteditable='true'][data-lexical-editor='true']").first,
+            self.page.locator("div[contenteditable='true'][aria-label='Type a message']").first,
+            self.page.locator("div[contenteditable='true'][aria-label^='Type to group']").first,
+            self.page.locator("footer div[contenteditable='true']").first,
+        ]
+
+    def _resolve_composer(
+        self,
+        timeout_ms: int,
+        required: bool = True,
+    ) -> Optional[Any]:
+        deadline = time.time() + (timeout_ms / 1000.0)
+        last_error: Optional[Exception] = None
+
+        while time.time() < deadline:
+            for locator in self._composer_candidates():
+                try:
+                    if locator.count() <= 0:
+                        continue
+                    candidate = locator.first
+                    candidate.wait_for(timeout=1200)
+                    return candidate
+                except Exception as exc:
+                    last_error = exc
+                    continue
+            self.page.wait_for_timeout(250)
+
+        if required:
+            raise RuntimeError(f"Composer not ready in target chat: {last_error}")
+        return None
+
+    def _active_chat_title(self) -> str:
+        last_error: Optional[Exception] = None
+        for _ in range(3):
+            try:
+                title = self.page.evaluate(
+                    """
+                    () => {
+                      const clean = (value) => (value || '').trim();
+                      const skip = new Set([
+                        '',
+                        'click here for group info',
+                        'profile details',
+                        'wa-wordmark-refreshed',
+                        'whatsapp',
+                        'call',
+                      ]);
+
+                      // Preferred: selected row in chat list.
+                      const selectedRow = document.querySelector(\"div[aria-label='Chat list'] [aria-selected='true']\");
+                      if (selectedRow) {
+                        const rowName = selectedRow.querySelector(\"span[title], span[dir='auto']\");
+                        if (rowName) {
+                          const text = clean(rowName.getAttribute('title') || rowName.textContent || '');
+                          if (!skip.has(text.toLowerCase())) return text;
+                        }
+                      }
+
+                      // Fallback: right panel header title. Scan from last header because left nav header is first.
+                      const headers = Array.from(document.querySelectorAll('header')).reverse();
+                      for (const header of headers) {
+                        const nodes = [
+                          ...header.querySelectorAll(\"span[dir='auto']\"),
+                          ...header.querySelectorAll('span[title]'),
+                          ...header.querySelectorAll('h1, h2'),
+                        ];
+                        for (const node of nodes) {
+                          const text = clean((node.getAttribute && node.getAttribute('title')) || node.textContent || '');
+                          if (skip.has(text.toLowerCase())) continue;
+                          if (text.length >= 2) return text;
+                        }
+                      }
+                      return '';
+                    }
+                    """
+                )
+                return str(title or "").strip()
+            except Exception as exc:
+                last_error = exc
+                if not self._is_navigation_context_error(exc):
+                    raise
+                self.page.wait_for_timeout(500)
+        if last_error and self._is_navigation_context_error(last_error):
+            return ""
+        if last_error:
+            raise last_error
+        return ""
 
     def _assert_active_target_chat(self) -> None:
         deadline = time.time() + 12.0
@@ -802,9 +903,7 @@ class WhatsAppSender:
                 self.page.wait_for_timeout(1200)
 
         self._assert_active_target_chat()
-
-        composer = self.page.locator("footer div[contenteditable='true'][role='textbox']").first
-        composer.wait_for(timeout=self.action_timeout_ms)
+        self._resolve_composer(timeout_ms=min(self.action_timeout_ms, 20_000), required=False)
 
         if self.verbose:
             print(f"WhatsApp active chat: {self._active_chat_title()}")
@@ -877,6 +976,99 @@ class WhatsAppSender:
             raise last_error
         raise RuntimeError("Failed to open document file chooser")
 
+    def _outgoing_message_count(self) -> int:
+        try:
+            value = self.page.evaluate(
+                """
+                () => {
+                  return document.querySelectorAll("div.message-out").length;
+                }
+                """
+            )
+            return int(value or 0)
+        except Exception:
+            return 0
+
+    def _wait_for_new_outgoing_message(self, previous_count: int, timeout_ms: int) -> None:
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 4):
+            try:
+                self.page.wait_for_function(
+                    """
+                    (prev) => {
+                      const count = document.querySelectorAll("div.message-out").length;
+                      return count > prev;
+                    }
+                    """,
+                    arg=previous_count,
+                    timeout=timeout_ms,
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                if not self._is_navigation_context_error(exc):
+                    raise
+                if attempt < 3:
+                    self.page.wait_for_timeout(800)
+                    continue
+        # Soft fallback for transient navigation race: avoid hard crash mid-run.
+        if last_error and self._is_navigation_context_error(last_error):
+            self.page.wait_for_timeout(2000)
+            return
+        if last_error:
+            raise last_error
+
+    def _wait_for_last_outgoing_settled(self, timeout_ms: int) -> None:
+        """
+        Wait until the latest outgoing message is no longer in "sending/uploading" state.
+
+        This prevents closing the temporary browser profile before WhatsApp finishes
+        syncing the just-sent message to server state.
+        """
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 4):
+            try:
+                self.page.wait_for_function(
+                    """
+                    () => {
+                      const outgoing = document.querySelectorAll("div.message-out");
+                      if (!outgoing.length) return false;
+                      const last = outgoing[outgoing.length - 1];
+                      if (!last) return false;
+
+                      const pending = last.querySelector(
+                        [
+                          "span[data-icon='msg-time']",
+                          "span[data-icon='status-clock']",
+                          "[role='progressbar']",
+                          "[aria-label*='sending']",
+                          "[aria-label*='Sending']",
+                          "[aria-label*='отправля']",
+                          "[aria-label*='Отправля']"
+                        ].join(",")
+                      );
+                      return !pending;
+                    }
+                    """,
+                    timeout=timeout_ms,
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                if not self._is_navigation_context_error(exc):
+                    raise
+                if attempt < 3:
+                    self.page.wait_for_timeout(800)
+                    continue
+        if last_error and self._is_navigation_context_error(last_error):
+            self.page.wait_for_timeout(2500)
+            return
+        if last_error:
+            raise last_error
+
+    def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
+        self._wait_for_last_outgoing_settled(timeout_ms=timeout_ms)
+
     def send_text_message(self, text: str) -> None:
         if not text.strip():
             return
@@ -889,8 +1081,13 @@ class WhatsAppSender:
         for attempt in range(1, 5):
             try:
                 self._assert_active_target_chat()
-                composer = self.page.locator("footer div[contenteditable='true'][role='textbox']").first
-                composer.wait_for(timeout=self.action_timeout_ms)
+                prev_outgoing = self._outgoing_message_count()
+                composer = self._resolve_composer(
+                    timeout_ms=max(self.action_timeout_ms, 45_000),
+                    required=True,
+                )
+                if composer is None:
+                    raise RuntimeError("Composer not available")
                 composer.click()
 
                 try:
@@ -906,7 +1103,13 @@ class WhatsAppSender:
                         self.page.keyboard.press("Shift+Enter")
 
                 self.page.keyboard.press("Enter")
-                self.page.wait_for_timeout(900)
+                self._wait_for_new_outgoing_message(
+                    prev_outgoing,
+                    timeout_ms=max(self.action_timeout_ms, 60_000),
+                )
+                self._wait_for_last_outgoing_settled(
+                    timeout_ms=max(self.action_timeout_ms, 90_000),
+                )
                 self._assert_active_target_chat()
                 return
             except Exception as exc:
@@ -931,6 +1134,11 @@ class WhatsAppSender:
         for attempt in range(1, 4):
             try:
                 self._assert_active_target_chat()
+                prev_outgoing = self._outgoing_message_count()
+                self._resolve_composer(
+                    timeout_ms=max(self.action_timeout_ms, 45_000),
+                    required=True,
+                )
                 self._safe_click_selectors(
                     [
                         "button[aria-label='Attach']",
@@ -954,7 +1162,13 @@ class WhatsAppSender:
                     timeout_ms=15_000,
                 )
 
-                self.page.wait_for_timeout(1500)
+                self._wait_for_new_outgoing_message(
+                    prev_outgoing,
+                    timeout_ms=max(self.action_timeout_ms, 90_000),
+                )
+                self._wait_for_last_outgoing_settled(
+                    timeout_ms=max(self.action_timeout_ms, 120_000),
+                )
                 self._assert_active_target_chat()
                 return
             except Exception as exc:
@@ -1106,8 +1320,32 @@ def run_sender(
 
                 print(f"    {i}. {pdf['filename']}")
 
+                if not pdf["path"].exists():
+                    recovered = _recover_missing_pdf_path(pdf, today_folder)
+                    if recovered is not None:
+                        if verbose:
+                            print(f"      recovered moved PDF path: {recovered}")
+                    else:
+                        results["failed"] += 1
+                        print(f"      SKIP: missing PDF on disk: {pdf['path']}")
+                        continue
+
                 try:
                     sender.send_document(pdf["path"])
+                except FileNotFoundError:
+                    recovered = _recover_missing_pdf_path(pdf, today_folder)
+                    if recovered is not None:
+                        try:
+                            sender.send_document(recovered)
+                        except Exception as exc:
+                            results["failed"] += 1
+                            print(f"\nSTOPPING: Failed to send {pdf['filename']}: {exc}")
+                            print("Use --resume after fixing WhatsApp UI/session")
+                            break
+                    else:
+                        results["failed"] += 1
+                        print(f"      SKIP: missing PDF on disk: {pdf['path']}")
+                        continue
                 except Exception as exc:
                     results["failed"] += 1
                     print(f"\nSTOPPING: Failed to send {pdf['filename']}: {exc}")
@@ -1131,6 +1369,16 @@ def run_sender(
                 except Exception as exc:
                     results["status_message_failed"] = 1
                     print(f"\nWARNING: Failed to send post-send status message: {exc}")
+
+            # Ensure final message/doc upload state is synced before browser closes.
+            try:
+                sender.wait_for_outgoing_sync(timeout_ms=120_000)
+            except Exception as exc:
+                if verbose:
+                    print(f"WARNING: final outgoing sync check failed: {exc}")
+    except Exception as exc:
+        results["failed"] += 1
+        print(f"\nSTOPPING: Sender runtime error: {exc}")
     finally:
         sender.close()
 
