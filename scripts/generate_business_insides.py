@@ -29,11 +29,20 @@ from core.db.sales_truth_query_guard import (
     install_sales_truth_query_guard,
     remove_sales_truth_query_guard,
 )
+from core.sales.ocean_drop_anchor import (
+    DEFAULT_REGISTRY as DEFAULT_OCEAN_DROP_ANCHOR_REGISTRY,
+    OceanDropAnchorError,
+    load_ocean_drop_anchor,
+)
 from core.sales import ensure_sales_truth_views
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_BANK = PROJECT_ROOT / "config" / "bank_accounts.yaml"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "config" / "business_insides"
+DEFAULT_BI_ALIGNMENT_OUTPUT_ROOT = (
+    PROJECT_ROOT / "exports" / "validation" / "business_insides_ocean_drop_alignment"
+)
+DEFAULT_BI_ALIGNMENT_WINDOW_DAYS = 14
 DEFAULT_WAYBILL_SELECTION_CACHE = (
     PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json"
 )
@@ -746,6 +755,7 @@ def compute_sales_metrics(
     last_7_days: int = 7,
     last_30_days: int = 30,
     enforce_query_guard: bool = False,
+    allow_completed_revenue_fallback: bool = True,
     waybill_selection_cache_path: Path = DEFAULT_WAYBILL_SELECTION_CACHE,
     archive_orders_globs: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -770,18 +780,29 @@ def compute_sales_metrics(
             """,
             (start_30.isoformat(), as_of_date.isoformat()),
         ).fetchall()
-        daily_rows = conn.execute(
+        daily_line_rows = conn.execute(
             """
             SELECT
-                sale_date,
-                SUM(COALESCE(units, 0)) AS units_shipped,
-                SUM(COALESCE(revenue_kzt, 0)) AS net_rev_kzt,
+                date(sale_date) AS sale_date,
+                SUM(COALESCE(units, 0)) AS units_delivered,
+                SUM(COALESCE(net_rev_kzt, 0)) AS net_rev_kzt
+            FROM view_sales_line_truth
+            WHERE date(sale_date) BETWEEN ? AND ?
+            GROUP BY date(sale_date)
+            ORDER BY date(sale_date)
+            """,
+            (start_30.isoformat(), as_of_date.isoformat()),
+        ).fetchall()
+        daily_fin_rows = conn.execute(
+            """
+            SELECT
+                date(sale_date) AS sale_date,
                 SUM(COALESCE(cogs_kzt, 0)) AS cogs_kzt,
                 SUM(COALESCE(profit_kzt, 0)) AS profit_kzt
             FROM view_sales_daily_truth
             WHERE date(sale_date) BETWEEN ? AND ?
-            GROUP BY sale_date
-            ORDER BY sale_date
+            GROUP BY date(sale_date)
+            ORDER BY date(sale_date)
             """,
             (start_30.isoformat(), as_of_date.isoformat()),
         ).fetchall()
@@ -860,34 +881,43 @@ def compute_sales_metrics(
             if sku_key:
                 unresolved_skus.add(sku_key)
 
-    for row in daily_rows:
+    fin_by_day = {
+        str(row["sale_date"]): {
+            "cogs_kzt": round(float(row["cogs_kzt"] or 0.0), 2),
+            "profit_kzt": round(float(row["profit_kzt"] or 0.0), 2),
+        }
+        for row in daily_fin_rows
+    }
+    for row in daily_line_rows:
         day = str(row["sale_date"])
-        units_delivered = round(float(row["units_shipped"] or 0.0), 2)
+        units_delivered = round(float(row["units_delivered"] or 0.0), 2)
+        fin = fin_by_day.get(day)
         by_date[day] = {
             "units_delivered": units_delivered,
             # Backward-compatible alias used by legacy consumers/tests.
             "units_shipped": units_delivered,
             "net_rev_kzt": round(float(row["net_rev_kzt"] or 0.0), 2),
-            "cogs_kzt": round(float(row["cogs_kzt"] or 0.0), 2),
-            "profit_kzt": round(float(row["profit_kzt"] or 0.0), 2),
+            "cogs_kzt": fin["cogs_kzt"] if fin is not None else None,
+            "profit_kzt": fin["profit_kzt"] if fin is not None else None,
         }
     canonical_days = set(by_date.keys())
 
     fallback_revenue_days = 0
-    for row in fallback_completed_daily_rows:
-        day = str(row["sale_date"] or "").strip()
-        if not day or day in by_date:
-            continue
-        units_delivered = round(float(row["units_shipped"] or 0.0), 2)
-        by_date[day] = {
-            "units_delivered": units_delivered,
-            # Backward-compatible alias used by legacy consumers/tests.
-            "units_shipped": units_delivered,
-            "net_rev_kzt": round(float(row["net_rev_kzt"] or 0.0), 2),
-            "cogs_kzt": None,
-            "profit_kzt": None,
-        }
-        fallback_revenue_days += 1
+    if allow_completed_revenue_fallback:
+        for row in fallback_completed_daily_rows:
+            day = str(row["sale_date"] or "").strip()
+            if not day or day in by_date:
+                continue
+            units_delivered = round(float(row["units_shipped"] or 0.0), 2)
+            by_date[day] = {
+                "units_delivered": units_delivered,
+                # Backward-compatible alias used by legacy consumers/tests.
+                "units_shipped": units_delivered,
+                "net_rev_kzt": round(float(row["net_rev_kzt"] or 0.0), 2),
+                "cogs_kzt": None,
+                "profit_kzt": None,
+            }
+            fallback_revenue_days += 1
 
     archive_orders = {
         "status": "disabled",
@@ -1155,12 +1185,83 @@ def _external_reference_check(
     }
 
 
+def _load_anchor_metadata(registry_path: Path) -> dict[str, Any]:
+    try:
+        payload = load_ocean_drop_anchor(registry_path)
+    except OceanDropAnchorError as exc:
+        return {
+            "configured": False,
+            "status": "missing",
+            "reason": str(exc),
+            "registry_path": str(Path(registry_path).resolve()),
+        }
+
+    return {
+        "configured": True,
+        "status": "locked",
+        "reason": "ok",
+        "registry_path": str(Path(registry_path).resolve()),
+        "ocean_drop_path": str(payload.get("ocean_drop_path") or ""),
+        "ocean_drop_path_resolved": str(payload.get("ocean_drop_path_resolved") or ""),
+        "sha256": str(payload.get("sha256") or ""),
+        "sha256_computed": str(payload.get("sha256_computed") or ""),
+        "as_of_end": str(payload.get("as_of_end") or ""),
+        "source": str(payload.get("source") or ""),
+        "transaction_date_mode": str(payload.get("transaction_date_mode") or ""),
+    }
+
+
+def _run_ocean_drop_alignment_check(
+    *,
+    db_path: Path,
+    as_of_date: date,
+    anchor_registry_path: Path,
+    output_root: Path,
+    strict: bool,
+    window_days: int | None,
+) -> dict[str, Any]:
+    anchor_meta = _load_anchor_metadata(anchor_registry_path)
+    if not anchor_meta.get("configured"):
+        return {
+            "status": "skipped",
+            "ok": not strict,
+            "reason": "anchor_registry_missing",
+            "details": anchor_meta,
+        }
+
+    from scripts.validate_sales_truth_ocean_drop_parity import validate_sales_truth_ocean_drop_parity
+
+    report = validate_sales_truth_ocean_drop_parity(
+        db_path=db_path,
+        as_of=as_of_date,
+        ocean_drop_path=Path(anchor_meta["ocean_drop_path_resolved"]),
+        output_root=output_root,
+        volatility_days=14,
+        strict=False,
+        crm_archive_lookup_path=None,
+        window_days=window_days,
+    )
+    status = str(report.get("status") or "FAIL").upper()
+    parity_dir = output_root.resolve() / as_of_date.isoformat()
+    return {
+        "status": status,
+        "ok": status == "PASS",
+        "reason": "ok" if status == "PASS" else "parity_mismatch",
+        "parity_report_json": str(parity_dir / "parity_report.json"),
+        "parity_report_md": str(parity_dir / "parity_report.md"),
+        "nonvolatile_mismatch_count": int(report.get("nonvolatile_mismatch_count") or 0),
+        "volatile_mismatch_count": int(report.get("volatile_mismatch_count") or 0),
+        "details": report,
+    }
+
+
 def _render_markdown(
     *,
     generated_at: datetime,
     as_of_date: str,
     capital: dict[str, Any],
     sales_metrics: dict[str, Any],
+    ocean_drop_anchor: dict[str, Any],
     external_check: dict[str, Any],
 ) -> str:
     capital_rows = [
@@ -1358,6 +1459,17 @@ def _render_markdown(
 
     lines.extend(
         [
+        "## Ocean Drop Provenance",
+        "",
+        f"- Anchor configured: `{str(bool(ocean_drop_anchor.get('configured'))).lower()}`",
+        f"- Anchor registry: `{ocean_drop_anchor.get('registry_path')}`",
+        f"- Anchor path: `{ocean_drop_anchor.get('ocean_drop_path_resolved') or ocean_drop_anchor.get('ocean_drop_path') or 'N/A'}`",
+        f"- Anchor sha256: `{ocean_drop_anchor.get('sha256') or 'N/A'}` "
+        f"(computed: `{ocean_drop_anchor.get('sha256_computed') or 'N/A'}`)",
+        f"- Anchor as_of_end: `{ocean_drop_anchor.get('as_of_end') or 'N/A'}`",
+        f"- Transaction date mode: `{ocean_drop_anchor.get('transaction_date_mode') or 'N/A'}`",
+        f"- Anchor source tag: `{ocean_drop_anchor.get('source') or 'N/A'}`",
+        "",
         "## Data Quality",
         "",
         f"- Sales source: `{sales_source_line}`.",
@@ -1400,10 +1512,16 @@ def generate_business_insides(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     external_sales_csv: Path | None = None,
     strict_cogs: bool = False,
+    strict: bool = False,
+    decision_grade: bool = False,
+    ocean_drop_anchor_registry: Path = DEFAULT_OCEAN_DROP_ANCHOR_REGISTRY,
+    bi_alignment_output_root: Path = DEFAULT_BI_ALIGNMENT_OUTPUT_ROOT,
+    bi_alignment_window_days: int | None = DEFAULT_BI_ALIGNMENT_WINDOW_DAYS,
     waybill_selection_cache_path: Path = DEFAULT_WAYBILL_SELECTION_CACHE,
     archive_orders_globs: list[str] | None = None,
 ) -> dict[str, Any]:
     as_of_date = _parse_as_of(as_of)
+    strict_alignment = bool(strict or decision_grade)
     generated_at = datetime.now()
     capital = compute_paid_capital_truth(
         db_path=db_path,
@@ -1414,6 +1532,7 @@ def generate_business_insides(
         db_path=db_path,
         as_of=as_of_date,
         enforce_query_guard=bool(strict_cogs),
+        allow_completed_revenue_fallback=not strict_alignment,
         waybill_selection_cache_path=waybill_selection_cache_path,
         archive_orders_globs=archive_orders_globs,
     )
@@ -1423,10 +1542,40 @@ def generate_business_insides(
             f"rows={sales_metrics['unresolved_rows']}, "
             f"sku_count={sales_metrics['unresolved_sku_count']}"
         )
-    external_check = _external_reference_check(
-        external_sales_csv=external_sales_csv,
-        metrics=sales_metrics,
-    )
+    ocean_drop_anchor = _load_anchor_metadata(ocean_drop_anchor_registry)
+    if strict_alignment and not ocean_drop_anchor.get("configured"):
+        raise RuntimeError(
+            "Strict BUSINESS_INSIDES run requires locked ocean-drop anchor registry. "
+            f"reason={ocean_drop_anchor.get('reason')}"
+        )
+    if strict_alignment:
+        external_check = _run_ocean_drop_alignment_check(
+            db_path=db_path,
+            as_of_date=as_of_date,
+            anchor_registry_path=ocean_drop_anchor_registry,
+            output_root=bi_alignment_output_root,
+            strict=strict_alignment,
+            window_days=bi_alignment_window_days,
+        )
+        ext_status = str(external_check.get("status") or "").upper()
+        ext_ok = bool(external_check.get("ok", ext_status == "PASS"))
+        if not ext_ok or ext_status in {"SKIPPED", "MISSING", "ERROR", "FAIL"}:
+            raise RuntimeError(
+                "Strict BUSINESS_INSIDES alignment failed: "
+                f"status={external_check.get('status')} details={external_check}"
+            )
+    else:
+        external_check = _external_reference_check(
+            external_sales_csv=external_sales_csv,
+            metrics=sales_metrics,
+        )
+        if ocean_drop_anchor.get("configured") and external_check.get("status") == "skipped":
+            external_check = {
+                "status": "skipped",
+                "reason": "strict_not_requested",
+                "anchor_configured": True,
+                "anchor_registry": ocean_drop_anchor.get("registry_path"),
+            }
 
     output_dir.mkdir(parents=True, exist_ok=True)
     snapshots_dir = output_dir / "snapshots"
@@ -1443,6 +1592,7 @@ def generate_business_insides(
         as_of_date=as_of_date.isoformat(),
         capital=capital,
         sales_metrics=sales_metrics,
+        ocean_drop_anchor=ocean_drop_anchor,
         external_check=external_check,
     )
     snapshot_path.write_text(content, encoding="utf-8")
@@ -1480,6 +1630,7 @@ def generate_business_insides(
         "ads": sales_metrics["ads"],
         "waybill_snapshot": sales_metrics.get("waybill_snapshot"),
         "archive_orders": sales_metrics.get("archive_orders"),
+        "ocean_drop_anchor": ocean_drop_anchor,
         "external_check": external_check,
     }
     payload_json = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
@@ -1508,6 +1659,7 @@ def generate_business_insides(
         "ads": sales_metrics["ads"],
         "waybill_snapshot": sales_metrics.get("waybill_snapshot"),
         "archive_orders": sales_metrics.get("archive_orders"),
+        "ocean_drop_anchor": ocean_drop_anchor,
         "external_check": external_check,
     }
 
@@ -1520,6 +1672,19 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--external-sales-csv", type=Path, default=None)
     parser.add_argument("--strict-cogs", action="store_true")
+    parser.add_argument("--strict", action="store_true", help="Fail-closed decision-grade mode")
+    parser.add_argument(
+        "--decision-grade",
+        action="store_true",
+        help="Alias for --strict (kept for clarity in ops docs)",
+    )
+    parser.add_argument("--ocean-drop-anchor-registry", type=Path, default=DEFAULT_OCEAN_DROP_ANCHOR_REGISTRY)
+    parser.add_argument(
+        "--bi-alignment-output-root",
+        type=Path,
+        default=DEFAULT_BI_ALIGNMENT_OUTPUT_ROOT,
+    )
+    parser.add_argument("--bi-alignment-window-days", type=int, default=DEFAULT_BI_ALIGNMENT_WINDOW_DAYS)
     parser.add_argument("--waybill-selection-cache", type=Path, default=DEFAULT_WAYBILL_SELECTION_CACHE)
     parser.add_argument(
         "--archive-orders-glob",
@@ -1539,6 +1704,11 @@ def main() -> int:
         output_dir=args.output_dir,
         external_sales_csv=args.external_sales_csv,
         strict_cogs=args.strict_cogs,
+        strict=args.strict,
+        decision_grade=args.decision_grade,
+        ocean_drop_anchor_registry=args.ocean_drop_anchor_registry,
+        bi_alignment_output_root=args.bi_alignment_output_root,
+        bi_alignment_window_days=args.bi_alignment_window_days,
         waybill_selection_cache_path=args.waybill_selection_cache,
         archive_orders_globs=args.archive_orders_glob,
     )

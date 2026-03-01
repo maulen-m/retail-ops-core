@@ -41,12 +41,15 @@ def validate_archive_export_integrity(
     until: str,
     strict: bool = True,
     require_status_change_date_for_completed: bool = True,
+    window_days: int = WINDOW_DAYS,
     output_root: Path | None = None,
 ) -> Dict[str, Any]:
     export_root = export_root.expanduser().resolve()
     since_d = _parse_date(since)
     until_d = _parse_date(until)
-    expected_windows = date_windows(since_d, until_d, WINDOW_DAYS)
+    if int(window_days) <= 0:
+        raise RuntimeError("window_days must be > 0")
+    expected_windows = date_windows(since_d, until_d, int(window_days))
 
     errors: List[str] = []
     stores: List[Dict[str, Any]] = []
@@ -224,6 +227,7 @@ def main() -> int:
         help="Fail if completed rows are missing status-change date",
     )
     parser.add_argument("--output-root", type=Path, default=None, help="Optional output artifact directory")
+    parser.add_argument("--window-days", type=int, default=WINDOW_DAYS)
     args = parser.parse_args()
 
     report = validate_archive_export_integrity(
@@ -232,6 +236,7 @@ def main() -> int:
         until=args.until,
         strict=args.strict,
         require_status_change_date_for_completed=args.require_status_change_date_for_completed,
+        window_days=int(args.window_days),
         output_root=args.output_root,
     )
     status = report.get("status", "FAIL")
