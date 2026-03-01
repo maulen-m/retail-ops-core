@@ -19,6 +19,7 @@ def test_cycle_runs_all_steps_when_green(tmp_path: Path) -> None:
         strict=True,
         ocean_drop=None,
         crm_archive_lookup=None,
+        window_days=14,
         runner=fake_runner,
     )
 
@@ -26,6 +27,7 @@ def test_cycle_runs_all_steps_when_green(tmp_path: Path) -> None:
     assert len(calls) == 7
     assert "rebuild_sales_fact_v2_from_kaspi_entries.py" in calls[3]
     assert "validate_sales_truth_ocean_drop_parity.py" in calls[4]
+    assert "--window-days 14" in calls[4]
     assert Path(report["json_path"]).exists()
     assert Path(report["md_path"]).exists()
 
@@ -46,6 +48,7 @@ def test_cycle_fails_closed_on_first_error(tmp_path: Path) -> None:
         strict=True,
         ocean_drop=None,
         crm_archive_lookup=None,
+        window_days=14,
         runner=fake_runner,
     )
 

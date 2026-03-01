@@ -53,6 +53,7 @@ def run_sales_truth_ocean_drop_cycle(
     strict: bool,
     ocean_drop: Path | None,
     crm_archive_lookup: Path | None,
+    window_days: int,
     runner: Runner | None = None,
 ) -> dict[str, Any]:
     root = project_root.resolve()
@@ -100,7 +101,7 @@ def run_sales_truth_ocean_drop_cycle(
             "step": "validate_sales_truth_ocean_drop_parity_post_rebuild",
             "cmd": (
                 "python3 scripts/validate_sales_truth_ocean_drop_parity.py "
-                f"--as-of {quoted_as_of} --strict --volatility-days 14"
+                f"--as-of {quoted_as_of} --strict --volatility-days 14 --window-days {int(window_days)}"
                 f"{ocean_drop_part}{crm_part}"
             ),
         },
@@ -176,6 +177,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--ocean-drop", type=Path, default=None)
     parser.add_argument("--crm-archive-lookup", type=Path, default=None)
+    parser.add_argument("--window-days", type=int, default=14)
     parser.add_argument("--strict", action="store_true")
     return parser
 
@@ -189,6 +191,7 @@ def main() -> int:
         strict=bool(args.strict),
         ocean_drop=args.ocean_drop,
         crm_archive_lookup=args.crm_archive_lookup,
+        window_days=int(args.window_days),
     )
     print(f"sales_truth_ocean_drop_cycle_json={report['json_path']}")
     print(f"sales_truth_ocean_drop_cycle_md={report['md_path']}")

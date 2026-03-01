@@ -102,6 +102,16 @@ def run_h5_proving_day(
             ),
         },
         {
+            "step": "validate_business_insides_ocean_drop_alignment",
+            "cmd": (
+                "python3 scripts/validate_business_insides_ocean_drop_alignment.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'business_insides_ocean_drop_alignment'))} "
+                "--strict"
+            ),
+        },
+        {
             "step": "validate_ops_selection_parity",
             "cmd": (
                 "python3 scripts/validate_ops_selection_parity.py "
@@ -116,6 +126,15 @@ def run_h5_proving_day(
                 "python3 scripts/validate_scheduler_heartbeat.py "
                 f"--as-of {quoted_as_of} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))} "
+                "--strict"
+            ),
+        },
+        {
+            "step": "validate_kaspi_archive_pack_integrity_ui",
+            "cmd": (
+                "python3 scripts/validate_kaspi_archive_pack_integrity.py "
+                "--source ui "
+                f"--as-of {quoted_as_of} "
                 "--strict"
             ),
         },

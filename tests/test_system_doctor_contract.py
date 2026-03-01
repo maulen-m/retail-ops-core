@@ -83,6 +83,7 @@ def test_system_doctor_includes_v10_contract_checks() -> None:
     assert "validate_business_insides_economics_ready.py" in joined
     assert "validate_ops_selection_parity.py" in joined
     assert "validate_scheduler_heartbeat.py" in joined
+    assert "validate_kaspi_archive_pack_integrity.py --source ui" in joined
     assert "validate_sales_truth_external_reference.py" in joined
     assert "validate_sales_truth_ocean_drop_parity.py" in joined
     assert "validate_sales_engine_self_sufficient.py" in joined

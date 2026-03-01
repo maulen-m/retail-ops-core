@@ -169,3 +169,34 @@ def test_sales_truth_ocean_drop_parity_fails_closed_on_nonvolatile_mismatch(tmp_
             strict=True,
             crm_archive_lookup_path=None,
         )
+
+
+def test_window_days_mode_detects_db_extra_days_without_reference_rows(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    ocean_drop = tmp_path / "ocean_drop.csv"
+
+    _seed_db(db, rev_ord_1=1200.0)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, kaspi_offer_name, store_code, quantity, sell_price_kzt,
+         delivery_fee, cogs, net_rev, profit, status, return_flag, return_date, source_file, api_updated_at)
+        VALUES ('ORD-EXTRA', '2026-02-26', 'SKU_X', 'SKU_X_M', 'M', 'Offer X', 'ACMEWEAR', 1, 500, 0, NULL, 500, NULL, 'DELIVERED', 0, NULL, 'seed', NULL)
+        """
+    )
+    conn.commit()
+    conn.close()
+    _write_ocean_drop(ocean_drop)
+
+    with pytest.raises(RuntimeError, match="non-volatile"):
+        validate_sales_truth_ocean_drop_parity(
+            db_path=db,
+            as_of=date(2026, 2, 26),
+            ocean_drop_path=ocean_drop,
+            output_root=tmp_path / "out",
+            volatility_days=0,
+            strict=True,
+            crm_archive_lookup_path=None,
+            window_days=2,
+        )

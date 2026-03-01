@@ -155,9 +155,11 @@ def validate_sales_truth_ocean_drop_parity(
         ref_order = ref_order[ref_order["sale_date"] >= start_window.isoformat()].copy()
         if ref_order.empty:
             raise RuntimeError(f"no reference rows in requested window_days={window_days}")
-
-    start_day = str(ref_order["sale_date"].min())
-    end_day = str(min(ref_order["sale_date"].max(), as_of.isoformat()))
+        start_day = start_window.isoformat()
+        end_day = as_of.isoformat()
+    else:
+        start_day = str(ref_order["sale_date"].min())
+        end_day = str(min(ref_order["sale_date"].max(), as_of.isoformat()))
     db_order = _load_db_order_lines(db_path=db_path.resolve(), start_day=start_day, end_day=end_day)
 
     ref_daily = (

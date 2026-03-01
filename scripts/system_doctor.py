@@ -220,6 +220,17 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_business_insides_ocean_drop_alignment",
+            "cmd": (
+                "python3 scripts/validate_business_insides_ocean_drop_alignment.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'business_insides_ocean_drop_alignment'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
             "check": "validate_ops_selection_parity",
             "cmd": (
                 "python3 scripts/validate_ops_selection_parity.py "
@@ -235,6 +246,16 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 "python3 scripts/validate_scheduler_heartbeat.py "
                 f"--as-of {quoted_as_of} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'daily'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_kaspi_archive_pack_integrity_ui",
+            "cmd": (
+                "python3 scripts/validate_kaspi_archive_pack_integrity.py "
+                "--source ui "
+                f"--as-of {quoted_as_of} "
                 "--strict"
             ),
         },
@@ -258,6 +279,7 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
                 f"--as-of {quoted_as_of} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'sales_ocean_drop_parity'))} "
+                "--window-days 14 "
                 "--volatility-days 14 "
                 "--strict-if-configured --strict"
             ),

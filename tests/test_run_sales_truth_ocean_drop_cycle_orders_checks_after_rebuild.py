@@ -19,6 +19,7 @@ def test_cycle_runs_post_rebuild_parity_check_and_records_step(tmp_path: Path) -
         strict=True,
         ocean_drop=None,
         crm_archive_lookup=None,
+        window_days=14,
         runner=fake_runner,
     )
 
@@ -28,4 +29,4 @@ def test_cycle_runs_post_rebuild_parity_check_and_records_step(tmp_path: Path) -
 
     assert report["ok"] is True
     assert parity_idx > rebuild_idx
-    assert any("validate_sales_truth_ocean_drop_parity.py" in cmd for cmd in calls)
+    assert any("validate_sales_truth_ocean_drop_parity.py" in cmd and "--window-days 14" in cmd for cmd in calls)
