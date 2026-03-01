@@ -95,3 +95,40 @@ def test_economics_ready_fails_on_nonvolatile_gaps_even_if_locked(tmp_path: Path
             strict=True,
             metrics_override=metrics,
         )
+
+
+def test_economics_ready_uses_strict_sales_metrics_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    as_of = "2026-02-26"
+    business_dir = tmp_path / "business"
+    business_dir.mkdir(parents=True)
+    snapshot_json = business_dir / f"BUSINESS_INSIDES_{as_of}.json"
+    _write_snapshot(snapshot_json, as_of, cogs=None, profit=None)
+
+    captured: dict[str, object] = {}
+
+    def _fake_compute_sales_metrics(**kwargs):
+        captured.update(kwargs)
+        return {
+            "economics_missing_days": [],
+            "economics_missing_nonvolatile_days": [],
+            "economics_volatility_days": 14,
+            "profit_publication_locked": False,
+        }
+
+    monkeypatch.setattr(
+        "scripts.validate_business_insides_economics_ready.compute_sales_metrics",
+        _fake_compute_sales_metrics,
+    )
+
+    report = validate_business_insides_economics_ready(
+        db_path=tmp_path / "app.db",
+        as_of=as_of,
+        output_root=tmp_path / "out",
+        business_dir=business_dir,
+        snapshot_json_path=snapshot_json,
+        strict=True,
+    )
+    assert report["ok"] is True
+    assert captured.get("allow_completed_revenue_fallback") is False

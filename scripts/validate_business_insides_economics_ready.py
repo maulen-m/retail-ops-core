@@ -108,6 +108,9 @@ def validate_business_insides_economics_ready(
     metrics = metrics_override or compute_sales_metrics(
         db_path=db_path.resolve(),
         as_of=as_of_date,
+        # Match strict BUSINESS_INSIDES semantics: do not backfill revenue from
+        # completed-order fallbacks when validating decision-grade readiness.
+        allow_completed_revenue_fallback=False,
     )
 
     missing_days = sorted(str(day) for day in metrics.get("economics_missing_days") or [])

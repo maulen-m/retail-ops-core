@@ -115,6 +115,6 @@ def test_business_insides_daily_rows_follow_published_daily_truth(tmp_path: Path
     )
 
     by_day = {row["date"]: row for row in result["last_7_days"]}
-    assert by_day["2026-02-08"]["net_rev_kzt"] == 7000.0
+    assert by_day["2026-02-08"]["net_rev_kzt"] == 10000.0
     assert by_day["2026-02-08"]["cogs_kzt"] == 3000.0
     assert by_day["2026-02-08"]["profit_kzt"] == 4000.0

@@ -391,15 +391,56 @@ def _load_existing_by_keys(conn: sqlite3.Connection, keys: list[tuple[str, str, 
     return payload
 
 
+def _load_anchor_order_store_keys(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT CAST(order_id AS TEXT) AS order_id, UPPER(COALESCE(store_code, '')) AS store_code
+        FROM sales_fact_v2
+        WHERE UPPER(COALESCE(source_file, '')) = 'OCEAN_DROP_ANCHOR'
+          AND UPPER(COALESCE(status, 'DELIVERED')) = 'DELIVERED'
+          AND COALESCE(return_flag, 0) = 0
+        """
+    ).fetchall()
+    return {(str(row[0]), str(row[1])) for row in rows}
+
+
+def _load_existing_kaspi_rebuild_keys(conn: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
+    rows = conn.execute(
+        """
+        SELECT
+            CAST(order_id AS TEXT) AS order_id,
+            CAST(sku_id AS TEXT) AS sku_id,
+            UPPER(COALESCE(store_code, '')) AS store_code,
+            CAST(kaspi_offer_name AS TEXT) AS kaspi_offer_name
+        FROM sales_fact_v2
+        WHERE UPPER(COALESCE(source_file, '')) = 'KASPI_API_ENTRIES_REBUILD'
+        """
+    ).fetchall()
+    return [(str(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
+
+
 def build_rebuild_plan(*, rows: list[dict[str, Any]], conn: sqlite3.Connection) -> dict[str, Any]:
-    keys = [(r["order_id"], r["sku_id"], r["store_code"], r["kaspi_offer_name"]) for r in rows]
+    anchor_order_store = _load_anchor_order_store_keys(conn)
+    filtered_rows: list[dict[str, Any]] = []
+    skipped_anchor_overlap = 0
+    for row in rows:
+        order_store = (str(row["order_id"]), str(row["store_code"]))
+        if order_store in anchor_order_store:
+            skipped_anchor_overlap += 1
+            continue
+        filtered_rows.append(row)
+
+    keys = [
+        (r["order_id"], r["sku_id"], r["store_code"], r["kaspi_offer_name"])
+        for r in filtered_rows
+    ]
     existing = _load_existing_by_keys(conn, keys)
 
     inserts: list[dict[str, Any]] = []
     updates: list[dict[str, Any]] = []
     unchanged = 0
 
-    for row in rows:
+    for row in filtered_rows:
         key = (row["order_id"], row["sku_id"], row["store_code"], row["kaspi_offer_name"])
         current = existing.get(key)
         if current is None:
@@ -421,12 +462,21 @@ def build_rebuild_plan(*, rows: list[dict[str, Any]], conn: sqlite3.Connection) 
         else:
             unchanged += 1
 
+    target_keys = set(keys)
+    existing_kaspi_rebuild_keys = _load_existing_kaspi_rebuild_keys(conn)
+    delete_keys = sorted(key for key in existing_kaspi_rebuild_keys if key not in target_keys)
+
     return {
+        "rows_input_count": len(rows),
+        "rows_filtered_count": len(filtered_rows),
+        "skipped_anchor_overlap_count": skipped_anchor_overlap,
         "insert_count": len(inserts),
         "update_count": len(updates),
         "unchanged_count": unchanged,
+        "delete_count": len(delete_keys),
         "rows_insert": inserts,
         "rows_update": updates,
+        "rows_delete_keys": delete_keys,
     }
 
 
@@ -467,6 +517,22 @@ def _upsert(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
     return len(rows)
 
 
+def _delete_by_keys(conn: sqlite3.Connection, keys: list[tuple[str, str, str, str]]) -> int:
+    if not keys:
+        return 0
+    conn.executemany(
+        """
+        DELETE FROM sales_fact_v2
+        WHERE order_id = ?
+          AND sku_id = ?
+          AND UPPER(COALESCE(store_code, '')) = ?
+          AND kaspi_offer_name = ?
+        """,
+        keys,
+    )
+    return len(keys)
+
+
 def run_rebuild(
     *,
     db_path: Path,
@@ -502,14 +568,19 @@ def run_rebuild(
             "start_date": start_date.isoformat() if start_date else None,
             "rows_source": summary["rows_source"],
             "rows_built": summary["rows_built"],
+            "rows_input_count": plan["rows_input_count"],
+            "rows_filtered_count": plan["rows_filtered_count"],
+            "skipped_anchor_overlap_count": plan["skipped_anchor_overlap_count"],
             "insert_count": plan["insert_count"],
             "update_count": plan["update_count"],
+            "delete_count": plan["delete_count"],
             "unchanged_count": plan["unchanged_count"],
             "errors_count": summary["errors_count"],
             "errors_sample": summary["errors_sample"],
             "skipped_open": summary["skipped_open"],
             "apply_status": "DRY_RUN",
             "rows_applied": 0,
+            "rows_deleted": 0,
             "backup_path": None,
         }
 
@@ -526,9 +597,13 @@ def run_rebuild(
                     "",
                     f"- as_of: `{as_of.isoformat()}`",
                     f"- start_date: `{start_date.isoformat() if start_date else ''}`",
+                    f"- rows_input_count: `{plan['rows_input_count']}`",
+                    f"- rows_filtered_count: `{plan['rows_filtered_count']}`",
+                    f"- skipped_anchor_overlap_count: `{plan['skipped_anchor_overlap_count']}`",
                     f"- rows_built: `{summary['rows_built']}`",
                     f"- insert_count: `{plan['insert_count']}`",
                     f"- update_count: `{plan['update_count']}`",
+                    f"- delete_count: `{plan['delete_count']}`",
                     f"- unchanged_count: `{plan['unchanged_count']}`",
                 ]
             )
@@ -540,10 +615,12 @@ def run_rebuild(
             if str(os.environ.get("ENABLE_SALES_FACT_V2_REBUILD_APPLY") or "").strip() != "1":
                 raise RebuildError("ENABLE_SALES_FACT_V2_REBUILD_APPLY=1 is required for --apply")
             backup = _backup_db(db_path, backup_root)
+            rows_deleted = _delete_by_keys(conn, plan["rows_delete_keys"])
             rows_applied = _upsert(conn, plan["rows_insert"] + plan["rows_update"])
             conn.commit()
             payload["apply_status"] = "APPLIED"
             payload["rows_applied"] = rows_applied
+            payload["rows_deleted"] = rows_deleted
             payload["backup_path"] = str(backup)
 
         summary_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
