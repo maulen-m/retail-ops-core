@@ -67,6 +67,16 @@ SOURCE_PER_STORE = "per-store"
 SOURCE_LEGACY = "legacy"
 SOURCE_CHOICES = [SOURCE_AUTO, SOURCE_MERGED, SOURCE_PER_STORE, SOURCE_LEGACY]
 
+STORE_DISPLAY = {
+    "STOREB": "STORE-B",
+    "STORE-B": "STORE-B",
+    "ACMEWEAR": "AcmeWear",
+    "UNIVERSAL": "Universal",
+    "MELVIS": "Store-C",
+    "11KZ": "11KZ",
+    "MERGED": "MERGED",
+}
+
 # Size ordering for send priority
 SIZE_ORDER = {
     # Kids
