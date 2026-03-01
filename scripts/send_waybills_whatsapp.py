@@ -230,7 +230,9 @@ def collect_pdfs_from_category(store_folder: Path, category: str) -> List[Path]:
     )
 
 
-def _build_manifest_output_index(store_folder: Path) -> tuple[Dict[str, Dict[str, str]], Dict[str, List[Dict[str, str]]]]:
+def _build_manifest_output_index(
+    store_folder: Path,
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
     """
     Build lookup maps from manifest output paths to row metadata.
 
@@ -238,8 +240,8 @@ def _build_manifest_output_index(store_folder: Path) -> tuple[Dict[str, Dict[str
       - exact output path map: "NORMAL_singles/file.pdf" -> row
       - basename map: "file.pdf" -> [rows...]
     """
-    exact_map: Dict[str, Dict[str, str]] = {}
-    basename_map: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+    exact_map: Dict[str, Dict[str, Any]] = {}
+    basename_map: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
     for manifest_path in sorted(store_folder.glob("manifest_*.csv")):
         with manifest_path.open("r", encoding="utf-8", newline="") as f:
@@ -249,9 +251,11 @@ def _build_manifest_output_index(store_folder: Path) -> tuple[Dict[str, Dict[str
                 if not output_raw:
                     continue
                 output_norm = output_raw.replace("\\", "/").lstrip("./")
-                row_meta = {
+                row_meta: Dict[str, Any] = {
                     "sku_key": str(row.get("sku_key") or "").strip(),
                     "sku_id": str(row.get("sku_id") or "").strip(),
+                    "store": str(row.get("store") or "").strip(),
+                    "order_ids": _split_order_ids(str(row.get("order_id") or "")),
                 }
                 exact_map[output_norm] = row_meta
                 basename_map[Path(output_norm).name].append(row_meta)
@@ -259,7 +263,11 @@ def _build_manifest_output_index(store_folder: Path) -> tuple[Dict[str, Dict[str
     return exact_map, basename_map
 
 
-def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List[Dict[str, Any]]:
+def collect_all_pdfs(
+    today_folder: Path,
+    source_mode: str = SOURCE_AUTO,
+    order_store_map: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     """
     Collect all PDFs in correct sending order.
 
@@ -270,6 +278,7 @@ def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List
     - filename: Just the filename
     """
     all_pdfs: List[Dict[str, Any]] = []
+    order_store_map = dict(order_store_map or {})
     store_folders = find_store_folders(today_folder, source_mode=source_mode)
 
     for store_folder in store_folders:
@@ -277,7 +286,7 @@ def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List
         for category in PDF_CATEGORIES:
             for pdf_path in collect_pdfs_from_category(store_folder, category):
                 rel_store_path = str(pdf_path.relative_to(store_folder)).replace("\\", "/")
-                row_meta = output_exact_map.get(rel_store_path)
+                row_meta: Optional[Dict[str, Any]] = output_exact_map.get(rel_store_path)
                 if row_meta is None:
                     by_name = output_basename_map.get(pdf_path.name, [])
                     if len(by_name) == 1:
@@ -288,6 +297,15 @@ def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List
                 item_core = _extract_item_core(pdf_path.name)
                 family_key = _family_key(item_core)
                 sku_key = str(row_meta.get("sku_key") or "").strip() or family_key
+                order_ids = list(row_meta.get("order_ids") or [])
+                row_store = str(row_meta.get("store") or "").strip()
+                fallback_store = _store_label_from_folder_name(store_folder.name)
+                order_counts_by_store = _derive_order_store_counts(
+                    order_ids=order_ids,
+                    row_store=row_store,
+                    fallback_store=fallback_store,
+                    order_store_map=order_store_map,
+                )
 
                 all_pdfs.append(
                     {
@@ -302,6 +320,8 @@ def collect_all_pdfs(today_folder: Path, source_mode: str = SOURCE_AUTO) -> List
                         "family_key": family_key,
                         "sku_key": sku_key,
                         "sku_id": str(row_meta.get("sku_id") or "").strip(),
+                        "order_ids": order_ids,
+                        "order_counts_by_store": order_counts_by_store,
                         "relative": _relative_for_tracker(pdf_path, today_folder),
                     }
                 )
@@ -490,17 +510,87 @@ def _split_order_ids(raw_order_ids: str) -> List[str]:
     return [token.strip() for token in (raw_order_ids or "").split(";") if token.strip()]
 
 
-def collect_store_order_bundle_stats(store_folders: List[Path]) -> Dict[str, Dict[str, int]]:
+def _normalize_store_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "UNKNOWN"
+    key = re.sub(r"[^A-Za-z0-9]+", "", text).upper()
+    if key == "STOREB":
+        return "STORE-B"
+    if key in STORE_DISPLAY:
+        return STORE_DISPLAY[key]
+    return text
+
+
+def _selection_cache_path(today_folder: Path) -> Path:
+    return (today_folder.parent.parent / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json").resolve()
+
+
+def load_order_store_map_from_selection(today_folder: Path) -> Dict[str, str]:
     """
-    Build per-store stats from manifest files.
+    Load order_id -> display store mapping from waybill selection cache.
+    """
+    path = _selection_cache_path(today_folder)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    stores = payload.get("stores")
+    if not isinstance(stores, dict):
+        return {}
+
+    order_store: Dict[str, str] = {}
+    for store_code, order_ids in stores.items():
+        store_name = _normalize_store_label(store_code)
+        if not isinstance(order_ids, list):
+            continue
+        for oid in order_ids:
+            order_id = str(oid or "").strip()
+            if order_id:
+                order_store[order_id] = store_name
+    return order_store
+
+
+def _derive_order_store_counts(
+    order_ids: List[str],
+    row_store: str,
+    fallback_store: str,
+    order_store_map: Dict[str, str],
+) -> Dict[str, int]:
+    counts: Dict[str, int] = Counter()
+    for order_id in order_ids:
+        store = order_store_map.get(order_id)
+        if not store:
+            if row_store and row_store.upper() != "MERGED":
+                store = _normalize_store_label(row_store)
+            elif fallback_store and fallback_store.upper() != "MERGED":
+                store = _normalize_store_label(fallback_store)
+            else:
+                store = "UNKNOWN"
+        counts[_normalize_store_label(store)] += 1
+    return dict(counts)
+
+
+def collect_store_order_bundle_stats(
+    store_folders: List[Path],
+    order_store_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, Dict[str, int]]:
+    """
+    Build per-store order target/ready stats from manifests + selection cache.
 
     Returns:
       {
-        "StoreName": {"orders": int, "bundles_target": int}
+        "StoreName": {"orders_target": int, "orders_ready": int}
       }
     """
-    stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"orders_set": set(), "bundles_target": 0})
+    order_store_map = dict(order_store_map or {})
+    target_sets: Dict[str, set[str]] = defaultdict(set)
+    for order_id, store in order_store_map.items():
+        target_sets[_normalize_store_label(store)].add(str(order_id))
 
+    ready_sets: Dict[str, set[str]] = defaultdict(set)
     for store_folder in store_folders:
         fallback_store = _store_label_from_folder_name(store_folder.name)
         manifest_files = sorted(store_folder.glob("manifest_*.csv"))
@@ -508,20 +598,31 @@ def collect_store_order_bundle_stats(store_folders: List[Path]) -> Dict[str, Dic
             with manifest_path.open("r", encoding="utf-8", newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    store_raw = (row.get("store") or "").strip()
-                    store_name = store_raw if store_raw and store_raw.upper() != "MERGED" else fallback_store
-                    if not store_name:
-                        store_name = "UNKNOWN"
+                    row_store = str(row.get("store") or "").strip()
+                    order_ids = _split_order_ids(str(row.get("order_id") or ""))
+                    if not order_ids:
+                        continue
+                    order_counts = _derive_order_store_counts(
+                        order_ids=order_ids,
+                        row_store=row_store,
+                        fallback_store=fallback_store,
+                        order_store_map=order_store_map,
+                    )
+                    for store_name in order_counts:
+                        for order_id in order_ids:
+                            mapped = order_store_map.get(order_id)
+                            if mapped:
+                                if _normalize_store_label(mapped) == store_name:
+                                    ready_sets[store_name].add(order_id)
+                            elif store_name != "UNKNOWN":
+                                ready_sets[store_name].add(order_id)
 
-                    stats[store_name]["bundles_target"] += 1
-                    for order_id in _split_order_ids(str(row.get("order_id") or "")):
-                        stats[store_name]["orders_set"].add(order_id)
-
+    stores = sorted(set(target_sets.keys()) | set(ready_sets.keys()))
     finalized: Dict[str, Dict[str, int]] = {}
-    for store_name in sorted(stats):
+    for store_name in stores:
         finalized[store_name] = {
-            "orders": len(stats[store_name]["orders_set"]),
-            "bundles_target": int(stats[store_name]["bundles_target"]),
+            "orders_target": len(target_sets.get(store_name, set())),
+            "orders_ready": len(ready_sets.get(store_name, set())),
         }
     return finalized
 
@@ -543,46 +644,56 @@ def _build_ascii_table(headers: List[str], rows: List[List[str]]) -> str:
     return "\n".join(lines)
 
 
-def format_pre_send_status_table(store_stats: Dict[str, Dict[str, int]]) -> str:
+def format_pre_send_status_table(
+    store_stats: Dict[str, Dict[str, int]],
+    bundles_target: int,
+) -> str:
     ordered_stores = sorted(store_stats)
     rows: List[List[str]] = []
-    total_orders = 0
+    total_orders_target = 0
+    total_orders_ready = 0
 
     for store in ordered_stores:
-        orders = int(store_stats[store].get("orders", 0))
-        total_orders += orders
-        rows.append([store, str(orders)])
+        orders_target = int(store_stats[store].get("orders_target", 0))
+        orders_ready = int(store_stats[store].get("orders_ready", 0))
+        total_orders_target += orders_target
+        total_orders_ready += orders_ready
+        rows.append([store, str(orders_target), str(orders_ready)])
 
-    rows.append(["TOTAL", str(total_orders)])
-    table = _build_ascii_table(["STORE", "Orders"], rows)
+    rows.append(["TOTAL", str(total_orders_target), str(total_orders_ready)])
+    table = _build_ascii_table(["STORE", "Orders Target", "Orders Ready"], rows)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"{timestamp}\n{table}"
+    bundles_line = f"Bundles Target: {bundles_target}"
+    return f"{timestamp}\n{table}\n{bundles_line}"
 
 
 def format_post_send_status_table(
     store_stats: Dict[str, Dict[str, int]],
-    sent_by_store: Dict[str, int],
+    sent_orders_by_store: Dict[str, int],
+    bundles_target: int,
+    bundles_sent: int,
 ) -> str:
     ordered_stores = sorted(store_stats)
     rows: List[List[str]] = []
-    total_orders = 0
-    total_target = 0
-    total_sent = 0
+    total_orders_target = 0
+    total_orders_ready = 0
+    total_orders_sent = 0
 
     for store in ordered_stores:
-        orders = int(store_stats[store].get("orders", 0))
-        bundles_target = int(store_stats[store].get("bundles_target", 0))
-        bundles_sent = int(sent_by_store.get(store, 0))
+        orders_target = int(store_stats[store].get("orders_target", 0))
+        orders_ready = int(store_stats[store].get("orders_ready", 0))
+        orders_sent = int(sent_orders_by_store.get(store, 0))
 
-        total_orders += orders
-        total_target += bundles_target
-        total_sent += bundles_sent
-        rows.append([store, str(orders), str(bundles_target), str(bundles_sent)])
+        total_orders_target += orders_target
+        total_orders_ready += orders_ready
+        total_orders_sent += orders_sent
+        rows.append([store, str(orders_target), str(orders_ready), str(orders_sent)])
 
-    rows.append(["TOTAL", str(total_orders), str(total_target), str(total_sent)])
-    table = _build_ascii_table(["STORE", "Orders", "Bundles Target", "Bundles Sent"], rows)
+    rows.append(["TOTAL", str(total_orders_target), str(total_orders_ready), str(total_orders_sent)])
+    table = _build_ascii_table(["STORE", "Orders Target", "Orders Ready", "Orders Sent"], rows)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"{timestamp}\n{table}"
+    bundles_line = f"Bundles: target={bundles_target}, sent={bundles_sent}"
+    return f"{timestamp}\n{table}\n{bundles_line}"
 
 
 # =============================================================================
@@ -1235,20 +1346,31 @@ def run_sender(
 
     source_root = resolve_send_root(today_folder, source_mode=bundle_source)
     results["source_root"] = str(source_root)
+    order_store_map = load_order_store_map_from_selection(today_folder)
 
     tracker_path = today_folder / SENT_TRACKER_FILE
     tracker = load_sent_tracker(tracker_path) if resume else {"sent": [], "last_updated": None}
 
-    all_pdfs = collect_all_pdfs(today_folder, source_mode=bundle_source)
+    all_pdfs = collect_all_pdfs(
+        today_folder,
+        source_mode=bundle_source,
+        order_store_map=order_store_map,
+    )
     results["total"] = len(all_pdfs)
     store_folders = find_store_folders(today_folder, source_mode=bundle_source)
-    store_stats = collect_store_order_bundle_stats(store_folders)
+    store_stats = collect_store_order_bundle_stats(
+        store_folders,
+        order_store_map=order_store_map,
+    )
     if not store_stats:
-        fallback_stats: Dict[str, Dict[str, int]] = defaultdict(lambda: {"orders": 0, "bundles_target": 0})
+        fallback_stats: Dict[str, Dict[str, int]] = defaultdict(
+            lambda: {"orders_target": 0, "orders_ready": 0}
+        )
         for pdf in all_pdfs:
-            store = str(pdf.get("store_label") or pdf.get("store") or "UNKNOWN")
-            fallback_stats[store]["bundles_target"] += 1
-        store_stats = {name: {"orders": 0, "bundles_target": values["bundles_target"]} for name, values in fallback_stats.items()}
+            for store, qty in dict(pdf.get("order_counts_by_store") or {}).items():
+                store_name = _normalize_store_label(store)
+                fallback_stats[store_name]["orders_ready"] += int(qty)
+        store_stats = {name: values for name, values in fallback_stats.items()}
 
     if verbose:
         print(f"Bundle source root: {source_root}")
@@ -1266,14 +1388,34 @@ def run_sender(
 
     if not pdfs_to_send:
         print("All PDFs already sent!")
+        sent_orders_snapshot: Counter[str] = Counter()
+        for pdf in all_pdfs:
+            for store_name, qty in dict(pdf.get("order_counts_by_store") or {}).items():
+                sent_orders_snapshot[_normalize_store_label(store_name)] += int(qty)
+        pre_status_text = format_pre_send_status_table(
+            store_stats,
+            bundles_target=len(all_pdfs),
+        )
+        post_status_text = format_post_send_status_table(
+            store_stats,
+            dict(sent_orders_snapshot),
+            bundles_target=len(all_pdfs),
+            bundles_sent=len(all_pdfs),
+        )
+        print("\nPre-send status:")
+        print(pre_status_text)
+        print("\nPost-send status:")
+        print(post_status_text)
         return results
 
     pdfs_to_send = order_pdfs_for_sending(pdfs_to_send)
-    sent_by_store = Counter()
+    bundles_target = len(pdfs_to_send)
+    bundles_sent = 0
+    sent_orders_by_store: Counter[str] = Counter()
 
     print(f"\n{'[DRY RUN] ' if dry_run else ''}PDFs to send: {len(pdfs_to_send)}")
     print("-" * 50)
-    pre_status_text = format_pre_send_status_table(store_stats)
+    pre_status_text = format_pre_send_status_table(store_stats, bundles_target=bundles_target)
     print("\nPre-send status:")
     print(pre_status_text)
 
@@ -1292,9 +1434,16 @@ def run_sender(
 
             print(f"    {i}. {pdf['filename']}")
             results["sent"] += 1
-            sent_by_store[str(pdf.get("store_label") or pdf.get("store") or "UNKNOWN")] += 1
+            bundles_sent += 1
+            for store_name, qty in dict(pdf.get("order_counts_by_store") or {}).items():
+                sent_orders_by_store[_normalize_store_label(store_name)] += int(qty)
 
-        post_status_text = format_post_send_status_table(store_stats, dict(sent_by_store))
+        post_status_text = format_post_send_status_table(
+            store_stats,
+            dict(sent_orders_by_store),
+            bundles_target=bundles_target,
+            bundles_sent=bundles_sent,
+        )
         print("\nPost-send status:")
         print(post_status_text)
         return results
@@ -1363,14 +1512,21 @@ def run_sender(
                     break
 
                 results["sent"] += 1
-                sent_by_store[str(pdf.get("store_label") or pdf.get("store") or "UNKNOWN")] += 1
+                bundles_sent += 1
+                for store_name, qty in dict(pdf.get("order_counts_by_store") or {}).items():
+                    sent_orders_by_store[_normalize_store_label(store_name)] += int(qty)
                 tracker["sent"].append(pdf["relative"])
                 save_sent_tracker(tracker_path, tracker)
 
                 if i < len(pdfs_to_send) and send_delay > 0:
                     time.sleep(send_delay)
 
-            post_status_text = format_post_send_status_table(store_stats, dict(sent_by_store))
+            post_status_text = format_post_send_status_table(
+                store_stats,
+                dict(sent_orders_by_store),
+                bundles_target=bundles_target,
+                bundles_sent=bundles_sent,
+            )
             print("\nPost-send status:")
             print(post_status_text)
             if status_messages:
@@ -1495,6 +1651,7 @@ def main() -> None:
     print(f"  Resume: {'No' if args.no_resume else 'Yes'}")
     print()
 
+    started_at = time.monotonic()
     results = run_sender(
         today_folder=args.today_folder,
         chat_title=args.chat_title,
@@ -1508,6 +1665,8 @@ def main() -> None:
         blocked_chat_titles=dedup_blocked,
         verbose=args.verbose,
     )
+    elapsed = max(0, int(time.monotonic() - started_at))
+    mins, secs = divmod(elapsed, 60)
 
     print()
     print("=" * 60)
@@ -1518,6 +1677,7 @@ def main() -> None:
     print(f"    Failed: {results['failed']}")
     print(f"    Status message failures: {results['status_message_failed']}")
     print(f"    Source root: {results.get('source_root', '')}")
+    print(f"    Duration: {mins}m {secs}s")
     print("=" * 60)
 
 

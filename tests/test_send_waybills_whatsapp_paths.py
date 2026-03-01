@@ -349,25 +349,57 @@ def test_collect_store_order_bundle_stats_counts_unique_orders(tmp_path: Path) -
         encoding="utf-8",
     )
 
-    stats = collect_store_order_bundle_stats([store])
+    stats = collect_store_order_bundle_stats(
+        [store],
+        order_store_map={"1": "UNIVERSAL", "2": "UNIVERSAL", "3": "UNIVERSAL"},
+    )
 
-    assert stats["Universal"]["orders"] == 3
-    assert stats["Universal"]["bundles_target"] == 3
+    assert stats["Universal"]["orders_target"] == 3
+    assert stats["Universal"]["orders_ready"] == 3
+
+
+def test_collect_store_order_bundle_stats_maps_merged_rows_by_order_store_map(tmp_path: Path) -> None:
+    root = tmp_path / "merged"
+    store = root / "TODAY" / "01.03.26_MERGED_qnt2"
+    store.mkdir(parents=True, exist_ok=True)
+    (store / "manifest_normal_singles.csv").write_text(
+        "type,store,order_id,output\n"
+        "NORMAL,MERGED,1001;1002,NORMAL_singles/a.pdf\n"
+        "NORMAL,MERGED,2001,NORMAL_singles/b.pdf\n",
+        encoding="utf-8",
+    )
+
+    stats = collect_store_order_bundle_stats(
+        [store],
+        order_store_map={
+            "1001": "UNIVERSAL",
+            "1002": "ACMEWEAR",
+            "2001": "STOREB",
+            "9999": "MELVIS",
+        },
+    )
+
+    assert stats["Universal"]["orders_ready"] == 1
+    assert stats["AcmeWear"]["orders_ready"] == 1
+    assert stats["STORE-B"]["orders_ready"] == 1
+    assert stats["Store-C"]["orders_target"] == 1
 
 
 def test_pre_and_post_status_table_contains_totals() -> None:
     stats = {
-        "STORE-B": {"orders": 51, "bundles_target": 26},
-        "AcmeWear": {"orders": 5, "bundles_target": 3},
-        "Universal": {"orders": 45, "bundles_target": 20},
+        "STORE-B": {"orders_target": 51, "orders_ready": 44},
+        "AcmeWear": {"orders_target": 5, "orders_ready": 4},
+        "Universal": {"orders_target": 45, "orders_ready": 32},
     }
 
-    pre = format_pre_send_status_table(stats)
+    pre = format_pre_send_status_table(stats, bundles_target=40)
     post = format_post_send_status_table(
         stats,
-        {"STORE-B": 26, "AcmeWear": 3, "Universal": 20},
+        {"STORE-B": 44, "AcmeWear": 4, "Universal": 32},
+        bundles_target=40,
+        bundles_sent=40,
     )
 
-    assert "STORE" in pre and "Orders" in pre and "TOTAL" in pre
-    assert "Bundles Target" in post and "Bundles Sent" in post
+    assert "STORE" in pre and "Orders Target" in pre and "TOTAL" in pre
+    assert "Orders Sent" in post and "Bundles: target=40, sent=40" in post
     assert "| TOTAL" in post
