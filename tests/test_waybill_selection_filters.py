@@ -457,6 +457,60 @@ def test_download_waybills_for_store_processes_fallback_targets_not_in_prefetch(
     assert (output_dir / "7002.pdf").exists()
 
 
+def test_download_waybills_for_store_skips_cancelled_fallback_without_retry(
+    tmp_path, monkeypatch
+):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    calls = {"get_order": 0, "download": 0}
+
+    class FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def get_waybill_url(self, order: dict) -> Optional[str]:
+            return order.get("attributes", {}).get("kaspiDelivery", {}).get("waybill")
+
+        def get_order(self, order_code: str) -> APIResponse:
+            calls["get_order"] += 1
+            order = _make_order(
+                code=order_code,
+                status="CANCELLED",
+                signature=False,
+                planned=date(2026, 2, 22),
+                assembled=False,
+            )
+            return APIResponse(success=True, data=order, status_code=200)
+
+        def download_waybill(self, waybill_url: str, timeout: Optional[int] = None) -> APIResponse:
+            calls["download"] += 1
+            return APIResponse(success=True, data=b"%PDF-1.4 test\n", status_code=200)
+
+    monkeypatch.setattr(download_waybills_api, "KaspiAPIClient", FakeClient)
+    monkeypatch.setattr(download_waybills_api, "WAYBILL_RETRY_DELAY", 0)
+    monkeypatch.setattr(download_waybills_api, "WAYBILL_RETRY_PASSES", 3)
+    monkeypatch.setattr(download_waybills_api, "WAYBILL_RETRY_DELAY_UNIVERSAL", 0)
+    monkeypatch.setattr(download_waybills_api, "WAYBILL_RETRY_PASSES_UNIVERSAL", 3)
+
+    result = download_waybills_api.download_waybills_for_store(
+        store_code="UNIVERSAL",
+        target_order_ids={"835522716"},
+        output_dir=output_dir,
+        since_days=1,
+        download_timeout=10,
+        dry_run=False,
+        verbose=False,
+        prefetched_orders=[],
+    )
+
+    assert result["downloaded"] == 0
+    assert result["missing_waybill"] == 0
+    assert result["skipped_terminal"] == 1
+    assert calls["get_order"] == 1
+    assert calls["download"] == 0
+
+
 def test_download_all_waybills_writes_selection_cache(tmp_path, monkeypatch):
     output_dir = tmp_path / "waybills"
     output_dir.mkdir(parents=True, exist_ok=True)

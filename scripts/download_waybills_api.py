@@ -44,6 +44,7 @@ from core.integrations.kaspi_api_client import (
     STORE_TOKEN_MAP,
 )
 from core.integrations.kaspi_order_stage import StageCode, api_state_filter_for_stage
+from core.integrations.kaspi_order_stage import classify_kaspi_order_stage
 from core.paths import data_path, get_data_root
 from core.ops.shipment_health import classify_waybill_health
 
@@ -67,6 +68,12 @@ WAYBILL_RETRY_PASSES = int(os.environ.get("KASPI_WAYBILL_RETRY_PASSES", "1"))
 WAYBILL_RETRY_DELAY_UNIVERSAL = int(os.environ.get("KASPI_WAYBILL_RETRY_DELAY_UNIVERSAL", "90"))
 WAYBILL_RETRY_PASSES_UNIVERSAL = int(os.environ.get("KASPI_WAYBILL_RETRY_PASSES_UNIVERSAL", "3"))
 DELIVERY_STATE = api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY) or ""
+TERMINAL_NO_WAYBILL_STAGES = {
+    StageCode.CANCELLED,
+    StageCode.CANCELLING,
+    StageCode.RETURN_REQUESTED,
+    StageCode.RETURNED,
+}
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -347,6 +354,24 @@ def _is_pending_crm_status(value: Any) -> bool:
     }
 
 
+def _terminal_no_waybill_stage(order: Any) -> Optional[StageCode]:
+    """
+    Return stage for orders that should be skipped from waybill retries.
+
+    Cancelled/return flows do not produce waybills for courier handover, so
+    waiting/retrying those orders only wastes time.
+    """
+    if not isinstance(order, dict):
+        return None
+    try:
+        stage = classify_kaspi_order_stage(order)
+    except Exception:
+        return None
+    if stage in TERMINAL_NO_WAYBILL_STAGES:
+        return stage
+    return None
+
+
 def get_target_order_ids_from_db(
     db_path: Path,
     target_date: date,
@@ -596,6 +621,7 @@ def download_waybills_for_store(
     missing_orders: list[str] = []
     already_exists = 0
     invalid_pdf = 0
+    skipped_terminal = 0
     errors = []
     processed_order_ids: set[str] = set()
     circuit_open = False
@@ -672,6 +698,14 @@ def download_waybills_for_store(
                     print(f"      {order_code}: Waybill URL found via detail fetch")
 
         if not waybill_url:
+            terminal_stage = _terminal_no_waybill_stage(detail.data if detail.success else order)
+            if terminal_stage is not None:
+                skipped_terminal += 1
+                if verbose:
+                    print(
+                        f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
+                    )
+                continue
             missing_orders.append(order_code)
             if verbose:
                 print(f"      {order_code}: No waybill URL yet")
@@ -749,6 +783,14 @@ def download_waybills_for_store(
 
             waybill_url = client.get_waybill_url(detail.data)
             if not waybill_url:
+                terminal_stage = _terminal_no_waybill_stage(detail.data)
+                if terminal_stage is not None:
+                    skipped_terminal += 1
+                    if verbose:
+                        print(
+                            f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
+                        )
+                    continue
                 missing_orders.append(order_code)
                 if verbose:
                     print(f"      {order_code}: No waybill URL yet (fallback target)")
@@ -816,6 +858,14 @@ def download_waybills_for_store(
                 else:
                     waybill_url = None
                 if not waybill_url:
+                    terminal_stage = _terminal_no_waybill_stage(detail.data if detail.success else None)
+                    if terminal_stage is not None:
+                        skipped_terminal += 1
+                        if verbose:
+                            print(
+                                f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
+                            )
+                        continue
                     still_missing.append(order_code)
                     if verbose:
                         print(f"      {order_code}: No waybill URL yet (retry)")
@@ -854,6 +904,7 @@ def download_waybills_for_store(
         'missing_waybill': missing_waybill,
         'already_exists': already_exists,
         'invalid_pdf': invalid_pdf,
+        'skipped_terminal': skipped_terminal,
         'errors': errors,
     }
 
