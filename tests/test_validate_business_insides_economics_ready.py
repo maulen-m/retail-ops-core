@@ -132,3 +132,105 @@ def test_economics_ready_uses_strict_sales_metrics_mode(
     )
     assert report["ok"] is True
     assert captured.get("allow_completed_revenue_fallback") is False
+
+
+def test_economics_ready_fails_on_nonvolatile_missing_sku_identity(tmp_path: Path) -> None:
+    as_of = "2026-02-26"
+    business_dir = tmp_path / "business"
+    business_dir.mkdir(parents=True)
+    snapshot_json = business_dir / f"BUSINESS_INSIDES_{as_of}.json"
+    _write_snapshot(snapshot_json, as_of, cogs=None, profit=None)
+
+    metrics = {
+        "economics_missing_days": [],
+        "economics_missing_nonvolatile_days": [],
+        "economics_volatility_days": 14,
+        "profit_publication_locked": False,
+    }
+    line_quality = {
+        "missing_sku_rows_total": 1,
+        "missing_sku_rows_nonvolatile": 1,
+        "missing_unit_cost_rows_total": 0,
+        "missing_unit_cost_rows_nonvolatile": 0,
+        "missing_sku_days_nonvolatile": ["2026-02-10"],
+        "missing_unit_cost_days_nonvolatile": [],
+    }
+    with pytest.raises(RuntimeError, match="economics readiness failed"):
+        validate_business_insides_economics_ready(
+            db_path=tmp_path / "app.db",
+            as_of=as_of,
+            output_root=tmp_path / "out",
+            business_dir=business_dir,
+            snapshot_json_path=snapshot_json,
+            strict=True,
+            metrics_override=metrics,
+            line_quality_override=line_quality,
+        )
+
+
+def test_economics_ready_fails_on_nonvolatile_missing_unit_cost(tmp_path: Path) -> None:
+    as_of = "2026-02-26"
+    business_dir = tmp_path / "business"
+    business_dir.mkdir(parents=True)
+    snapshot_json = business_dir / f"BUSINESS_INSIDES_{as_of}.json"
+    _write_snapshot(snapshot_json, as_of, cogs=None, profit=None)
+
+    metrics = {
+        "economics_missing_days": [],
+        "economics_missing_nonvolatile_days": [],
+        "economics_volatility_days": 14,
+        "profit_publication_locked": False,
+    }
+    line_quality = {
+        "missing_sku_rows_total": 0,
+        "missing_sku_rows_nonvolatile": 0,
+        "missing_unit_cost_rows_total": 3,
+        "missing_unit_cost_rows_nonvolatile": 3,
+        "missing_sku_days_nonvolatile": [],
+        "missing_unit_cost_days_nonvolatile": ["2026-02-09"],
+    }
+    with pytest.raises(RuntimeError, match="economics readiness failed"):
+        validate_business_insides_economics_ready(
+            db_path=tmp_path / "app.db",
+            as_of=as_of,
+            output_root=tmp_path / "out",
+            business_dir=business_dir,
+            snapshot_json_path=snapshot_json,
+            strict=True,
+            metrics_override=metrics,
+            line_quality_override=line_quality,
+        )
+
+
+def test_economics_ready_allows_missing_unit_cost_in_volatile_window(tmp_path: Path) -> None:
+    as_of = "2026-02-26"
+    business_dir = tmp_path / "business"
+    business_dir.mkdir(parents=True)
+    snapshot_json = business_dir / f"BUSINESS_INSIDES_{as_of}.json"
+    _write_snapshot(snapshot_json, as_of, cogs=None, profit=None)
+
+    metrics = {
+        "economics_missing_days": [],
+        "economics_missing_nonvolatile_days": [],
+        "economics_volatility_days": 14,
+        "profit_publication_locked": False,
+    }
+    line_quality = {
+        "missing_sku_rows_total": 2,
+        "missing_sku_rows_nonvolatile": 0,
+        "missing_unit_cost_rows_total": 2,
+        "missing_unit_cost_rows_nonvolatile": 0,
+        "missing_sku_days_nonvolatile": [],
+        "missing_unit_cost_days_nonvolatile": [],
+    }
+    report = validate_business_insides_economics_ready(
+        db_path=tmp_path / "app.db",
+        as_of=as_of,
+        output_root=tmp_path / "out",
+        business_dir=business_dir,
+        snapshot_json_path=snapshot_json,
+        strict=True,
+        metrics_override=metrics,
+        line_quality_override=line_quality,
+    )
+    assert report["ok"] is True

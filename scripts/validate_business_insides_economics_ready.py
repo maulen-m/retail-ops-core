@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.generate_business_insides import compute_sales_metrics
+from core.sales import ensure_sales_truth_views
 
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
@@ -66,6 +67,130 @@ def _render_md(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _collect_line_quality(
+    *,
+    db_path: Path,
+    as_of: date,
+    volatility_days: int,
+    lookback_days: int = 30,
+) -> dict[str, Any]:
+    start_date = as_of - timedelta(days=max(1, int(lookback_days)) - 1)
+    if not db_path.exists():
+        return {
+            "missing_sku_rows_total": 0,
+            "missing_sku_rows_nonvolatile": 0,
+            "missing_unit_cost_rows_total": 0,
+            "missing_unit_cost_rows_nonvolatile": 0,
+            "missing_sku_days_nonvolatile": [],
+            "missing_unit_cost_days_nonvolatile": [],
+            "status": "db_missing",
+        }
+
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_sales_truth_views(conn)
+        agg = conn.execute(
+            """
+            SELECT
+                SUM(
+                    CASE
+                        WHEN sku_key IS NULL OR TRIM(CAST(sku_key AS TEXT)) = '' THEN 1
+                        ELSE 0
+                    END
+                ) AS missing_sku_rows_total,
+                SUM(
+                    CASE
+                        WHEN (sku_key IS NULL OR TRIM(CAST(sku_key AS TEXT)) = '')
+                         AND CAST((julianday(?) - julianday(date(sale_date))) AS INTEGER) > ?
+                        THEN 1 ELSE 0
+                    END
+                ) AS missing_sku_rows_nonvolatile,
+                SUM(
+                    CASE
+                        WHEN cogs_kzt IS NULL OR UPPER(COALESCE(cogs_source, '')) = 'UNRESOLVED'
+                        THEN 1 ELSE 0
+                    END
+                ) AS missing_unit_cost_rows_total,
+                SUM(
+                    CASE
+                        WHEN (cogs_kzt IS NULL OR UPPER(COALESCE(cogs_source, '')) = 'UNRESOLVED')
+                         AND CAST((julianday(?) - julianday(date(sale_date))) AS INTEGER) > ?
+                        THEN 1 ELSE 0
+                    END
+                ) AS missing_unit_cost_rows_nonvolatile
+            FROM view_sales_line_truth
+            WHERE date(sale_date) BETWEEN ? AND ?
+              AND net_rev_kzt IS NOT NULL
+            """,
+            (
+                as_of.isoformat(),
+                int(volatility_days),
+                as_of.isoformat(),
+                int(volatility_days),
+                start_date.isoformat(),
+                as_of.isoformat(),
+            ),
+        ).fetchone()
+
+        missing_sku_days_nonvolatile = [
+            str(row["sale_date"])
+            for row in conn.execute(
+                """
+                SELECT date(sale_date) AS sale_date
+                FROM view_sales_line_truth
+                WHERE date(sale_date) BETWEEN ? AND ?
+                  AND net_rev_kzt IS NOT NULL
+                  AND CAST((julianday(?) - julianday(date(sale_date))) AS INTEGER) > ?
+                  AND (sku_key IS NULL OR TRIM(CAST(sku_key AS TEXT)) = '')
+                GROUP BY date(sale_date)
+                ORDER BY date(sale_date)
+                """,
+                (
+                    start_date.isoformat(),
+                    as_of.isoformat(),
+                    as_of.isoformat(),
+                    int(volatility_days),
+                ),
+            ).fetchall()
+        ]
+        missing_cost_days_nonvolatile = [
+            str(row["sale_date"])
+            for row in conn.execute(
+                """
+                SELECT date(sale_date) AS sale_date
+                FROM view_sales_line_truth
+                WHERE date(sale_date) BETWEEN ? AND ?
+                  AND net_rev_kzt IS NOT NULL
+                  AND CAST((julianday(?) - julianday(date(sale_date))) AS INTEGER) > ?
+                  AND (cogs_kzt IS NULL OR UPPER(COALESCE(cogs_source, '')) = 'UNRESOLVED')
+                GROUP BY date(sale_date)
+                ORDER BY date(sale_date)
+                """,
+                (
+                    start_date.isoformat(),
+                    as_of.isoformat(),
+                    as_of.isoformat(),
+                    int(volatility_days),
+                ),
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    return {
+        "missing_sku_rows_total": int(agg["missing_sku_rows_total"] or 0),
+        "missing_sku_rows_nonvolatile": int(agg["missing_sku_rows_nonvolatile"] or 0),
+        "missing_unit_cost_rows_total": int(agg["missing_unit_cost_rows_total"] or 0),
+        "missing_unit_cost_rows_nonvolatile": int(agg["missing_unit_cost_rows_nonvolatile"] or 0),
+        "missing_sku_days_nonvolatile": missing_sku_days_nonvolatile,
+        "missing_unit_cost_days_nonvolatile": missing_cost_days_nonvolatile,
+        "status": "ok",
+    }
+
+
 def validate_business_insides_economics_ready(
     *,
     db_path: Path,
@@ -76,6 +201,7 @@ def validate_business_insides_economics_ready(
     strict: bool,
     volatility_days: int | None = None,
     metrics_override: dict[str, Any] | None = None,
+    line_quality_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     checks: list[dict[str, Any]] = []
@@ -144,6 +270,46 @@ def validate_business_insides_economics_ready(
             "nonvolatile economics gaps detected for days: " + ", ".join(nonvolatile_missing)
         )
 
+    line_quality = line_quality_override or _collect_line_quality(
+        db_path=db_path.resolve(),
+        as_of=as_of_date,
+        volatility_days=metrics_volatility,
+    )
+    missing_sku_nonvolatile = int(line_quality.get("missing_sku_rows_nonvolatile") or 0)
+    missing_cost_nonvolatile = int(line_quality.get("missing_unit_cost_rows_nonvolatile") or 0)
+    missing_sku_days_nonvolatile = list(line_quality.get("missing_sku_days_nonvolatile") or [])
+    missing_cost_days_nonvolatile = list(line_quality.get("missing_unit_cost_days_nonvolatile") or [])
+
+    checks.append(
+        {
+            "check": "nonvolatile_missing_sku_identity_zero",
+            "ok": missing_sku_nonvolatile == 0,
+            "details": ",".join(missing_sku_days_nonvolatile)
+            if missing_sku_days_nonvolatile
+            else "none",
+        }
+    )
+    if missing_sku_nonvolatile > 0:
+        errors.append(
+            "nonvolatile missing sku identity rows detected: "
+            + ", ".join(missing_sku_days_nonvolatile or ["<unknown_days>"])
+        )
+
+    checks.append(
+        {
+            "check": "nonvolatile_missing_unit_cost_zero",
+            "ok": missing_cost_nonvolatile == 0,
+            "details": ",".join(missing_cost_days_nonvolatile)
+            if missing_cost_days_nonvolatile
+            else "none",
+        }
+    )
+    if missing_cost_nonvolatile > 0:
+        errors.append(
+            "nonvolatile missing unit cost rows detected: "
+            + ", ".join(missing_cost_days_nonvolatile or ["<unknown_days>"])
+        )
+
     if snapshot_payload is not None:
         perf = snapshot_payload.get("performance") or {}
         perf_cogs = perf.get("avg_30d_cogs_kzt")
@@ -182,6 +348,7 @@ def validate_business_insides_economics_ready(
         "economics_missing_days": missing_days,
         "economics_missing_nonvolatile_days": nonvolatile_missing,
         "profit_publication_locked": locked,
+        "line_quality": line_quality,
         "checks": checks,
         "errors": errors,
     }
