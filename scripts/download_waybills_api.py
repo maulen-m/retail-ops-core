@@ -622,6 +622,7 @@ def download_waybills_for_store(
     already_exists = 0
     invalid_pdf = 0
     skipped_terminal = 0
+    terminal_skipped_order_ids: set[str] = set()
     errors = []
     processed_order_ids: set[str] = set()
     circuit_open = False
@@ -633,6 +634,8 @@ def download_waybills_for_store(
             'missing_waybill': 0,
             'already_exists': 0,
             'invalid_pdf': 0,
+            'skipped_terminal': 0,
+            'terminal_skipped_order_ids': [],
             'errors': [],
         }
 
@@ -646,6 +649,8 @@ def download_waybills_for_store(
             'missing_waybill': 0,
             'already_exists': 0,
             'invalid_pdf': 0,
+            'skipped_terminal': 0,
+            'terminal_skipped_order_ids': [],
             'errors': [f"Auth error: {e}"],
         }
 
@@ -701,6 +706,7 @@ def download_waybills_for_store(
             terminal_stage = _terminal_no_waybill_stage(detail.data if detail.success else order)
             if terminal_stage is not None:
                 skipped_terminal += 1
+                terminal_skipped_order_ids.add(order_code)
                 if verbose:
                     print(
                         f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
@@ -786,6 +792,7 @@ def download_waybills_for_store(
                 terminal_stage = _terminal_no_waybill_stage(detail.data)
                 if terminal_stage is not None:
                     skipped_terminal += 1
+                    terminal_skipped_order_ids.add(order_code)
                     if verbose:
                         print(
                             f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
@@ -861,6 +868,7 @@ def download_waybills_for_store(
                     terminal_stage = _terminal_no_waybill_stage(detail.data if detail.success else None)
                     if terminal_stage is not None:
                         skipped_terminal += 1
+                        terminal_skipped_order_ids.add(order_code)
                         if verbose:
                             print(
                                 f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
@@ -905,6 +913,7 @@ def download_waybills_for_store(
         'already_exists': already_exists,
         'invalid_pdf': invalid_pdf,
         'skipped_terminal': skipped_terminal,
+        'terminal_skipped_order_ids': sorted(terminal_skipped_order_ids),
         'errors': errors,
     }
 
@@ -1111,6 +1120,7 @@ def download_all_waybills(
     total_missing_waybill = 0
     total_already_exists = 0
     total_invalid_pdf = 0
+    total_skipped_terminal = 0
     all_errors = []
 
     # Process each store
@@ -1137,13 +1147,25 @@ def download_all_waybills(
         total_missing_waybill += result['missing_waybill']
         total_already_exists += result['already_exists']
         total_invalid_pdf += result['invalid_pdf']
+        total_skipped_terminal += int(result.get('skipped_terminal', 0))
         all_errors.extend(result['errors'])
+
+        # Cancelled/returned orders that were in fallback selection are removed
+        # from selection cache + downstream target counts to keep reports aligned.
+        terminal_ids = set(result.get("terminal_skipped_order_ids", []))
+        if terminal_ids:
+            target_orders_by_store[api_store_code] = set(order_ids) - terminal_ids
+            logger.info(
+                f"{api_store_code}: removed {len(terminal_ids)} terminal "
+                "(cancelled/returned) orders from target selection"
+            )
 
         # Per-store summary
         print(f"    Downloaded: {result['downloaded']}, "
               f"Exists: {result['already_exists']}, "
               f"No waybill: {result['missing_waybill']}, "
-              f"Invalid PDF: {result['invalid_pdf']}")
+              f"Invalid PDF: {result['invalid_pdf']}, "
+              f"Terminal skipped: {result.get('skipped_terminal', 0)}")
 
     selection_status = "API_ONLY"
     if fallback_used:
@@ -1162,6 +1184,7 @@ def download_all_waybills(
                 "stores": {
                     store: sorted(order_ids)
                     for store, order_ids in sorted(target_orders_by_store.items())
+                    if order_ids
                 },
             }
             selection_orders_path.write_text(
@@ -1190,6 +1213,7 @@ def download_all_waybills(
         'missing_waybill': total_missing_waybill,
         'already_exists': total_already_exists,
         'invalid_pdf': total_invalid_pdf,
+        'skipped_terminal': total_skipped_terminal,
         'errors': all_errors,
         'selection_status': selection_status,
         'fallback_used': fallback_used,
@@ -1351,6 +1375,7 @@ def main() -> int:
     print(f"  Already existed: {result['already_exists']}")
     print(f"  Missing waybill URL: {result['missing_waybill']}")
     print(f"  Invalid PDF payloads: {result['invalid_pdf']}")
+    print(f"  Terminal skipped (cancelled/returned): {result.get('skipped_terminal', 0)}")
     print(f"  Skipped (not in target set): {result['skipped_not_target']}")
     if result.get("selection_status"):
         status = result["selection_status"]
