@@ -15,8 +15,16 @@ def _seed_db(db_path: Path) -> None:
             po_part_id TEXT PRIMARY KEY,
             po_id TEXT,
             status TEXT,
+            cargo_freight_id TEXT,
+            actual_dlv_pay_date TEXT,
             est_weight_kg REAL,
+            actual_weight_kg REAL,
             total_bags INTEGER,
+            paid_dlv_usd REAL,
+            paid_dlv_kzt REAL,
+            final_usd_per_kg REAL,
+            usd_kzt_rate REAL,
+            actual_dlv_days INTEGER,
             is_paid_base INTEGER,
             is_paid_dlv INTEGER,
             to_pay_base_kzt REAL,
@@ -28,25 +36,72 @@ def _seed_db(db_path: Path) -> None:
     conn.executemany(
         """
         INSERT INTO po_part (
-            po_part_id, po_id, status, est_weight_kg, total_bags,
+            po_part_id, po_id, status, cargo_freight_id, actual_dlv_pay_date,
+            est_weight_kg, actual_weight_kg, total_bags,
+            paid_dlv_usd, paid_dlv_kzt, final_usd_per_kg, usd_kzt_rate, actual_dlv_days,
             is_paid_base, is_paid_dlv, to_pay_base_kzt, to_pay_dlv_kzt, total_units
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            ("PO-4.1", "PO-4.1", "RECEIVED", 475.8, 13, 1, 1, 0, 0, 1430),
-            ("PO-5.2", "PO-5", "IN_TRANSIT", 2188.5, 53, 0, 0, 9305790, 3085347.3, 3980),
+            (
+                "PO-4.1",
+                "PO-4.1",
+                "RECEIVED",
+                "WB-PO41",
+                "2026-02-05",
+                475.8,
+                475.8,
+                13,
+                1290.0,
+                670800.0,
+                2.71,
+                520.0,
+                15,
+                1,
+                1,
+                0,
+                0,
+                1430,
+            ),
+            (
+                "PO-5.2",
+                "PO-5",
+                "IN_TRANSIT",
+                "WB-PO52",
+                "",
+                2188.5,
+                0.0,
+                53,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0,
+                0,
+                0,
+                9305790,
+                3085347.3,
+                3980,
+            ),
         ],
     )
     conn.commit()
     conn.close()
 
 
-def _write_workbook(path: Path, paid_dlv_po41: str = "YES") -> None:
+def _write_workbook(
+    path: Path,
+    paid_dlv_po41: str = "YES",
+    po52_actual_dlv_days: object = 0,
+) -> None:
     totals = pd.DataFrame(
         [
             {
                 "PO_part_id": "PO-4.1",
                 "PO_id": "PO-4.1",
+                "Status": "Arrived",
+                "Cargo_freight_id": "WB-PO41",
+                "Actual_DLV_PAY_date": "2026-02-05",
                 "is_paid_BASE": "YES",
                 "is_paid_DLV": paid_dlv_po41,
                 "To_pay_BASE_KZT": 0,
@@ -54,10 +109,19 @@ def _write_workbook(path: Path, paid_dlv_po41: str = "YES") -> None:
                 "Est. Weight (kg)": 475.8,
                 "Total Bags": 13,
                 "Total Units": 1430,
+                "Actual_Weight_kg": 475.8,
+                "Paid_DLV_USD": 1290.0,
+                "Paid_DLV_KZT": 670800.0,
+                "Final_USD_per_kg": 2.71,
+                "USD_KZT_rate": 520.0,
+                "Actual_DLV_days": 15,
             },
             {
                 "PO_part_id": "PO-5.2",
                 "PO_id": "PO-5",
+                "Status": "Transit",
+                "Cargo_freight_id": "WB-PO52",
+                "Actual_DLV_PAY_date": "",
                 "is_paid_BASE": "NO",
                 "is_paid_DLV": "NO",
                 "To_pay_BASE_KZT": 9305790,
@@ -65,6 +129,12 @@ def _write_workbook(path: Path, paid_dlv_po41: str = "YES") -> None:
                 "Est. Weight (kg)": 2188.5,
                 "Total Bags": 53,
                 "Total Units": 3980,
+                "Actual_Weight_kg": 0.0,
+                "Paid_DLV_USD": 0.0,
+                "Paid_DLV_KZT": 0.0,
+                "Final_USD_per_kg": 0.0,
+                "USD_KZT_rate": 0.0,
+                "Actual_DLV_days": po52_actual_dlv_days,
             },
         ]
     )
@@ -109,3 +179,15 @@ def test_validate_system_fails_on_paid_flag_mismatch(tmp_path: Path) -> None:
 
     errors = validate_system(db_path=db_path, workbook_path=xlsx, dashboard_path=dashboard)
     assert any("PO-4.1" in err and "is_paid_DLV" in err for err in errors)
+
+
+def test_validate_system_handles_nan_actual_dlv_days(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx = tmp_path / "inbound.xlsx"
+    dashboard = tmp_path / "dashboard.json"
+    _seed_db(db_path)
+    _write_workbook(xlsx, po52_actual_dlv_days=float("nan"))
+    _write_payload(dashboard)
+
+    errors = validate_system(db_path=db_path, workbook_path=xlsx, dashboard_path=dashboard)
+    assert errors == []

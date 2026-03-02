@@ -38,6 +38,7 @@ from scripts.validate_single_truth_system import (
     DEFAULT_DASHBOARD as DEFAULT_SINGLE_TRUTH_DASHBOARD,
 )
 from scripts.validate_inbound_sheet_consistency import validate_inbound_sheet_consistency
+from scripts.validate_astana_totals_alignment import validate_astana_totals_alignment
 from scripts.validate_on_delivery_freeze import validate_on_delivery_freeze
 from scripts.validate_business_insides import validate_business_insides
 from scripts.validate_sales_truth_reconciliation import reconcile_sales_truth
@@ -407,6 +408,18 @@ def main():
                         )
                 else:
                     result.add_info("inbound_sheet_consistency: OK")
+
+                astana_alignment = validate_astana_totals_alignment(
+                    workbook_path=single_truth_workbook,
+                )
+                if not astana_alignment["ok"]:
+                    for err in astana_alignment.get("errors", []):
+                        result.add_error(f"astana_totals_alignment: {err}")
+                else:
+                    result.add_info("astana_totals_alignment: OK")
+                for warn in astana_alignment.get("warnings", []):
+                    result.add_info(f"astana_totals_alignment warning: {warn}")
+
                 system_errors = validate_single_truth_system(
                     db_path=db_path,
                     workbook_path=single_truth_workbook,

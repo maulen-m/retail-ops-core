@@ -325,6 +325,15 @@ def _write_workbook(
                 },
             ]
         )
+    for row in part_rows:
+        row.setdefault("Cargo_freight_id", "")
+        row.setdefault("Actual_DLV_PAY_date", None)
+        row.setdefault("Actual_Weight_kg", 0.0)
+        row.setdefault("Paid_DLV_USD", 0.0)
+        row.setdefault("Paid_DLV_KZT", 0.0)
+        row.setdefault("Final_USD_per_kg", 0.0)
+        row.setdefault("USD_KZT_rate", 0.0)
+        row.setdefault("Actual_DLV_days", 0)
     part_totals = pd.DataFrame(part_rows)
     dim_sku_light = pd.DataFrame(
         [

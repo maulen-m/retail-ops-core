@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import openpyxl
 import pandas as pd
 
 
@@ -120,13 +121,18 @@ def _load_totals(path: Path) -> dict[str, float]:
 
 
 def _load_cargo_sheets(path: Path) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], set[str]]]:
-    book = pd.ExcelFile(path)
     observed: dict[tuple[str, str], float] = {}
     key_sources: dict[tuple[str, str], set[str]] = {}
+    workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
 
-    for sheet in book.sheet_names:
-        if not sheet.lower().startswith(CARGO_PREFIX):
-            continue
+    def _add_row(part_id: str, sku_key: str, qty: float, sheet: str) -> None:
+        if not _is_valid_part_id(part_id) or not sku_key or qty <= 0:
+            return
+        key = (part_id, sku_key)
+        observed[key] = observed.get(key, 0.0) + qty
+        key_sources.setdefault(key, set()).add(sheet)
+
+    def _collect_tabular(sheet: str) -> bool:
         df = pd.read_excel(path, sheet_name=sheet, dtype=object)
         df = _normalize_columns(df)
         cols = set(df.columns)
@@ -134,17 +140,99 @@ def _load_cargo_sheets(path: Path) -> tuple[dict[tuple[str, str], float], dict[t
         sku_col = _pick_column(cols, ["SKU_key", "sku_key", "sku_id", "sku"])
         qty_col = _pick_column(cols, ["Qty", "qty", "quantity", "actual_qty"])
         if not part_col or not sku_col or not qty_col:
-            continue
+            return False
 
+        found = False
         for _, row in df.iterrows():
             part_id = _norm_part(row.get(part_col))
             sku_key = _norm_sku(row.get(sku_col))
-            if not _is_valid_part_id(part_id) or not sku_key:
-                continue
             qty = _to_float(row.get(qty_col))
-            key = (part_id, sku_key)
-            observed[key] = observed.get(key, 0.0) + qty
-            key_sources.setdefault(key, set()).add(sheet)
+            if not _is_valid_part_id(part_id) or not sku_key or qty <= 0:
+                continue
+            _add_row(part_id, sku_key, qty, sheet)
+            found = True
+        return found
+
+    def _collect_styled(sheet: str) -> bool:
+        ws = workbook[sheet]
+        part_id_fallback = ""
+
+        for r in range(1, 30):
+            k = str(ws.cell(r, 1).value or "").strip().upper()
+            if k != "PO_PART_ID":
+                continue
+            # row can be single-part (col B) or multi-part (cols C..)
+            candidates = [ws.cell(r, c).value for c in range(2, 10)]
+            for val in candidates:
+                cand = _norm_part(val)
+                if _is_valid_part_id(cand):
+                    part_id_fallback = cand
+                    break
+            if part_id_fallback:
+                break
+
+        header_row = None
+        header_cols: dict[str, int] = {}
+        for r in range(1, 260):
+            row_vals = [str(ws.cell(r, c).value or "").strip().lower() for c in range(1, 26)]
+            if "sku_key" in row_vals and "qty" in row_vals:
+                header_row = r
+                for c, val in enumerate(row_vals, start=1):
+                    if val:
+                        header_cols[val] = c
+                break
+
+        if not header_row:
+            return False
+
+        sku_col = header_cols.get("sku_key")
+        qty_col = header_cols.get("qty")
+        part_col = header_cols.get("po_part_id")
+        po_name_col = header_cols.get("po_name")
+        if not sku_col or not qty_col:
+            return False
+
+        found = False
+        for r in range(header_row + 1, min(ws.max_row, header_row + 1200) + 1):
+            marker = str(ws.cell(r, 1).value or "").strip().upper()
+            if found and (
+                "TOTALS" in marker
+                or "PER BAG" in marker
+                or "COMBINED" in marker
+                or marker.startswith("SKU_KEY")
+            ):
+                break
+
+            sku_key = _norm_sku(ws.cell(r, sku_col).value)
+            if not sku_key:
+                continue
+            upper = sku_key.upper()
+            if any(token in upper for token in ("TOTAL", "SUBTOTAL", "PER BAG", "COMBINED")):
+                continue
+            qty = _to_float(ws.cell(r, qty_col).value)
+            if qty <= 0:
+                continue
+
+            part_id = ""
+            if part_col:
+                part_id = _norm_part(ws.cell(r, part_col).value)
+            if (not part_id or not _is_valid_part_id(part_id)) and po_name_col:
+                part_id = _norm_part(ws.cell(r, po_name_col).value)
+            if not part_id or not _is_valid_part_id(part_id):
+                part_id = part_id_fallback
+            if not part_id or not _is_valid_part_id(part_id):
+                continue
+
+            _add_row(part_id, sku_key, qty, sheet)
+            found = True
+        return found
+
+    for sheet in workbook.sheetnames:
+        if not sheet.lower().startswith(CARGO_PREFIX):
+            continue
+        if _collect_tabular(sheet):
+            continue
+        _collect_styled(sheet)
 
     return observed, key_sources
 
@@ -157,6 +245,19 @@ def validate_inbound_sheet_consistency(*, workbook_path: Path, tolerance: float 
     mismatches: list[dict[str, Any]] = []
 
     common_keys = sorted(set(expected_by_key.keys()) & set(observed_by_key.keys()))
+    if expected_by_key and not common_keys:
+        mismatches.append(
+            {
+                "type": "cargo_parse_contract",
+                "po_part_id": "*",
+                "sku_key": "*",
+                "expected_qty": float(sum(expected_by_key.values())),
+                "observed_qty": 0.0,
+                "delta_qty": float(-sum(expected_by_key.values())),
+                "source_sheets": [],
+            }
+        )
+
     for part_id, sku_key in common_keys:
         expected = round(expected_by_key[(part_id, sku_key)], 2)
         observed = round(observed_by_key[(part_id, sku_key)], 2)

@@ -44,6 +44,34 @@ def _run(xlsx: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _make_styled_workbook(path: Path, *, qty: int = 3980) -> None:
+    wb = openpyxl.Workbook()
+
+    ws_inbounds = wb.active
+    ws_inbounds.title = "Inbounds_sheet"
+    ws_inbounds.append(["PO_part_id", "SKU_key", "Qty", "Actual_qty"])
+    ws_inbounds.append(["PO-5.2", "CL_OC_MEN_LINE52_BLACK", qty, qty])
+
+    ws_totals = wb.create_sheet("PO_part_id_Totals")
+    ws_totals.append(["PO_part_id", "Total Units"])
+    ws_totals.append(["PO-5.2", qty])
+
+    ws_cargo = wb.create_sheet("Cargo_send_31.1.2026_PO-5.2_4.2")
+    ws_cargo["A1"] = "SHIPMENT INFO"
+    ws_cargo["A3"] = "PO_part_id"
+    ws_cargo["B3"] = "PO-5.2"
+    ws_cargo["A17"] = "SKU_Key"
+    ws_cargo["B17"] = "Size"
+    ws_cargo["C17"] = "Qty"
+    ws_cargo["F17"] = "PO Name"
+    ws_cargo["A18"] = "CL_OC_MEN_LINE52_BLACK"
+    ws_cargo["B18"] = "M"
+    ws_cargo["C18"] = qty
+    ws_cargo["F18"] = "PO-5.2"
+
+    wb.save(path)
+
+
 def test_flags_qty_mismatch_between_cargo_and_inbounds(tmp_path: Path) -> None:
     xlsx = tmp_path / "inbound.xlsx"
     _make_workbook(xlsx, cargo_qty=3940, actual_qty=3980)
@@ -70,6 +98,29 @@ def test_reports_authoritative_sheet_precedence(tmp_path: Path) -> None:
     payload = json.loads(proc.stdout)
     assert payload["authoritative_sheet"] == "Inbounds_sheet"
     assert payload["authoritative_quantity_column"] == "Actual_qty"
+
+
+def test_parses_styled_cargo_sheet_layout(tmp_path: Path) -> None:
+    xlsx = tmp_path / "inbound_styled.xlsx"
+    _make_styled_workbook(xlsx, qty=3980)
+
+    proc = _run(xlsx)
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload["ok"] is True
+    assert payload["checked_keys"] == 1
+    assert payload["mismatch_count"] == 0
+
+
+def test_fails_when_no_comparable_cargo_keys_exist(tmp_path: Path) -> None:
+    xlsx = tmp_path / "inbound_contract_breach.xlsx"
+    _make_workbook(xlsx, cargo_qty=0, actual_qty=3980)
+
+    proc = _run(xlsx)
+    assert proc.returncode != 0
+    payload = json.loads(proc.stdout)
+    types = {m["type"] for m in payload["mismatches"]}
+    assert "cargo_parse_contract" in types
 
 
 def test_exit_nonzero_on_contract_breach(tmp_path: Path) -> None:
