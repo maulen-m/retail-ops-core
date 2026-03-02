@@ -1322,6 +1322,7 @@ def run_sender(
     chrome_user_data_dir: Path = DEFAULT_CHROME_USER_DATA_DIR,
     chrome_profile_directory: str = DEFAULT_CHROME_PROFILE_DIR,
     blocked_chat_titles: Iterable[str] = BLOCKED_CHAT_TITLES_DEFAULT,
+    fail_fast: bool = False,
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """Run WhatsApp PDF sender workflow."""
@@ -1464,9 +1465,11 @@ def run_sender(
                     sender.send_text_message(pre_status_text)
                 except Exception as exc:
                     results["status_message_failed"] = 1
-                    results["failed"] += 1
-                    print(f"\nSTOPPING: Failed to send pre-send status message: {exc}")
-                    return results
+                    print(f"\nWARNING: Failed to send pre-send status message: {exc}")
+                    if fail_fast:
+                        results["failed"] += 1
+                        print("STOPPING: fail-fast enabled.")
+                        return results
 
             for i, pdf in enumerate(pdfs_to_send, start=1):
                 if pdf["store"] != current_store:
@@ -1498,18 +1501,24 @@ def run_sender(
                             sender.send_document(recovered)
                         except Exception as exc:
                             results["failed"] += 1
-                            print(f"\nSTOPPING: Failed to send {pdf['filename']}: {exc}")
-                            print("Use --resume after fixing WhatsApp UI/session")
-                            break
+                            if fail_fast:
+                                print(f"\nSTOPPING: Failed to send {pdf['filename']}: {exc}")
+                                print("Use --resume after fixing WhatsApp UI/session")
+                                break
+                            print(f"\nWARNING: Failed to send {pdf['filename']}: {exc}")
+                            continue
                     else:
                         results["failed"] += 1
                         print(f"      SKIP: missing PDF on disk: {pdf['path']}")
                         continue
                 except Exception as exc:
                     results["failed"] += 1
-                    print(f"\nSTOPPING: Failed to send {pdf['filename']}: {exc}")
-                    print("Use --resume after fixing WhatsApp UI/session")
-                    break
+                    if fail_fast:
+                        print(f"\nSTOPPING: Failed to send {pdf['filename']}: {exc}")
+                        print("Use --resume after fixing WhatsApp UI/session")
+                        break
+                    print(f"\nWARNING: Failed to send {pdf['filename']}: {exc}")
+                    continue
 
                 results["sent"] += 1
                 bundles_sent += 1
@@ -1544,7 +1553,10 @@ def run_sender(
                     print(f"WARNING: final outgoing sync check failed: {exc}")
     except Exception as exc:
         results["failed"] += 1
-        print(f"\nSTOPPING: Sender runtime error: {exc}")
+        if fail_fast:
+            print(f"\nSTOPPING: Sender runtime error: {exc}")
+        else:
+            print(f"\nWARNING: Sender runtime error: {exc}")
     finally:
         sender.close()
 
@@ -1627,6 +1639,11 @@ def main() -> None:
         action="store_false",
         help="Disable sending pre/post ASCII status tables to WhatsApp chat",
     )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Stop on first send/runtime error (default: continue and report failures)",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
@@ -1648,6 +1665,7 @@ def main() -> None:
     print(f"  Browser profile: {args.chrome_user_data_dir} / {args.chrome_profile_directory}")
     print(f"  Mode: {'DRY RUN' if args.dry_run else 'LIVE'}")
     print(f"  Status messages: {'Yes' if args.status_messages else 'No'}")
+    print(f"  Fail fast: {'Yes' if args.fail_fast else 'No'}")
     print(f"  Resume: {'No' if args.no_resume else 'Yes'}")
     print()
 
@@ -1663,6 +1681,7 @@ def main() -> None:
         chrome_user_data_dir=args.chrome_user_data_dir,
         chrome_profile_directory=args.chrome_profile_directory,
         blocked_chat_titles=dedup_blocked,
+        fail_fast=bool(args.fail_fast),
         verbose=args.verbose,
     )
     elapsed = max(0, int(time.monotonic() - started_at))

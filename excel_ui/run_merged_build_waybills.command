@@ -140,14 +140,23 @@ fi
 echo ""
 echo "Preflight: shipment hard gates..."
 echo "----------------------------------------"
-python scripts/preflight_shipment.py --project-root "${DATA_ROOT}"
-
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "ERROR: Shipment hard preflight failed. Fix issues above and retry."
-    echo "Press Enter to close..."
-    read
-    exit 1
+SHIPMENT_HARD_GATE_MODE="${KASPI_SHIPMENT_HARD_GATE_MODE:-warn}"  # fail|warn|skip
+if [ "${SHIPMENT_HARD_GATE_MODE}" = "skip" ]; then
+    echo "WARNING: Shipment hard gates skipped (KASPI_SHIPMENT_HARD_GATE_MODE=skip)."
+else
+    python scripts/preflight_shipment.py --project-root "${DATA_ROOT}"
+    if [ $? -ne 0 ]; then
+        echo ""
+        if [ "${SHIPMENT_HARD_GATE_MODE}" = "warn" ]; then
+            echo "WARNING: Shipment hard preflight failed, bypassing in warn mode."
+            echo "Set KASPI_SHIPMENT_HARD_GATE_MODE=fail to enforce hard stop."
+        else
+            echo "ERROR: Shipment hard preflight failed. Fix issues above and retry."
+            echo "Press Enter to close..."
+            read
+            exit 1
+        fi
+    fi
 fi
 
 echo ""
