@@ -69,6 +69,20 @@ if [ -z "${AB_DATA_DIR:-}" ] && [ -z "${DATA_DIR:-}" ]; then
 fi
 DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-~/Docs/Autonomous_business}}"
 OUTPUT_TODAY_DIR="${DATA_ROOT}/excel_ui/Kaspi_orders/Today"
+WHATSAPP_RUNNER="${DATA_ROOT}/excel_ui/run_send_whatsapp.command"
+
+# WhatsApp auto-send control:
+#   KASPI_AUTO_SEND_WHATSAPP=1    -> always run after successful waybill workflow
+#   KASPI_AUTO_SEND_WHATSAPP=0    -> never auto-run
+#   KASPI_AUTO_SEND_WHATSAPP=auto -> run only in interactive TTY (default)
+AUTO_SEND_WHATSAPP="${KASPI_AUTO_SEND_WHATSAPP:-auto}"
+if [ "${AUTO_SEND_WHATSAPP}" = "auto" ]; then
+    if [ -t 0 ] && [ -t 1 ]; then
+        AUTO_SEND_WHATSAPP="1"
+    else
+        AUTO_SEND_WHATSAPP="0"
+    fi
+fi
 
 # Merchant UID headers (store-specific). Prefer config/kaspi_stores.yaml when available.
 MERCHANT_EXPORTS=$(python3 - <<'PY' 2>/dev/null
@@ -383,6 +397,26 @@ if [ "${HARD_FAIL}" -ne 0 ]; then
     echo "Press Enter to close..."
     read
     exit 1
+fi
+
+if [ "${AUTO_SEND_WHATSAPP}" = "1" ]; then
+    echo ""
+    echo "Step 4: Sending bundles to WhatsApp..."
+    echo "----------------------------------------"
+    if [ -x "${WHATSAPP_RUNNER}" ]; then
+        "${WHATSAPP_RUNNER}"
+        if [ $? -ne 0 ]; then
+            echo ""
+            echo "WARNING: WhatsApp send step returned non-zero."
+            echo "Please review sender logs above."
+        fi
+    else
+        echo "WARNING: WhatsApp runner not found/executable: ${WHATSAPP_RUNNER}"
+        echo "Run manually: ${DATA_ROOT}/excel_ui/run_send_whatsapp.command"
+    fi
+else
+    echo ""
+    echo "Step 4: WhatsApp send skipped (KASPI_AUTO_SEND_WHATSAPP=${AUTO_SEND_WHATSAPP})"
 fi
 
 echo ""
