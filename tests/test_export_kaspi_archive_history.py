@@ -2,6 +2,7 @@ from datetime import date
 
 from scripts.export_kaspi_archive_history import (
     WINDOW_DAYS,
+    _flatten_order,
     _hydrate_missing_status_change_dates,
     _order_matches_date_mode,
     date_windows,
@@ -129,3 +130,26 @@ def test_process_store_status_date_mode_no_shadow_crash(tmp_path, monkeypatch):
     assert result.windows_ok == 1
     assert result.orders_dedup == 0
     assert result.rows_exported == 0
+
+
+def test_flatten_order_includes_courier_transmission_date():
+    flat = _flatten_order(
+        {
+            "id": "oid-1",
+            "type": "orders",
+            "attributes": {
+                "code": "123456789",
+                "creationDate": 1740441600000,
+                "statusChangeDate": 1740614400000,
+                "kaspiDelivery": {
+                    "courierTransmissionPlanningDate": 1740700800000,
+                    "courierTransmissionDate": 1740787200000,
+                },
+            },
+            "relationships": {"entries": {"data": []}},
+        },
+        "UNIVERSAL",
+    )
+
+    assert "courier_transmission_date" in flat
+    assert flat["courier_transmission_date"] != ""

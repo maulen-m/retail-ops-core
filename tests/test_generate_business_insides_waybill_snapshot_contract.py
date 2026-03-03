@@ -5,7 +5,10 @@ from datetime import date
 import sqlite3
 from pathlib import Path
 
-from scripts.generate_business_insides import load_waybill_selection_snapshot
+from scripts.generate_business_insides import (
+    load_shipped_truth_snapshot,
+    load_waybill_selection_snapshot,
+)
 
 
 def _seed_db(db_path: Path) -> None:
@@ -104,3 +107,86 @@ def test_waybill_snapshot_mismatch_without_archive_is_fail_closed(tmp_path: Path
     assert snapshot["status"] == "as_of_mismatch"
     assert snapshot["totals"]["orders"] == 0
     assert snapshot["stores"] == {}
+
+
+def test_load_shipped_truth_snapshot_reads_range_summary(tmp_path: Path) -> None:
+    shipped_root = tmp_path / "shipped_truth"
+    summary_path = shipped_root / "2026-02-01_to_2026-03-01" / "summary.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "day": "2026-02-08",
+                        "store": "Universal",
+                        "api_primary": 10,
+                        "provisional": False,
+                    },
+                    {
+                        "day": "2026-02-08",
+                        "store": "AcmeWear",
+                        "api_primary": 3,
+                        "provisional": False,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = load_shipped_truth_snapshot(
+        as_of_date=date.fromisoformat("2026-02-08"),
+        shipped_truth_root=shipped_root,
+    )
+
+    assert snapshot is not None
+    assert snapshot["status"] == "available_shipped_truth"
+    assert snapshot["totals"]["orders"] == 13
+    assert snapshot["stores"]["Universal"]["orders"] == 10
+    assert snapshot["stores"]["AcmeWear"]["orders"] == 3
+
+
+def test_load_shipped_truth_snapshot_returns_none_when_day_missing(tmp_path: Path) -> None:
+    shipped_root = tmp_path / "shipped_truth"
+    summary_path = shipped_root / "2026-02-01_to_2026-03-01" / "summary.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text(json.dumps({"rows": []}), encoding="utf-8")
+
+    snapshot = load_shipped_truth_snapshot(
+        as_of_date=date.fromisoformat("2026-02-10"),
+        shipped_truth_root=shipped_root,
+    )
+
+    assert snapshot is None
+
+
+def test_load_shipped_truth_snapshot_prefers_newest_summary(tmp_path: Path) -> None:
+    shipped_root = tmp_path / "shipped_truth"
+    older = shipped_root / "2026-02-17_to_2026-02-17" / "summary.json"
+    newer = shipped_root / "2026-02-01_to_2026-03-01" / "summary.json"
+    older.parent.mkdir(parents=True)
+    newer.parent.mkdir(parents=True)
+    older.write_text(
+        json.dumps(
+            {"rows": [{"day": "2026-02-17", "store": "Universal", "api_primary": 48, "provisional": False}]}
+        ),
+        encoding="utf-8",
+    )
+    newer.write_text(
+        json.dumps(
+            {"rows": [{"day": "2026-02-17", "store": "Universal", "api_primary": 50, "provisional": False}]}
+        ),
+        encoding="utf-8",
+    )
+    # Ensure deterministic ordering by mtime.
+    older.touch()
+    newer.touch()
+
+    snapshot = load_shipped_truth_snapshot(
+        as_of_date=date.fromisoformat("2026-02-17"),
+        shipped_truth_root=shipped_root,
+    )
+
+    assert snapshot is not None
+    assert snapshot["totals"]["orders"] == 50

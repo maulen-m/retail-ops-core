@@ -7,6 +7,7 @@ import argparse
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -36,6 +37,32 @@ def _resolve_business_snapshot_json(project_root: Path, as_of: str) -> Path | No
         if candidate.exists():
             return candidate
     return None
+
+
+def _normalize_store_key(value: str) -> str:
+    text = str(value or "").strip().upper()
+    compact = re.sub(r"[^A-Z0-9]", "", text)
+    aliases = {
+        "UNIVERSAL": "UNIVERSAL",
+        "ACMEWEAR": "ACMEWEAR",
+        "11KZ": "11KZ",
+        "MELVIS": "MELVIS",
+        "STOREB": "STOREB",
+    }
+    return aliases.get(compact, compact or text)
+
+
+def _normalize_store_totals(raw: dict[str, Any]) -> dict[str, dict[str, float]]:
+    normalized: dict[str, dict[str, float]] = {}
+    for store_raw, values in (raw or {}).items():
+        key = _normalize_store_key(str(store_raw))
+        row = values if isinstance(values, dict) else {}
+        orders = int(float(row.get("orders") or 0))
+        units = float(row.get("units") or 0.0)
+        bucket = normalized.setdefault(key, {"orders": 0.0, "units": 0.0})
+        bucket["orders"] += float(orders)
+        bucket["units"] += float(units)
+    return normalized
 
 
 def _render_md(report: dict[str, Any]) -> str:
@@ -119,12 +146,12 @@ def validate_sales_vs_waybill_parity(
             f"waybill selection target_date mismatch: expected {as_of}, got {source_target_date or '<missing>'}"
         )
 
-    business_stores = (
-        business_waybill.get("stores")
-        if isinstance(business_waybill, dict)
-        else {}
-    ) or {}
-    source_stores = (source_waybill.get("stores") or {}) if isinstance(source_waybill, dict) else {}
+    business_stores = _normalize_store_totals(
+        (business_waybill.get("stores") if isinstance(business_waybill, dict) else {}) or {}
+    )
+    source_stores = _normalize_store_totals(
+        (source_waybill.get("stores") or {}) if isinstance(source_waybill, dict) else {}
+    )
     store_keys = sorted(set(business_stores.keys()) | set(source_stores.keys()))
 
     store_checks: list[dict[str, Any]] = []

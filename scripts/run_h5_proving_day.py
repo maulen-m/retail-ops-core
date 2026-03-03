@@ -102,6 +102,17 @@ def run_h5_proving_day(
             ),
         },
         {
+            "step": "validate_shipped_truth_crm_waybill",
+            "cmd": (
+                "python3 scripts/validate_shipped_truth_crm_waybill.py "
+                f"--project-root {quoted_root} "
+                f"--since {quoted_as_of} "
+                f"--until {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'shipped_truth_crm_waybill'))} "
+                "--strict"
+            ),
+        },
+        {
             "step": "validate_business_insides_ocean_drop_alignment",
             "cmd": (
                 "python3 scripts/validate_business_insides_ocean_drop_alignment.py "

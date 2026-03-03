@@ -240,6 +240,7 @@ def _flatten_order(order: Dict[str, Any], store_code: str) -> Dict[str, Any]:
         "creation_date": _timestamp_to_iso(attrs.get("creationDate")),
         "status_change_date": _timestamp_to_iso(attrs.get("statusChangeDate")),
         "planned_courier_date": _timestamp_to_iso(delivery.get("courierTransmissionPlanningDate")),
+        "courier_transmission_date": _timestamp_to_iso(delivery.get("courierTransmissionDate")),
         "total_price": attrs.get("totalPrice"),
         "delivery_cost_for_seller": attrs.get("deliveryCostForSeller"),
         "delivery_cost": attrs.get("deliveryCost"),

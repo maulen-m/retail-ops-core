@@ -26,6 +26,7 @@ def test_run_h5_proving_day_runs_required_chain(tmp_path: Path) -> None:
     assert "system_doctor.py" in joined
     assert "validate_as_of_consistency.py" in joined
     assert "validate_business_insides_economics_ready.py" in joined
+    assert "validate_shipped_truth_crm_waybill.py" in joined
     assert "validate_ops_selection_parity.py" in joined
     assert "validate_scheduler_heartbeat.py" in joined
     assert "validate_kaspi_archive_pack_integrity.py --source ui" in joined

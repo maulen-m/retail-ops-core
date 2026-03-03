@@ -12,6 +12,11 @@ Define strict integrity checks for UI-exported Kaspi archive packs used for deli
   - Required columns include `Статус` and `Дата изменения статуса`.
   - Completed rows (`Выдан`/`Завершен`) must have non-empty `Дата изменения статуса`.
 
+## Date-Mode Separation
+- Delivered/sales truth uses `Дата изменения статуса` (`statusChangeDate`) for completed rows.
+- Shipped truth uses API `courierTransmissionDate` and must not be inferred from creation date.
+- Historical shipped parity checks must query both API states: `KASPI_DELIVERY` and `ARCHIVE`.
+
 ## Strict Failure Conditions
 - Any API-pack style blank status-change date for completed rows.
 - Missing windows or non-`ok` window status.

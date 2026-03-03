@@ -58,9 +58,15 @@ updating this contract and corresponding tests before merge.
   - `scripts/validate_business_insides_economics_ready.py --as-of <YYYY-MM-DD> --strict`
   - `scripts/validate_ops_selection_parity.py --as-of <YYYY-MM-DD> --strict`
   - `scripts/validate_scheduler_heartbeat.py --as-of <YYYY-MM-DD> --strict`
+  - `scripts/validate_shipped_truth_crm_waybill.py --since <YYYY-MM-DD> --until <YYYY-MM-DD> --strict`
 - keep autopilot exception queue contract fail-closed:
   - `scripts/run_daily_autopilot.py --strict`
   - `exports/exceptions/<YYYY-MM-DD>/exceptions.{json,md}`
+
+## Shipped Count Rule (Do Not Drift)
+- Shipped truth for parity checks is anchored on API `courierTransmissionDate`.
+- Historical shipped checks must include API states `KASPI_DELIVERY` + `ARCHIVE`.
+- `KASPI_DELIVERY`-only shipped counting is not valid for historical daily parity.
 
 ## Promotion Governance
 - Promotion checklist authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.

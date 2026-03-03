@@ -14,6 +14,11 @@ Define strict integrity checks for API-extracted Kaspi archive packs (`creationD
   - `Дата изменения статуса` completeness for completed rows.
     API payload does not reliably provide this field for historical ranges.
 
+## Shipped-Truth Caveat (Mandatory)
+- API archive packs in `creationDate` mode are **not** a direct shipped-count source.
+- Shipped truth must be computed from `courierTransmissionDate` using daily API parity checks.
+- For shipped parity checks, API state scope must include both `KASPI_DELIVERY` and `ARCHIVE`.
+
 ## Strict Failure Conditions
 - Missing `store_*` folders.
 - Window mismatch or non-`ok` window status.

@@ -209,6 +209,31 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_shipped_truth_crm_waybill",
+            "cmd": (
+                "python3 scripts/validate_shipped_truth_crm_waybill.py "
+                f"--project-root {quoted_root} "
+                f"--since {quoted_as_of} "
+                f"--until {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'shipped_truth_crm_waybill'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_business_insides_shipped_truth",
+            "cmd": (
+                "python3 scripts/validate_business_insides_shipped_truth.py "
+                f"--since {quoted_as_of} "
+                f"--until {quoted_as_of} "
+                f"--shipped-summary {shlex.quote(str(root / 'exports' / 'validation' / 'shipped_truth_crm_waybill' / f'{as_of}_to_{as_of}' / 'summary.json'))} "
+                f"--business-dir {shlex.quote(str(root / 'config' / 'business_insides'))} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'business_insides_shipped_truth'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
             "check": "validate_business_insides_economics_ready",
             "cmd": (
                 "python3 scripts/validate_business_insides_economics_ready.py "

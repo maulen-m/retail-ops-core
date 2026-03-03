@@ -46,6 +46,7 @@ DEFAULT_BI_ALIGNMENT_WINDOW_DAYS = 14
 DEFAULT_WAYBILL_SELECTION_CACHE = (
     PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json"
 )
+DEFAULT_SHIPPED_TRUTH_ROOT = PROJECT_ROOT / "exports" / "validation" / "shipped_truth_crm_waybill"
 DEFAULT_WAYBILL_ARCHIVE_DIR = PROJECT_ROOT / "excel_ui" / "Archive"
 WAYBILL_ORDER_ID_RE = re.compile(r"(\d{6,})")
 DEFAULT_ARCHIVE_ORDERS_GLOBS = [
@@ -595,6 +596,105 @@ def load_waybill_selection_snapshot(
     return snapshot
 
 
+def _parse_window_dir_name(name: str) -> tuple[date, date] | None:
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})_to_(\d{4}-\d{2}-\d{2})", name)
+    if not match:
+        return None
+    try:
+        since = date.fromisoformat(match.group(1))
+        until = date.fromisoformat(match.group(2))
+    except ValueError:
+        return None
+    if since > until:
+        return None
+    return since, until
+
+
+def load_shipped_truth_snapshot(
+    *,
+    as_of_date: date,
+    shipped_truth_root: Path,
+) -> dict[str, Any] | None:
+    """Load canonical shipped-primary totals for a day from shipped-truth summaries."""
+    target_day = as_of_date.isoformat()
+    direct_summary = shipped_truth_root / f"{target_day}_to_{target_day}" / "summary.json"
+    candidate_paths: list[Path] = []
+    if direct_summary.exists():
+        candidate_paths.append(direct_summary)
+    for summary_path in sorted(shipped_truth_root.glob("*_to_*/summary.json")):
+        window = _parse_window_dir_name(summary_path.parent.name)
+        if window is None:
+            continue
+        since, until = window
+        if since <= as_of_date <= until:
+            candidate_paths.append(summary_path)
+
+    if not candidate_paths:
+        return None
+
+    # Prefer freshest summaries first; use smaller windows as tie-breaker.
+    def _window_days(path: Path) -> int:
+        window = _parse_window_dir_name(path.parent.name)
+        if window is None:
+            return 10**9
+        return (window[1] - window[0]).days
+
+    unique_paths = {p.resolve() for p in candidate_paths}
+    ordered_paths = sorted(
+        unique_paths,
+        key=lambda path: (
+            -path.stat().st_mtime,
+            _window_days(path),
+        ),
+    )
+
+    for summary_path in ordered_paths:
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            continue
+        day_rows = [row for row in rows if str(row.get("day") or "").strip() == target_day]
+        if not day_rows:
+            continue
+
+        stores: dict[str, dict[str, float | int]] = {}
+        total_orders = 0
+        for row in day_rows:
+            store = str(row.get("store") or "UNKNOWN").strip()
+            api_primary = int(row.get("api_primary") or 0)
+            if api_primary <= 0:
+                continue
+            bucket = stores.setdefault(store, {"orders": 0, "units": 0.0})
+            bucket["orders"] = int(bucket["orders"]) + api_primary
+            bucket["units"] = round(float(bucket["units"]) + float(api_primary), 2)
+            total_orders += api_primary
+
+        if total_orders <= 0:
+            continue
+
+        return {
+            "status": "available_shipped_truth",
+            "reason": "canonical_shipped_primary",
+            "as_of": target_day,
+            "target_date": target_day,
+            "cache_path": str(summary_path),
+            "include_overdue": None,
+            "all_dates": None,
+            "stores": stores,
+            "totals": {
+                "orders": int(total_orders),
+                "units": round(float(total_orders), 2),
+            },
+            "shipped_truth_source": {
+                "summary_path": str(summary_path),
+            },
+        }
+    return None
+
+
 def _load_ads_daily(
     db_path: Path,
     start_date: date,
@@ -757,6 +857,7 @@ def compute_sales_metrics(
     enforce_query_guard: bool = False,
     allow_completed_revenue_fallback: bool = True,
     waybill_selection_cache_path: Path = DEFAULT_WAYBILL_SELECTION_CACHE,
+    shipped_truth_root: Path | None = DEFAULT_SHIPPED_TRUTH_ROOT,
     archive_orders_globs: list[str] | None = None,
 ) -> dict[str, Any]:
     as_of_date = _parse_as_of(as_of)
@@ -1049,6 +1150,23 @@ def compute_sales_metrics(
         as_of_date=as_of_date,
         selection_cache_path=selection_cache_path,
     )
+
+    shipped_truth_effective = shipped_truth_root
+    if shipped_truth_effective is not None:
+        shipped_truth_effective = shipped_truth_effective.resolve()
+        if (
+            shipped_truth_effective == DEFAULT_SHIPPED_TRUTH_ROOT.resolve()
+            and db_path.resolve() != DEFAULT_DB.resolve()
+        ):
+            shipped_truth_effective = None
+    if shipped_truth_effective is not None:
+        shipped_truth_snapshot = load_shipped_truth_snapshot(
+            as_of_date=as_of_date,
+            shipped_truth_root=shipped_truth_effective,
+        )
+        if shipped_truth_snapshot is not None:
+            waybill_snapshot = shipped_truth_snapshot
+
     economics_volatility_days = max(0, int(os.environ.get("AB_ECONOMICS_VOLATILITY_DAYS", "14")))
     economics_missing_days: list[str] = []
     economics_missing_nonvolatile_days: list[str] = []
@@ -1518,6 +1636,7 @@ def generate_business_insides(
     bi_alignment_output_root: Path = DEFAULT_BI_ALIGNMENT_OUTPUT_ROOT,
     bi_alignment_window_days: int | None = DEFAULT_BI_ALIGNMENT_WINDOW_DAYS,
     waybill_selection_cache_path: Path = DEFAULT_WAYBILL_SELECTION_CACHE,
+    shipped_truth_root: Path | None = DEFAULT_SHIPPED_TRUTH_ROOT,
     archive_orders_globs: list[str] | None = None,
 ) -> dict[str, Any]:
     as_of_date = _parse_as_of(as_of)
@@ -1534,6 +1653,7 @@ def generate_business_insides(
         enforce_query_guard=bool(strict_cogs),
         allow_completed_revenue_fallback=not strict_alignment,
         waybill_selection_cache_path=waybill_selection_cache_path,
+        shipped_truth_root=shipped_truth_root,
         archive_orders_globs=archive_orders_globs,
     )
     if strict_cogs and int(sales_metrics["unresolved_rows"]) > 0:
@@ -1686,6 +1806,7 @@ def main() -> int:
     )
     parser.add_argument("--bi-alignment-window-days", type=int, default=DEFAULT_BI_ALIGNMENT_WINDOW_DAYS)
     parser.add_argument("--waybill-selection-cache", type=Path, default=DEFAULT_WAYBILL_SELECTION_CACHE)
+    parser.add_argument("--shipped-truth-root", type=Path, default=DEFAULT_SHIPPED_TRUTH_ROOT)
     parser.add_argument(
         "--archive-orders-glob",
         action="append",
@@ -1710,6 +1831,7 @@ def main() -> int:
         bi_alignment_output_root=args.bi_alignment_output_root,
         bi_alignment_window_days=args.bi_alignment_window_days,
         waybill_selection_cache_path=args.waybill_selection_cache,
+        shipped_truth_root=args.shipped_truth_root,
         archive_orders_globs=args.archive_orders_glob,
     )
     def _fmt_metric(value: Any) -> str:
