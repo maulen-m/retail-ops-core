@@ -90,6 +90,7 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
     exceptions_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions.json"))
     triage_json_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions_triage.json"))
     triage_md_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions_triage.md"))
+    economics_since = shlex.quote(str(os.environ.get("AB_ECONOMICS_PARITY_SINCE", "2025-06-06")))
 
     return [
         {
@@ -240,6 +241,31 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
                 f"--as-of {quoted_as_of} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'business_insides_economics'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_sales_archive_statusdate_mapped",
+            "cmd": (
+                "python3 scripts/validate_sales_archive_statusdate_mapped.py "
+                f"--since {economics_since} "
+                f"--until {quoted_as_of} "
+                f"--data-root {shlex.quote(str(root / 'exports' / 'sales_archive_statusdate_mapped'))} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'economics_parity'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_monthly_economics_parity",
+            "cmd": (
+                "python3 scripts/validate_monthly_economics_parity.py "
+                f"--since {economics_since} "
+                f"--until {quoted_as_of} "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--mapped-root {shlex.quote(str(root / 'exports' / 'sales_archive_statusdate_mapped'))} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'economics_parity'))} "
                 "--strict"
             ),
         },
