@@ -15,7 +15,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.generate_business_insides import load_waybill_selection_snapshot
+from scripts.generate_business_insides import (
+    DEFAULT_SHIPPED_TRUTH_ROOT,
+    load_shipped_truth_snapshot,
+    load_waybill_selection_snapshot,
+)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -129,16 +133,49 @@ def validate_sales_vs_waybill_parity(
         if not isinstance(business_waybill, dict):
             errors.append("BUSINESS_INSIDES payload missing waybill_snapshot section")
 
-    source_waybill = load_waybill_selection_snapshot(
-        db_path=db_path.resolve(),
-        as_of_date=as_of_date,
-        selection_cache_path=selection_cache_path.resolve(),
+    business_source_status = (
+        str((business_waybill or {}).get("status") or "").strip().lower()
+        if isinstance(business_waybill, dict)
+        else ""
     )
+    source_mode = "waybill_selection"
+    source_waybill = None
+    if business_source_status == "available_shipped_truth":
+        source_mode = "shipped_truth_primary"
+        shipped_snapshot = load_shipped_truth_snapshot(
+            as_of_date=as_of_date,
+            shipped_truth_root=DEFAULT_SHIPPED_TRUTH_ROOT.resolve(),
+        )
+        if shipped_snapshot is None:
+            errors.append(
+                "BUSINESS_INSIDES uses shipped-truth source but shipped-truth summary "
+                f"is missing for as_of={as_of}"
+            )
+            source_waybill = {
+                "status": "missing",
+                "reason": "shipped_truth_summary_missing",
+                "target_date": as_of,
+                "stores": {},
+            }
+        else:
+            source_waybill = shipped_snapshot
+    else:
+        source_waybill = load_waybill_selection_snapshot(
+            db_path=db_path.resolve(),
+            as_of_date=as_of_date,
+            selection_cache_path=selection_cache_path.resolve(),
+        )
     source_status = str(source_waybill.get("status") or "missing")
     source_target_date = str(source_waybill.get("target_date") or "").strip()
-    if source_status not in {"available", "available_archive"}:
+    allowed_statuses = {"available", "available_archive"}
+    source_label = "waybill selection"
+    if source_mode == "shipped_truth_primary":
+        allowed_statuses = {"available_shipped_truth"}
+        source_label = "shipped-truth"
+
+    if source_status not in allowed_statuses:
         errors.append(
-            "waybill selection snapshot unavailable for parity validation: "
+            f"{source_label} snapshot unavailable for parity validation: "
             f"status={source_status} reason={source_waybill.get('reason')}"
         )
     elif source_target_date != as_of:
@@ -191,6 +228,7 @@ def validate_sales_vs_waybill_parity(
         "project_root": str(root),
         "business_snapshot_json": str(resolved_business_snapshot) if resolved_business_snapshot else None,
         "selection_cache_path": str(selection_cache_path.resolve()),
+        "source_mode": source_mode,
         "source_status": source_status,
         "source_reason": source_waybill.get("reason"),
         "store_checks": store_checks,

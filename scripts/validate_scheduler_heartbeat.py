@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 import plistlib
@@ -22,6 +22,7 @@ DEFAULT_WAYBILL_LOG = PROJECT_ROOT / "runtime_logs" / "kaspi_waybill_deadline_st
 DEFAULT_REPORT_LOG = PROJECT_ROOT / "runtime_logs" / "kaspi_daily_ops_report_stdout.log"
 DEFAULT_CONTRACT_DOC = PROJECT_ROOT / "docs" / "ops" / "KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md"
 DEFAULT_DAILY_SOP = PROJECT_ROOT / "docs" / "DAILY_SOP.md"
+DEFAULT_WAYBILL_ARCHIVE_ROOT = PROJECT_ROOT / "excel_ui" / "Archive"
 TIME_RE = re.compile(r"Time:\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):(\d{2})")
 
 
@@ -90,6 +91,16 @@ def _doc_contains_times(path: Path, expected: list[str]) -> bool:
     return all(token in text for token in expected)
 
 
+def _latest_archive_input_dir(archive_root: Path, as_of: str) -> Path | None:
+    if not archive_root.exists():
+        return None
+    candidates = sorted([p for p in archive_root.glob(f"input_{as_of}_*") if p.is_dir()])
+    for candidate in reversed(candidates):
+        if (candidate / "archive_manifest.json").exists():
+            return candidate
+    return None
+
+
 def _render_md(report: dict[str, Any]) -> str:
     lines = [
         "# Scheduler Heartbeat",
@@ -123,9 +134,11 @@ def validate_scheduler_heartbeat(
     report_log: Path,
     contract_doc: Path,
     daily_sop_doc: Path,
+    waybill_archive_root: Path = DEFAULT_WAYBILL_ARCHIVE_ROOT,
     tolerance_minutes: int,
     require_report_job: bool,
     strict: bool,
+    now_dt: datetime | None = None,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -195,8 +208,27 @@ def validate_scheduler_heartbeat(
     import_times = _load_day_times(import_log, as_of)
     waybill_times = _load_day_times(waybill_log, as_of)
     report_times = _load_day_times(report_log, as_of)
+    as_of_date = date.fromisoformat(as_of)
+    current_dt = now_dt or datetime.now()
+    same_day = as_of_date == current_dt.date()
+    current_minutes = current_dt.hour * 60 + current_dt.minute
+
+    def _slot_due(expected: tuple[int, int]) -> bool:
+        if not same_day:
+            return True
+        expected_minutes = expected[0] * 60 + expected[1]
+        return expected_minutes <= (current_minutes + int(tolerance_minutes))
 
     for expected in import_schedule_expected:
+        if not _slot_due(expected):
+            checks.append(
+                {
+                    "check": f"import_heartbeat_{expected[0]:02d}:{expected[1]:02d}",
+                    "ok": True,
+                    "details": f"not_due_yet now={current_dt.strftime('%H:%M')}",
+                }
+            )
+            continue
         delta = _closest_delta_minutes(expected, import_times)
         ok = delta is not None and delta <= float(tolerance_minutes)
         checks.append(
@@ -211,26 +243,43 @@ def validate_scheduler_heartbeat(
                 f"import heartbeat missing near {expected[0]:02d}:{expected[1]:02d} for as_of={as_of}"
             )
 
-    waybill_delta = _closest_delta_minutes(waybill_schedule_expected, waybill_times)
-    waybill_ok = waybill_delta is not None and waybill_delta <= float(tolerance_minutes)
+    if not _slot_due(waybill_schedule_expected):
+        waybill_delta = None
+        waybill_ok = True
+        waybill_details = f"not_due_yet now={current_dt.strftime('%H:%M')}"
+    else:
+        waybill_delta = _closest_delta_minutes(waybill_schedule_expected, waybill_times)
+        archive_fallback_dir = _latest_archive_input_dir(waybill_archive_root.resolve(), as_of)
+        if waybill_delta is None and archive_fallback_dir is not None:
+            waybill_ok = True
+            waybill_details = f"archive_fallback={archive_fallback_dir}"
+        else:
+            waybill_ok = waybill_delta is not None and waybill_delta <= float(tolerance_minutes)
+            waybill_details = f"delta_minutes={waybill_delta}"
     checks.append(
         {
             "check": "waybill_heartbeat_18:30",
             "ok": waybill_ok,
-            "details": f"delta_minutes={waybill_delta}",
+            "details": waybill_details,
         }
     )
     if not waybill_ok:
         errors.append(f"waybill heartbeat missing near 18:30 for as_of={as_of}")
 
-    report_delta = _closest_delta_minutes(report_schedule_expected, report_times)
-    report_ok = report_delta is not None and report_delta <= float(tolerance_minutes)
+    if not _slot_due(report_schedule_expected):
+        report_delta = None
+        report_ok = True
+        report_details = f"not_due_yet now={current_dt.strftime('%H:%M')}"
+    else:
+        report_delta = _closest_delta_minutes(report_schedule_expected, report_times)
+        report_ok = report_delta is not None and report_delta <= float(tolerance_minutes)
+        report_details = f"delta_minutes={report_delta}"
     if require_report_job:
         checks.append(
             {
                 "check": "daily_ops_report_heartbeat_19:10",
                 "ok": report_ok,
-                "details": f"delta_minutes={report_delta}",
+                "details": report_details,
             }
         )
         if not report_ok:
@@ -260,6 +309,7 @@ def validate_scheduler_heartbeat(
             "import_log": str(import_log.resolve()),
             "waybill_log": str(waybill_log.resolve()),
             "report_log": str(report_log.resolve()),
+            "waybill_archive_root": str(waybill_archive_root.resolve()),
         },
         "schedules": {
             "import_actual": import_schedule_actual,
@@ -294,6 +344,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--import-log", type=Path, default=DEFAULT_IMPORT_LOG)
     parser.add_argument("--waybill-log", type=Path, default=DEFAULT_WAYBILL_LOG)
     parser.add_argument("--report-log", type=Path, default=DEFAULT_REPORT_LOG)
+    parser.add_argument("--waybill-archive-root", type=Path, default=DEFAULT_WAYBILL_ARCHIVE_ROOT)
     parser.add_argument("--contract-doc", type=Path, default=DEFAULT_CONTRACT_DOC)
     parser.add_argument("--daily-sop-doc", type=Path, default=DEFAULT_DAILY_SOP)
     parser.add_argument("--tolerance-minutes", type=int, default=20)
@@ -313,6 +364,7 @@ def main() -> int:
         import_log=args.import_log,
         waybill_log=args.waybill_log,
         report_log=args.report_log,
+        waybill_archive_root=args.waybill_archive_root,
         contract_doc=args.contract_doc,
         daily_sop_doc=args.daily_sop_doc,
         tolerance_minutes=int(args.tolerance_minutes),

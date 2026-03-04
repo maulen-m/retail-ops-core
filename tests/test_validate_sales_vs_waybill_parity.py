@@ -169,3 +169,57 @@ def test_sales_vs_waybill_parity_normalizes_store_aliases(tmp_path: Path) -> Non
 
     assert report["ok"] is True
     assert report["status"] == "PASS"
+
+
+def test_sales_vs_waybill_parity_uses_shipped_truth_when_business_source_is_shipped_truth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    as_of = "2026-03-04"
+    db_path = tmp_path / "db" / "app.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _init_orders_db(db_path)
+
+    # Deliberately sparse cache: should be ignored because business source is shipped-truth.
+    selection = tmp_path / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json"
+    _write_json(selection, {"target_date": as_of, "stores": {"STOREB": ["A1"]}})
+
+    business_snapshot = tmp_path / "config" / "business_insides" / f"BUSINESS_INSIDES_{as_of}.json"
+    _write_json(
+        business_snapshot,
+        {
+            "as_of": as_of,
+            "waybill_snapshot": {
+                "status": "available_shipped_truth",
+                "target_date": as_of,
+                "stores": {
+                    "STORE-B": {"orders": 2, "units": 2},
+                    "AcmeWear": {"orders": 1, "units": 1},
+                },
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "scripts.validate_sales_vs_waybill_parity.load_shipped_truth_snapshot",
+        lambda **_kwargs: {
+            "status": "available_shipped_truth",
+            "target_date": as_of,
+            "stores": {
+                "STORE-B": {"orders": 2, "units": 2},
+                "AcmeWear": {"orders": 1, "units": 1},
+            },
+        },
+    )
+
+    report = validate_sales_vs_waybill_parity(
+        project_root=tmp_path,
+        as_of=as_of,
+        db_path=db_path,
+        selection_cache_path=selection,
+        output_root=tmp_path / "exports" / "daily",
+        business_snapshot_json=business_snapshot,
+        strict=True,
+    )
+    assert report["ok"] is True
+    assert report["source_mode"] == "shipped_truth_primary"

@@ -161,3 +161,56 @@ def test_self_sufficient_validator_fails_closed_on_parity_error(monkeypatch: pyt
             crm_archive_lookup_path=None,
             window_days=14,
         )
+
+
+def test_self_sufficient_validator_allows_unmapped_rows_if_parity_passes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    _seed_data(conn)
+    # Add a row that cannot be mapped deterministically (empty offer_id + empty sku identity).
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, kaspi_offer_name, sku_key, sku_id, assigned_size, my_size,
+            quantity, internal_status, kaspi_status, status_updated_at,
+            actual_shipment_date, planned_shipment_date, created_at, delivery_cost_for_seller
+        ) VALUES (
+            'ORD-UNMAPPED', 'STOREB', '', '', '', '', '',
+            1, 'COMPLETED', 'Выдан', '2026-02-25T11:00:00',
+            '2026-02-25', '2026-02-25', '2026-02-24', 10
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_order_entries_kaspi (entry_id, order_id, store_code, offer_id, quantity, total_price_kzt)
+        VALUES ('E-UNMAPPED', 'ORD-UNMAPPED', 'STOREB', '', 1, 500)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    ocean = tmp_path / "ocean.csv"
+    ocean.write_text("order_id,store_code\nORD-SELF,ACMEWEAR\n", encoding="utf-8")
+
+    def fake_parity(**_kwargs):
+        return {"status": "PASS", "nonvolatile_mismatch_count": 0}
+
+    monkeypatch.setattr(
+        "scripts.validate_sales_engine_self_sufficient.validate_sales_truth_ocean_drop_parity",
+        fake_parity,
+    )
+
+    report = validate_sales_engine_self_sufficient(
+        db_path=db,
+        as_of=date(2026, 2, 26),
+        ocean_drop_path=ocean,
+        output_root=tmp_path / "out",
+        strict=True,
+        crm_archive_lookup_path=None,
+        window_days=14,
+    )
+    assert report["status"] == "PASS"

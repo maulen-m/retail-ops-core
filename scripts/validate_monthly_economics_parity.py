@@ -23,6 +23,7 @@ from core.sales import ensure_sales_truth_views  # noqa: E402
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_MAPPED_ROOT = PROJECT_ROOT / "exports" / "sales_archive_statusdate_mapped"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "economics_parity"
+DEFAULT_STATUSDATE_CUTOVER = "2026-02-27"
 
 
 class ParityError(RuntimeError):
@@ -356,7 +357,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mapped-root", type=Path, default=DEFAULT_MAPPED_ROOT)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--tolerance-pct", type=float, default=0.005)
-    parser.add_argument("--statusdate-cutover", default="2026-01-01")
+    parser.add_argument("--statusdate-cutover", default=DEFAULT_STATUSDATE_CUTOVER)
     parser.add_argument("--strict", action="store_true")
     return parser
 

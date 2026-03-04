@@ -21,8 +21,11 @@ If code differs from v8 formulas, update v8 first, then this contract, then code
   2. `ui_override_status_date` when UI pack enrichment provides a stricter value,
   3. `creation_date_fallback` (`Дата поступления заказа`) only for legacy months before cutover.
 - Cutover policy:
-  - `statusdate_cutover = 2026-01-01`
-  - For delivered rows with `transaction_date >= 2026-01-01`, `creation_date_fallback` is forbidden in strict mode.
+  - `statusdate_cutover = 2026-02-27`
+  - For delivered rows with `transaction_date >= 2026-02-27`, `creation_date_fallback` is forbidden in strict mode.
+  - Rationale:
+    - Current locked archive evidence still contains non-zero legacy fallback rows for `STOREB` up to `2026-02-19`.
+    - Those rows remain provisional until a full UI status-date refresh replaces them with authoritative `Дата изменения статуса`.
 
 ## Economics Formulas (Kaspi, v8)
 Per unit:

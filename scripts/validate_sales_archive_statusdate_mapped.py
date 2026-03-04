@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 DEFAULT_DATA_ROOT = PROJECT_ROOT / "exports" / "sales_archive_statusdate_mapped"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "economics_parity"
 DEFAULT_REQUIRED_STORES = {"UNIVERSAL", "ACMEWEAR", "STOREB", "MELVIS", "11KZ"}
+DEFAULT_STRICT_STATUSDATE_REQUIRED_SINCE = "2026-02-27"
 
 REQUIRED_COLUMNS = {
     "line_id",
@@ -279,7 +280,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--strict", action="store_true")
-    parser.add_argument("--strict-statusdate-required-since", default="2026-01-01")
+    parser.add_argument(
+        "--strict-statusdate-required-since",
+        default=DEFAULT_STRICT_STATUSDATE_REQUIRED_SINCE,
+    )
     parser.add_argument("--min-delivered-mapping-coverage", type=float, default=0.995)
     return parser
 

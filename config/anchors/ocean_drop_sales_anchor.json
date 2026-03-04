@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "created_at": "2026-02-28T21:45:54",
-  "as_of_end": "2026-02-26",
-  "source": "merged_api_ui_statusdate",
-  "ocean_drop_path": "~/Docs/Autonomous_business/exports/ocean_drop/20260228_214554/ArchiveOrders_ALL_STORES_ocean_drop_20260228_214554.csv",
-  "sha256": "8381f979e2863009f6d0ff92b469764260f5e34047dadfaf03eaa1e91e6b604d",
-  "notes": "Validation anchor only. Never union into published truth views.",
+  "created_at": "2026-03-04T17:15:00",
+  "as_of_end": "2026-03-03",
+  "source": "web_automation_archive_mapped_final",
+  "ocean_drop_path": "~/Docs/Web_automation/exports/archive_orders_mapped/20260304_013732/ArchiveOrders_ALL_STORES_mapped_20260304_013732_final.csv",
+  "sha256": "d047707e94378cfe623cad51c8dec4f3913300c78ee3c7995fe69749fdcd9388",
+  "notes": "Validation anchor only. Never union into published truth views. Uses latest mapped archive feed while UI status-date refresh remains incomplete.",
   "transaction_date_mode": "delivered_status_date"
 }

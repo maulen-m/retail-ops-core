@@ -83,6 +83,12 @@ def test_system_doctor_includes_v10_contract_checks() -> None:
     assert "validate_shipped_truth_crm_waybill.py" in joined
     assert "validate_business_insides_shipped_truth.py" in joined
     assert "validate_business_insides_economics_ready.py" in joined
+    assert "validate_ads_sidecar_readiness.py" in joined
+    assert "validate_reference_freshness.py" in joined
+    assert "import_web_automation_offer_identity.py" in joined
+    assert "validate_external_snapshot_parity.py" in joined
+    assert "validate_recent_identity_coverage.py" in joined
+    assert "validate_order_entries_freshness.py" in joined
     assert "validate_ops_selection_parity.py" in joined
     assert "validate_scheduler_heartbeat.py" in joined
     assert "validate_kaspi_archive_pack_integrity.py --source ui" in joined
@@ -90,4 +96,23 @@ def test_system_doctor_includes_v10_contract_checks() -> None:
     assert "validate_sales_truth_ocean_drop_parity.py" in joined
     assert "validate_sales_engine_self_sufficient.py" in joined
     assert "build_sales_truth_drift_report.py" in joined
+    assert "build_owner_pnl_report.py" in joined
     assert "triage_exceptions.py" in joined
+
+
+def test_system_doctor_summary_prefers_error_code_line(tmp_path: Path) -> None:
+    def fake_runner(cmd: str, _cwd: Path) -> tuple[int, str]:
+        if "install_single_truth_ops_scheduler.sh" in cmd:
+            return 1, "status=FAIL\nerror_code=REFERENCE_STALE\nmessage=reference stale"
+        return 0, "ok"
+
+    report = run_system_doctor(
+        project_root=Path(".").resolve(),
+        as_of="2026-02-25",
+        output_dir=tmp_path,
+        strict=True,
+        runner=fake_runner,
+    )
+    assert report["ok"] is False
+    first = report["checks"][0]
+    assert first["summary"] == "error_code=REFERENCE_STALE"

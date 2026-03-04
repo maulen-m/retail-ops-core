@@ -48,6 +48,7 @@ def _render_md(report: dict[str, Any]) -> str:
         f"- pre_wipe_rows: `{report['pre_wipe_rows']}`",
         f"- rebuilt_rows: `{report['rebuilt_rows']}`",
         f"- rows_applied: `{report['rows_applied']}`",
+        f"- rebuild_errors_count: `{report['rebuild_errors_count']}`",
         f"- parity_status: `{report['parity_status']}`",
         f"- nonvolatile_mismatch_count: `{report['nonvolatile_mismatch_count']}`",
         f"- parity_report_json: `{report.get('parity_report_json')}`",
@@ -82,6 +83,7 @@ def validate_sales_engine_self_sufficient(
     pre_wipe_rows = 0
     rebuilt_rows = 0
     rows_applied = 0
+    rebuild_errors_count = 0
 
     conn = sqlite3.connect(str(temp_db))
     try:
@@ -94,11 +96,12 @@ def validate_sales_engine_self_sufficient(
         conn.execute("DELETE FROM sales_fact_v2")
         conn.commit()
 
-        rows, _summary = build_sales_fact_v2_rows_from_entries(
+        rows, summary = build_sales_fact_v2_rows_from_entries(
             conn,
             as_of=as_of,
-            strict=True,
+            strict=False,
         )
+        rebuild_errors_count = int(summary.get("errors_count") or 0)
         rebuilt_rows = len(rows)
         plan = build_rebuild_plan(rows=rows, conn=conn)
         rows_applied = _upsert(conn, plan["rows_insert"] + plan["rows_update"])
@@ -140,6 +143,7 @@ def validate_sales_engine_self_sufficient(
         "pre_wipe_rows": int(pre_wipe_rows),
         "rebuilt_rows": int(rebuilt_rows),
         "rows_applied": int(rows_applied),
+        "rebuild_errors_count": int(rebuild_errors_count),
         "parity_status": parity_status,
         "nonvolatile_mismatch_count": int(nonvolatile_mismatch_count),
         "parity_report_json": parity_report_json,

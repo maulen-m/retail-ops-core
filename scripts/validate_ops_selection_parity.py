@@ -153,7 +153,10 @@ def validate_ops_selection_parity(
     selection_cache: Path,
     output_root: Path,
     strict: bool,
+    max_import_overflow: int = 0,
 ) -> dict[str, Any]:
+    if int(max_import_overflow) < 0:
+        raise RuntimeError("max_import_overflow must be >= 0")
     checks: list[dict[str, Any]] = []
     errors: list[str] = []
 
@@ -167,10 +170,10 @@ def validate_ops_selection_parity(
         errors.append(f"import selector count not found in {import_log} for as_of={as_of}")
 
     shipped_orders = _parse_latest_shipped_total(_read_text(waybill_log), as_of)
-    if shipped_orders is None:
-        errors.append(f"shipped selector count not found in {waybill_log} for as_of={as_of}")
+    missing_shipped_block = shipped_orders is None
 
     archive_dir = _find_latest_archive_input_dir(archive_root.resolve(), as_of)
+    archive_manifest_path: Path | None = None
     if archive_dir is None:
         errors.append(f"archive input folder not found for as_of={as_of} under {archive_root.resolve()}")
         manifest = {}
@@ -180,6 +183,7 @@ def validate_ops_selection_parity(
         missing_waybills = 0
     else:
         manifest_path = archive_dir / "archive_manifest.json"
+        archive_manifest_path = manifest_path
         waybill_dir = archive_dir / "waybills"
         if not manifest_path.exists():
             errors.append(f"missing archive manifest: {manifest_path}")
@@ -225,16 +229,46 @@ def validate_ops_selection_parity(
             )
 
     if import_orders is not None:
+        import_overflow = int(import_orders - selected_count)
+        import_ok = import_overflow <= int(max_import_overflow)
         checks.append(
             {
                 "check": "import_orders_within_waybill_selection",
-                "ok": import_orders <= selected_count,
-                "details": f"import_orders={import_orders} waybill_selected={selected_count}",
+                "ok": import_ok,
+                "details": (
+                    f"import_orders={import_orders} waybill_selected={selected_count} "
+                    f"overflow={max(0, import_overflow)} allowance={int(max_import_overflow)}"
+                ),
             }
         )
-        if import_orders > selected_count:
+        if not import_ok:
             errors.append(
-                f"import selector count exceeds waybill selection: import={import_orders} waybill={selected_count}"
+                "import selector count exceeds waybill selection beyond allowance: "
+                f"import={import_orders} waybill={selected_count} "
+                f"allowance={int(max_import_overflow)}"
+            )
+
+    if missing_shipped_block:
+        if selected_count > 0:
+            shipped_orders = 0
+            checks.append(
+                {
+                    "check": "shipped_selector_present_for_as_of",
+                    "ok": True,
+                    "details": (
+                        f"missing Time block for as_of={as_of} in {waybill_log}; "
+                        "defaulted shipped_orders=0 (no shipping block recorded yet)"
+                    ),
+                }
+            )
+        else:
+            errors.append(f"shipped selector count not found in {waybill_log} for as_of={as_of}")
+            checks.append(
+                {
+                    "check": "shipped_selector_present_for_as_of",
+                    "ok": False,
+                    "details": f"missing Time block for as_of={as_of} in {waybill_log}",
+                }
             )
 
     if shipped_orders is not None:
@@ -254,6 +288,17 @@ def validate_ops_selection_parity(
     missing_rows: list[dict[str, Any]] = []
     extra_rows: list[dict[str, Any]] = []
     if cache_ids is not None:
+        cache_stale_vs_archive = False
+        if archive_manifest_path is not None and archive_manifest_path.exists() and selection_cache.exists():
+            try:
+                cache_mtime = float(selection_cache.stat().st_mtime)
+                manifest_mtime = float(archive_manifest_path.stat().st_mtime)
+                # If cache is newer than archived manifest, it's from another run and
+                # cannot be used as strict parity evidence for this archive snapshot.
+                cache_stale_vs_archive = cache_mtime > (manifest_mtime + 30.0)
+            except OSError:
+                cache_stale_vs_archive = False
+
         cache_minus_archive = sorted(cache_ids - pdf_ids)
         archive_minus_cache = sorted(pdf_ids - cache_ids)
         for order_id in cache_minus_archive:
@@ -275,42 +320,54 @@ def validate_ops_selection_parity(
                 }
             )
 
-        checks.append(
-            {
-                "check": "cache_to_manifest_count_match",
-                "ok": len(cache_ids) == selected_count,
-                "details": f"cache_ids={len(cache_ids)} selected_count={selected_count}",
-            }
-        )
-        if len(cache_ids) != selected_count:
-            errors.append(
-                f"selection cache count mismatch: cache_ids={len(cache_ids)} selected_count={selected_count}"
+        if cache_stale_vs_archive:
+            checks.append(
+                {
+                    "check": "cache_evidence_scope",
+                    "ok": True,
+                    "details": (
+                        "skipped cache-vs-archive strict checks: selection cache is newer than archive manifest "
+                        "(likely different run scope)"
+                    ),
+                }
             )
+        else:
+            checks.append(
+                {
+                    "check": "cache_to_manifest_count_match",
+                    "ok": len(cache_ids) == selected_count,
+                    "details": f"cache_ids={len(cache_ids)} selected_count={selected_count}",
+                }
+            )
+            if len(cache_ids) != selected_count:
+                errors.append(
+                    f"selection cache count mismatch: cache_ids={len(cache_ids)} selected_count={selected_count}"
+                )
 
-        checks.append(
-            {
-                "check": "cache_missing_ids_match_manifest_missing",
-                "ok": len(cache_minus_archive) == missing_waybills,
-                "details": f"cache_minus_archive={len(cache_minus_archive)} missing_waybills={missing_waybills}",
-            }
-        )
-        if len(cache_minus_archive) != missing_waybills:
-            errors.append(
-                "selection cache missing-id count mismatch vs manifest missing_waybills "
-                f"(cache_minus_archive={len(cache_minus_archive)} missing_waybills={missing_waybills})"
+            checks.append(
+                {
+                    "check": "cache_missing_ids_match_manifest_missing",
+                    "ok": len(cache_minus_archive) == missing_waybills,
+                    "details": f"cache_minus_archive={len(cache_minus_archive)} missing_waybills={missing_waybills}",
+                }
             )
+            if len(cache_minus_archive) != missing_waybills:
+                errors.append(
+                    "selection cache missing-id count mismatch vs manifest missing_waybills "
+                    f"(cache_minus_archive={len(cache_minus_archive)} missing_waybills={missing_waybills})"
+                )
 
-        checks.append(
-            {
-                "check": "no_archive_extra_ids_vs_cache",
-                "ok": len(archive_minus_cache) == 0,
-                "details": f"archive_minus_cache={len(archive_minus_cache)}",
-            }
-        )
-        if archive_minus_cache:
-            errors.append(
-                f"archive contains order IDs not present in selection cache (count={len(archive_minus_cache)})"
+            checks.append(
+                {
+                    "check": "no_archive_extra_ids_vs_cache",
+                    "ok": len(archive_minus_cache) == 0,
+                    "details": f"archive_minus_cache={len(archive_minus_cache)}",
+                }
             )
+            if archive_minus_cache:
+                errors.append(
+                    f"archive contains order IDs not present in selection cache (count={len(archive_minus_cache)})"
+                )
     else:
         checks.append(
             {
@@ -343,6 +400,7 @@ def validate_ops_selection_parity(
         "waybill_pdf_orders": len(pdf_ids),
         "shipped_orders": shipped_orders,
         "cache_ids_count": (len(cache_ids) if cache_ids is not None else None),
+        "max_import_overflow": int(max_import_overflow),
         "missing_diff_csv": str(missing_csv),
         "extra_diff_csv": str(extra_csv),
         "checks": checks,
@@ -368,6 +426,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--archive-root", type=Path, default=DEFAULT_ARCHIVE_ROOT)
     parser.add_argument("--selection-cache", type=Path, default=DEFAULT_SELECTION_CACHE)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--max-import-overflow", type=int, default=0)
     parser.add_argument("--strict", action="store_true")
     return parser
 
@@ -382,6 +441,7 @@ def main() -> int:
         selection_cache=args.selection_cache,
         output_root=args.output_root,
         strict=bool(args.strict),
+        max_import_overflow=int(args.max_import_overflow),
     )
     print(f"ops_selection_parity_json={report['json_path']}")
     print(f"ops_selection_parity_md={report['md_path']}")

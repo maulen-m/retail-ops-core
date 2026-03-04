@@ -102,6 +102,16 @@ def run_h5_proving_day(
             ),
         },
         {
+            "step": "validate_ads_sidecar_readiness",
+            "cmd": (
+                "python3 scripts/validate_ads_sidecar_readiness.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'ads_sidecar_readiness'))} "
+                "--strict"
+            ),
+        },
+        {
             "step": "validate_shipped_truth_crm_waybill",
             "cmd": (
                 "python3 scripts/validate_shipped_truth_crm_waybill.py "
@@ -119,6 +129,20 @@ def run_h5_proving_day(
                 f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
                 f"--as-of {quoted_as_of} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'business_insides_ocean_drop_alignment'))} "
+                "--strict"
+            ),
+        },
+        {
+            "step": "build_owner_pnl_report",
+            "cmd": (
+                "python3 scripts/build_owner_pnl_report.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                "--since 2025-06-06 "
+                f"--mapped-root {shlex.quote(str(root / 'exports' / 'sales_archive_statusdate_mapped'))} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'owner_pnl'))} "
+                f"--parity-output-root {shlex.quote(str(root / 'exports' / 'validation' / 'economics_parity'))} "
+                "--include-store-breakdown "
                 "--strict"
             ),
         },

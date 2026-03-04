@@ -191,3 +191,21 @@ def test_validate_system_handles_nan_actual_dlv_days(tmp_path: Path) -> None:
 
     errors = validate_system(db_path=db_path, workbook_path=xlsx, dashboard_path=dashboard)
     assert errors == []
+
+
+def test_validate_system_parses_excel_serial_actual_dlv_pay_date(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx = tmp_path / "inbound.xlsx"
+    dashboard = tmp_path / "dashboard.json"
+    _seed_db(db_path)
+    _write_payload(dashboard)
+    _write_workbook(xlsx)
+
+    # Replace workbook pay date with Excel serial for 2026-02-05.
+    df = pd.read_excel(xlsx, sheet_name="PO_part_id_Totals", dtype=object)
+    df.loc[df["PO_part_id"] == "PO-4.1", "Actual_DLV_PAY_date"] = 46058
+    with pd.ExcelWriter(xlsx, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="PO_part_id_Totals", index=False)
+
+    errors = validate_system(db_path=db_path, workbook_path=xlsx, dashboard_path=dashboard)
+    assert errors == []

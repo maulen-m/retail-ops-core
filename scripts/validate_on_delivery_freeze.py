@@ -68,7 +68,16 @@ def validate_on_delivery_freeze(
 
         has_sku_cols = "sku_key" in order_cols or "sku_id" in order_cols
         if has_sku_cols:
-            sku_expr = "CASE WHEN COALESCE(TRIM(sku_key), '') <> '' OR COALESCE(TRIM(sku_id), '') <> '' THEN 1 ELSE 0 END"
+            # `sku_key='CL'` is a known placeholder from unresolved offer mapping.
+            # Freeze checks should only enforce balances for deterministically identified rows.
+            sku_expr = (
+                "CASE WHEN ("
+                "(COALESCE(TRIM(sku_key), '') <> '' AND UPPER(TRIM(sku_key)) NOT IN ('CL', 'UNKNOWN')) "
+                "OR (COALESCE(TRIM(sku_key), '') = '' "
+                "AND COALESCE(TRIM(sku_id), '') <> '' "
+                "AND UPPER(TRIM(sku_id)) NOT IN ('CL', 'UNKNOWN'))"
+                ") THEN 1 ELSE 0 END"
+            )
         else:
             sku_expr = "1"
         order_rows = conn.execute(

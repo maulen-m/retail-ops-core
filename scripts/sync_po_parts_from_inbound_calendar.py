@@ -86,9 +86,24 @@ def _parse_date(value: Any) -> str | None:
         return value.date().isoformat() if isinstance(value, datetime) else value.isoformat()
     if isinstance(value, float) and pd.isna(value):
         return None
+    # Excel serial date support (e.g., 46035 -> 2026-01-13)
+    if isinstance(value, (int, float)):
+        try:
+            serial = float(value)
+            if serial > 0:
+                return (pd.Timestamp("1899-12-30") + pd.to_timedelta(serial, unit="D")).date().isoformat()
+        except Exception:
+            pass
     raw = str(value).strip()
     if not raw:
         return None
+    if re.fullmatch(r"\d+(\.\d+)?", raw):
+        try:
+            serial = float(raw)
+            if serial > 0:
+                return (pd.Timestamp("1899-12-30") + pd.to_timedelta(serial, unit="D")).date().isoformat()
+        except Exception:
+            pass
     for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y", "%d/%m/%Y"):
         try:
             return datetime.strptime(raw, fmt).date().isoformat()

@@ -109,6 +109,54 @@ def test_waybill_snapshot_mismatch_without_archive_is_fail_closed(tmp_path: Path
     assert snapshot["stores"] == {}
 
 
+def test_waybill_snapshot_prefers_archive_when_cache_underflow_detected(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    as_of = "2026-02-26"
+    db_path = tmp_path / "app.db"
+    _seed_db(db_path)
+
+    cache_path = tmp_path / "_waybill_selection_orders.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "target_date": as_of,
+                "stores": {"UNIVERSAL": ["835000001"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    archive_root = tmp_path / "archive"
+    archive_dir = archive_root / f"input_{as_of}_183543"
+    waybill_dir = archive_dir / "waybills"
+    waybill_dir.mkdir(parents=True)
+    (archive_dir / "archive_manifest.json").write_text(
+        json.dumps(
+            {
+                "selected_count": 2,
+                "copied_waybills": 2,
+                "missing_waybills": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (waybill_dir / "835000001.pdf").write_bytes(b"%PDF")
+    (waybill_dir / "835000002.pdf").write_bytes(b"%PDF")
+    monkeypatch.setenv("AB_WAYBILL_ARCHIVE_ROOT", str(archive_root))
+    monkeypatch.setattr("scripts.generate_business_insides.PROJECT_ROOT", tmp_path)
+
+    snapshot = load_waybill_selection_snapshot(
+        db_path=db_path,
+        as_of_date=date.fromisoformat(as_of),
+        selection_cache_path=cache_path,
+    )
+    assert snapshot["status"] == "available_archive"
+    assert snapshot["reason"] == "archive_fallback_cache_underflow"
+    assert snapshot["totals"]["orders"] == 2
+
+
 def test_load_shipped_truth_snapshot_reads_range_summary(tmp_path: Path) -> None:
     shipped_root = tmp_path / "shipped_truth"
     summary_path = shipped_root / "2026-02-01_to_2026-03-01" / "summary.json"

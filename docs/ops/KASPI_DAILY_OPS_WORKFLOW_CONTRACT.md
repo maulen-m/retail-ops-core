@@ -57,6 +57,8 @@ updating this contract and corresponding tests before merge.
 - keep post-ocean-drop reliability gates fail-closed:
   - `scripts/validate_business_insides_economics_ready.py --as-of <YYYY-MM-DD> --strict`
   - `scripts/validate_ops_selection_parity.py --as-of <YYYY-MM-DD> --strict`
+    - import-vs-waybill selector overflow allowance is explicit and bounded only via `AB_OPS_SELECTION_MAX_IMPORT_OVERFLOW` (default `2` in `system_doctor` orchestration).
+    - rationale: allows deterministic exclusion of terminal/not-ready rows in waybill selection while still failing on larger drift.
   - `scripts/validate_scheduler_heartbeat.py --as-of <YYYY-MM-DD> --strict`
   - `scripts/validate_shipped_truth_crm_waybill.py --since <YYYY-MM-DD> --until <YYYY-MM-DD> --strict`
 - keep autopilot exception queue contract fail-closed:

@@ -36,6 +36,7 @@ def _create_test_db(db_path: Path) -> None:
             cargo_send_date TEXT,
             estimated_arrival_date TEXT,
             actual_arrival_date TEXT,
+            actual_dlv_pay_date TEXT,
             status TEXT,
             total_sku_keys INTEGER DEFAULT 0,
             total_units INTEGER DEFAULT 0,
@@ -103,6 +104,7 @@ def _write_workbook(
     suit_qty: int = 200,
     include_junk_part_rows: bool = False,
     po41_dlv_paid: str = "NO",
+    include_line52_part: bool = False,
 ) -> None:
     inbounds = pd.DataFrame(
         [
@@ -274,6 +276,33 @@ def _write_workbook(
                 "To_pay_DLV_KZT": 172700,
             },
         ]
+    if include_line52_part:
+        part_rows.append(
+            {
+                "PO_part_id": "Line52_PO-9",
+                "PO_id": "Line52_PO-9",
+                "supplier_id": "SHR",
+                "message_date": "2026-03-01",
+                "cargo_send_date": "2026-03-02",
+                "Estimated_Arrival_date": "2026-03-20",
+                "Actual_Arrival_date": None,
+                "Status": "Transit",
+                "Total SKU Keys": 1,
+                "Total Units": 500,
+                "Base_cost_CNY": 12500,
+                "Base_cost_KZT": 937500,
+                "Est. Weight (kg)": 80.0,
+                "Est. Delivery (USD)": 220.0,
+                "Total Bags": 6,
+                "Qty Delta": 0,
+                "Est. Delivery (KZT)": 114400,
+                "is_paid_BASE": "NO",
+                "is_paid_DLV": "NO",
+                "To_pay_BASE_KZT": 937500,
+                "To_pay_DLV_KZT": 114400,
+                "Actual_DLV_PAY_date": 46035,
+            }
+        )
     if include_junk_part_rows:
         part_rows.extend(
             [
@@ -518,5 +547,31 @@ def test_sync_backfills_po_header_weight_and_total_places_from_part_totals(
         assert row is not None
         assert float(row["weight_nom_kg"] or 0.0) == 326.6
         assert int(row["total_places"] or 0) == 11
+    finally:
+        conn.close()
+
+
+def test_sync_imports_line52_part_ids_from_parts_sheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path, include_line52_part=True)
+    monkeypatch.setenv("ENABLE_PO_PART_SYNC_WRITE", "1")
+
+    sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT po_part_id, po_id, status, total_units, actual_dlv_pay_date FROM po_part WHERE po_part_id='Line52_PO-9'"
+        ).fetchone()
+        assert row is not None
+        assert row["po_id"] == "Line52_PO-9"
+        assert row["status"] == "IN_TRANSIT"
+        assert int(row["total_units"] or 0) == 500
+        assert row["actual_dlv_pay_date"] == "2026-01-13"
     finally:
         conn.close()

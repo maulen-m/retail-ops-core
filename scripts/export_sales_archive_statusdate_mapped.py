@@ -130,8 +130,10 @@ def _extract_store_from_path(path: Path) -> str | None:
     return None
 
 
-def _build_ui_status_map(ui_sources: list[Path]) -> tuple[dict[tuple[str, str], tuple[str, str]], list[dict[str, Any]]]:
-    status_map: dict[tuple[str, str], tuple[str, str]] = {}
+def _build_ui_status_map(
+    ui_sources: list[Path],
+) -> tuple[dict[tuple[str, str], tuple[str, str, str]], list[dict[str, Any]]]:
+    status_map: dict[tuple[str, str], tuple[str, str, str]] = {}
     manifest_rows: list[dict[str, Any]] = []
 
     for source in ui_sources:
@@ -165,7 +167,7 @@ def _build_ui_status_map(ui_sources: list[Path]) -> tuple[dict[tuple[str, str], 
                 key = (store_code, order_id)
                 prev = status_map.get(key)
                 if prev is None or status_iso > prev[1]:
-                    status_map[key] = (status_raw, status_iso)
+                    status_map[key] = (status_raw, status_iso, str(row.get("Статус") or "").strip())
                 seen += 1
 
             manifest_rows.append(
@@ -180,12 +182,18 @@ def _build_ui_status_map(ui_sources: list[Path]) -> tuple[dict[tuple[str, str], 
     return status_map, manifest_rows
 
 
-def _overlay_status_dates(base_df: pd.DataFrame, status_map: dict[tuple[str, str], tuple[str, str]]) -> tuple[pd.DataFrame, int]:
+def _overlay_status_dates(
+    base_df: pd.DataFrame,
+    status_map: dict[tuple[str, str], tuple[str, str, str]],
+) -> tuple[pd.DataFrame, int, int]:
     merged = base_df.copy()
     if "Дата изменения статуса" not in merged.columns:
         merged["Дата изменения статуса"] = ""
+    if "Статус" not in merged.columns:
+        merged["Статус"] = ""
 
     filled = 0
+    status_updates = 0
     stores = merged["Склад передачи КД"].map(_normalize_store)
     order_ids = merged["№ заказа"].astype(str).str.strip()
 
@@ -196,12 +204,18 @@ def _overlay_status_dates(base_df: pd.DataFrame, status_map: dict[tuple[str, str
             continue
         current = str(merged.at[idx, "Дата изменения статуса"] or "").strip()
         current_iso = _parse_date(current)
-        override_raw, override_iso = override
+        override_raw, override_iso, override_status = override
         if current_iso is None or override_iso > current_iso:
             merged.at[idx, "Дата изменения статуса"] = override_raw
             filled += 1
+        if override_status:
+            current_status = str(merged.at[idx, "Статус"] or "").strip().upper()
+            new_status = str(override_status).strip()
+            if current_status != new_status.upper():
+                merged.at[idx, "Статус"] = new_status
+                status_updates += 1
 
-    return merged, filled
+    return merged, filled, status_updates
 
 
 def _schema() -> dict[str, Any]:
@@ -249,14 +263,14 @@ def export_sales_archive_statusdate_mapped(
     if missing:
         raise ExportError(f"ocean-drop source missing required columns: {', '.join(missing)}")
 
-    status_map: dict[tuple[str, str], tuple[str, str]] = {}
+    status_map: dict[tuple[str, str], tuple[str, str, str]] = {}
     ui_manifest_rows: list[dict[str, Any]] = []
     if ui_sources:
         status_map, ui_manifest_rows = _build_ui_status_map(ui_sources)
     elif strict:
         raise ExportError("strict export requires at least one UI source for status-date enrichment")
 
-    merged_df, ui_filled_count = _overlay_status_dates(base_df, status_map)
+    merged_df, ui_filled_count, ui_status_updates = _overlay_status_dates(base_df, status_map)
 
     out_dir = output_root.resolve() / f"{since.isoformat()}_to_{until.isoformat()}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -358,6 +372,7 @@ def export_sales_archive_statusdate_mapped(
         "ui_sources": ui_manifest_rows,
         "ui_status_map_keys": int(len(status_map)),
         "ui_status_dates_filled": int(ui_filled_count),
+        "ui_status_values_updated": int(ui_status_updates),
         "snapshot_meta": snapshot_meta,
         "output": {
             "csv": str(output_csv.resolve()),

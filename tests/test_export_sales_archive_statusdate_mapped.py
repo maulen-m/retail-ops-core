@@ -106,3 +106,55 @@ def test_export_sales_archive_statusdate_mapped_strict_requires_ui_source(tmp_pa
             ui_sources=[],
             strict=True,
         )
+
+
+def test_export_sales_archive_statusdate_mapped_overrides_status_from_ui(tmp_path: Path) -> None:
+    base_csv = tmp_path / "base.csv"
+    pd.DataFrame(
+        [
+            {
+                "№ заказа": "O3",
+                "Дата поступления заказа": "03.03.2026",
+                "Дата изменения статуса": "",
+                "Статус": "Ожидает передачи курьеру",
+                "Количество": "1",
+                "Сумма": "9000",
+                "Склад передачи КД": "30000001_PP1",
+                "Артикул": "SKU_C",
+                "Название в системе продавца": "Offer C",
+                "mapped_sku_key": "SKU_C",
+                "mapped_size": "L",
+                "Стоимость доставки для продавца": "0",
+                "Компенсация за доставку": "0",
+            }
+        ]
+    ).to_csv(base_csv, index=False, encoding="utf-8")
+
+    ui_csv = tmp_path / "ui.csv"
+    pd.DataFrame(
+        [
+            {
+                "№ заказа": "O3",
+                "Статус": "Завершен",
+                "Дата изменения статуса": "03.03.2026",
+                "Склад передачи КД": "30000001_PP1",
+            }
+        ]
+    ).to_csv(ui_csv, index=False, encoding="utf-8")
+
+    report = export_sales_archive_statusdate_mapped(
+        since=date(2025, 6, 6),
+        until=date(2026, 3, 4),
+        ocean_drop_path=base_csv,
+        output_root=tmp_path / "out",
+        ui_sources=[ui_csv],
+        strict=True,
+    )
+    df = pd.read_csv(Path(report["output_csv"]), dtype=str)
+    row = df[df["order_id"] == "O3"].iloc[0]
+    assert row["status_internal"] == "DELIVERED"
+    assert row["transaction_date"] == "2026-03-03"
+    assert row["transaction_date_source"] == "ui_override_status_date"
+
+    manifest = json.loads(Path(report["manifest_json"]).read_text(encoding="utf-8"))
+    assert int(manifest["ui_status_values_updated"]) == 1

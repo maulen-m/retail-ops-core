@@ -425,7 +425,14 @@ def _apply_balance_delta(
     balances[target] = float(balances.get(target, 0.0)) + float(delta)
 
 
-def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_id: str) -> int:
+def translate_orders(
+    db_path: Path,
+    since: date,
+    until: date,
+    apply: bool,
+    run_id: str,
+    allow_missing: bool = False,
+) -> int:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
 
@@ -1032,7 +1039,11 @@ def translate_orders(db_path: Path, since: date, until: date, apply: bool, run_i
                     f"{len(missing_cost)} order lines (sample: {sample}). "
                     "Ensure dim_sku has base_cost_cny or cogs_kzt (or weight for calc_cogs)."
                 )
-            raise RuntimeError(" ".join(messages))
+            if not allow_missing:
+                raise RuntimeError(" ".join(messages))
+            report_lines.append("WARNING: missing data skipped due to --allow-missing")
+            for msg in messages:
+                report_lines.append(f"  - {msg}")
 
         new_events = []
         if events:
@@ -1097,6 +1108,11 @@ def main() -> int:
     parser.add_argument("--until", type=str, default=None, help="End date (YYYY-MM-DD)")
     parser.add_argument("--apply", action="store_true", help="Apply writes (requires ENABLE_CASHFLOW_WRITE=1)")
     parser.add_argument("--run-id", type=str, default=None, help="Run id for audit")
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="Skip unresolved/missing-cost lines and continue with deterministic rows",
+    )
     args = parser.parse_args()
 
     cutoff = get_cutoff_date_almaty()
@@ -1107,7 +1123,14 @@ def main() -> int:
     if since > until:
         raise ValueError("--since must be <= --until")
 
-    return translate_orders(args.db, since, until, args.apply, run_id)
+    return translate_orders(
+        args.db,
+        since,
+        until,
+        args.apply,
+        run_id,
+        allow_missing=bool(args.allow_missing),
+    )
 
 
 if __name__ == "__main__":

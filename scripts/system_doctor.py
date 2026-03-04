@@ -36,6 +36,17 @@ def _run_shell(cmd: str, cwd: Path) -> tuple[int, str]:
     return int(proc.returncode), output
 
 
+def _summarize_output(output: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    for key in ("error_code=", "status=", "blocked_layer="):
+        for line in lines:
+            if line.startswith(key):
+                return line
+    return lines[-1]
+
+
 def _render_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# System Doctor Report",
@@ -91,6 +102,12 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
     triage_json_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions_triage.json"))
     triage_md_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions_triage.md"))
     economics_since = shlex.quote(str(os.environ.get("AB_ECONOMICS_PARITY_SINCE", "2025-06-06")))
+    statusdate_cutover = shlex.quote(str(os.environ.get("AB_STATUSDATE_CUTOVER", "2026-02-27")))
+    ops_selection_overflow = int(os.environ.get("AB_OPS_SELECTION_MAX_IMPORT_OVERFLOW", "2"))
+    identity_validation_root = root / "exports" / "validation" / "identity_stabilization"
+    identity_reference_csv = shlex.quote(
+        str(identity_validation_root / as_of / "offer_identity_reference.csv")
+    )
 
     return [
         {
@@ -185,6 +202,61 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_reference_freshness",
+            "cmd": (
+                "python3 scripts/validate_reference_freshness.py "
+                f"--as-of {quoted_as_of} "
+                f"--reference-root {shlex.quote(str(root / 'exports' / 'sales_archive_statusdate_mapped'))} "
+                f"--output-root {shlex.quote(str(identity_validation_root))} "
+                "--max-delivery-lag-days 7 "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "import_web_automation_offer_identity",
+            "cmd": (
+                "python3 scripts/import_web_automation_offer_identity.py "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(identity_validation_root))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_external_snapshot_parity",
+            "cmd": (
+                "python3 scripts/validate_external_snapshot_parity.py "
+                f"--as-of {quoted_as_of} "
+                f"--reference-csv {identity_reference_csv} "
+                f"--output-root {shlex.quote(str(identity_validation_root))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_recent_identity_coverage",
+            "cmd": (
+                "python3 scripts/validate_recent_identity_coverage.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(identity_validation_root))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_order_entries_freshness",
+            "cmd": (
+                "python3 scripts/validate_order_entries_freshness.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(identity_validation_root))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
             "check": "validate_exceptions_schema",
             "cmd": f"python3 scripts/validate_exceptions_schema.py {exceptions_path} --strict",
         },
@@ -246,6 +318,17 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_ads_sidecar_readiness",
+            "cmd": (
+                "python3 scripts/validate_ads_sidecar_readiness.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'ads_sidecar_readiness'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
             "check": "validate_sales_archive_statusdate_mapped",
             "cmd": (
                 "python3 scripts/validate_sales_archive_statusdate_mapped.py "
@@ -253,6 +336,7 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 f"--until {quoted_as_of} "
                 f"--data-root {shlex.quote(str(root / 'exports' / 'sales_archive_statusdate_mapped'))} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'economics_parity'))} "
+                f"--strict-statusdate-required-since {statusdate_cutover} "
                 "--strict"
             ),
         },
@@ -266,6 +350,23 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
                 f"--mapped-root {shlex.quote(str(root / 'exports' / 'sales_archive_statusdate_mapped'))} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'economics_parity'))} "
+                f"--statusdate-cutover {statusdate_cutover} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "build_owner_pnl_report",
+            "cmd": (
+                "python3 scripts/build_owner_pnl_report.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--since {economics_since} "
+                f"--mapped-root {shlex.quote(str(root / 'exports' / 'sales_archive_statusdate_mapped'))} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'owner_pnl'))} "
+                f"--parity-output-root {shlex.quote(str(root / 'exports' / 'validation' / 'economics_parity'))} "
+                f"--statusdate-cutover {statusdate_cutover} "
+                "--include-store-breakdown "
                 "--strict"
             ),
         },
@@ -287,6 +388,7 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 "python3 scripts/validate_ops_selection_parity.py "
                 f"--as-of {quoted_as_of} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'ops_selection_parity'))} "
+                f"--max-import-overflow {ops_selection_overflow} "
                 "--strict"
             ),
         },
@@ -411,7 +513,7 @@ def run_system_doctor(
             started = time.perf_counter()
             rc, out = run(row["cmd"], root)
             duration = round(time.perf_counter() - started, 3)
-            summary = out.splitlines()[-1] if out else ""
+            summary = _summarize_output(out)
             ok = rc == 0
             check_rows.append(
                 {

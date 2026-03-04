@@ -533,6 +533,30 @@ def load_waybill_selection_snapshot(
         snapshot["reason"] = "no_order_ids"
         return snapshot
 
+    cache_order_count = sum(len(ids) for ids in stores_orders.values())
+    cache_path_resolved = selection_cache_path.resolve()
+    cache_in_project_scope = False
+    try:
+        cache_in_project_scope = cache_path_resolved.is_relative_to(PROJECT_ROOT.resolve())
+    except Exception:  # pragma: no cover - defensive
+        cache_in_project_scope = str(cache_path_resolved).startswith(str(PROJECT_ROOT.resolve()))
+
+    if target_date == target_as_of and cache_in_project_scope:
+        archive_snapshot = _load_waybill_archive_snapshot(
+            db_path=db_path.resolve(),
+            as_of_date=as_of_date,
+            selection_cache_path=cache_path_resolved,
+        )
+        if archive_snapshot is not None:
+            archive_orders = int(float((archive_snapshot.get("totals") or {}).get("orders") or 0))
+            if archive_orders > cache_order_count:
+                archive_snapshot["cache_status"] = "underflow"
+                archive_snapshot["cache_reason"] = (
+                    f"cache_orders={cache_order_count} archive_orders={archive_orders}"
+                )
+                archive_snapshot["reason"] = "archive_fallback_cache_underflow"
+                return archive_snapshot
+
     quantity_by_order: dict[str, float] = {}
     if db_path.exists() and order_ids_all:
         conn = sqlite3.connect(str(db_path))

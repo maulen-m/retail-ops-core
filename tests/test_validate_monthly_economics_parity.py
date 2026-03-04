@@ -7,7 +7,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from scripts.validate_monthly_economics_parity import validate_monthly_economics_parity
+from scripts.validate_monthly_economics_parity import _build_parser, validate_monthly_economics_parity
 
 
 def _seed_db(path: Path, *, jan_net_rev: float = 12000.0) -> None:
@@ -168,3 +168,9 @@ def test_validate_monthly_economics_parity_fails_when_decision_grade_exceeds_arc
             tolerance_pct=0.0,
             statusdate_cutover=date(2026, 1, 1),
         )
+
+
+def test_validate_monthly_economics_parity_parser_default_cutover() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--since", "2025-06-06", "--until", "2026-03-04"])
+    assert args.statusdate_cutover == "2026-02-27"

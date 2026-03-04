@@ -44,7 +44,9 @@ def test_step2_uses_unattended_safe_xlwings_first_mode():
     # Keep no-gui unattended mode and do not rely on env-side toggles.
     assert "--strict-excel" not in flags
     assert "CRM_OPENPYXL_APPEND_FALLBACK=1" not in step2_block
-    assert "--refresh-delivery-fees" not in flags
+    assert 'REFRESH_DELIVERY_FEES="${KASPI_REFRESH_DELIVERY_FEES:-1}"' in text
+    assert 'REFRESH_DELIVERY_FLAGS="--refresh-delivery-fees --refresh-fees-from ${REFRESH_FEES_FROM} --refresh-fees-to ${REFRESH_FEES_TO}"' in text
+    assert "${REFRESH_DELIVERY_FLAGS}" in step2_block
 
 
 def test_step2_append_timeout_default_is_not_overly_aggressive():
