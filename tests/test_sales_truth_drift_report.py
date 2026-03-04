@@ -79,3 +79,37 @@ def test_build_sales_truth_drift_report_fails_closed_on_mismatch(tmp_path: Path)
             ocean_drop_path=None,
             crm_archive_lookup=None,
         )
+
+
+def test_build_sales_truth_drift_report_ignores_volatile_mismatch_in_strict_mode(
+    tmp_path: Path,
+) -> None:
+    parity_root = tmp_path / "parity"
+    _write_parity(
+        parity_root,
+        "2026-02-26",
+        [
+            {
+                "sale_date": "2026-02-25",
+                "store_code": "ACMEWEAR",
+                "ref_units": 10,
+                "db_units": 9,
+                "ref_rev_kzt": 1000,
+                "db_rev_kzt": 900,
+                "is_volatile": True,
+                "match": False,
+            }
+        ],
+    )
+
+    report = build_sales_truth_drift_report(
+        as_of="2026-02-26",
+        output_root=tmp_path / "daily",
+        parity_root=parity_root,
+        lookback_days=14,
+        strict=True,
+        ocean_drop_path=None,
+        crm_archive_lookup=None,
+    )
+
+    assert report["status"] == "PASS"

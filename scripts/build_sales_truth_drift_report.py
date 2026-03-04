@@ -29,23 +29,25 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- as_of: `{payload['as_of']}`",
         f"- lookback_days: `{payload['lookback_days']}`",
         f"- status: `{payload['status']}`",
-        f"- mismatch_count: `{payload['mismatch_count']}`",
+        f"- mismatch_count_nonvolatile: `{payload['mismatch_count']}`",
+        f"- mismatch_count_total: `{payload['mismatch_count_total']}`",
+        f"- mismatch_count_volatile: `{payload['volatile_mismatch_count']}`",
         f"- parity_report: `{payload['parity_report_json']}`",
         "",
-        "| sale_date | store_code | ref_units | db_units | ref_rev | db_rev | match |",
-        "|---|---|---:|---:|---:|---:|---|",
+        "| sale_date | store_code | ref_units | db_units | ref_rev | db_rev | volatile | match |",
+        "|---|---|---:|---:|---:|---:|---|---|",
     ]
     for row in payload["rows"]:
         lines.append(
             f"| `{row['sale_date']}` | `{row['store_code']}` | {row['ref_units']:.2f} | {row['db_units']:.2f} | "
-            f"{row['ref_rev_kzt']:.2f} | {row['db_rev_kzt']:.2f} | {str(row['match']).lower()} |"
+            f"{row['ref_rev_kzt']:.2f} | {row['db_rev_kzt']:.2f} | {str(row['is_volatile']).lower()} | {str(row['match']).lower()} |"
         )
     if payload["mismatch_rows"]:
         lines.extend(["", "## Mismatches", ""])
         for row in payload["mismatch_rows"][:200]:
             lines.append(
                 f"- {row['sale_date']} {row['store_code']}: ref_units={row['ref_units']:.2f} db_units={row['db_units']:.2f} "
-                f"ref_rev={row['ref_rev_kzt']:.2f} db_rev={row['db_rev_kzt']:.2f}"
+                f"ref_rev={row['ref_rev_kzt']:.2f} db_rev={row['db_rev_kzt']:.2f} volatile={str(row['is_volatile']).lower()}"
             )
     return "\n".join(lines) + "\n"
 
@@ -96,21 +98,27 @@ def build_sales_truth_drift_report(
                 "db_units": float(row.get("db_units") or 0.0),
                 "ref_rev_kzt": float(row.get("ref_rev_kzt") or 0.0),
                 "db_rev_kzt": float(row.get("db_rev_kzt") or 0.0),
+                "is_volatile": bool(row.get("is_volatile", False)),
                 "match": bool(row.get("match", False)),
             }
         )
     rows.sort(key=lambda r: (r["sale_date"], r["store_code"]))
     mismatch_rows = [r for r in rows if not r["match"]]
+    nonvolatile_mismatch_rows = [r for r in mismatch_rows if not r["is_volatile"]]
+    volatile_mismatch_rows = [r for r in mismatch_rows if r["is_volatile"]]
 
-    status = "PASS" if not mismatch_rows else "FAIL"
+    status = "PASS" if not nonvolatile_mismatch_rows else "FAIL"
     payload = {
         "generated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z"),
         "as_of": as_of_day.isoformat(),
         "lookback_days": lookback_days,
         "status": status,
-        "mismatch_count": len(mismatch_rows),
+        "mismatch_count": len(nonvolatile_mismatch_rows),
+        "mismatch_count_total": len(mismatch_rows),
+        "volatile_mismatch_count": len(volatile_mismatch_rows),
         "rows": rows,
         "mismatch_rows": mismatch_rows,
+        "nonvolatile_mismatch_rows": nonvolatile_mismatch_rows,
         "parity_report_json": str(parity_json),
     }
 
@@ -121,7 +129,7 @@ def build_sales_truth_drift_report(
     out_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     out_md.write_text(_render_md(payload), encoding="utf-8")
 
-    if strict and mismatch_rows:
+    if strict and nonvolatile_mismatch_rows:
         raise RuntimeError("sales truth drift detected in strict mode")
 
     return {

@@ -74,6 +74,12 @@ TERMINAL_NO_WAYBILL_STAGES = {
     StageCode.RETURN_REQUESTED,
     StageCode.RETURNED,
 }
+NONREADY_NO_WAYBILL_STAGES = {
+    StageCode.SIGN_REQUIRED,
+    StageCode.NEW_APPROVED,
+    StageCode.PREORDER_IN_TRANSIT,
+    StageCode.ACCEPTED_PENDING_ASSEMBLY,
+}
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -372,6 +378,19 @@ def _terminal_no_waybill_stage(order: Any) -> Optional[StageCode]:
     return None
 
 
+def _nonready_no_waybill_stage(order: Any) -> Optional[StageCode]:
+    """Return stage when order is not ready for waybill generation yet."""
+    if not isinstance(order, dict):
+        return None
+    try:
+        stage = classify_kaspi_order_stage(order)
+    except Exception:
+        return None
+    if stage in NONREADY_NO_WAYBILL_STAGES:
+        return stage
+    return None
+
+
 def get_target_order_ids_from_db(
     db_path: Path,
     target_date: date,
@@ -622,7 +641,9 @@ def download_waybills_for_store(
     already_exists = 0
     invalid_pdf = 0
     skipped_terminal = 0
+    skipped_nonready = 0
     terminal_skipped_order_ids: set[str] = set()
+    nonready_skipped_order_ids: set[str] = set()
     errors = []
     processed_order_ids: set[str] = set()
     circuit_open = False
@@ -635,7 +656,9 @@ def download_waybills_for_store(
             'already_exists': 0,
             'invalid_pdf': 0,
             'skipped_terminal': 0,
+            'skipped_nonready': 0,
             'terminal_skipped_order_ids': [],
+            'nonready_skipped_order_ids': [],
             'errors': [],
         }
 
@@ -650,7 +673,9 @@ def download_waybills_for_store(
             'already_exists': 0,
             'invalid_pdf': 0,
             'skipped_terminal': 0,
+            'skipped_nonready': 0,
             'terminal_skipped_order_ids': [],
+            'nonready_skipped_order_ids': [],
             'errors': [f"Auth error: {e}"],
         }
 
@@ -710,6 +735,15 @@ def download_waybills_for_store(
                 if verbose:
                     print(
                         f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
+                    )
+                continue
+            nonready_stage = _nonready_no_waybill_stage(detail.data if detail.success else order)
+            if nonready_stage is not None:
+                skipped_nonready += 1
+                nonready_skipped_order_ids.add(order_code)
+                if verbose:
+                    print(
+                        f"      {order_code}: Not ready for waybill ({nonready_stage.value}), skipping retries"
                     )
                 continue
             missing_orders.append(order_code)
@@ -798,6 +832,15 @@ def download_waybills_for_store(
                             f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
                         )
                     continue
+                nonready_stage = _nonready_no_waybill_stage(detail.data)
+                if nonready_stage is not None:
+                    skipped_nonready += 1
+                    nonready_skipped_order_ids.add(order_code)
+                    if verbose:
+                        print(
+                            f"      {order_code}: Not ready for waybill ({nonready_stage.value}), skipping retries"
+                        )
+                    continue
                 missing_orders.append(order_code)
                 if verbose:
                     print(f"      {order_code}: No waybill URL yet (fallback target)")
@@ -874,6 +917,17 @@ def download_waybills_for_store(
                                 f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
                             )
                         continue
+                    nonready_stage = _nonready_no_waybill_stage(
+                        detail.data if detail.success else None
+                    )
+                    if nonready_stage is not None:
+                        skipped_nonready += 1
+                        nonready_skipped_order_ids.add(order_code)
+                        if verbose:
+                            print(
+                                f"      {order_code}: Not ready for waybill ({nonready_stage.value}), skipping retries"
+                            )
+                        continue
                     still_missing.append(order_code)
                     if verbose:
                         print(f"      {order_code}: No waybill URL yet (retry)")
@@ -913,7 +967,9 @@ def download_waybills_for_store(
         'already_exists': already_exists,
         'invalid_pdf': invalid_pdf,
         'skipped_terminal': skipped_terminal,
+        'skipped_nonready': skipped_nonready,
         'terminal_skipped_order_ids': sorted(terminal_skipped_order_ids),
+        'nonready_skipped_order_ids': sorted(nonready_skipped_order_ids),
         'errors': errors,
     }
 
@@ -1030,6 +1086,9 @@ def download_all_waybills(
             'missing_waybill': 0,
             'already_exists': 0,
             'invalid_pdf': 0,
+            'skipped_terminal': 0,
+            'skipped_nonready': 0,
+            'skipped_missing_size': 0,
             'errors': [],
         }
     if source_label:
@@ -1115,12 +1174,63 @@ def download_all_waybills(
             "API selection failed for stores: " + ", ".join(sorted(api_errors))
         )
 
+    # Gate target set by size availability (DB/CRM) so target counts reflect
+    # actually packageable orders.
+    excluded_missing_size_by_store: dict[str, set[str]] = {}
+    if _env_bool("KASPI_WAYBILL_REQUIRE_SIZE", True) and target_orders_by_store:
+        eligible_sized_by_store: dict[str, set[str]] = defaultdict(set)
+        resolved_db_path = resolve_db_path(db_path)
+        if resolved_db_path:
+            db_sized = get_target_order_ids_from_db(
+                resolved_db_path,
+                target_date,
+                store_filter,
+                exact_date=exact_date,
+                lookback_days=None if all_dates or exact_date else since_days,
+            )
+            for store_code, ids in db_sized.items():
+                eligible_sized_by_store[store_code].update(ids)
+
+        if crm_path:
+            crm_sized = get_target_order_ids_from_crm(
+                crm_path,
+                sheet_name,
+                target_date,
+                store_filter,
+                exact_date=exact_date,
+                lookback_days=None if all_dates or exact_date else since_days,
+            )
+            for store_code, ids in crm_sized.items():
+                eligible_sized_by_store[store_code].update(ids)
+
+        if eligible_sized_by_store:
+            for store_code in list(target_orders_by_store.keys()):
+                target_ids = set(target_orders_by_store.get(store_code, set()))
+                sized_ids = set(eligible_sized_by_store.get(store_code, set()))
+                missing_size_ids = target_ids - sized_ids
+                if not missing_size_ids:
+                    continue
+                excluded_missing_size_by_store[store_code] = missing_size_ids
+                target_orders_by_store[store_code] = target_ids - missing_size_ids
+                logger.warning(
+                    f"{store_code}: excluding {len(missing_size_ids)} target orders "
+                    "without size in DB/CRM"
+                )
+                if not target_orders_by_store[store_code]:
+                    target_orders_by_store.pop(store_code, None)
+        else:
+            logger.warning(
+                "Size gate enabled but no eligible sized orders found in DB/CRM; "
+                "skipping size gate to avoid dropping all targets"
+            )
+
     total_downloaded = 0
     total_skipped_not_target = 0
     total_missing_waybill = 0
     total_already_exists = 0
     total_invalid_pdf = 0
     total_skipped_terminal = 0
+    total_skipped_nonready = 0
     all_errors = []
 
     # Process each store
@@ -1148,6 +1258,7 @@ def download_all_waybills(
         total_already_exists += result['already_exists']
         total_invalid_pdf += result['invalid_pdf']
         total_skipped_terminal += int(result.get('skipped_terminal', 0))
+        total_skipped_nonready += int(result.get('skipped_nonready', 0))
         all_errors.extend(result['errors'])
 
         # Cancelled/returned orders that were in fallback selection are removed
@@ -1159,13 +1270,22 @@ def download_all_waybills(
                 f"{api_store_code}: removed {len(terminal_ids)} terminal "
                 "(cancelled/returned) orders from target selection"
             )
+        nonready_ids = set(result.get("nonready_skipped_order_ids", []))
+        if nonready_ids:
+            current_ids = set(target_orders_by_store.get(api_store_code, set()))
+            target_orders_by_store[api_store_code] = current_ids - nonready_ids
+            logger.info(
+                f"{api_store_code}: removed {len(nonready_ids)} not-ready "
+                "(pre-waybill) orders from target selection"
+            )
 
         # Per-store summary
         print(f"    Downloaded: {result['downloaded']}, "
               f"Exists: {result['already_exists']}, "
               f"No waybill: {result['missing_waybill']}, "
               f"Invalid PDF: {result['invalid_pdf']}, "
-              f"Terminal skipped: {result.get('skipped_terminal', 0)}")
+              f"Terminal skipped: {result.get('skipped_terminal', 0)}, "
+              f"Not-ready skipped: {result.get('skipped_nonready', 0)}")
 
     selection_status = "API_ONLY"
     if fallback_used:
@@ -1200,6 +1320,15 @@ def download_all_waybills(
             f"fallback_used={int(fallback_used)}",
             f"fallback_stores={','.join(fallback_stores)}",
             f"api_errors={','.join(sorted(api_errors))}",
+            "size_gate="
+            + (
+                ",".join(
+                    f"{store}:{len(ids)}"
+                    for store, ids in sorted(excluded_missing_size_by_store.items())
+                )
+                if excluded_missing_size_by_store
+                else "none"
+            ),
             f"target_date={target_date.isoformat()}",
         ]
         try:
@@ -1214,6 +1343,10 @@ def download_all_waybills(
         'already_exists': total_already_exists,
         'invalid_pdf': total_invalid_pdf,
         'skipped_terminal': total_skipped_terminal,
+        'skipped_nonready': total_skipped_nonready,
+        'skipped_missing_size': int(
+            sum(len(ids) for ids in excluded_missing_size_by_store.values())
+        ),
         'errors': all_errors,
         'selection_status': selection_status,
         'fallback_used': fallback_used,
@@ -1376,6 +1509,8 @@ def main() -> int:
     print(f"  Missing waybill URL: {result['missing_waybill']}")
     print(f"  Invalid PDF payloads: {result['invalid_pdf']}")
     print(f"  Terminal skipped (cancelled/returned): {result.get('skipped_terminal', 0)}")
+    print(f"  Not-ready skipped (pre-waybill): {result.get('skipped_nonready', 0)}")
+    print(f"  Missing-size skipped (DB/CRM): {result.get('skipped_missing_size', 0)}")
     print(f"  Skipped (not in target set): {result['skipped_not_target']}")
     if result.get("selection_status"):
         status = result["selection_status"]
