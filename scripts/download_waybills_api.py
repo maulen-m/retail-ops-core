@@ -1174,56 +1174,6 @@ def download_all_waybills(
             "API selection failed for stores: " + ", ".join(sorted(api_errors))
         )
 
-    # Gate target set by size availability (DB/CRM) so target counts reflect
-    # actually packageable orders.
-    excluded_missing_size_by_store: dict[str, set[str]] = {}
-    if _env_bool("KASPI_WAYBILL_REQUIRE_SIZE", True) and target_orders_by_store:
-        eligible_sized_by_store: dict[str, set[str]] = defaultdict(set)
-        resolved_db_path = resolve_db_path(db_path)
-        if resolved_db_path:
-            db_sized = get_target_order_ids_from_db(
-                resolved_db_path,
-                target_date,
-                store_filter,
-                exact_date=exact_date,
-                lookback_days=None if all_dates or exact_date else since_days,
-            )
-            for store_code, ids in db_sized.items():
-                eligible_sized_by_store[store_code].update(ids)
-
-        if crm_path:
-            crm_sized = get_target_order_ids_from_crm(
-                crm_path,
-                sheet_name,
-                target_date,
-                store_filter,
-                exact_date=exact_date,
-                lookback_days=None if all_dates or exact_date else since_days,
-            )
-            for store_code, ids in crm_sized.items():
-                eligible_sized_by_store[store_code].update(ids)
-
-        if eligible_sized_by_store:
-            for store_code in list(target_orders_by_store.keys()):
-                target_ids = set(target_orders_by_store.get(store_code, set()))
-                sized_ids = set(eligible_sized_by_store.get(store_code, set()))
-                missing_size_ids = target_ids - sized_ids
-                if not missing_size_ids:
-                    continue
-                excluded_missing_size_by_store[store_code] = missing_size_ids
-                target_orders_by_store[store_code] = target_ids - missing_size_ids
-                logger.warning(
-                    f"{store_code}: excluding {len(missing_size_ids)} target orders "
-                    "without size in DB/CRM"
-                )
-                if not target_orders_by_store[store_code]:
-                    target_orders_by_store.pop(store_code, None)
-        else:
-            logger.warning(
-                "Size gate enabled but no eligible sized orders found in DB/CRM; "
-                "skipping size gate to avoid dropping all targets"
-            )
-
     total_downloaded = 0
     total_skipped_not_target = 0
     total_missing_waybill = 0
@@ -1270,15 +1220,6 @@ def download_all_waybills(
                 f"{api_store_code}: removed {len(terminal_ids)} terminal "
                 "(cancelled/returned) orders from target selection"
             )
-        nonready_ids = set(result.get("nonready_skipped_order_ids", []))
-        if nonready_ids:
-            current_ids = set(target_orders_by_store.get(api_store_code, set()))
-            target_orders_by_store[api_store_code] = current_ids - nonready_ids
-            logger.info(
-                f"{api_store_code}: removed {len(nonready_ids)} not-ready "
-                "(pre-waybill) orders from target selection"
-            )
-
         # Per-store summary
         print(f"    Downloaded: {result['downloaded']}, "
               f"Exists: {result['already_exists']}, "
@@ -1320,15 +1261,6 @@ def download_all_waybills(
             f"fallback_used={int(fallback_used)}",
             f"fallback_stores={','.join(fallback_stores)}",
             f"api_errors={','.join(sorted(api_errors))}",
-            "size_gate="
-            + (
-                ",".join(
-                    f"{store}:{len(ids)}"
-                    for store, ids in sorted(excluded_missing_size_by_store.items())
-                )
-                if excluded_missing_size_by_store
-                else "none"
-            ),
             f"target_date={target_date.isoformat()}",
         ]
         try:
@@ -1344,9 +1276,7 @@ def download_all_waybills(
         'invalid_pdf': total_invalid_pdf,
         'skipped_terminal': total_skipped_terminal,
         'skipped_nonready': total_skipped_nonready,
-        'skipped_missing_size': int(
-            sum(len(ids) for ids in excluded_missing_size_by_store.values())
-        ),
+        'skipped_missing_size': 0,
         'errors': all_errors,
         'selection_status': selection_status,
         'fallback_used': fallback_used,
