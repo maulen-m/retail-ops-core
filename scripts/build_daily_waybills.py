@@ -1714,6 +1714,11 @@ def main(
         'normal': 0,
         'multi_qty': 0,
         'multi_line': 0,
+        'merged_groups': 0,
+        'merged_packages': 0,
+        'merged_normal': 0,
+        'merged_multi_qty': 0,
+        'merged_multi_line': 0,
     }
 
     crm_df = load_crm_dataframe(crm_path, sheet_name)
@@ -1925,13 +1930,18 @@ def main(
                         f"Processing merged groups ({label or 'ALL'}) "
                         f"({len(merged_groups)} groups)"
                     )
-                    build_store_output(
+                    merged_stats = build_store_output(
                         "MERGED",
                         merged_groups,
                         merged_base_dir,
                         date_prefix,
                         dry_run,
                     )
+                    stats['merged_groups'] += len(merged_groups)
+                    stats['merged_packages'] += int(merged_stats.get('packages', 0))
+                    stats['merged_normal'] += int(merged_stats.get('normal', 0))
+                    stats['merged_multi_qty'] += int(merged_stats.get('multi_qty', 0))
+                    stats['merged_multi_line'] += int(merged_stats.get('multi_line', 0))
 
         # Write top-level files
         if not dry_run:
@@ -1955,6 +1965,12 @@ def main(
     logger.info(f"  NORMAL: {stats['normal']}")
     logger.info(f"  MULTI_QTY: {stats['multi_qty']}")
     logger.info(f"  MULTI_LINE: {stats['multi_line']}")
+    if output_layout == OUTPUT_LAYOUT_PER_STORE_AND_MERGED:
+        logger.info(f"  Merged bundles: {stats['merged_groups']}")
+        logger.info(f"  Merged packages: {stats['merged_packages']}")
+        logger.info(f"  Merged NORMAL: {stats['merged_normal']}")
+        logger.info(f"  Merged MULTI_QTY: {stats['merged_multi_qty']}")
+        logger.info(f"  Merged MULTI_LINE: {stats['merged_multi_line']}")
     if missing_rows:
         logger.warning("Missing orders (first 5):")
         for row in missing_rows[:5]:

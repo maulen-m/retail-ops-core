@@ -323,6 +323,32 @@ else
     fi
 fi
 
+if [ "${HARD_FAIL}" -eq 0 ] && [ -d "${OUTPUT_TODAY_DIR}" ]; then
+    echo ""
+    echo "Bundle count summary..."
+    echo "----------------------------------------"
+    OUTPUT_TODAY_DIR="${OUTPUT_TODAY_DIR}" python3 - <<'PY'
+from pathlib import Path
+import os
+
+root = Path(os.environ["OUTPUT_TODAY_DIR"])
+per_store_root = root / "PER_STORE"
+merged_root = root / "MERGED"
+
+def count_pdfs(base: Path) -> int:
+    if not base.exists():
+        return 0
+    return sum(1 for _ in base.rglob("*.pdf"))
+
+per_store_count = count_pdfs(per_store_root)
+merged_count = count_pdfs(merged_root)
+
+print(f"PER_STORE bundles (all partitions): {per_store_count}")
+print(f"MERGED bundles (all partitions): {merged_count}")
+print("Note: WhatsApp sender auto mode uses MERGED by default.")
+PY
+fi
+
 echo ""
 # Archive inputs (CRM + waybill PDFs) for backup
 echo "Archiving inputs (CRM + waybill PDFs)..."
