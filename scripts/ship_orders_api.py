@@ -667,6 +667,30 @@ def summarize_pending_backlog(
     }
 
 
+def print_pending_backlog(label: str, backlog: dict[str, Any]) -> None:
+    """Emit a compact backlog summary with a small stale-order sample."""
+    print(f"\n{label}")
+    print(
+        "  Pending backlog: "
+        f"total={backlog.get('total_pending', 0)} "
+        f"overdue={backlog.get('overdue_pending', 0)} "
+        f"stale={backlog.get('stale_pending', 0)}"
+    )
+    stale_orders = backlog.get("stale_orders") or []
+    if stale_orders:
+        print("  Oldest stale pending orders:")
+        for row in stale_orders[:5]:
+            planned = row.get("planned_date") or "unknown"
+            created_at = row.get("created_at") or "unknown"
+            age_hours = row.get("age_hours")
+            print(
+                f"    - {row.get('store_code')} {row.get('order_id')} | "
+                f"planned={planned} | created={created_at} | age_hours={age_hours}"
+            )
+        if len(stale_orders) > 5:
+            print(f"    ... and {len(stale_orders) - 5} more")
+
+
 def derive_dynamic_since_days(
     db_path: Path,
     target_date: date,
@@ -1086,7 +1110,7 @@ def main() -> int:
     if args.store:
         selected_code = STORE_NAME_TO_API_CODE.get(args.store, args.store.upper())
         selected_store_codes = {selected_code}
-    pending_orders, order_id_to_base64, _planned_map, _pending_meta = get_pending_assembly_orders(
+    pending_orders, order_id_to_base64, _planned_map, pending_meta = get_pending_assembly_orders(
         target_date=target_date,
         since_days=args.since_days,
         store_codes=selected_store_codes,
@@ -1100,6 +1124,8 @@ def main() -> int:
         return 0
 
     print(f"  Found {total_pending} orders pending assembly across all stores")
+    initial_backlog = summarize_pending_backlog(pending_meta, target_date=target_date)
+    print_pending_backlog("  Initial backlog snapshot...", initial_backlog)
 
     all_pending = set()
     for order_ids in pending_orders.values():
@@ -1245,6 +1271,22 @@ def main() -> int:
 
     if args.dry_run:
         print("\n  [DRY RUN] No API calls were made.")
+    else:
+        remaining_pending, _remaining_base64, _remaining_planned, remaining_meta = get_pending_assembly_orders(
+            target_date=target_date,
+            since_days=args.since_days,
+            store_codes=selected_store_codes,
+            include_overdue=include_overdue,
+            overdue_lookback_days=overdue_lookback_days,
+        )
+        remaining_backlog = summarize_pending_backlog(remaining_meta, target_date=target_date)
+        remaining_total = sum(len(ids) for ids in remaining_pending.values())
+        result["remaining_pending"] = remaining_total
+        result["remaining_overdue_pending"] = int(remaining_backlog.get("overdue_pending", 0))
+        result["remaining_stale_pending"] = int(remaining_backlog.get("stale_pending", 0))
+        result["remaining_backlog"] = remaining_backlog
+        print_pending_backlog("  Remaining backlog after shipping...", remaining_backlog)
+
     health = classify_ship_health(result)
     print(f"  Health: {health.code} ({health.message})")
     return health.exit_code

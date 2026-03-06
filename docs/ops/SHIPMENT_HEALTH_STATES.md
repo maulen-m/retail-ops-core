@@ -7,6 +7,7 @@ Purpose: classify shipping/waybill runs deterministically and prevent silent par
 ### `ship_orders_api.py`
 - `ok`: shipped orders with no skips/errors. Exit `0`.
 - `no_pending`: nothing pending. Exit `0`.
+- `backlog`: shipping call succeeded, but overdue/stale pending assembly backlog still remains after the run. Exit `1`.
 - `partial`: mixed shipped/skipped and no explicit API error. Exit `1`.
 - `api_error`: one or more shipping errors. Exit `1`.
 

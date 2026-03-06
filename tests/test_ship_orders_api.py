@@ -486,6 +486,76 @@ def test_main_limits_pending_fetch_scope_when_store_filter_is_set(monkeypatch, t
     assert captured["overdue_lookback_days"] == 7
 
 
+def test_main_returns_nonzero_when_overdue_backlog_remains(monkeypatch, tmp_path):
+    calls = {"count": 0}
+    pending_meta = {
+        "STOREB": {
+            "845767451": {
+                "planned_date": date(2026, 3, 5),
+                "created_at": datetime(2026, 3, 5, 8, 0, 0),
+            }
+        }
+    }
+
+    def fake_get_pending_assembly_orders(
+        *,
+        target_date,
+        since_days,
+        store_codes=None,
+        fallback_since_days=30,
+        include_overdue=False,
+        overdue_lookback_days=None,
+    ):
+        calls["count"] += 1
+        return {"STOREB": {"845767451"}}, {"STOREB": {"845767451": "base64"}}, {}, pending_meta
+
+    monkeypatch.setattr(ship_mod, "get_pending_assembly_orders", fake_get_pending_assembly_orders)
+    monkeypatch.setattr(ship_mod, "load_dotenv", lambda: None)
+    monkeypatch.setattr(ship_mod, "resolve_db_path", lambda _path: tmp_path / "app.db")
+    monkeypatch.setattr(ship_mod, "load_db_order_info", lambda _db, _ids: {})
+    monkeypatch.setattr(
+        ship_mod,
+        "read_crm_orders",
+        lambda *args, **kwargs: {
+            "845767451": [
+                ship_mod.OrderItem(
+                    order_id="845767451",
+                    store_name="STORE-B",
+                    kaspi_name_core="Принт_5в1_черный",
+                    my_size="XL",
+                    sku_key="CL_OC_MEN_LINE52_BLACK",
+                    sku_id="CL_OC_MEN_LINE52_BLACK_XL",
+                    quantity=1,
+                    planned_date=date(2026, 3, 5),
+                )
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        ship_mod,
+        "ship_orders",
+        lambda *args, **kwargs: {"shipped": 1, "skipped": 0, "errors": []},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ship_orders_api.py",
+            "--store",
+            "STORE-B",
+            "--crm-file",
+            str(tmp_path / "unused.xlsx"),
+            "--date",
+            "2026-03-06",
+        ],
+    )
+
+    rc = ship_mod.main()
+
+    assert rc == 1
+    assert calls["count"] == 2
+
+
 def test_ship_orders_counts_when_assemble_is_confirmed(monkeypatch):
     class _FakeClient:
         def __init__(self, store_code: str):

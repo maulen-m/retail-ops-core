@@ -29,7 +29,6 @@ from scripts.import_orders_to_crm import (
     STORE_MAP,
     WAREHOUSE_STORE_MAP,
     _derive_identity_from_raw_row,
-    _build_line_append_dedupe_key,
     _load_sku_meta_for_keys,
     _build_line_dedupe_key,
     _coerce_column_values,
@@ -407,7 +406,7 @@ def test_filter_for_shipping_include_overdue_honors_lookback_window():
     assert stats["overdue_lookback_days"] == 2
 
 
-def test_build_pending_append_mask_reappends_overdue_once_per_new_append_date():
+def test_build_pending_append_mask_appends_first_overdue_rollover_once():
     append_date = date(2026, 3, 7)
     df = pd.DataFrame(
         {
@@ -437,20 +436,20 @@ def test_build_pending_append_mask_reappends_overdue_once_per_new_append_date():
             "handover": "Плановая дата передачи курьеру",
         },
         existing_keys={base_key},
-        existing_append_keys={_build_line_append_dedupe_key(base_key, date(2026, 3, 6))},
+        existing_rollover_keys=set(),
         include_overdue=True,
         append_date=append_date,
     )
 
     assert new_mask.tolist() == [True]
-    assert stats["dedupe_mode"] == "append_date"
+    assert stats["dedupe_mode"] == "first_rollover"
     assert stats["carryforward_rows"] == 1
     assert stats["carryforward_rows_to_append"] == 1
     assert work["_is_overdue"].tolist() == [True]
 
 
-def test_build_pending_append_mask_blocks_same_day_overdue_rerun():
-    append_date = date(2026, 3, 7)
+def test_build_pending_append_mask_blocks_second_overdue_rollover():
+    append_date = date(2026, 3, 8)
     df = pd.DataFrame(
         {
             "№ заказа": ["845767451"],
@@ -468,7 +467,6 @@ def test_build_pending_append_mask_blocks_same_day_overdue_rerun():
         "LINE52_XL",
         1,
     )
-    today_append_key = _build_line_append_dedupe_key(base_key, append_date)
 
     _work, new_mask, stats = build_pending_append_mask(
         df,
@@ -480,13 +478,14 @@ def test_build_pending_append_mask_blocks_same_day_overdue_rerun():
             "handover": "Плановая дата передачи курьеру",
         },
         existing_keys={base_key},
-        existing_append_keys={today_append_key},
+        existing_rollover_keys={base_key},
         include_overdue=True,
         append_date=append_date,
     )
 
     assert new_mask.tolist() == [False]
     assert stats["duplicates_skipped"] == 1
+    assert stats["overdue_repeat_rows"] == 1
     assert stats["carryforward_rows_to_append"] == 0
 
 
@@ -1672,7 +1671,7 @@ def _minimal_snapshot() -> CRMSnapshot:
         order_ids=set(),
         order_rows={},
         existing_keys=set(),
-        existing_append_keys=set(),
+        existing_rollover_keys=set(),
         column_positions={},
         planned_col_abs=None,
         table_date_col=None,
