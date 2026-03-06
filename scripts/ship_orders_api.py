@@ -13,6 +13,7 @@ Usage:
     python scripts/ship_orders_api.py --verbose
     python scripts/ship_orders_api.py --dry-run
     python scripts/ship_orders_api.py --store UNIVERSAL
+    python scripts/ship_orders_api.py --today-only
 """
 
 import argparse
@@ -510,6 +511,8 @@ def get_pending_assembly_orders(
     *,
     store_codes: Optional[set[str]] = None,
     fallback_since_days: int = 30,
+    include_overdue: bool = False,
+    overdue_lookback_days: Optional[int] = None,
 ) -> tuple[
     dict[str, set[str]],
     dict[str, dict[str, str]],
@@ -588,8 +591,19 @@ def get_pending_assembly_orders(
                 order_code = attrs.get("code", "")
                 base64_id = order.get("id", "")
                 planned_date = _planned_date_from_order(order)
-                if target_date and planned_date != target_date:
-                    continue
+                if target_date:
+                    if include_overdue:
+                        min_date: Optional[date] = None
+                        if overdue_lookback_days is not None:
+                            min_date = target_date - timedelta(days=max(int(overdue_lookback_days), 0))
+                        if (
+                            planned_date is None
+                            or planned_date > target_date
+                            or (min_date is not None and planned_date < min_date)
+                        ):
+                            continue
+                    elif planned_date != target_date:
+                        continue
                 if order_code:
                     order_ids.add(order_code)
                     if base64_id:
@@ -998,6 +1012,27 @@ def main() -> int:
         help='Days to look back in API (default: 7)'
     )
     parser.add_argument(
+        '--include-overdue',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            'Include overdue pending assembly orders within --overdue-lookback-days '
+            '(default: on). Use --no-include-overdue or --today-only for strict '
+            'current-day only mode.'
+        ),
+    )
+    parser.add_argument(
+        '--today-only',
+        action='store_true',
+        help='Strict current-day mode: exclude overdue pending assembly orders.',
+    )
+    parser.add_argument(
+        '--overdue-lookback-days',
+        type=int,
+        default=None,
+        help='Lookback window for overdue carry-forward. Defaults to --since-days when omitted.',
+    )
+    parser.add_argument(
         '--dry-run',
         action='store_true',
         help='Preview only, do not call API'
@@ -1023,6 +1058,10 @@ def main() -> int:
         target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
     else:
         target_date = datetime.now(ALMATY_TZ).date()
+    include_overdue = bool(args.include_overdue) and not bool(args.today_only)
+    overdue_lookback_days = args.overdue_lookback_days
+    if include_overdue and overdue_lookback_days is None:
+        overdue_lookback_days = args.since_days
 
     print("=" * 60)
     print("  Kaspi Order Shipping (Set Package Count)")
@@ -1030,6 +1069,11 @@ def main() -> int:
     print(f"  Data root: {get_data_root()}")
     print(f"  CRM file: {args.crm_file}")
     print(f"  Target date: {target_date}")
+    if include_overdue:
+        lookback_label = overdue_lookback_days if overdue_lookback_days is not None else "all"
+        print(f"  Date mode: planned <= target (lookback {lookback_label}d)")
+    else:
+        print("  Date mode: planned == target only")
     if args.store:
         print(f"  Store filter: {args.store}")
     if args.dry_run:
@@ -1046,6 +1090,8 @@ def main() -> int:
         target_date=target_date,
         since_days=args.since_days,
         store_codes=selected_store_codes,
+        include_overdue=include_overdue,
+        overdue_lookback_days=overdue_lookback_days,
     )
 
     total_pending = sum(len(ids) for ids in pending_orders.values())

@@ -29,3 +29,9 @@ def test_waybill_command_supports_partial_health_override() -> None:
     text = Path("excel_ui/run_build_waybills.command").read_text(encoding="utf-8")
     assert "KASPI_ALLOW_PARTIAL_WAYBILL_HEALTH" in text
     assert "--allow-partial-health" in text
+
+
+def test_waybill_command_ships_with_overdue_carry_forward() -> None:
+    text = Path("excel_ui/run_build_waybills.command").read_text(encoding="utf-8")
+    assert "--include-overdue" in text
+    assert "--overdue-lookback-days \"${LOOKBACK_DAYS}\"" in text

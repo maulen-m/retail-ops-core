@@ -315,7 +315,12 @@ if [ "${SHIPPING_ENABLED}" -eq 1 ]; then
         if [ -x "${SCRIPT_PATH}" ]; then
             SKIP_PREFLIGHT=1 SKIP_WAIT=1 "${SCRIPT_PATH}"
         else
-            python scripts/ship_orders_api.py --verbose --since-days "${LOOKBACK_DAYS}" --store "${STORE_LABEL}"
+            python scripts/ship_orders_api.py \
+                --verbose \
+                --since-days "${LOOKBACK_DAYS}" \
+                --include-overdue \
+                --overdue-lookback-days "${LOOKBACK_DAYS}" \
+                --store "${STORE_LABEL}"
         fi
         if [ $? -ne 0 ]; then
             echo ""

@@ -46,6 +46,10 @@ updating this contract and corresponding tests before merge.
 ## Non-Negotiable Runtime Rules
 - keep fail-closed behavior in `run_merged_build_waybills.command` (`HARD_FAIL` -> non-zero exit)
 - keep strict stop-line report (`--strict-stopline`)
+- keep ship-until-shipped carry-forward contract:
+  - pending orders that miss one day must continue to surface on later daily runs until shipped or terminally cancelled/returned
+  - `scripts/ship_orders_api.py` defaults to overdue carry-forward mode; strict today-only shipping is opt-in only
+  - `scripts/import_orders_to_crm.py --include-overdue` may append one fresh CRM `Date` row per operational day for still-pending overdue orders while preserving original Kaspi planned handover date
 - keep fallback selection path in waybill download (`--fallback-crm`) to avoid missing PDFs for non-prefetched target IDs
 - keep profile contract in daily ops orchestrator:
   - `today-fast`: `report_waybill_status.py --since-days 1` (no `--include-overdue`)
@@ -82,7 +86,11 @@ updating this contract and corresponding tests before merge.
 - `tests/test_kaspi_waybill_deadline_scheduler_contract.py`
 - `tests/test_kaspi_daily_ops_report_scheduler_contract.py`
 - `tests/test_run_full_import_command_step2.py`
+- `tests/test_run_assemble_daily_command.py`
 - `tests/test_run_build_waybills_command_stopline.py`
+- `tests/test_run_merged_build_waybills_command_contract.py`
+- `tests/test_ship_orders_api.py`
+- `tests/test_import_orders_to_crm.py`
 - `tests/test_waybill_selection_filters.py`
 - `tests/test_kaspi_api_client.py`
 - `tests/test_kaspi_daily_ops_workflow_contract_doc.py`

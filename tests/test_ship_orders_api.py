@@ -156,6 +156,90 @@ def test_get_pending_assembly_orders_status_first_without_creation_lookback(monk
     assert calls[0]["status"] == "ACCEPTED_BY_MERCHANT"
 
 
+def test_get_pending_assembly_orders_include_overdue_honors_lookback(monkeypatch):
+    tz = ZoneInfo("Asia/Almaty")
+
+    def _ms(dt_str: str) -> int:
+        dt = datetime.fromisoformat(dt_str).replace(tzinfo=tz)
+        return int(dt.timestamp() * 1000)
+
+    class _FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def list_orders(
+            self,
+            state=None,
+            status=None,
+            since=None,
+            until=None,
+            page_number=0,
+            page_size=100,
+            delivery_type=None,
+            signature_required=None,
+            include_orders=None,
+        ):
+            if page_number > 0:
+                return APIResponse(success=True, data={"data": [], "meta": {"pageCount": 1}}, status_code=200)
+            return APIResponse(
+                success=True,
+                data={
+                    "data": [
+                        {
+                            "id": "base64-today",
+                            "attributes": {
+                                "code": "845767451",
+                                "assembled": False,
+                                "status": "ACCEPTED_BY_MERCHANT",
+                                "creationDate": _ms("2026-03-05T14:11:44"),
+                                "kaspiDelivery": {"courierTransmissionPlanningDate": _ms("2026-03-07T20:00:00")},
+                            },
+                        },
+                        {
+                            "id": "base64-overdue",
+                            "attributes": {
+                                "code": "845784291",
+                                "assembled": False,
+                                "status": "ACCEPTED_BY_MERCHANT",
+                                "creationDate": _ms("2026-03-05T15:11:44"),
+                                "kaspiDelivery": {"courierTransmissionPlanningDate": _ms("2026-03-06T20:00:00")},
+                            },
+                        },
+                        {
+                            "id": "base64-too-old",
+                            "attributes": {
+                                "code": "845785318",
+                                "assembled": False,
+                                "status": "ACCEPTED_BY_MERCHANT",
+                                "creationDate": _ms("2026-03-04T15:11:44"),
+                                "kaspiDelivery": {"courierTransmissionPlanningDate": _ms("2026-03-04T20:00:00")},
+                            },
+                        },
+                    ],
+                    "meta": {"pageCount": 1},
+                },
+                status_code=200,
+            )
+
+    monkeypatch.setattr(ship_mod, "STORE_TOKEN_MAP", {"STOREB": "token"})
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _FakeClient)
+
+    pending, base64_map, planned_map, _pending_meta = ship_mod.get_pending_assembly_orders(
+        target_date=date(2026, 3, 7),
+        since_days=None,
+        store_codes={"STOREB"},
+        include_overdue=True,
+        overdue_lookback_days=1,
+    )
+
+    assert pending == {"STOREB": {"845767451", "845784291"}}
+    assert base64_map["STOREB"]["845767451"] == "base64-today"
+    assert base64_map["STOREB"]["845784291"] == "base64-overdue"
+    assert planned_map["STOREB"]["845767451"] == date(2026, 3, 7)
+    assert planned_map["STOREB"]["845784291"] == date(2026, 3, 6)
+    assert "845785318" not in pending["STOREB"]
+
+
 def test_summarize_pending_backlog_flags_stale_overdue_orders():
     pending_meta = {
         "STOREB": {
@@ -362,11 +446,21 @@ def test_ship_orders_does_not_count_unconfirmed_assemble(monkeypatch):
 def test_main_limits_pending_fetch_scope_when_store_filter_is_set(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
-    def fake_get_pending_assembly_orders(*, target_date, since_days, store_codes=None, fallback_since_days=30):
+    def fake_get_pending_assembly_orders(
+        *,
+        target_date,
+        since_days,
+        store_codes=None,
+        fallback_since_days=30,
+        include_overdue=False,
+        overdue_lookback_days=None,
+    ):
         captured["target_date"] = target_date
         captured["since_days"] = since_days
         captured["store_codes"] = store_codes
         captured["fallback_since_days"] = fallback_since_days
+        captured["include_overdue"] = include_overdue
+        captured["overdue_lookback_days"] = overdue_lookback_days
         return {"UNIVERSAL": set()}, {}, {}, {}
 
     monkeypatch.setattr(ship_mod, "get_pending_assembly_orders", fake_get_pending_assembly_orders)
@@ -388,6 +482,8 @@ def test_main_limits_pending_fetch_scope_when_store_filter_is_set(monkeypatch, t
 
     assert rc == 0
     assert captured["store_codes"] == {"UNIVERSAL"}
+    assert captured["include_overdue"] is True
+    assert captured["overdue_lookback_days"] == 7
 
 
 def test_ship_orders_counts_when_assemble_is_confirmed(monkeypatch):

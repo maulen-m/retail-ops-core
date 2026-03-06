@@ -29,6 +29,7 @@ from scripts.import_orders_to_crm import (
     STORE_MAP,
     WAREHOUSE_STORE_MAP,
     _derive_identity_from_raw_row,
+    _build_line_append_dedupe_key,
     _load_sku_meta_for_keys,
     _build_line_dedupe_key,
     _coerce_column_values,
@@ -56,6 +57,7 @@ from scripts.import_orders_to_crm import (
     apply_fixed_values_backfill_openpyxl,
     append_orders_with_fallback,
     build_staging,
+    build_pending_append_mask,
     clean_order_id,
     clean_value,
     compute_fixed_value_columns,
@@ -403,6 +405,89 @@ def test_filter_for_shipping_include_overdue_honors_lookback_window():
     assert planned_dates == {"26.02.2026", "25.02.2026"}
     assert stats["include_overdue"] is True
     assert stats["overdue_lookback_days"] == 2
+
+
+def test_build_pending_append_mask_reappends_overdue_once_per_new_append_date():
+    append_date = date(2026, 3, 7)
+    df = pd.DataFrame(
+        {
+            "№ заказа": ["845767451"],
+            "Название товара в Kaspi Магазине": ["Принт_5в1_черный"],
+            "Артикул": ["LINE52_XL"],
+            "Количество": [1],
+            "Плановая дата передачи курьеру": ["06.03.2026"],
+        }
+    )
+
+    base_key = _build_line_dedupe_key(
+        "845767451",
+        date(2026, 3, 6),
+        "Принт_5в1_черный",
+        "LINE52_XL",
+        1,
+    )
+
+    work, new_mask, stats = build_pending_append_mask(
+        df,
+        colmap={
+            "order_id": "№ заказа",
+            "offer_name": "Название товара в Kaspi Магазине",
+            "sku": "Артикул",
+            "quantity": "Количество",
+            "handover": "Плановая дата передачи курьеру",
+        },
+        existing_keys={base_key},
+        existing_append_keys={_build_line_append_dedupe_key(base_key, date(2026, 3, 6))},
+        include_overdue=True,
+        append_date=append_date,
+    )
+
+    assert new_mask.tolist() == [True]
+    assert stats["dedupe_mode"] == "append_date"
+    assert stats["carryforward_rows"] == 1
+    assert stats["carryforward_rows_to_append"] == 1
+    assert work["_is_overdue"].tolist() == [True]
+
+
+def test_build_pending_append_mask_blocks_same_day_overdue_rerun():
+    append_date = date(2026, 3, 7)
+    df = pd.DataFrame(
+        {
+            "№ заказа": ["845767451"],
+            "Название товара в Kaspi Магазине": ["Принт_5в1_черный"],
+            "Артикул": ["LINE52_XL"],
+            "Количество": [1],
+            "Плановая дата передачи курьеру": ["06.03.2026"],
+        }
+    )
+
+    base_key = _build_line_dedupe_key(
+        "845767451",
+        date(2026, 3, 6),
+        "Принт_5в1_черный",
+        "LINE52_XL",
+        1,
+    )
+    today_append_key = _build_line_append_dedupe_key(base_key, append_date)
+
+    _work, new_mask, stats = build_pending_append_mask(
+        df,
+        colmap={
+            "order_id": "№ заказа",
+            "offer_name": "Название товара в Kaspi Магазине",
+            "sku": "Артикул",
+            "quantity": "Количество",
+            "handover": "Плановая дата передачи курьеру",
+        },
+        existing_keys={base_key},
+        existing_append_keys={today_append_key},
+        include_overdue=True,
+        append_date=append_date,
+    )
+
+    assert new_mask.tolist() == [False]
+    assert stats["duplicates_skipped"] == 1
+    assert stats["carryforward_rows_to_append"] == 0
 
 
 # ============================================================================
@@ -1587,6 +1672,7 @@ def _minimal_snapshot() -> CRMSnapshot:
         order_ids=set(),
         order_rows={},
         existing_keys=set(),
+        existing_append_keys=set(),
         column_positions={},
         planned_col_abs=None,
         table_date_col=None,

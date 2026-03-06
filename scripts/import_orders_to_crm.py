@@ -851,6 +851,11 @@ def _build_line_dedupe_key(
     return f"{clean_order}|{planned_iso}|{article_key}|{offer_key}|{quantity_key}"
 
 
+def _build_line_append_dedupe_key(line_key: str, append_date: Optional[date]) -> str:
+    append_iso = append_date.isoformat() if append_date else ""
+    return f"{line_key}|append:{append_iso}"
+
+
 def _load_article_identity_for_articles(articles: List[str]) -> Dict[str, Dict[str, str]]:
     clean_articles = sorted(
         {
@@ -1738,6 +1743,82 @@ def sort_for_crm(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def build_pending_append_mask(
+    df: pd.DataFrame,
+    *,
+    colmap: Dict[str, str],
+    existing_keys: set[str],
+    existing_append_keys: Optional[set[str]],
+    include_overdue: bool,
+    append_date: Optional[date],
+) -> tuple[pd.DataFrame, pd.Series, Dict[str, Any]]:
+    """
+    Compute dedupe mask for CRM append rows.
+
+    In include-overdue mode we dedupe by append date, not only by planned date.
+    That lets a still-pending overdue order surface once per operational day until
+    it is actually shipped, while still preventing duplicate re-appends on the
+    same day.
+    """
+
+    work = df.copy()
+    order_col = colmap.get("order_id")
+    handover_col = colmap.get("handover")
+    offer_col = colmap.get("offer_name")
+    sku_col = colmap.get("sku")
+    qty_col = colmap.get("quantity")
+
+    if not order_col:
+        mask = pd.Series([True] * len(work), index=work.index)
+        return work, mask, {
+            "dedupe_mode": "none",
+            "duplicates_skipped": 0,
+            "carryforward_rows": 0,
+            "carryforward_rows_to_append": 0,
+        }
+
+    work["_oid"] = work[order_col].apply(clean_order_id)
+    if handover_col and handover_col in work.columns:
+        work["_pdate"] = work[handover_col].apply(parse_date)
+    else:
+        work["_pdate"] = None
+
+    work["_is_overdue"] = work["_pdate"].apply(
+        lambda d: append_date is not None and isinstance(d, date) and d < append_date
+    )
+    work["_okey"] = [
+        _build_line_dedupe_key(
+            oid,
+            pdate,
+            row.get(offer_col) if offer_col else "",
+            row.get(sku_col) if sku_col else "",
+            row.get(qty_col) if qty_col else 0,
+        )
+        for (_, row), oid, pdate in zip(work.iterrows(), work["_oid"], work["_pdate"])
+    ]
+
+    use_append_date_dedupe = bool(include_overdue and append_date and existing_append_keys is not None)
+    if use_append_date_dedupe:
+        work["_akey"] = [
+            _build_line_append_dedupe_key(line_key, append_date) for line_key in work["_okey"]
+        ]
+        new_mask = ~work["_akey"].isin(existing_append_keys or set())
+        dedupe_mode = "append_date"
+    else:
+        new_mask = ~work["_okey"].isin(existing_keys)
+        dedupe_mode = "planned_date"
+
+    carryforward_rows = int(work["_is_overdue"].sum())
+    carryforward_rows_to_append = int((work["_is_overdue"] & new_mask).sum())
+    stats = {
+        "dedupe_mode": dedupe_mode,
+        "duplicates_skipped": int((~new_mask).sum()),
+        "carryforward_rows": carryforward_rows,
+        "carryforward_rows_to_append": carryforward_rows_to_append,
+    }
+    return work, new_mask, stats
+
+
 # ---------- CRM Inspection (openpyxl read-only) ----------
 
 def inspect_crm_sheet(
@@ -2192,6 +2273,7 @@ class CRMSnapshot:
     order_ids: set[str]
     order_rows: Dict[str, int]
     existing_keys: set[str]
+    existing_append_keys: set[str]
     column_positions: Dict[str, int]
     planned_col_abs: Optional[int]
     table_date_col: Optional[int]
@@ -2264,6 +2346,7 @@ def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSn
         order_ids: set[str] = set()
         order_rows: Dict[str, int] = {}
         existing_keys: set[str] = set()
+        existing_append_keys: set[str] = set()
         delivery_fee_rows: list[tuple[int, Optional[date], float, float]] = []
 
         planned_in_table = (
@@ -2322,9 +2405,13 @@ def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSn
             )
             existing_keys.add(key)
 
+            row_date = None
+            if table_date_col:
+                row_date = parse_date(ws.cell(row=row_num, column=table_date_col).value)
+                existing_append_keys.add(_build_line_append_dedupe_key(key, row_date))
+
             if table_date_col and delivery_fee_col and seller_fee_col:
-                row_date = ws.cell(row=row_num, column=table_date_col).value
-                parsed_date = parse_date(row_date)
+                parsed_date = row_date
                 seller_val = ws.cell(row=row_num, column=seller_fee_col).value
                 fee_val = ws.cell(row=row_num, column=delivery_fee_col).value
                 try:
@@ -2355,6 +2442,7 @@ def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSn
             order_ids=order_ids,
             order_rows=order_rows,
             existing_keys=existing_keys,
+            existing_append_keys=existing_append_keys,
             column_positions=target_columns,
             planned_col_abs=planned_col_abs,
             table_date_col=table_date_col,
@@ -4062,6 +4150,7 @@ def main(
         "orders_imported": 0,
         "orders_updated": 0,
         "orders_filtered": 0,
+        "carryforward_rows_appended": 0,
     }
     backup_done = False
     summary_path = Path(args.summary_file) if getattr(args, "summary_file", None) else None
@@ -4373,36 +4462,18 @@ def main(
     # Dedup against existing
     colmap = map_headers(df_filt)
     if "order_id" in colmap:
-        order_col = colmap["order_id"]
         if column_positions is None:
             column_positions = snapshot.column_positions
-        planned_col_abs = None
-        if column_positions:
-            planned_col_abs = column_positions.get("Плановая дата передачи курьеру")
-
         existing_keys = snapshot.existing_keys
-
-        handover_col = colmap.get("handover")
-        df_filt["_oid"] = df_filt[order_col].apply(clean_order_id)
-        if handover_col and handover_col in df_filt.columns:
-            df_filt["_pdate"] = df_filt[handover_col].apply(parse_date)
-        else:
-            df_filt["_pdate"] = None
-
-        offer_col = colmap.get("offer_name")
-        sku_col = colmap.get("sku")
-        qty_col = colmap.get("quantity")
-        df_filt["_okey"] = [
-            _build_line_dedupe_key(
-                oid,
-                p,
-                row.get(offer_col) if offer_col else "",
-                row.get(sku_col) if sku_col else "",
-                row.get(qty_col) if qty_col else 0,
-            )
-            for (_, row), oid, p in zip(df_filt.iterrows(), df_filt["_oid"], df_filt["_pdate"])
-        ]
-        new_mask = ~df_filt["_okey"].isin(existing_keys)
+        existing_append_keys = snapshot.existing_append_keys if snapshot.table_date_col else None
+        df_filt, new_mask, dedupe_stats = build_pending_append_mask(
+            df_filt,
+            colmap=colmap,
+            existing_keys=existing_keys,
+            existing_append_keys=existing_append_keys,
+            include_overdue=bool(args.include_overdue),
+            append_date=append_date,
+        )
 
         # Filter stage and phone values to match
         indices_to_keep = df_filt[new_mask].index.tolist()
@@ -4419,9 +4490,22 @@ def main(
             else None
         )
 
-        dup_count = len(stage) - len(stage_filtered)
+        dup_count = int(dedupe_stats.get("duplicates_skipped", 0))
         if dup_count > 0:
-            print(f"Skipped {dup_count} duplicates (same order_id + planned date already in CRM)")
+            if dedupe_stats.get("dedupe_mode") == "append_date" and append_date is not None:
+                print(
+                    f"Skipped {dup_count} duplicates "
+                    f"(same order line already appended for CRM Date {append_date.isoformat()})"
+                )
+            else:
+                print(f"Skipped {dup_count} duplicates (same order_id + planned date already in CRM)")
+        carryforward_rows = int(dedupe_stats.get("carryforward_rows_to_append", 0))
+        if carryforward_rows > 0:
+            print(
+                f"Carry-forward overdue rows to append: {carryforward_rows} "
+                f"(still pending, re-surfaced for {append_date.isoformat()})"
+            )
+            result["carryforward_rows_appended"] = carryforward_rows
 
         stage = stage_filtered
         phone_values = phone_filtered
@@ -4554,6 +4638,8 @@ def main(
     print(f"\n✅ Import complete!")
     print(f"   Updated: {updated_count} existing orders")
     print(f"   Appended: {new_rows_added} new orders")
+    if result.get("carryforward_rows_appended"):
+        print(f"   Carry-forward overdue rows: {result['carryforward_rows_appended']}")
     print(f"   Archived: {archive_path}")
     result["orders_imported"] = new_rows_added
     result["orders_updated"] = updated_count

@@ -97,6 +97,7 @@ echo "========================================"
 echo ""
 echo "Data root: ${DATA_ROOT}"
 echo "Lookback days: ${LOOKBACK_DAYS}"
+echo "Carry-forward mode: include overdue pending orders within ${LOOKBACK_DAYS} days"
 echo ""
 
 if [ "${SKIP_PREFLIGHT:-0}" != "1" ]; then
@@ -117,7 +118,12 @@ fi
 
 echo "Step: Shipping orders (set package count)"
 echo "----------------------------------------"
-python scripts/ship_orders_api.py --verbose --since-days "${LOOKBACK_DAYS}" --store "${STORE_NAME}"
+python scripts/ship_orders_api.py \
+    --verbose \
+    --since-days "${LOOKBACK_DAYS}" \
+    --include-overdue \
+    --overdue-lookback-days "${LOOKBACK_DAYS}" \
+    --store "${STORE_NAME}"
 
 if [ $? -ne 0 ]; then
     echo ""
