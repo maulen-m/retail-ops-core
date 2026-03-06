@@ -406,7 +406,7 @@ def test_filter_for_shipping_include_overdue_honors_lookback_window():
     assert stats["overdue_lookback_days"] == 2
 
 
-def test_build_pending_append_mask_appends_first_overdue_rollover_once():
+def test_build_pending_append_mask_appends_previous_day_miss_once():
     append_date = date(2026, 3, 7)
     df = pd.DataFrame(
         {
@@ -442,14 +442,15 @@ def test_build_pending_append_mask_appends_first_overdue_rollover_once():
     )
 
     assert new_mask.tolist() == [True]
-    assert stats["dedupe_mode"] == "first_rollover"
+    assert stats["dedupe_mode"] == "previous_day_rollover"
     assert stats["carryforward_rows"] == 1
     assert stats["carryforward_rows_to_append"] == 1
     assert work["_is_overdue"].tolist() == [True]
+    assert work["_is_prev_day_overdue"].tolist() == [True]
 
 
-def test_build_pending_append_mask_blocks_second_overdue_rollover():
-    append_date = date(2026, 3, 8)
+def test_build_pending_append_mask_blocks_second_previous_day_rollover():
+    append_date = date(2026, 3, 7)
     df = pd.DataFrame(
         {
             "№ заказа": ["845767451"],
@@ -486,6 +487,47 @@ def test_build_pending_append_mask_blocks_second_overdue_rollover():
     assert new_mask.tolist() == [False]
     assert stats["duplicates_skipped"] == 1
     assert stats["overdue_repeat_rows"] == 1
+    assert stats["carryforward_rows_to_append"] == 0
+
+
+def test_build_pending_append_mask_suppresses_older_overdue_backlog_rows():
+    append_date = date(2026, 3, 7)
+    df = pd.DataFrame(
+        {
+            "№ заказа": ["845767451"],
+            "Название товара в Kaspi Магазине": ["Принт_5в1_черный"],
+            "Артикул": ["LINE52_XL"],
+            "Количество": [1],
+            "Плановая дата передачи курьеру": ["05.03.2026"],
+        }
+    )
+
+    base_key = _build_line_dedupe_key(
+        "845767451",
+        date(2026, 3, 5),
+        "Принт_5в1_черный",
+        "LINE52_XL",
+        1,
+    )
+
+    work, new_mask, stats = build_pending_append_mask(
+        df,
+        colmap={
+            "order_id": "№ заказа",
+            "offer_name": "Название товара в Kaspi Магазине",
+            "sku": "Артикул",
+            "quantity": "Количество",
+            "handover": "Плановая дата передачи курьеру",
+        },
+        existing_keys={base_key},
+        existing_rollover_keys=set(),
+        include_overdue=True,
+        append_date=append_date,
+    )
+
+    assert work["_is_older_overdue"].tolist() == [True]
+    assert new_mask.tolist() == [False]
+    assert stats["older_overdue_rows_suppressed"] == 1
     assert stats["carryforward_rows_to_append"] == 0
 
 

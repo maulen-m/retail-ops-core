@@ -49,8 +49,9 @@ updating this contract and corresponding tests before merge.
 - keep ship-until-shipped carry-forward contract:
   - pending orders that miss one day must continue to surface on later daily runs until shipped or terminally cancelled/returned
   - `scripts/ship_orders_api.py` defaults to overdue carry-forward mode; strict today-only shipping is opt-in only
-  - `scripts/import_orders_to_crm.py --include-overdue` may append exactly one first-overdue rollover CRM `Date` row for a still-pending overdue order while preserving the original Kaspi planned handover date
+  - `scripts/import_orders_to_crm.py --include-overdue` may append only previous-day missed pending orders into CRM (`append_date - 1`), while preserving the original Kaspi planned handover date
   - overdue pending assembly backlog must remain visible as a stop-line until shipped; shipping health stays non-green while overdue/stale pending backlog remains after a live shipping run
+  - `scripts/ship_orders_api.py` must emit a dedicated backlog report with age buckets + exact overdue IDs under `reports/kaspi_pending_backlog/<YYYY-MM-DD>/`
 - keep fallback selection path in waybill download (`--fallback-crm`) to avoid missing PDFs for non-prefetched target IDs
 - keep profile contract in daily ops orchestrator:
   - `today-fast`: `report_waybill_status.py --since-days 1` (no `--include-overdue`)

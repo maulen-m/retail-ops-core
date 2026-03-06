@@ -1751,9 +1751,9 @@ def build_pending_append_mask(
     Compute dedupe mask for CRM append rows.
 
     In include-overdue mode we still keep overdue pending orders operationally
-    visible, but CRM only gets the first rollover row after an order becomes
-    overdue. That preserves a clear follow-up signal without re-appending the
-    same pending order every day forever.
+    visible, but CRM only gets a single rollover row for previous-day misses.
+    Older backlog is handled by shipping/waybill catch-up and backlog reports,
+    not by appending the same order family into CRM forever.
     """
 
     work = df.copy()
@@ -1781,6 +1781,11 @@ def build_pending_append_mask(
     work["_is_overdue"] = work["_pdate"].apply(
         lambda d: append_date is not None and isinstance(d, date) and d < append_date
     )
+    previous_day = append_date - timedelta(days=1) if append_date is not None else None
+    work["_is_prev_day_overdue"] = work["_pdate"].apply(
+        lambda d: previous_day is not None and isinstance(d, date) and d == previous_day
+    )
+    work["_is_older_overdue"] = work["_is_overdue"] & ~work["_is_prev_day_overdue"]
     work["_okey"] = [
         _build_line_dedupe_key(
             oid,
@@ -1797,13 +1802,16 @@ def build_pending_append_mask(
 
     use_rollover_dedupe = bool(include_overdue and append_date and existing_rollover_keys is not None)
     overdue_repeat_rows = 0
+    older_overdue_rows_suppressed = 0
     if use_rollover_dedupe:
         overdue_repeat_mask = work["_okey"].isin(existing_rollover_keys or set())
-        overdue_repeat_rows = int((work["_is_overdue"] & overdue_repeat_mask).sum())
-        rollover_new_mask = ~overdue_repeat_mask
+        overdue_repeat_rows = int((work["_is_prev_day_overdue"] & overdue_repeat_mask).sum())
+        older_overdue_rows_suppressed = int(work["_is_older_overdue"].sum())
+        rollover_new_mask = work["_is_prev_day_overdue"] & ~overdue_repeat_mask
         new_mask = planned_new_mask.copy()
-        new_mask.loc[work["_is_overdue"]] = rollover_new_mask.loc[work["_is_overdue"]]
-        dedupe_mode = "first_rollover"
+        new_mask.loc[work["_is_overdue"]] = False
+        new_mask.loc[work["_is_prev_day_overdue"]] = rollover_new_mask.loc[work["_is_prev_day_overdue"]]
+        dedupe_mode = "previous_day_rollover"
     else:
         new_mask = planned_new_mask
         dedupe_mode = "planned_date"
@@ -1815,6 +1823,8 @@ def build_pending_append_mask(
         "duplicates_skipped": int((~new_mask).sum()),
         "planned_duplicate_rows": planned_duplicate_rows,
         "overdue_repeat_rows": overdue_repeat_rows,
+        "previous_day_overdue_rows": int(work["_is_prev_day_overdue"].sum()),
+        "older_overdue_rows_suppressed": older_overdue_rows_suppressed,
         "carryforward_rows": carryforward_rows,
         "carryforward_rows_to_append": carryforward_rows_to_append,
     }
@@ -4508,18 +4518,26 @@ def main(
         if overdue_repeat_count > 0:
             print(
                 f"Skipped {overdue_repeat_count} overdue duplicates "
-                f"(same order line already rolled into CRM after planned handover date)"
+                f"(same previous-day missed order already rolled into CRM)"
             )
-        if dup_count > 0 and planned_dup_count == 0 and overdue_repeat_count == 0:
-            print(f"Skipped {dup_count} duplicates (same order line already in CRM)")
+        older_overdue_suppressed = int(dedupe_stats.get("older_overdue_rows_suppressed", 0))
+        if older_overdue_suppressed > 0:
+            print(
+                f"Skipped {older_overdue_suppressed} older overdue rows from CRM append "
+                f"(handled via shipping/waybill catch-up and backlog reports)"
+            )
+        residual_dup_count = dup_count - planned_dup_count - overdue_repeat_count - older_overdue_suppressed
+        if residual_dup_count > 0:
+            print(f"Skipped {residual_dup_count} duplicates (same order line already in CRM)")
         carryforward_rows = int(dedupe_stats.get("carryforward_rows_to_append", 0))
         if carryforward_rows > 0:
             print(
-                f"First-overdue rollover rows to append: {carryforward_rows} "
-                f"(still pending, first carried to CRM Date {append_date.isoformat()})"
+                f"Previous-day missed rows to append: {carryforward_rows} "
+                f"(still pending from { (append_date - timedelta(days=1)).isoformat() }, "
+                f"carried to CRM Date {append_date.isoformat()})"
             )
             result["carryforward_rows_appended"] = carryforward_rows
-            result["first_rollover_rows_appended"] = carryforward_rows
+            result["previous_day_rollover_rows_appended"] = carryforward_rows
 
         stage = stage_filtered
         phone_values = phone_filtered

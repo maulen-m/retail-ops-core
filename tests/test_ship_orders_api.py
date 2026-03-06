@@ -267,6 +267,66 @@ def test_summarize_pending_backlog_flags_stale_overdue_orders():
     assert report["stale_orders"][0]["order_id"] == "818884703"
 
 
+def test_build_pending_backlog_report_includes_age_buckets_and_exact_ids():
+    pending_meta = {
+        "STOREB": {
+            "818884703": {
+                "planned_date": date(2026, 2, 17),
+                "created_at": datetime(2026, 2, 12, 14, 11, 44),
+                "fetch_mode": "status_first",
+            },
+            "900000001": {
+                "planned_date": date(2026, 2, 14),
+                "created_at": datetime(2026, 2, 13, 8, 0, 0),
+                "fetch_mode": "fallback_since",
+            },
+        }
+    }
+
+    report = ship_mod.build_pending_backlog_report(
+        pending_meta,
+        target_date=date(2026, 2, 17),
+        stale_hours=24,
+        now_dt=datetime(2026, 2, 18, 12, 0, 0),
+    )
+
+    assert report["summary"]["overdue_pending"] == 2
+    assert report["age_buckets"]["1d"] == 1
+    assert report["age_buckets"]["4-7d"] == 1
+    assert [row["order_id"] for row in report["overdue_orders"]] == ["900000001", "818884703"]
+
+
+def test_write_pending_backlog_report_creates_json_and_md(tmp_path):
+    report = ship_mod.build_pending_backlog_report(
+        {
+            "STOREB": {
+                "818884703": {
+                    "planned_date": date(2026, 2, 17),
+                    "created_at": datetime(2026, 2, 12, 14, 11, 44),
+                }
+            }
+        },
+        target_date=date(2026, 2, 17),
+        now_dt=datetime(2026, 2, 18, 12, 0, 0),
+    )
+
+    json_path, md_path = ship_mod.write_pending_backlog_report(
+        target_date=date(2026, 2, 17),
+        store_scope="STORE-B",
+        dry_run=True,
+        include_overdue=True,
+        overdue_lookback_days=7,
+        initial_report=report,
+        remaining_report=None,
+        output_root=tmp_path,
+    )
+
+    assert json_path.exists()
+    assert md_path.exists()
+    assert "818884703" in md_path.read_text(encoding="utf-8")
+    assert '"store_scope": "STORE-B"' in json_path.read_text(encoding="utf-8")
+
+
 def test_get_pending_assembly_orders_falls_back_when_status_first_api_requires_since(monkeypatch):
     calls = {"status_first": 0, "fallback_since": []}
     tz = ZoneInfo("Asia/Almaty")
@@ -535,6 +595,11 @@ def test_main_returns_nonzero_when_overdue_backlog_remains(monkeypatch, tmp_path
         ship_mod,
         "ship_orders",
         lambda *args, **kwargs: {"shipped": 1, "skipped": 0, "errors": []},
+    )
+    monkeypatch.setattr(
+        ship_mod,
+        "write_pending_backlog_report",
+        lambda **kwargs: (tmp_path / "backlog.json", tmp_path / "backlog.md"),
     )
     monkeypatch.setattr(
         sys,
