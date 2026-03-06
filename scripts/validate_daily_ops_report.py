@@ -22,6 +22,7 @@ REQUIRED_FIELDS = [
     "stores_red",
     "stores_green",
     "store_results",
+    "shipping_backlog",
     "summary_json",
 ]
 
@@ -50,6 +51,13 @@ def validate_daily_ops_report(path: Path, *, strict: bool = False) -> dict[str, 
                 errors.append(f"store_results[{store}] missing ok")
             if "rc" not in meta:
                 errors.append(f"store_results[{store}] missing rc")
+
+    shipping_backlog = payload.get("shipping_backlog")
+    if not isinstance(shipping_backlog, dict):
+        errors.append("shipping_backlog must be an object")
+    else:
+        if "present" not in shipping_backlog:
+            errors.append("shipping_backlog missing present")
 
     stores_total = int(payload.get("stores_total", -1)) if str(payload.get("stores_total", "")).isdigit() else payload.get("stores_total")
     stores_red = int(payload.get("stores_red", -1)) if str(payload.get("stores_red", "")).isdigit() else payload.get("stores_red")

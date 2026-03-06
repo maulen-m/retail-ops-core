@@ -88,6 +88,49 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _discover_shipping_backlog_latest(project_root: Path, as_of: str) -> dict[str, Any]:
+    report_dir = project_root / "reports" / "kaspi_pending_backlog" / as_of
+    base = {
+        "present": False,
+        "scope": "",
+        "json_path": "",
+        "md_path": "",
+        "initial_overdue_pending": 0,
+        "initial_stale_pending": 0,
+        "remaining_overdue_pending": 0,
+        "remaining_stale_pending": 0,
+    }
+    if not report_dir.exists():
+        return base
+
+    candidates = sorted(report_dir.glob("ship_orders_backlog_*_latest.json"))
+    if not candidates:
+        return base
+    preferred = next((path for path in candidates if "ALL_STORES_latest.json" in path.name), None)
+    latest_json = preferred or max(candidates, key=lambda path: path.stat().st_mtime)
+    latest_md = latest_json.with_suffix(".md")
+
+    try:
+        payload = _load_json(latest_json)
+    except Exception as exc:
+        out = dict(base)
+        out["error"] = f"failed to parse shipping backlog report: {exc}"
+        return out
+
+    initial_summary = ((payload.get("initial") or {}).get("summary") or {})
+    remaining_summary = ((payload.get("remaining") or {}).get("summary") or {})
+    return {
+        "present": True,
+        "scope": str(payload.get("store_scope") or ""),
+        "json_path": str(latest_json),
+        "md_path": str(latest_md),
+        "initial_overdue_pending": int(initial_summary.get("overdue_pending", 0) or 0),
+        "initial_stale_pending": int(initial_summary.get("stale_pending", 0) or 0),
+        "remaining_overdue_pending": int(remaining_summary.get("overdue_pending", 0) or 0),
+        "remaining_stale_pending": int(remaining_summary.get("stale_pending", 0) or 0),
+    }
+
+
 def _render_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Kaspi Daily Ops Orchestrator Summary",
@@ -100,8 +143,28 @@ def _render_markdown(report: dict[str, Any]) -> str:
         f"- total_duration_sec: `{report['total_duration_sec']}`",
         f"- red_stores: `{','.join(report.get('red_stores', []))}`",
         "",
-        "## Steps",
+        "## Shipping Backlog",
     ]
+    shipping_backlog = report.get("shipping_backlog_latest") or {}
+    if shipping_backlog.get("present"):
+        lines.extend(
+            [
+                f"- scope: `{shipping_backlog.get('scope', '')}`",
+                f"- initial_overdue_pending: `{shipping_backlog.get('initial_overdue_pending', 0)}`",
+                f"- initial_stale_pending: `{shipping_backlog.get('initial_stale_pending', 0)}`",
+                f"- remaining_overdue_pending: `{shipping_backlog.get('remaining_overdue_pending', 0)}`",
+                f"- remaining_stale_pending: `{shipping_backlog.get('remaining_stale_pending', 0)}`",
+                f"- report_md: `{shipping_backlog.get('md_path', '')}`",
+            ]
+        )
+    else:
+        lines.append("- present: `False`")
+    lines.extend(
+        [
+            "",
+        "## Steps",
+        ]
+    )
     for row in report["steps"]:
         status = "OK" if row["ok"] else "FAIL"
         allow = " (allowed)" if row.get("allow_failure") and row["rc"] != 0 else ""
@@ -347,6 +410,7 @@ def run_kaspi_daily_ops(
         "ok": bool(overall_ok),
         "exit_code": 0 if overall_ok else 1,
         "total_duration_sec": round(time.perf_counter() - started, 3),
+        "shipping_backlog_latest": _discover_shipping_backlog_latest(root, as_of),
         "steps": steps,
         "summary_json": str(summary_json),
         "summary_md": str(summary_md),
