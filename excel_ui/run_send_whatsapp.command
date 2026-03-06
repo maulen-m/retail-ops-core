@@ -16,6 +16,7 @@ echo "Starting immediately..."
 echo ""
 
 python scripts/send_waybills_whatsapp.py \
+  --bundle-source merged \
   --chat-title "Заказы" \
   --forbid-chat "order 2" \
   --status-messages \

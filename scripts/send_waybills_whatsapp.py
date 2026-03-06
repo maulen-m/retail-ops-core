@@ -66,6 +66,7 @@ SOURCE_MERGED = "merged"
 SOURCE_PER_STORE = "per-store"
 SOURCE_LEGACY = "legacy"
 SOURCE_CHOICES = [SOURCE_AUTO, SOURCE_MERGED, SOURCE_PER_STORE, SOURCE_LEGACY]
+MERGED_SEND_ROOT_NAME = "SEND"
 
 STORE_DISPLAY = {
     "STOREB": "STORE-B",
@@ -188,16 +189,19 @@ def _has_store_folders(scan_root: Path) -> bool:
 def resolve_send_root(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Path:
     """Resolve which bundle root to use under Today/."""
     merged_root = today_folder / "MERGED"
+    merged_send_root = merged_root / MERGED_SEND_ROOT_NAME
     per_store_root = today_folder / "PER_STORE"
 
     if source_mode == SOURCE_MERGED:
+        if _has_store_folders(merged_send_root):
+            return merged_send_root
         return merged_root
     if source_mode == SOURCE_PER_STORE:
         return per_store_root
     if source_mode == SOURCE_LEGACY:
         return today_folder
 
-    for candidate in (merged_root, per_store_root, today_folder):
+    for candidate in (merged_send_root, merged_root, per_store_root, today_folder):
         if _has_store_folders(candidate):
             return candidate
     return today_folder
@@ -279,10 +283,15 @@ def collect_all_pdfs(
     """
     all_pdfs: List[Dict[str, Any]] = []
     order_store_map = dict(order_store_map or {})
-    store_folders = find_store_folders(today_folder, source_mode=source_mode)
+    source_root = resolve_send_root(today_folder, source_mode=source_mode)
+    store_folders = _collect_store_folders(source_root)
 
     for store_folder in store_folders:
         output_exact_map, output_basename_map = _build_manifest_output_index(store_folder)
+        try:
+            batch_label = str(store_folder.relative_to(source_root)).replace("\\", "/")
+        except Exception:
+            batch_label = store_folder.name
         for category in PDF_CATEGORIES:
             for pdf_path in collect_pdfs_from_category(store_folder, category):
                 rel_store_path = str(pdf_path.relative_to(store_folder)).replace("\\", "/")
@@ -312,6 +321,7 @@ def collect_all_pdfs(
                         "path": pdf_path,
                         "store": store_folder.name,
                         "store_label": _store_label_from_folder_name(store_folder.name),
+                        "batch_label": batch_label,
                         "category": category,
                         "filename": pdf_path.name,
                         "item_core": item_core,
@@ -1420,14 +1430,15 @@ def run_sender(
     print("\nPre-send status:")
     print(pre_status_text)
 
-    current_store: Optional[str] = None
+    current_batch: Optional[str] = None
     current_category: Optional[str] = None
 
     if dry_run:
         for i, pdf in enumerate(pdfs_to_send, start=1):
-            if pdf["store"] != current_store:
-                current_store = pdf["store"]
-                print(f"\nStore: {current_store}")
+            batch_label = str(pdf.get("batch_label") or pdf["store"])
+            if batch_label != current_batch:
+                current_batch = batch_label
+                print(f"\nBatch: {current_batch}")
 
             if pdf["category"] != current_category:
                 current_category = pdf["category"]
@@ -1472,9 +1483,10 @@ def run_sender(
                         return results
 
             for i, pdf in enumerate(pdfs_to_send, start=1):
-                if pdf["store"] != current_store:
-                    current_store = pdf["store"]
-                    print(f"\nStore: {current_store}")
+                batch_label = str(pdf.get("batch_label") or pdf["store"])
+                if batch_label != current_batch:
+                    current_batch = batch_label
+                    print(f"\nBatch: {current_batch}")
 
                 if pdf["category"] != current_category:
                     current_category = pdf["category"]
@@ -1598,8 +1610,8 @@ def main() -> None:
         default=SOURCE_AUTO,
         help=(
             "Which bundle layout to send from: "
-            "auto (prefer MERGED, then PER_STORE, then legacy), "
-            "merged, per-store, or legacy."
+            "auto (prefer MERGED/SEND, then MERGED, then PER_STORE, then legacy), "
+            "merged (prefer MERGED/SEND, fallback MERGED), per-store, or legacy."
         ),
     )
     parser.add_argument(
@@ -1698,6 +1710,9 @@ def main() -> None:
     print(f"    Source root: {results.get('source_root', '')}")
     print(f"    Duration: {mins}m {secs}s")
     print("=" * 60)
+
+    if results["failed"] > 0:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

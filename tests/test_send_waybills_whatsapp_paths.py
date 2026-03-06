@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from scripts.send_waybills_whatsapp import (
+    MERGED_SEND_ROOT_NAME,
     SOURCE_MERGED,
     WhatsAppSender,
     _normalize_chat_key,
@@ -13,6 +14,7 @@ from scripts.send_waybills_whatsapp import (
     format_post_send_status_table,
     format_pre_send_status_table,
     order_pdfs_for_sending,
+    resolve_send_root,
 )
 
 
@@ -72,6 +74,23 @@ def test_collect_all_pdfs_can_force_merged_source(tmp_path: Path) -> None:
     assert folders[0] == merged_store
     assert len(pdfs) == 1
     assert pdfs[0]["filename"] == "merged_only.pdf"
+
+
+def test_collect_all_pdfs_prefers_merged_send_root_when_present(tmp_path: Path) -> None:
+    today_root = tmp_path / "Today"
+    merged_store = today_root / "MERGED" / "TODAY" / "28.02.26_MERGED_qnt1"
+    send_store = today_root / "MERGED" / MERGED_SEND_ROOT_NAME / "28.02.26_MERGED_qnt1"
+    _write_store_fixture(merged_store, "partitioned.pdf")
+    _write_store_fixture(send_store, "send_ready.pdf")
+
+    resolved_root = resolve_send_root(today_root, source_mode=SOURCE_MERGED)
+    folders = find_store_folders(today_root, source_mode=SOURCE_MERGED)
+    pdfs = collect_all_pdfs(today_root, source_mode=SOURCE_MERGED)
+
+    assert resolved_root == today_root / "MERGED" / MERGED_SEND_ROOT_NAME
+    assert folders == [send_store]
+    assert [pdf["filename"] for pdf in pdfs] == ["send_ready.pdf"]
+    assert pdfs[0]["batch_label"] == "28.02.26_MERGED_qnt1"
 
 
 def test_collect_all_pdfs_recurses_nested_category_folders(tmp_path: Path) -> None:

@@ -84,6 +84,56 @@ if [ "${AUTO_SEND_WHATSAPP}" = "auto" ]; then
     fi
 fi
 
+count_pdf_files() {
+    python3 - "$1" <<'PY'
+from pathlib import Path
+import sys
+
+base = Path(sys.argv[1])
+if not base.exists():
+    print(0)
+else:
+    print(sum(1 for _ in base.rglob("*.pdf")))
+PY
+}
+
+count_merged_audit_bundle_pdfs() {
+    OUTPUT_TODAY_DIR="${OUTPUT_TODAY_DIR}" python3 - <<'PY'
+from pathlib import Path
+import os
+
+root = Path(os.environ["OUTPUT_TODAY_DIR"]) / "MERGED"
+if not root.exists():
+    print(0)
+    raise SystemExit(0)
+
+partitions = [root / "TODAY", root / "OVERDUE"]
+if any(part.exists() for part in partitions):
+    count = sum(sum(1 for _ in part.rglob("*.pdf")) for part in partitions if part.exists())
+else:
+    count = 0
+    for path in root.rglob("*.pdf"):
+        if "SEND" in path.parts:
+            continue
+        count += 1
+print(count)
+PY
+}
+
+resolve_whatsapp_send_source() {
+    OUTPUT_TODAY_DIR="${OUTPUT_TODAY_DIR}" python3 - <<'PY'
+import os
+from pathlib import Path
+
+from scripts.send_waybills_whatsapp import SOURCE_MERGED, resolve_send_root
+
+root = Path(os.environ["OUTPUT_TODAY_DIR"])
+source = resolve_send_root(root, source_mode=SOURCE_MERGED)
+count = sum(1 for _ in source.rglob("*.pdf")) if source.exists() else 0
+print(f"{count}|{source}")
+PY
+}
+
 # Merchant UID headers (store-specific). Prefer config/kaspi_stores.yaml when available.
 MERCHANT_EXPORTS=$(python3 - <<'PY' 2>/dev/null
 from pathlib import Path
@@ -327,26 +377,16 @@ if [ "${HARD_FAIL}" -eq 0 ] && [ -d "${OUTPUT_TODAY_DIR}" ]; then
     echo ""
     echo "Bundle count summary..."
     echo "----------------------------------------"
-    OUTPUT_TODAY_DIR="${OUTPUT_TODAY_DIR}" python3 - <<'PY'
-from pathlib import Path
-import os
-
-root = Path(os.environ["OUTPUT_TODAY_DIR"])
-per_store_root = root / "PER_STORE"
-merged_root = root / "MERGED"
-
-def count_pdfs(base: Path) -> int:
-    if not base.exists():
-        return 0
-    return sum(1 for _ in base.rglob("*.pdf"))
-
-per_store_count = count_pdfs(per_store_root)
-merged_count = count_pdfs(merged_root)
-
-print(f"PER_STORE bundles (all partitions): {per_store_count}")
-print(f"MERGED bundles (all partitions): {merged_count}")
-print("Note: WhatsApp sender auto mode uses MERGED by default.")
-PY
+    PER_STORE_BUNDLE_COUNT="$(count_pdf_files "${OUTPUT_TODAY_DIR}/PER_STORE")"
+    MERGED_AUDIT_BUNDLE_COUNT="$(count_merged_audit_bundle_pdfs)"
+    WHATSAPP_SEND_INFO="$(resolve_whatsapp_send_source)"
+    WHATSAPP_BUNDLE_COUNT="${WHATSAPP_SEND_INFO%%|*}"
+    WHATSAPP_SOURCE_ROOT="${WHATSAPP_SEND_INFO#*|}"
+    echo "PER_STORE bundles (all partitions): ${PER_STORE_BUNDLE_COUNT}"
+    echo "MERGED bundles (audit, all partitions): ${MERGED_AUDIT_BUNDLE_COUNT}"
+    echo "MERGED send bundles (WhatsApp source): ${WHATSAPP_BUNDLE_COUNT}"
+    echo "WhatsApp send source root: ${WHATSAPP_SOURCE_ROOT}"
+    echo "Note: WhatsApp sender uses the resolved merged source above."
 fi
 
 echo ""
@@ -417,32 +457,43 @@ if [ $? -ne 0 ]; then
     HARD_FAIL=1
 fi
 
+if [ "${AUTO_SEND_WHATSAPP}" = "1" ]; then
+    echo ""
+    WHATSAPP_SEND_INFO="$(resolve_whatsapp_send_source)"
+    WHATSAPP_BUNDLE_COUNT="${WHATSAPP_SEND_INFO%%|*}"
+    WHATSAPP_SOURCE_ROOT="${WHATSAPP_SEND_INFO#*|}"
+    if [ "${WHATSAPP_BUNDLE_COUNT}" -gt 0 ]; then
+        echo "Step 4: Sending bundles to WhatsApp..."
+        echo "----------------------------------------"
+        if [ "${HARD_FAIL}" -ne 0 ]; then
+            echo "WARNING: Waybill health reported mismatches, but ready merged bundles will still be sent."
+            echo "WhatsApp source root: ${WHATSAPP_SOURCE_ROOT}"
+        fi
+        if [ -x "${WHATSAPP_RUNNER}" ]; then
+            "${WHATSAPP_RUNNER}"
+            if [ $? -ne 0 ]; then
+                echo ""
+                echo "WARNING: WhatsApp send step returned non-zero."
+                echo "Please review sender logs above."
+            fi
+        else
+            echo "WARNING: WhatsApp runner not found/executable: ${WHATSAPP_RUNNER}"
+            echo "Run manually: ${DATA_ROOT}/excel_ui/run_send_whatsapp.command"
+        fi
+    else
+        echo "Step 4: WhatsApp send skipped (no merged send bundles found)"
+    fi
+else
+    echo ""
+    echo "Step 4: WhatsApp send skipped (KASPI_AUTO_SEND_WHATSAPP=${AUTO_SEND_WHATSAPP})"
+fi
+
 if [ "${HARD_FAIL}" -ne 0 ]; then
     echo ""
     echo "STOP-LINE: workflow completed with hard failures. See warnings above."
     echo "Press Enter to close..."
     read
     exit 1
-fi
-
-if [ "${AUTO_SEND_WHATSAPP}" = "1" ]; then
-    echo ""
-    echo "Step 4: Sending bundles to WhatsApp..."
-    echo "----------------------------------------"
-    if [ -x "${WHATSAPP_RUNNER}" ]; then
-        "${WHATSAPP_RUNNER}"
-        if [ $? -ne 0 ]; then
-            echo ""
-            echo "WARNING: WhatsApp send step returned non-zero."
-            echo "Please review sender logs above."
-        fi
-    else
-        echo "WARNING: WhatsApp runner not found/executable: ${WHATSAPP_RUNNER}"
-        echo "Run manually: ${DATA_ROOT}/excel_ui/run_send_whatsapp.command"
-    fi
-else
-    echo ""
-    echo "Step 4: WhatsApp send skipped (KASPI_AUTO_SEND_WHATSAPP=${AUTO_SEND_WHATSAPP})"
 fi
 
 echo ""
