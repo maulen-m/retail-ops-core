@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -350,6 +351,69 @@ def test_sender_blocks_forbidden_target_chat_without_launching() -> None:
             profile_directory="Profile 2",
             blocked_chat_titles=["order 2"],
         )
+
+
+class _AlwaysDetachedTarget:
+    def click(self, timeout=1500, force=False):
+        raise RuntimeError("detached")
+
+    def evaluate(self, _script):
+        raise RuntimeError("locator evaluate timeout")
+
+
+class _FakeLocator:
+    def __init__(self, target=None):
+        self._target = target
+
+    def count(self):
+        return 1 if self._target is not None else 0
+
+    @property
+    def first(self):
+        if self._target is None:
+            raise AssertionError("No target present")
+        return self._target
+
+
+class _FakePage:
+    def __init__(self, selectors=None, *, js_clickable=None):
+        self._selectors = selectors or {}
+        self._js_clickable = set(js_clickable or [])
+        self.wait_calls = []
+        self.js_clicks = []
+
+    def locator(self, selector):
+        return self._selectors.get(selector, _FakeLocator())
+
+    def wait_for_timeout(self, ms):
+        self.wait_calls.append(ms)
+
+    def evaluate(self, script, selector=None):
+        if "document.querySelector" in script:
+            if selector in self._js_clickable:
+                self.js_clicks.append(selector)
+                return True
+            return False
+        raise AssertionError(f"Unexpected evaluate call: {script!r}")
+
+
+def test_safe_click_selectors_uses_page_level_js_fallback() -> None:
+    selector = "button[aria-label='Attach']"
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    fake_page = _FakePage(
+        selectors={selector: _FakeLocator(_AlwaysDetachedTarget())},
+        js_clickable={selector},
+    )
+    sender._ctx = SimpleNamespace(page=fake_page)
+
+    sender._safe_click_selectors([selector], "attach button", timeout_ms=500)
+
+    assert fake_page.js_clicks == [selector]
 
 
 def test_collect_store_order_bundle_stats_counts_unique_orders(tmp_path: Path) -> None:

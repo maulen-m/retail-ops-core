@@ -1073,6 +1073,25 @@ class WhatsAppSender:
                 except Exception as exc:
                     errors.append(f"{selector} js: {exc}")
 
+                # Direct page-level query avoids locator re-resolution races when
+                # WhatsApp re-renders the composer/attachment controls mid-click.
+                try:
+                    clicked = self.page.evaluate(
+                        """
+                        (sel) => {
+                          const el = document.querySelector(sel);
+                          if (!el) return false;
+                          el.click();
+                          return true;
+                        }
+                        """,
+                        selector,
+                    )
+                    if clicked:
+                        return
+                except Exception as exc:
+                    errors.append(f"{selector} page-js: {exc}")
+
             self.page.wait_for_timeout(250)
 
         err_tail = " | ".join(errors[-6:]) if errors else "no matching elements"
