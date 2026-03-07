@@ -30,7 +30,8 @@ from core.integrations.kaspi_api_client import (  # noqa: E402
     STORE_TOKEN_MAP,
 )
 from core.integrations.kaspi_order_stage import StageCode, api_state_filter_for_stage  # noqa: E402
-from core.utils.kaspi_dates import planned_date_from_order  # noqa: E402
+from core.integrations.kaspi_order_stage import classify_kaspi_stage_from_db_row, classify_kaspi_order_stage  # noqa: E402
+from core.utils.kaspi_dates import parse_kaspi_date, planned_date_from_order  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -57,6 +58,11 @@ API_TO_DISPLAY = {
     "MELVIS": "Store-C",
 }
 
+PENDING_STAGES = {
+    StageCode.ACCEPTED_PENDING_ASSEMBLY,
+    StageCode.ASSEMBLED_PENDING_HANDOVER,
+}
+
 
 def _coerce_str(value: Any) -> str:
     if value is None or pd.isna(value):
@@ -81,29 +87,19 @@ def normalize_store_name(value: Any) -> str:
 
 
 def parse_date(value: Any) -> Optional[date]:
-    if pd.isna(value) or value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    value_str = str(value).strip()
-    try:
-        return datetime.strptime(value_str, "%d.%m.%Y").date()
-    except ValueError:
-        pass
-    try:
-        return datetime.strptime(value_str, "%Y-%m-%d").date()
-    except ValueError:
-        pass
-    try:
-        return pd.to_datetime(value, dayfirst=True).date()
-    except (ValueError, TypeError):
-        return None
+    return parse_kaspi_date(value)
 
 
 def _planned_date_from_order(order: dict) -> Optional[date]:
     return planned_date_from_order(order)
+
+
+def _db_row_planned_date(row: Any) -> Optional[date]:
+    if not hasattr(row, "get"):
+        row = dict(row)
+    return parse_date(row.get("courier_transmission_planning_date")) or parse_date(
+        row.get("planned_shipment_date")
+    )
 
 
 def get_api_orders_by_store(
@@ -144,9 +140,11 @@ def get_api_orders_by_store(
             logger.info(f"{store_code}: API returned {len(orders)} orders")
 
         ids = set()
+        min_date = target_date - timedelta(days=max(int(since_days), 0))
         for order in orders:
             planned = _planned_date_from_order(order)
-            if planned == target_date:
+            stage = classify_kaspi_order_stage(order)
+            if stage in PENDING_STAGES and planned and min_date <= planned <= target_date:
                 code = order.get("attributes", {}).get("code", "")
                 if code:
                     ids.add(code)
@@ -182,10 +180,8 @@ def get_crm_orders(
         if not order_id:
             continue
 
-        planned_date = parse_date(row.get("PLANNED_SHIPPING_DATE"))
-        if not planned_date:
-            planned_date = parse_date(row.get("Плановая дата передачи курьеру"))
-        if planned_date != target_date:
+        row_date = parse_date(row.get("Date"))
+        if row_date != target_date:
             continue
 
         store_name = row.get("STORE_NAME")
@@ -204,6 +200,7 @@ def get_crm_orders(
 def get_db_orders(
     db_path: Path,
     target_date: date,
+    since_days: int = 7,
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     if not db_path.exists():
         return {}, {}
@@ -214,22 +211,53 @@ def get_db_orders(
         if not table:
             return {}, {}
 
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(fact_orders_kaspi)").fetchall()
+        }
+        select_cols = [
+            col
+            for col in (
+                "order_id",
+                "store_code",
+                "assigned_size",
+                "my_size",
+                "kaspi_status",
+                "kaspi_status_detail",
+                "signature_required",
+                "pre_order",
+                "waybill_url",
+                "delivery_mode",
+                "returned_to_warehouse",
+                "courier_transmission_date",
+                "actual_shipment_date",
+                "courier_transmission_planning_date",
+                "planned_shipment_date",
+            )
+            if col in cols
+        ]
         rows = conn.execute(
-            """
-            SELECT order_id, store_code, assigned_size, my_size
+            f"""
+            SELECT {", ".join(select_cols)}
             FROM fact_orders_kaspi
-            WHERE planned_shipment_date = ?
-            """,
-            (target_date.isoformat(),),
+            """
         ).fetchall()
 
     db_all: dict[str, set[str]] = defaultdict(set)
     db_size: dict[str, set[str]] = defaultdict(set)
+    min_date = target_date - timedelta(days=max(int(since_days), 0))
     for row in rows:
         order_id = _coerce_str(row["order_id"])
         if order_id.endswith(".0"):
             order_id = order_id[:-2]
         if not order_id:
+            continue
+
+        planned_date = _db_row_planned_date(row)
+        if not planned_date or not (min_date <= planned_date <= target_date):
+            continue
+
+        stage = classify_kaspi_stage_from_db_row(row)
+        if stage not in PENDING_STAGES:
             continue
 
         store_name = normalize_store_name(row["store_code"])
@@ -291,7 +319,7 @@ def main() -> int:
         target_date, since_days=args.since_days, store_filter=args.store, verbose=args.verbose
     )
     crm_all, crm_size = get_crm_orders(args.crm_file, args.sheet, target_date)
-    db_all, db_size = get_db_orders(db_path, target_date)
+    db_all, db_size = get_db_orders(db_path, target_date, since_days=args.since_days)
 
     all_stores = set()
     for store_code in api_by_store:
@@ -303,7 +331,7 @@ def main() -> int:
 
     headers = [
         "STORE", "API_TODAY", "CRM_TODAY", "DB_TODAY", "CRM_SIZE", "DB_SIZE",
-        "MISS_CRM", "MISS_SIZE",
+        "MISS_CRM", "STALE_CRM", "MISS_SIZE",
     ]
     rows = []
     store_rows: list[dict[str, Any]] = []
@@ -324,11 +352,12 @@ def main() -> int:
         db_size_ids = db_size.get(store, set())
 
         miss_crm = len(api_ids - crm_ids)
+        stale_crm = len(crm_ids - api_ids)
         size_ok = crm_size_ids | db_size_ids
         miss_size = len(api_ids - size_ok)
 
         if api_failed:
-            row = [store, "ERR", "-", "-", "-", "-", "-", "-"]
+            row = [store, "ERR", "-", "-", "-", "-", "-", "-", "-"]
             store_rows.append(
                 {
                     "store": store,
@@ -339,6 +368,7 @@ def main() -> int:
                     "crm_size": None,
                     "db_size": None,
                     "miss_crm": None,
+                    "stale_crm": None,
                     "miss_size": None,
                 }
             )
@@ -351,6 +381,7 @@ def main() -> int:
                 str(len(crm_size_ids)),
                 str(len(db_size_ids)),
                 str(miss_crm),
+                str(stale_crm),
                 str(miss_size),
             ]
             totals["API"] += len(api_ids)
@@ -359,6 +390,7 @@ def main() -> int:
             totals["CRM_SIZE"] += len(crm_size_ids)
             totals["DB_SIZE"] += len(db_size_ids)
             totals["MISS_CRM"] += miss_crm
+            totals["STALE_CRM"] += stale_crm
             totals["MISS_SIZE"] += miss_size
             store_rows.append(
                 {
@@ -370,6 +402,7 @@ def main() -> int:
                     "crm_size": len(crm_size_ids),
                     "db_size": len(db_size_ids),
                     "miss_crm": miss_crm,
+                    "stale_crm": stale_crm,
                     "miss_size": miss_size,
                 }
             )
@@ -377,7 +410,7 @@ def main() -> int:
         rows.append(row)
 
     if api_errors:
-        totals_row = ["TOTAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL"]
+        totals_row = ["TOTAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL"]
     else:
         totals_row = [
             "TOTAL",
@@ -387,6 +420,7 @@ def main() -> int:
             str(totals["CRM_SIZE"]),
             str(totals["DB_SIZE"]),
             str(totals["MISS_CRM"]),
+            str(totals["STALE_CRM"]),
             str(totals["MISS_SIZE"]),
         ]
     rows.append(totals_row)
@@ -404,6 +438,7 @@ def main() -> int:
             "crm_size": int(totals["CRM_SIZE"]),
             "db_size": int(totals["DB_SIZE"]),
             "miss_crm": int(totals["MISS_CRM"]),
+            "stale_crm": int(totals["STALE_CRM"]),
             "miss_size": int(totals["MISS_SIZE"]),
         },
         "stores": store_rows,
@@ -435,6 +470,7 @@ def main() -> int:
         print(f"{title} (first 5): {', '.join(sample)}")
 
     show_missing("Missing in CRM", api_all - crm_all_ids)
+    show_missing("Stale in CRM today", crm_all_ids - api_all)
     show_missing("Missing size (DB+CRM)", api_all - size_ok_ids)
 
     return 0

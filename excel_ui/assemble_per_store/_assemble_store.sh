@@ -12,12 +12,15 @@ cd "${PROJECT_ROOT}"
 source .venv/bin/activate 2>/dev/null || true
 if [ -f ".env" ]; then
     ENV_EXPORTS=$(python3 - <<'PY'
+import re
 import shlex
 from pathlib import Path
 
 p = Path(".env")
 if not p.exists():
     raise SystemExit(0)
+
+SHELL_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 for raw in p.read_text(encoding="utf-8").splitlines():
     line = raw.strip()
@@ -30,6 +33,8 @@ for raw in p.read_text(encoding="utf-8").splitlines():
     key, val = line.split("=", 1)
     key = key.strip()
     if not key:
+        continue
+    if not SHELL_KEY_RE.match(key):
         continue
     print(f"export {key}={shlex.quote(val.strip())}")
 PY

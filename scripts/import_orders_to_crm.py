@@ -14,7 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from contextlib import contextmanager
 import json
 import os
@@ -64,7 +64,7 @@ from core.integrations.kaspi_order_stage import (
 )
 from core.parsers.kaspi_parser import extract_sku_from_article
 from core.utils.sku_map import extract_kaspi_name_core
-from core.utils.kaspi_dates import planned_date_from_order
+from core.utils.kaspi_dates import parse_kaspi_date, planned_date_from_order
 from core.db import get_db
 from scripts.validate_crm_workbook_integrity import (
     filter_integrity_errors,
@@ -851,6 +851,73 @@ def _build_line_dedupe_key(
     return f"{clean_order}|{planned_iso}|{article_key}|{offer_key}|{quantity_key}"
 
 
+@dataclass(frozen=True)
+class CRMDateBlockRow:
+    row_num: int
+    line_key: str
+    my_size: str = ""
+
+
+@dataclass(frozen=True)
+class CRMAppendDateReconcilePlan:
+    delete_row_numbers: list[int]
+    keep_keys: set[str]
+    keep_rows_by_key: Dict[str, CRMDateBlockRow]
+    missing_keys: list[str]
+
+
+def plan_append_date_reconcile(
+    existing_rows: List[CRMDateBlockRow],
+    desired_keys: List[str],
+) -> CRMAppendDateReconcilePlan:
+    """
+    Reconcile append-date CRM rows against the desired pending line-key universe.
+
+    Keeps at most the desired multiplicity for each key, preferring rows with
+    operator-entered MY_SIZE so manual work survives repeated imports.
+    """
+    desired_counts = Counter(desired_keys)
+    rows_by_key: Dict[str, List[CRMDateBlockRow]] = {}
+    for row in existing_rows:
+        rows_by_key.setdefault(row.line_key, []).append(row)
+
+    keep_rows_by_key: Dict[str, CRMDateBlockRow] = {}
+    delete_row_numbers: list[int] = []
+
+    for key, rows in rows_by_key.items():
+        keep_count = max(int(desired_counts.get(key, 0)), 0)
+        ranked_rows = sorted(
+            rows,
+            key=lambda row: (0 if str(row.my_size or "").strip() else 1, row.row_num),
+        )
+        keep_rows = ranked_rows[:keep_count]
+        if keep_rows:
+            keep_rows_by_key[key] = keep_rows[0]
+        delete_row_numbers.extend(row.row_num for row in ranked_rows[keep_count:])
+
+    delete_row_numbers = sorted(set(delete_row_numbers), reverse=True)
+    keep_keys = set(keep_rows_by_key.keys())
+
+    # Existing duplicates trimmed above count as present; missing keys are
+    # whatever the desired universe still lacks after keep/delete selection.
+    final_existing_counts = Counter(row.line_key for row in existing_rows) - Counter(
+        row.line_key for row in existing_rows if row.row_num in set(delete_row_numbers)
+    )
+    missing_keys = []
+    for key, desired_count in desired_counts.items():
+        missing = max(int(desired_count) - int(final_existing_counts.get(key, 0)), 0)
+        if missing <= 0:
+            continue
+        missing_keys.extend([key] * missing)
+
+    return CRMAppendDateReconcilePlan(
+        delete_row_numbers=delete_row_numbers,
+        keep_keys=keep_keys,
+        keep_rows_by_key=keep_rows_by_key,
+        missing_keys=missing_keys,
+    )
+
+
 def _load_article_identity_for_articles(articles: List[str]) -> Dict[str, Dict[str, str]]:
     clean_articles = sorted(
         {
@@ -1152,6 +1219,50 @@ def build_fixed_value_payload(df_filt: pd.DataFrame) -> List[Dict[str, Any]]:
     ]
 
 
+def build_resolved_my_size_by_key(
+    df_filt: pd.DataFrame,
+    latest_my_size_by_key: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """
+    Resolve a deterministic MY_SIZE for each line key.
+
+    Precedence:
+    1. Existing non-empty CRM MY_SIZE already seen for the same line key
+    2. Deterministic identity parsing / DB-backed fixed-value derivation
+    """
+    if df_filt.empty:
+        return {}
+
+    work = df_filt.copy()
+    colmap = map_headers(work)
+    required = {"order_id", "handover", "offer_name", "sku", "quantity"}
+    if "_okey" not in work.columns and required.issubset(colmap):
+        work["_okey"] = work.apply(
+            lambda row: _build_line_dedupe_key(
+                row.get(colmap["order_id"]),
+                parse_kz_date(row.get(colmap["handover"])),
+                row.get(colmap["offer_name"]),
+                row.get(colmap["sku"]),
+                row.get(colmap["quantity"]),
+            ),
+            axis=1,
+        )
+
+    fixed_payload = build_fixed_value_payload(work)
+    latest_map = latest_my_size_by_key or {}
+    resolved: Dict[str, str] = {}
+
+    for idx, row_vals in zip(work.index, fixed_payload):
+        key = str(work.loc[idx, "_okey"]) if "_okey" in work.columns else ""
+        if not key:
+            continue
+        preserved = str(latest_map.get(key) or "").strip()
+        parsed = str(row_vals.get("MY_SIZE") or "").strip()
+        resolved[key] = preserved or parsed
+
+    return resolved
+
+
 def build_kaspi_name_core_payload(df_filt: pd.DataFrame) -> List[str]:
     """Build explicit Kaspi_name_core values for appended rows only."""
     fixed_payload = build_fixed_value_payload(df_filt)
@@ -1297,25 +1408,15 @@ def backfill_seller_delivery_fee(
 
 def parse_date(v) -> Optional[date]:
     """Parse dates from CRM/Kaspi exports (supports Excel serials)."""
-    if pd.isna(v):
-        return None
-    if isinstance(v, date) and not isinstance(v, datetime):
-        return v
-    if isinstance(v, datetime):
-        return v.date()
-    if isinstance(v, str):
-        s = v.strip()
-        if len(s) == 10 and s[4] == "-" and s[7] == "-":
-            return datetime.strptime(s, "%Y-%m-%d").date()
     if isinstance(v, (int, float)) and 40000 <= float(v) <= 60000:
         base = datetime(1899, 12, 30)
         return (base + timedelta(days=int(float(v)))).date()
-    try:
-        return dtp.parse(str(v).strip(), dayfirst=True).date()
-    except Exception:
-        if isinstance(v, pd.Timestamp):
-            return v.date()
-        return None
+    parsed = parse_kaspi_date(v)
+    if parsed is not None:
+        return parsed
+    if isinstance(v, pd.Timestamp):
+        return v.date()
+    return None
 
 
 def clean_value(v):
@@ -1323,6 +1424,11 @@ def clean_value(v):
         return None
     s = str(v).strip()
     return s if s else None
+
+
+def _coerce_str(v: Any) -> str:
+    cleaned = clean_value(v)
+    return str(cleaned) if cleaned is not None else ""
 
 
 def clean_order_id(v) -> Optional[str]:
@@ -1743,17 +1849,16 @@ def build_pending_append_mask(
     *,
     colmap: Dict[str, str],
     existing_keys: set[str],
-    existing_rollover_keys: Optional[set[str]],
+    existing_append_date_keys: Optional[Any],
     include_overdue: bool,
     append_date: Optional[date],
 ) -> tuple[pd.DataFrame, pd.Series, Dict[str, Any]]:
     """
     Compute dedupe mask for CRM append rows.
 
-    In include-overdue mode we still keep overdue pending orders operationally
-    visible, but CRM only gets a single rollover row for previous-day misses.
-    Older backlog is handled by shipping/waybill catch-up and backlog reports,
-    not by appending the same order family into CRM forever.
+    CRM append should dedupe against the current append-date operational view,
+    not against historical rows. This keeps overdue still-pending orders visible
+    again today while preventing duplicate today rows across repeated imports.
     """
 
     work = df.copy()
@@ -1800,18 +1905,25 @@ def build_pending_append_mask(
     planned_new_mask = ~work["_okey"].isin(existing_keys)
     planned_duplicate_rows = int(((~planned_new_mask) & ~work["_is_overdue"]).sum())
 
-    use_rollover_dedupe = bool(include_overdue and append_date and existing_rollover_keys is not None)
-    overdue_repeat_rows = 0
-    older_overdue_rows_suppressed = 0
-    if use_rollover_dedupe:
-        overdue_repeat_mask = work["_okey"].isin(existing_rollover_keys or set())
-        overdue_repeat_rows = int((work["_is_prev_day_overdue"] & overdue_repeat_mask).sum())
-        older_overdue_rows_suppressed = int(work["_is_older_overdue"].sum())
-        rollover_new_mask = work["_is_prev_day_overdue"] & ~overdue_repeat_mask
-        new_mask = planned_new_mask.copy()
-        new_mask.loc[work["_is_overdue"]] = False
-        new_mask.loc[work["_is_prev_day_overdue"]] = rollover_new_mask.loc[work["_is_prev_day_overdue"]]
-        dedupe_mode = "previous_day_rollover"
+    use_append_date_view = bool(append_date and existing_append_date_keys is not None)
+    append_date_duplicate_rows = 0
+    if use_append_date_view:
+        if isinstance(existing_append_date_keys, Counter):
+            append_date_counts = Counter(existing_append_date_keys)
+        elif isinstance(existing_append_date_keys, dict):
+            append_date_counts = Counter({str(k): int(v) for k, v in existing_append_date_keys.items()})
+        else:
+            append_date_counts = Counter({str(k): 1 for k in (existing_append_date_keys or set())})
+        append_flags: list[bool] = []
+        for key in work["_okey"].tolist():
+            if append_date_counts.get(key, 0) > 0:
+                append_flags.append(False)
+                append_date_counts[key] -= 1
+                append_date_duplicate_rows += 1
+            else:
+                append_flags.append(True)
+        new_mask = pd.Series(append_flags, index=work.index)
+        dedupe_mode = "append_date_view"
     else:
         new_mask = planned_new_mask
         dedupe_mode = "planned_date"
@@ -1822,9 +1934,9 @@ def build_pending_append_mask(
         "dedupe_mode": dedupe_mode,
         "duplicates_skipped": int((~new_mask).sum()),
         "planned_duplicate_rows": planned_duplicate_rows,
-        "overdue_repeat_rows": overdue_repeat_rows,
+        "append_date_duplicate_rows": append_date_duplicate_rows,
         "previous_day_overdue_rows": int(work["_is_prev_day_overdue"].sum()),
-        "older_overdue_rows_suppressed": older_overdue_rows_suppressed,
+        "older_overdue_rows_suppressed": 0,
         "carryforward_rows": carryforward_rows,
         "carryforward_rows_to_append": carryforward_rows_to_append,
     }
@@ -2292,9 +2404,19 @@ class CRMSnapshot:
     delivery_fee_col: Optional[int]
     seller_fee_col: Optional[int]
     delivery_fee_rows: list[tuple[int, Optional[date], float, float]]
+    append_date_keys: set[str]
+    append_date_key_counts: Dict[str, int]
+    append_date_rows: List[CRMDateBlockRow]
+    latest_my_size_by_key: Dict[str, str]
 
 
-def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSnapshot:
+def load_crm_snapshot(
+    crm_path: Path,
+    sheet_name: str,
+    table_name: str,
+    *,
+    append_date: Optional[date] = None,
+) -> CRMSnapshot:
     """Load CRM metadata in a single openpyxl session (read-only snapshot)."""
     wb = load_workbook(filename=str(crm_path), read_only=False, data_only=True)
     try:
@@ -2381,6 +2503,12 @@ def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSn
         offer_col_abs = table_map.get("Название товара в Kaspi Магазине")
         article_col_abs = table_map.get("Артикул")
         quantity_col_abs = table_map.get("Количество")
+        my_size_col_abs = table_map.get("MY_SIZE")
+
+        append_date_keys: set[str] = set()
+        append_date_key_counts: Dict[str, int] = {}
+        append_date_rows: List[CRMDateBlockRow] = []
+        latest_my_size_by_key: Dict[str, str] = {}
 
         for row_num in range(start_row + 1, end_row + 1):
             order_val = ws.cell(row=row_num, column=idx_start).value
@@ -2420,12 +2548,24 @@ def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSn
             row_date = None
             if table_date_col:
                 row_date = parse_date(ws.cell(row=row_num, column=table_date_col).value)
-                if (
-                    row_date is not None
-                    and planned_date is not None
-                    and row_date > planned_date
-                ):
+                if row_date is not None and planned_date is not None and row_date > planned_date:
                     existing_rollover_keys.add(key)
+
+            my_size = ""
+            if my_size_col_abs:
+                my_size = _coerce_str(ws.cell(row=row_num, column=my_size_col_abs).value)
+                if my_size:
+                    latest_my_size_by_key[key] = my_size
+            if append_date is not None and row_date == append_date:
+                append_date_keys.add(key)
+                append_date_key_counts[key] = int(append_date_key_counts.get(key, 0)) + 1
+                append_date_rows.append(
+                    CRMDateBlockRow(
+                        row_num=row_num,
+                        line_key=key,
+                        my_size=my_size,
+                    )
+                )
 
             if table_date_col and delivery_fee_col and seller_fee_col:
                 parsed_date = row_date
@@ -2466,6 +2606,10 @@ def load_crm_snapshot(crm_path: Path, sheet_name: str, table_name: str) -> CRMSn
             delivery_fee_col=delivery_fee_col,
             seller_fee_col=seller_fee_col,
             delivery_fee_rows=delivery_fee_rows,
+            append_date_keys=append_date_keys,
+            append_date_key_counts=append_date_key_counts,
+            append_date_rows=append_date_rows,
+            latest_my_size_by_key=latest_my_size_by_key,
         )
     finally:
         wb.close()
@@ -3010,6 +3154,7 @@ def excel_append_xlwings(
     slice_headers: List[str],
     fixed_values: Optional[List[Dict[str, Any]]] = None,
     kaspi_name_core_values: Optional[List[str]] = None,
+    preserved_my_sizes: Optional[List[str]] = None,
 ) -> Tuple[int, int]:
     """
     Append rows to CRM using xlwings (preserves formulas & external links).
@@ -3166,6 +3311,15 @@ def excel_append_xlwings(
                     bottom_row=bottom_row,
                     my_size_col_abs=my_size_col_abs,
                 )
+                if preserved_my_sizes:
+                    normalized_sizes = [str(v or "").strip() for v in preserved_my_sizes]
+                    if len(normalized_sizes) < n:
+                        normalized_sizes.extend([""] * (n - len(normalized_sizes)))
+                    normalized_sizes = normalized_sizes[:n]
+                    if any(normalized_sizes):
+                        sh.range((top_row, my_size_col_abs), (bottom_row, my_size_col_abs)).value = [
+                            [v] for v in normalized_sizes
+                        ]
 
             wb.save()
         wb.close()
@@ -3196,6 +3350,7 @@ def excel_append_openpyxl(
     slice_headers: List[str],
     fixed_values: Optional[List[Dict[str, Any]]] = None,
     kaspi_name_core_values: Optional[List[str]] = None,
+    preserved_my_sizes: Optional[List[str]] = None,
     *,
     repair_cf_ranges: bool = True,
     verbose: bool = False,
@@ -3329,6 +3484,13 @@ def excel_append_openpyxl(
         if my_size_col_abs:
             for row_num in range(top_row, bottom_row + 1):
                 ws.cell(row=row_num, column=my_size_col_abs, value="")
+            if preserved_my_sizes:
+                normalized_sizes = [str(v or "").strip() for v in preserved_my_sizes]
+                if len(normalized_sizes) < n:
+                    normalized_sizes.extend([""] * (n - len(normalized_sizes)))
+                normalized_sizes = normalized_sizes[:n]
+                for idx, value in enumerate(normalized_sizes):
+                    ws.cell(row=top_row + idx, column=my_size_col_abs, value=value)
 
         table.ref = (
             f"{get_column_letter(tbl_start_col)}{tbl_start_row}:"
@@ -3368,6 +3530,7 @@ def append_orders_with_fallback(
     slice_headers: List[str],
     fixed_values: Optional[List[Dict[str, Any]]] = None,
     kaspi_name_core_values: Optional[List[str]] = None,
+    preserved_my_sizes: Optional[List[str]] = None,
     *,
     allow_openpyxl_fallback: bool = False,
     prefer_xlwings: bool = True,
@@ -3392,6 +3555,7 @@ def append_orders_with_fallback(
                 slice_headers,
                 fixed_values=fixed_values,
                 kaspi_name_core_values=kaspi_name_core_values,
+                preserved_my_sizes=preserved_my_sizes,
             )
         except Exception as exc:
             if not allow_openpyxl_fallback:
@@ -3424,9 +3588,137 @@ def append_orders_with_fallback(
         slice_headers,
         fixed_values=fixed_values,
         kaspi_name_core_values=kaspi_name_core_values,
+        preserved_my_sizes=preserved_my_sizes,
         repair_cf_ranges=repair_cf_ranges,
         verbose=verbose,
     )
+
+
+def delete_crm_rows_xlwings(
+    out_wb: Path,
+    sheet_name: str,
+    table_name: str,
+    row_numbers: List[int],
+) -> int:
+    """Delete CRM worksheet rows bottom-up via xlwings and keep table bounds valid."""
+    row_numbers = sorted({int(r) for r in row_numbers if int(r) > 0}, reverse=True)
+    if not row_numbers:
+        return 0
+
+    _require_xlwings()
+
+    print(f"  Opening Excel (hidden) for CRM reconcile delete...")
+    app = xw.App(visible=False, add_book=False)
+    app.display_alerts = False
+    app.screen_updating = False
+    wb = None
+
+    try:
+        wb = _open_workbook_xlwings(app, out_wb, update_links=False, read_only=False)
+        sh = wb.sheets[sheet_name]
+        with _temporary_manual_calculation(app):
+            try:
+                tbl = sh.tables[table_name]
+            except KeyError:
+                tables = list(sh.tables)
+                if not tables:
+                    raise RuntimeError(f"No table found on sheet {sheet_name}")
+                tbl = tables[0]
+
+            header_row = tbl.range.row
+            tbl_start_col = tbl.range.column
+            tbl_end_col = tbl.range.columns.count + tbl_start_col - 1
+
+            for row_num in row_numbers:
+                sh.range(f"{row_num}:{row_num}").delete()
+
+            last_data_row = sh.range((sh.cells.last_cell.row, tbl_start_col)).end("up").row
+            new_bottom_row = max(header_row, int(last_data_row))
+            new_table_range = sh.range(
+                (header_row, tbl_start_col),
+                (new_bottom_row, tbl_end_col),
+            )
+            tbl.resize(new_table_range)
+            wb.save()
+        wb.close()
+        wb = None
+        print(f"  Reconciled {len(row_numbers)} stale CRM row(s) in {out_wb.name}")
+        return len(row_numbers)
+    finally:
+        if wb is not None:
+            _safe_close_xlwings_book(wb, context="reconcile-delete")
+        _safe_quit_xlwings_app(app, context="reconcile-delete")
+
+
+def backfill_append_date_my_sizes_openpyxl(
+    crm_path: Path,
+    sheet_name: str,
+    table_name: str,
+    append_date: date,
+    resolved_my_size_by_key: Dict[str, str],
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> int:
+    """Fill blank MY_SIZE cells for the append-date operational block."""
+    if not resolved_my_size_by_key or append_date is None:
+        return 0
+
+    wb = load_workbook(filename=str(crm_path), read_only=False, data_only=False)
+    try:
+        ws = wb[sheet_name]
+        table = _resolve_table(ws, table_name)
+        start_col, start_row, end_col, end_row = _table_bounds(table)
+
+        header_row = list(
+            ws.iter_rows(min_row=start_row, max_row=start_row, min_col=start_col, max_col=end_col)
+        )[0]
+        header_to_col: Dict[str, int] = {}
+        for i, cell in enumerate(header_row):
+            header = str(cell.value or "").strip()
+            if header:
+                header_to_col[header] = start_col + i
+
+        date_col = header_to_col.get("Date") or header_to_col.get("Дата поступления заказа")
+        order_col = header_to_col.get("OrderID") or header_to_col.get("№ заказа")
+        offer_col = header_to_col.get("KASPI_OFFER_NAME") or header_to_col.get("Название товара в Kaspi Магазине")
+        article_col = header_to_col.get("Артикул") or header_to_col.get("SKU_ID_KSP")
+        quantity_col = header_to_col.get("Quantity") or header_to_col.get("Количество")
+        planned_col = header_to_col.get("PLANNED_SHIPPING_DATE") or header_to_col.get("Плановая дата передачи курьеру")
+        my_size_col = header_to_col.get("MY_SIZE")
+        if not all([date_col, order_col, offer_col, article_col, quantity_col, planned_col, my_size_col]):
+            if verbose:
+                print("  MY_SIZE backfill skipped: required columns not found")
+            return 0
+
+        updated = 0
+        for row_num in range(start_row + 1, end_row + 1):
+            row_date = parse_date(ws.cell(row=row_num, column=date_col).value)
+            if row_date != append_date:
+                continue
+            current_size = _coerce_str(ws.cell(row=row_num, column=my_size_col).value)
+            if current_size:
+                continue
+
+            order_id = clean_order_id(ws.cell(row=row_num, column=order_col).value)
+            planned_date = parse_date(ws.cell(row=row_num, column=planned_col).value)
+            offer_name = ws.cell(row=row_num, column=offer_col).value
+            article = ws.cell(row=row_num, column=article_col).value
+            quantity = ws.cell(row=row_num, column=quantity_col).value
+            line_key = _build_line_dedupe_key(order_id, planned_date, offer_name, article, quantity)
+            resolved_size = str(resolved_my_size_by_key.get(line_key) or "").strip()
+            if not resolved_size:
+                continue
+            updated += 1
+            if not dry_run:
+                ws.cell(row=row_num, column=my_size_col, value=resolved_size)
+
+        if updated and not dry_run:
+            wb.save(str(crm_path))
+        if verbose and updated:
+            print(f"   MY_SIZE backfill rows updated: {updated}")
+        return updated
+    finally:
+        wb.close()
 
 
 def apply_fixed_values_backfill_xlwings(
@@ -4350,7 +4642,7 @@ def main(
     print(f"Sorted by: Status (cancelled first), STORE_NAME, OrderID, Quantity, KASPI_OFFER_NAME, Date")
 
     # Inspect CRM structure (single openpyxl snapshot)
-    snapshot = load_crm_snapshot(args.crm_file, args.sheet, args.table)
+    snapshot = load_crm_snapshot(args.crm_file, args.sheet, args.table, append_date=append_date)
     date_abs = snapshot.date_col
     phone_abs = snapshot.phone_col
     start_abs = snapshot.start_col
@@ -4471,6 +4763,9 @@ def main(
     stage, phone_values = build_staging(df_filt, slice_headers)
     fixed_values_payload: Optional[List[Dict[str, Any]]] = None
     kaspi_name_core_payload: Optional[List[str]] = None
+    preserved_my_sizes_payload: Optional[List[str]] = None
+    resolved_my_size_by_key: Dict[str, str] = {}
+    reconcile_delete_count = 0
     if args.fixed_values:
         fixed_values_payload = build_fixed_value_payload(df_filt)
     elif getattr(args, "kaspi_core_override", False):
@@ -4482,15 +4777,40 @@ def main(
         if column_positions is None:
             column_positions = snapshot.column_positions
         existing_keys = snapshot.existing_keys
-        existing_rollover_keys = snapshot.existing_rollover_keys if snapshot.table_date_col else None
+        existing_append_date_keys = snapshot.append_date_key_counts if snapshot.table_date_col else None
         df_filt, new_mask, dedupe_stats = build_pending_append_mask(
             df_filt,
             colmap=colmap,
             existing_keys=existing_keys,
-            existing_rollover_keys=existing_rollover_keys,
+            existing_append_date_keys=existing_append_date_keys,
             include_overdue=bool(args.include_overdue),
             append_date=append_date,
         )
+        resolved_my_size_by_key = build_resolved_my_size_by_key(
+            df_filt,
+            latest_my_size_by_key=snapshot.latest_my_size_by_key,
+        )
+
+        desired_keys = df_filt["_okey"].tolist() if "_okey" in df_filt.columns else []
+        reconcile_plan = plan_append_date_reconcile(
+            snapshot.append_date_rows,
+            desired_keys=desired_keys,
+        )
+        reconcile_delete_count = len(reconcile_plan.delete_row_numbers)
+        if reconcile_delete_count > 0:
+            print(
+                f"CRM reconcile: deleting {reconcile_delete_count} stale/duplicate row(s) "
+                f"from Date {append_date.isoformat()} before append"
+            )
+            if not args.dry_run:
+                target_crm_path = write_crm_path()
+                delete_crm_rows_xlwings(
+                    target_crm_path,
+                    args.sheet,
+                    args.table,
+                    reconcile_plan.delete_row_numbers,
+                )
+            result["crm_rows_reconciled_deleted"] = reconcile_delete_count
 
         # Filter stage and phone values to match
         indices_to_keep = df_filt[new_mask].index.tolist()
@@ -4506,35 +4826,36 @@ def main(
             if kaspi_name_core_payload is not None
             else None
         )
+        preserved_my_sizes_payload = (
+            [
+                resolved_my_size_by_key.get(df_filt.loc[idx, "_okey"], "")
+                for idx in indices_to_keep
+            ]
+            if "_okey" in df_filt.columns
+            else None
+        )
 
         dup_count = int(dedupe_stats.get("duplicates_skipped", 0))
         planned_dup_count = int(dedupe_stats.get("planned_duplicate_rows", 0))
-        overdue_repeat_count = int(dedupe_stats.get("overdue_repeat_rows", 0))
+        append_date_duplicate_count = int(dedupe_stats.get("append_date_duplicate_rows", 0))
         if planned_dup_count > 0:
             print(
                 f"Skipped {planned_dup_count} duplicates "
                 f"(same order_id + planned date already in CRM)"
             )
-        if overdue_repeat_count > 0:
+        if append_date_duplicate_count > 0:
             print(
-                f"Skipped {overdue_repeat_count} overdue duplicates "
-                f"(same previous-day missed order already rolled into CRM)"
+                f"Skipped {append_date_duplicate_count} duplicates "
+                f"(same order line already present in CRM Date {append_date.isoformat()})"
             )
-        older_overdue_suppressed = int(dedupe_stats.get("older_overdue_rows_suppressed", 0))
-        if older_overdue_suppressed > 0:
-            print(
-                f"Skipped {older_overdue_suppressed} older overdue rows from CRM append "
-                f"(handled via shipping/waybill catch-up and backlog reports)"
-            )
-        residual_dup_count = dup_count - planned_dup_count - overdue_repeat_count - older_overdue_suppressed
+        residual_dup_count = dup_count - planned_dup_count - append_date_duplicate_count
         if residual_dup_count > 0:
             print(f"Skipped {residual_dup_count} duplicates (same order line already in CRM)")
         carryforward_rows = int(dedupe_stats.get("carryforward_rows_to_append", 0))
         if carryforward_rows > 0:
             print(
-                f"Previous-day missed rows to append: {carryforward_rows} "
-                f"(still pending from { (append_date - timedelta(days=1)).isoformat() }, "
-                f"carried to CRM Date {append_date.isoformat()})"
+                f"Overdue pending rows to append: {carryforward_rows} "
+                f"(still pending from previous planned dates, carried to CRM Date {append_date.isoformat()})"
             )
             result["carryforward_rows_appended"] = carryforward_rows
             result["previous_day_rollover_rows_appended"] = carryforward_rows
@@ -4544,13 +4865,42 @@ def main(
         fixed_values_payload = fixed_filtered
         kaspi_name_core_payload = kaspi_core_filtered
 
+    def maybe_backfill_append_date_my_sizes() -> int:
+        if args.dry_run or not append_date or not resolved_my_size_by_key:
+            return 0
+        try:
+            return backfill_append_date_my_sizes_openpyxl(
+                write_crm_path(),
+                args.sheet,
+                args.table,
+                append_date=append_date,
+                resolved_my_size_by_key=resolved_my_size_by_key,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
+        except Exception as exc:
+            if not allow_openpyxl_append_fallback:
+                raise
+            print(f"   WARNING: MY_SIZE backfill failed ({exc}); continuing.")
+            return 0
+
     print(f"\n4. Appending new orders...")
     new_rows_added = len(stage)
     print(f"   Orders to append: {new_rows_added}")
 
     if len(stage) == 0:
-        if updated_count > 0:
-            print(f"   No new orders to append (updated {updated_count} existing orders)")
+        my_size_backfilled = maybe_backfill_append_date_my_sizes()
+        if my_size_backfilled:
+            result["append_date_my_size_rows_filled"] = my_size_backfilled
+        if updated_count > 0 or reconcile_delete_count > 0:
+            detail_bits = []
+            if updated_count > 0:
+                detail_bits.append(f"updated {updated_count} existing orders")
+            if reconcile_delete_count > 0:
+                detail_bits.append(f"reconciled {reconcile_delete_count} stale today row(s)")
+            if my_size_backfilled > 0:
+                detail_bits.append(f"filled MY_SIZE on {my_size_backfilled} today row(s)")
+            print(f"   No new orders to append ({'; '.join(detail_bits)})")
             if args.refresh_delivery_fees:
                 if not xlwings_write_available and allow_openpyxl_append_fallback:
                     print("   WARNING: skipping delivery fee backfill (Excel automation unavailable).")
@@ -4581,9 +4931,23 @@ def main(
                 sync_pending_orders_to_gdrive_safe(args.crm_file, end_date, args.dry_run)
             else:
                 print("   Google Drive sync skipped (--no-gdrive-sync).")
-            print(f"\n✅ Import complete! Updated {updated_count} orders, appended 0 new.")
+            print(
+                f"\n✅ Import complete! Updated {updated_count} orders, "
+                f"reconciled {reconcile_delete_count} stale today rows, appended 0 new."
+            )
             return finalize(result)
         else:
+            if my_size_backfilled > 0:
+                print(
+                    "   No new orders to append "
+                    f"(filled MY_SIZE on {my_size_backfilled} today row(s))."
+                )
+                result["append_date_my_size_rows_filled"] = my_size_backfilled
+                fixed_backfilled = maybe_run_fixed_backfill()
+                if fixed_backfilled:
+                    print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
+                finalize_candidate_if_needed()
+                return finalize(result)
             print("   All orders already in CRM. Nothing to import or update.")
             print("   NO-OP: skipping Google Drive sync.")
             fixed_backfilled = maybe_run_fixed_backfill()
@@ -4614,6 +4978,7 @@ def main(
         slice_headers,
         fixed_values=fixed_values_payload,
         kaspi_name_core_values=kaspi_name_core_payload,
+        preserved_my_sizes=preserved_my_sizes_payload,
         allow_openpyxl_fallback=allow_openpyxl_append_fallback,
         prefer_xlwings=prefer_xlwings_append,
         repair_cf_ranges=bool(getattr(args, "repair_cf_ranges", True)),
@@ -4628,6 +4993,9 @@ def main(
             end_row=append_end_row,
             verbose=bool(args.verbose),
         )
+    my_size_backfilled = maybe_backfill_append_date_my_sizes()
+    if my_size_backfilled:
+        result["append_date_my_size_rows_filled"] = my_size_backfilled
     fixed_backfilled = maybe_run_fixed_backfill()
     if fixed_backfilled:
         print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")

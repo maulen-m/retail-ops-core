@@ -244,6 +244,13 @@ def test_iso_format():
     assert result.year == 2025
 
 
+def test_iso_datetime_format():
+    """Test parsing ISO datetime strings without flipping day/month."""
+    result = parse_date("2026-03-06 20:00:00")
+
+    assert result == date(2026, 3, 6)
+
+
 def test_excel_serial_dates():
     """Test parsing Excel serial date numbers."""
     # Excel serial 45658 is approximately Jan 7, 2025
@@ -406,7 +413,7 @@ def test_filter_for_shipping_include_overdue_honors_lookback_window():
     assert stats["overdue_lookback_days"] == 2
 
 
-def test_build_pending_append_mask_appends_previous_day_miss_once():
+def test_build_pending_append_mask_appends_overdue_pending_when_missing_from_today_view():
     append_date = date(2026, 3, 7)
     df = pd.DataFrame(
         {
@@ -436,20 +443,20 @@ def test_build_pending_append_mask_appends_previous_day_miss_once():
             "handover": "Плановая дата передачи курьеру",
         },
         existing_keys={base_key},
-        existing_rollover_keys=set(),
+        existing_append_date_keys=set(),
         include_overdue=True,
         append_date=append_date,
     )
 
     assert new_mask.tolist() == [True]
-    assert stats["dedupe_mode"] == "previous_day_rollover"
+    assert stats["dedupe_mode"] == "append_date_view"
     assert stats["carryforward_rows"] == 1
     assert stats["carryforward_rows_to_append"] == 1
     assert work["_is_overdue"].tolist() == [True]
     assert work["_is_prev_day_overdue"].tolist() == [True]
 
 
-def test_build_pending_append_mask_blocks_second_previous_day_rollover():
+def test_build_pending_append_mask_blocks_overdue_pending_already_in_today_view():
     append_date = date(2026, 3, 7)
     df = pd.DataFrame(
         {
@@ -479,18 +486,18 @@ def test_build_pending_append_mask_blocks_second_previous_day_rollover():
             "handover": "Плановая дата передачи курьеру",
         },
         existing_keys={base_key},
-        existing_rollover_keys={base_key},
+        existing_append_date_keys={base_key},
         include_overdue=True,
         append_date=append_date,
     )
 
     assert new_mask.tolist() == [False]
     assert stats["duplicates_skipped"] == 1
-    assert stats["overdue_repeat_rows"] == 1
+    assert stats["append_date_duplicate_rows"] == 1
     assert stats["carryforward_rows_to_append"] == 0
 
 
-def test_build_pending_append_mask_suppresses_older_overdue_backlog_rows():
+def test_build_pending_append_mask_keeps_older_overdue_pending_when_missing_today():
     append_date = date(2026, 3, 7)
     df = pd.DataFrame(
         {
@@ -520,15 +527,15 @@ def test_build_pending_append_mask_suppresses_older_overdue_backlog_rows():
             "handover": "Плановая дата передачи курьеру",
         },
         existing_keys={base_key},
-        existing_rollover_keys=set(),
+        existing_append_date_keys=set(),
         include_overdue=True,
         append_date=append_date,
     )
 
     assert work["_is_older_overdue"].tolist() == [True]
-    assert new_mask.tolist() == [False]
-    assert stats["older_overdue_rows_suppressed"] == 1
-    assert stats["carryforward_rows_to_append"] == 0
+    assert new_mask.tolist() == [True]
+    assert stats["older_overdue_rows_suppressed"] == 0
+    assert stats["carryforward_rows_to_append"] == 1
 
 
 # ============================================================================
@@ -1720,6 +1727,10 @@ def _minimal_snapshot() -> CRMSnapshot:
         delivery_fee_col=None,
         seller_fee_col=None,
         delivery_fee_rows=[],
+        append_date_keys=set(),
+        append_date_key_counts={},
+        append_date_rows=[],
+        latest_my_size_by_key={},
     )
 
 

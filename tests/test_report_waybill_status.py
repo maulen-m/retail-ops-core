@@ -5,12 +5,17 @@ from scripts.report_waybill_status import (
     load_output_assigned,
     load_waybills,
     normalize_store_name,
+    parse_date,
 )
 
 
 def test_normalize_store_name_maps_api_codes():
     assert normalize_store_name("MELVIS") == "Store-C"
     assert normalize_store_name("STOREB") == "STORE-B"
+
+
+def test_parse_date_handles_iso_datetime_without_dayfirst_flip():
+    assert parse_date("2026-03-06 20:00:00").isoformat() == "2026-03-06"
 
 
 def test_load_output_assigned_normalizes_store_names(tmp_path):

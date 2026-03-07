@@ -38,7 +38,7 @@ from core.integrations.kaspi_order_stage import (  # noqa: E402
     api_state_filter_for_stage,
     classify_kaspi_order_stage,
 )
-from core.utils.kaspi_dates import planned_date_from_order  # noqa: E402
+from core.utils.kaspi_dates import parse_kaspi_date, planned_date_from_order  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -102,25 +102,7 @@ def normalize_store_name(value: Any) -> str:
 
 
 def parse_date(value: Any) -> Optional[date]:
-    if pd.isna(value) or value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    value_str = str(value).strip()
-    try:
-        return datetime.strptime(value_str, "%d.%m.%Y").date()
-    except ValueError:
-        pass
-    try:
-        return datetime.strptime(value_str, "%Y-%m-%d").date()
-    except ValueError:
-        pass
-    try:
-        return pd.to_datetime(value, dayfirst=True).date()
-    except (ValueError, TypeError):
-        return None
+    return parse_kaspi_date(value)
 
 
 def _planned_date_from_order(order: dict) -> Optional[date]:

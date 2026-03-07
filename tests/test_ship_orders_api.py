@@ -8,7 +8,7 @@ import pytest
 
 from core.integrations.kaspi_api_client import APIResponse
 from scripts import ship_orders_api as ship_mod
-from scripts.ship_orders_api import read_crm_orders
+from scripts.ship_orders_api import parse_date, read_crm_orders
 
 
 def _write_crm(tmp_path, rows):
@@ -61,6 +61,10 @@ def test_read_crm_orders_can_require_size(tmp_path):
     orders = read_crm_orders(crm_path, "Sheet1", date.today(), allow_missing_size=False)
 
     assert orders == {}
+
+
+def test_parse_date_handles_iso_datetime_without_dayfirst_flip():
+    assert parse_date("2026-03-06 20:00:00") == date(2026, 3, 6)
 
 
 def test_get_pending_assembly_orders_status_first_without_creation_lookback(monkeypatch):

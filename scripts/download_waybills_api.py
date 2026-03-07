@@ -44,9 +44,13 @@ from core.integrations.kaspi_api_client import (
     STORE_TOKEN_MAP,
 )
 from core.integrations.kaspi_order_stage import StageCode, api_state_filter_for_stage
-from core.integrations.kaspi_order_stage import classify_kaspi_order_stage
+from core.integrations.kaspi_order_stage import (
+    classify_kaspi_order_stage,
+    classify_kaspi_stage_from_db_row,
+)
 from core.paths import data_path, get_data_root
 from core.ops.shipment_health import classify_waybill_health
+from core.utils.kaspi_dates import parse_kaspi_date
 
 # Configure logging
 logging.basicConfig(
@@ -276,36 +280,8 @@ def _is_pdf_bytes(data: bytes) -> bool:
 
 
 def parse_date(value: Any) -> Optional[date]:
-    """Parse date from various formats."""
-    if pd.isna(value) or value is None:
-        return None
-
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-
-    value_str = str(value).strip()
-
-    # DD.MM.YYYY format
-    try:
-        return datetime.strptime(value_str, "%d.%m.%Y").date()
-    except ValueError:
-        pass
-
-    # YYYY-MM-DD format
-    try:
-        return datetime.strptime(value_str, "%Y-%m-%d").date()
-    except ValueError:
-        pass
-
-    # Try pandas
-    try:
-        return pd.to_datetime(value, dayfirst=True).date()
-    except (ValueError, TypeError):
-        pass
-
-    return None
+    """Parse mixed CRM/DB date values without flipping ISO month/day order."""
+    return parse_kaspi_date(value)
 
 
 def normalize_store_name(value: Any) -> str:
@@ -348,6 +324,15 @@ def _is_handed_over(courier_transmission_date: Any) -> bool:
         return False
     text = str(courier_transmission_date).strip().lower()
     return bool(text and text not in {"none", "nan", "null"})
+
+
+def _db_row_planned_date(row: Any) -> Optional[date]:
+    """Prefer raw courier planning date from DB rows; fall back to legacy planned date."""
+    if not hasattr(row, "get"):
+        row = dict(row)
+    return parse_date(row.get("courier_transmission_planning_date")) or parse_date(
+        row.get("planned_shipment_date")
+    )
 
 
 def _is_pending_crm_status(value: Any) -> bool:
@@ -421,6 +406,12 @@ def get_target_order_ids_from_db(
             logger.warning("DB missing fact_orders_kaspi table; falling back to CRM")
             return {}
 
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(fact_orders_kaspi)").fetchall()
+        }
+        waybill_select = "waybill_url" if "waybill_url" in columns else "NULL AS waybill_url"
+
         query = """
             SELECT
                 order_id,
@@ -428,30 +419,24 @@ def get_target_order_ids_from_db(
                 assigned_size,
                 my_size,
                 planned_shipment_date,
+                courier_transmission_planning_date,
+                {waybill_select},
                 signature_required,
-                courier_transmission_date
+                courier_transmission_date,
+                kaspi_status,
+                kaspi_status_detail,
+                returned_to_warehouse
             FROM fact_orders_kaspi
-            WHERE (
-                (assigned_size IS NOT NULL AND assigned_size != '')
-                OR (my_size IS NOT NULL AND my_size != '')
-            )
-        """
-        params = []
-        if exact_date:
-            query += " AND planned_shipment_date = ?"
-            params.append(target_date.isoformat())
-        else:
-            query += " AND planned_shipment_date <= ?"
-            params.append(target_date.isoformat())
-            if lookback_days is not None:
-                min_date = (target_date - timedelta(days=lookback_days)).isoformat()
-                query += " AND planned_shipment_date >= ?"
-                params.append(min_date)
-
-        rows = conn.execute(query, params).fetchall()
+                WHERE (
+                    (assigned_size IS NOT NULL AND assigned_size != '')
+                    OR (my_size IS NOT NULL AND my_size != '')
+                )
+        """.format(waybill_select=waybill_select)
+        rows = conn.execute(query).fetchall()
 
     orders_by_store: dict[str, set[str]] = defaultdict(set)
     skipped_no_store = 0
+    skipped_wrong_date = 0
 
     for row in rows:
         order_id = str(row["order_id"]).strip()
@@ -460,10 +445,35 @@ def get_target_order_ids_from_db(
         if not order_id:
             continue
 
+        stage = classify_kaspi_stage_from_db_row(row)
+        if stage not in {
+            StageCode.ACCEPTED_PENDING_ASSEMBLY,
+            StageCode.ASSEMBLED_PENDING_HANDOVER,
+        }:
+            continue
+
         if _is_signature_required(row["signature_required"]):
             continue
         if _is_handed_over(row["courier_transmission_date"]):
             continue
+
+        planned_date = _db_row_planned_date(row)
+        if not planned_date:
+            skipped_wrong_date += 1
+            continue
+        if exact_date:
+            if planned_date != target_date:
+                skipped_wrong_date += 1
+                continue
+        else:
+            if planned_date > target_date:
+                skipped_wrong_date += 1
+                continue
+            if lookback_days is not None:
+                min_date = target_date - timedelta(days=lookback_days)
+                if planned_date < min_date:
+                    skipped_wrong_date += 1
+                    continue
 
         api_store = normalize_api_store_code(row["store_code"])
         if not api_store:
@@ -490,6 +500,8 @@ def get_target_order_ids_from_db(
             )
     if skipped_no_store:
         logger.info(f"Skipped {skipped_no_store} DB rows with unknown store codes")
+    if skipped_wrong_date:
+        logger.info(f"Skipped {skipped_wrong_date} DB rows outside target planned-date window")
 
     return dict(orders_by_store)
 
@@ -1051,21 +1063,23 @@ def download_all_waybills(
 
     # Optional fallback to DB/CRM per store if API failed or returned no orders
     fallback_orders_by_store: dict[str, set[str]] = {}
+    db_fallback_orders_by_store: dict[str, set[str]] = {}
+    crm_fallback_orders_by_store: dict[str, set[str]] = {}
     if fallback_crm:
         resolved_db_path = resolve_db_path(db_path)
         if resolved_db_path:
-            fallback_orders_by_store = get_target_order_ids_from_db(
+            db_fallback_orders_by_store = get_target_order_ids_from_db(
                 resolved_db_path,
                 target_date,
                 store_filter,
                 exact_date=exact_date,
                 lookback_days=None if all_dates or exact_date else since_days,
             )
-            if fallback_orders_by_store:
+            if db_fallback_orders_by_store:
                 source_label = f"Kaspi API (planned date) + DB fallback"
 
         if crm_path:
-            crm_orders = get_target_order_ids_from_crm(
+            crm_fallback_orders_by_store = get_target_order_ids_from_crm(
                 crm_path,
                 sheet_name,
                 target_date,
@@ -1073,10 +1087,19 @@ def download_all_waybills(
                 exact_date=exact_date,
                 lookback_days=None if all_dates or exact_date else since_days,
             )
-            if crm_orders:
+            if crm_fallback_orders_by_store:
                 source_label = "Kaspi API (planned date) + CRM/DB fallback"
-                for store_code, ids in crm_orders.items():
+                for store_code, ids in crm_fallback_orders_by_store.items():
+                    # DB sync runs immediately before waybill selection and carries the
+                    # raw courier planning date, so when DB fallback exists it is the
+                    # authoritative fallback source for that store. CRM-only fallback
+                    # stays available only for stores missing DB coverage.
+                    if store_code in db_fallback_orders_by_store:
+                        continue
                     fallback_orders_by_store.setdefault(store_code, set()).update(ids)
+
+        for store_code, ids in db_fallback_orders_by_store.items():
+            fallback_orders_by_store[store_code] = set(ids)
 
     if not target_orders_by_store and not fallback_orders_by_store:
         print("  No orders found for the target date.")
@@ -1099,19 +1122,15 @@ def download_all_waybills(
     fallback_stores = sorted(fallback_orders_by_store.keys())
 
     def _exclude_cached_waybills(order_ids: set[str]) -> tuple[set[str], set[str]]:
-        """Return (kept, excluded_cached_pdf) using local waybill cache files."""
-        if all_dates:
-            # Explicit all-dates mode is intentionally unbounded.
-            return set(order_ids), set()
-        kept: set[str] = set()
-        excluded: set[str] = set()
-        for oid in order_ids:
-            pdf_path = output_dir / f"{oid}.pdf"
-            if pdf_path.exists():
-                excluded.add(oid)
-            else:
-                kept.add(oid)
-        return kept, excluded
+        """
+        Keep fallback-only pending orders in the target set even if their PDF is cached.
+
+        Cached waybill PDFs are a reuse optimization, not proof that the order was
+        actually shipped in the warehouse. Excluding them from the target set lets
+        overdue still-pending orders disappear from merged bundles and WhatsApp send
+        sources, which is exactly the drift we must avoid.
+        """
+        return set(order_ids), set()
 
     if fallback_orders_by_store:
         merged_orders_by_store: dict[str, set[str]] = {}

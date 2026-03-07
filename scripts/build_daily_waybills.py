@@ -67,6 +67,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 from core.db import DEFAULT_DB_PATH, get_db
 from core.paths import data_path, get_data_root
+from core.utils.kaspi_dates import parse_kaspi_date
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
 from core.waybill.pdf_grouper import merge_pdfs
 from core.integrations.kaspi_api_client import KaspiAPIClient, STORE_TOKEN_MAP, KaspiAuthError
@@ -239,36 +240,8 @@ def sanitize_filename(name: str) -> str:
 
 
 def parse_date(value: Any) -> Optional[date]:
-    """Parse date from various formats."""
-    if pd.isna(value) or value is None:
-        return None
-
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-
-    value_str = str(value).strip()
-
-    # DD.MM.YYYY format
-    try:
-        return datetime.strptime(value_str, "%d.%m.%Y").date()
-    except ValueError:
-        pass
-
-    # YYYY-MM-DD format
-    try:
-        return datetime.strptime(value_str, "%Y-%m-%d").date()
-    except ValueError:
-        pass
-
-    # Try pandas
-    try:
-        return pd.to_datetime(value, dayfirst=True).date()
-    except (ValueError, TypeError):
-        pass
-
-    return None
+    """Parse mixed CRM/DB date values without flipping ISO month/day order."""
+    return parse_kaspi_date(value)
 
 
 def normalize_store_name(value: Any) -> str:

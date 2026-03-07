@@ -111,6 +111,10 @@ def test_parse_date_formats():
     assert result is not None
     assert result.day == 25
 
+    # ISO datetime must not flip day/month
+    result = parse_date("2026-03-06 20:00:00")
+    assert result == date(2026, 3, 6)
+
 
 def test_filters_by_date():
     """Test that orders are filtered by planned date."""

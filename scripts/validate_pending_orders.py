@@ -27,13 +27,13 @@ from typing import Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from dateutil import parser as dtp
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.paths import data_path
 from core.db import get_db, DEFAULT_DB_PATH
+from core.utils.kaspi_dates import parse_kaspi_date
 from core.integrations.kaspi_order_stage import (
     StageCode,
     classify_kaspi_stage_from_db_row,
@@ -62,6 +62,7 @@ DB_STAGE_COLUMNS = [
     "courier_transmission_date",
     "actual_shipment_date",
     "courier_transmission_planning_date",
+    "planned_shipment_date",
 ]
 
 
@@ -95,26 +96,18 @@ def _is_ready_status(value) -> bool:
 
 
 def _parse_date(value) -> Optional[date]:
-    if pd.isna(value):
-        return None
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-    if isinstance(value, datetime):
-        return value.date()
     if isinstance(value, (int, float)) and 40000 <= float(value) <= 60000:
         base = datetime(1899, 12, 30)
         return (base + timedelta(days=int(float(value)))).date()
-    if isinstance(value, str):
-        s = value.strip()
-        if len(s) == 10 and s[4] == "-" and s[7] == "-":
-            try:
-                return datetime.strptime(s, "%Y-%m-%d").date()
-            except ValueError:
-                pass
-    try:
-        return dtp.parse(str(value).strip(), dayfirst=True).date()
-    except Exception:
-        return None
+    return parse_kaspi_date(value)
+
+
+def _db_row_planned_date(row) -> Optional[date]:
+    if not hasattr(row, "get"):
+        row = dict(row)
+    return _parse_date(row.get("courier_transmission_planning_date")) or _parse_date(
+        row.get("planned_shipment_date")
+    )
 
 
 def _clean_order_id(value) -> Optional[str]:
@@ -257,32 +250,19 @@ def read_db_pending(
         select_cols = [col for col in DB_STAGE_COLUMNS if col in cols]
         select_cols_sql = ",\n                    ".join(select_cols) if select_cols else "order_id"
 
-        if include_overdue:
-            query = f"""
-                SELECT
-                    {select_cols_sql}
-                FROM fact_orders_kaspi
-                WHERE planned_shipment_date <= ?
+        rows = conn.execute(
+            f"""
+            SELECT
+                {select_cols_sql}
+            FROM fact_orders_kaspi
             """
-            params = [target_date.isoformat()]
-            if lookback_days is not None:
-                min_date = (target_date - timedelta(days=lookback_days)).isoformat()
-                query += " AND planned_shipment_date >= ?"
-                params.append(min_date)
-            rows = conn.execute(query, params).fetchall()
-        else:
-            rows = conn.execute(
-                f"""
-                SELECT
-                    {select_cols_sql}
-                FROM fact_orders_kaspi
-                WHERE planned_shipment_date = ?
-                """,
-                (target_date.isoformat(),),
-            ).fetchall()
+        ).fetchall()
 
     total = len(rows)
     pending = set()
+    min_date = None
+    if include_overdue and lookback_days is not None:
+        min_date = target_date - timedelta(days=lookback_days)
 
     terminal = {
         StageCode.CANCELLED,
@@ -295,6 +275,17 @@ def read_db_pending(
         order_id = _clean_order_id(row["order_id"])
         if not order_id:
             continue
+        planned_date = _db_row_planned_date(row)
+        if not planned_date:
+            continue
+        if include_overdue:
+            if planned_date > target_date:
+                continue
+            if min_date is not None and planned_date < min_date:
+                continue
+        else:
+            if planned_date != target_date:
+                continue
         stage = classify_kaspi_stage_from_db_row(row)
         if stage in terminal:
             continue
