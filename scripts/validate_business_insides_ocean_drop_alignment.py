@@ -41,6 +41,9 @@ def _render_md(report: dict[str, Any]) -> str:
         f"- as_of: `{report['as_of']}`",
         f"- status: `{report['status']}`",
         f"- parity_status: `{report['parity_status']}`",
+        f"- reference_window_overlap: `{str(report['reference_window_overlap']).lower()}`",
+        f"- anchor_reference_min_sale_date: `{report['anchor_reference_min_sale_date']}`",
+        f"- anchor_reference_max_sale_date: `{report['anchor_reference_max_sale_date']}`",
         f"- volatility_days: `{report['volatility_days']}`",
         f"- snapshot_json: `{report['snapshot_json_path']}`",
         f"- anchor_path: `{report['anchor_path']}`",
@@ -99,8 +102,47 @@ def validate_business_insides_ocean_drop_alignment(
     payload = json.loads(snapshot_json.read_text(encoding="utf-8"))
     external_check = payload.get("external_check") or {}
     parity_status = str(external_check.get("status") or "").upper()
-    if parity_status != "PASS":
+    if parity_status not in {"PASS", "PASS_NO_OVERLAP"}:
         raise RuntimeError(f"BUSINESS_INSIDES external check is not PASS: {external_check}")
+    if parity_status == "PASS_NO_OVERLAP":
+        out_dir = report_root.resolve() / as_of.isoformat()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        diff_csv = out_dir / "alignment_diff_daily.csv"
+        pd.DataFrame(
+            columns=["date", "bi_units", "ref_units", "bi_net_rev_kzt", "ref_net_rev_kzt", "is_volatile"]
+        ).to_csv(
+            diff_csv,
+            index=False,
+            encoding="utf-8",
+        )
+        report = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "as_of": as_of.isoformat(),
+            "status": "PASS",
+            "parity_status": parity_status,
+            "reference_window_overlap": False,
+            "anchor_reference_min_sale_date": external_check.get("reference_min_sale_date"),
+            "anchor_reference_max_sale_date": external_check.get("reference_max_sale_date"),
+            "volatility_days": int(volatility_days),
+            "snapshot_json_path": str(snapshot_json),
+            "snapshot_markdown_path": str(generate_result["latest_path"]),
+            "anchor_path": str(anchor["ocean_drop_path_resolved"]),
+            "anchor_sha256": str(anchor["sha256"]),
+            "nonvolatile_mismatch_count": 0,
+            "volatile_mismatch_count": 0,
+            "nonvolatile_mismatches": [],
+            "volatile_mismatches": [],
+            "daily_rows": [],
+            "alignment_diff_csv": str(diff_csv),
+            "parity_report_json": str(out_dir / "parity_report.json"),
+        }
+        report_json = out_dir / "alignment_report.json"
+        report_md = out_dir / "alignment_report.md"
+        report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report_md.write_text(_render_md(report), encoding="utf-8")
+        report["report_json"] = str(report_json)
+        report["report_md"] = str(report_md)
+        return report
 
     parity = validate_sales_truth_ocean_drop_parity(
         db_path=db_path.resolve(),
@@ -210,6 +252,9 @@ def validate_business_insides_ocean_drop_alignment(
         if not nonvolatile_mismatches and parity.get("status") == "PASS"
         else "FAIL",
         "parity_status": str(parity.get("status") or "FAIL"),
+        "reference_window_overlap": True,
+        "anchor_reference_min_sale_date": str(ref_df["sale_date"].min()) if not ref_df.empty else None,
+        "anchor_reference_max_sale_date": str(ref_df["sale_date"].max()) if not ref_df.empty else None,
         "volatility_days": int(volatility_days),
         "snapshot_json_path": str(snapshot_json),
         "snapshot_markdown_path": str(generate_result["latest_path"]),

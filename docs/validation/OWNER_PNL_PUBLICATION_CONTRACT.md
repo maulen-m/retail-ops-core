@@ -8,11 +8,18 @@ This contract exists to prevent capital decisions on false-green profitability.
 ## Canonical Inputs
 - `view_sales_line_truth` / `view_sales_daily_truth` (DB operational truth)
 - `exports/sales_archive_statusdate_mapped/*/ArchiveSales_ALL_STORES_statusdate_mapped.csv` (status-date archive parity source)
+- `docs/validation/WEBUI_ARCHIVE_SINGLE_TRUTH_CONTRACT.md` (candidate WebUI archive promotion contract)
+- `docs/validation/WEBUI_CRM_CHRONOLOGY_AUTHORITY_CONTRACT.md` (fallback chronology anchor when WebUI day parity is not authority-backed)
 - `ads_spend_sidecar_daily` + `core/ads/sidecar_contract.py` (ads freshness + mapping coverage)
+- deterministic daily governance prerequisites generated inside the strict daily path:
+  - `exports/daily/<as_of>/daily_ops_report.json`
+  - `exports/exceptions/<as_of>/exceptions.json`
+  - when a frozen board-runtime seed exists for proving/release replay, repo-local ops-selection artifacts generated from that seed
 
 ## Publication Surface
 - `exports/owner_pnl/<as_of>/OWNER_PNL.json`
 - `exports/owner_pnl/<as_of>/OWNER_PNL.md`
+- `exports/owner_pnl/<as_of>/OWNER_PNL_ASCII.txt`
 
 Required row fields:
 - `sale_month`
@@ -22,15 +29,29 @@ Required row fields:
 - `cogs_kzt`
 - `ads_kzt`
 - `profit_after_ads_kzt`
+- `opex_kzt`
+- `profit_after_ads_and_opex_kzt`
 - `locked_reason` (when values are locked)
 
 ## Decision-Grade Rule
 A month is publishable (`decision_grade=true`) only when:
 1. all month/store parity rows are decision-grade per `SALES_ECONOMICS_TRUTH_CONTRACT`,
 2. monthly economics parity is PASS,
-3. ads readiness is PASS (`validate_ads_sidecar_readiness --strict`).
+3. ads readiness is PASS (`validate_ads_sidecar_readiness --strict`),
+4. when `truth_source=webui_archive`, the WebUI archive promotion contract is green for the proving window,
+5. when the active chronology contract is `CRM_REMAINS_CHRONOLOGY_AUTHORITY`, workbook chronology anchor validation is also PASS.
 
 If any condition is false, profitability values must be locked (`N/A`) and `locked_reason` must be set.
+
+## OPEX Readiness Rule
+OPEX readiness is validated by `scripts/validate_opex_readiness.py`.
+
+`profit_after_ads_and_opex_kzt` is publishable only when:
+- month is decision-grade,
+- ads readiness is PASS,
+- opex readiness is PASS.
+
+If OPEX readiness is not PASS, `profit_after_ads_and_opex_kzt` and `opex_kzt` must be locked (`N/A`).
 
 ## Ads Readiness Rule
 Ads readiness is PASS only when:
@@ -42,7 +63,15 @@ Ads readiness is PASS only when:
 - `build_owner_pnl_report.py --strict` exits non-zero when:
   - parity is FAIL, or
   - ads readiness is FAIL, or
-  - ads sidecar table is missing.
+  - ads sidecar table is missing, or
+  - `truth_source=webui_archive` and required WebUI promotion artifacts are red/missing, or
+  - `truth_source=webui_archive` and workbook chronology anchor evidence is required but red/missing.
+- strict daily publication must not depend on hand-created governance artifacts; required prerequisite artifacts must either:
+  - already exist as canonical repo-local outputs for the requested `as_of`, or
+  - be generated deterministically by automation before publication gates run.
+- `build_owner_pnl_report.py --strict --require-opex-for-net-publication` exits non-zero when:
+  - opex readiness is FAIL, or
+  - OPEX table is missing.
 
 ## Change Protocol
 1. Formula changes: update `docs/inventory/Master_Inventory_Rules_v8.md` first.

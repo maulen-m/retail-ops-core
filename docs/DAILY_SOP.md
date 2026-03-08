@@ -25,6 +25,9 @@ Authority: `docs/ops/KASPI_DAILY_OPS_ORCHESTRATOR_RUNBOOK.md`
 Daily report contract:
 - `scripts/generate_daily_ops_report.py`
 - `scripts/validate_daily_ops_report.py --strict`
+- `scripts/run_owner_truth_daily.py --as-of <YYYY-MM-DD> --strict`
+  - deterministically regenerates `daily_ops_report`, `exceptions`, and any repo-local frozen ops-selection prerequisites before strict doctor/publication gates
+  - fails closed if those prerequisites cannot be regenerated from repo-local inputs
 
 Board V10 autopilot contract:
 - `scripts/run_daily_autopilot.py --as-of <YYYY-MM-DD> --strict`
@@ -94,6 +97,17 @@ Run this before launchd smoke/manual starts to verify anchor health + scheduler 
 
 Expected outcome:
 - `OPS_STATUS PASS` with zero exit code.
+
+### 1.1.2 Run strict owner-truth replay when proving a release anchor
+
+```bash
+./.venv/bin/python scripts/run_owner_truth_daily.py --as-of <YYYY-MM-DD> --strict
+```
+
+Cold-start proving expectations:
+- no manual stopline or governance artifacts should be required
+- if a frozen board-runtime seed exists for the requested `as_of`, automation may materialize repo-local ops-selection artifacts from that seed
+- publication remains fail-closed; locked months must still stay locked
 
 ### 1.2 Run on-delivery residual dry-run check
 Run this daily before any write-side cashflow reconciliation:
