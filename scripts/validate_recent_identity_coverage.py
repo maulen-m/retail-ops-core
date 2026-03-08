@@ -49,12 +49,25 @@ def _store_payload(name: str) -> dict[str, Any]:
 
 def _identity_required(row: sqlite3.Row, *, as_of: date) -> bool:
     status_detail = str(row["kaspi_status_detail"] or "").strip().upper()
+    internal_status = str(row["internal_status"] or "").strip().upper()
+    kaspi_status = str(row["kaspi_status"] or "").strip().upper()
+
+    # Terminal states that do not require identity completion for recent governance.
     if status_detail in {"CANCELLED", "RETURNED"}:
         return False
-    if status_detail in {"ACCEPTED_BY_MERCHANT", "APPROVED_BY_BANK", "NEW"}:
+    if internal_status in {"CANCELLED", "RETURNED"}:
+        return False
+
+    # Pending/pre-assembly orders can legitimately lack resolved identity.
+    pending_like = {"ACCEPTED_BY_MERCHANT", "APPROVED_BY_BANK", "NEW", "ASSEMBLY"}
+    if (
+        status_detail in pending_like
+        or internal_status in {"NEW", "ACCEPTED", "READY"}
+        or kaspi_status in {"NEW", "ASSEMBLY"}
+    ):
         created_text = str(row["created_at"] or "").strip()
         created_date = created_text[:10] if len(created_text) >= 10 else ""
-        if created_date == as_of.isoformat():
+        if created_date <= as_of.isoformat():
             return False
     return True
 
@@ -90,6 +103,8 @@ def validate_recent_identity_coverage(
                 COALESCE(my_size, '') AS my_size,
                 COALESCE(kaspi_offer_name, '') AS kaspi_offer_name,
                 COALESCE(kaspi_status_detail, '') AS kaspi_status_detail,
+                COALESCE(internal_status, '') AS internal_status,
+                COALESCE(kaspi_status, '') AS kaspi_status,
                 COALESCE(created_at, '') AS created_at
             FROM fact_orders_kaspi
             WHERE date(created_at) BETWEEN ? AND ?

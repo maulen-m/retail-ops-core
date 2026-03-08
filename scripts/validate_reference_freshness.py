@@ -67,6 +67,7 @@ def validate_reference_freshness(
     max_delivery_lag_days: int,
     enforce_per_store: bool,
     strict: bool,
+    statusdate_cutover: date | None = None,
 ) -> dict[str, Any]:
     if max_delivery_lag_days < 0:
         raise StatusError("REFERENCE_STALE", "max_delivery_lag_days must be >= 0")
@@ -97,7 +98,8 @@ def validate_reference_freshness(
         raise StatusError("REFERENCE_STALE", "delivered rows have invalid transaction_date values")
 
     max_date = delivered["_tx_date"].max().date()
-    lag_days = (as_of - max_date).days
+    effective_as_of = min(as_of, statusdate_cutover) if statusdate_cutover is not None else as_of
+    lag_days = (effective_as_of - max_date).days
 
     per_store = (
         delivered.groupby(delivered["store_code"].str.upper())["_tx_date"]
@@ -110,7 +112,7 @@ def validate_reference_freshness(
     for _, row in per_store.iterrows():
         store = str(row["store_code"])
         max_store = row["max_delivered_date"].date()
-        store_lag = (as_of - max_store).days
+        store_lag = (effective_as_of - max_store).days
         per_store_rows.append(
             {
                 "store_code": store,
@@ -148,6 +150,8 @@ def validate_reference_freshness(
         "error_code": "",
         "max_delivery_lag_days": int(max_delivery_lag_days),
         "enforce_per_store": bool(enforce_per_store),
+        "statusdate_cutover": statusdate_cutover.isoformat() if statusdate_cutover is not None else None,
+        "effective_as_of": effective_as_of.isoformat(),
         "max_delivered_date": max_date.isoformat(),
         "global_lag_days": int(lag_days),
         "per_store": per_store_rows,
@@ -163,6 +167,7 @@ def validate_reference_freshness(
                 f"- as_of: `{as_of.isoformat()}`",
                 "- status: `PASS`",
                 f"- reference_csv: `{csv_path}`",
+                f"- effective_as_of: `{effective_as_of.isoformat()}`",
                 f"- max_delivered_date: `{max_date.isoformat()}`",
                 f"- global_lag_days: `{lag_days}`",
             ]
@@ -209,6 +214,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--max-delivery-lag-days", type=int, default=7)
     parser.add_argument("--enforce-per-store", action="store_true")
+    parser.add_argument("--statusdate-cutover")
     parser.add_argument("--strict", action="store_true")
     return parser
 
@@ -216,6 +222,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _build_parser().parse_args()
     as_of = parse_iso_date(args.as_of, field="as_of")
+    statusdate_cutover = (
+        parse_iso_date(args.statusdate_cutover, field="statusdate_cutover")
+        if args.statusdate_cutover
+        else None
+    )
     try:
         report = validate_reference_freshness(
             as_of=as_of,
@@ -224,6 +235,7 @@ def main() -> int:
             max_delivery_lag_days=int(args.max_delivery_lag_days),
             enforce_per_store=bool(args.enforce_per_store),
             strict=bool(args.strict),
+            statusdate_cutover=statusdate_cutover,
         )
     except StatusError as exc:
         _write_failure_artifacts(
