@@ -3272,19 +3272,6 @@ def excel_append_xlwings(
                 if str(name or "").strip()
             }
 
-            # Optional low-risk override: write only Kaspi_name_core on appended rows.
-            if kaspi_name_core_values is not None:
-                kaspi_name_core_col = header_to_col.get("Kaspi_name_core")
-                if kaspi_name_core_col:
-                    core_vals = list(kaspi_name_core_values)
-                    if len(core_vals) < n:
-                        core_vals.extend([""] * (n - len(core_vals)))
-                    core_vals = core_vals[:n]
-                    sh.range((top_row, kaspi_name_core_col), (bottom_row, kaspi_name_core_col)).value = [
-                        [v if v is not None else ""]
-                        for v in core_vals
-                    ]
-
             # Write fixed-value columns for appended rows (excluding human-owned fields).
             if fixed_values:
                 for col_name in FIXED_APPEND_COLUMNS:
@@ -3301,7 +3288,8 @@ def excel_append_xlwings(
                     target.value = col_vals
 
             # MY_SIZE is human-owned; always clear for newly appended rows to
-            # prevent Excel table formula autofill from writing pseudo sizes.
+            # prevent Excel table formula autofill or parser-derived defaults
+            # from writing pseudo sizes during import.
             my_size_col_abs = None
             my_size_col_abs = header_to_col.get("MY_SIZE")
             if my_size_col_abs:
@@ -3311,15 +3299,6 @@ def excel_append_xlwings(
                     bottom_row=bottom_row,
                     my_size_col_abs=my_size_col_abs,
                 )
-                if preserved_my_sizes:
-                    normalized_sizes = [str(v or "").strip() for v in preserved_my_sizes]
-                    if len(normalized_sizes) < n:
-                        normalized_sizes.extend([""] * (n - len(normalized_sizes)))
-                    normalized_sizes = normalized_sizes[:n]
-                    if any(normalized_sizes):
-                        sh.range((top_row, my_size_col_abs), (bottom_row, my_size_col_abs)).value = [
-                            [v] for v in normalized_sizes
-                        ]
 
             wb.save()
         wb.close()
@@ -3451,20 +3430,6 @@ def excel_append_openpyxl(
                 else:
                     cell.value = "" if value is None else value
 
-        if kaspi_name_core_values is not None:
-            kaspi_name_core_col = header_to_col.get("Kaspi_name_core")
-            if kaspi_name_core_col:
-                core_vals = list(kaspi_name_core_values)
-                if len(core_vals) < n:
-                    core_vals.extend([""] * (n - len(core_vals)))
-                core_vals = core_vals[:n]
-                for idx, value in enumerate(core_vals):
-                    ws.cell(
-                        row=top_row + idx,
-                        column=kaspi_name_core_col,
-                        value="" if value is None else value,
-                    )
-
         if fixed_values:
             for col_name in FIXED_APPEND_COLUMNS:
                 if col_name in PROTECTED_HUMAN_COLUMNS:
@@ -3484,13 +3449,6 @@ def excel_append_openpyxl(
         if my_size_col_abs:
             for row_num in range(top_row, bottom_row + 1):
                 ws.cell(row=row_num, column=my_size_col_abs, value="")
-            if preserved_my_sizes:
-                normalized_sizes = [str(v or "").strip() for v in preserved_my_sizes]
-                if len(normalized_sizes) < n:
-                    normalized_sizes.extend([""] * (n - len(normalized_sizes)))
-                normalized_sizes = normalized_sizes[:n]
-                for idx, value in enumerate(normalized_sizes):
-                    ws.cell(row=top_row + idx, column=my_size_col_abs, value=value)
 
         table.ref = (
             f"{get_column_letter(tbl_start_col)}{tbl_start_row}:"
@@ -4223,7 +4181,7 @@ def main(
         "--kaspi-core-override",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Write explicit Kaspi_name_core values for appended rows only (default: off).",
+        help="Deprecated/no-op. CRM table formulas own Kaspi_name_core.",
     )
     parser.add_argument(
         "--backfill-fixed-days",
@@ -4762,14 +4720,11 @@ def main(
     # Build staging data (returns tuple: stage_block, phone_values)
     stage, phone_values = build_staging(df_filt, slice_headers)
     fixed_values_payload: Optional[List[Dict[str, Any]]] = None
-    kaspi_name_core_payload: Optional[List[str]] = None
-    preserved_my_sizes_payload: Optional[List[str]] = None
-    resolved_my_size_by_key: Dict[str, str] = {}
     reconcile_delete_count = 0
     if args.fixed_values:
         fixed_values_payload = build_fixed_value_payload(df_filt)
     elif getattr(args, "kaspi_core_override", False):
-        kaspi_name_core_payload = build_kaspi_name_core_payload(df_filt)
+        print("  NOTE: Kaspi_name_core override ignored; CRM table formulas own that column.")
 
     # Dedup against existing
     colmap = map_headers(df_filt)
@@ -4785,10 +4740,6 @@ def main(
             existing_append_date_keys=existing_append_date_keys,
             include_overdue=bool(args.include_overdue),
             append_date=append_date,
-        )
-        resolved_my_size_by_key = build_resolved_my_size_by_key(
-            df_filt,
-            latest_my_size_by_key=snapshot.latest_my_size_by_key,
         )
 
         desired_keys = df_filt["_okey"].tolist() if "_okey" in df_filt.columns else []
@@ -4821,19 +4772,6 @@ def main(
             if fixed_values_payload is not None
             else None
         )
-        kaspi_core_filtered = (
-            [kaspi_name_core_payload[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
-            if kaspi_name_core_payload is not None
-            else None
-        )
-        preserved_my_sizes_payload = (
-            [
-                resolved_my_size_by_key.get(df_filt.loc[idx, "_okey"], "")
-                for idx in indices_to_keep
-            ]
-            if "_okey" in df_filt.columns
-            else None
-        )
 
         dup_count = int(dedupe_stats.get("duplicates_skipped", 0))
         planned_dup_count = int(dedupe_stats.get("planned_duplicate_rows", 0))
@@ -4863,43 +4801,18 @@ def main(
         stage = stage_filtered
         phone_values = phone_filtered
         fixed_values_payload = fixed_filtered
-        kaspi_name_core_payload = kaspi_core_filtered
-
-    def maybe_backfill_append_date_my_sizes() -> int:
-        if args.dry_run or not append_date or not resolved_my_size_by_key:
-            return 0
-        try:
-            return backfill_append_date_my_sizes_openpyxl(
-                write_crm_path(),
-                args.sheet,
-                args.table,
-                append_date=append_date,
-                resolved_my_size_by_key=resolved_my_size_by_key,
-                dry_run=args.dry_run,
-                verbose=args.verbose,
-            )
-        except Exception as exc:
-            if not allow_openpyxl_append_fallback:
-                raise
-            print(f"   WARNING: MY_SIZE backfill failed ({exc}); continuing.")
-            return 0
 
     print(f"\n4. Appending new orders...")
     new_rows_added = len(stage)
     print(f"   Orders to append: {new_rows_added}")
 
     if len(stage) == 0:
-        my_size_backfilled = maybe_backfill_append_date_my_sizes()
-        if my_size_backfilled:
-            result["append_date_my_size_rows_filled"] = my_size_backfilled
         if updated_count > 0 or reconcile_delete_count > 0:
             detail_bits = []
             if updated_count > 0:
                 detail_bits.append(f"updated {updated_count} existing orders")
             if reconcile_delete_count > 0:
                 detail_bits.append(f"reconciled {reconcile_delete_count} stale today row(s)")
-            if my_size_backfilled > 0:
-                detail_bits.append(f"filled MY_SIZE on {my_size_backfilled} today row(s)")
             print(f"   No new orders to append ({'; '.join(detail_bits)})")
             if args.refresh_delivery_fees:
                 if not xlwings_write_available and allow_openpyxl_append_fallback:
@@ -4937,17 +4850,6 @@ def main(
             )
             return finalize(result)
         else:
-            if my_size_backfilled > 0:
-                print(
-                    "   No new orders to append "
-                    f"(filled MY_SIZE on {my_size_backfilled} today row(s))."
-                )
-                result["append_date_my_size_rows_filled"] = my_size_backfilled
-                fixed_backfilled = maybe_run_fixed_backfill()
-                if fixed_backfilled:
-                    print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
-                finalize_candidate_if_needed()
-                return finalize(result)
             print("   All orders already in CRM. Nothing to import or update.")
             print("   NO-OP: skipping Google Drive sync.")
             fixed_backfilled = maybe_run_fixed_backfill()
@@ -4977,8 +4879,8 @@ def main(
         append_date,
         slice_headers,
         fixed_values=fixed_values_payload,
-        kaspi_name_core_values=kaspi_name_core_payload,
-        preserved_my_sizes=preserved_my_sizes_payload,
+        kaspi_name_core_values=None,
+        preserved_my_sizes=None,
         allow_openpyxl_fallback=allow_openpyxl_append_fallback,
         prefer_xlwings=prefer_xlwings_append,
         repair_cf_ranges=bool(getattr(args, "repair_cf_ranges", True)),
@@ -4993,9 +4895,6 @@ def main(
             end_row=append_end_row,
             verbose=bool(args.verbose),
         )
-    my_size_backfilled = maybe_backfill_append_date_my_sizes()
-    if my_size_backfilled:
-        result["append_date_my_size_rows_filled"] = my_size_backfilled
     fixed_backfilled = maybe_run_fixed_backfill()
     if fixed_backfilled:
         print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")

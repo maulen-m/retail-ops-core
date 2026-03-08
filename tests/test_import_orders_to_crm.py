@@ -48,6 +48,7 @@ from scripts.import_orders_to_crm import (
     _temporary_manual_calculation,
     _build_xlwings_write_plan,
     _clear_my_size_range,
+    excel_append_openpyxl,
     excel_append_xlwings,
     _excel_automation_preflight,
     _excel_open_probe,
@@ -888,6 +889,109 @@ def test_excel_append_openpyxl_writes_numeric_order_id_and_phone(tmp_path):
     assert ws2.cell(row=3, column=3).number_format == "0"
     assert ws2.cell(row=3, column=2).value == 77770000001
     assert ws2.cell(row=3, column=2).number_format == "0"
+    wb2.close()
+
+
+def test_excel_append_openpyxl_keeps_my_size_blank_on_append(tmp_path):
+    workbook = tmp_path / "crm_my_size.xlsx"
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+    headers = ["Date", "Phone", "№ заказа", "MY_SIZE"]
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(row=1, column=idx, value=header)
+    ws.cell(row=2, column=1, value=date.today())
+    ws.cell(row=2, column=2, value=77770000000)
+    ws.cell(row=2, column=3, value=800000001)
+    ws.cell(row=2, column=4, value="manual")
+
+    table = Table(displayName="tb_SalesRaw", ref="A1:D2")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(table)
+    wb.save(workbook)
+    wb.close()
+
+    start_row, end_row = excel_append_openpyxl(
+        out_wb=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        date_col_abs=1,
+        phone_col_abs=2,
+        start_col_abs=3,
+        end_col_abs=3,
+        stage_block=[["812300002"]],
+        phone_values=["+7 (777) 000-00-02"],
+        set_date=date.today(),
+        slice_headers=["№ заказа"],
+        preserved_my_sizes=["XL"],
+        repair_cf_ranges=False,
+        verbose=False,
+    )
+
+    assert (start_row, end_row) == (3, 3)
+
+    wb2 = openpyxl.load_workbook(workbook)
+    ws2 = wb2["SALES_KSP_CRM_1"]
+    assert ws2.cell(row=3, column=4).value in ("", None)
+    wb2.close()
+
+
+def test_excel_append_openpyxl_does_not_rewrite_kaspi_name_core(tmp_path):
+    workbook = tmp_path / "crm_kaspi_core.xlsx"
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+    headers = ["Date", "Phone", "№ заказа", "Height", "Kaspi_name_core"]
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(row=1, column=idx, value=header)
+    ws.cell(row=2, column=1, value=date.today())
+    ws.cell(row=2, column=2, value=77770000000)
+    ws.cell(row=2, column=3, value=800000001)
+    ws.cell(row=2, column=4, value="legacy")
+    ws.cell(row=2, column=5, value='="AUTO"')
+
+    table = Table(displayName="tb_SalesRaw", ref="A1:E2")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(table)
+    wb.save(workbook)
+    wb.close()
+
+    start_row, end_row = excel_append_openpyxl(
+        out_wb=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        date_col_abs=1,
+        phone_col_abs=2,
+        start_col_abs=3,
+        end_col_abs=3,
+        stage_block=[["812300003"]],
+        phone_values=["+7 (777) 000-00-03"],
+        set_date=date.today(),
+        slice_headers=["№ заказа"],
+        kaspi_name_core_values=["MANUAL_CORE"],
+        repair_cf_ranges=False,
+        verbose=False,
+    )
+
+    assert (start_row, end_row) == (3, 3)
+
+    wb2 = openpyxl.load_workbook(workbook, data_only=False)
+    ws2 = wb2["SALES_KSP_CRM_1"]
+    assert ws2.cell(row=3, column=5).value == '="AUTO"'
     wb2.close()
 
 
@@ -1779,6 +1883,71 @@ def test_main_default_does_not_compute_fixed_values_payload(monkeypatch, tmp_pat
     assert stats["orders_imported"] == 1
 
 
+def test_main_does_not_autofill_or_backfill_my_size(monkeypatch, tmp_path):
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+    source_file = orders_dir / "ActiveOrders.xlsx"
+    source_file.write_text("placeholder", encoding="utf-8")
+    crm_path = tmp_path / "crm.xlsx"
+    crm_path.write_text("crm", encoding="utf-8")
+
+    df = pd.DataFrame(
+        {
+            "№ заказа": ["847016620"],
+            "Название товара в Kaspi Магазине": ["Трусы_черные"],
+            "Артикул": ["SKU-1"],
+            "Количество": [1],
+            "Плановая дата передачи курьеру": ["07.03.2026"],
+        }
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.read_active_orders", lambda _p: (df, [source_file]))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.filter_for_shipping",
+        lambda df_all, *_args, **_kwargs: (df_all, {"rows_in_files": 1, "rows_after_filters": 1}),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.sort_for_crm", lambda in_df: in_df)
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_crm_snapshot", lambda *_args, **_kwargs: _minimal_snapshot())
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["847016620"]], [""]))
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_pending_append_mask", lambda df_in, **_kwargs: (df_in.assign(_okey=["k1"]), pd.Series([True], index=df_in.index), {"duplicates_skipped": 0, "planned_duplicate_rows": 0, "append_date_duplicate_rows": 0, "carryforward_rows_to_append": 0}))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.build_resolved_my_size_by_key",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("MY_SIZE auto-resolve must stay disabled")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.backfill_append_date_my_sizes_openpyxl",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("MY_SIZE backfill must stay disabled")),
+        raising=False,
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm._promote_candidate_workbook", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", lambda *_args, **_kwargs: tmp_path / "archive")
+    monkeypatch.setattr("scripts.import_orders_to_crm.sync_pending_orders_to_gdrive_safe", lambda *_args, **_kwargs: {"rows_synced": 0})
+
+    seen = {}
+
+    def _append_spy(*_args, **kwargs):
+        seen["preserved_my_sizes"] = kwargs.get("preserved_my_sizes")
+        return (2, 2)
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", _append_spy)
+
+    stats = main(
+        orders_dir=orders_dir,
+        crm_path=crm_path,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        dry_run=False,
+        update_existing=False,
+        no_update=True,
+        append_integrity_check=False,
+        verbose=False,
+    )
+
+    assert stats["orders_imported"] == 1
+    assert seen["preserved_my_sizes"] is None
+
+
 def test_main_does_not_archive_when_candidate_promotion_fails(monkeypatch, tmp_path):
     orders_dir = tmp_path / "orders"
     orders_dir.mkdir()
@@ -1830,7 +1999,7 @@ def test_main_does_not_archive_when_candidate_promotion_fails(monkeypatch, tmp_p
     assert archive_calls["count"] == 0
 
 
-def test_main_can_write_kaspi_core_override_without_full_fixed_payload(monkeypatch, tmp_path):
+def test_main_does_not_write_kaspi_core_override_payload(monkeypatch, tmp_path):
     orders_dir = tmp_path / "orders"
     orders_dir.mkdir()
     source_file = orders_dir / "ActiveOrders.xlsx"
@@ -1854,7 +2023,7 @@ def test_main_can_write_kaspi_core_override_without_full_fixed_payload(monkeypat
     )
     monkeypatch.setattr(
         "scripts.import_orders_to_crm.build_kaspi_name_core_payload",
-        lambda *_args, **_kwargs: ["6в1_Черный_+Сумка"],
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Kaspi_name_core override must stay disabled")),
         raising=False,
     )
     monkeypatch.setattr("scripts.import_orders_to_crm._promote_candidate_workbook", lambda *_args, **_kwargs: None, raising=False)
@@ -1884,7 +2053,7 @@ def test_main_can_write_kaspi_core_override_without_full_fixed_payload(monkeypat
         verbose=False,
     )
     assert stats["orders_imported"] == 1
-    assert seen["kaspi_name_core_values"] == ["6в1_Черный_+Сумка"]
+    assert seen["kaspi_name_core_values"] is None
     assert seen["fixed_values"] is None
 
 
