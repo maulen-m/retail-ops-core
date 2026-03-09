@@ -75,6 +75,8 @@ fi
 DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-~/Docs/Autonomous_business}}"
 OUTPUT_TODAY_DIR="${DATA_ROOT}/excel_ui/Kaspi_orders/Today"
 WHATSAPP_RUNNER="${DATA_ROOT}/excel_ui/run_send_whatsapp.command"
+WHATSAPP_STOPLINE_JSON="${OUTPUT_TODAY_DIR}/whatsapp_send_stopline.json"
+WHATSAPP_PREFLIGHT_JSON="${DATA_ROOT}/exports/validation/waybill_whatsapp_ops/$(date +%Y-%m-%d)/auto_chain_preflight_runtime.json"
 
 # WhatsApp auto-send control:
 #   KASPI_AUTO_SEND_WHATSAPP=1    -> always run after successful waybill workflow
@@ -475,16 +477,34 @@ if [ "${AUTO_SEND_WHATSAPP}" = "1" ]; then
     if [ "${WHATSAPP_BUNDLE_COUNT}" -gt 0 ]; then
         echo "Step 4: Sending bundles to WhatsApp..."
         echo "----------------------------------------"
-        if [ "${HARD_FAIL}" -ne 0 ]; then
-            echo "WARNING: Waybill health reported mismatches, but ready merged bundles will still be sent."
-            echo "WhatsApp source root: ${WHATSAPP_SOURCE_ROOT}"
+        WHATSAPP_PREFLIGHT_OK=0
+        echo "Preflight: validating immutable WhatsApp send batch (send_batch_manifest.json)..."
+        python scripts/send_waybills_whatsapp.py \
+            --today-folder "${OUTPUT_TODAY_DIR}" \
+            --bundle-source merged \
+            --preflight-only \
+            --json-out "${WHATSAPP_PREFLIGHT_JSON}"
+        if [ $? -ne 0 ]; then
+            echo "WARNING: WhatsApp auto-send preflight failed. Auto-send will not start."
+            echo "Preflight report: ${WHATSAPP_PREFLIGHT_JSON}"
+            HARD_FAIL=1
+        else
+            WHATSAPP_PREFLIGHT_OK=1
+            if [ "${HARD_FAIL}" -ne 0 ]; then
+                echo "WARNING: Waybill health reported mismatches, but ready merged bundles will still be sent."
+                echo "WhatsApp source root: ${WHATSAPP_SOURCE_ROOT}"
+            fi
         fi
-        if [ -x "${WHATSAPP_RUNNER}" ]; then
+        if [ -x "${WHATSAPP_RUNNER}" ] && [ "${WHATSAPP_PREFLIGHT_OK}" -eq 1 ]; then
             "${WHATSAPP_RUNNER}"
             if [ $? -ne 0 ]; then
                 echo ""
                 echo "WARNING: WhatsApp send step returned non-zero."
                 echo "Please review sender logs above."
+                if [ -f "${WHATSAPP_STOPLINE_JSON}" ]; then
+                    echo "Sender stopline artifact: ${WHATSAPP_STOPLINE_JSON}"
+                fi
+                HARD_FAIL=1
             fi
         else
             echo "WARNING: WhatsApp runner not found/executable: ${WHATSAPP_RUNNER}"

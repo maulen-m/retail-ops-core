@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,18 @@ from typing import Any, Dict, Iterable, List, Optional
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.ops.waybill_send_batch import (
+    LEDGER_STATES,
+    SEND_BATCH_MANIFEST_FILE,
+    SEND_LEDGER_FILE,
+    SEND_STOPLINE_FILE,
+    load_send_ledger as core_load_send_ledger,
+    resolve_manifest_entry_path as core_resolve_manifest_entry_path,
+    save_send_ledger as core_save_send_ledger,
+    select_manifest_entries_for_send as core_select_manifest_entries_for_send,
+    transition_send_ledger_entry as core_transition_send_ledger_entry,
+)
 
 
 # =============================================================================
@@ -51,7 +64,6 @@ COPY_PROFILE_TO_TEMP = True
 # Default paths
 TODAY_FOLDER = PROJECT_ROOT / "excel_ui" / "Kaspi_orders" / "Today"
 SENT_TRACKER_FILE = "sent_pdfs.json"
-
 # PDF sending order (priority high to low)
 PDF_CATEGORIES = [
     "SPECIAL_multi_line",
@@ -118,7 +130,12 @@ NOISE_TOKENS = {
 }
 
 # Delay between sends (seconds)
-SEND_DELAY = 2.0
+SEND_DELAY = 0.4
+DOCUMENT_APPEAR_TIMEOUT_MS = 20_000
+DOCUMENT_SETTLE_TIMEOUT_MS = 30_000
+DOCUMENT_POLL_INTERVAL_MS = 250
+TEXT_SETTLE_TIMEOUT_MS = 20_000
+UNSURE_REASON_PREFIX = "UNSURE:"
 
 WHATSAPP_WEB_URL = "https://web.whatsapp.com"
 CHAT_OPEN_TIMEOUT_MS = 90_000
@@ -150,6 +167,235 @@ def save_sent_tracker(tracker_path: Path, tracker: Dict[str, Any]) -> None:
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(tracker, f, indent=2, ensure_ascii=False)
     temp_path.replace(tracker_path)
+
+
+# =============================================================================
+# MANIFEST / LEDGER
+# =============================================================================
+
+
+FINAL_LEDGER_STATES = {"confirmed", "unsure", "failed"}
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _looks_like_sha256(value: Any) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F]{64}", str(value or "").strip()))
+
+
+def _manifest_batch_hash(entries: List[Dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    stable_entries = []
+    for entry in sorted(entries, key=lambda x: str(x.get("pdf_key") or "")):
+        stable_entries.append(
+            {
+                "pdf_key": entry.get("pdf_key", ""),
+                "relative_output_path": entry.get("relative_output_path", ""),
+                "sha256": entry.get("sha256", ""),
+                "file_size": int(entry.get("file_size", 0) or 0),
+                "mtime": entry.get("mtime", ""),
+                "logical_group_type": entry.get("logical_group_type", ""),
+                "order_ids": list(entry.get("order_ids") or []),
+                "source_row_ids": list(entry.get("source_row_ids") or []),
+            }
+        )
+    digest.update(json.dumps(stable_entries, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _resolve_batch_folder(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Path:
+    source_root = resolve_send_root(today_folder, source_mode=source_mode)
+    if (source_root / SEND_BATCH_MANIFEST_FILE).exists():
+        return source_root
+
+    batch_folders = sorted(
+        [
+            item
+            for item in source_root.iterdir()
+            if item.is_dir() and (item / SEND_BATCH_MANIFEST_FILE).exists()
+        ],
+        key=lambda path: path.name,
+    ) if source_root.exists() else []
+
+    if not batch_folders:
+        batch_folders = [
+            folder
+            for folder in _collect_store_folders(source_root)
+            if (folder / SEND_BATCH_MANIFEST_FILE).exists()
+        ]
+    if not batch_folders:
+        raise FileNotFoundError(f"No batch folders found under {source_root}")
+    if len(batch_folders) != 1:
+        raise RuntimeError(
+            f"Expected exactly one immutable send batch under {source_root}, found {len(batch_folders)}"
+        )
+    return batch_folders[0]
+
+
+def _resolve_manifest_entry_path(batch_root: Path, entry: Dict[str, Any]) -> Path:
+    return core_resolve_manifest_entry_path(batch_root, entry)
+
+
+def load_send_batch_manifest(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Dict[str, Any]:
+    batch_root = _resolve_batch_folder(today_folder, source_mode=source_mode)
+    manifest_path = batch_root / SEND_BATCH_MANIFEST_FILE
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Missing send batch manifest: {manifest_path}")
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries = list(payload.get("entries") or [])
+    hydrated_entries: List[Dict[str, Any]] = []
+    for raw_entry in entries:
+        entry = dict(raw_entry)
+        entry["path"] = _resolve_manifest_entry_path(batch_root, entry)
+        hydrated_entries.append(entry)
+    payload["entries"] = hydrated_entries
+    payload["manifest_path"] = str(manifest_path)
+    payload["batch_root"] = str(batch_root)
+    return payload
+
+
+def load_send_ledger(ledger_path: Path, manifest: Dict[str, Any]) -> Dict[str, Any]:
+    return core_load_send_ledger(ledger_path, manifest)
+
+
+def save_send_ledger(ledger_path: Path, ledger: Dict[str, Any]) -> None:
+    core_save_send_ledger(ledger_path, ledger)
+
+
+def transition_send_ledger_entry(
+    ledger: Dict[str, Any],
+    pdf_key: str,
+    new_state: str,
+    *,
+    allow_unsure_resume: bool = False,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    return core_transition_send_ledger_entry(
+        ledger,
+        pdf_key,
+        new_state,
+        allow_unsure_resume=allow_unsure_resume,
+        note=note or "",
+    )
+
+
+def select_manifest_entries_for_send(
+    manifest: Dict[str, Any],
+    ledger: Dict[str, Any],
+    *,
+    allow_unsure_resume: bool = False,
+) -> List[Dict[str, Any]]:
+    return core_select_manifest_entries_for_send(
+        manifest,
+        ledger,
+        allow_unsure_resume=allow_unsure_resume,
+    )
+
+
+def _write_send_stopline(today_folder: Path, payload: Dict[str, Any]) -> Path:
+    output_path = today_folder / SEND_STOPLINE_FILE
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return output_path
+
+
+def verify_send_batch_preflight(
+    today_folder: Path,
+    source_mode: str = SOURCE_AUTO,
+    *,
+    allow_unsure_resume: bool = False,
+) -> Dict[str, Any]:
+    issues: List[Dict[str, Any]] = []
+    try:
+        manifest = load_send_batch_manifest(today_folder, source_mode=source_mode)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "issues": [{"code": "manifest_unavailable", "detail": str(exc)}],
+        }
+
+    computed_hash = _manifest_batch_hash(list(manifest.get("entries") or []))
+    manifest_batch_hash = str(manifest.get("batch_hash") or "")
+    if _looks_like_sha256(manifest_batch_hash) and computed_hash != manifest_batch_hash:
+        issues.append(
+            {
+                "code": "batch_hash_mismatch",
+                "detail": f"manifest={manifest_batch_hash} computed={computed_hash}",
+            }
+        )
+
+    overdue_order_ids = set(manifest.get("overdue_order_ids") or [])
+    send_order_ids = set(manifest.get("send_order_ids") or [])
+    if not send_order_ids:
+        for entry in manifest.get("entries") or []:
+            send_order_ids.update(entry.get("order_ids") or [])
+    missing_overdue = sorted(overdue_order_ids - send_order_ids)
+    if missing_overdue:
+        issues.append(
+            {
+                "code": "overdue_missing_from_send",
+                "detail": ",".join(missing_overdue),
+            }
+        )
+
+    if not bool(manifest.get("terminal_orders_excluded")):
+        issues.append(
+            {
+                "code": "terminal_pollution_check_failed",
+                "detail": "terminal_orders_excluded=false",
+            }
+        )
+
+    ledger_path = Path(manifest["batch_root"]) / SEND_LEDGER_FILE
+    ledger = load_send_ledger(ledger_path, manifest)
+    save_send_ledger(ledger_path, ledger)
+    if str(ledger.get("batch_hash") or "") not in {"", str(manifest.get("batch_hash") or "")}:
+        issues.append(
+            {
+                "code": "ledger_batch_hash_mismatch",
+                "detail": f"ledger={ledger.get('batch_hash')} manifest={manifest.get('batch_hash')}",
+            }
+        )
+
+    for pdf_key, entry in ledger.get("entries", {}).items():
+        state = str(entry.get("state") or "pending")
+        if state not in LEDGER_STATES:
+            issues.append(
+                {
+                    "code": "ledger_invalid_state",
+                    "detail": f"{pdf_key}:{state}",
+                }
+            )
+        elif state in {"opened", "clicked"}:
+            issues.append(
+                {
+                    "code": "ledger_in_progress_state",
+                    "detail": f"{pdf_key}:{state}",
+                }
+            )
+        elif state == "unsure" and not allow_unsure_resume:
+            issues.append(
+                {
+                    "code": "ledger_unsure_resume_blocked",
+                    "detail": pdf_key,
+                }
+            )
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "manifest_path": manifest["manifest_path"],
+        "batch_root": manifest["batch_root"],
+        "batch_hash": manifest.get("batch_hash", ""),
+        "send_pdf_count": int(manifest.get("counts", {}).get("pdfs", 0) or 0),
+        "send_order_count": int(manifest.get("counts", {}).get("orders", 0) or 0),
+    }
 
 
 # =============================================================================
@@ -186,6 +432,14 @@ def _has_store_folders(scan_root: Path) -> bool:
     return bool(_collect_store_folders(scan_root))
 
 
+def _has_send_batch_manifest(scan_root: Path) -> bool:
+    if not scan_root.exists():
+        return False
+    if (scan_root / SEND_BATCH_MANIFEST_FILE).exists():
+        return True
+    return any(item.is_dir() and (item / SEND_BATCH_MANIFEST_FILE).exists() for item in scan_root.iterdir())
+
+
 def resolve_send_root(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Path:
     """Resolve which bundle root to use under Today/."""
     merged_root = today_folder / "MERGED"
@@ -193,16 +447,14 @@ def resolve_send_root(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Pat
     per_store_root = today_folder / "PER_STORE"
 
     if source_mode == SOURCE_MERGED:
-        if _has_store_folders(merged_send_root):
-            return merged_send_root
-        return merged_root
+        return merged_send_root
     if source_mode == SOURCE_PER_STORE:
         return per_store_root
     if source_mode == SOURCE_LEGACY:
         return today_folder
 
     for candidate in (merged_send_root, merged_root, per_store_root, today_folder):
-        if _has_store_folders(candidate):
+        if _has_store_folders(candidate) or _has_send_batch_manifest(candidate):
             return candidate
     return today_folder
 
@@ -428,6 +680,7 @@ def _size_rank(size_token: str) -> int:
 
 def _extract_item_core(filename: str) -> str:
     stem = Path(filename).stem
+    stem = re.sub(r"^Местовая-\d+\)_", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"^Местовая-\d+_", "", stem, flags=re.IGNORECASE)
     stem = TRAILING_SIZE_RE.sub("", stem)
     return stem
@@ -1219,6 +1472,55 @@ class WhatsAppSender:
     def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
         self._wait_for_last_outgoing_settled(timeout_ms=timeout_ms)
 
+    def _wait_for_document_bubble(self, expected_filename: str, timeout_ms: int) -> None:
+        expected_name = expected_filename.strip()
+        expected_stem = Path(expected_name).stem
+        self.page.wait_for_function(
+            """
+            (payload) => {
+              const outgoing = Array.from(document.querySelectorAll("div.message-out")).slice(-12);
+              const candidates = [payload.filename, payload.stem].filter(Boolean).map((x) => x.toLowerCase());
+              return outgoing.some((node) => {
+                const text = String(node.innerText || node.textContent || '').toLowerCase();
+                return candidates.some((candidate) => candidate && text.includes(candidate));
+              });
+            }
+            """,
+            arg={"filename": expected_name, "stem": expected_stem},
+            timeout=timeout_ms,
+        )
+
+    def _wait_for_document_bubble_settled(self, expected_filename: str, timeout_ms: int) -> None:
+        expected_name = expected_filename.strip()
+        expected_stem = Path(expected_name).stem
+        self.page.wait_for_function(
+            """
+            (payload) => {
+              const outgoing = Array.from(document.querySelectorAll("div.message-out")).slice(-12).reverse();
+              const candidates = [payload.filename, payload.stem].filter(Boolean).map((x) => x.toLowerCase());
+              const matched = outgoing.find((node) => {
+                const text = String(node.innerText || node.textContent || '').toLowerCase();
+                return candidates.some((candidate) => candidate && text.includes(candidate));
+              });
+              if (!matched) return false;
+              const pending = matched.querySelector(
+                [
+                  "span[data-icon='msg-time']",
+                  "span[data-icon='status-clock']",
+                  "[role='progressbar']",
+                  "[aria-label*='sending']",
+                  "[aria-label*='Sending']",
+                  "[aria-label*='отправля']",
+                  "[aria-label*='Отправля']"
+                ].join(",")
+              );
+              return !pending;
+            }
+            """,
+            arg={"filename": expected_name, "stem": expected_stem},
+            timeout=timeout_ms,
+        )
+
     def send_text_message(self, text: str) -> None:
         if not text.strip():
             return
@@ -1227,117 +1529,111 @@ class WhatsAppSender:
         if not lines:
             return
 
-        last_error: Optional[Exception] = None
-        for attempt in range(1, 5):
-            try:
-                self._assert_active_target_chat()
-                prev_outgoing = self._outgoing_message_count()
-                composer = self._resolve_composer(
-                    timeout_ms=max(self.action_timeout_ms, 45_000),
-                    required=True,
-                )
-                if composer is None:
-                    raise RuntimeError("Composer not available")
-                composer.click()
+        self._assert_active_target_chat()
+        prev_outgoing = self._outgoing_message_count()
+        composer = self._resolve_composer(
+            timeout_ms=max(self.action_timeout_ms, 12_000),
+            required=True,
+        )
+        if composer is None:
+            raise RuntimeError("Composer not available")
+        composer.click()
 
-                try:
-                    composer.press("Control+A")
-                    composer.press("Backspace")
-                except Exception:
-                    pass
+        try:
+            composer.press("Control+A")
+            composer.press("Backspace")
+        except Exception:
+            pass
 
-                for idx, line in enumerate(lines):
-                    if line:
-                        self.page.keyboard.insert_text(line)
-                    if idx < len(lines) - 1:
-                        self.page.keyboard.press("Shift+Enter")
+        for idx, line in enumerate(lines):
+            if line:
+                self.page.keyboard.insert_text(line)
+            if idx < len(lines) - 1:
+                self.page.keyboard.press("Shift+Enter")
 
-                self.page.keyboard.press("Enter")
-                self._wait_for_new_outgoing_message(
-                    prev_outgoing,
-                    timeout_ms=max(self.action_timeout_ms, 60_000),
-                )
-                self._wait_for_last_outgoing_settled(
-                    timeout_ms=max(self.action_timeout_ms, 90_000),
-                )
-                self._assert_active_target_chat()
-                return
-            except Exception as exc:
-                last_error = exc
-                if attempt >= 4:
-                    break
-                if self.verbose:
-                    print(f"      text send retry {attempt}/4 due to: {exc}")
-                self._wait_for_chat_list_ready()
-                self.open_chat(self.chat_title)
-                self.page.wait_for_timeout(800)
+        self.page.keyboard.press("Enter")
+        self._wait_for_new_outgoing_message(
+            prev_outgoing,
+            timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
+        )
+        self._wait_for_last_outgoing_settled(
+            timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
+        )
+        self._assert_active_target_chat()
 
-        if last_error:
-            raise last_error
-
-    def send_document(self, pdf_path: Path) -> None:
+    def prepare_document(self, pdf_path: Path) -> None:
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
+        self._assert_active_target_chat()
+        self._resolve_composer(
+            timeout_ms=max(self.action_timeout_ms, 12_000),
+            required=True,
+        )
+        self._safe_click_selectors(
+            [
+                "button[aria-label='Attach']",
+                "button[aria-label='Прикрепить']",
+            ],
+            "attach button",
+            timeout_ms=8_000,
+        )
+        self._choose_file_via_document_menu(pdf_path)
+        self.page.wait_for_timeout(300)
+
+    def click_document_send(self) -> None:
+        selectors = [
+            "button[aria-label='Send']",
+            "button[aria-label='Отправить']",
+            "span[data-icon='wds-ic-send-filled']",
+            "span[data-icon='send']",
+        ]
+        deadline = time.time() + 8.0
         last_error: Optional[Exception] = None
+        while time.time() < deadline:
+            for selector in selectors:
+                locator = self.page.locator(selector)
+                if locator.count() <= 0:
+                    continue
+                try:
+                    locator.first.click(timeout=1200)
+                    return
+                except Exception as exc:
+                    last_error = exc
+            self.page.wait_for_timeout(200)
+        raise RuntimeError(f"Failed to click send button once: {last_error}")
 
-        for attempt in range(1, 4):
-            try:
-                self._assert_active_target_chat()
-                prev_outgoing = self._outgoing_message_count()
-                self._resolve_composer(
-                    timeout_ms=max(self.action_timeout_ms, 45_000),
-                    required=True,
-                )
-                self._safe_click_selectors(
-                    [
-                        "button[aria-label='Attach']",
-                        "button[aria-label='Прикрепить']",
-                    ],
-                    "attach button",
-                    timeout_ms=12_000,
-                )
-
-                self._choose_file_via_document_menu(pdf_path)
-                self.page.wait_for_timeout(800)
-
-                self._safe_click_selectors(
-                    [
-                        "button[aria-label='Send']",
-                        "button[aria-label='Отправить']",
-                        "span[data-icon='wds-ic-send-filled']",
-                        "span[data-icon='send']",
-                    ],
-                    "send button",
-                    timeout_ms=15_000,
-                )
-
-                self._wait_for_new_outgoing_message(
-                    prev_outgoing,
-                    timeout_ms=max(self.action_timeout_ms, 90_000),
-                )
-                self._wait_for_last_outgoing_settled(
-                    timeout_ms=max(self.action_timeout_ms, 120_000),
-                )
-                self._assert_active_target_chat()
-                return
-            except Exception as exc:
-                last_error = exc
-                if attempt >= 3:
-                    break
-                if self.verbose:
-                    print(f"      send retry {attempt}/3 due to: {exc}")
-                self._wait_for_chat_list_ready()
-                self.open_chat(self.chat_title)
-                self.page.wait_for_timeout(1000)
-
-        if last_error:
-            raise last_error
+    def confirm_document_sent(self, expected_filename: str) -> None:
+        try:
+            self._wait_for_document_bubble(
+                expected_filename,
+                timeout_ms=max(self.action_timeout_ms, DOCUMENT_APPEAR_TIMEOUT_MS),
+            )
+            self._wait_for_document_bubble_settled(
+                expected_filename,
+                timeout_ms=max(self.action_timeout_ms, DOCUMENT_SETTLE_TIMEOUT_MS),
+            )
+            self._assert_active_target_chat()
+        except Exception as exc:
+            raise RuntimeError(
+                f"{UNSURE_REASON_PREFIX} document confirmation failed for {expected_filename}: {exc}"
+            ) from exc
 
 
 # =============================================================================
 # MAIN LOGIC
 # =============================================================================
+
+
+def _store_stats_from_manifest(manifest: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+    stats: Dict[str, Dict[str, int]] = defaultdict(lambda: {"orders_target": 0, "orders_ready": 0})
+    for entry in manifest.get("entries") or []:
+        counts = dict(entry.get("order_counts_by_store") or {})
+        for store, qty in counts.items():
+            store_name = _normalize_store_label(store)
+            stats[store_name]["orders_target"] += int(qty)
+            stats[store_name]["orders_ready"] += int(qty)
+    return dict(stats)
 
 
 def run_sender(
@@ -1352,6 +1648,7 @@ def run_sender(
     chrome_profile_directory: str = DEFAULT_CHROME_PROFILE_DIR,
     blocked_chat_titles: Iterable[str] = BLOCKED_CHAT_TITLES_DEFAULT,
     fail_fast: bool = False,
+    allow_unsure_resume: bool = False,
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """Run WhatsApp PDF sender workflow."""
@@ -1363,6 +1660,8 @@ def run_sender(
         "target_chat": chat_title or "",
         "source_root": "",
         "status_message_failed": 0,
+        "halted": False,
+        "halt_reason": "",
     }
 
     if not chat_title and not dry_run:
@@ -1374,63 +1673,74 @@ def run_sender(
         print("Install with: pip install playwright")
         return results
 
-    source_root = resolve_send_root(today_folder, source_mode=bundle_source)
-    results["source_root"] = str(source_root)
-    order_store_map = load_order_store_map_from_selection(today_folder)
-
-    tracker_path = today_folder / SENT_TRACKER_FILE
-    tracker = load_sent_tracker(tracker_path) if resume else {"sent": [], "last_updated": None}
-
-    all_pdfs = collect_all_pdfs(
+    preflight = verify_send_batch_preflight(
         today_folder,
         source_mode=bundle_source,
-        order_store_map=order_store_map,
+        allow_unsure_resume=allow_unsure_resume,
     )
-    results["total"] = len(all_pdfs)
-    store_folders = find_store_folders(today_folder, source_mode=bundle_source)
-    store_stats = collect_store_order_bundle_stats(
-        store_folders,
-        order_store_map=order_store_map,
-    )
-    if not store_stats:
-        fallback_stats: Dict[str, Dict[str, int]] = defaultdict(
-            lambda: {"orders_target": 0, "orders_ready": 0}
+    if not preflight["ok"]:
+        results["failed"] += 1
+        results["halted"] = True
+        results["halt_reason"] = "PREFLIGHT_RED"
+        _write_send_stopline(
+            today_folder,
+            {
+                "halt_reason": results["halt_reason"],
+                "issues": preflight["issues"],
+                "captured_at": datetime.now().isoformat(),
+            },
         )
-        for pdf in all_pdfs:
-            for store, qty in dict(pdf.get("order_counts_by_store") or {}).items():
-                store_name = _normalize_store_label(store)
-                fallback_stats[store_name]["orders_ready"] += int(qty)
-        store_stats = {name: values for name, values in fallback_stats.items()}
-
-    if verbose:
-        print(f"Bundle source root: {source_root}")
-        print(f"Found {len(all_pdfs)} PDFs total")
-
-    if not all_pdfs:
-        print("No PDFs found in Today folder")
+        print("ERROR: send batch preflight failed.")
+        for issue in preflight["issues"]:
+            print(f"  - {issue['code']}: {issue['detail']}")
         return results
 
-    pdfs_to_send = filter_unsent_pdfs(all_pdfs, tracker["sent"]) if resume else all_pdfs
-    results["skipped"] = len(all_pdfs) - len(pdfs_to_send)
+    manifest = load_send_batch_manifest(today_folder, source_mode=bundle_source)
+    batch_root = Path(manifest["batch_root"])
+    results["source_root"] = str(batch_root)
+    entries = list(manifest.get("entries") or [])
+    results["total"] = len(entries)
+    store_stats = _store_stats_from_manifest(manifest)
+    ledger_path = batch_root / SEND_LEDGER_FILE
+    ledger = load_send_ledger(ledger_path, manifest)
+    save_send_ledger(ledger_path, ledger)
+
+    if verbose:
+        print(f"Bundle source root: {batch_root}")
+        print(f"Found {len(entries)} PDFs total")
+
+    if not entries:
+        print("No PDFs found in send batch manifest")
+        return results
+
+    pdfs_to_send = select_manifest_entries_for_send(
+        manifest,
+        ledger,
+        allow_unsure_resume=allow_unsure_resume,
+    )
+    pdfs_to_send = order_pdfs_for_sending(pdfs_to_send)
+    results["skipped"] = len(entries) - len(pdfs_to_send)
 
     if results["skipped"] > 0 and verbose:
-        print(f"Skipping {results['skipped']} already-sent PDFs")
+        print(f"Skipping {results['skipped']} ledger-complete PDFs")
 
     if not pdfs_to_send:
-        print("All PDFs already sent!")
+        print("All PDFs already sent or blocked by ledger state!")
         sent_orders_snapshot: Counter[str] = Counter()
-        for pdf in all_pdfs:
-            for store_name, qty in dict(pdf.get("order_counts_by_store") or {}).items():
-                sent_orders_snapshot[_normalize_store_label(store_name)] += int(qty)
+        for entry in entries:
+            entry_state = str(ledger.get("entries", {}).get(entry["pdf_key"], {}).get("state") or "pending")
+            if entry_state == "confirmed":
+                for store_name, qty in dict(entry.get("order_counts_by_store") or {}).items():
+                    sent_orders_snapshot[_normalize_store_label(store_name)] += int(qty)
         pre_status_text = format_pre_send_status_table(
             store_stats,
-            bundles_target=len(all_pdfs),
+            bundles_target=len(entries),
         )
         post_status_text = format_post_send_status_table(
             store_stats,
             dict(sent_orders_snapshot),
-            bundles_target=len(all_pdfs),
-            bundles_sent=len(all_pdfs),
+            bundles_target=len(entries),
+            bundles_sent=sum(1 for entry in entries if ledger.get("entries", {}).get(entry["pdf_key"], {}).get("state") == "confirmed"),
         )
         print("\nPre-send status:")
         print(pre_status_text)
@@ -1438,7 +1748,6 @@ def run_sender(
         print(post_status_text)
         return results
 
-    pdfs_to_send = order_pdfs_for_sending(pdfs_to_send)
     bundles_target = len(pdfs_to_send)
     bundles_sent = 0
     sent_orders_by_store: Counter[str] = Counter()
@@ -1454,7 +1763,7 @@ def run_sender(
 
     if dry_run:
         for i, pdf in enumerate(pdfs_to_send, start=1):
-            batch_label = str(pdf.get("batch_label") or pdf["store"])
+            batch_label = str(manifest.get("batch_label") or batch_root.name)
             if batch_label != current_batch:
                 current_batch = batch_label
                 print(f"\nBatch: {current_batch}")
@@ -1496,13 +1805,9 @@ def run_sender(
                 except Exception as exc:
                     results["status_message_failed"] = 1
                     print(f"\nWARNING: Failed to send pre-send status message: {exc}")
-                    if fail_fast:
-                        results["failed"] += 1
-                        print("STOPPING: fail-fast enabled.")
-                        return results
 
             for i, pdf in enumerate(pdfs_to_send, start=1):
-                batch_label = str(pdf.get("batch_label") or pdf["store"])
+                batch_label = str(manifest.get("batch_label") or batch_root.name)
                 if batch_label != current_batch:
                     current_batch = batch_label
                     print(f"\nBatch: {current_batch}")
@@ -1513,40 +1818,59 @@ def run_sender(
 
                 print(f"    {i}. {pdf['filename']}")
 
-                if not pdf["path"].exists():
-                    recovered = _recover_missing_pdf_path(pdf, today_folder)
-                    if recovered is not None:
-                        if verbose:
-                            print(f"      recovered moved PDF path: {recovered}")
-                    else:
-                        results["failed"] += 1
-                        print(f"      SKIP: missing PDF on disk: {pdf['path']}")
-                        continue
-
+                pdf_key = str(pdf["pdf_key"])
+                pdf_path = Path(pdf["path"])
                 try:
-                    sender.send_document(pdf["path"])
-                except FileNotFoundError:
-                    recovered = _recover_missing_pdf_path(pdf, today_folder)
-                    if recovered is not None:
-                        try:
-                            sender.send_document(recovered)
-                        except Exception as exc:
-                            results["failed"] += 1
-                            if fail_fast:
-                                print(f"\nSTOPPING: Failed to send {pdf['filename']}: {exc}")
-                                print("Use --resume after fixing WhatsApp UI/session")
-                                break
-                            print(f"\nWARNING: Failed to send {pdf['filename']}: {exc}")
-                            continue
-                    else:
-                        results["failed"] += 1
-                        print(f"      SKIP: missing PDF on disk: {pdf['path']}")
-                        continue
+                    transition_send_ledger_entry(
+                        ledger,
+                        pdf_key,
+                        "opened",
+                        allow_unsure_resume=allow_unsure_resume,
+                    )
+                    save_send_ledger(ledger_path, ledger)
+                    sender.prepare_document(pdf_path)
+                    sender.click_document_send()
+                    transition_send_ledger_entry(ledger, pdf_key, "clicked")
+                    save_send_ledger(ledger_path, ledger)
+                    sender.confirm_document_sent(pdf["filename"])
+                    transition_send_ledger_entry(ledger, pdf_key, "confirmed")
+                    save_send_ledger(ledger_path, ledger)
                 except Exception as exc:
+                    message = str(exc)
+                    if message.startswith(UNSURE_REASON_PREFIX):
+                        transition_send_ledger_entry(ledger, pdf_key, "unsure")
+                        save_send_ledger(ledger_path, ledger)
+                        results["failed"] += 1
+                        results["halted"] = True
+                        results["halt_reason"] = "UNSURE"
+                        _write_send_stopline(
+                            today_folder,
+                            {
+                                "halt_reason": "UNSURE",
+                                "pdf_key": pdf_key,
+                                "filename": pdf["filename"],
+                                "detail": message,
+                                "batch_root": str(batch_root),
+                                "manifest_path": manifest["manifest_path"],
+                                "ledger_path": str(ledger_path),
+                                "captured_at": datetime.now().isoformat(),
+                            },
+                        )
+                        print(f"\nSTOPPING: {message}")
+                        break
+
                     results["failed"] += 1
+                    if ledger.get("entries", {}).get(pdf_key, {}).get("state") == "opened":
+                        try:
+                            transition_send_ledger_entry(ledger, pdf_key, "failed")
+                            save_send_ledger(ledger_path, ledger)
+                        except Exception:
+                            pass
                     if fail_fast:
                         print(f"\nSTOPPING: Failed to send {pdf['filename']}: {exc}")
                         print("Use --resume after fixing WhatsApp UI/session")
+                        results["halted"] = True
+                        results["halt_reason"] = "FAILED"
                         break
                     print(f"\nWARNING: Failed to send {pdf['filename']}: {exc}")
                     continue
@@ -1555,8 +1879,6 @@ def run_sender(
                 bundles_sent += 1
                 for store_name, qty in dict(pdf.get("order_counts_by_store") or {}).items():
                     sent_orders_by_store[_normalize_store_label(store_name)] += int(qty)
-                tracker["sent"].append(pdf["relative"])
-                save_sent_tracker(tracker_path, tracker)
 
                 if i < len(pdfs_to_send) and send_delay > 0:
                     time.sleep(send_delay)
@@ -1584,6 +1906,8 @@ def run_sender(
                     print(f"WARNING: final outgoing sync check failed: {exc}")
     except Exception as exc:
         results["failed"] += 1
+        results["halted"] = True
+        results["halt_reason"] = "RUNTIME_ERROR"
         if fail_fast:
             print(f"\nSTOPPING: Sender runtime error: {exc}")
         else:
@@ -1624,13 +1948,18 @@ def main() -> None:
         help="Don't skip already-sent PDFs",
     )
     parser.add_argument(
+        "--allow-unsure-resume",
+        action="store_true",
+        help="Allow explicit resume from ledger entries currently marked UNSURE",
+    )
+    parser.add_argument(
         "--bundle-source",
         choices=SOURCE_CHOICES,
         default=SOURCE_AUTO,
         help=(
             "Which bundle layout to send from: "
             "auto (prefer MERGED/SEND, then MERGED, then PER_STORE, then legacy), "
-            "merged (prefer MERGED/SEND, fallback MERGED), per-store, or legacy."
+            "merged (MERGED/SEND only), per-store, or legacy."
         ),
     )
     parser.add_argument(
@@ -1675,6 +2004,17 @@ def main() -> None:
         action="store_true",
         help="Stop on first send/runtime error (default: continue and report failures)",
     )
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="Validate immutable send batch contract and exit without sending",
+    )
+    parser.add_argument(
+        "--json-out",
+        type=Path,
+        default=None,
+        help="Optional JSON output path for preflight or live run summary",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
@@ -1698,7 +2038,29 @@ def main() -> None:
     print(f"  Status messages: {'Yes' if args.status_messages else 'No'}")
     print(f"  Fail fast: {'Yes' if args.fail_fast else 'No'}")
     print(f"  Resume: {'No' if args.no_resume else 'Yes'}")
+    print(f"  Allow UNSURE resume: {'Yes' if args.allow_unsure_resume else 'No'}")
+    print(f"  Preflight only: {'Yes' if args.preflight_only else 'No'}")
     print()
+
+    if args.preflight_only:
+        preflight = verify_send_batch_preflight(
+            args.today_folder,
+            source_mode=args.bundle_source,
+            allow_unsure_resume=bool(args.allow_unsure_resume),
+        )
+        if args.json_out:
+            args.json_out.parent.mkdir(parents=True, exist_ok=True)
+            args.json_out.write_text(json.dumps(preflight, ensure_ascii=False, indent=2), encoding="utf-8")
+        if preflight["ok"]:
+            print("Preflight OK")
+            print(f"  Manifest: {preflight['manifest_path']}")
+            print(f"  Batch root: {preflight['batch_root']}")
+            print(f"  Batch hash: {preflight['batch_hash']}")
+            raise SystemExit(0)
+        print("Preflight FAIL")
+        for issue in preflight["issues"]:
+            print(f"  - {issue['code']}: {issue['detail']}")
+        raise SystemExit(1)
 
     started_at = time.monotonic()
     results = run_sender(
@@ -1713,24 +2075,31 @@ def main() -> None:
         chrome_profile_directory=args.chrome_profile_directory,
         blocked_chat_titles=dedup_blocked,
         fail_fast=bool(args.fail_fast),
+        allow_unsure_resume=bool(args.allow_unsure_resume),
         verbose=args.verbose,
     )
     elapsed = max(0, int(time.monotonic() - started_at))
     mins, secs = divmod(elapsed, 60)
+
+    if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print()
     print("=" * 60)
     print("  Results:")
     print(f"    Total PDFs: {results['total']}")
     print(f"    Sent: {results['sent']}")
-    print(f"    Skipped (already sent): {results['skipped']}")
+    print(f"    Skipped (ledger-complete): {results['skipped']}")
     print(f"    Failed: {results['failed']}")
+    print(f"    Halted: {'Yes' if results.get('halted') else 'No'}")
+    print(f"    Halt reason: {results.get('halt_reason', '')}")
     print(f"    Status message failures: {results['status_message_failed']}")
     print(f"    Source root: {results.get('source_root', '')}")
     print(f"    Duration: {mins}m {secs}s")
     print("=" * 60)
 
-    if results["failed"] > 0:
+    if results["failed"] > 0 or results.get("halted"):
         raise SystemExit(1)
 
 

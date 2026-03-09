@@ -65,7 +65,7 @@ def test_collect_all_pdfs_prefers_merged_layout_when_present(tmp_path: Path) -> 
 
 def test_collect_all_pdfs_can_force_merged_source(tmp_path: Path) -> None:
     today_root = tmp_path / "Today"
-    merged_store = today_root / "MERGED" / "TODAY" / "28.02.26_MERGED_qnt1"
+    merged_store = today_root / "MERGED" / MERGED_SEND_ROOT_NAME / "28.02.26_MERGED_qnt1"
     _write_store_fixture(merged_store, "merged_only.pdf")
 
     folders = find_store_folders(today_root, source_mode=SOURCE_MERGED)
@@ -75,6 +75,20 @@ def test_collect_all_pdfs_can_force_merged_source(tmp_path: Path) -> None:
     assert folders[0] == merged_store
     assert len(pdfs) == 1
     assert pdfs[0]["filename"] == "merged_only.pdf"
+
+
+def test_collect_all_pdfs_merged_mode_does_not_fallback_to_partitioned_merged_root(tmp_path: Path) -> None:
+    today_root = tmp_path / "Today"
+    merged_store = today_root / "MERGED" / "TODAY" / "28.02.26_MERGED_qnt1"
+    _write_store_fixture(merged_store, "partitioned_only.pdf")
+
+    resolved_root = resolve_send_root(today_root, source_mode=SOURCE_MERGED)
+    folders = find_store_folders(today_root, source_mode=SOURCE_MERGED)
+    pdfs = collect_all_pdfs(today_root, source_mode=SOURCE_MERGED)
+
+    assert resolved_root == today_root / "MERGED" / MERGED_SEND_ROOT_NAME
+    assert folders == []
+    assert pdfs == []
 
 
 def test_collect_all_pdfs_prefers_merged_send_root_when_present(tmp_path: Path) -> None:
@@ -96,7 +110,7 @@ def test_collect_all_pdfs_prefers_merged_send_root_when_present(tmp_path: Path) 
 
 def test_collect_all_pdfs_recurses_nested_category_folders(tmp_path: Path) -> None:
     today_root = tmp_path / "Today"
-    merged_store = today_root / "MERGED" / "TODAY" / "28.02.26_MERGED_qnt2"
+    merged_store = today_root / "MERGED" / MERGED_SEND_ROOT_NAME / "28.02.26_MERGED_qnt2"
     _write_store_fixture(merged_store, "top_level.pdf")
 
     nested_pdf = merged_store / "NORMAL_singles" / "New Folder With Items" / "nested.pdf"
@@ -107,7 +121,7 @@ def test_collect_all_pdfs_recurses_nested_category_folders(tmp_path: Path) -> No
     names = sorted(x["filename"] for x in pdfs)
 
     assert names == ["nested.pdf", "top_level.pdf"]
-    assert all(x["relative"].startswith("MERGED/") for x in pdfs)
+    assert all(x["relative"].startswith(f"MERGED/{MERGED_SEND_ROOT_NAME}/") for x in pdfs)
 
 
 def test_recover_missing_pdf_path_finds_moved_file_with_same_name(tmp_path: Path) -> None:

@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -66,6 +67,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
 from core.db import DEFAULT_DB_PATH, get_db
+from core.ops.crm_operational_view import select_operational_crm_rows
+from core.ops.waybill_send_batch import SEND_LEDGER_FILE, initialize_send_ledger
 from core.paths import data_path, get_data_root
 from core.utils.kaspi_dates import parse_kaspi_date
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
@@ -172,6 +175,7 @@ class OrderItem:
     quantity: int
     kaspi_offer_name: str
     planned_date: Optional[date]
+    source_row_id: str = ""
 
 
 @dataclass
@@ -237,6 +241,16 @@ def sanitize_filename(name: str) -> str:
         result = result[:80]
 
     return result if result else "UNKNOWN"
+
+
+def format_item_detail(item: OrderItem) -> str:
+    """Compact warehouse-readable item detail with explicit quantity."""
+    core = sanitize_filename(item.kaspi_name_core)
+    size = sanitize_filename(item.my_size)
+    qty = int(item.quantity or 0)
+    if qty <= 0:
+        qty = 1
+    return f"{core}-{size}-{qty}"
 
 
 def parse_date(value: Any) -> Optional[date]:
@@ -607,6 +621,21 @@ def read_crm_orders(
         logger.info(f"Reading CRM from {crm_path}")
         df = pd.read_excel(crm_path, sheet_name=sheet_name)
 
+    if target_date:
+        df, operational_stats = select_operational_crm_rows(
+            df,
+            target_date=target_date,
+            order_id_filter=order_id_filter,
+        )
+        logger.info(
+            "Resolved CRM operational rows: "
+            f"orders={operational_stats['orders_selected']} "
+            f"today={operational_stats['selected_today_orders']} "
+            f"fallback={operational_stats['selected_fallback_orders']} "
+            f"historical_dropped={operational_stats['historical_rows_dropped']} "
+            f"line_dupes_dropped={operational_stats['same_day_line_duplicates_dropped']}"
+        )
+
     status_col = None
     for name in ("Статус", "STATUS", "Status"):
         if name in df.columns:
@@ -711,6 +740,10 @@ def read_crm_orders(
             quantity=quantity,
             kaspi_offer_name=kaspi_offer_name,
             planned_date=planned_date,
+            source_row_id=(
+                f"{order_id}@{row.get('_batch_date') or target_date}#"
+                f"{row.get('_row_ordinal', row.name)}"
+            ),
         )
         orders.append(item)
 
@@ -1107,19 +1140,11 @@ def generate_filename(group: WaybillGroup, index: int) -> str:
         return f"{name_core}_{size}-{count}.pdf"
 
     elif group.group_type == "MULTI_QTY":
-        # Местовая-{N}_{core}_{size}-{qty}.pdf
-        return f"Местовая-{index}_{name_core}_{size}-{group.total_quantity}.pdf"
+        return f"Местовая-{index})_{name_core}-{size}-{group.total_quantity}.pdf"
 
     elif group.group_type == "MULTI_LINE":
-        # Местовая-{N}_{core1}-{sz1}-{q1}(1-N)_{core2}-{sz2}-{q2}(2-N).pdf
-        parts = []
-        total = len(group.items)
-        for i, item in enumerate(group.items, 1):
-            core = sanitize_filename(item.kaspi_name_core)
-            sz = sanitize_filename(item.my_size)
-            parts.append(f"{core}-{sz}-{item.quantity}({i}-{total})")
-
-        return f"Местовая-{index}_{'_'.join(parts)}.pdf"
+        parts = [format_item_detail(item) for item in group.items]
+        return f"Местовая-{index})_{'_'.join(parts)}.pdf"
 
     return f"unknown_{group.order_id}.pdf"
 
@@ -1318,6 +1343,7 @@ def build_store_output(
         'multi_qty': 0,
         'multi_line': 0,
         'packages': count_packages(groups),
+        'batch_dir': store_dir,
     }
 
     if dry_run:
@@ -1419,6 +1445,135 @@ def build_store_output(
     return stats
 
 
+def _store_order_counts(group: WaybillGroup) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for item in group.items:
+        if item.store_name:
+            counts[item.store_name] += 1
+    return dict(counts)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _compute_batch_hash(entries: list[dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    stable_entries = []
+    for entry in sorted(entries, key=lambda x: x["pdf_key"]):
+        stable_entries.append(
+            {
+                "pdf_key": entry["pdf_key"],
+                "relative_output_path": entry["relative_output_path"],
+                "sha256": entry["sha256"],
+                "file_size": entry["file_size"],
+                "mtime": entry["mtime"],
+                "logical_group_type": entry["logical_group_type"],
+                "order_ids": entry["order_ids"],
+                "source_row_ids": entry["source_row_ids"],
+            }
+        )
+    digest.update(json.dumps(stable_entries, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def write_send_batch_manifest(
+    batch_root: Path,
+    today_root: Path,
+    groups: list[WaybillGroup],
+    target_date: date,
+) -> Path:
+    """Write immutable manifest for the operator-safe SEND batch."""
+    entries: list[dict[str, Any]] = []
+    send_order_ids: set[str] = set()
+    overdue_order_ids: set[str] = set()
+
+    for group in sorted(groups, key=manifest_sort_key):
+        relative_output_path = str(group.output_filename or "").replace("\\", "/")
+        if not relative_output_path:
+            continue
+        output_path = batch_root / relative_output_path
+        if not output_path.exists():
+            raise FileNotFoundError(f"Manifest output missing on disk: {output_path}")
+
+        stat = output_path.stat()
+        order_ids = group.order_ids
+        send_order_ids.update(order_ids)
+        group_overdue = any(
+            item.planned_date and item.planned_date < target_date
+            for item in group.items
+        )
+        if group_overdue:
+            overdue_order_ids.update(order_ids)
+
+        items_detail = [format_item_detail(item) for item in group.items]
+        source_row_ids = [
+            str(getattr(item, "source_row_id", "") or "").strip()
+            for item in group.items
+            if str(getattr(item, "source_row_id", "") or "").strip()
+        ]
+        sha256 = _file_sha256(output_path)
+        pdf_key_seed = {
+            "group_type": group.group_type,
+            "order_ids": order_ids,
+            "sha256": sha256,
+            "items_detail": items_detail,
+            "source_row_ids": source_row_ids,
+        }
+        pdf_key = hashlib.sha256(
+            json.dumps(pdf_key_seed, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        entries.append(
+            {
+                "pdf_key": pdf_key,
+                "relative_output_path": relative_output_path,
+                "relative_to_today": str(output_path.relative_to(today_root)).replace("\\", "/"),
+                "filename": output_path.name,
+                "category": Path(relative_output_path).parent.name,
+                "logical_group_type": group.group_type,
+                "sha256": sha256,
+                "file_size": int(stat.st_size),
+                "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "order_ids": order_ids,
+                "order_counts_by_store": _store_order_counts(group),
+                "source_row_ids": source_row_ids,
+                "items_detail": items_detail,
+            }
+        )
+
+    payload = {
+        "schema_version": 1,
+        "created_at": datetime.now(ALMATY_TZ).isoformat(),
+        "target_date": target_date.isoformat(),
+        "today_root": str(today_root),
+        "source_root": str(batch_root),
+        "batch_label": batch_root.name,
+        "counts": {
+            "pdfs": len(entries),
+            "orders": len(send_order_ids),
+            "overdue_orders": len(overdue_order_ids),
+        },
+        "send_order_ids": sorted(send_order_ids),
+        "overdue_order_ids": sorted(overdue_order_ids),
+        "missing_overdue_order_ids": [],
+        "terminal_orders_excluded": True,
+        "entries": entries,
+    }
+    payload["batch_hash"] = _compute_batch_hash(entries)
+
+    output_path = batch_root / "send_batch_manifest.json"
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
 def write_manifest(groups: list[WaybillGroup], output_path: Path, manifest_type: str):
     """Write manifest CSV file."""
     if not groups:
@@ -1453,10 +1608,7 @@ def write_manifest(groups: list[WaybillGroup], output_path: Path, manifest_type:
 
             if manifest_type == "MULTI_LINE":
                 row['items_count'] = len(group.items)
-                detail_parts = [
-                    f"{sanitize_filename(item.kaspi_name_core)}-{item.my_size}-{item.quantity}"
-                    for item in group.items
-                ]
+                detail_parts = [format_item_detail(item) for item in group.items]
                 row['items_detail'] = ';'.join(detail_parts)
 
             writer.writerow(row)
@@ -1925,7 +2077,7 @@ def main(
                     stats['merged_multi_qty'] += int(merged_stats.get('multi_qty', 0))
                     stats['merged_multi_line'] += int(merged_stats.get('multi_line', 0))
 
-        if merged_root and has_partitioned_sets:
+        if merged_root:
             send_base_dir = merged_root / WHATSAPP_SEND_ROOT_NAME
             if not dry_run:
                 send_base_dir.mkdir(parents=True, exist_ok=True)
@@ -1945,17 +2097,22 @@ def main(
                     date_prefix,
                     dry_run,
                 )
+                if not dry_run:
+                    manifest_path = write_send_batch_manifest(
+                        batch_root=send_stats["batch_dir"],
+                        today_root=output_dir,
+                        groups=send_groups,
+                        target_date=target_date,
+                    )
+                    initialize_send_ledger(
+                        send_stats["batch_dir"] / SEND_LEDGER_FILE,
+                        json.loads(manifest_path.read_text(encoding="utf-8")),
+                    )
                 stats['whatsapp_groups'] = len(send_groups)
                 stats['whatsapp_packages'] = int(send_stats.get('packages', 0))
                 stats['whatsapp_normal'] = int(send_stats.get('normal', 0))
                 stats['whatsapp_multi_qty'] = int(send_stats.get('multi_qty', 0))
                 stats['whatsapp_multi_line'] = int(send_stats.get('multi_line', 0))
-        elif merged_root:
-            stats['whatsapp_groups'] = stats['merged_groups']
-            stats['whatsapp_packages'] = stats['merged_packages']
-            stats['whatsapp_normal'] = stats['merged_normal']
-            stats['whatsapp_multi_qty'] = stats['merged_multi_qty']
-            stats['whatsapp_multi_line'] = stats['merged_multi_line']
 
         # Write top-level files
         if not dry_run:

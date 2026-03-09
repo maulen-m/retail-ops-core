@@ -5,6 +5,7 @@ Phase 11 TASK-194: 20 tests for the waybill builder script.
 """
 
 import csv
+import json
 import tempfile
 import zipfile
 from datetime import date, timedelta
@@ -30,9 +31,12 @@ from scripts.build_daily_waybills import (
     is_heavy_item,
     normalize_store_name,
     parse_date,
+    read_crm_orders as read_waybill_crm_orders,
     sanitize_filename,
     split_groups_by_overdue,
     size_sort_key,
+    write_manifest,
+    write_send_batch_manifest,
 )
 
 
@@ -214,6 +218,56 @@ def test_multi_line():
     assert groups[0].group_type == "MULTI_LINE"
 
 
+def test_waybill_read_crm_orders_uses_operational_today_view_for_carry_forward_rows(tmp_path):
+    crm_path = tmp_path / "crm.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "Date": "2026-03-06",
+                "OrderID": "846479842",
+                "STORE_NAME": "STORE-B",
+                "MY_SIZE": "L",
+                "Kaspi_name_core": "Футболка_черная",
+                "KASPI_OFFER_NAME": "Рашгард 30260620_700546788 черный М",
+                "Quantity": 1,
+                "PLANNED_SHIPPING_DATE": "2026-03-06",
+            },
+            {
+                "Date": "2026-03-07",
+                "OrderID": "846479842",
+                "STORE_NAME": "STORE-B",
+                "MY_SIZE": "L",
+                "Kaspi_name_core": "Футболка_черная",
+                "KASPI_OFFER_NAME": "Рашгард 30260620_700546788 черный М",
+                "Quantity": 1,
+                "PLANNED_SHIPPING_DATE": "2026-03-06",
+            },
+            {
+                "Date": "2026-03-08",
+                "OrderID": "846479842",
+                "STORE_NAME": "STORE-B",
+                "MY_SIZE": "L",
+                "Kaspi_name_core": "Футболка_черная",
+                "KASPI_OFFER_NAME": "Рашгард 30260620_700546788 черный М",
+                "Quantity": 1,
+                "PLANNED_SHIPPING_DATE": "2026-03-06",
+            },
+        ]
+    ).to_excel(crm_path, sheet_name="Sheet1", index=False)
+
+    orders = read_waybill_crm_orders(
+        crm_path,
+        "Sheet1",
+        target_date=date(2026, 3, 8),
+        order_id_filter={"846479842"},
+        apply_date_filter=False,
+    )
+
+    assert len(orders) == 1
+    assert orders[0].order_id == "846479842"
+    assert orders[0].my_size == "L"
+
+
 def test_split_groups_by_overdue():
     target_date = date(2026, 1, 27)
     today_item = OrderItem(
@@ -348,7 +402,7 @@ def test_normal_filename():
 
 
 def test_multi_qty_filename():
-    """Test MULTI_QTY filename: Местовая-{N}_{core}_{size}-{qty}.pdf"""
+    """Test MULTI_QTY filename uses explicit quantity contract."""
     group = WaybillGroup(
         group_type="MULTI_QTY",
         store_name="AcmeWear",
@@ -357,27 +411,120 @@ def test_multi_qty_filename():
 
     filename = generate_filename(group, 5)
 
-    assert filename.startswith("Местовая-5_")
-    assert "Nike_футболка" in filename
-    assert "_L-3.pdf" in filename
+    assert filename == "Местовая-5)_Nike_футболка-L-3.pdf"
+    assert "ORDER" not in filename
+    assert "qty" not in filename
 
 
 def test_multi_line_filename():
-    """Test MULTI_LINE filename with (1-N)(2-N) notation."""
+    """Test MULTI_LINE filename uses explicit quantity per line item."""
     group = WaybillGroup(
         group_type="MULTI_LINE",
         store_name="AcmeWear",
         items=[
-            OrderItem("111", "AcmeWear", "Prod1", "M", "", "", 1, "", None),
-            OrderItem("111", "AcmeWear", "Prod2", "L", "", "", 2, "", None),
+            OrderItem("111", "AcmeWear", "Футболка_черная", "2XL", "", "", 1, "", None),
+            OrderItem("111", "AcmeWear", "Трусы_черные", "2XL", "", "", 2, "", None),
         ],
     )
 
-    filename = generate_filename(group, 3)
+    filename = generate_filename(group, 2)
 
-    assert filename.startswith("Местовая-3_")
-    assert "(1-2)" in filename
-    assert "(2-2)" in filename
+    assert filename == "Местовая-2)_Футболка_черная-2XL-1_Трусы_черные-2XL-2.pdf"
+    assert "ORDER" not in filename
+    assert "items" not in filename
+    assert "qty1" not in filename
+    assert "qty2" not in filename
+    assert "x2" not in filename
+
+
+def test_multi_line_manifest_items_detail_uses_explicit_quantity_shape(tmp_path: Path):
+    groups = [
+        WaybillGroup(
+            group_type="MULTI_LINE",
+            store_name="AcmeWear",
+            items=[
+                OrderItem("111", "AcmeWear", "Футболка_черная", "2XL", "", "", 1, "", None),
+                OrderItem("111", "AcmeWear", "Трусы_черные", "2XL", "", "", 2, "", None),
+            ],
+            output_filename="SPECIAL_multi_line/Местовая-2)_Футболка_черная-2XL-1_Трусы_черные-2XL-2.pdf",
+        )
+    ]
+
+    output = tmp_path / "manifest_special_multi_line.csv"
+    write_manifest(groups, output, "MULTI_LINE")
+
+    rows = list(csv.DictReader(output.open("r", encoding="utf-8", newline="")))
+    assert len(rows) == 1
+    assert rows[0]["items_detail"] == "Футболка_черная-2XL-1;Трусы_черные-2XL-2"
+
+
+def test_write_send_batch_manifest_contains_stable_pdf_keys_and_overdue_orders(tmp_path: Path):
+    today_root = tmp_path / "Today"
+    batch_root = today_root / "MERGED" / "SEND" / "10.03.26_MERGED_qnt2"
+    normal_dir = batch_root / "NORMAL_singles"
+    special_dir = batch_root / "SPECIAL_multi_line"
+    normal_dir.mkdir(parents=True, exist_ok=True)
+    special_dir.mkdir(parents=True, exist_ok=True)
+
+    normal_pdf = normal_dir / "Футболка_черная_L-1.pdf"
+    special_pdf = special_dir / "Местовая-1)_Футболка_черная-2XL-1_Трусы_черные-2XL-2.pdf"
+    pdf_bytes = b"%PDF-1.4\n%waybill\n"
+    normal_pdf.write_bytes(pdf_bytes)
+    special_pdf.write_bytes(pdf_bytes + b"special")
+
+    today_item = OrderItem(
+        "1001", "Universal", "Футболка_черная", "L", "SKU1", "SKU1-L", 1, "offer", date(2026, 3, 10)
+    )
+    overdue_item = OrderItem(
+        "1002", "STORE-B", "Футболка_черная", "2XL", "SKU2", "SKU2-2XL", 1, "offer", date(2026, 3, 9)
+    )
+    second_line = OrderItem(
+        "1002", "STORE-B", "Трусы_черные", "2XL", "SKU3", "SKU3-2XL", 2, "offer", date(2026, 3, 9)
+    )
+    today_item.source_row_id = "1001@2026-03-10#1"
+    overdue_item.source_row_id = "1002@2026-03-09#1"
+    second_line.source_row_id = "1002@2026-03-09#2"
+
+    groups = [
+        WaybillGroup(
+            group_type="NORMAL",
+            store_name="MERGED",
+            items=[today_item],
+            pdf_path=normal_pdf,
+            pdf_paths=[normal_pdf],
+            output_filename="NORMAL_singles/Футболка_черная_L-1.pdf",
+        ),
+        WaybillGroup(
+            group_type="MULTI_LINE",
+            store_name="MERGED",
+            items=[overdue_item, second_line],
+            pdf_path=special_pdf,
+            pdf_paths=[special_pdf],
+            output_filename="SPECIAL_multi_line/Местовая-1)_Футболка_черная-2XL-1_Трусы_черные-2XL-2.pdf",
+        ),
+    ]
+
+    manifest_path = write_send_batch_manifest(
+        batch_root=batch_root,
+        today_root=today_root,
+        groups=groups,
+        target_date=date(2026, 3, 10),
+    )
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert payload["batch_label"] == "10.03.26_MERGED_qnt2"
+    assert payload["counts"]["pdfs"] == 2
+    assert payload["overdue_order_ids"] == ["1002"]
+    assert payload["missing_overdue_order_ids"] == []
+    assert {entry["relative_output_path"] for entry in payload["entries"]} == {
+        "NORMAL_singles/Футболка_черная_L-1.pdf",
+        "SPECIAL_multi_line/Местовая-1)_Футболка_черная-2XL-1_Трусы_черные-2XL-2.pdf",
+    }
+    for entry in payload["entries"]:
+        assert entry["pdf_key"]
+        assert entry["sha256"]
+        assert entry["file_size"] > 0
+        assert entry["source_row_ids"]
 
 
 def test_sanitizes_cyrillic():
