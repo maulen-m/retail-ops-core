@@ -1114,7 +1114,7 @@ class WhatsAppSender:
 
     def _wait_for_chat_list_ready(self) -> None:
         self.page.locator("div[aria-label='Chat list']").wait_for(timeout=CHAT_OPEN_TIMEOUT_MS)
-        self.page.locator("div[aria-label='Search input textbox']").wait_for(timeout=CHAT_OPEN_TIMEOUT_MS)
+        self._resolve_sidebar_search(timeout_ms=CHAT_OPEN_TIMEOUT_MS, required=False)
 
     @staticmethod
     def _is_navigation_context_error(exc: Exception) -> bool:
@@ -1134,6 +1134,44 @@ class WhatsAppSender:
             self.page.locator("div[contenteditable='true'][aria-label^='Type to group']").first,
             self.page.locator("footer div[contenteditable='true']").first,
         ]
+
+    def _sidebar_search_candidates(self) -> List[Any]:
+        return [
+            self.page.locator("div[aria-label='Search input textbox']").first,
+            self.page.locator(
+                "div[role='textbox'][contenteditable='true'][aria-label='Search input textbox']"
+            ).first,
+            self.page.locator(
+                "div[role='textbox'][contenteditable='true'][aria-label*='Search']"
+            ).first,
+            self.page.locator("div[contenteditable='true'][role='textbox'][data-tab='3']").first,
+            self.page.locator("div[contenteditable='true'][data-tab='3']").first,
+        ]
+
+    def _resolve_sidebar_search(
+        self,
+        timeout_ms: int,
+        required: bool = True,
+    ) -> Optional[Any]:
+        deadline = time.time() + (timeout_ms / 1000.0)
+        last_error: Optional[Exception] = None
+
+        while time.time() < deadline:
+            for locator in self._sidebar_search_candidates():
+                try:
+                    if locator.count() <= 0:
+                        continue
+                    candidate = locator.first
+                    candidate.wait_for(timeout=1200)
+                    return candidate
+                except Exception as exc:
+                    last_error = exc
+                    continue
+            self.page.wait_for_timeout(250)
+
+        if required:
+            raise RuntimeError(f"Sidebar search not ready: {last_error}")
+        return None
 
     def _resolve_composer(
         self,
@@ -1245,19 +1283,26 @@ class WhatsAppSender:
             f"Safety gate blocked send: active chat mismatch ({last_title!r} != {self.chat_title!r})"
         )
 
-    def _try_click_candidate(self, candidates: Iterable[Any]) -> bool:
-        for candidate in candidates:
-            if candidate.count() <= 0:
-                continue
-            candidate.first.click()
-            self.page.wait_for_timeout(900)
-            if _normalize_chat_key(self._active_chat_title()) == self.chat_key:
-                return True
+    def _try_click_candidate(self, candidates: Iterable[Any], timeout_ms: int = 3500) -> bool:
+        deadline = time.time() + (timeout_ms / 1000.0)
+        while time.time() < deadline:
+            for candidate in candidates:
+                if candidate.count() <= 0:
+                    continue
+                candidate.first.click()
+                self.page.wait_for_timeout(900)
+                if _normalize_chat_key(self._active_chat_title()) == self.chat_key:
+                    return True
+            self.page.wait_for_timeout(250)
         return False
 
     def open_chat(self, chat_title: str) -> None:
         if _normalize_chat_key(chat_title) in self.blocked_chat_keys:
             raise RuntimeError(f"Requested chat is blocked: {chat_title!r}")
+
+        if _normalize_chat_key(self._active_chat_title()) == self.chat_key:
+            self._resolve_composer(timeout_ms=min(self.action_timeout_ms, 20_000), required=False)
+            return
 
         # First attempt: direct click from visible chat list (fastest + safest).
         chat_list = self.page.locator("div[aria-label='Chat list']")
@@ -1269,7 +1314,10 @@ class WhatsAppSender:
             ]
         ):
             # Fallback: use search box, then click/enter.
-            search = self.page.locator("div[aria-label='Search input textbox']").first
+            search = self._resolve_sidebar_search(
+                timeout_ms=min(self.action_timeout_ms, 12_000),
+                required=True,
+            )
             search.click()
             search.fill("")
             search.fill(chat_title)

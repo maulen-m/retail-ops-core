@@ -384,9 +384,7 @@ class _FakeLocator:
 
     @property
     def first(self):
-        if self._target is None:
-            raise AssertionError("No target present")
-        return self._target
+        return self if self._target is None else self._target
 
 
 class _FakePage:
@@ -411,6 +409,70 @@ class _FakePage:
         raise AssertionError(f"Unexpected evaluate call: {script!r}")
 
 
+class _ReadyLocator:
+    def __init__(self, target=None):
+        self._target = target
+
+    def count(self):
+        return 1 if self._target is not None else 0
+
+    @property
+    def first(self):
+        return self
+
+    def wait_for(self, timeout=None):
+        if self._target is None:
+            raise RuntimeError("missing target")
+        if hasattr(self._target, "wait_for"):
+            return self._target.wait_for(timeout=timeout)
+        return None
+
+    def click(self, timeout=None, force=False):
+        if self._target is None:
+            raise RuntimeError("missing target")
+        return self._target.click(timeout=timeout, force=force)
+
+    def fill(self, value):
+        if self._target is None:
+            raise RuntimeError("missing target")
+        return self._target.fill(value)
+
+    def locator(self, _selector, **_kwargs):
+        return _ReadyLocator()
+
+    def get_by_text(self, *_args, **_kwargs):
+        return _ReadyLocator()
+
+
+class _SearchTarget:
+    def __init__(self):
+        self.actions = []
+
+    def wait_for(self, timeout=None):
+        self.actions.append(("wait_for", timeout))
+
+    def click(self, timeout=None, force=False):
+        self.actions.append(("click", timeout, force))
+
+    def fill(self, value):
+        self.actions.append(("fill", value))
+
+
+class _SidebarReadyPage:
+    def __init__(self, selectors=None):
+        self._selectors = selectors or {}
+        self.wait_calls = []
+
+    def locator(self, selector):
+        return self._selectors.get(selector, _ReadyLocator())
+
+    def get_by_text(self, *_args, **_kwargs):
+        return _ReadyLocator()
+
+    def wait_for_timeout(self, ms):
+        self.wait_calls.append(ms)
+
+
 def test_safe_click_selectors_uses_page_level_js_fallback() -> None:
     selector = "button[aria-label='Attach']"
     sender = WhatsAppSender(
@@ -428,6 +490,64 @@ def test_safe_click_selectors_uses_page_level_js_fallback() -> None:
     sender._safe_click_selectors([selector], "attach button", timeout_ms=500)
 
     assert fake_page.js_clicks == [selector]
+
+
+def test_wait_for_chat_list_ready_accepts_alternative_sidebar_search_selector() -> None:
+    chat_list_target = _SearchTarget()
+    sidebar_search_target = _SearchTarget()
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=_SidebarReadyPage(
+            selectors={
+                "div[aria-label='Chat list']": _ReadyLocator(chat_list_target),
+                "div[contenteditable='true'][role='textbox'][data-tab='3']": _ReadyLocator(sidebar_search_target),
+            }
+        )
+    )
+
+    sender._wait_for_chat_list_ready()
+
+    assert any(action[0] == "wait_for" for action in chat_list_target.actions)
+    assert any(action[0] == "wait_for" for action in sidebar_search_target.actions)
+
+
+def test_open_chat_uses_alternative_sidebar_search_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    search_target = _SearchTarget()
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=_SidebarReadyPage(
+            selectors={
+                "div[aria-label='Chat list']": _ReadyLocator(_SearchTarget()),
+                "div[contenteditable='true'][role='textbox'][data-tab='3']": _ReadyLocator(search_target),
+            }
+        )
+    )
+    click_calls = {"count": 0}
+
+    def _fake_try_click(_candidates, timeout_ms=3500):
+        click_calls["count"] += 1
+        return click_calls["count"] > 1
+
+    monkeypatch.setattr(sender, "_try_click_candidate", _fake_try_click)
+    monkeypatch.setattr(sender, "_assert_active_target_chat", lambda: None)
+    monkeypatch.setattr(sender, "_resolve_composer", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sender, "_active_chat_title", lambda: "")
+
+    sender.open_chat("Заказы")
+
+    assert click_calls["count"] == 2
+    assert ("fill", "") in search_target.actions
+    assert ("fill", "Заказы") in search_target.actions
 
 
 def test_collect_store_order_bundle_stats_counts_unique_orders(tmp_path: Path) -> None:
