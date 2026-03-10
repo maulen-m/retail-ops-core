@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.db import DEFAULT_DB_PATH, get_db  # noqa: E402
 from core.paths import data_path, get_data_root  # noqa: E402
+from core.ops.crm_operational_view import select_operational_crm_rows  # noqa: E402
 from core.integrations.kaspi_api_client import (  # noqa: E402
     KaspiAPIClient,
     KaspiAuthError,
@@ -215,6 +216,12 @@ def get_crm_orders(
     if not crm_path.exists():
         return {}, {}
     df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    df, _ = select_operational_crm_rows(
+        df,
+        target_date=target_date,
+        allow_historical_fallback=False,
+        backfill_overdue_my_size_from_history=True,
+    )
     crm_all: dict[str, set[str]] = defaultdict(set)
     crm_size: dict[str, set[str]] = defaultdict(set)
 

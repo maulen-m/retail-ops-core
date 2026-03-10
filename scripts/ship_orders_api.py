@@ -37,6 +37,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db import DEFAULT_DB_PATH, get_db
+from core.ops.crm_operational_view import select_operational_crm_rows
 from core.paths import data_path, get_data_root
 from core.utils.kaspi_dates import parse_kaspi_date
 from core.integrations.kaspi_api_client import (
@@ -316,8 +317,11 @@ def read_crm_orders(
     """
     Read orders from CRM Excel file, grouped by order_id.
 
+    The shipping workflow must act only on sizes that were manually assigned in
+    the current CRM batch view for the target date.
+
     Filters for orders where:
-    - MY_SIZE is filled
+    - MY_SIZE is filled in CRM
     - planned_date <= target_date
     - Optionally filtered by store
 
@@ -328,6 +332,23 @@ def read_crm_orders(
 
     logger.info(f"Reading CRM from {crm_path}")
     df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    df, operational_stats = select_operational_crm_rows(
+        df,
+        target_date=target_date,
+        order_id_filter=target_order_ids,
+        allow_historical_fallback=False,
+        backfill_overdue_my_size_from_history=True,
+    )
+    logger.info(
+        "Resolved CRM current-batch rows: "
+        f"orders={operational_stats['orders_selected']} "
+        f"today={operational_stats['selected_today_orders']} "
+        f"fallback={operational_stats['selected_fallback_orders']} "
+        f"dropped_no_today={operational_stats['orders_without_today_row_dropped']} "
+        f"historical_dropped={operational_stats['historical_rows_dropped']} "
+        f"line_dupes_dropped={operational_stats['same_day_line_duplicates_dropped']} "
+        f"overdue_size_backfilled={operational_stats['overdue_my_size_backfilled_rows']}"
+    )
 
     orders_by_id: dict[str, list[OrderItem]] = defaultdict(list)
     skipped_no_size = 0
@@ -335,7 +356,6 @@ def read_crm_orders(
     skipped_date = 0
     skipped_store = 0
     skipped_not_pending = 0
-    used_db_size = 0
     used_crm_size = 0
 
     for _, row in df.iterrows():
@@ -355,22 +375,18 @@ def read_crm_orders(
             continue
 
         db_info = db_order_info.get(order_id) if db_order_info else None
-        db_size = _coerce_str(db_info.get("size")) if db_info else ""
-
-        # Check MY_SIZE (DB first, CRM fallback)
+        # Check MY_SIZE from the current CRM batch only.
         my_size = str(row.get('MY_SIZE', '')).strip()
         if my_size.lower() in ('nan', 'none', ''):
             my_size = ""
 
-        final_size = db_size or my_size
+        final_size = my_size
         if not final_size:
             if not allow_missing_size:
                 skipped_no_size += 1
                 continue
             missing_size_allowed += 1
             final_size = ""
-        if db_size:
-            used_db_size += 1
         else:
             used_crm_size += 1
 
@@ -399,8 +415,11 @@ def read_crm_orders(
 
         # Get other fields
         kaspi_name_core = str(row.get('Kaspi_name_core', '')).strip()
-        if kaspi_name_core.lower() == 'nan':
-            kaspi_name_core = ""
+        if not kaspi_name_core or kaspi_name_core.lower() == 'nan':
+            kaspi_offer = str(row.get('KASPI_OFFER_NAME', '')).strip()
+            if kaspi_offer.lower() == 'nan':
+                kaspi_offer = ""
+            kaspi_name_core = extract_name_core(kaspi_offer) if kaspi_offer else ""
 
         sku_key = str(row.get('SKU_key', '')).strip()
         if sku_key.lower() == 'nan':
@@ -434,7 +453,6 @@ def read_crm_orders(
         logger.info(f"Skipped {skipped_no_size} rows without MY_SIZE")
     if apply_date_filter:
         logger.info(f"Skipped {skipped_date} rows with future planned date")
-    logger.info(f"Used DB sizes: {used_db_size}")
     logger.info(f"Used CRM sizes: {used_crm_size}")
     if store_filter:
         logger.info(f"Skipped {skipped_store} rows from other stores")
@@ -1332,7 +1350,7 @@ def main() -> int:
             pending_store_for_order[order_id] = store_code
 
     # Step 2: Read orders from CRM
-    print("\nStep 2: Reading CRM for MY_SIZE data (DB-first)...")
+    print("\nStep 2: Reading CRM for manually assigned MY_SIZE data...")
     resolved_db_path = resolve_db_path(None)
     if resolved_db_path:
         print(f"  DB: {resolved_db_path}")
@@ -1348,24 +1366,26 @@ def main() -> int:
         allow_missing_size=args.allow_missing_size,
     )
 
-    # Add DB-only orders missing in CRM (still pending in Kaspi)
+    # Add placeholder orders missing in the current CRM batch only when
+    # allow_missing_size is explicitly enabled. Never reintroduce DB sizes as
+    # actionable size truth for operator shipping.
     missing_in_crm = all_pending - set(orders_by_id.keys())
-    added_db_only = 0
-    skipped_db_no_size = 0
-    skipped_db_store = 0
-    missing_db_size_allowed = 0
+    added_missing_crm_placeholders = 0
+    skipped_missing_current_crm = 0
+    skipped_placeholder_store = 0
     added_api_only = 0
-    if missing_in_crm and db_order_info:
+    if missing_in_crm:
         for order_id in missing_in_crm:
             info = db_order_info.get(order_id)
+            if not args.allow_missing_size:
+                skipped_missing_current_crm += 1
+                continue
             if not info:
-                if not args.allow_missing_size:
-                    continue
                 store_code = pending_store_for_order.get(order_id)
                 if args.store:
                     expected_code = STORE_NAME_TO_API_CODE.get(args.store, args.store)
                     if store_code and store_code != expected_code:
-                        skipped_db_store += 1
+                        skipped_placeholder_store += 1
                         continue
                 store_name = API_CODE_TO_STORE_NAME.get(store_code or "", store_code or "UNKNOWN")
                 item = OrderItem(
@@ -1381,16 +1401,9 @@ def main() -> int:
                 orders_by_id.setdefault(order_id, []).append(item)
                 added_api_only += 1
                 continue
-            size = _coerce_str(info.get("size"))
-            if not size:
-                if not args.allow_missing_size:
-                    skipped_db_no_size += 1
-                    continue
-                missing_db_size_allowed += 1
-                size = ""
             store_name = normalize_store_name(info.get("store_code"))
             if args.store and store_name != args.store:
-                skipped_db_store += 1
+                skipped_placeholder_store += 1
                 continue
             kaspi_offer = _coerce_str(info.get("kaspi_offer_name"))
             kaspi_core = extract_name_core(kaspi_offer) if kaspi_offer else ""
@@ -1401,25 +1414,29 @@ def main() -> int:
                 order_id=order_id,
                 store_name=store_name,
                 kaspi_name_core=kaspi_core,
-                my_size=size,
+                my_size="",
                 sku_key=_coerce_str(info.get("sku_key")),
                 sku_id=_coerce_str(info.get("sku_id")),
                 quantity=quantity,
                 planned_date=info.get("planned_date"),
             )
             orders_by_id.setdefault(order_id, []).append(item)
-            added_db_only += 1
+            added_missing_crm_placeholders += 1
 
-    if added_db_only:
-        print(f"  Added {added_db_only} DB-only pending orders (CRM missing)")
+    if added_missing_crm_placeholders:
+        print(
+            f"  Added {added_missing_crm_placeholders} pending orders without size "
+            f"(current CRM row missing; allow-missing-size)"
+        )
     if added_api_only:
         print(f"  Added {added_api_only} API-only pending orders (no CRM/DB)")
-    if skipped_db_no_size:
-        print(f"  Skipped {skipped_db_no_size} pending orders (no size in DB/CRM)")
-    if skipped_db_store:
-        print(f"  Skipped {skipped_db_store} pending orders (store filter)")
-    if missing_db_size_allowed:
-        print(f"  Included {missing_db_size_allowed} pending orders without size (allow-missing-size)")
+    if skipped_missing_current_crm:
+        print(
+            f"  Skipped {skipped_missing_current_crm} pending orders "
+            f"(missing current CRM row or unresolved manual size)"
+        )
+    if skipped_placeholder_store:
+        print(f"  Skipped {skipped_placeholder_store} pending orders (store filter)")
 
     if not orders_by_id and not missing_in_crm:
         print("No eligible orders in CRM/DB.")
@@ -1427,7 +1444,7 @@ def main() -> int:
     if args.allow_missing_size:
         print(f"  Found {len(orders_by_id)} orders (size optional)")
     else:
-        print(f"  Found {len(orders_by_id)} orders with MY_SIZE (CRM+DB)")
+        print(f"  Found {len(orders_by_id)} orders with MY_SIZE in CRM")
 
     # Quick per-store sanity: pending vs sized
     sized_by_store = defaultdict(int)

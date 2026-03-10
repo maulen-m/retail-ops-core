@@ -268,6 +268,88 @@ def test_waybill_read_crm_orders_uses_operational_today_view_for_carry_forward_r
     assert orders[0].my_size == "L"
 
 
+def test_waybill_read_crm_orders_requires_current_batch_rows(tmp_path):
+    crm_path = tmp_path / "crm.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "Date": "2026-03-09",
+                "OrderID": "849921993",
+                "STORE_NAME": "AcmeWear",
+                "MY_SIZE": "4XL",
+                "Kaspi_name_core": "Line51",
+                "KASPI_OFFER_NAME": "Спортивный костюм ACMEWEAR AcmeWear 05 черный, белый 4XL",
+                "Quantity": 1,
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850084962",
+                "STORE_NAME": "Universal",
+                "MY_SIZE": "M",
+                "Kaspi_name_core": "Длинный_рашгард_Белый",
+                "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок, компрессионная посадка белый M",
+                "Quantity": 1,
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+            },
+        ]
+    ).to_excel(crm_path, sheet_name="Sheet1", index=False)
+
+    orders = read_waybill_crm_orders(
+        crm_path,
+        "Sheet1",
+        target_date=date(2026, 3, 10),
+        order_id_filter={"849921993", "850084962"},
+        lookback_days=3,
+        apply_date_filter=False,
+    )
+
+    assert [order.order_id for order in orders] == ["850084962"]
+
+
+def test_waybill_read_crm_orders_backfills_blank_current_day_size_for_overdue_rows(tmp_path):
+    crm_path = tmp_path / "crm.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "Date": "2026-03-09",
+                "OrderID": "850084962",
+                "STORE_NAME": "Universal",
+                "MY_SIZE": "M",
+                "Kaspi_name_core": "Длинный_рашгард_Белый",
+                "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+                "Quantity": 1,
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "SKU_ID": "SKU-TOP",
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850084962",
+                "STORE_NAME": "Universal",
+                "MY_SIZE": "",
+                "Kaspi_name_core": "Длинный_рашгард_Белый",
+                "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+                "Quantity": 1,
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "SKU_ID": "SKU-TOP",
+            },
+        ]
+    ).to_excel(crm_path, sheet_name="Sheet1", index=False)
+
+    orders = read_waybill_crm_orders(
+        crm_path,
+        "Sheet1",
+        target_date=date(2026, 3, 10),
+        order_id_filter={"850084962"},
+        lookback_days=3,
+        apply_date_filter=False,
+    )
+
+    assert len(orders) == 1
+    assert orders[0].order_id == "850084962"
+    assert orders[0].my_size == "M"
+
+
 def test_split_groups_by_overdue():
     target_date = date(2026, 1, 27)
     today_item = OrderItem(

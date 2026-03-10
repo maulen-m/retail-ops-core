@@ -309,6 +309,206 @@ def test_get_target_order_ids_from_crm_filters_status_signature(tmp_path):
     assert result == {"UNIVERSAL": {"3001", "3002", "3005"}}
 
 
+def test_get_target_order_ids_from_crm_requires_current_batch_rows(tmp_path):
+    target_date = date(2026, 3, 10)
+    crm_path = tmp_path / "crm.xlsx"
+    df = pd.DataFrame(
+        [
+            {
+                "Date": "2026-03-09",
+                "OrderID": "849921993",
+                "MY_SIZE": "4XL",
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "STORE_NAME": "AcmeWear",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850902537",
+                "MY_SIZE": "XL",
+                "PLANNED_SHIPPING_DATE": "2026-03-10",
+                "STORE_NAME": "Universal",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+            },
+        ]
+    )
+    df.to_excel(crm_path, index=False)
+
+    result = download_waybills_api.get_target_order_ids_from_crm(
+        crm_path=crm_path,
+        sheet_name="Sheet1",
+        target_date=target_date,
+        exact_date=False,
+        lookback_days=3,
+    )
+
+    assert result == {"UNIVERSAL": {"850902537"}}
+
+
+def test_get_target_order_ids_from_crm_backfills_blank_current_day_size_for_overdue_rows(
+    tmp_path,
+):
+    target_date = date(2026, 3, 10)
+    crm_path = tmp_path / "crm.xlsx"
+    df = pd.DataFrame(
+        [
+            {
+                "Date": "2026-03-09",
+                "OrderID": "850084962",
+                "MY_SIZE": "M",
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "STORE_NAME": "Universal",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+                "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+                "SKU_ID": "SKU-TOP",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850084962",
+                "MY_SIZE": "",
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "STORE_NAME": "Universal",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+                "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+                "SKU_ID": "SKU-TOP",
+                "Quantity": 1,
+            },
+        ]
+    )
+    df.to_excel(crm_path, index=False)
+
+    result = download_waybills_api.get_target_order_ids_from_crm(
+        crm_path=crm_path,
+        sheet_name="Sheet1",
+        target_date=target_date,
+        exact_date=False,
+        lookback_days=3,
+    )
+
+    assert result == {"UNIVERSAL": {"850084962"}}
+
+
+def test_get_target_order_ids_from_crm_does_not_backfill_same_day_blank_size(tmp_path):
+    target_date = date(2026, 3, 10)
+    crm_path = tmp_path / "crm.xlsx"
+    df = pd.DataFrame(
+        [
+            {
+                "Date": "2026-03-09",
+                "OrderID": "850084962",
+                "MY_SIZE": "M",
+                "PLANNED_SHIPPING_DATE": "2026-03-10",
+                "STORE_NAME": "Universal",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+                "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+                "SKU_ID": "SKU-TOP",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850084962",
+                "MY_SIZE": "",
+                "PLANNED_SHIPPING_DATE": "2026-03-10",
+                "STORE_NAME": "Universal",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+                "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+                "SKU_ID": "SKU-TOP",
+                "Quantity": 1,
+            },
+        ]
+    )
+    df.to_excel(crm_path, index=False)
+
+    result = download_waybills_api.get_target_order_ids_from_crm(
+        crm_path=crm_path,
+        sheet_name="Sheet1",
+        target_date=target_date,
+        exact_date=False,
+        lookback_days=3,
+    )
+
+    assert result == {}
+
+
+def test_download_all_waybills_uses_current_batch_crm_sizes_as_authoritative_targets(
+    tmp_path, monkeypatch
+):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    target_date = date(2026, 3, 10)
+    api_order = _make_order(
+        code="850902537",
+        status="ACCEPTED_BY_MERCHANT",
+        signature=False,
+        planned=target_date,
+        assembled=True,
+    )
+
+    def _fake_get_target_orders_from_api(store_code: str, *_args, **_kwargs):
+        if store_code == "UNIVERSAL":
+            return [api_order], False
+        return [], False
+
+    def _fake_get_target_order_ids_from_crm(*_args, **_kwargs):
+        return {
+            "UNIVERSAL": {"849656111", "850084962", "850902537"},
+            "STOREB": {"850732964"},
+        }
+
+    captured_targets: dict[str, set[str]] = {}
+
+    def _fake_download_waybills_for_store(**kwargs):
+        captured_targets[kwargs["store_code"]] = set(kwargs["target_order_ids"])
+        return {
+            "downloaded": 0,
+            "skipped_not_target": 0,
+            "missing_waybill": 0,
+            "already_exists": 0,
+            "invalid_pdf": 0,
+            "skipped_terminal": 0,
+            "skipped_nonready": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
+    monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_crm", _fake_get_target_order_ids_from_crm)
+    monkeypatch.setattr(
+        download_waybills_api,
+        "get_target_order_ids_from_db",
+        lambda *_args, **_kwargs: {"ACMEWEAR": {"DB_EXTRA"}},
+    )
+    monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
+
+    result = download_waybills_api.download_all_waybills(
+        output_dir=output_dir,
+        crm_path=tmp_path / "crm.xlsx",
+        sheet_name="Sheet1",
+        target_date=target_date,
+        db_path=tmp_path / "app.db",
+        store_filter=None,
+        since_days=3,
+        download_timeout=20,
+        dry_run=False,
+        verbose=False,
+        all_dates=False,
+        exact_date=False,
+        fallback_crm=True,
+    )
+
+    assert result["fallback_used"] is True
+    assert captured_targets["UNIVERSAL"] == {"849656111", "850084962", "850902537"}
+    assert captured_targets["STOREB"] == {"850732964"}
+    assert "ACMEWEAR" not in captured_targets
+
+
 def test_build_daily_waybills_read_db_orders_filters_status_signature(tmp_path):
     db_path = tmp_path / "app.db"
     _init_fact_orders_db(db_path)
@@ -582,11 +782,8 @@ def test_download_all_waybills_excludes_terminal_orders_from_selection_cache(
     def _fake_get_target_orders_from_api(*args, **kwargs):
         return ([api_order], False)
 
-    def _fake_get_target_order_ids_from_db(*_args, **_kwargs):
-        return {"UNIVERSAL": {"API100", "CANCEL1"}}
-
     def _fake_get_target_order_ids_from_crm(*_args, **_kwargs):
-        return {}
+        return {"UNIVERSAL": {"API100", "CANCEL1"}}
 
     def _fake_download_waybills_for_store(**kwargs):
         # Store receives fallback union, but terminal orders must be removed
@@ -604,7 +801,6 @@ def test_download_all_waybills_excludes_terminal_orders_from_selection_cache(
         }
 
     monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
-    monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_db", _fake_get_target_order_ids_from_db)
     monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_crm", _fake_get_target_order_ids_from_crm)
     monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
 
@@ -648,12 +844,6 @@ def test_download_all_waybills_fallback_does_not_expand_store_when_api_has_order
             return [api_order], False
         return [], False
 
-    def _fake_get_target_order_ids_from_db(*_args, **_kwargs):
-        return {
-            "UNIVERSAL": {"API100", "DB_EXTRA"},
-            "ACMEWEAR": {"ACMEWEAR_FALLBACK"},
-        }
-
     def _fake_get_target_order_ids_from_crm(*_args, **_kwargs):
         return {
             "UNIVERSAL": {"CRM_EXTRA"},
@@ -674,7 +864,6 @@ def test_download_all_waybills_fallback_does_not_expand_store_when_api_has_order
         }
 
     monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
-    monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_db", _fake_get_target_order_ids_from_db)
     monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_crm", _fake_get_target_order_ids_from_crm)
     monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
 
@@ -695,7 +884,7 @@ def test_download_all_waybills_fallback_does_not_expand_store_when_api_has_order
     )
 
     assert result["fallback_used"] is True
-    assert captured_targets["UNIVERSAL"] == {"API100"}
+    assert captured_targets["UNIVERSAL"] == {"CRM_EXTRA"}
     assert captured_targets["ACMEWEAR"] == {"ACMEWEAR_FALLBACK"}
 
 
@@ -721,12 +910,6 @@ def test_download_all_waybills_include_overdue_skips_cached_fallback_when_api_ha
             return [api_order], False
         return [], False
 
-    def _fake_get_target_order_ids_from_db(*_args, **_kwargs):
-        return {
-            "UNIVERSAL": {"API100", "DB_EXTRA"},
-            "ACMEWEAR": {"ACMEWEAR_FALLBACK"},
-        }
-
     def _fake_get_target_order_ids_from_crm(*_args, **_kwargs):
         return {
             "UNIVERSAL": {"CRM_EXTRA"},
@@ -747,7 +930,6 @@ def test_download_all_waybills_include_overdue_skips_cached_fallback_when_api_ha
         }
 
     monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
-    monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_db", _fake_get_target_order_ids_from_db)
     monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_crm", _fake_get_target_order_ids_from_crm)
     monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
 
@@ -768,7 +950,7 @@ def test_download_all_waybills_include_overdue_skips_cached_fallback_when_api_ha
     )
 
     assert result["fallback_used"] is True
-    assert captured_targets["UNIVERSAL"] == {"API100"}
+    assert captured_targets["UNIVERSAL"] == {"CRM_EXTRA"}
     assert captured_targets["ACMEWEAR"] == {"ACMEWEAR_FALLBACK"}
 
 
@@ -793,11 +975,6 @@ def test_download_all_waybills_include_overdue_keeps_missing_pdf_fallback_when_a
             return [api_order], False
         return [], False
 
-    def _fake_get_target_order_ids_from_db(*_args, **_kwargs):
-        return {
-            "UNIVERSAL": {"API100", "DB_EXTRA"},
-        }
-
     def _fake_get_target_order_ids_from_crm(*_args, **_kwargs):
         return {
             "UNIVERSAL": {"CRM_EXTRA"},
@@ -817,7 +994,6 @@ def test_download_all_waybills_include_overdue_keeps_missing_pdf_fallback_when_a
         }
 
     monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
-    monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_db", _fake_get_target_order_ids_from_db)
     monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_crm", _fake_get_target_order_ids_from_crm)
     monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
 
@@ -838,4 +1014,4 @@ def test_download_all_waybills_include_overdue_keeps_missing_pdf_fallback_when_a
     )
 
     assert result["fallback_used"] is True
-    assert captured_targets["UNIVERSAL"] == {"API100", "CRM_EXTRA"}
+    assert captured_targets["UNIVERSAL"] == {"CRM_EXTRA"}

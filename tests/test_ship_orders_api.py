@@ -63,6 +63,169 @@ def test_read_crm_orders_can_require_size(tmp_path):
     assert orders == {}
 
 
+def test_read_crm_orders_drops_historical_carry_forward_duplicates(tmp_path):
+    crm_path = _write_crm(
+        tmp_path,
+        [
+            {
+                "Date": "2026-03-06",
+                "OrderID": "846479842",
+                "MY_SIZE": "L",
+                "PLANNED_SHIPPING_DATE": "2026-03-06",
+                "STORE_NAME": "STORE-B",
+                "Kaspi_name_core": "Футболка_черная",
+                "KASPI_OFFER_NAME": "Рашгард 30260620_700546788 черный М",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-07",
+                "OrderID": "846479842",
+                "MY_SIZE": "L",
+                "PLANNED_SHIPPING_DATE": "2026-03-06",
+                "STORE_NAME": "STORE-B",
+                "Kaspi_name_core": "Футболка_черная",
+                "KASPI_OFFER_NAME": "Рашгард 30260620_700546788 черный М",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-08",
+                "OrderID": "846479842",
+                "MY_SIZE": "L",
+                "PLANNED_SHIPPING_DATE": "2026-03-06",
+                "STORE_NAME": "STORE-B",
+                "Kaspi_name_core": "Футболка_черная",
+                "KASPI_OFFER_NAME": "Рашгард 30260620_700546788 черный М",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-08",
+                "OrderID": "848253366",
+                "MY_SIZE": "3XL",
+                "PLANNED_SHIPPING_DATE": "2026-03-08",
+                "STORE_NAME": "STORE-B",
+                "Kaspi_name_core": "Трусы_черные",
+                "KASPI_OFFER_NAME": "Тайтсы PRO COMBAT 17 черный 3XL",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-08",
+                "OrderID": "848253366",
+                "MY_SIZE": "2XL",
+                "PLANNED_SHIPPING_DATE": "2026-03-08",
+                "STORE_NAME": "STORE-B",
+                "Kaspi_name_core": "Трусы_черные",
+                "KASPI_OFFER_NAME": "Тайтсы PRO COMBAT 17 черный XL",
+                "Quantity": 1,
+            },
+        ],
+    )
+
+    orders = read_crm_orders(
+        crm_path,
+        "Sheet1",
+        date(2026, 3, 8),
+        target_order_ids={"846479842", "848253366"},
+        apply_date_filter=False,
+    )
+
+    assert len(orders["846479842"]) == 1
+    assert len(orders["848253366"]) == 2
+
+
+def test_read_crm_orders_requires_current_batch_rows_and_manual_crm_sizes(tmp_path):
+    crm_path = _write_crm(
+        tmp_path,
+        [
+            {
+                "Date": "2026-03-09",
+                "OrderID": "849921993",
+                "MY_SIZE": "4XL",
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "STORE_NAME": "AcmeWear",
+                "Kaspi_name_core": "Line51",
+                "KASPI_OFFER_NAME": "Спортивный костюм ACMEWEAR AcmeWear 05 черный, белый 4XL",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850750129",
+                "MY_SIZE": "",
+                "PLANNED_SHIPPING_DATE": "2026-03-10",
+                "STORE_NAME": "Universal",
+                "Kaspi_name_core": "Леггинсы_белый",
+                "KASPI_OFFER_NAME": "Леггинсы PRO COMBAT 2010 белый XL",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850902537",
+                "MY_SIZE": "XL",
+                "PLANNED_SHIPPING_DATE": "2026-03-10",
+                "STORE_NAME": "Universal",
+                "Kaspi_name_core": "Футболка_черная",
+                "KASPI_OFFER_NAME": "Рашгард 30260620_662528941 черный 2XL",
+                "Quantity": 1,
+            },
+        ],
+    )
+
+    orders = read_crm_orders(
+        crm_path,
+        "Sheet1",
+        date(2026, 3, 10),
+        target_order_ids={"849921993", "850750129", "850902537"},
+        db_order_info={
+            "849921993": {"size": "4XL"},
+            "850750129": {"size": "XL"},
+        },
+        allow_missing_size=False,
+    )
+
+    assert set(orders.keys()) == {"850902537"}
+    assert orders["850902537"][0].my_size == "XL"
+
+
+def test_read_crm_orders_backfills_blank_current_day_size_for_overdue_rows(tmp_path):
+    crm_path = _write_crm(
+        tmp_path,
+        [
+            {
+                "Date": "2026-03-09",
+                "OrderID": "850084962",
+                "MY_SIZE": "M",
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "STORE_NAME": "Universal",
+                "Kaspi_name_core": "Длинный_рашгард_Белый",
+                "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+                "Quantity": 1,
+                "SKU_ID": "SKU-TOP",
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850084962",
+                "MY_SIZE": "",
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "STORE_NAME": "Universal",
+                "Kaspi_name_core": "Длинный_рашгард_Белый",
+                "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+                "Quantity": 1,
+                "SKU_ID": "SKU-TOP",
+            },
+        ],
+    )
+
+    orders = read_crm_orders(
+        crm_path,
+        "Sheet1",
+        date(2026, 3, 10),
+        target_order_ids={"850084962"},
+        allow_missing_size=False,
+    )
+
+    assert set(orders.keys()) == {"850084962"}
+    assert orders["850084962"][0].my_size == "M"
+
+
 def test_parse_date_handles_iso_datetime_without_dayfirst_flip():
     assert parse_date("2026-03-06 20:00:00") == date(2026, 3, 6)
 

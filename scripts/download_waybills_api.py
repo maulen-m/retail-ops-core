@@ -48,6 +48,7 @@ from core.integrations.kaspi_order_stage import (
     classify_kaspi_order_stage,
     classify_kaspi_stage_from_db_row,
 )
+from core.ops.crm_operational_view import select_operational_crm_rows
 from core.paths import data_path, get_data_root
 from core.ops.shipment_health import classify_waybill_health
 from core.utils.kaspi_dates import parse_kaspi_date
@@ -411,6 +412,16 @@ def get_target_order_ids_from_db(
             for row in conn.execute("PRAGMA table_info(fact_orders_kaspi)").fetchall()
         }
         waybill_select = "waybill_url" if "waybill_url" in columns else "NULL AS waybill_url"
+        courier_plan_select = (
+            "courier_transmission_planning_date"
+            if "courier_transmission_planning_date" in columns
+            else "NULL AS courier_transmission_planning_date"
+        )
+        returned_select = (
+            "returned_to_warehouse"
+            if "returned_to_warehouse" in columns
+            else "NULL AS returned_to_warehouse"
+        )
 
         query = """
             SELECT
@@ -419,19 +430,23 @@ def get_target_order_ids_from_db(
                 assigned_size,
                 my_size,
                 planned_shipment_date,
-                courier_transmission_planning_date,
+                {courier_plan_select},
                 {waybill_select},
                 signature_required,
                 courier_transmission_date,
                 kaspi_status,
                 kaspi_status_detail,
-                returned_to_warehouse
+                {returned_select}
             FROM fact_orders_kaspi
                 WHERE (
                     (assigned_size IS NOT NULL AND assigned_size != '')
                     OR (my_size IS NOT NULL AND my_size != '')
                 )
-        """.format(waybill_select=waybill_select)
+            """.format(
+                courier_plan_select=courier_plan_select,
+                returned_select=returned_select,
+                waybill_select=waybill_select,
+            )
         rows = conn.execute(query).fetchall()
 
     orders_by_store: dict[str, set[str]] = defaultdict(set)
@@ -532,6 +547,22 @@ def get_target_order_ids_from_crm(
 
     logger.info(f"Reading CRM from {crm_path}")
     df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    df, operational_stats = select_operational_crm_rows(
+        df,
+        target_date=target_date,
+        allow_historical_fallback=False,
+        backfill_overdue_my_size_from_history=True,
+    )
+    logger.info(
+        "Resolved CRM current-batch rows: "
+        f"orders={operational_stats['orders_selected']} "
+        f"today={operational_stats['selected_today_orders']} "
+        f"fallback={operational_stats['selected_fallback_orders']} "
+        f"dropped_no_today={operational_stats['orders_without_today_row_dropped']} "
+        f"historical_dropped={operational_stats['historical_rows_dropped']} "
+        f"line_dupes_dropped={operational_stats['same_day_line_duplicates_dropped']} "
+        f"overdue_size_backfilled={operational_stats['overdue_my_size_backfilled_rows']}"
+    )
 
     orders_by_store: dict[str, set[str]] = defaultdict(set)
     skipped_no_size = 0
@@ -1061,47 +1092,23 @@ def download_all_waybills(
     if target_orders_by_store:
         source_label = "Kaspi API (planned date)"
 
-    # Optional fallback to DB/CRM per store if API failed or returned no orders
-    fallback_orders_by_store: dict[str, set[str]] = {}
-    db_fallback_orders_by_store: dict[str, set[str]] = {}
-    crm_fallback_orders_by_store: dict[str, set[str]] = {}
-    if fallback_crm:
-        resolved_db_path = resolve_db_path(db_path)
-        if resolved_db_path:
-            db_fallback_orders_by_store = get_target_order_ids_from_db(
-                resolved_db_path,
-                target_date,
-                store_filter,
-                exact_date=exact_date,
-                lookback_days=None if all_dates or exact_date else since_days,
-            )
-            if db_fallback_orders_by_store:
-                source_label = f"Kaspi API (planned date) + DB fallback"
+    # Current-batch CRM manual sizes are the only authoritative actionable target set.
+    manual_orders_by_store: dict[str, set[str]] = {}
+    if fallback_crm and crm_path:
+        manual_orders_by_store = get_target_order_ids_from_crm(
+            crm_path,
+            sheet_name,
+            target_date,
+            store_filter,
+            exact_date=exact_date,
+            lookback_days=None if all_dates or exact_date else since_days,
+        )
+        if manual_orders_by_store:
+            source_label = "CRM current-batch manual sizes + API detail lookup"
 
-        if crm_path:
-            crm_fallback_orders_by_store = get_target_order_ids_from_crm(
-                crm_path,
-                sheet_name,
-                target_date,
-                store_filter,
-                exact_date=exact_date,
-                lookback_days=None if all_dates or exact_date else since_days,
-            )
-            if crm_fallback_orders_by_store:
-                source_label = "Kaspi API (planned date) + CRM/DB fallback"
-                for store_code, ids in crm_fallback_orders_by_store.items():
-                    # DB sync runs immediately before waybill selection and carries the
-                    # raw courier planning date, so when DB fallback exists it is the
-                    # authoritative fallback source for that store. CRM-only fallback
-                    # stays available only for stores missing DB coverage.
-                    if store_code in db_fallback_orders_by_store:
-                        continue
-                    fallback_orders_by_store.setdefault(store_code, set()).update(ids)
+    target_selection_by_store = manual_orders_by_store if fallback_crm else target_orders_by_store
 
-        for store_code, ids in db_fallback_orders_by_store.items():
-            fallback_orders_by_store[store_code] = set(ids)
-
-    if not target_orders_by_store and not fallback_orders_by_store:
+    if not target_selection_by_store:
         print("  No orders found for the target date.")
         return {
             'downloaded': 0,
@@ -1117,78 +1124,10 @@ def download_all_waybills(
     if source_label:
         print(f"  Using {source_label} for order selection")
 
-    # Merge API + fallback selections per store
-    fallback_used = bool(fallback_orders_by_store)
-    fallback_stores = sorted(fallback_orders_by_store.keys())
+    fallback_used = bool(fallback_crm and manual_orders_by_store)
+    fallback_stores = sorted(manual_orders_by_store.keys()) if fallback_used else []
 
-    def _exclude_cached_waybills(order_ids: set[str]) -> tuple[set[str], set[str]]:
-        """
-        Keep fallback-only pending orders in the target set even if their PDF is cached.
-
-        Cached waybill PDFs are a reuse optimization, not proof that the order was
-        actually shipped in the warehouse. Excluding them from the target set lets
-        overdue still-pending orders disappear from merged bundles and WhatsApp send
-        sources, which is exactly the drift we must avoid.
-        """
-        return set(order_ids), set()
-
-    if fallback_orders_by_store:
-        merged_orders_by_store: dict[str, set[str]] = {}
-        store_union = set(target_orders_by_store) | set(fallback_orders_by_store)
-        for store_code in store_union:
-            api_ids = target_orders_by_store.get(store_code, set())
-            fallback_ids = fallback_orders_by_store.get(store_code, set())
-
-            if api_ids:
-                extra = fallback_ids - api_ids
-                if extra and exact_date:
-                    # Keep strict-today behavior deterministic in exact-date mode:
-                    # API is source-of-truth when it already returned store targets.
-                    logger.warning(
-                        f"{store_code}: ignoring {len(extra)} fallback-only orders "
-                        "because API already returned targets for this store "
-                        "(exact-date mode)"
-                    )
-                    merged_orders_by_store[store_code] = set(api_ids)
-                else:
-                    # In overdue/all-dates modes include fallback carry-over IDs
-                    # so previous-day missed pending orders remain processable.
-                    allowed_extra, excluded_cached = _exclude_cached_waybills(extra)
-                    merged_orders_by_store[store_code] = set(api_ids) | allowed_extra
-                    if extra:
-                        mode_label = "all-dates" if all_dates else "include-overdue"
-                        if excluded_cached:
-                            logger.warning(
-                                f"{store_code}: excluding {len(excluded_cached)} fallback-only "
-                                f"orders with cached waybill PDFs ({mode_label} mode)"
-                            )
-                        if allowed_extra:
-                            logger.warning(
-                                f"{store_code}: including {len(allowed_extra)} fallback-only orders "
-                                f"not in API selection ({mode_label} mode)"
-                            )
-            else:
-                if fallback_ids:
-                    allowed_fallback, excluded_cached = _exclude_cached_waybills(fallback_ids)
-                    if excluded_cached:
-                        mode_label = "all-dates" if all_dates else "include-overdue"
-                        logger.warning(
-                            f"{store_code}: excluding {len(excluded_cached)} fallback-only "
-                            f"orders with cached waybill PDFs ({mode_label} mode)"
-                        )
-                    if allowed_fallback:
-                        merged_orders_by_store[store_code] = allowed_fallback
-                        logger.warning(
-                            f"{store_code}: API selection empty or failed; "
-                            f"using fallback ({len(allowed_fallback)} orders)"
-                        )
-                    else:
-                        logger.warning(
-                            f"{store_code}: API selection empty or failed; fallback reduced to 0 "
-                            "after cached-waybill filter"
-                        )
-        target_orders_by_store = merged_orders_by_store
-    elif api_errors:
+    if api_errors and not fallback_used:
         logger.warning(
             "API selection failed for stores: " + ", ".join(sorted(api_errors))
         )
@@ -1203,7 +1142,7 @@ def download_all_waybills(
     all_errors = []
 
     # Process each store
-    for api_store_code, order_ids in target_orders_by_store.items():
+    for api_store_code, order_ids in target_selection_by_store.items():
         if api_store_code not in STORE_TOKEN_MAP:
             logger.warning(f"Unknown store: {api_store_code}, skipping {len(order_ids)} orders")
             continue
@@ -1234,7 +1173,7 @@ def download_all_waybills(
         # from selection cache + downstream target counts to keep reports aligned.
         terminal_ids = set(result.get("terminal_skipped_order_ids", []))
         if terminal_ids:
-            target_orders_by_store[api_store_code] = set(order_ids) - terminal_ids
+            target_selection_by_store[api_store_code] = set(order_ids) - terminal_ids
             logger.info(
                 f"{api_store_code}: removed {len(terminal_ids)} terminal "
                 "(cancelled/returned) orders from target selection"
@@ -1263,7 +1202,7 @@ def download_all_waybills(
                 "all_dates": bool(all_dates),
                 "stores": {
                     store: sorted(order_ids)
-                    for store, order_ids in sorted(target_orders_by_store.items())
+                    for store, order_ids in sorted(target_selection_by_store.items())
                     if order_ids
                 },
             }

@@ -2,6 +2,7 @@ import csv
 import zipfile
 
 from scripts.report_waybill_status import (
+    get_crm_orders,
     load_output_assigned,
     load_waybills,
     normalize_store_name,
@@ -52,3 +53,43 @@ def test_load_waybills_respects_order_id_filter(tmp_path):
 
     ids = load_waybills(waybill_dir, order_id_filter={"222", "333"})
     assert ids == {"222", "333"}
+
+
+def test_get_crm_orders_backfills_blank_current_day_size_for_overdue_rows(tmp_path):
+    crm_path = tmp_path / "crm.xlsx"
+    rows = [
+        {
+            "Date": "2026-03-09",
+            "OrderID": "850084962",
+            "MY_SIZE": "M",
+            "PLANNED_SHIPPING_DATE": "2026-03-09",
+            "STORE_NAME": "Universal",
+            "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+            "SKU_ID": "SKU-TOP",
+            "Quantity": 1,
+        },
+        {
+            "Date": "2026-03-10",
+            "OrderID": "850084962",
+            "MY_SIZE": "",
+            "PLANNED_SHIPPING_DATE": "2026-03-09",
+            "STORE_NAME": "Universal",
+            "KASPI_OFFER_NAME": "Рашгард Мужская термофутболка для тренировок белый M",
+            "SKU_ID": "SKU-TOP",
+            "Quantity": 1,
+        },
+    ]
+    import pandas as pd
+
+    pd.DataFrame(rows).to_excel(crm_path, index=False)
+
+    crm_all, crm_size = get_crm_orders(
+        crm_path=crm_path,
+        sheet_name="Sheet1",
+        target_date=parse_date("2026-03-10"),
+        include_overdue=True,
+        lookback_days=3,
+    )
+
+    assert crm_all == {"Universal": {"850084962"}}
+    assert crm_size == {"Universal": {"850084962"}}

@@ -607,7 +607,11 @@ def read_crm_orders(
     """
     Read orders from CRM Excel file.
 
+    The waybill/WhatsApp workflow must act only on sizes manually assigned in
+    the current CRM batch view for the target date.
+
     Filters for orders where:
+    - Date == target_date when the workbook has a Date column
     - MY_SIZE is filled (not empty)
     - PLANNED_SHIPPING_DATE within [target_date - lookback_days, target_date] (if specified)
 
@@ -626,14 +630,18 @@ def read_crm_orders(
             df,
             target_date=target_date,
             order_id_filter=order_id_filter,
+            allow_historical_fallback=False,
+            backfill_overdue_my_size_from_history=True,
         )
         logger.info(
-            "Resolved CRM operational rows: "
+            "Resolved CRM current-batch rows: "
             f"orders={operational_stats['orders_selected']} "
             f"today={operational_stats['selected_today_orders']} "
             f"fallback={operational_stats['selected_fallback_orders']} "
+            f"dropped_no_today={operational_stats['orders_without_today_row_dropped']} "
             f"historical_dropped={operational_stats['historical_rows_dropped']} "
-            f"line_dupes_dropped={operational_stats['same_day_line_duplicates_dropped']}"
+            f"line_dupes_dropped={operational_stats['same_day_line_duplicates_dropped']} "
+            f"overdue_size_backfilled={operational_stats['overdue_my_size_backfilled_rows']}"
         )
 
     status_col = None
@@ -654,6 +662,7 @@ def read_crm_orders(
     skipped_not_target = 0
     skipped_wrong_status = 0
     skipped_signature_required = 0
+    skipped_unknown_core = 0
 
     for _, row in df.iterrows():
         # Check MY_SIZE is filled
@@ -712,10 +721,6 @@ def read_crm_orders(
         store_name = normalize_store_name(store_name)
 
         # Get other fields
-        kaspi_name_core = str(row.get('Kaspi_name_core', '')).strip()
-        if not kaspi_name_core or kaspi_name_core.lower() == 'nan':
-            kaspi_name_core = "UNKNOWN"
-
         sku_key = str(row.get('SKU_key', '')).strip()
         if sku_key.lower() == 'nan':
             sku_key = ""
@@ -729,6 +734,13 @@ def read_crm_orders(
         kaspi_offer_name = str(row.get('KASPI_OFFER_NAME', '')).strip()
         if kaspi_offer_name.lower() == 'nan':
             kaspi_offer_name = ""
+
+        kaspi_name_core = str(row.get('Kaspi_name_core', '')).strip()
+        if not kaspi_name_core or kaspi_name_core.lower() == 'nan':
+            kaspi_name_core = extract_name_core(kaspi_offer_name) if kaspi_offer_name else ""
+        if not kaspi_name_core or kaspi_name_core.lower() == "unknown":
+            skipped_unknown_core += 1
+            continue
 
         item = OrderItem(
             order_id=order_id,
@@ -760,6 +772,8 @@ def read_crm_orders(
             logger.info(f"Skipped {skipped_wrong_status} orders with wrong status")
         if skipped_signature_required:
             logger.info(f"Skipped {skipped_signature_required} orders requiring signature")
+    if skipped_unknown_core:
+        logger.info(f"Skipped {skipped_unknown_core} orders without usable Kaspi_name_core")
 
     return orders
 
@@ -845,8 +859,9 @@ def get_crm_missing_info(
     """
     Return (missing_in_crm, missing_size) for target_date.
 
-    missing_in_crm: order_ids not present in CRM rows for target_date.
-    missing_size: order_ids present in CRM rows for target_date but MY_SIZE empty.
+    missing_in_crm: order_ids not present in the current operational CRM batch view.
+    missing_size: order_ids present in the operational CRM batch view but still
+    unresolved after overdue-size backfill.
     """
     if not crm_path.exists() or not order_ids:
         return set(order_ids), set()
@@ -854,6 +869,13 @@ def get_crm_missing_info(
     df = crm_df
     if df is None:
         df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    df, _ = select_operational_crm_rows(
+        df,
+        target_date=target_date,
+        order_id_filter=order_ids,
+        allow_historical_fallback=False,
+        backfill_overdue_my_size_from_history=True,
+    )
     missing_in_crm = set(order_ids)
     missing_size = set()
 
@@ -1856,9 +1878,10 @@ def main(
 
     crm_df = load_crm_dataframe(crm_path, sheet_name)
 
-    # Read orders (DB-first, CRM fallback)
+    # Read orders from the current CRM batch only.
     resolved_db_path = resolve_db_path(db_path)
     orders: list[OrderItem] = []
+    db_orders: list[OrderItem] = []
     api_order_ids: set[str] = set()
 
     # Prefer Kaspi API planned date for selection (freshest)
@@ -1896,55 +1919,18 @@ def main(
 
     if resolved_db_path:
         logger.info(f"DB: {resolved_db_path}")
-        db_orders = read_db_orders(
-            resolved_db_path,
-            target_date,
-            lookback_days,
-            order_id_filter=api_order_ids if api_order_ids else None,
-        )
-        orders = db_orders
-        if orders:
-            logger.info("Using DB for order selection")
-            orders = enrich_orders_with_crm(
-                orders,
-                crm_path,
-                sheet_name,
-                target_date,
-                lookback_days,
-                apply_date_filter=not bool(api_order_ids),
-                crm_df=crm_df,
-            )
-            # Add CRM-only orders missing in DB to avoid exclusions
-            crm_all = read_crm_orders(
-                crm_path,
-                sheet_name,
-                target_date,
-                order_id_filter=api_order_ids if api_order_ids else None,
-                lookback_days=lookback_days,
-                apply_date_filter=not bool(api_order_ids),
-                crm_df=crm_df,
-            )
-            if crm_all:
-                existing_ids = {o.order_id for o in orders}
-                extras = [o for o in crm_all if o.order_id not in existing_ids]
-                if extras:
-                    orders.extend(extras)
-                    logger.info(
-                        f"Added {len(extras)} CRM-only orders not in DB selection"
-                    )
-        else:
-            logger.warning("No eligible orders found in DB; falling back to CRM")
 
-    if not orders:
-        orders = read_crm_orders(
-            crm_path,
-            sheet_name,
-            target_date,
-            order_id_filter=api_order_ids if api_order_ids else None,
-            lookback_days=lookback_days,
-            apply_date_filter=not bool(api_order_ids),
-            crm_df=crm_df,
-        )
+    orders = read_crm_orders(
+        crm_path,
+        sheet_name,
+        target_date,
+        order_id_filter=api_order_ids if api_order_ids else None,
+        lookback_days=lookback_days,
+        apply_date_filter=not bool(api_order_ids),
+        crm_df=crm_df,
+    )
+    if orders:
+        logger.info("Using current-batch CRM manual sizes for order selection")
     stats['orders_read'] = len(orders)
 
     if not orders:
