@@ -866,6 +866,12 @@ class CRMAppendDateReconcilePlan:
     missing_keys: list[str]
 
 
+@dataclass(frozen=True)
+class CRMAppendExpectation:
+    line_key: str
+    order_id: str
+
+
 def plan_append_date_reconcile(
     existing_rows: List[CRMDateBlockRow],
     desired_keys: List[str],
@@ -916,6 +922,75 @@ def plan_append_date_reconcile(
         keep_rows_by_key=keep_rows_by_key,
         missing_keys=missing_keys,
     )
+
+
+def build_append_expectations(
+    df: pd.DataFrame,
+    *,
+    colmap: Dict[str, str],
+) -> list[CRMAppendExpectation]:
+    """Build semantic append expectations for the rows we intend to append."""
+    expectations: list[CRMAppendExpectation] = []
+    order_col = colmap.get("order_id")
+    handover_col = colmap.get("handover")
+    offer_col = colmap.get("offer_name")
+    sku_col = colmap.get("sku")
+    qty_col = colmap.get("quantity")
+
+    for _, row in df.iterrows():
+        order_id = clean_order_id(row.get(order_col) if order_col else "")
+        line_key = _coerce_str(row.get("_okey"))
+        if not line_key:
+            line_key = _build_line_dedupe_key(
+                order_id,
+                parse_date(row.get(handover_col)) if handover_col else None,
+                row.get(offer_col) if offer_col else "",
+                row.get(sku_col) if sku_col else "",
+                row.get(qty_col) if qty_col else 0,
+            )
+        expectations.append(CRMAppendExpectation(line_key=line_key, order_id=order_id))
+
+    return expectations
+
+
+def find_missing_append_expectations(
+    expectations: List[CRMAppendExpectation],
+    actual_counts: Dict[str, int],
+) -> list[CRMAppendExpectation]:
+    """
+    Compare intended append line keys against the live append-date CRM block.
+
+    Multiplicity matters. If Excel silently drops one row from an otherwise
+    duplicated key set, we still want the specific missing row surfaced.
+    """
+    remaining = Counter({str(k): int(v) for k, v in (actual_counts or {}).items()})
+    missing: list[CRMAppendExpectation] = []
+    for expectation in expectations:
+        if remaining.get(expectation.line_key, 0) > 0:
+            remaining[expectation.line_key] -= 1
+            continue
+        missing.append(expectation)
+    return missing
+
+
+def verify_expected_append_rows(
+    crm_path: Path,
+    sheet_name: str,
+    table_name: str,
+    *,
+    append_date: date,
+    expectations: List[CRMAppendExpectation],
+) -> list[CRMAppendExpectation]:
+    """Reload CRM and confirm the intended append-date rows actually exist."""
+    if not expectations:
+        return []
+    snapshot = load_crm_snapshot(
+        crm_path,
+        sheet_name,
+        table_name,
+        append_date=append_date,
+    )
+    return find_missing_append_expectations(expectations, snapshot.append_date_key_counts)
 
 
 def _load_article_identity_for_articles(articles: List[str]) -> Dict[str, Dict[str, str]]:
@@ -4728,6 +4803,7 @@ def main(
 
     # Dedup against existing
     colmap = map_headers(df_filt)
+    append_df = df_filt.copy()
     if "order_id" in colmap:
         if column_positions is None:
             column_positions = snapshot.column_positions
@@ -4765,6 +4841,7 @@ def main(
 
         # Filter stage and phone values to match
         indices_to_keep = df_filt[new_mask].index.tolist()
+        append_df = df_filt[new_mask].copy()
         stage_filtered = [stage[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
         phone_filtered = [phone_values[i] for i, idx in enumerate(df_filt.index) if idx in indices_to_keep]
         fixed_filtered = (
@@ -4805,6 +4882,7 @@ def main(
     print(f"\n4. Appending new orders...")
     new_rows_added = len(stage)
     print(f"   Orders to append: {new_rows_added}")
+    append_expectations = build_append_expectations(append_df, colmap=colmap) if new_rows_added > 0 else []
 
     if len(stage) == 0:
         if updated_count > 0 or reconcile_delete_count > 0:
@@ -4895,6 +4973,89 @@ def main(
             end_row=append_end_row,
             verbose=bool(args.verbose),
         )
+    missing_appended = verify_expected_append_rows(
+        target_crm_path,
+        args.sheet,
+        args.table,
+        append_date=append_date,
+        expectations=append_expectations,
+    )
+    if missing_appended:
+        missing_order_ids = [item.order_id for item in missing_appended if item.order_id]
+        print(
+            "   WARNING: CRM append readback is missing "
+            f"{len(missing_appended)} expected row(s); retrying missing subset once."
+        )
+        if missing_order_ids:
+            print(
+                "   Missing order IDs after first append: "
+                + ", ".join(missing_order_ids[:10])
+                + (" ..." if len(missing_order_ids) > 10 else "")
+            )
+
+        missing_keys = Counter(item.line_key for item in missing_appended)
+        append_df_retry = append_df.copy()
+        append_df_retry["_retry_keep"] = False
+        for idx, row in append_df_retry.iterrows():
+            key = _coerce_str(row.get("_okey"))
+            if not key or missing_keys.get(key, 0) <= 0:
+                continue
+            append_df_retry.at[idx, "_retry_keep"] = True
+            missing_keys[key] -= 1
+
+        retry_keep_mask = append_df_retry["_retry_keep"].astype(bool)
+        retry_stage = [row for row, keep in zip(stage, retry_keep_mask.tolist()) if keep]
+        retry_phone_values = [row for row, keep in zip(phone_values, retry_keep_mask.tolist()) if keep]
+        retry_fixed_values = (
+            [row for row, keep in zip(fixed_values_payload, retry_keep_mask.tolist()) if keep]
+            if fixed_values_payload is not None
+            else None
+        )
+
+        retry_start_row, retry_end_row = append_orders_with_fallback(
+            target_crm_path,
+            args.sheet,
+            args.table,
+            date_abs,
+            phone_abs,
+            start_abs,
+            end_abs,
+            retry_stage,
+            retry_phone_values,
+            append_date,
+            slice_headers,
+            fixed_values=retry_fixed_values,
+            kaspi_name_core_values=None,
+            preserved_my_sizes=None,
+            allow_openpyxl_fallback=allow_openpyxl_append_fallback,
+            prefer_xlwings=prefer_xlwings_append,
+            repair_cf_ranges=bool(getattr(args, "repair_cf_ranges", True)),
+            verbose=bool(args.verbose),
+        )
+        if bool(getattr(args, "append_integrity_check", True)):
+            _verify_appended_rows_integrity(
+                workbook_path=target_crm_path,
+                sheet_name=args.sheet,
+                table_name=args.table,
+                start_row=retry_start_row,
+                end_row=retry_end_row,
+                verbose=bool(args.verbose),
+            )
+
+        missing_after_retry = verify_expected_append_rows(
+            target_crm_path,
+            args.sheet,
+            args.table,
+            append_date=append_date,
+            expectations=append_expectations,
+        )
+        if missing_after_retry:
+            missing_after_retry_ids = [item.order_id for item in missing_after_retry if item.order_id]
+            raise RuntimeError(
+                "CRM semantic append verification failed after retry. "
+                "Missing order IDs: "
+                + ", ".join(missing_after_retry_ids[:20])
+            )
     fixed_backfilled = maybe_run_fixed_backfill()
     if fixed_backfilled:
         print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")

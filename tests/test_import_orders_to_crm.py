@@ -22,6 +22,7 @@ import pandas as pd
 import pytest
 
 from scripts.import_orders_to_crm import (
+    CRMAppendExpectation,
     CRMSnapshot,
     READY_STATUS,
     NO_SIGNATURE,
@@ -58,10 +59,12 @@ from scripts.import_orders_to_crm import (
     append_orders_with_fallback,
     build_staging,
     build_pending_append_mask,
+    build_append_expectations,
     clean_order_id,
     clean_value,
     compute_fixed_value_columns,
     deduplicate_orders,
+    find_missing_append_expectations,
     filter_orders_for_shipment,
     filter_for_shipping,
     find_active_orders_files,
@@ -1812,6 +1815,49 @@ def test_build_line_dedupe_key_normalizes_article_prefix_tokens():
     assert k_raw == k_norm
 
 
+def test_find_missing_append_expectations_respects_multiplicity():
+    expectations = [
+        CRMAppendExpectation(line_key="k1", order_id="851184511"),
+        CRMAppendExpectation(line_key="k1", order_id="851184512"),
+        CRMAppendExpectation(line_key="k2", order_id="851184513"),
+    ]
+
+    missing = find_missing_append_expectations(expectations, {"k1": 1, "k2": 1})
+
+    assert [item.order_id for item in missing] == ["851184512"]
+
+
+def test_build_append_expectations_prefers_existing_okey():
+    df = pd.DataFrame(
+        {
+            "№ заказа": ["851184511"],
+            "Плановая дата передачи курьеру": ["10.03.2026"],
+            "Название товара в Kaspi Магазине": ["Рашгард"],
+            "Артикул": ["SKU-1"],
+            "Количество": [1],
+            "_okey": ["851184511|2026-03-10|sku-1|рашгард|1"],
+        }
+    )
+
+    expectations = build_append_expectations(
+        df,
+        colmap={
+            "order_id": "№ заказа",
+            "handover": "Плановая дата передачи курьеру",
+            "offer_name": "Название товара в Kaspi Магазине",
+            "sku": "Артикул",
+            "quantity": "Количество",
+        },
+    )
+
+    assert expectations == [
+        CRMAppendExpectation(
+            line_key="851184511|2026-03-10|sku-1|рашгард|1",
+            order_id="851184511",
+        )
+    ]
+
+
 def _minimal_snapshot() -> CRMSnapshot:
     return CRMSnapshot(
         date_col=2,
@@ -1864,7 +1910,8 @@ def test_main_default_does_not_compute_fixed_values_payload(monkeypatch, tmp_pat
         "scripts.import_orders_to_crm.build_fixed_value_payload",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fixed payload must not be built by default")),
     )
-    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr("scripts.import_orders_to_crm.append_orders_with_fallback", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr("scripts.import_orders_to_crm.verify_expected_append_rows", lambda *_args, **_kwargs: [])
     monkeypatch.setattr("scripts.import_orders_to_crm._promote_candidate_workbook", lambda *_args, **_kwargs: None, raising=False)
     monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", lambda *_args, **_kwargs: tmp_path / "archive")
     monkeypatch.setattr("scripts.import_orders_to_crm.sync_pending_orders_to_gdrive_safe", lambda *_args, **_kwargs: {"rows_synced": 0})
@@ -1930,7 +1977,8 @@ def test_main_does_not_autofill_or_backfill_my_size(monkeypatch, tmp_path):
         seen["preserved_my_sizes"] = kwargs.get("preserved_my_sizes")
         return (2, 2)
 
-    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", _append_spy)
+    monkeypatch.setattr("scripts.import_orders_to_crm.append_orders_with_fallback", _append_spy)
+    monkeypatch.setattr("scripts.import_orders_to_crm.verify_expected_append_rows", lambda *_args, **_kwargs: [])
 
     stats = main(
         orders_dir=orders_dir,
@@ -1967,7 +2015,8 @@ def test_main_does_not_archive_when_candidate_promotion_fails(monkeypatch, tmp_p
     monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["x"]], [""]))
     monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("scripts.import_orders_to_crm.build_fixed_value_payload", lambda *_args, **_kwargs: [{}])
-    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr("scripts.import_orders_to_crm.append_orders_with_fallback", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr("scripts.import_orders_to_crm.verify_expected_append_rows", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         "scripts.import_orders_to_crm._promote_candidate_workbook",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("candidate verification failed")),
@@ -2037,7 +2086,8 @@ def test_main_does_not_write_kaspi_core_override_payload(monkeypatch, tmp_path):
         seen["fixed_values"] = kwargs.get("fixed_values")
         return (2, 2)
 
-    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", _append_spy)
+    monkeypatch.setattr("scripts.import_orders_to_crm.append_orders_with_fallback", _append_spy)
+    monkeypatch.setattr("scripts.import_orders_to_crm.verify_expected_append_rows", lambda *_args, **_kwargs: [])
 
     stats = main(
         orders_dir=orders_dir,
@@ -2075,7 +2125,8 @@ def test_main_skip_gdrive_sync_flag_disables_drive_sync(monkeypatch, tmp_path):
     monkeypatch.setattr("scripts.import_orders_to_crm.load_crm_snapshot", lambda *_args, **_kwargs: _minimal_snapshot())
     monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["x"]], [""]))
     monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr("scripts.import_orders_to_crm.append_orders_with_fallback", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr("scripts.import_orders_to_crm.verify_expected_append_rows", lambda *_args, **_kwargs: [])
     monkeypatch.setattr("scripts.import_orders_to_crm._promote_candidate_workbook", lambda *_args, **_kwargs: None, raising=False)
     monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", lambda *_args, **_kwargs: tmp_path / "archive")
     monkeypatch.setattr(
@@ -2097,6 +2148,134 @@ def test_main_skip_gdrive_sync_flag_disables_drive_sync(monkeypatch, tmp_path):
     )
 
     assert stats["orders_imported"] == 1
+
+
+def test_main_retries_missing_semantic_append_rows_once(monkeypatch, tmp_path):
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+    source_file = orders_dir / "ActiveOrders.xlsx"
+    source_file.write_text("placeholder", encoding="utf-8")
+    crm_path = tmp_path / "crm.xlsx"
+    crm_path.write_text("crm", encoding="utf-8")
+
+    df = pd.DataFrame(
+        {
+            "№ заказа": ["851184511"],
+            "Плановая дата передачи курьеру": ["10.03.2026"],
+            "Название товара в Kaspi Магазине": ["Рашгард"],
+            "Артикул": ["SKU-1"],
+            "Количество": [1],
+        }
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.read_active_orders", lambda _p: (df, [source_file]))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.filter_for_shipping",
+        lambda df_all, *_args, **_kwargs: (df_all, {"rows_in_files": 1, "rows_after_filters": 1}),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.sort_for_crm", lambda in_df: in_df)
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_crm_snapshot", lambda *_args, **_kwargs: _minimal_snapshot())
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["851184511"]], [""]))
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.build_pending_append_mask",
+        lambda df_in, **_kwargs: (
+            df_in.assign(_okey=["851184511|2026-03-10|sku-1|рашгард|1"]),
+            pd.Series([True], index=df_in.index),
+            {"duplicates_skipped": 0, "planned_duplicate_rows": 0, "append_date_duplicate_rows": 0, "carryforward_rows_to_append": 0},
+        ),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm._promote_candidate_workbook", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", lambda *_args, **_kwargs: tmp_path / "archive")
+    monkeypatch.setattr("scripts.import_orders_to_crm.sync_pending_orders_to_gdrive_safe", lambda *_args, **_kwargs: {"rows_synced": 0})
+
+    append_calls = {"count": 0}
+
+    def _append_spy(*_args, **_kwargs):
+        append_calls["count"] += 1
+        return (2, 2)
+
+    verify_responses = [
+        [CRMAppendExpectation(line_key="851184511|2026-03-10|sku-1|рашгард|1", order_id="851184511")],
+        [],
+    ]
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.append_orders_with_fallback", _append_spy)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.verify_expected_append_rows",
+        lambda *_args, **_kwargs: verify_responses.pop(0),
+    )
+
+    stats = main(
+        orders_dir=orders_dir,
+        crm_path=crm_path,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        dry_run=False,
+        update_existing=False,
+        no_update=True,
+        append_integrity_check=False,
+        verbose=False,
+    )
+
+    assert stats["orders_imported"] == 1
+    assert append_calls["count"] == 2
+
+
+def test_main_raises_when_semantic_append_row_still_missing_after_retry(monkeypatch, tmp_path):
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+    source_file = orders_dir / "ActiveOrders.xlsx"
+    source_file.write_text("placeholder", encoding="utf-8")
+    crm_path = tmp_path / "crm.xlsx"
+    crm_path.write_text("crm", encoding="utf-8")
+
+    df = pd.DataFrame(
+        {
+            "№ заказа": ["851184511"],
+            "Плановая дата передачи курьеру": ["10.03.2026"],
+            "Название товара в Kaspi Магазине": ["Рашгард"],
+            "Артикул": ["SKU-1"],
+            "Количество": [1],
+        }
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.read_active_orders", lambda _p: (df, [source_file]))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.filter_for_shipping",
+        lambda df_all, *_args, **_kwargs: (df_all, {"rows_in_files": 1, "rows_after_filters": 1}),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.sort_for_crm", lambda in_df: in_df)
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_crm_snapshot", lambda *_args, **_kwargs: _minimal_snapshot())
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["851184511"]], [""]))
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.build_pending_append_mask",
+        lambda df_in, **_kwargs: (
+            df_in.assign(_okey=["851184511|2026-03-10|sku-1|рашгард|1"]),
+            pd.Series([True], index=df_in.index),
+            {"duplicates_skipped": 0, "planned_duplicate_rows": 0, "append_date_duplicate_rows": 0, "carryforward_rows_to_append": 0},
+        ),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm._promote_candidate_workbook", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", lambda *_args, **_kwargs: tmp_path / "archive")
+    monkeypatch.setattr("scripts.import_orders_to_crm.sync_pending_orders_to_gdrive_safe", lambda *_args, **_kwargs: {"rows_synced": 0})
+    monkeypatch.setattr("scripts.import_orders_to_crm.append_orders_with_fallback", lambda *_args, **_kwargs: (2, 2))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.verify_expected_append_rows",
+        lambda *_args, **_kwargs: [CRMAppendExpectation(line_key="851184511|2026-03-10|sku-1|рашгард|1", order_id="851184511")],
+    )
+
+    with pytest.raises(RuntimeError, match="CRM semantic append verification failed after retry"):
+        main(
+            orders_dir=orders_dir,
+            crm_path=crm_path,
+            sheet_name="SALES_KSP_CRM_1",
+            table_name="tb_SalesRaw",
+            dry_run=False,
+            update_existing=False,
+            no_update=True,
+            append_integrity_check=False,
+            verbose=False,
+        )
 
 
 def test_restore_preserved_package_parts_readds_missing_pivot_parts(tmp_path):
