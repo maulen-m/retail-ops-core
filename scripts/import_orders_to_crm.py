@@ -122,6 +122,118 @@ def backup_crm(crm_path: Path) -> Path:
     return backup_path
 
 
+@dataclass(frozen=True)
+class ExcelWorkbookSession:
+    name: str
+    saved: bool
+    path: str = ""
+
+
+def _list_excel_workbooks(timeout_sec: int = 10) -> List[ExcelWorkbookSession]:
+    """
+    Return currently open Microsoft Excel workbooks without launching Excel.
+    """
+    script = """
+if application "Microsoft Excel" is running then
+    tell application "Microsoft Excel"
+        set wbNames to name of workbooks
+        set wbSaved to saved of workbooks
+        set outputLines to {}
+        repeat with idx from 1 to (count of wbNames)
+            set end of outputLines to (item idx of wbNames) & "|" & ((item idx of wbSaved) as string)
+        end repeat
+        set AppleScript's text item delimiters to linefeed
+        set payload to outputLines as string
+        set AppleScript's text item delimiters to ""
+        return payload
+    end tell
+else
+    return ""
+end if
+"""
+    try:
+        proc = subprocess.run(
+            ["osascript", "-"],
+            input=script,
+            text=True,
+            capture_output=True,
+            timeout=max(int(timeout_sec), 1),
+        )
+    except FileNotFoundError:
+        return []
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Excel session inspection timed out after {int(timeout_sec)}s") from exc
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip() or f"osascript rc={proc.returncode}"
+        raise RuntimeError(f"Excel session inspection failed: {detail}")
+
+    sessions: List[ExcelWorkbookSession] = []
+    for line in (proc.stdout or "").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        parts = raw.split("|", 1)
+        name = parts[0].strip() if parts else ""
+        saved_raw = parts[1].strip().lower() if len(parts) > 1 else "true"
+        sessions.append(
+            ExcelWorkbookSession(
+                name=name,
+                saved=saved_raw == "true",
+                path="",
+            )
+        )
+    return sessions
+
+
+def _excel_session_preflight(crm_path: Path, verbose: bool = False) -> None:
+    """
+    Fail fast when Excel already has unsafe workbook state that can stall xlwings.
+    """
+    sessions = _list_excel_workbooks()
+    if not sessions:
+        return
+
+    crm_resolved = crm_path.expanduser().resolve()
+    target_open = False
+    unsaved_side_workbooks: List[str] = []
+
+    for session in sessions:
+        session_path = (session.path or "").strip()
+        matches_target = session.name.strip() == crm_path.name
+        if session_path:
+            try:
+                path_obj = Path(session_path)
+                if path_obj.name == crm_path.name:
+                    matches_target = True
+                elif path_obj.expanduser().resolve() == crm_resolved:
+                    matches_target = True
+            except Exception:
+                matches_target = matches_target or session_path.rstrip(":").endswith(crm_path.name)
+        if matches_target:
+            target_open = True
+            continue
+        if not session.saved:
+            unsaved_side_workbooks.append(session.name or "(unnamed workbook)")
+
+    if target_open:
+        raise RuntimeError(
+            "CRM workbook is already open in Excel. Close it before import to avoid concurrent workbook sessions."
+        )
+
+    if unsaved_side_workbooks:
+        sample = ", ".join(unsaved_side_workbooks[:5])
+        if len(unsaved_side_workbooks) > 5:
+            sample += ", ..."
+        raise RuntimeError(
+            "Unsaved Excel workbook(s) are open: "
+            f"{sample}. Save or close them before CRM import to avoid silent Excel automation hangs."
+        )
+
+    if verbose:
+        print(f"  Excel session guard OK ({len(sessions)} open workbook(s), all saved side sessions)")
+
+
 def _excel_open_probe(workbook_path: Path, attempts: int = 3, timeout_sec: int = 45) -> Tuple[bool, str]:
     """
     Ask Microsoft Excel to open and close workbook_path.
@@ -689,8 +801,10 @@ def _workbook_integrity_preflight(crm_path: Path, verbose: bool = False) -> None
 def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbose: bool = False) -> None:
     """
     Validate that Excel automation can safely control the workbook before writes.
-    In strict mode this aborts early instead of attempting risky fallbacks.
+    Excel session guard always runs; strict mode adds workbook-open probing.
     """
+    _excel_session_preflight(crm_path, verbose=verbose)
+
     if not strict_excel:
         return
     lock_file = crm_path.parent / f"~${crm_path.name}"

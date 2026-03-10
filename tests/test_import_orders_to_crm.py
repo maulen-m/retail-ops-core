@@ -24,6 +24,7 @@ import pytest
 from scripts.import_orders_to_crm import (
     CRMAppendExpectation,
     CRMSnapshot,
+    ExcelWorkbookSession,
     READY_STATUS,
     NO_SIGNATURE,
     RAW_KASPI_COLUMNS,
@@ -52,6 +53,8 @@ from scripts.import_orders_to_crm import (
     excel_append_openpyxl,
     excel_append_xlwings,
     _excel_automation_preflight,
+    _excel_session_preflight,
+    _list_excel_workbooks,
     _excel_open_probe,
     _verify_candidate_workbook,
     _xlwings_append_timeout_sec,
@@ -1531,9 +1534,87 @@ def test_workbook_integrity_preflight_blocks_non_baseline_errors(tmp_path, monke
 def test_excel_automation_preflight_skips_when_not_strict(tmp_path):
     crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
     crm.write_text("placeholder", encoding="utf-8")
-    lock = tmp_path / "~$SALES_KSP_CRM_V3.xlsx"
-    lock.write_text("lock", encoding="utf-8")
-    _excel_automation_preflight(crm, strict_excel=False)
+    seen = {}
+
+    def _guard(path, verbose=False):
+        seen["path"] = path
+        seen["verbose"] = verbose
+
+    with patch("scripts.import_orders_to_crm._excel_session_preflight", _guard):
+        _excel_automation_preflight(crm, strict_excel=False, verbose=True)
+
+    assert seen == {"path": crm, "verbose": True}
+
+
+def test_list_excel_workbooks_parses_running_excel_output(monkeypatch):
+    def _fake_run(_cmd, input=None, text=True, capture_output=True, timeout=10):
+        return SimpleNamespace(
+            returncode=0,
+            stdout="CRM_copy.xlsx|false\nSALES_KSP_CRM_V3.xlsx|true\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.subprocess.run", _fake_run)
+
+    sessions = _list_excel_workbooks(timeout_sec=10)
+
+    assert sessions == [
+        ExcelWorkbookSession(
+            name="CRM_copy.xlsx",
+            saved=False,
+            path="",
+        ),
+        ExcelWorkbookSession(
+            name="SALES_KSP_CRM_V3.xlsx",
+            saved=True,
+            path="",
+        ),
+    ]
+
+
+def test_excel_session_preflight_fails_on_unsaved_side_workbook(monkeypatch, tmp_path):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._list_excel_workbooks",
+        lambda timeout_sec=10: [
+            ExcelWorkbookSession(name="CRM_copy.xlsx", saved=False, path="~/Desktop/CRM_copy.xlsx"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="Unsaved Excel workbook\\(s\\) are open: CRM_copy.xlsx"):
+        _excel_session_preflight(crm, verbose=False)
+
+
+def test_excel_session_preflight_fails_when_target_workbook_is_open(monkeypatch, tmp_path):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._list_excel_workbooks",
+        lambda timeout_sec=10: [
+            ExcelWorkbookSession(name="SALES_KSP_CRM_V3.xlsx", saved=True, path=str(crm.resolve())),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="CRM workbook is already open in Excel"):
+        _excel_session_preflight(crm, verbose=False)
+
+
+def test_excel_session_preflight_matches_target_by_name_when_path_missing(monkeypatch, tmp_path):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._list_excel_workbooks",
+        lambda timeout_sec=10: [
+            ExcelWorkbookSession(name="SALES_KSP_CRM_V3.xlsx", saved=True, path=""),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="CRM workbook is already open in Excel"):
+        _excel_session_preflight(crm, verbose=False)
 
 
 def test_excel_open_probe_retries_after_osascript_timeout(monkeypatch, tmp_path):
