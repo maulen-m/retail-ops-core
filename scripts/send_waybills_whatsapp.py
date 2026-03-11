@@ -254,6 +254,8 @@ def load_send_batch_manifest(today_folder: Path, source_mode: str = SOURCE_AUTO)
     for raw_entry in entries:
         entry = dict(raw_entry)
         entry["path"] = _resolve_manifest_entry_path(batch_root, entry)
+        if not Path(entry["path"]).exists():
+            _recover_missing_pdf_path(entry, today_folder)
         hydrated_entries.append(entry)
     payload["entries"] = hydrated_entries
     payload["manifest_path"] = str(manifest_path)
@@ -991,6 +993,7 @@ def _copy_profile_to_temp(user_data_dir: Path, profile_directory: str, verbose: 
         shutil.copy2(local_state, tmp_root / "Local State")
 
     def ignore_cache_dirs(_dir: str, names: Iterable[str]) -> List[str]:
+        # Keep WhatsApp session state such as Service Worker data; skip only rebuildable caches.
         skip = {
             "Cache",
             "Code Cache",
@@ -998,7 +1001,6 @@ def _copy_profile_to_temp(user_data_dir: Path, profile_directory: str, verbose: 
             "DawnCache",
             "GrShaderCache",
             "ShaderCache",
-            "Service Worker",
             "VideoDecodeStats",
             "blob_storage",
             "Blob Storage",
@@ -1306,33 +1308,48 @@ class WhatsAppSender:
 
         # First attempt: direct click from visible chat list (fastest + safest).
         chat_list = self.page.locator("div[aria-label='Chat list']")
+        direct_candidates = [
+            chat_list.locator(f"span[title='{chat_title}']"),
+            chat_list.locator("span[dir='auto']", has_text=chat_title),
+            chat_list.get_by_text(chat_title, exact=True),
+        ]
         if not self._try_click_candidate(
-            [
-                chat_list.locator(f"span[title='{chat_title}']"),
-                chat_list.locator("span[dir='auto']", has_text=chat_title),
-                chat_list.get_by_text(chat_title, exact=True),
-            ]
+            direct_candidates,
+            timeout_ms=min(self.action_timeout_ms, 12_000),
         ):
-            # Fallback: use search box, then click/enter.
+            # Search box can lag behind the chat list on fresh WhatsApp loads.
             search = self._resolve_sidebar_search(
-                timeout_ms=min(self.action_timeout_ms, 12_000),
-                required=True,
+                timeout_ms=min(self.action_timeout_ms, 20_000),
+                required=False,
             )
-            search.click()
-            search.fill("")
-            search.fill(chat_title)
-            self.page.wait_for_timeout(1000)
+            if search is not None:
+                search.click()
+                search.fill("")
+                search.fill(chat_title)
+                self.page.wait_for_timeout(1000)
 
-            if not self._try_click_candidate(
-                [
-                    chat_list.locator(f"span[title='{chat_title}']"),
-                    chat_list.locator("span[dir='auto']", has_text=chat_title),
-                    self.page.locator(f"span[title='{chat_title}']"),
-                    self.page.get_by_text(chat_title, exact=True),
-                ]
-            ):
-                self.page.keyboard.press("Enter")
-                self.page.wait_for_timeout(1200)
+                if not self._try_click_candidate(
+                    [
+                        chat_list.locator(f"span[title='{chat_title}']"),
+                        chat_list.locator("span[dir='auto']", has_text=chat_title),
+                        self.page.locator(f"span[title='{chat_title}']"),
+                        self.page.get_by_text(chat_title, exact=True),
+                    ],
+                    timeout_ms=min(self.action_timeout_ms, 12_000),
+                ):
+                    self.page.keyboard.press("Enter")
+                    self.page.wait_for_timeout(1200)
+            else:
+                if not self._try_click_candidate(
+                    [
+                        chat_list.locator(f"span[title='{chat_title}']"),
+                        chat_list.locator("span[dir='auto']", has_text=chat_title),
+                        self.page.locator(f"span[title='{chat_title}']"),
+                        self.page.get_by_text(chat_title, exact=True),
+                    ],
+                    timeout_ms=min(self.action_timeout_ms, 12_000),
+                ):
+                    raise RuntimeError("Sidebar search not ready and target chat was not clickable from chat list")
 
         self._assert_active_target_chat()
         self._resolve_composer(timeout_ms=min(self.action_timeout_ms, 20_000), required=False)

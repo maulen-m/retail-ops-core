@@ -7,7 +7,9 @@ from scripts.send_waybills_whatsapp import (
     MERGED_SEND_ROOT_NAME,
     SOURCE_MERGED,
     WhatsAppSender,
+    _copy_profile_to_temp,
     _normalize_chat_key,
+    load_send_batch_manifest,
     _recover_missing_pdf_path,
     collect_store_order_bundle_stats,
     collect_all_pdfs,
@@ -26,6 +28,46 @@ def _write_store_fixture(store_dir: Path, pdf_name: str = "sample.pdf") -> Path:
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(b"%PDF-1.0\n")
     return pdf_path
+
+
+def test_copy_profile_to_temp_preserves_service_worker_state(tmp_path: Path) -> None:
+    user_data_dir = tmp_path / "Chrome"
+    profile = "Profile 2"
+    profile_dir = user_data_dir / profile
+    (profile_dir / "Service Worker" / "Database").mkdir(parents=True, exist_ok=True)
+    (profile_dir / "Service Worker" / "Database" / "state.txt").write_text("ok", encoding="utf-8")
+    (profile_dir / "Cache").mkdir(parents=True, exist_ok=True)
+    (profile_dir / "Cache" / "cache.bin").write_text("skip", encoding="utf-8")
+    (user_data_dir / "Local State").write_text("{}", encoding="utf-8")
+
+    tmp_profile = _copy_profile_to_temp(user_data_dir, profile)
+    try:
+        assert (tmp_profile / profile / "Service Worker" / "Database" / "state.txt").read_text(encoding="utf-8") == "ok"
+        assert not (tmp_profile / profile / "Cache").exists()
+        assert (tmp_profile / "Local State").exists()
+    finally:
+        import shutil
+        shutil.rmtree(tmp_profile, ignore_errors=True)
+
+
+def test_copy_profile_to_temp_removes_singleton_locks(tmp_path: Path) -> None:
+    user_data_dir = tmp_path / "Chrome"
+    profile = "Profile 2"
+    profile_dir = user_data_dir / profile
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (user_data_dir / "Local State").write_text("{}", encoding="utf-8")
+    for root in (user_data_dir, profile_dir):
+        for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            (root / name).write_text("lock", encoding="utf-8")
+
+    tmp_profile = _copy_profile_to_temp(user_data_dir, profile)
+    try:
+        for root in (tmp_profile, tmp_profile / profile):
+            for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+                assert not (root / name).exists()
+    finally:
+        import shutil
+        shutil.rmtree(tmp_profile, ignore_errors=True)
 
 
 def test_collect_all_pdfs_legacy_today_layout(tmp_path: Path) -> None:
@@ -122,6 +164,26 @@ def test_collect_all_pdfs_recurses_nested_category_folders(tmp_path: Path) -> No
 
     assert names == ["nested.pdf", "top_level.pdf"]
     assert all(x["relative"].startswith(f"MERGED/{MERGED_SEND_ROOT_NAME}/") for x in pdfs)
+
+
+def test_load_send_batch_manifest_recovers_moved_pdf_path(tmp_path: Path) -> None:
+    today_root = tmp_path / "Today"
+    batch_root = today_root / "MERGED" / "SEND" / "11.03.26_MERGED_qnt2"
+    moved_pdf = batch_root / "SPECIAL_multi_qty" / "New Folder With Items" / "Местовая-2)_Трусы_черные-2XL-2.pdf"
+    moved_pdf.parent.mkdir(parents=True, exist_ok=True)
+    moved_pdf.write_bytes(b"%PDF-1.0\n")
+    (batch_root / "send_batch_manifest.json").write_text(
+        '{"entries": ['
+        '{"pdf_key": "k1", "filename": "Местовая-2)_Трусы_черные-2XL-2.pdf", '
+        '"relative_output_path": "SPECIAL_multi_qty/Местовая-2)_Трусы_черные-2XL-2.pdf", '
+        '"category": "SPECIAL_multi_qty", "store": "11.03.26_MERGED_qnt2"}'
+        '] }',
+        encoding="utf-8",
+    )
+
+    manifest = load_send_batch_manifest(today_root, source_mode=SOURCE_MERGED)
+
+    assert manifest["entries"][0]["path"] == moved_pdf
 
 
 def test_recover_missing_pdf_path_finds_moved_file_with_same_name(tmp_path: Path) -> None:
@@ -548,6 +610,36 @@ def test_open_chat_uses_alternative_sidebar_search_selector(monkeypatch: pytest.
     assert click_calls["count"] == 2
     assert ("fill", "") in search_target.actions
     assert ("fill", "Заказы") in search_target.actions
+
+
+def test_open_chat_retries_visible_candidates_when_sidebar_search_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=_SidebarReadyPage(
+            selectors={
+                "div[aria-label='Chat list']": _ReadyLocator(_SearchTarget()),
+            }
+        )
+    )
+    click_calls = {"count": 0}
+
+    def _fake_try_click(_candidates, timeout_ms=3500):
+        click_calls["count"] += 1
+        return click_calls["count"] >= 2
+
+    monkeypatch.setattr(sender, "_try_click_candidate", _fake_try_click)
+    monkeypatch.setattr(sender, "_assert_active_target_chat", lambda: None)
+    monkeypatch.setattr(sender, "_resolve_composer", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sender, "_active_chat_title", lambda: "")
+
+    sender.open_chat("Заказы")
+
+    assert click_calls["count"] == 2
 
 
 def test_collect_store_order_bundle_stats_counts_unique_orders(tmp_path: Path) -> None:
