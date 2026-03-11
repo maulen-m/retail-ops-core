@@ -39,6 +39,7 @@ def test_step2_uses_unattended_safe_xlwings_first_mode():
     assert "--openpyxl-append-fallback" not in flags
     assert "--no-prefer-xlwings-append" not in flags
     assert "--no-append-integrity-check" not in flags
+    assert "--allow-large-reconcile-delete" not in flags
     assert "--no-gdrive-sync" in flags
 
     # Keep no-gui unattended mode and do not rely on env-side toggles.

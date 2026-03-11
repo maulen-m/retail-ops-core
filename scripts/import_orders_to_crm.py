@@ -986,6 +986,48 @@ class CRMAppendExpectation:
     order_id: str
 
 
+def guard_reconcile_delete_volume(
+    existing_rows: List[CRMDateBlockRow],
+    desired_keys: List[str],
+    delete_row_numbers: List[int],
+    *,
+    append_date: date,
+    allow_large_reconcile_delete: bool = False,
+) -> None:
+    """
+    Fail closed when reconcile would shrink the append-date block too aggressively.
+
+    Small duplicate trimming is allowed. Large stale-key deletes require an explicit
+    operator override because they can erase most of a day's CRM history if the
+    import source is partial.
+    """
+    if allow_large_reconcile_delete or not delete_row_numbers or not existing_rows:
+        return
+
+    desired_key_set = set(desired_keys)
+    delete_row_set = set(int(row_num) for row_num in delete_row_numbers)
+    deleted_rows = [row for row in existing_rows if row.row_num in delete_row_set]
+    stale_deleted_rows = [row for row in deleted_rows if row.line_key not in desired_key_set]
+    if not stale_deleted_rows:
+        return
+
+    total_existing = len(existing_rows)
+    stale_delete_count = len(stale_deleted_rows)
+    stale_delete_fraction = stale_delete_count / total_existing if total_existing else 0.0
+    stale_manual_count = sum(1 for row in stale_deleted_rows if str(row.my_size or "").strip())
+
+    if stale_delete_count >= 5 and stale_delete_fraction >= 0.20:
+        sample = ", ".join(str(row.row_num) for row in stale_deleted_rows[:5])
+        raise RuntimeError(
+            "Refusing destructive CRM reconcile delete for "
+            f"Date {append_date.isoformat()}: would delete {stale_delete_count} stale row(s) "
+            f"out of {total_existing} existing append-date row(s) "
+            f"({stale_delete_fraction:.0%}), including {stale_manual_count} row(s) with MY_SIZE. "
+            f"Sample row numbers: {sample}. Re-run only with explicit --allow-large-reconcile-delete "
+            "if this shrink is intentional."
+        )
+
+
 def plan_append_date_reconcile(
     existing_rows: List[CRMDateBlockRow],
     desired_keys: List[str],
@@ -4281,6 +4323,7 @@ def main(
     openpyxl_append_fallback=_UNSET,
     prefer_xlwings_append=_UNSET,
     append_integrity_check=_UNSET,
+    allow_large_reconcile_delete=_UNSET,
     repair_cf_ranges=_UNSET,
     gdrive_sync=_UNSET,
     enforce_crm_path=_UNSET,
@@ -4451,6 +4494,12 @@ def main(
         help="Verify appended rows (formulas/styles/CF coverage) before promotion (default: on).",
     )
     parser.add_argument(
+        "--allow-large-reconcile-delete",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow large stale-row deletes from the append-date CRM block (default: off/fail-closed).",
+    )
+    parser.add_argument(
         "--repair-cf-ranges",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -4510,6 +4559,7 @@ def main(
         and openpyxl_append_fallback is _UNSET
         and prefer_xlwings_append is _UNSET
         and append_integrity_check is _UNSET
+        and allow_large_reconcile_delete is _UNSET
         and repair_cf_ranges is _UNSET
         and gdrive_sync is _UNSET
         and enforce_crm_path is _UNSET
@@ -4576,6 +4626,8 @@ def main(
             args.prefer_xlwings_append = bool(prefer_xlwings_append)
         if append_integrity_check is not _UNSET:
             args.append_integrity_check = bool(append_integrity_check)
+        if allow_large_reconcile_delete is not _UNSET:
+            args.allow_large_reconcile_delete = bool(allow_large_reconcile_delete)
         if repair_cf_ranges is not _UNSET:
             args.repair_cf_ranges = bool(repair_cf_ranges)
         if gdrive_sync is not _UNSET:
@@ -4938,6 +4990,13 @@ def main(
             desired_keys=desired_keys,
         )
         reconcile_delete_count = len(reconcile_plan.delete_row_numbers)
+        guard_reconcile_delete_volume(
+            snapshot.append_date_rows,
+            desired_keys,
+            reconcile_plan.delete_row_numbers,
+            append_date=append_date,
+            allow_large_reconcile_delete=bool(getattr(args, "allow_large_reconcile_delete", False)),
+        )
         if reconcile_delete_count > 0:
             print(
                 f"CRM reconcile: deleting {reconcile_delete_count} stale/duplicate row(s) "

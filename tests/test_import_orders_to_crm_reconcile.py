@@ -11,6 +11,7 @@ from scripts.import_orders_to_crm import (
     _build_line_dedupe_key,
     _order_to_update_fields,
     build_pending_append_mask,
+    guard_reconcile_delete_volume,
     plan_append_date_reconcile,
 )
 
@@ -133,6 +134,44 @@ def test_plan_append_date_reconcile_keeps_row_with_manual_size_when_duplicate_ex
 
     assert plan.delete_row_numbers == [20]
     assert plan.keep_rows_by_key[key_dup].row_num == 21
+
+
+def test_guard_reconcile_delete_volume_blocks_large_stale_day_block_shrink():
+    key_keep = _build_line_dedupe_key("1001", date(2026, 3, 10), "Item A", "SKU-A", 1)
+    stale_rows = [
+        _Row(row_num=20 + idx, line_key=_build_line_dedupe_key(f"200{idx}", date(2026, 3, 10), f"Item {idx}", f"SKU-{idx}", 1), my_size="L")
+        for idx in range(6)
+    ]
+
+    try:
+        guard_reconcile_delete_volume(
+            existing_rows=[_Row(row_num=10, line_key=key_keep, my_size="M"), *stale_rows],
+            desired_keys=[key_keep],
+            delete_row_numbers=[row.row_num for row in stale_rows],
+            append_date=date(2026, 3, 10),
+            allow_large_reconcile_delete=False,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "Refusing destructive CRM reconcile delete" in message
+        assert "--allow-large-reconcile-delete" in message
+    else:
+        raise AssertionError("expected destructive reconcile delete to be blocked")
+
+
+def test_guard_reconcile_delete_volume_allows_duplicate_trim_for_same_key():
+    key_dup = _build_line_dedupe_key("1001", date(2026, 3, 10), "Item A", "SKU-A", 1)
+
+    guard_reconcile_delete_volume(
+        existing_rows=[
+            _Row(row_num=20, line_key=key_dup, my_size=""),
+            _Row(row_num=21, line_key=key_dup, my_size="XL"),
+        ],
+        desired_keys=[key_dup],
+        delete_row_numbers=[20],
+        append_date=date(2026, 3, 10),
+        allow_large_reconcile_delete=False,
+    )
 
 
 def test_order_to_update_fields_uses_raw_courier_planning_date():
