@@ -30,6 +30,8 @@ The daily surface must carry:
 - `trust_banner=PASS_PROVISIONAL_DERIVED_FROM_GREEN_LIVE_CHAIN`
 - `semantics_mode=PROVISIONAL_DERIVED_FROM_LOCKED_MONTHLY_REVIEW`
 - `semantics_contract=docs/validation/OWNER_PROFIT_DAILY_SEMANTICS_CONTRACT.md`
+- `production_acceptable=true`
+- `decision_scope=OWNER_DAILY_MONITORING_ONLY`
 
 ## Allowed use
 
@@ -40,6 +42,16 @@ This provisional surface is acceptable for:
 - comparing months using the same derived method
 
 This provisional surface is **not** the contract that unlocks upstream monthly review semantics by itself.
+
+## Production interpretation
+
+The provisional banner is production-acceptable for owner-facing daily use because:
+
+1. the live owner-truth chain is already green
+2. the underlying revenue / COGS / ads / OPEX fields are numeric and complete
+3. the only locked element is the upstream monthly-review publication surface, not the underlying business math
+
+This means the surface is valid for day-to-day owner review, but still not the authority that removes upstream monthly-lock semantics on its own.
 
 ## Upgrade path
 

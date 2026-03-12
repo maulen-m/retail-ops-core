@@ -46,6 +46,8 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- trust_banner: `{payload['trust_banner']}`",
         f"- semantics_mode: `{payload['semantics_mode']}`",
         f"- semantics_contract: `{payload['semantics_contract']}`",
+        f"- production_acceptable: `{str(bool(payload['production_acceptable'])).lower()}`",
+        f"- decision_scope: `{payload['decision_scope']}`",
         f"- derived_profit_rows: `{payload['derived_profit_rows']}`",
         f"- owner_truth_status: `{payload['sources']['owner_truth_summary']['status']}`",
         f"- system_health_status: `{payload['sources']['system_health']['status']}`",
@@ -129,6 +131,11 @@ def build_owner_profit_daily(
         if ok and derived_profit_rows > 0
         else ("PASS_GREEN_LIVE_CHAIN" if ok else "FAIL_UPSTREAM_GATES")
     )
+    production_acceptable = bool(ok)
+    decision_scope = (
+        "OWNER_DAILY_MONITORING_ONLY" if ok and derived_profit_rows > 0 else
+        ("FULL_DECISION_GRADE" if ok else "BLOCKED_UPSTREAM_GATES")
+    )
     payload = {
         "generated_at": _now_utc(),
         "as_of": as_of,
@@ -137,6 +144,8 @@ def build_owner_profit_daily(
         "trust_banner": trust_banner,
         "semantics_mode": semantics_mode,
         "semantics_contract": semantics_contract,
+        "production_acceptable": production_acceptable,
+        "decision_scope": decision_scope,
         "derived_profit_rows": derived_profit_rows,
         "sources": {
             "owner_truth_summary": {"path": str(owner_truth_summary_path), "status": owner_truth.get("status")},
@@ -164,6 +173,8 @@ def build_owner_profit_daily(
         "trust_banner": trust_banner,
         "semantics_mode": semantics_mode,
         "semantics_contract": semantics_contract,
+        "production_acceptable": production_acceptable,
+        "decision_scope": decision_scope,
         "derived_profit_rows": derived_profit_rows,
         "json_path": str(json_path.resolve()),
         "md_path": str(md_path.resolve()),

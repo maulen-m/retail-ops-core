@@ -50,12 +50,16 @@ def test_build_owner_profit_daily_derives_numeric_profit_from_locked_rows(tmp_pa
     assert payload["trust_banner"] == "PASS_PROVISIONAL_DERIVED_FROM_GREEN_LIVE_CHAIN"
     assert payload["semantics_mode"] == "PROVISIONAL_DERIVED_FROM_LOCKED_MONTHLY_REVIEW"
     assert payload["semantics_contract"] == "docs/validation/OWNER_PROFIT_DAILY_SEMANTICS_CONTRACT.md"
+    assert payload["production_acceptable"] is True
+    assert payload["decision_scope"] == "OWNER_DAILY_MONITORING_ONLY"
     assert payload["rows"][0]["profit_after_ads_kzt"] == 500.0
     assert payload["rows"][0]["profit_after_ads_and_opex_kzt"] == 450.0
     assert payload["derived_profit_rows"] == 2
     trust_report = json.loads((tmp_path / "validation" / "2026-03-09" / "trust_report.json").read_text())
     assert trust_report["status"] == "PASS"
     assert trust_report["semantics_mode"] == "PROVISIONAL_DERIVED_FROM_LOCKED_MONTHLY_REVIEW"
+    assert trust_report["production_acceptable"] is True
+    assert trust_report["decision_scope"] == "OWNER_DAILY_MONITORING_ONLY"
 
 
 def test_build_cash_risk_daily_uses_cashfloor_and_po_summary(tmp_path: Path) -> None:
