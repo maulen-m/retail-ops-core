@@ -223,3 +223,63 @@ def test_sales_vs_waybill_parity_uses_shipped_truth_when_business_source_is_ship
     )
     assert report["ok"] is True
     assert report["source_mode"] == "shipped_truth_primary"
+
+
+def test_sales_vs_waybill_parity_accepts_live_waybill_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    as_of = "2026-03-09"
+    db_path = tmp_path / "db" / "app.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _init_orders_db(db_path)
+
+    selection = tmp_path / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json"
+    _write_json(
+        selection,
+        {
+            "target_date": "2026-03-11",
+            "stores": {"UNIVERSAL": ["A1"]},
+        },
+    )
+
+    business_snapshot = tmp_path / "config" / "business_insides" / f"BUSINESS_INSIDES_{as_of}.json"
+    _write_json(
+        business_snapshot,
+        {
+            "as_of": as_of,
+            "waybill_snapshot": {
+                "status": "available_live",
+                "target_date": as_of,
+                "stores": {
+                    "AcmeWear": {"orders": 2, "units": 3},
+                    "Universal": {"orders": 1, "units": 3},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "scripts.validate_sales_vs_waybill_parity.load_waybill_selection_snapshot",
+        lambda **_kwargs: {
+            "status": "available_live",
+            "reason": "live_api_selection",
+            "target_date": as_of,
+            "stores": {
+                "ACMEWEAR": {"orders": 2, "units": 3},
+                "UNIVERSAL": {"orders": 1, "units": 3},
+            },
+        },
+    )
+
+    report = validate_sales_vs_waybill_parity(
+        project_root=tmp_path,
+        as_of=as_of,
+        db_path=db_path,
+        selection_cache_path=selection,
+        output_root=tmp_path / "exports" / "daily",
+        business_snapshot_json=business_snapshot,
+        strict=True,
+    )
+
+    assert report["ok"] is True
+    assert report["source_status"] == "available_live"

@@ -9,6 +9,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -74,6 +75,60 @@ API_TO_DISPLAY = {
 }
 
 WAYBILL_PATTERN = re.compile(r"KASPI_SHOP-(\d+)\.pdf", re.IGNORECASE)
+
+
+def _resolve_path_arg(path: Optional[Path], project_root: Path) -> Optional[Path]:
+    if path is None:
+        return None
+    return path.expanduser() if path.is_absolute() else (project_root / path).resolve()
+
+
+def _resolve_anchor_workbook(project_root: Path) -> Optional[Path]:
+    anchor = project_root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
+    if not anchor.exists():
+        return None
+    try:
+        return anchor.resolve(strict=True)
+    except FileNotFoundError:
+        return None
+
+
+def resolve_runtime_paths(
+    *,
+    project_root: Path,
+    crm_file: Optional[Path],
+    db_path: Optional[Path],
+    waybill_dir: Optional[Path],
+    output_dir: Optional[Path],
+) -> tuple[Path, Path, Path, Path]:
+    root = project_root.resolve()
+    env_data_root = os.environ.get("AB_DATA_DIR") or os.environ.get("DATA_DIR")
+    data_root = Path(env_data_root).expanduser() if env_data_root else root
+    default_crm = data_root / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
+    default_db = data_root / "db" / "app.db"
+    default_waybill = data_root / "excel_ui" / "ActiveOrders"
+    default_output = data_root / "excel_ui" / "Kaspi_orders" / "Today"
+
+    resolved_crm = _resolve_path_arg(crm_file, root) or default_crm
+    resolved_db = _resolve_path_arg(db_path, root) or default_db
+    resolved_waybill = _resolve_path_arg(waybill_dir, root) or default_waybill
+    resolved_output = _resolve_path_arg(output_dir, root) or default_output
+
+    anchor_workbook = _resolve_anchor_workbook(root)
+    anchor_root = anchor_workbook.parent.parent if anchor_workbook is not None else None
+
+    if crm_file is None and not resolved_crm.exists() and anchor_workbook is not None:
+        resolved_crm = anchor_workbook
+    if waybill_dir is None and not resolved_waybill.exists() and anchor_root is not None:
+        resolved_waybill = anchor_root / "excel_ui" / "ActiveOrders"
+    if output_dir is None and not resolved_output.exists() and anchor_root is not None:
+        resolved_output = anchor_root / "excel_ui" / "Kaspi_orders" / "Today"
+    if db_path is None and not resolved_db.exists() and anchor_root is not None:
+        anchor_db = anchor_root / "db" / "app.db"
+        if anchor_db.exists():
+            resolved_db = anchor_db
+
+    return resolved_crm, resolved_db, resolved_waybill, resolved_output
 
 
 def _coerce_str(value: Any) -> str:
@@ -412,10 +467,10 @@ def compute_stopline_exit_code(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Report waybill health for a given date")
     parser.add_argument("--date", help="Target date (YYYY-MM-DD, default: today)")
-    parser.add_argument("--crm-file", type=Path, default=DEFAULT_CRM_PATH)
+    parser.add_argument("--crm-file", type=Path, default=None)
     parser.add_argument("--db-path", type=Path, default=None)
-    parser.add_argument("--waybill-dir", type=Path, default=DEFAULT_WAYBILL_DIR)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--waybill-dir", type=Path, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--sheet", default=DEFAULT_SHEET_NAME)
     parser.add_argument("--since-days", type=int, default=7)
     parser.add_argument("--store", help="Filter by store (ACMEWEAR/UNIVERSAL/11KZ/STOREB)")
@@ -426,6 +481,13 @@ def main() -> int:
     args = parser.parse_args()
 
     load_dotenv(PROJECT_ROOT / ".env")
+    crm_file, db_path, waybill_dir, output_dir = resolve_runtime_paths(
+        project_root=PROJECT_ROOT,
+        crm_file=args.crm_file,
+        db_path=args.db_path,
+        waybill_dir=args.waybill_dir,
+        output_dir=args.output_dir,
+    )
 
     if args.date:
         target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
@@ -437,11 +499,10 @@ def main() -> int:
     print("=" * 80)
     print(f"Data root: {get_data_root()}")
     print(f"Target date: {target_date}")
-    print(f"CRM: {args.crm_file}")
-    db_path = args.db_path or data_path("db", "app.db")
+    print(f"CRM: {crm_file}")
     print(f"DB: {db_path}")
-    print(f"Waybill dir: {args.waybill_dir}")
-    print(f"Output dir: {args.output_dir}")
+    print(f"Waybill dir: {waybill_dir}")
+    print(f"Output dir: {output_dir}")
     if args.include_overdue:
         print(f"Date mode: planned <= target (lookback {args.since_days}d)")
     print()
@@ -450,7 +511,7 @@ def main() -> int:
     api_errors: set[str] = set()
     if not args.no_selection_cache:
         api_by_store = load_selection_cache(
-            args.waybill_dir, target_date, include_overdue=args.include_overdue
+            waybill_dir, target_date, include_overdue=args.include_overdue
         )
         if api_by_store:
             logger.info("Using cached API selection from waybill download step")
@@ -469,14 +530,14 @@ def main() -> int:
     for ids in api_by_store.values():
         api_all_ids.update(ids)
     crm_all, crm_size = get_crm_orders(
-        args.crm_file,
+        crm_file,
         args.sheet,
         target_date,
         include_overdue=args.include_overdue,
         lookback_days=args.since_days if args.include_overdue else None,
     )
-    waybills = load_waybills(args.waybill_dir, order_id_filter=api_all_ids or None)
-    assigned, bundles, packages = load_output_assigned(args.output_dir)
+    waybills = load_waybills(waybill_dir, order_id_filter=api_all_ids or None)
+    assigned, bundles, packages = load_output_assigned(output_dir)
 
     all_stores = set()
     for store_code in api_by_store:

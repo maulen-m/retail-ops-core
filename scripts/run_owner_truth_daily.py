@@ -14,7 +14,12 @@ import sys
 import time
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.resolve_owner_truth_runtime_mode import RuntimeModeError, resolve_owner_truth_runtime_mode
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "owner_truth_daily"
 DEFAULT_SUMMARY_ROOT = PROJECT_ROOT / "exports" / "daily"
 
@@ -81,6 +86,26 @@ def _resolve_validation_dir(root: Path, *, truth_source: str, as_of: str, explic
     return default
 
 
+def _resolve_live_workbook_anchor(root: Path) -> Path:
+    raw = os.environ.get("AB_CRM_WORKBOOK_PATH", "").strip()
+    if raw:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = (root / candidate).resolve()
+        if candidate.exists():
+            return candidate.resolve()
+        raise OwnerTruthDailyError(f"AB_CRM_WORKBOOK_PATH does not exist: {candidate}")
+
+    anchored = root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
+    if anchored.exists():
+        return anchored.resolve()
+
+    raise OwnerTruthDailyError(
+        "AB_CRM_WORKBOOK_PATH is required for live owner-truth runs; "
+        "missing config/anchors/SALES_KSP_CRM_LATEST.xlsx"
+    )
+
+
 def _default_webui_ledger_root(root: Path) -> Path:
     full_parse = root / "exports" / "order_status_ledger" / "webui_status_ledger_20260306_full_parse"
     if full_parse.exists():
@@ -132,6 +157,33 @@ def _resolve_pack_root_from_ledger(ledger_root: Path, project_root: Path) -> Pat
     return None
 
 
+def _infer_project_root_from_exports_path(path: Path) -> Path | None:
+    candidate = path.expanduser().resolve()
+    if "exports" not in candidate.parts:
+        return None
+    parts = list(candidate.parts)
+    exports_idx = parts.index("exports")
+    if exports_idx == 0:
+        return None
+    return Path(*parts[:exports_idx]).resolve()
+
+
+def _resolve_default_download_run_id(project_root: Path, pack_root: Path | None) -> str:
+    local_download_root = project_root / "exports" / "webui_archive_download_runs"
+    local_canonical = local_download_root / "webui_archive_download_20260306"
+    if local_canonical.exists():
+        return str(local_canonical.resolve())
+
+    if pack_root is not None:
+        source_root = _infer_project_root_from_exports_path(pack_root)
+        if source_root is not None:
+            external_canonical = source_root / "exports" / "webui_archive_download_runs" / "webui_archive_download_20260306"
+            if external_canonical.exists():
+                return str(external_canonical.resolve())
+
+    return "webui_archive_download_20260306"
+
+
 def _run(cmd: str, *, cwd: Path, env: dict[str, str] | None = None) -> tuple[int, str, float]:
     started = time.perf_counter()
     proc = subprocess.run(
@@ -175,6 +227,7 @@ def run_owner_truth_daily(
     pack_root: Path | None = None,
     ledger_root: Path | None = None,
     download_run_id: str | None = None,
+    runtime_mode: str = "live",
 ) -> dict[str, Any]:
     root = project_root.resolve()
     as_of_str = as_of.isoformat()
@@ -225,18 +278,37 @@ def run_owner_truth_daily(
             or (root / "exports" / "webui_archive_packs" / "webui_archive_seed_20260306")
         )
     )
-    resolved_download_run_id = download_run_id or "webui_archive_download_20260306"
+    resolved_download_run_id = (
+        str(download_run_id.resolve())
+        if isinstance(download_run_id, Path)
+        else (download_run_id or _resolve_default_download_run_id(root, resolved_pack_root))
+    )
     resolved_workbook = (
         root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
         if (root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx").exists()
         else root / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
     )
     resolved_workbook_map_output = root / "exports" / "validation" / "workbook_catalog_offer_map_sync"
-    daily_ops_summary_json = root / "exports" / "validation" / "board_v8_runtime" / as_of_str / "daily_ops_summary.json"
-    ops_selection_seed_json = root / "exports" / "validation" / "board_v8_runtime" / as_of_str / "ops_selection_seed.json"
+    try:
+        runtime_mode_report = resolve_owner_truth_runtime_mode(
+            project_root=root,
+            as_of=as_of_str,
+            mode=runtime_mode,
+            strict=bool(strict),
+        )
+    except RuntimeModeError as exc:
+        raise OwnerTruthDailyError(str(exc)) from exc
+    live_workbook_env = None
+    if runtime_mode_report["mode"] == "live":
+        live_workbook_env = {
+            **os.environ,
+            "AB_CRM_WORKBOOK_PATH": str(_resolve_live_workbook_anchor(root)),
+        }
+
+    daily_ops_summary_json = Path(str(runtime_mode_report["daily_ops_summary_json"]))
+    ops_selection_seed_json = Path(str(runtime_mode_report["ops_selection_seed_json"]))
     daily_ops_output_dir = summary_root.resolve() / as_of_str
     exceptions_output_dir = root / "exports" / "exceptions" / as_of_str
-
     step_cmds: list[tuple[str, str, dict[str, str] | None]] = [
         (
             "export_sales_archive_statusdate_mapped",
@@ -262,6 +334,14 @@ def run_owner_truth_daily(
                 f"--as-of {shlex.quote(as_of_str)} "
                 f"--summary-json {shlex.quote(str(daily_ops_summary_json))} "
                 f"--output-dir {shlex.quote(str(daily_ops_output_dir))}"
+            ),
+            None,
+        ),
+        (
+            "validate_daily_ops_report",
+            (
+                "python3 scripts/validate_daily_ops_report.py "
+                f"--strict --path {shlex.quote(str(daily_ops_output_dir / 'daily_ops_report.json'))}"
             ),
             None,
         ),
@@ -335,7 +415,7 @@ def run_owner_truth_daily(
             "validate_ads_sidecar_readiness",
             (
                 "python3 scripts/validate_ads_sidecar_readiness.py "
-                f"--as-of {shlex.quote(as_of_str)} --strict"
+                f"--as-of {shlex.quote(as_of_str)} --readiness-mode live --strict"
             ),
             None,
         ),
@@ -378,7 +458,7 @@ def run_owner_truth_daily(
                     else ""
                 )
             ),
-            None,
+            live_workbook_env,
         ),
         (
             "build_owner_pnl_report",
@@ -416,50 +496,143 @@ def run_owner_truth_daily(
             None,
         ),
     ]
-    if not daily_ops_summary_json.exists():
-        step_cmds.insert(
-            2,
+    if runtime_mode_report["mode"] == "replay":
+        step_cmds = [
+            (
+                "export_sales_archive_statusdate_mapped",
+                (
+                    "python3 scripts/export_sales_archive_statusdate_mapped.py "
+                    f"--since {shlex.quote(since.isoformat())} "
+                    f"--until {shlex.quote(as_of_str)} --strict"
+                ),
+                None,
+            ),
+            (
+                "generate_business_insides",
+                (
+                    "python3 scripts/generate_business_insides.py "
+                    f"--as-of {shlex.quote(as_of_str)} --strict"
+                ),
+                None,
+            ),
+            (
+                "generate_daily_ops_report",
+                (
+                    "python3 scripts/generate_daily_ops_report.py "
+                    f"--as-of {shlex.quote(as_of_str)} "
+                    f"--summary-json {shlex.quote(str(daily_ops_summary_json))} "
+                    f"--output-dir {shlex.quote(str(daily_ops_output_dir))}"
+                ),
+                None,
+            ),
+            (
+                "generate_owner_truth_exceptions",
+                (
+                    "python3 scripts/generate_owner_truth_exceptions.py "
+                    f"--as-of {shlex.quote(as_of_str)} "
+                    f"--daily-report-json {shlex.quote(str(daily_ops_output_dir / 'daily_ops_report.json'))} "
+                    f"--output-dir {shlex.quote(str(exceptions_output_dir))} "
+                    "--strict"
+                ),
+                None,
+            ),
+            (
+                "build_owner_pnl_report",
+                (
+                    "python3 scripts/build_owner_pnl_report.py "
+                    f"--as-of {shlex.quote(as_of_str)} "
+                    f"--since {shlex.quote(since.isoformat())} "
+                    f"--truth-source {shlex.quote(truth_source)} "
+                    f"--validation-dir {shlex.quote(str(resolved_validation_dir))} "
+                    + (
+                        f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                        if truth_source == "webui_archive"
+                        else ""
+                    )
+                    + "--include-store-breakdown --strict"
+                ),
+                None,
+            ),
+            (
+                "build_north_star_owner_review",
+                (
+                    "python3 scripts/build_north_star_owner_review.py "
+                    f"--as-of {shlex.quote(as_of_str)} "
+                    f"--start {shlex.quote(north_star_start_str)} "
+                    f"--end {shlex.quote(north_star_end_str)} "
+                    f"--truth-source {shlex.quote(truth_source)} "
+                    f"--validation-dir {shlex.quote(str(resolved_validation_dir))} "
+                    f"--owner-pnl-json {shlex.quote(str(root / 'exports' / 'owner_pnl' / as_of_str / 'OWNER_PNL.json'))} "
+                    f"--output-dir {shlex.quote(str(root / 'exports' / 'north_star_owner_review' / as_of_str))} "
+                    + (
+                        f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                        if truth_source == "webui_archive"
+                        else ""
+                    )
+                    + "--strict"
+                ),
+                None,
+            ),
+        ]
+        if bool(runtime_mode_report["use_ops_selection_seed"]):
+            step_cmds.insert(
+                1,
+                (
+                    "generate_ops_selection_artifacts",
+                    (
+                        "python3 scripts/generate_ops_selection_artifacts.py "
+                        f"--as-of {shlex.quote(as_of_str)} "
+                        f"--seed-json {shlex.quote(str(ops_selection_seed_json))} "
+                        "--strict"
+                    ),
+                    None,
+                ),
+            )
+    else:
+        if bool(runtime_mode_report["run_kaspi_daily_ops"]):
+            step_cmds.insert(
+                2,
             (
                 "run_kaspi_daily_ops",
                 (
                     "python3 scripts/run_kaspi_daily_ops.py "
                     f"--as-of {shlex.quote(as_of_str)}"
                 ),
-                None,
+                live_workbook_env,
             ),
         )
 
-    if ops_selection_seed_json.exists():
-        step_cmds.insert(
-            3,
-            (
-                "generate_ops_selection_artifacts",
+        if bool(runtime_mode_report["use_ops_selection_seed"]):
+            step_cmds.insert(
+                3,
                 (
-                    "python3 scripts/generate_ops_selection_artifacts.py "
+                    "generate_ops_selection_artifacts",
+                    (
+                        "python3 scripts/generate_ops_selection_artifacts.py "
+                        f"--as-of {shlex.quote(as_of_str)} "
+                        f"--seed-json {shlex.quote(str(ops_selection_seed_json))} "
+                        "--strict"
+                    ),
+                    None,
+                ),
+            )
+
+        step_cmds.insert(
+            next(i for i, existing in enumerate(step_cmds) if existing[0] == "validate_reference_freshness"),
+            (
+                "generate_owner_truth_exceptions",
+                (
+                    "python3 scripts/generate_owner_truth_exceptions.py "
                     f"--as-of {shlex.quote(as_of_str)} "
-                    f"--seed-json {shlex.quote(str(ops_selection_seed_json))} "
+                    f"--daily-report-json {shlex.quote(str(daily_ops_output_dir / 'daily_ops_report.json'))} "
+                    f"--output-dir {shlex.quote(str(exceptions_output_dir))} "
                     "--strict"
                 ),
                 None,
             ),
         )
 
-    step_cmds.insert(
-        next(i for i, existing in enumerate(step_cmds) if existing[0] == "validate_reference_freshness"),
-        (
-            "generate_owner_truth_exceptions",
-            (
-                "python3 scripts/generate_owner_truth_exceptions.py "
-                f"--as-of {shlex.quote(as_of_str)} "
-                f"--daily-report-json {shlex.quote(str(daily_ops_output_dir / 'daily_ops_report.json'))} "
-                f"--output-dir {shlex.quote(str(exceptions_output_dir))} "
-                "--strict"
-            ),
-            None,
-        ),
-    )
-
-    if truth_source == "webui_archive":
+    if runtime_mode_report["mode"] != "replay" and truth_source == "webui_archive":
         step_cmds[6:6] = [
             (
                 "validate_webui_archive_pack_integrity",
@@ -514,6 +687,20 @@ def run_owner_truth_daily(
                 None,
             ),
             (
+                "validate_webui_archive_vs_current_db_full_range",
+                (
+                    "python3 scripts/validate_webui_archive_vs_current_db.py "
+                    f"--start {shlex.quote(since.isoformat())} "
+                    f"--end {shlex.quote(as_of_str)} "
+                    f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                    f"--output-dir {shlex.quote(str(resolved_validation_dir / 'full_range_db_gate'))} "
+                    "--range-policy full_range_owner_truth "
+                    f"--statusdate-cutover {shlex.quote(os.environ.get('AB_STATUSDATE_CUTOVER', '2026-02-27'))} "
+                    "--strict"
+                ),
+                None,
+            ),
+            (
                 "validate_playwright_archive_downloads",
                 (
                     "python3 scripts/validate_playwright_archive_downloads.py "
@@ -530,7 +717,7 @@ def run_owner_truth_daily(
                 None,
             ),
         ]
-    else:
+    elif runtime_mode_report["mode"] != "replay":
         step_cmds.insert(
             6,
             (
@@ -546,6 +733,9 @@ def run_owner_truth_daily(
             ),
         )
 
+    if not apply:
+        step_cmds = [item for item in step_cmds if item[0] != "sync_ads_sidecar"]
+
     def _insert_after(step_name: str, item: tuple[str, str, dict[str, str] | None]) -> None:
         idx = next(i for i, existing in enumerate(step_cmds) if existing[0] == step_name)
         step_cmds.insert(idx + 1, item)
@@ -554,117 +744,130 @@ def run_owner_truth_daily(
         "validate_webui_archive_vs_current_db" if truth_source == "webui_archive" else "validate_sales_against_workbook"
     )
 
-    _insert_after(
-        ads_dependency_step,
-        (
+    if runtime_mode_report["mode"] != "replay":
+        _insert_after(
+            ads_dependency_step,
+            (
+                "validate_ads_offer_universe_coverage",
+                (
+                    "python3 scripts/validate_ads_offer_universe_coverage.py "
+                    f"--start {shlex.quote(north_star_start_str)} "
+                    f"--end {shlex.quote(north_star_end_str)} "
+                    f"--truth-source {shlex.quote(truth_source)} "
+                    f"--output-dir {shlex.quote(str(resolved_validation_dir))} "
+                    + (
+                        f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                        if truth_source == "webui_archive"
+                        else ""
+                    )
+                    + "--strict"
+                ),
+                None,
+            ),
+        )
+        _insert_after(
             "validate_ads_offer_universe_coverage",
             (
-                "python3 scripts/validate_ads_offer_universe_coverage.py "
-                f"--start {shlex.quote(north_star_start_str)} "
-                f"--end {shlex.quote(north_star_end_str)} "
-                f"--truth-source {shlex.quote(truth_source)} "
-                f"--output-dir {shlex.quote(str(resolved_validation_dir))} "
-                + (
-                    f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
-                    if truth_source == "webui_archive"
-                    else ""
-                )
-                + "--strict"
+                "validate_ads_spend_reality",
+                (
+                    "python3 scripts/validate_ads_spend_reality.py "
+                    f"--start {shlex.quote(north_star_start_str)} "
+                    f"--end {shlex.quote(north_star_end_str)} "
+                    f"--truth-source {shlex.quote(truth_source)} "
+                    f"--output-dir {shlex.quote(str(resolved_validation_dir))} "
+                    + (
+                        f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                        if truth_source == "webui_archive"
+                        else ""
+                    )
+                    + "--strict"
+                ),
+                None,
             ),
-            None,
-        ),
-    )
-    _insert_after(
-        "validate_ads_offer_universe_coverage",
-        (
+        )
+        _insert_after(
             "validate_ads_spend_reality",
             (
-                "python3 scripts/validate_ads_spend_reality.py "
-                f"--start {shlex.quote(north_star_start_str)} "
-                f"--end {shlex.quote(north_star_end_str)} "
-                f"--truth-source {shlex.quote(truth_source)} "
-                f"--output-dir {shlex.quote(str(resolved_validation_dir))} "
-                + (
-                    f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
-                    if truth_source == "webui_archive"
-                    else ""
-                )
-                + "--strict"
+                "validate_cogs_completeness_by_month",
+                (
+                    "python3 scripts/validate_cogs_completeness_by_month.py "
+                    f"--start {shlex.quote(north_star_start_str)} "
+                    f"--end {shlex.quote(north_star_end_str)} "
+                    f"--truth-source {shlex.quote(truth_source)} "
+                    f"--output-dir {shlex.quote(str(resolved_validation_dir))} "
+                    + (
+                        f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                        if truth_source == "webui_archive"
+                        else ""
+                    )
+                    + "--strict"
+                ),
+                None,
             ),
-            None,
-        ),
-    )
-    _insert_after(
-        "validate_ads_spend_reality",
-        (
+        )
+        _insert_after(
             "validate_cogs_completeness_by_month",
             (
-                "python3 scripts/validate_cogs_completeness_by_month.py "
-                f"--start {shlex.quote(north_star_start_str)} "
-                f"--end {shlex.quote(north_star_end_str)} "
-                f"--truth-source {shlex.quote(truth_source)} "
-                f"--output-dir {shlex.quote(str(resolved_validation_dir))} "
-                + (
-                    f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
-                    if truth_source == "webui_archive"
-                    else ""
-                )
-                + "--strict"
+                "validate_cogs_realism_vs_forensic",
+                (
+                    "python3 scripts/validate_cogs_realism_vs_forensic.py "
+                    f"--start {shlex.quote(north_star_start_str)} "
+                    f"--end {shlex.quote(north_star_end_str)} "
+                    f"--truth-source {shlex.quote(truth_source)} "
+                    f"--output-dir {shlex.quote(str(resolved_validation_dir))} "
+                    + (
+                        f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                        if truth_source == "webui_archive"
+                        else ""
+                    )
+                    + "--strict"
+                ),
+                None,
             ),
-            None,
-        ),
-    )
-    _insert_after(
-        "validate_cogs_completeness_by_month",
-        (
-            "validate_cogs_realism_vs_forensic",
+        )
+        triage_idx = next(i for i, item in enumerate(step_cmds) if item[0] == "triage_owner_truth_stoplines")
+        step_cmds.insert(
+            triage_idx,
             (
-                "python3 scripts/validate_cogs_realism_vs_forensic.py "
-                f"--start {shlex.quote(north_star_start_str)} "
-                f"--end {shlex.quote(north_star_end_str)} "
-                f"--truth-source {shlex.quote(truth_source)} "
-                f"--output-dir {shlex.quote(str(resolved_validation_dir))} "
-                + (
-                    f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
-                    if truth_source == "webui_archive"
-                    else ""
-                )
-                + "--strict"
+                "build_north_star_owner_review",
+                (
+                    "python3 scripts/build_north_star_owner_review.py "
+                    f"--as-of {shlex.quote(as_of_str)} "
+                    f"--start {shlex.quote(north_star_start_str)} "
+                    f"--end {shlex.quote(north_star_end_str)} "
+                    f"--truth-source {shlex.quote(truth_source)} "
+                    f"--validation-dir {shlex.quote(str(resolved_validation_dir))} "
+                    f"--owner-pnl-json {shlex.quote(str(root / 'exports' / 'owner_pnl' / as_of_str / 'OWNER_PNL.json'))} "
+                    f"--output-dir {shlex.quote(str(root / 'exports' / 'north_star_owner_review' / as_of_str))} "
+                    + (
+                        f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                        if truth_source == "webui_archive"
+                        else ""
+                    )
+                    + "--strict"
+                ),
+                None,
             ),
-            None,
-        ),
-    )
-    triage_idx = next(i for i, item in enumerate(step_cmds) if item[0] == "triage_owner_truth_stoplines")
-    step_cmds.insert(
-        triage_idx,
-        (
-            "build_north_star_owner_review",
-            (
-                "python3 scripts/build_north_star_owner_review.py "
-                f"--as-of {shlex.quote(as_of_str)} "
-                f"--start {shlex.quote(north_star_start_str)} "
-                f"--end {shlex.quote(north_star_end_str)} "
-                f"--truth-source {shlex.quote(truth_source)} "
-                f"--validation-dir {shlex.quote(str(resolved_validation_dir))} "
-                f"--owner-pnl-json {shlex.quote(str(root / 'exports' / 'owner_pnl' / as_of_str / 'OWNER_PNL.json'))} "
-                f"--output-dir {shlex.quote(str(root / 'exports' / 'north_star_owner_review' / as_of_str))} "
-                + (
-                    f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
-                    if truth_source == "webui_archive"
-                    else ""
-                )
-                + "--strict"
-            ),
-            None,
-        ),
-    )
+        )
 
+    allowed_after_failure: set[str] = set()
     if stopline_code is None:
         for name, cmd, env in step_cmds:
+            if stopline_code is not None and name not in allowed_after_failure:
+                break
             rc, out, dur = _run(cmd, cwd=root, env=env)
             _record(name, cmd, rc, out, dur)
+            if stopline_code is not None and name in allowed_after_failure:
+                if rc == 0:
+                    allowed_after_failure.discard(name)
+                else:
+                    allowed_after_failure.clear()
+                continue
             if rc != 0:
                 stopline_code = f"{name.upper()}_FAIL"
+                if name == "run_kaspi_daily_ops":
+                    allowed_after_failure = {"generate_daily_ops_report", "validate_daily_ops_report"}
+                    continue
                 break
 
     overall_ok = stopline_code is None
@@ -675,6 +878,8 @@ def run_owner_truth_daily(
         "status": "PASS" if overall_ok else "FAIL",
         "ok": overall_ok,
         "error_code": stopline_code,
+        "runtime_mode": runtime_mode_report["mode"],
+        "runtime_mode_report": runtime_mode_report,
         "apply": bool(apply),
         "backup_path": backup_path,
         "steps": [{k: v for k, v in row.items() if k != "output"} for row in steps],
@@ -693,6 +898,7 @@ def run_owner_truth_daily(
         f"- since: `{since.isoformat()}`",
         f"- status: `{summary['status']}`",
         f"- error_code: `{summary.get('error_code') or 'none'}`",
+        f"- runtime_mode: `{runtime_mode_report['mode']}`",
         f"- apply: `{str(bool(apply)).lower()}`",
         f"- backup_path: `{backup_path or 'n/a'}`",
         "",
@@ -732,6 +938,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pack-root", type=Path, default=None)
     parser.add_argument("--ledger-root", type=Path, default=None)
     parser.add_argument("--download-run-id", default=None)
+    parser.add_argument("--mode", choices=["live", "replay"], default="live")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--apply", action="store_true")
     return parser
@@ -755,6 +962,7 @@ def main() -> int:
             pack_root=args.pack_root,
             ledger_root=args.ledger_root,
             download_run_id=args.download_run_id,
+            runtime_mode=str(args.mode),
         )
     except OwnerTruthDailyError as exc:
         print("status=FAIL")

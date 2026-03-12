@@ -78,6 +78,7 @@ def validate_ads_spend_reality(
         stores_config=stores_config,
         gap_quarantine_config=gap_quarantine_config,
         output_dir=coverage_input_dir,
+        truth_output_dir=output_dir,
     )
 
     spend_reality_fail_pairs = int(payload.get("spend_reality_fail_pairs", 0))

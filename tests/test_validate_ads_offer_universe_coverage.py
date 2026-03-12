@@ -238,6 +238,74 @@ def test_validate_ads_offer_universe_coverage_webui_uses_effective_db_quarantine
     assert payload["truth_errors"] == []
 
 
+def test_validate_ads_offer_universe_coverage_can_resolve_truth_from_parent_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "app.db"
+    stores = tmp_path / "stores.yaml"
+    ledger = tmp_path / "ledger"
+    out_dir = tmp_path / "out" / "_ads_spend_reality_offer_input"
+    truth_dir = tmp_path / "out"
+    ads_scope = tmp_path / "ads_active_scope.yaml"
+    ledger.mkdir()
+    _write_stores_yaml(stores)
+    _write_acmewear_active_scope_yaml(ads_scope)
+    _seed_db(db, with_ads=True)
+
+    monkeypatch.setattr(
+        ads_mod,
+        "build_webui_truth_projection",
+        lambda **_kwargs: (
+            pd.DataFrame(
+                [
+                    {
+                        "order_id": "1",
+                        "sale_date": "2026-01-05",
+                        "store_code": "ACMEWEAR",
+                        "sku_key": "SKU_A",
+                        "net_rev_kzt": 1000.0,
+                        "db_match_status": "MATCHED",
+                    }
+                ]
+            ),
+            {"projected_rows": 1, "missing_in_db_orders": 1},
+        ),
+    )
+
+    truth_dir.mkdir(parents=True, exist_ok=True)
+    (truth_dir / "webui_vs_db_report.json").write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "ledger_root": str(ledger.resolve()),
+                "period": {"start": "2026-01-01", "end": "2026-01-31"},
+                "missing_in_db_orders": 0,
+                "original_missing_in_db_orders": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = validate_ads_offer_universe_coverage(
+        start="2026-01-01",
+        end="2026-01-31",
+        strict=True,
+        min_coverage=1.0,
+        max_ads_to_net_rev_ratio=0.8,
+        db_path=db,
+        truth_source="webui_archive",
+        ledger_root=ledger,
+        as_of="2026-03-07",
+        stores_config=stores,
+        ads_scope_config=ads_scope,
+        output_dir=out_dir,
+        truth_output_dir=truth_dir,
+    )
+    assert payload["status"] == "PASS"
+    assert payload["truth_errors"] == []
+
+
 def test_validate_ads_offer_universe_coverage_ignores_inactive_store_after_stop_date(
     tmp_path: Path,
 ) -> None:

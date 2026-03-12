@@ -18,9 +18,11 @@ REQUIRED_FIELDS = [
     "profile",
     "steps_total",
     "steps_failed",
+    "failed_step_names",
     "stores_total",
     "stores_red",
     "stores_green",
+    "red_store_codes",
     "store_results",
     "shipping_backlog",
     "summary_json",
@@ -59,6 +61,20 @@ def validate_daily_ops_report(path: Path, *, strict: bool = False) -> dict[str, 
         if "present" not in shipping_backlog:
             errors.append("shipping_backlog missing present")
 
+    failed_step_names = payload.get("failed_step_names")
+    if not isinstance(failed_step_names, list):
+        errors.append("failed_step_names must be a list")
+
+    red_store_codes = payload.get("red_store_codes")
+    if not isinstance(red_store_codes, list):
+        errors.append("red_store_codes must be a list")
+
+    summary_json = payload.get("summary_json")
+    if not isinstance(summary_json, str) or not summary_json:
+        errors.append("summary_json must be a non-empty string")
+    elif not Path(summary_json).exists():
+        errors.append("summary_json path does not exist")
+
     stores_total = int(payload.get("stores_total", -1)) if str(payload.get("stores_total", "")).isdigit() else payload.get("stores_total")
     stores_red = int(payload.get("stores_red", -1)) if str(payload.get("stores_red", "")).isdigit() else payload.get("stores_red")
     stores_green = int(payload.get("stores_green", -1)) if str(payload.get("stores_green", "")).isdigit() else payload.get("stores_green")
@@ -71,6 +87,10 @@ def validate_daily_ops_report(path: Path, *, strict: bool = False) -> dict[str, 
             errors.append("stores_red mismatch vs store_results")
         if stores_green != (len(store_results) - computed_red):
             errors.append("stores_green mismatch vs store_results")
+        if isinstance(red_store_codes, list):
+            computed_red_codes = sorted(store for store, meta in store_results.items() if not bool(meta.get("ok", False)))
+            if sorted(str(item) for item in red_store_codes) != computed_red_codes:
+                errors.append("red_store_codes mismatch vs store_results")
 
     ok = not errors
     report = {

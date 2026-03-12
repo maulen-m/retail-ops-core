@@ -13,13 +13,14 @@ This contract is fail-closed: workflow regressions must surface as test failures
 - `scripts/benchmark_kaspi_daily_ops.py`
 
 ## Canonical Scheduler Contracts
-- `config/com.example.kaspi-import.plist`
+- `config/launchd_templates/com.example.kaspi-import.plist.tmpl`
   - `11:00` daily import run
   - `16:03` daily import run
-- `config/com.example.kaspi-waybill-deadline.plist`
+- `config/launchd_templates/com.example.kaspi-waybill-deadline.plist.tmpl`
   - `18:30` daily waybill deadline run
-- `config/com.example.kaspi-daily-ops-report.plist`
+- `config/launchd_templates/com.example.kaspi-daily-ops-report.plist.tmpl`
   - `19:10` daily daily-ops report run
+- renderer: `scripts/render_launchd_plists.py`
 - installer: `scripts/install_scheduler.sh`
 
 ## Multi-Store Scale Roster
@@ -109,3 +110,9 @@ bash scripts/install_single_truth_ops_scheduler.sh --validate-only
 python3 scripts/check_anchor_health.py --project-root <REPO_PATH>
 python3 scripts/ops_status.py --project-root <REPO_PATH>
 ```
+
+These checks are not complete unless the repo root has:
+
+- anchor symlinks under `config/anchors/`
+- a readable `.env` with required `KASPI_TOKEN_*` keys for the active store roster
+- the frozen release validation root when replaying a historical green anchor

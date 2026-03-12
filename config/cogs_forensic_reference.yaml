@@ -5,8 +5,8 @@ truth_sources:
     reason: "legacy_forensic_run_20260304_032257_is_stale_relative_to_green_internal_webui_controls"
     required_reports:
       monthly_economics_parity:
-        path: "../exports/validation/economics_parity/2025-06-06_to_2026-03-07/summary.json"
+        path: "../../Autonomous_business/exports/validation/economics_parity/2025-06-06_to_2026-03-07/summary.json"
         status: "PASS"
       audit_cogs_realism:
-        path: "../exports/validation/cogs_realism/2026-03-07/cogs_realism_report.json"
+        path: "../../Autonomous_business/exports/validation/cogs_realism/2026-03-07/cogs_realism_report.json"
         status: "PASS"

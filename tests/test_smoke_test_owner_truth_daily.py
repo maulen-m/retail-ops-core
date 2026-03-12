@@ -31,7 +31,7 @@ def test_run_smoke_test_writes_artifacts_and_confirms_idempotence(
 ) -> None:
     run_counter = {"value": 0}
 
-    def fake_run_owner_truth_daily(*, project_root: Path, as_of: str, strict: bool) -> dict[str, object]:
+    def fake_run_owner_truth_daily(*, project_root: Path, as_of: str, strict: bool, mode: str) -> dict[str, object]:
         run_counter["value"] += 1
         daily_dir = project_root / "exports" / "daily" / as_of
         exceptions_dir = project_root / "exports" / "exceptions" / as_of
@@ -87,7 +87,7 @@ def test_run_smoke_test_writes_artifacts_and_confirms_idempotence(
             json.dumps({"generated_at": stamp, "status": "PASS", "ok": True}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        return {"rc": 0, "stdout": "status=PASS", "stderr": ""}
+        return {"rc": 0, "stdout": f"mode={mode}\nstatus=PASS", "stderr": ""}
 
     monkeypatch.setattr(
         "scripts.smoke_test_owner_truth_daily._run_owner_truth_daily",
@@ -107,3 +107,4 @@ def test_run_smoke_test_writes_artifacts_and_confirms_idempotence(
     assert (tmp_path / "exports" / "validation" / "owner_truth_release" / "2026-03-08" / "cold_start_smoke_run_1.md").exists()
     assert (tmp_path / "exports" / "validation" / "owner_truth_release" / "2026-03-08" / "cold_start_smoke_run_2.md").exists()
     assert (tmp_path / "exports" / "validation" / "owner_truth_release" / "2026-03-08" / "idempotence_report.json").exists()
+    assert all("mode=replay" in run["stdout"] for run in report["runs"])

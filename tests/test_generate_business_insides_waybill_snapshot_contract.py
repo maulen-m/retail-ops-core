@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
 import sqlite3
 from pathlib import Path
@@ -98,15 +99,71 @@ def test_waybill_snapshot_mismatch_without_archive_is_fail_closed(tmp_path: Path
         encoding="utf-8",
     )
     monkeypatch.setenv("AB_WAYBILL_ARCHIVE_ROOT", str(tmp_path / "missing_archive_root"))
+    monkeypatch.setattr(
+        "scripts.report_waybill_status.get_api_orders_by_store",
+        lambda target_date, since_days=7, store_filter=None, verbose=False, include_overdue=False: (
+            {},
+            {"UNIVERSAL"},
+        ),
+    )
 
     snapshot = load_waybill_selection_snapshot(
         db_path=db_path,
         as_of_date=date.fromisoformat(as_of),
         selection_cache_path=cache_path,
     )
-    assert snapshot["status"] == "as_of_mismatch"
+    assert snapshot["status"] == "live_api_unavailable"
     assert snapshot["totals"]["orders"] == 0
     assert snapshot["stores"] == {}
+
+
+def test_waybill_snapshot_uses_live_fallback_on_cache_target_mismatch_without_archive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    as_of = "2026-02-26"
+    db_path = tmp_path / "app.db"
+    _seed_db(db_path)
+    cache_path = tmp_path / "_waybill_selection_orders.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "target_date": "2026-02-28",
+                "stores": {"UNIVERSAL": ["999999999"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AB_WAYBILL_ARCHIVE_ROOT", str(tmp_path / "missing_archive_root"))
+    (tmp_path / ".env").write_text("KASPI_TOKEN_ACMEWEAR=token-123\n", encoding="utf-8")
+    monkeypatch.setattr("scripts.generate_business_insides.PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("KASPI_TOKEN_ACMEWEAR", raising=False)
+    monkeypatch.setattr(
+        "scripts.report_waybill_status.get_api_orders_by_store",
+        lambda target_date, since_days=7, store_filter=None, verbose=False, include_overdue=False: (
+            (
+                {
+                    "UNIVERSAL": {"835000001"},
+                    "ACMEWEAR": {"835000002"},
+                },
+                set(),
+            )
+            if os.environ.get("KASPI_TOKEN_ACMEWEAR") == "token-123"
+            else ({}, {"ACMEWEAR"})
+        ),
+    )
+
+    snapshot = load_waybill_selection_snapshot(
+        db_path=db_path,
+        as_of_date=date.fromisoformat(as_of),
+        selection_cache_path=cache_path,
+    )
+    assert snapshot["status"] == "available_live"
+    assert snapshot["reason"] == "live_api_selection"
+    assert snapshot["target_date"] == as_of
+    assert snapshot["totals"]["orders"] == 2
+    assert snapshot["stores"]["UNIVERSAL"]["orders"] == 1
+    assert snapshot["stores"]["ACMEWEAR"]["orders"] == 1
 
 
 def test_waybill_snapshot_prefers_archive_when_cache_underflow_detected(

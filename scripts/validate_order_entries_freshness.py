@@ -23,6 +23,9 @@ from scripts.identity_stabilization_common import (
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "identity_stabilization"
+# Latest API-observed statuses are the authority for whether an order is still
+# in-flight and therefore not yet required to have entry-backed identity rows.
+PENDING_LATEST_STATUSES = {"READY", "ACCEPTED", "SHIPPED"}
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -30,10 +33,90 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
-def _entry_required(row: sqlite3.Row, *, as_of: date) -> bool:
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _load_latest_status_context(
+    conn: sqlite3.Connection,
+    *,
+    as_of: date,
+    stores: tuple[str, ...],
+) -> tuple[dict[tuple[str, str], str], dict[str, datetime]]:
+    if not _table_exists(conn, "fact_order_status_observations"):
+        return {}, {}
+    rows = conn.execute(
+        """
+        SELECT
+            CAST(order_id AS TEXT) AS order_id,
+            UPPER(COALESCE(store_code, '')) AS store_code,
+            COALESCE(status_internal, '') AS status_internal,
+            COALESCE(observed_at, '') AS observed_at
+        FROM fact_order_status_observations
+        WHERE date(observed_at) <= ?
+          AND UPPER(COALESCE(store_code, '')) IN ({})
+        ORDER BY
+            CAST(order_id AS TEXT),
+            UPPER(COALESCE(store_code, '')),
+            datetime(observed_at) DESC,
+            rowid DESC
+        """.format(",".join(["?"] * len(stores))),
+        (as_of.isoformat(), *stores),
+    ).fetchall()
+    latest: dict[tuple[str, str], str] = {}
+    watermarks: dict[str, datetime] = {}
+    for row in rows:
+        store = str(row["store_code"] or "").strip().upper()
+        order_id = str(row["order_id"] or "").strip()
+        observed_at = _parse_dt(row["observed_at"])
+        if observed_at is not None:
+            prev = watermarks.get(store)
+            if prev is None or observed_at > prev:
+                watermarks[store] = observed_at
+        latest.setdefault((store, order_id), str(row["status_internal"] or "").strip().upper())
+    return latest, watermarks
+
+
+def _resolve_store_watermark(
+    store: str,
+    *,
+    observation_watermarks: dict[str, datetime],
+) -> datetime | None:
+    return observation_watermarks.get(store)
+
+
+def _entry_required(
+    row: sqlite3.Row,
+    *,
+    as_of: date,
+    latest_status_internal: str = "",
+    store_watermark: datetime | None = None,
+) -> bool:
     status_detail = str(row["kaspi_status_detail"] or "").strip().upper()
     internal_status = str(row["internal_status"] or "").strip().upper()
     kaspi_status = str(row["kaspi_status"] or "").strip().upper()
+    if latest_status_internal in PENDING_LATEST_STATUSES:
+        return False
+    if latest_status_internal in {"CANCELLED", "RETURNED"}:
+        return False
+    if store_watermark is not None:
+        created_at = _parse_dt(row["created_at"])
+        if created_at is not None and created_at > store_watermark:
+            return False
 
     if status_detail in {"CANCELLED", "RETURNED"}:
         return False
@@ -99,6 +182,11 @@ def validate_order_entries_freshness(
             """.format(",".join(["?"] * len(stores))),
             (start_day.isoformat(), as_of.isoformat(), *stores),
         ).fetchall()
+        latest_status_by_order, observation_watermarks = _load_latest_status_context(
+            conn,
+            as_of=as_of,
+            stores=stores,
+        )
     finally:
         conn.close()
 
@@ -117,9 +205,17 @@ def validate_order_entries_freshness(
     missing_rows: list[dict[str, str]] = []
 
     for row in order_rows:
-        if not _entry_required(row, as_of=as_of):
-            continue
         store = str(row["store_code"] or "").strip().upper()
+        if not _entry_required(
+            row,
+            as_of=as_of,
+            latest_status_internal=latest_status_by_order.get((store, str(row["order_id"] or "").strip()), ""),
+            store_watermark=_resolve_store_watermark(
+                store,
+                observation_watermarks=observation_watermarks,
+            ),
+        ):
+            continue
         order_id = str(row["order_id"] or "").strip()
         key = f"{store}:{order_id}"
         p = per_store[store]

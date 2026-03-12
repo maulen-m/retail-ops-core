@@ -167,7 +167,7 @@ def validate_sales_vs_waybill_parity(
         )
     source_status = str(source_waybill.get("status") or "missing")
     source_target_date = str(source_waybill.get("target_date") or "").strip()
-    allowed_statuses = {"available", "available_archive"}
+    allowed_statuses = {"available", "available_archive", "available_live"}
     source_label = "waybill selection"
     if source_mode == "shipped_truth_primary":
         allowed_statuses = {"available_shipped_truth"}

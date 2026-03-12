@@ -27,8 +27,15 @@ def normalize_payload(value: Any) -> Any:
     return value
 
 
-def _run_owner_truth_daily(*, project_root: Path, as_of: str, strict: bool) -> dict[str, Any]:
-    cmd = [str(project_root / ".venv" / "bin" / "python"), "scripts/run_owner_truth_daily.py", "--as-of", as_of]
+def _run_owner_truth_daily(*, project_root: Path, as_of: str, strict: bool, mode: str) -> dict[str, Any]:
+    cmd = [
+        str(project_root / ".venv" / "bin" / "python"),
+        "scripts/run_owner_truth_daily.py",
+        "--mode",
+        mode,
+        "--as-of",
+        as_of,
+    ]
     if strict:
         cmd.append("--strict")
     proc = subprocess.run(
@@ -139,7 +146,7 @@ def run_smoke_test(*, project_root: Path, as_of: str, strict: bool) -> dict[str,
     run_md_paths: list[Path] = []
     for run_no in (1, 2):
         removed = _purge_for_cold_start(root, as_of)
-        result = _run_owner_truth_daily(project_root=root, as_of=as_of, strict=strict)
+        result = _run_owner_truth_daily(project_root=root, as_of=as_of, strict=strict, mode="replay")
         run_md_path = release_root / f"cold_start_smoke_run_{run_no}.md"
         _write_run_md(run_md_path, run_no=run_no, as_of=as_of, result=result, removed=removed)
         run_md_paths.append(run_md_path)

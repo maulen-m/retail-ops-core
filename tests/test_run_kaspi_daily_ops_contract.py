@@ -116,3 +116,69 @@ def test_orchestrator_surfaces_latest_shipping_backlog_report(tmp_path: Path) ->
     assert payload["shipping_backlog_latest"]["present"] is True
     assert payload["shipping_backlog_latest"]["json_path"].endswith("ship_orders_backlog_ALL_STORES_latest.json")
     assert payload["shipping_backlog_latest"]["remaining_overdue_pending"] == 1
+
+
+def test_orchestrator_passes_as_of_to_shipment_preflight(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "config").mkdir(parents=True)
+    (project_root / "config" / "stores.yaml").write_text(
+        "stores:\n  UNIVERSAL:\n    active: true\n",
+        encoding="utf-8",
+    )
+    seen: list[str] = []
+
+    def fake_runner(cmd: str, _cwd: Path) -> tuple[int, str]:
+        seen.append(cmd)
+        return 0, "ok"
+
+    run_kaspi_daily_ops(
+        project_root=project_root,
+        as_of="2026-03-09",
+        output_root=tmp_path,
+        allow_store_failures=set(),
+        runner=fake_runner,
+        stores_config=project_root / "config" / "stores.yaml",
+    )
+
+    preflight_cmd = next(cmd for cmd in seen if "scripts/preflight_shipment.py" in cmd)
+    assert "--as-of 2026-03-09" in preflight_cmd
+
+
+def test_orchestrator_records_store_blocker_classification(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "config").mkdir(parents=True)
+    (project_root / "config" / "stores.yaml").write_text(
+        "stores:\n  UNIVERSAL:\n    active: true\n",
+        encoding="utf-8",
+    )
+
+    def fake_runner(cmd: str, _cwd: Path) -> tuple[int, str]:
+        if "--store UNIVERSAL" in cmd:
+            return (
+                1,
+                "\n".join(
+                    [
+                        "| Universal | 2 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | 2 | 0 | 2 | 2 |",
+                        "Missing in CRM (first 5): 849656111, 850084962",
+                        "Missing PDF (first 5): 849656111, 850084962",
+                        "Missing in bundles (first 5): 849656111, 850084962",
+                        "STOP-LINE: strict waybill health gate failed",
+                    ]
+                ),
+            )
+        return 0, "ok"
+
+    report = run_kaspi_daily_ops(
+        project_root=project_root,
+        as_of="2026-03-09",
+        output_root=tmp_path,
+        allow_store_failures=set(),
+        runner=fake_runner,
+        stores_config=project_root / "config" / "stores.yaml",
+    )
+
+    store_meta = report["store_results"]["UNIVERSAL"]
+    assert store_meta["blocker_class"] == "WAYBILL_STOPLINE"
+    assert store_meta["blocker_details"]["miss_crm"] == 2
+    assert store_meta["blocker_details"]["miss_pdf"] == 2
+    assert store_meta["blocker_details"]["miss_bundle"] == 2

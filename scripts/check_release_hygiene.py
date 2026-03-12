@@ -11,8 +11,10 @@ from typing import Any
 
 DEFAULT_ACTIVE_DOCS = [
     Path("docs/validation/OWNER_PNL_PUBLICATION_CONTRACT.md"),
+    Path("docs/validation/OWNER_TRUTH_RUNTIME_MODE_CONTRACT.md"),
     Path("docs/validation/WEBUI_ARCHIVE_SINGLE_TRUTH_CONTRACT.md"),
     Path("docs/DAILY_SOP.md"),
+    Path("docs/ops/OWNER_TRUTH_ANCHOR_BOOTSTRAP.md"),
     Path("docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md"),
 ]
 
@@ -20,12 +22,17 @@ DEFAULT_ACTIVE_SCRIPTS = [
     Path("scripts/run_owner_truth_daily.py"),
     Path("scripts/generate_owner_truth_exceptions.py"),
     Path("scripts/generate_ops_selection_artifacts.py"),
+    Path("scripts/resolve_owner_truth_runtime_mode.py"),
+    Path("scripts/render_launchd_plists.py"),
+    Path("scripts/bootstrap_owner_truth_anchors.py"),
     Path("scripts/smoke_test_owner_truth_daily.py"),
     Path("scripts/build_daily_ops_timings.py"),
     Path("scripts/validate_business_insides_ocean_drop_alignment.py"),
     Path("scripts/system_doctor.py"),
     Path("scripts/triage_owner_truth_stoplines.py"),
     Path("scripts/run_kaspi_import_scheduler.py"),
+    Path("scripts/install_scheduler.sh"),
+    Path("scripts/install_single_truth_ops_scheduler.sh"),
 ]
 
 BANNED_ABSOLUTE_PATH_TOKENS = [
@@ -36,6 +43,8 @@ BANNED_ABSOLUTE_PATH_TOKENS = [
 BANNED_SCRIPT_DATE_TOKENS = [
     "2026-03-08",
     "20260308",
+    "2026-03-09",
+    "20260309",
 ]
 
 

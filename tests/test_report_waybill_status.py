@@ -1,11 +1,13 @@
 import csv
 import zipfile
+from pathlib import Path
 
 from scripts.report_waybill_status import (
     load_output_assigned,
     load_waybills,
     normalize_store_name,
     parse_date,
+    resolve_runtime_paths,
 )
 
 
@@ -52,3 +54,29 @@ def test_load_waybills_respects_order_id_filter(tmp_path):
 
     ids = load_waybills(waybill_dir, order_id_filter={"222", "333"})
     assert ids == {"222", "333"}
+
+
+def test_resolve_runtime_paths_prefers_anchor_target_when_local_runtime_inputs_missing(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    anchors = project_root / "config" / "anchors"
+    anchors.mkdir(parents=True)
+    external_root = tmp_path / "external_data"
+    external_excel = external_root / "excel_ui"
+    (external_excel / "ActiveOrders").mkdir(parents=True)
+    (external_excel / "Kaspi_orders" / "Today").mkdir(parents=True)
+    workbook = external_excel / "SALES_KSP_CRM_V3.xlsx"
+    workbook.write_bytes(b"stub")
+    (anchors / "SALES_KSP_CRM_LATEST.xlsx").symlink_to(workbook)
+
+    crm_file, db_path, waybill_dir, output_dir = resolve_runtime_paths(
+        project_root=project_root,
+        crm_file=None,
+        db_path=None,
+        waybill_dir=None,
+        output_dir=None,
+    )
+
+    assert crm_file == workbook
+    assert db_path == project_root / "db" / "app.db"
+    assert waybill_dir == external_excel / "ActiveOrders"
+    assert output_dir == external_excel / "Kaspi_orders" / "Today"

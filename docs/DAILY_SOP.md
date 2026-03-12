@@ -42,8 +42,8 @@ AB_INBOUND_WORKBOOK_PATH="config/anchors/INBOUND_CALENDAR_LATEST.xlsx" \
 ```
 
 Notes:
-- `AB_CRM_WORKBOOK_PATH` gate is optional by design; if unset, workbook anchor check is skipped.
-- In production operations, set it explicitly so daily published sales truth cannot exceed workbook anchor tolerance.
+- production-grade live `run_owner_truth_daily.py` and `system_doctor.py` runs must set `AB_CRM_WORKBOOK_PATH`
+- strict live proving now fails closed if `config/anchors/SALES_KSP_CRM_LATEST.xlsx` is missing
 - Content freshness guard also enforces workbook max-date lag/future windows:
   - `AB_CRM_WORKBOOK_MAX_LAG_DAYS` (default `1`)
   - `AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS` (default `0`)

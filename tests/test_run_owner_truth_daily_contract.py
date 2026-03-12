@@ -10,6 +10,13 @@ import scripts.run_owner_truth_daily as runner_mod
 from scripts.run_owner_truth_daily import OwnerTruthDailyError, run_owner_truth_daily
 
 
+def _seed_crm_anchor(project_root: Path) -> Path:
+    anchor = project_root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
+    anchor.parent.mkdir(parents=True, exist_ok=True)
+    anchor.write_text("anchor", encoding="utf-8")
+    return anchor
+
+
 def test_run_owner_truth_daily_requires_env_for_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ENABLE_OWNER_TRUTH_APPLY", raising=False)
     with pytest.raises(OwnerTruthDailyError):
@@ -28,6 +35,7 @@ def test_run_owner_truth_daily_requires_env_for_apply(tmp_path: Path, monkeypatc
 
 def test_run_owner_truth_daily_writes_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append(cmd)
@@ -48,6 +56,7 @@ def test_run_owner_truth_daily_writes_summary(tmp_path: Path, monkeypatch: pytes
         summary_root=tmp_path / "daily",
         strict=True,
         apply=True,
+        runtime_mode="live",
     )
     assert summary["status"] == "PASS"
     assert summary["backup_path"] is not None
@@ -61,6 +70,7 @@ def test_run_owner_truth_daily_webui_includes_webui_contract_steps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append(cmd)
@@ -83,6 +93,7 @@ def test_run_owner_truth_daily_webui_includes_webui_contract_steps(
         pack_root=tmp_path / "pack",
         ledger_root=tmp_path / "ledger",
         download_run_id="download_run",
+        runtime_mode="live",
     )
 
     assert summary["status"] == "PASS"
@@ -102,6 +113,7 @@ def test_run_owner_truth_daily_applies_workbook_catalog_sync_before_truth_steps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, dict[str, str] | None]] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append((cmd, env))
@@ -127,6 +139,7 @@ def test_run_owner_truth_daily_applies_workbook_catalog_sync_before_truth_steps(
         pack_root=tmp_path / "pack",
         ledger_root=tmp_path / "ledger",
         download_run_id="download_run",
+        runtime_mode="live",
     )
 
     assert summary["status"] == "PASS"
@@ -152,6 +165,7 @@ def test_run_owner_truth_daily_db_uses_workbook_anchor_not_legacy_crm_validator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append(cmd)
@@ -179,11 +193,78 @@ def test_run_owner_truth_daily_db_uses_workbook_anchor_not_legacy_crm_validator(
     assert "validate_sales_truth_vs_crm_north_star.py" not in joined
 
 
+def test_run_owner_truth_daily_emits_daily_ops_artifact_after_live_ops_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
+
+    def fake_run(cmd: str, *, cwd: Path, env=None):
+        calls.append(cmd)
+        if "run_kaspi_daily_ops.py" in cmd:
+            return 1, "summary_md=/tmp/daily_ops_summary.md", 0.01
+        return 0, "status=PASS", 0.01
+
+    monkeypatch.setattr(runner_mod, "_run", fake_run)
+
+    with pytest.raises(OwnerTruthDailyError, match="RUN_KASPI_DAILY_OPS_FAIL"):
+        run_owner_truth_daily(
+            as_of=date(2026, 3, 9),
+            since=date(2025, 6, 6),
+            north_star_start=date(2026, 1, 1),
+            north_star_end=date(2026, 2, 28),
+            project_root=tmp_path,
+            output_root=tmp_path / "out",
+            summary_root=tmp_path / "daily",
+            strict=True,
+            apply=False,
+            runtime_mode="live",
+        )
+
+    joined = "\n".join(calls)
+    assert "run_kaspi_daily_ops.py" in joined
+    assert "generate_daily_ops_report.py" in joined
+    assert "validate_daily_ops_report.py" in joined
+
+
+def test_run_owner_truth_daily_live_uses_live_ads_readiness_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
+
+    def fake_run(cmd: str, *, cwd: Path, env=None):
+        calls.append(cmd)
+        return 0, "status=PASS", 0.01
+
+    monkeypatch.setattr(runner_mod, "_run", fake_run)
+
+    summary = run_owner_truth_daily(
+        as_of=date(2026, 3, 9),
+        since=date(2025, 6, 6),
+        north_star_start=date(2026, 1, 1),
+        north_star_end=date(2026, 2, 28),
+        project_root=tmp_path,
+        output_root=tmp_path / "out",
+        summary_root=tmp_path / "daily",
+        strict=True,
+        apply=False,
+        runtime_mode="live",
+    )
+
+    assert summary["status"] == "PASS"
+    ads_cmd = next(cmd for cmd in calls if "validate_ads_sidecar_readiness.py" in cmd)
+    assert "--readiness-mode live" in ads_cmd
+
+
 def test_run_owner_truth_daily_uses_publication_fallback_validation_dir_for_db(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append(cmd)
@@ -229,6 +310,7 @@ def test_run_owner_truth_daily_uses_publication_fallback_validation_dir_for_db(
         strict=True,
         apply=False,
         truth_source="db",
+        runtime_mode="live",
     )
 
     assert summary["status"] == "PASS"
@@ -241,6 +323,7 @@ def test_run_owner_truth_daily_prefers_publication_validation_dir_for_webui(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append(cmd)
@@ -291,6 +374,7 @@ def test_run_owner_truth_daily_prefers_publication_validation_dir_for_webui(
         pack_root=tmp_path / "pack",
         ledger_root=tmp_path / "ledger",
         download_run_id="download_run",
+        runtime_mode="live",
     )
 
     assert summary["status"] == "PASS"
@@ -303,6 +387,7 @@ def test_run_owner_truth_daily_defaults_to_webui_full_parse_roots(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append(cmd)
@@ -329,6 +414,7 @@ def test_run_owner_truth_daily_defaults_to_webui_full_parse_roots(
         summary_root=tmp_path / "daily",
         strict=True,
         apply=False,
+        runtime_mode="live",
     )
 
     assert summary["status"] == "PASS"
@@ -343,6 +429,7 @@ def test_run_owner_truth_daily_resolves_repo_local_pack_root_from_imported_ledge
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append(cmd)
@@ -386,6 +473,7 @@ def test_run_owner_truth_daily_resolves_repo_local_pack_root_from_imported_ledge
         summary_root=tmp_path / "daily",
         strict=True,
         apply=False,
+        runtime_mode="live",
     )
 
     assert summary["status"] == "PASS"
@@ -394,11 +482,72 @@ def test_run_owner_truth_daily_resolves_repo_local_pack_root_from_imported_ledge
     assert "~/Docs/Autonomous_business/" not in joined
 
 
+def test_run_owner_truth_daily_resolves_external_download_run_when_local_default_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
+
+    def fake_run(cmd: str, *, cwd: Path, env=None):
+        calls.append(cmd)
+        return 0, "status=PASS", 0.01
+
+    monkeypatch.setattr(runner_mod, "_run", fake_run)
+
+    pack_id = "webui_archive_full_parse_2024-06-06_to_2026-03-05_20260306_2211_pack"
+    external_root = tmp_path / "external_repo"
+    external_pack_root = (
+        external_root
+        / "exports"
+        / "webui_archive_full_parse_runs"
+        / "webui_archive_full_parse_2024-06-06_to_2026-03-05_20260306_2211"
+        / "pack_outputs"
+        / pack_id
+    )
+    external_pack_root.mkdir(parents=True, exist_ok=True)
+    external_download_root = external_root / "exports" / "webui_archive_download_runs" / "webui_archive_download_20260306"
+    external_download_root.mkdir(parents=True, exist_ok=True)
+    (external_download_root / "run_manifest.json").write_text("{}", encoding="utf-8")
+
+    ledger_root = tmp_path / "exports" / "order_status_ledger" / "webui_status_ledger_20260306_full_parse"
+    ledger_root.mkdir(parents=True, exist_ok=True)
+    (ledger_root / "ledger_manifest.json").write_text(
+        json.dumps(
+            {
+                "pack_roots": [str(external_pack_root)],
+                "pack_ids": [pack_id],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    summary = run_owner_truth_daily(
+        as_of=date(2026, 3, 8),
+        since=date(2025, 6, 6),
+        north_star_start=date(2026, 1, 1),
+        north_star_end=date(2026, 2, 28),
+        project_root=tmp_path,
+        output_root=tmp_path / "out",
+        summary_root=tmp_path / "daily",
+        strict=True,
+        apply=False,
+        runtime_mode="live",
+    )
+
+    assert summary["status"] == "PASS"
+    joined = "\n".join(calls)
+    assert str(external_download_root) in joined
+
+
 def test_run_owner_truth_daily_builds_owner_review_after_validation_and_owner_pnl(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append(cmd)
@@ -421,6 +570,7 @@ def test_run_owner_truth_daily_builds_owner_review_after_validation_and_owner_pn
         pack_root=tmp_path / "pack",
         ledger_root=tmp_path / "ledger",
         download_run_id="download_run",
+        runtime_mode="live",
     )
 
     assert summary["status"] == "PASS"
@@ -438,6 +588,7 @@ def test_run_owner_truth_daily_runs_webui_db_gate_before_ads_validators(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
 
     def fake_run(cmd: str, *, cwd: Path, env=None):
         calls.append(cmd)
@@ -460,6 +611,7 @@ def test_run_owner_truth_daily_runs_webui_db_gate_before_ads_validators(
         pack_root=tmp_path / "pack",
         ledger_root=tmp_path / "ledger",
         download_run_id="download_run",
+        runtime_mode="live",
     )
 
     assert summary["status"] == "PASS"
@@ -469,7 +621,127 @@ def test_run_owner_truth_daily_runs_webui_db_gate_before_ads_validators(
     assert db_gate_idx < ads_coverage_idx < ads_spend_idx
 
 
-def test_run_owner_truth_daily_reuses_existing_daily_ops_summary_before_doctor(
+def test_run_owner_truth_daily_emits_full_range_webui_db_gate_before_owner_pnl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
+
+    def fake_run(cmd: str, *, cwd: Path, env=None):
+        calls.append(cmd)
+        return 0, "status=PASS", 0.01
+
+    monkeypatch.setattr(runner_mod, "_run", fake_run)
+
+    summary = run_owner_truth_daily(
+        as_of=date(2026, 3, 9),
+        since=date(2025, 6, 6),
+        north_star_start=date(2026, 1, 1),
+        north_star_end=date(2026, 2, 28),
+        project_root=tmp_path,
+        output_root=tmp_path / "out",
+        summary_root=tmp_path / "daily",
+        strict=True,
+        apply=False,
+        truth_source="webui_archive",
+        validation_dir=tmp_path / "validation",
+        pack_root=tmp_path / "pack",
+        ledger_root=tmp_path / "ledger",
+        download_run_id="download_run",
+        runtime_mode="live",
+    )
+
+    assert summary["status"] == "PASS"
+    full_range_cmd = next(
+        cmd
+        for cmd in calls
+        if "validate_webui_archive_vs_current_db.py" in cmd and "full_range_db_gate" in cmd
+    )
+    assert "--start 2025-06-06" in full_range_cmd
+    assert "--end 2026-03-09" in full_range_cmd
+    assert "--range-policy full_range_owner_truth" in full_range_cmd
+    assert "--statusdate-cutover 2026-02-27" in full_range_cmd
+    full_range_idx = calls.index(full_range_cmd)
+    pnl_idx = next(i for i, cmd in enumerate(calls) if "build_owner_pnl_report.py" in cmd)
+    assert full_range_idx < pnl_idx
+
+
+def test_run_owner_truth_daily_skips_ads_sidecar_sync_when_apply_false(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
+
+    def fake_run(cmd: str, *, cwd: Path, env=None):
+        calls.append(cmd)
+        return 0, "status=PASS", 0.01
+
+    monkeypatch.setattr(runner_mod, "_run", fake_run)
+
+    summary = run_owner_truth_daily(
+        as_of=date(2026, 3, 9),
+        since=date(2025, 6, 6),
+        north_star_start=date(2026, 1, 1),
+        north_star_end=date(2026, 2, 28),
+        project_root=tmp_path,
+        output_root=tmp_path / "out",
+        summary_root=tmp_path / "daily",
+        strict=True,
+        apply=False,
+        truth_source="webui_archive",
+        validation_dir=tmp_path / "validation",
+        pack_root=tmp_path / "pack",
+        ledger_root=tmp_path / "ledger",
+        download_run_id="download_run",
+        runtime_mode="live",
+    )
+
+    assert summary["status"] == "PASS"
+    assert not any("sync_ads_sidecar.py" in cmd for cmd in calls)
+
+
+def test_run_owner_truth_daily_runs_ads_sidecar_sync_only_with_apply_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, str] | None]] = []
+    _seed_crm_anchor(tmp_path)
+    monkeypatch.setenv("ENABLE_OWNER_TRUTH_APPLY", "1")
+
+    def fake_run(cmd: str, *, cwd: Path, env=None):
+        calls.append((cmd, env))
+        return 0, "status=PASS", 0.01
+
+    monkeypatch.setattr(runner_mod, "_run", fake_run)
+
+    summary = run_owner_truth_daily(
+        as_of=date(2026, 3, 9),
+        since=date(2025, 6, 6),
+        north_star_start=date(2026, 1, 1),
+        north_star_end=date(2026, 2, 28),
+        project_root=tmp_path,
+        output_root=tmp_path / "out",
+        summary_root=tmp_path / "daily",
+        strict=True,
+        apply=True,
+        truth_source="webui_archive",
+        validation_dir=tmp_path / "validation",
+        pack_root=tmp_path / "pack",
+        ledger_root=tmp_path / "ledger",
+        download_run_id="download_run",
+        runtime_mode="live",
+    )
+
+    assert summary["status"] == "PASS"
+    sync_call = next((item for item in calls if "sync_ads_sidecar.py" in item[0]), None)
+    assert sync_call is not None
+    assert sync_call[1] is not None
+    assert sync_call[1]["ENABLE_CASHFLOW_WRITE"] == "1"
+
+
+def test_run_owner_truth_daily_replay_mode_regenerates_deterministic_outputs_from_frozen_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -520,6 +792,70 @@ def test_run_owner_truth_daily_reuses_existing_daily_ops_summary_before_doctor(
         ),
         encoding="utf-8",
     )
+    summary = run_owner_truth_daily(
+        as_of=date(2026, 3, 8),
+        since=date(2025, 6, 6),
+        north_star_start=date(2026, 1, 1),
+        north_star_end=date(2026, 2, 28),
+        project_root=tmp_path,
+        output_root=tmp_path / "out",
+        summary_root=tmp_path / "daily",
+        strict=True,
+        apply=False,
+        truth_source="webui_archive",
+        validation_dir=tmp_path / "validation",
+        pack_root=tmp_path / "pack",
+        ledger_root=tmp_path / "ledger",
+        download_run_id="download_run",
+        runtime_mode="replay",
+    )
+
+    assert summary["status"] == "PASS"
+    joined = "\n".join(calls)
+    assert "export_sales_archive_statusdate_mapped.py" in joined
+    assert "generate_business_insides.py" in joined
+    assert "generate_daily_ops_report.py" in joined
+    assert "generate_ops_selection_artifacts.py" in joined
+    assert "generate_owner_truth_exceptions.py" in joined
+    assert "build_owner_pnl_report.py" in joined
+    assert "build_north_star_owner_review.py" in joined
+    assert "validate_webui_archive_pack_integrity.py" not in joined
+    assert "system_doctor.py" not in joined
+    assert "run_kaspi_daily_ops.py" not in joined
+
+    export_idx = next(i for i, cmd in enumerate(calls) if "export_sales_archive_statusdate_mapped.py" in cmd)
+    bi_idx = next(i for i, cmd in enumerate(calls) if "generate_business_insides.py" in cmd)
+    report_idx = next(i for i, cmd in enumerate(calls) if "generate_daily_ops_report.py" in cmd)
+    ops_selection_idx = next(i for i, cmd in enumerate(calls) if "generate_ops_selection_artifacts.py" in cmd)
+    exceptions_idx = next(i for i, cmd in enumerate(calls) if "generate_owner_truth_exceptions.py" in cmd)
+    pnl_idx = next(i for i, cmd in enumerate(calls) if "build_owner_pnl_report.py" in cmd)
+    review_idx = next(i for i, cmd in enumerate(calls) if "build_north_star_owner_review.py" in cmd)
+    assert export_idx < ops_selection_idx < bi_idx < report_idx < exceptions_idx < pnl_idx < review_idx
+
+
+def test_run_owner_truth_daily_live_mode_forces_daily_ops_even_when_summary_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
+
+    def fake_run(cmd: str, *, cwd: Path, env=None):
+        calls.append(cmd)
+        return 0, "status=PASS", 0.01
+
+    monkeypatch.setattr(runner_mod, "_run", fake_run)
+
+    runtime_root = tmp_path / "exports" / "validation" / "board_v8_runtime" / "2026-03-08"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (runtime_root / "daily_ops_summary.json").write_text(
+        json.dumps({"as_of": "2026-03-08", "ok": True, "status": "PASS"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (runtime_root / "ops_selection_seed.json").write_text(
+        json.dumps({"as_of": "2026-03-08", "stores": {"ACMEWEAR": ["1"]}}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     summary = run_owner_truth_daily(
         as_of=date(2026, 3, 8),
@@ -536,25 +872,49 @@ def test_run_owner_truth_daily_reuses_existing_daily_ops_summary_before_doctor(
         pack_root=tmp_path / "pack",
         ledger_root=tmp_path / "ledger",
         download_run_id="download_run",
+        runtime_mode="live",
     )
 
     assert summary["status"] == "PASS"
     joined = "\n".join(calls)
-    assert "generate_business_insides.py" in joined
-    assert "generate_daily_ops_report.py" in joined
-    assert "generate_ops_selection_artifacts.py" in joined
-    assert "generate_owner_truth_exceptions.py" in joined
-    assert "run_kaspi_daily_ops.py" not in joined
-
-    bi_idx = next(i for i, cmd in enumerate(calls) if "generate_business_insides.py" in cmd)
-    report_idx = next(i for i, cmd in enumerate(calls) if "generate_daily_ops_report.py" in cmd)
-    ops_selection_idx = next(i for i, cmd in enumerate(calls) if "generate_ops_selection_artifacts.py" in cmd)
-    exceptions_idx = next(i for i, cmd in enumerate(calls) if "generate_owner_truth_exceptions.py" in cmd)
-    doctor_idx = next(i for i, cmd in enumerate(calls) if "system_doctor.py" in cmd)
-    assert bi_idx < report_idx < ops_selection_idx < exceptions_idx < doctor_idx
+    assert "run_kaspi_daily_ops.py" in joined
+    assert "generate_ops_selection_artifacts.py" not in joined
 
 
-def test_run_owner_truth_daily_falls_back_to_live_daily_ops_when_summary_missing(
+def test_run_owner_truth_daily_live_passes_workbook_anchor_to_system_doctor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, str] | None]] = []
+    anchor = _seed_crm_anchor(tmp_path)
+
+    def fake_run(cmd: str, *, cwd: Path, env=None):
+        calls.append((cmd, env))
+        return 0, "status=PASS", 0.01
+
+    monkeypatch.setattr(runner_mod, "_run", fake_run)
+
+    summary = run_owner_truth_daily(
+        as_of=date(2026, 3, 9),
+        since=date(2025, 6, 6),
+        north_star_start=date(2026, 1, 1),
+        north_star_end=date(2026, 2, 28),
+        project_root=tmp_path,
+        output_root=tmp_path / "out",
+        summary_root=tmp_path / "daily",
+        strict=True,
+        apply=False,
+        runtime_mode="live",
+    )
+
+    assert summary["status"] == "PASS"
+    doctor_cmd, doctor_env = next((cmd, env) for cmd, env in calls if "system_doctor.py" in cmd)
+    assert "--as-of 2026-03-09" in doctor_cmd
+    assert doctor_env is not None
+    assert doctor_env["AB_CRM_WORKBOOK_PATH"] == str(anchor.resolve())
+
+
+def test_run_owner_truth_daily_live_requires_bootstrapped_workbook_anchor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -566,23 +926,25 @@ def test_run_owner_truth_daily_falls_back_to_live_daily_ops_when_summary_missing
 
     monkeypatch.setattr(runner_mod, "_run", fake_run)
 
-    summary = run_owner_truth_daily(
-        as_of=date(2026, 3, 8),
-        since=date(2025, 6, 6),
-        north_star_start=date(2026, 1, 1),
-        north_star_end=date(2026, 2, 28),
-        project_root=tmp_path,
-        output_root=tmp_path / "out",
-        summary_root=tmp_path / "daily",
-        strict=True,
-        apply=False,
-        truth_source="webui_archive",
-        validation_dir=tmp_path / "validation",
-        pack_root=tmp_path / "pack",
-        ledger_root=tmp_path / "ledger",
-        download_run_id="download_run",
-    )
+    with pytest.raises(OwnerTruthDailyError, match="AB_CRM_WORKBOOK_PATH"):
+        run_owner_truth_daily(
+            as_of=date(2026, 3, 9),
+            since=date(2025, 6, 6),
+            north_star_start=date(2026, 1, 1),
+            north_star_end=date(2026, 2, 28),
+            project_root=tmp_path,
+            output_root=tmp_path / "out",
+            summary_root=tmp_path / "daily",
+            strict=True,
+            apply=False,
+            runtime_mode="live",
+        )
 
-    assert summary["status"] == "PASS"
-    joined = "\n".join(calls)
-    assert "run_kaspi_daily_ops.py" in joined
+    assert calls == []
+
+
+def test_run_owner_truth_daily_parser_defaults_to_live_mode() -> None:
+    parser = runner_mod._build_parser()
+    args = parser.parse_args(["--as-of", "2026-03-08"])
+
+    assert args.mode == "live"

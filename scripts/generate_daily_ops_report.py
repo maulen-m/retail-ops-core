@@ -84,6 +84,8 @@ def generate_daily_ops_report(*, summary_json: Path, output_dir: Path) -> dict[s
     stores_green = stores_total - stores_red
     steps_total = len(steps)
     steps_failed = sum(1 for row in steps if not bool(row.get("ok", False)))
+    failed_step_names = [str(row.get("step") or "") for row in steps if not bool(row.get("ok", False))]
+    red_store_codes = sorted([store for store, meta in store_results.items() if not bool(meta.get("ok", False))])
 
     ok = bool(summary.get("ok", False)) and stores_red == 0
     status = "GREEN" if ok else "RED"
@@ -107,9 +109,11 @@ def generate_daily_ops_report(*, summary_json: Path, output_dir: Path) -> dict[s
         "profile": str(summary.get("profile", "")),
         "steps_total": steps_total,
         "steps_failed": steps_failed,
+        "failed_step_names": failed_step_names,
         "stores_total": stores_total,
         "stores_red": stores_red,
         "stores_green": stores_green,
+        "red_store_codes": red_store_codes,
         "store_results": store_results,
         "shipping_backlog": shipping_backlog,
         "summary_json": str(summary_json),

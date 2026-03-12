@@ -25,6 +25,74 @@ from scripts.identity_stabilization_common import (
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "identity_stabilization"
+PENDING_LATEST_STATUSES = {"READY", "ACCEPTED"}
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _load_latest_status_context(
+    conn: sqlite3.Connection,
+    *,
+    as_of: date,
+    stores: tuple[str, ...],
+) -> tuple[dict[tuple[str, str], str], dict[str, datetime]]:
+    if not _table_exists(conn, "fact_order_status_observations"):
+        return {}, {}
+    rows = conn.execute(
+        """
+        SELECT
+            CAST(order_id AS TEXT) AS order_id,
+            UPPER(COALESCE(store_code, '')) AS store_code,
+            COALESCE(status_internal, '') AS status_internal,
+            COALESCE(observed_at, '') AS observed_at
+        FROM fact_order_status_observations
+        WHERE date(observed_at) <= ?
+          AND UPPER(COALESCE(store_code, '')) IN ({})
+        ORDER BY
+            CAST(order_id AS TEXT),
+            UPPER(COALESCE(store_code, '')),
+            datetime(observed_at) DESC,
+            rowid DESC
+        """.format(",".join(["?"] * len(stores))),
+        (as_of.isoformat(), *stores),
+    ).fetchall()
+    latest: dict[tuple[str, str], str] = {}
+    watermarks: dict[str, datetime] = {}
+    for row in rows:
+        store = str(row["store_code"] or "").strip().upper()
+        order_id = str(row["order_id"] or "").strip()
+        observed_at = _parse_dt(row["observed_at"])
+        if observed_at is not None:
+            prev = watermarks.get(store)
+            if prev is None or observed_at > prev:
+                watermarks[store] = observed_at
+        key = (store, order_id)
+        latest.setdefault(key, str(row["status_internal"] or "").strip().upper())
+    return latest, watermarks
+
+
+def _resolve_store_watermark(
+    store: str,
+    *,
+    observation_watermarks: dict[str, datetime],
+) -> datetime | None:
+    return observation_watermarks.get(store)
 
 
 def _missing_fields(row: sqlite3.Row) -> list[str]:
@@ -47,10 +115,24 @@ def _store_payload(name: str) -> dict[str, Any]:
     }
 
 
-def _identity_required(row: sqlite3.Row, *, as_of: date) -> bool:
+def _identity_required(
+    row: sqlite3.Row,
+    *,
+    as_of: date,
+    latest_status_internal: str = "",
+    store_watermark: datetime | None = None,
+) -> bool:
     status_detail = str(row["kaspi_status_detail"] or "").strip().upper()
     internal_status = str(row["internal_status"] or "").strip().upper()
     kaspi_status = str(row["kaspi_status"] or "").strip().upper()
+    if latest_status_internal in PENDING_LATEST_STATUSES:
+        return False
+    if latest_status_internal in {"CANCELLED", "RETURNED"}:
+        return False
+    if store_watermark is not None:
+        created_at = _parse_dt(row["created_at"])
+        if created_at is not None and created_at > store_watermark:
+            return False
 
     # Terminal states that do not require identity completion for recent governance.
     if status_detail in {"CANCELLED", "RETURNED"}:
@@ -112,6 +194,11 @@ def validate_recent_identity_coverage(
             """.format(",".join(["?"] * len(stores))),
             (start_day.isoformat(), as_of.isoformat(), *stores),
         ).fetchall()
+        latest_status_by_order, observation_watermarks = _load_latest_status_context(
+            conn,
+            as_of=as_of,
+            stores=stores,
+        )
     finally:
         conn.close()
 
@@ -120,7 +207,15 @@ def validate_recent_identity_coverage(
 
     for row in rows:
         store = str(row["store_code"] or "").strip().upper()
-        if not _identity_required(row, as_of=as_of):
+        if not _identity_required(
+            row,
+            as_of=as_of,
+            latest_status_internal=latest_status_by_order.get((store, str(row["order_id"] or "").strip()), ""),
+            store_watermark=_resolve_store_watermark(
+                store,
+                observation_watermarks=observation_watermarks,
+            ),
+        ):
             continue
         payload = per_store.setdefault(store, _store_payload(store))
         payload["total_orders"] += 1

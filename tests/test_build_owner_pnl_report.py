@@ -179,7 +179,7 @@ def test_build_owner_pnl_report_pass(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert Path(report["ascii_path"]).exists()
 
 
-def test_build_owner_pnl_report_strict_fails_when_ads_stale(
+def test_build_owner_pnl_report_strict_uses_live_sidecar_when_ads_source_stale(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -196,19 +196,21 @@ def test_build_owner_pnl_report_strict_fails_when_ads_stale(
     os.utime(ads_source, (stale_epoch, stale_epoch))
     monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
 
-    with pytest.raises(OwnerPnlError):
-        build_owner_pnl_report(
-            db_path=db_path,
-            as_of=date(2026, 3, 2),
-            since=date(2026, 1, 1),
-            mapped_root=tmp_path / "mapped",
-            mapped_csv=mapped_csv,
-            output_root=tmp_path / "owner",
-            parity_output_root=tmp_path / "parity",
-            include_store_breakdown=False,
-            strict=True,
-            opex_schedule_yaml=opex_schedule,
-        )
+    report = build_owner_pnl_report(
+        db_path=db_path,
+        as_of=date(2026, 3, 2),
+        since=date(2026, 1, 1),
+        mapped_root=tmp_path / "mapped",
+        mapped_csv=mapped_csv,
+        output_root=tmp_path / "owner",
+        parity_output_root=tmp_path / "parity",
+        include_store_breakdown=False,
+        strict=True,
+        opex_schedule_yaml=opex_schedule,
+    )
+
+    assert report["status"] == "PASS"
+    assert report["ads_readiness"]["ok"] is True
 
 
 def test_build_owner_pnl_locks_pre_cutover_month(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

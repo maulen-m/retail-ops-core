@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -35,6 +36,24 @@ PROFILE_CONFIG = {
         "include_overdue": True,
     },
 }
+
+WAYBILL_TABLE_HEADERS = [
+    "store",
+    "api",
+    "crm",
+    "crm_size",
+    "db_size",
+    "pdfs",
+    "bundled",
+    "bundles",
+    "packages",
+    "miss_crm",
+    "miss_size",
+    "miss_pdf",
+    "miss_bundle",
+]
+MISSING_IDS_RE = re.compile(r"Missing (?:in CRM|PDF|in bundles) \(first 5\): (.+)")
+PREFLIGHT_FAIL_RE = re.compile(r"^- ([^:]+): FAIL \(rc=(\d+)\)", re.MULTILINE)
 
 
 def _run_shell(cmd: str, cwd: Path) -> tuple[int, str]:
@@ -77,6 +96,92 @@ def _append_step(
         }
     )
     return ok
+
+
+def _parse_waybill_stopline_details(output: str) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "miss_crm": 0,
+        "miss_size": 0,
+        "miss_pdf": 0,
+        "miss_bundle": 0,
+        "missing_order_ids": [],
+    }
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) != len(WAYBILL_TABLE_HEADERS):
+            continue
+        header_marker = cells[0].upper()
+        if header_marker in {"STORE", "TOTAL"}:
+            continue
+        try:
+            details["miss_crm"] = int(float(cells[9]))
+            details["miss_size"] = int(float(cells[10]))
+            details["miss_pdf"] = int(float(cells[11]))
+            details["miss_bundle"] = int(float(cells[12]))
+        except ValueError:
+            pass
+        break
+
+    missing_ids: list[str] = []
+    for line in output.splitlines():
+        match = MISSING_IDS_RE.search(line.strip())
+        if not match:
+            continue
+        for order_id in [item.strip() for item in match.group(1).split(",")]:
+            if order_id and order_id not in missing_ids:
+                missing_ids.append(order_id)
+    details["missing_order_ids"] = missing_ids
+    return details
+
+
+def classify_store_blocker(store_code: str, rc: int, output: str) -> dict[str, Any]:
+    if rc == 0:
+        return {
+            "blocker_class": "GREEN",
+            "blocker_details": {},
+        }
+    if "Auth error" in output:
+        return {
+            "blocker_class": "AUTH_ERROR",
+            "blocker_details": {},
+        }
+    if "API error" in output:
+        return {
+            "blocker_class": "API_ERROR",
+            "blocker_details": {},
+        }
+    if "STOP-LINE: strict waybill health gate failed" in output:
+        return {
+            "blocker_class": "WAYBILL_STOPLINE",
+            "blocker_details": _parse_waybill_stopline_details(output),
+        }
+    return {
+        "blocker_class": "UNKNOWN",
+        "blocker_details": {"store_code": store_code},
+    }
+
+
+def classify_preflight_blocker(output: str) -> dict[str, Any]:
+    failed_checks = [match.group(1) for match in PREFLIGHT_FAIL_RE.finditer(output)]
+    if not failed_checks:
+        return {"blocker_class": "GREEN", "failed_checks": []}
+    if "validate_params_strict" in failed_checks:
+        blocker_class = "PREFLIGHT_VALIDATE_PARAMS"
+    elif "anchor_health" in failed_checks:
+        blocker_class = "PREFLIGHT_ANCHOR_HEALTH"
+    elif "scheduler_validate_only" in failed_checks:
+        blocker_class = "PREFLIGHT_SCHEDULER"
+    elif "ops_status" in failed_checks:
+        blocker_class = "PREFLIGHT_OPS_STATUS"
+    else:
+        blocker_class = "PREFLIGHT_UNKNOWN"
+    return {
+        "blocker_class": blocker_class,
+        "failed_checks": failed_checks,
+    }
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -245,19 +350,20 @@ def run_kaspi_daily_ops(
         cmd: str,
         allow_failure: bool = False,
         cache_key: str | None = None,
-    ) -> bool:
+    ) -> tuple[bool, int, str]:
         if step in checkpoint_rows:
             prev = checkpoint_rows[step]
-            return _append_step(
+            ok = _append_step(
                 steps=steps,
                 step=step,
                 cmd=cmd,
                 rc=int(prev.get("rc", 0)),
-                output=str(prev.get("summary", "")),
+                output=str(prev.get("output", prev.get("summary", ""))),
                 duration_sec=0.0,
                 allow_failure=allow_failure,
                 from_checkpoint=True,
             )
+            return ok, int(prev.get("rc", 0)), str(prev.get("output", prev.get("summary", "")))
 
         cache_path = None
         if enable_cache and cache_key:
@@ -266,7 +372,7 @@ def run_kaspi_daily_ops(
             if cache_path.exists():
                 cached_payload = _load_json(cache_path)
                 if str(cached_payload.get("cmd", "")) == cmd:
-                    return _append_step(
+                    ok = _append_step(
                         steps=steps,
                         step=step,
                         cmd=cmd,
@@ -276,6 +382,7 @@ def run_kaspi_daily_ops(
                         allow_failure=allow_failure,
                         from_cache=True,
                     )
+                    return ok, int(cached_payload.get("rc", 1)), str(cached_payload.get("output", ""))
 
         step_started = time.perf_counter()
         rc, output = run(cmd, root)
@@ -296,6 +403,7 @@ def run_kaspi_daily_ops(
             "rc": int(rc),
             "ok": bool(ok),
             "summary": output.splitlines()[-1] if output else "",
+            "output": output,
             "duration_sec": float(duration),
             "allow_failure": bool(allow_failure),
         }
@@ -313,7 +421,7 @@ def run_kaspi_daily_ops(
                     "profile": profile,
                 },
             )
-        return ok
+        return ok, rc, output
 
     static_checks = [
         (
@@ -339,12 +447,20 @@ def run_kaspi_daily_ops(
         ),
         (
             "shipment_preflight",
-            f"python3 scripts/preflight_shipment.py --project-root {shlex.quote(str(root))}",
+            (
+                "python3 scripts/preflight_shipment.py "
+                f"--project-root {shlex.quote(str(root))} "
+                f"--as-of {shlex.quote(as_of)}"
+            ),
         ),
     ]
 
+    preflight_blocker = {"blocker_class": "GREEN", "failed_checks": []}
     for step, cmd in static_checks:
-        if not _record_step(step=step, cmd=cmd):
+        ok, rc, output = _record_step(step=step, cmd=cmd)
+        if step == "shipment_preflight":
+            preflight_blocker = classify_preflight_blocker(output)
+        if not ok:
             overall_ok = False
 
     for store in stores:
@@ -356,21 +472,22 @@ def run_kaspi_daily_ops(
         )
         allow_failure = store in allowed
         step_name = f"waybill_status_{store}"
-        if not _record_step(
+        ok, rc, output = _record_step(
             step=step_name,
             cmd=cmd,
             allow_failure=allow_failure,
             cache_key=step_name,
-        ):
+        )
+        if not ok:
             overall_ok = False
-        current = steps[-1]
         store_results[store] = {
-            "ok": bool(current["ok"]),
-            "rc": int(current["rc"]),
+            "ok": bool(ok),
+            "rc": int(rc),
             "allow_failure": bool(allow_failure),
-            "from_checkpoint": bool(current.get("from_checkpoint", False)),
-            "from_cache": bool(current.get("from_cache", False)),
-            "summary": str(current.get("summary", "")),
+            "from_checkpoint": bool(steps[-1].get("from_checkpoint", False)),
+            "from_cache": bool(steps[-1].get("from_cache", False)),
+            "summary": str(steps[-1].get("summary", "")),
+            **classify_store_blocker(store, rc, output),
         }
 
     drift_commands = [
@@ -384,7 +501,8 @@ def run_kaspi_daily_ops(
         ),
     ]
     for step, cmd in drift_commands:
-        if not _record_step(step=step, cmd=cmd):
+        ok, _rc, _output = _record_step(step=step, cmd=cmd)
+        if not ok:
             overall_ok = False
 
     run_dir = output_root / as_of
@@ -402,6 +520,7 @@ def run_kaspi_daily_ops(
         "stores": stores,
         "store_results": store_results,
         "red_stores": sorted([store for store, meta in store_results.items() if not bool(meta.get("ok", False))]),
+        "preflight_blocker": preflight_blocker,
         "allow_store_failures": sorted(allowed),
         "checkpoint_path": str(checkpoint),
         "resume": bool(resume),

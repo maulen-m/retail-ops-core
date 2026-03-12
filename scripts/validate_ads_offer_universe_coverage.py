@@ -89,6 +89,7 @@ def _load_sold_truth(
     start: str,
     end: str,
     output_dir: Path,
+    truth_output_dir: Path,
 ) -> tuple[pd.DataFrame, dict[str, object] | None, list[str]]:
     if truth_source == "webui_archive":
         resolved_ledger_root = _resolve_ledger_root(ledger_root)
@@ -112,7 +113,7 @@ def _load_sold_truth(
         if int((projection_meta or {}).get("projected_rows", 0)) == 0:
             truth_errors.append("webui truth projection contains 0 rows")
         effective_missing_in_db_orders, _ = resolve_effective_missing_in_db_orders(
-            output_dir=output_dir,
+            output_dir=truth_output_dir,
             ledger_root=resolved_ledger_root,
             start=start,
             end=end,
@@ -203,9 +204,13 @@ def validate_ads_offer_universe_coverage(
     ads_scope_config: Path = DEFAULT_ADS_ACTIVE_SCOPE_CONFIG,
     gap_quarantine_config: Path | None = DEFAULT_ADS_SOURCE_GAP_QUARANTINE_CONFIG,
     output_dir: Path | None = None,
+    truth_output_dir: Path | None = None,
 ) -> dict[str, object]:
     output_dir = _resolve_output_dir(output_dir, truth_source=truth_source, as_of=as_of)
     output_dir.mkdir(parents=True, exist_ok=True)
+    resolved_truth_output_dir = (
+        truth_output_dir.resolve() if truth_output_dir is not None else output_dir.resolve()
+    )
 
     sold, projection_meta, truth_errors = _load_sold_truth(
         db_path=db_path,
@@ -214,6 +219,7 @@ def validate_ads_offer_universe_coverage(
         start=start,
         end=end,
         output_dir=output_dir,
+        truth_output_dir=resolved_truth_output_dir,
     )
     sold["ads_scope_active"] = (
         sold.apply(

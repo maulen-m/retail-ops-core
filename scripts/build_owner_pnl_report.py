@@ -386,6 +386,7 @@ def build_owner_pnl_report(
         max_age_hours=float(ads_max_age_hours),
         min_mapping_coverage_pct=float(ads_min_mapping_coverage_pct),
         min_total_cost_kzt=float(ads_min_total_cost_kzt),
+        readiness_mode="live",
         strict=False,
     )
     opex_readiness = validate_opex_readiness(

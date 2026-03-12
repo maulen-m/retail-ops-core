@@ -730,24 +730,40 @@ def build_webui_truth_projection(
         order_ids=sorted(delivered_orders["order_id"].dropna().astype(str).unique().tolist()),
     )
     if db_rows.empty:
-        projection = pd.DataFrame(
-            columns=[
-                "order_id",
-                "sale_date",
-                "store_code",
-                "sku_key",
-                "sku_id",
-                "units",
-                "net_rev_kzt",
-                "cogs_kzt",
-                "cogs_source",
-                "profit_kzt",
-                "truth_source",
-                "webui_delivered_at",
-                "first_seen_pack",
-                "last_seen_pack",
-            ]
-        )
+        if delivered_orders.empty:
+            projection = pd.DataFrame(
+                columns=[
+                    "order_id",
+                    "sale_date",
+                    "store_code",
+                    "sku_key",
+                    "sku_id",
+                    "units",
+                    "net_rev_kzt",
+                    "cogs_kzt",
+                    "cogs_source",
+                    "profit_kzt",
+                    "truth_source",
+                    "webui_delivered_at",
+                    "first_seen_pack",
+                    "last_seen_pack",
+                    "db_match_status",
+                ]
+            )
+        else:
+            projection = delivered_orders.copy()
+            projection["sale_date"] = projection["delivered_at"]
+            projection["sku_key"] = ""
+            projection["sku_id"] = ""
+            projection["units"] = 0.0
+            projection["net_rev_kzt"] = 0.0
+            projection["cogs_kzt"] = 0.0
+            projection["cogs_source"] = "unresolved"
+            projection["profit_kzt"] = 0.0
+            projection["truth_source"] = "webui_archive"
+            projection["webui_delivered_at"] = projection["delivered_at"]
+            projection["db_match_status"] = "MISSING_IN_DB"
+            projection = projection.drop(columns=["delivered_at", "returned_at"])
     else:
         projection = db_rows.merge(
             delivered_orders,

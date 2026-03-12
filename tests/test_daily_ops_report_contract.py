@@ -49,6 +49,8 @@ def test_daily_ops_report_generator_and_validator_contract(tmp_path: Path) -> No
     assert payload["status"] == "GREEN"
     assert payload["stores_total"] == 2
     assert payload["stores_red"] == 0
+    assert payload["failed_step_names"] == []
+    assert payload["red_store_codes"] == []
     assert payload["shipping_backlog"]["present"] is True
     assert payload["shipping_backlog"]["remaining_overdue_pending"] == 2
 
