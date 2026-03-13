@@ -18,6 +18,14 @@ def test_skill_requires_flat_updated_folder_and_finder_open() -> None:
     assert "original basenames" in content
 
 
+def test_skill_requires_fresh_top17_context_folder() -> None:
+    content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    assert "context_top17_md_" in content
+    assert "top 17" in content.lower()
+    assert "Do not carry forward older `context_top20_md_*`" in content
+    assert "Do not create inner subfolders inside `context_top17_md_<timestamp>/`" in content
+
+
 def test_skill_points_to_external_oracle_root_only() -> None:
     content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
     assert "~/Docs/Oracle/Autonomous_business/" in content

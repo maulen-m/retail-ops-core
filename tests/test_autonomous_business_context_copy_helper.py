@@ -37,6 +37,13 @@ def test_updated_name_uses_original_basename() -> None:
     assert mod.updated_name(rel) == "DECISIONS.md"
 
 
+def test_generated_context_rel_detects_top_context_folders() -> None:
+    mod = load_module()
+    assert mod.is_generated_context_rel(Path("context_top20_md_20260220/files/docs/DAILY_SOP.md"))
+    assert mod.is_generated_context_rel(Path("context_top17_md_20260314_001500/files/docs/DAILY_SOP.md"))
+    assert not mod.is_generated_context_rel(Path("append/DAILY_SOP.md"))
+
+
 def test_find_previous_snapshot_chooses_latest_older_sibling(tmp_path: Path) -> None:
     mod = load_module()
     parent = tmp_path / "web_ui_files"
@@ -50,6 +57,24 @@ def test_find_previous_snapshot_chooses_latest_older_sibling(tmp_path: Path) -> 
     previous = mod.find_previous_snapshot(current)
 
     assert previous == expected
+
+
+def test_git_value_supports_multiple_rev_parse_args(tmp_path: Path) -> None:
+    mod = load_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    (repo / "a.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "a.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True)
+
+    branch = mod.git_value(repo, "--abbrev-ref", "HEAD")
+    assert branch in {"master", "main", "UNKNOWN"}
 
 
 def test_write_updated_delta_creates_flat_files_and_report(tmp_path: Path) -> None:
@@ -135,6 +160,7 @@ def test_open_in_finder_invokes_open(monkeypatch, tmp_path: Path) -> None:
 def test_end_to_end_copy_uses_report_mappings_and_creates_updated(tmp_path: Path) -> None:
     mod = load_module()
     mod.CANONICAL_OUTPUT_ROOT = tmp_path
+    mod.TOP17_CONTEXT_REPO_RELS = ("docs/alpha.md", ".claude/DECISIONS.md")
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     (repo_root / "docs").mkdir()
@@ -162,6 +188,11 @@ def test_end_to_end_copy_uses_report_mappings_and_creates_updated(tmp_path: Path
         "copied": [
             {"rel": "append/DECISIONS.md", "repo_rel": ".claude/DECISIONS.md", "bytes": 0},
             {"rel": "leave/alpha.md", "repo_rel": "docs/alpha.md", "bytes": 0},
+            {
+                "rel": "context_top20_md_20260220/files/docs/old.md",
+                "repo_rel": "docs/alpha.md",
+                "bytes": 0,
+            },
         ],
         "skipped": [],
     }
@@ -180,3 +211,10 @@ def test_end_to_end_copy_uses_report_mappings_and_creates_updated(tmp_path: Path
     assert (out_dir / "append" / "DECISIONS.md").read_text(encoding="utf-8") == "current-decisions"
     assert (out_dir / "leave" / "alpha.md").read_text(encoding="utf-8") == "current-alpha"
     assert (out_dir / "Updated" / "DECISIONS.md").exists()
+    assert not (out_dir / "context_top20_md_20260220").exists()
+    top17_dir = out_dir / "context_top17_md_20260313_233733"
+    assert (top17_dir / "alpha.md").read_text(encoding="utf-8") == "current-alpha"
+    assert (top17_dir / "DECISIONS.md").read_text(encoding="utf-8") == "current-decisions"
+    report_out = json.loads((out_dir / "COPY_REPORT.json").read_text(encoding="utf-8"))
+    assert report_out["context_top17"]["file_count"] == 2
+    assert report_out["source_branch"] in {"master", "main", "UNKNOWN"}
