@@ -94,6 +94,11 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     - COGS/profit policy: published COGS is valid only when full landed formula inputs
       (base_cost_cny + weight_kg + FX) are present.
     """
+    # Daily orchestration can briefly overlap with read-only consumers. Wait for
+    # transient locks instead of failing immediately while probing schema or
+    # rebuilding the views.
+    conn.execute("PRAGMA busy_timeout = 10000")
+
     has_sales_v2 = _table_exists(conn, "sales_fact_v2")
     has_fact_sales = _table_exists(conn, "fact_sales")
     has_sales_ref = _table_exists(conn, "fact_sales_external_ref")

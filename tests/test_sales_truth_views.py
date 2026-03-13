@@ -1,4 +1,6 @@
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 from core.sales.truth_views import ensure_sales_truth_views
@@ -461,3 +463,49 @@ def test_view_sales_truth_keeps_internal_source_when_external_reference_exists(t
 
     assert truth_rows == [("ACMEWEAR", 1.0, 1000.0), ("UNIVERSAL", 1.0, 2000.0)]
     assert reference_rows == [("ACMEWEAR", 3.0, 5000.0)]
+
+
+def test_ensure_sales_truth_views_waits_for_transient_db_lock(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    locker = sqlite3.connect(db, check_same_thread=False)
+    _seed_schema(locker)
+    locker.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_LOCK', 40, 0.5, 0)
+        """
+    )
+    locker.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-LOCK', '2026-02-08', 'SKU_LOCK', 'SKU_LOCK_M', 'M', 'ACMEWEAR', 1, 1000, 300, 700, 'DELIVERED', 0)
+        """
+    )
+    locker.commit()
+
+    runner = sqlite3.connect(db, timeout=0.1)
+    try:
+        locker.execute("BEGIN EXCLUSIVE")
+
+        def _release_lock() -> None:
+            time.sleep(0.3)
+            locker.rollback()
+
+        release_thread = threading.Thread(target=_release_lock)
+        release_thread.start()
+
+        ensure_sales_truth_views(runner)
+        row = runner.execute(
+            """
+            SELECT order_id, source_table
+            FROM view_sales_line_truth
+            WHERE order_id='ORD-LOCK'
+            """
+        ).fetchone()
+        release_thread.join(timeout=2.0)
+    finally:
+        runner.close()
+        locker.close()
+
+    assert row == ("ORD-LOCK", "sales_fact_v2")

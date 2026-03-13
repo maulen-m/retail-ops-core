@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,36 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _to_float(value: Any) -> float:
+    return round(float(value or 0.0), 2)
+
+
+def _to_int(value: Any) -> int:
+    return int(float(value or 0))
+
+
+def _normalize_sku_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sku_key": str(row.get("sku_key") or ""),
+        "sku_name": str(row.get("sku_name") or ""),
+        "po_qty_total": _to_int(row.get("po_qty_total")),
+        "deficit_total": _to_int(row.get("deficit_total")),
+        "stock": _to_int(row.get("stock")),
+        "monthly_profit": _to_float(row.get("monthly_profit")),
+        "roic_pct": _to_float(row.get("roic_pct")),
+        "roic_below_threshold": bool(row.get("roic_below_threshold")),
+        "po_cogs_kzt": _to_float(row.get("po_cogs_kzt")),
+        "oos_type": str(row.get("oos_type") or ""),
+        "notes": str(row.get("notes") or ""),
+    }
+
+
+def _days_between(start: Any, end: Any) -> int | None:
+    if not start or not end:
+        return None
+    return (date.fromisoformat(str(end)) - date.fromisoformat(str(start))).days
+
+
 def _render_md(payload: dict[str, Any]) -> str:
     lines = [
         "# PO / SKU Daily",
@@ -31,6 +61,15 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- total_skus: `{payload['summary']['total_skus']}`",
         f"- total_units: `{payload['summary']['total_units']}`",
         f"- total_po_cogs_kzt: `{payload['summary']['total_po_cogs_kzt']}`",
+        f"- low_roic_skus: `{payload['summary'].get('low_roic_skus')}`",
+        f"- no_order_needed: `{payload['summary'].get('no_order_needed')}`",
+        "",
+        "## Planning Snapshot",
+        "",
+        f"- base_stock_date: `{payload['planning_snapshot'].get('base_stock_date')}`",
+        f"- cutoff_date: `{payload['planning_snapshot'].get('cutoff_date')}`",
+        f"- freshness: `{payload['planning_snapshot'].get('freshness')}`",
+        f"- staleness_days_vs_cutoff: `{payload['planning_snapshot'].get('staleness_days_vs_cutoff')}`",
         "",
         "| PO ID | Supplier | Units | Cost CNY | Status |",
         "|---|---|---:|---:|---|",
@@ -39,6 +78,19 @@ def _render_md(payload: dict[str, Any]) -> str:
         lines.append(
             f"| `{row['po_id']}` | `{row['supplier_code']}` | {row['units_total']} | {row['total_cost_cny']:.2f} | `{row['status']}` |"
         )
+    for title, rows, fields in [
+        ("Reorder Now", payload["action_buckets"]["reorder_now"], ["sku_key", "po_qty_total", "deficit_total", "po_cogs_kzt"]),
+        ("Freeze / Kill Review", payload["action_buckets"]["freeze_or_kill_review"], ["sku_key", "monthly_profit", "roic_pct", "po_cogs_kzt"]),
+        ("No Order Needed", payload["action_buckets"]["no_order_needed"], ["sku_key", "stock", "notes"]),
+        ("Tied Up Capital", payload["action_buckets"]["tied_up_capital"], ["sku_key", "po_cogs_kzt", "po_qty_total"]),
+    ]:
+        lines.extend(["", f"## {title}", ""])
+        if not rows:
+            lines.append("- none")
+            continue
+        for row in rows:
+            pieces = [f"`{field}`={row.get(field)}" for field in fields if field != "sku_key"]
+            lines.append(f"- `{row.get('sku_key')}`: " + ", ".join(pieces))
     return "\n".join(lines) + "\n"
 
 
@@ -58,13 +110,15 @@ def build_po_sku_daily(
     ok = str(owner_truth.get("status")) == "PASS" and str(system_health.get("status")) == "GREEN"
     summary = po_dashboard.get("summary") or {}
     real_pos = po_dashboard.get("real_pos") or []
+    sku_level = (((po_dashboard.get("pos") or {}).get("PLAN-0") or {}).get("sku_level") or [])
+    normalized_skus = [_normalize_sku_row(row) for row in sku_level]
     top_real_pos = sorted(
         [
             {
                 "po_id": str(row.get("po_id") or ""),
                 "supplier_code": str(row.get("supplier_code") or ""),
-                "units_total": int(float(row.get("units_total") or 0)),
-                "total_cost_cny": round(float(row.get("total_cost_cny") or 0.0), 2),
+                "units_total": _to_int(row.get("units_total")),
+                "total_cost_cny": _to_float(row.get("total_cost_cny")),
                 "status": str(row.get("status") or ""),
             }
             for row in real_pos
@@ -72,19 +126,62 @@ def build_po_sku_daily(
         key=lambda row: (row["total_cost_cny"], row["units_total"]),
         reverse=True,
     )[:max_rows]
+    reorder_now = sorted(
+        [row for row in normalized_skus if row["po_qty_total"] > 0 and row["deficit_total"] > 0 and not row["roic_below_threshold"]],
+        key=lambda row: row["po_cogs_kzt"],
+        reverse=True,
+    )[:5]
+    freeze_or_kill_review = sorted(
+        [row for row in normalized_skus if row["roic_below_threshold"]],
+        key=lambda row: row["po_cogs_kzt"],
+        reverse=True,
+    )[:5]
+    no_order_needed = sorted(
+        [
+            row
+            for row in normalized_skus
+            if row["po_qty_total"] == 0 or ("NO_ORDER_NEEDED" in row["notes"] and row["po_cogs_kzt"] == 0)
+        ],
+        key=lambda row: row["stock"],
+        reverse=True,
+    )[:5]
+    tied_up_capital = sorted(normalized_skus, key=lambda row: row["po_cogs_kzt"], reverse=True)[:5]
+    base_stock_date = po_dashboard.get("base_stock_date")
+    cutoff_date = po_dashboard.get("cutoff_date")
+    staleness_days_vs_cutoff = _days_between(base_stock_date, cutoff_date)
+    freshness = "FRESH"
+    if staleness_days_vs_cutoff is not None and staleness_days_vs_cutoff > 0:
+        freshness = "STALE_VS_CUTOFF"
+    trust_banner = "PASS_GREEN_LIVE_CHAIN_WITH_STALE_PO_SNAPSHOT" if ok and freshness != "FRESH" else (
+        "PASS_GREEN_LIVE_CHAIN" if ok else "FAIL_UPSTREAM_GATES"
+    )
     payload = {
         "generated_at": _now_utc(),
         "as_of": as_of,
         "status": "PASS" if ok else "FAIL",
         "ok": ok,
-        "trust_banner": "PASS_GREEN_LIVE_CHAIN" if ok else "FAIL_UPSTREAM_GATES",
+        "trust_banner": trust_banner,
         "summary": {
             "total_skus": summary.get("total_skus"),
             "total_units": summary.get("total_units"),
             "total_po_cogs_kzt": summary.get("total_po_cogs_kzt"),
             "priority_skus": summary.get("priority_skus"),
+            "low_roic_skus": summary.get("low_roic_skus"),
+            "no_order_needed": summary.get("no_order_needed"),
         },
         "top_real_pos": top_real_pos,
+        "planning_snapshot": {
+            "base_stock_date": base_stock_date,
+            "cutoff_date": cutoff_date,
+            "freshness": freshness,
+            "staleness_days_vs_cutoff": staleness_days_vs_cutoff,
+        },
+        "action_buckets": {
+            "reorder_now": reorder_now,
+            "freeze_or_kill_review": freeze_or_kill_review,
+            "no_order_needed": no_order_needed,
+            "tied_up_capital": tied_up_capital,
+        },
         "sources": {
             "owner_truth_summary": str(owner_truth_summary_path),
             "system_health": str(system_health_path),
