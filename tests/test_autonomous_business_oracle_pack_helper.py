@@ -120,6 +120,11 @@ def test_open_finder_on_success_invokes_open(monkeypatch: pytest.MonkeyPatch, tm
     assert calls == [(["open", str(tmp_path)], True)]
 
 
+def test_canonical_output_root_is_external_oracle_dir() -> None:
+    mod = load_module()
+    assert mod.CANONICAL_OUTPUT_ROOT == Path("~/Docs/Oracle/Autonomous_business")
+
+
 def test_parse_args_rejects_no_open_finder_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     mod = load_module()
     monkeypatch.setattr(
@@ -136,6 +141,32 @@ def test_parse_args_rejects_no_open_finder_flag(monkeypatch: pytest.MonkeyPatch)
             "--bundle-file",
             "docs/README.md",
             "--no-open-finder",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        mod.parse_args()
+
+    assert exc.value.code == 2
+
+
+def test_parse_args_rejects_output_root_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = load_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build_oracle_pack.py",
+            "--repo",
+            ".",
+            "--slug",
+            "demo-pack",
+            "--prompt",
+            "plain prompt",
+            "--bundle-file",
+            "docs/README.md",
+            "--output-root",
+            "/tmp/override",
         ],
     )
 
