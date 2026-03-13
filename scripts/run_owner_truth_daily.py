@@ -11,6 +11,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -186,16 +187,20 @@ def _resolve_default_download_run_id(project_root: Path, pack_root: Path | None)
 
 def _run(cmd: str, *, cwd: Path, env: dict[str, str] | None = None) -> tuple[int, str, float]:
     started = time.perf_counter()
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        shell=True,
-        text=True,
-        capture_output=True,
-        env=env,
-    )
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as capture:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            shell=True,
+            text=True,
+            stdout=capture,
+            stderr=subprocess.STDOUT,
+            capture_output=False,
+            env=env,
+        )
+        capture.seek(0)
+        output = capture.read().strip()
     duration = round(time.perf_counter() - started, 3)
-    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
     return int(proc.returncode), output, duration
 
 

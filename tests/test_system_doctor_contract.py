@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+import scripts.system_doctor as doctor_mod
 from scripts.system_doctor import _build_parser, run_system_doctor
 
 
@@ -11,6 +14,31 @@ def _seed_crm_anchor(project_root: Path) -> Path:
     anchor.parent.mkdir(parents=True, exist_ok=True)
     anchor.write_text("anchor", encoding="utf-8")
     return anchor
+
+
+def test_system_doctor_run_shell_uses_file_backed_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeProc:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        stdout = kwargs["stdout"]
+        stdout.write("doctor stdout\n")
+        return FakeProc()
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    rc, output = doctor_mod._run_shell("python3 -V", tmp_path)
+
+    assert rc == 0
+    assert output == "doctor stdout"
+    kwargs = seen["kwargs"]
+    assert kwargs["capture_output"] is False
+    assert kwargs["stderr"] == doctor_mod.subprocess.STDOUT
+    assert kwargs["stdout"] is not None
 
 
 def test_system_doctor_fails_closed_on_runtime_layer() -> None:

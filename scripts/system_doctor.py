@@ -11,6 +11,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Callable
 
@@ -30,14 +31,18 @@ from scripts.run_owner_truth_daily import (
 
 
 def _run_shell(cmd: str, cwd: Path) -> tuple[int, str]:
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        shell=True,
-        text=True,
-        capture_output=True,
-    )
-    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as capture:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            shell=True,
+            text=True,
+            stdout=capture,
+            stderr=subprocess.STDOUT,
+            capture_output=False,
+        )
+        capture.seek(0)
+        output = capture.read().strip()
     return int(proc.returncode), output
 
 

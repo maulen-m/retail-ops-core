@@ -17,6 +17,32 @@ def _seed_crm_anchor(project_root: Path) -> Path:
     return anchor
 
 
+def test_run_helper_uses_file_backed_capture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeProc:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        stdout = kwargs["stdout"]
+        stdout.write("stdout line\n")
+        return FakeProc()
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+
+    rc, output, duration = runner_mod._run("python3 -V", cwd=tmp_path)
+
+    assert rc == 0
+    assert output == "stdout line"
+    assert duration >= 0
+    kwargs = seen["kwargs"]
+    assert kwargs["capture_output"] is False
+    assert kwargs["stderr"] == runner_mod.subprocess.STDOUT
+    assert kwargs["stdout"] is not None
+
+
 def test_run_owner_truth_daily_requires_env_for_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ENABLE_OWNER_TRUTH_APPLY", raising=False)
     with pytest.raises(OwnerTruthDailyError):

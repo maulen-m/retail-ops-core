@@ -4498,6 +4498,8 @@ if __name__ == "__main__":
         "generated_at": TODAY.isoformat(),
         "base_stock_date": STOCK_DATE,
         "cutoff_date": DATA_CUTOFF,
+        "production_scope": "OWNER_MONITORING_ONLY",
+        "po_execution_ready": False,
         "day_complete_ok": day_complete_ok,
         "summary": base_summary,
         "pos": all_pos,

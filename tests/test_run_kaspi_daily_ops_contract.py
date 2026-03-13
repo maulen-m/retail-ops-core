@@ -3,7 +3,35 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+import scripts.run_kaspi_daily_ops as daily_ops_mod
 from scripts.run_kaspi_daily_ops import run_kaspi_daily_ops
+
+
+def test_run_shell_uses_file_backed_capture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeProc:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        stdout = kwargs["stdout"]
+        stdout.write("ok\n")
+        return FakeProc()
+
+    monkeypatch.setattr(daily_ops_mod.subprocess, "run", fake_run)
+
+    rc, output = daily_ops_mod._run_shell("echo ok", tmp_path)
+
+    assert rc == 0
+    assert output == "ok"
+    kwargs = seen["kwargs"]
+    assert kwargs["capture_output"] is False
+    assert kwargs["stderr"] == daily_ops_mod.subprocess.STDOUT
+    assert kwargs["stdout"] is not None
 
 
 def test_orchestrator_fails_closed_when_required_step_fails(tmp_path: Path) -> None:
