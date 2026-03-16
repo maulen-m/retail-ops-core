@@ -888,6 +888,24 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ads_source_refresh_runs (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            merchant_id TEXT NOT NULL,
+            store_code TEXT NOT NULL,
+            date_start TEXT NOT NULL,
+            date_end TEXT NOT NULL,
+            campaign_days_total INTEGER NOT NULL DEFAULT 0,
+            product_rows_total INTEGER NOT NULL DEFAULT 0,
+            download_failure_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            notes_json TEXT NOT NULL DEFAULT '[]'
+        )
+        """
+    )
     conn.commit()
 
     def ensure_columns(table: str, columns: list[tuple[str, str]]) -> None:
@@ -945,6 +963,31 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
             ("report_crr", "REAL"),
             ("report_extra", "TEXT"),
         ],
+    )
+    conn.commit()
+
+
+def record_ads_source_refresh_run(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    cols = [
+        "run_id",
+        "started_at",
+        "finished_at",
+        "merchant_id",
+        "store_code",
+        "date_start",
+        "date_end",
+        "campaign_days_total",
+        "product_rows_total",
+        "download_failure_count",
+        "status",
+        "notes_json",
+    ]
+    conn.execute(
+        f"""
+        INSERT OR REPLACE INTO ads_source_refresh_runs ({",".join(cols)})
+        VALUES ({",".join(["?"] * len(cols))})
+        """,
+        [row.get(col) for col in cols],
     )
     conn.commit()
 
@@ -1313,6 +1356,7 @@ def main() -> int:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     now = datetime.now(ALMATY_TZ)
+    run_started_at = now
     run_id = now.strftime("%Y%m%d_%H%M%S")
     ingested_at = now.isoformat()
 
@@ -1340,6 +1384,8 @@ def main() -> int:
     run_log["notes"].append("bid_cpc is current API snapshot; no historical bid data available.")
 
     last_state_by_campaign: dict[str, str] = {}
+    campaign_days_total = 0
+    product_rows_total = 0
 
     with sqlite3.connect(db_path) as conn:
         ensure_db_schema(conn)
@@ -1411,6 +1457,7 @@ def main() -> int:
                 run_log.setdefault("inactive_skipped", {})[target_date] = inactive_skipped
             campaigns = filtered_campaigns
             run_log.setdefault("campaign_counts", {})[target_date] = len(campaigns)
+            campaign_days_total += len(campaigns)
 
             campaigns_json_path = day_raw / f"campaigns_{target_date}.json"
             campaigns_json_path.write_text(
@@ -1542,6 +1589,7 @@ def main() -> int:
                 time.sleep(0.2)
 
             normalize_row_keys(product_rows)
+            product_rows_total += len(product_rows)
 
             # Save normalized CSVs
             pd.DataFrame(campaign_daily_rows).to_csv(
@@ -1629,6 +1677,25 @@ def main() -> int:
                 time.sleep(day_sleep)
 
         context.close()
+
+    with sqlite3.connect(db_path) as conn:
+        record_ads_source_refresh_run(
+            conn,
+            {
+                "run_id": run_id,
+                "started_at": run_started_at.isoformat(),
+                "finished_at": datetime.now(ALMATY_TZ).isoformat(),
+                "merchant_id": args.merchant_id,
+                "store_code": args.store_code,
+                "date_start": days[0].isoformat(),
+                "date_end": days[-1].isoformat(),
+                "campaign_days_total": int(campaign_days_total),
+                "product_rows_total": int(product_rows_total),
+                "download_failure_count": len(run_log["download_failures"]),
+                "status": "SUCCESS",
+                "notes_json": json.dumps(run_log.get("notes") or [], ensure_ascii=False),
+            },
+        )
 
     # Export to app.db if requested
     if args.export_app_db:

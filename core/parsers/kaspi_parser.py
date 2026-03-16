@@ -86,8 +86,10 @@ SIZE_TOKENS = {
     "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL",
     "ONE_SIZE", "ONESIZE", "OS",
 }
+ARTICLE_ALIAS_TOKENS = {"K-O", "KO", "TRM"}
 
 ACMEWEAR_LINE61_ARTICLE_RE = re.compile(r"^OF_SUIT-?61_BLK(?:_(.+))?$", re.IGNORECASE)
+LOSINA_ALIAS_RE = re.compile(r"^LOSINA\s+(BLACK|WHITE)\b", re.IGNORECASE)
 
 
 def _map_acmewear_line61_size(size_tokens: list[str]) -> Optional[str]:
@@ -146,6 +148,22 @@ def _looks_like_size_token(token: str) -> bool:
     return False
 
 
+def _looks_like_variant_suffix(token: str, prev_token: str | None, product_type: Optional[str]) -> bool:
+    """Detect small trailing variant markers that follow a real size token, e.g. `_XL_2`."""
+    t = str(token or "").strip().strip("()").upper()
+    prev = str(prev_token or "").strip().strip("()").upper()
+    if not t or not prev:
+        return False
+    if not t.isdigit():
+        return False
+    if len(t) >= 4:
+        return False
+    if _looks_like_size_token(prev):
+        return True
+    prev_norm = normalize_size(prev, product_type=product_type)
+    return bool(prev_norm)
+
+
 def extract_sku_from_article(
     kaspi_article: str,
     kaspi_offer: Optional[str] = None
@@ -201,6 +219,17 @@ def extract_sku_from_article(
             result["sku_id"] = f"{result['sku_key']}_{size}"
         return result
 
+    losina_match = LOSINA_ALIAS_RE.match(article)
+    if losina_match:
+        color = str(losina_match.group(1) or "").strip().upper()
+        size = normalize_size(_extract_size(article) or _extract_size(offer_text), product_type="CL")
+        result["product_type"] = "CL"
+        result["sku_key"] = f"CL_NEW-CLO_MEN_LEG_{color}"
+        result["my_size"] = size
+        if size:
+            result["sku_id"] = f"{result['sku_key']}_{size}"
+        return result
+
     # Try to detect product type from article patterns
     if "CL" in article or "КОМПЛЕКТ" in offer_text or "PRINT" in article:
         result["product_type"] = "CL"
@@ -232,11 +261,20 @@ def extract_sku_from_article(
             upper_tokens.pop()
             raw_tokens.pop()
             continue
+        prev_token = upper_tokens[-2] if len(upper_tokens) >= 2 else None
+        if _looks_like_variant_suffix(token_stripped, prev_token, result["product_type"]):
+            upper_tokens.pop()
+            raw_tokens.pop()
+            continue
         if token_stripped.isdigit() and len(token_stripped) >= 4:
             upper_tokens.pop()
             raw_tokens.pop()
             continue
         break
+
+    while upper_tokens and upper_tokens[-1].strip().upper() in ARTICLE_ALIAS_TOKENS:
+        upper_tokens.pop()
+        raw_tokens.pop()
 
     if raw_tokens and len(raw_tokens) >= 2:
         candidate = "_".join(raw_tokens)

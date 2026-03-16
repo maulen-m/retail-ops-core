@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+import json
 from pathlib import Path
 import sqlite3
 import sys
@@ -22,6 +24,7 @@ DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 _ALT_WORKBOOK = PROJECT_ROOT.parent / "Autonomous_business 2" / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
 DEFAULT_WORKBOOK = _ALT_WORKBOOK if _ALT_WORKBOOK.exists() else (PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx")
 DEFAULT_SHEET = "SALES_KSP_CRM_1"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "sales_against_workbook"
 
 
 def _norm_header(value: Any) -> str:
@@ -80,6 +83,20 @@ def _to_date_iso(value: Any) -> str | None:
         return parsed.date().isoformat()
     except Exception:
         return None
+
+
+def _parse_input_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        year_s, month_s, day_s = str(value).split("-", 2)
+        year = int(year_s)
+        month = int(month_s)
+        day = int(day_s)
+        max_day = calendar.monthrange(year, month)[1]
+        if day > max_day:
+            return date(year, month, max_day)
+        raise
 
 
 def parse_workbook_daily_totals(
@@ -197,6 +214,34 @@ def _pct_diff(anchor: float, value: float) -> float:
     return abs(value - anchor) / base * 100.0
 
 
+def _write_report_artifacts(report: dict[str, Any], output_dir: Path | None) -> dict[str, Any]:
+    if output_dir is None:
+        return report
+    resolved_output_dir = output_dir.resolve()
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    report_json = resolved_output_dir / "sales_against_workbook_report.json"
+    report_md = resolved_output_dir / "sales_against_workbook_report.md"
+    report["outputs"] = {
+        "sales_against_workbook_report_json": str(report_json),
+        "sales_against_workbook_report_md": str(report_md),
+    }
+    report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    md_lines = [
+        "# Sales Against Workbook",
+        "",
+        f"- status: `{report['status']}`",
+        f"- window: `{report['window_start']}`..`{report['window_end']}`",
+        f"- overlap_days: `{report['overlap_days']}`",
+        f"- workbook_max_date: `{report['workbook_max_date']}`",
+        f"- db_max_date: `{report['db_max_date']}`",
+    ]
+    if report["errors"]:
+        md_lines.extend(["", "## Errors", ""])
+        md_lines.extend(f"- {error}" for error in report["errors"])
+    report_md.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    return report
+
+
 def validate_sales_against_workbook(
     *,
     db_path: Path,
@@ -205,13 +250,18 @@ def validate_sales_against_workbook(
     days: int = 14,
     tol_pct: float = 5.0,
     as_of: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
     min_overlap_days: int = 7,
     max_lag_days: int = 1,
+    output_dir: Path | None = None,
 ) -> dict[str, Any]:
     try:
         workbook_daily = parse_workbook_daily_totals(workbook_path, sheet_name=sheet_name)
     except Exception as exc:
-        return {
+        return _write_report_artifacts({
+            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "status": "FAIL",
             "ok": False,
             "errors": [f"workbook parse error: {exc}"],
             "overlap_days": 0,
@@ -221,7 +271,8 @@ def validate_sales_against_workbook(
             "db_max_date": None,
             "max_lag_days": int(max_lag_days),
             "daily": [],
-        }
+            "period": {"start": None, "end": None},
+        }, output_dir)
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -236,7 +287,9 @@ def validate_sales_against_workbook(
     if not published_daily:
         errors.append("published truth has no daily rows")
     if errors:
-        return {
+        return _write_report_artifacts({
+            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "status": "FAIL",
             "ok": False,
             "errors": errors,
             "overlap_days": 0,
@@ -246,11 +299,18 @@ def validate_sales_against_workbook(
             "db_max_date": None,
             "max_lag_days": int(max_lag_days),
             "daily": [],
-        }
+            "period": {"start": None, "end": None},
+        }, output_dir)
 
-    as_of_date = date.fromisoformat(as_of) if as_of else date.today()
+    if (start is None) ^ (end is None):
+        raise ValueError("start and end must be provided together")
+
     wb_max = max(date.fromisoformat(d) for d in workbook_daily)
     db_max = max(date.fromisoformat(d) for d in published_daily)
+    if end is not None:
+        as_of_date = _parse_input_date(end)
+    else:
+        as_of_date = _parse_input_date(as_of) if as_of else date.today()
 
     lag_days = (as_of_date - wb_max).days
     if lag_days > int(max_lag_days):
@@ -260,8 +320,12 @@ def validate_sales_against_workbook(
             f"lag_days={lag_days} max_lag_days={int(max_lag_days)}"
         )
 
-    window_end = min(as_of_date, wb_max, db_max)
-    window_start = window_end - timedelta(days=max(1, int(days)) - 1)
+    if start is not None and end is not None:
+        window_start = _parse_input_date(start)
+        window_end = _parse_input_date(end)
+    else:
+        window_end = min(as_of_date, wb_max, db_max)
+        window_start = window_end - timedelta(days=max(1, int(days)) - 1)
 
     overlap_days = []
     day = window_start
@@ -309,7 +373,9 @@ def validate_sales_against_workbook(
         if wb_net == 0 and pub_net > 0:
             errors.append(f"{d}: published exceeds workbook net_rev (anchor is zero)")
 
-    return {
+    report = {
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "status": "PASS" if len(errors) == 0 else "FAIL",
         "ok": len(errors) == 0,
         "errors": errors,
         "overlap_days": len(overlap_days),
@@ -319,7 +385,9 @@ def validate_sales_against_workbook(
         "db_max_date": db_max.isoformat(),
         "max_lag_days": int(max_lag_days),
         "daily": details,
+        "period": {"start": window_start.isoformat(), "end": window_end.isoformat()},
     }
+    return _write_report_artifacts(report, output_dir)
 
 
 def main() -> int:
@@ -330,8 +398,12 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=14)
     parser.add_argument("--tol-pct", type=float, default=5.0)
     parser.add_argument("--as-of", type=str, default=None)
+    parser.add_argument("--start", type=str, default=None)
+    parser.add_argument("--end", type=str, default=None)
     parser.add_argument("--min-overlap-days", type=int, default=7)
     parser.add_argument("--max-lag-days", type=int, default=1)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
 
     report = validate_sales_against_workbook(
@@ -341,8 +413,11 @@ def main() -> int:
         days=args.days,
         tol_pct=args.tol_pct,
         as_of=args.as_of,
+        start=args.start,
+        end=args.end,
         min_overlap_days=args.min_overlap_days,
         max_lag_days=args.max_lag_days,
+        output_dir=args.output_dir,
     )
     print(
         "window="
@@ -352,7 +427,7 @@ def main() -> int:
     if report["errors"]:
         for err in report["errors"]:
             print(f"ERROR: {err}")
-        return 1
+        return 1 if args.strict or report["errors"] else 0
     print("OK: published truth is within workbook tolerance")
     return 0
 

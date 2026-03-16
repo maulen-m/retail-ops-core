@@ -23,8 +23,8 @@ def _safe_int(value: str, default: int) -> int:
 
 def _get_cutoff_time() -> time:
     """Return cutoff time for planned date (local Kaspi rule)."""
-    hour = _safe_int(os.environ.get(_CUTOFF_HOUR_ENV, "16"), 16)
-    minute = _safe_int(os.environ.get(_CUTOFF_MINUTE_ENV, "0"), 0)
+    hour = _safe_int(os.environ.get(_CUTOFF_HOUR_ENV, "15"), 15)
+    minute = _safe_int(os.environ.get(_CUTOFF_MINUTE_ENV, "1"), 1)
     # Clamp to valid ranges to avoid ValueError.
     hour = min(max(hour, 0), 23)
     minute = min(max(minute, 0), 59)
@@ -120,7 +120,7 @@ def planned_date_from_order(order: dict) -> Optional[date]:
         hour=cutoff.hour, minute=cutoff.minute, second=0, microsecond=0
     )
     base_date = created_dt.date()
-    if created_dt > cutoff_dt:
+    if created_dt >= cutoff_dt:
         base_date = base_date + timedelta(days=1)
 
     return base_date

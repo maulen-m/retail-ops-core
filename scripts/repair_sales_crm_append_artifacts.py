@@ -28,10 +28,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.paths import data_path
 from scripts.import_orders_to_crm import (
+    CRM_SALES_SHEET_NAME,
+    CRM_SALES_TABLE_NAME,
     _find_template_row_for_append,
     _formula_template_columns,
     _has_formula_payload,
-    _normalize_conditional_formatting_ranges,
+    _resolve_crm_template_path,
+    _restore_conditional_formatting_from_template,
+    _restore_formula_and_style_window_from_template,
     _resolve_table,
     _table_bounds,
     _verify_appended_rows_integrity,
@@ -71,7 +75,6 @@ def _repair_append_window(
             if str(name or "").strip()
         }
         formula_cols = _formula_template_columns(header_to_col)
-
         start_row = row_from or data_start
         end_row = row_to or tbl_end_row
         start_row = max(start_row, data_start)
@@ -81,11 +84,23 @@ def _repair_append_window(
                 f"Requested window {row_from}-{row_to} resolves outside table rows {data_start}-{tbl_end_row}."
             )
 
-        template_search_end = start_row - 1
+        template_wb = None
+        template_ws = None
+        template_end_row = start_row - 1
+        if sheet_name == CRM_SALES_SHEET_NAME and table_name == CRM_SALES_TABLE_NAME:
+            resolved_template = _resolve_crm_template_path()
+            if resolved_template is not None and resolved_template.resolve() != workbook_path.resolve():
+                template_wb = load_workbook(filename=str(resolved_template), read_only=False, data_only=False)
+                if sheet_name in template_wb.sheetnames:
+                    template_ws = template_wb[sheet_name]
+                    template_table = _resolve_table(template_ws, table_name)
+                    _, _, _, template_end_row = _table_bounds(template_table)
+
+        source_ws = template_ws or ws
         template_row = _find_template_row_for_append(
-            ws=ws,
+            ws=source_ws,
             header_row=tbl_start_row,
-            table_end_row=template_search_end,
+            table_end_row=template_end_row,
             formula_cols=formula_cols,
         )
         if template_row is None:
@@ -95,45 +110,31 @@ def _repair_append_window(
 
         restored_formulas = 0
         restored_styles = 0
-        touched_rows = 0
-        for row_num in range(start_row, end_row + 1):
-            row_changed = False
-            for col_num in range(tbl_start_col, tbl_end_col + 1):
-                src = ws.cell(row=template_row, column=col_num)
-                dst = ws.cell(row=row_num, column=col_num)
-
-                if src.has_style and dst.style_id != src.style_id:
-                    dst._style = copy(src._style)
-                    restored_styles += 1
-                    row_changed = True
-
-                src_has_formula = _has_formula_payload(src.value)
-                dst_has_formula = _has_formula_payload(dst.value)
-                if not src_has_formula or dst_has_formula or dst.value not in (None, ""):
-                    continue
-
-                if isinstance(src.value, str) and src.value.startswith("="):
-                    origin = f"{get_column_letter(col_num)}{template_row}"
-                    target = f"{get_column_letter(col_num)}{row_num}"
-                    try:
-                        dst.value = Translator(src.value, origin=origin).translate_formula(target)
-                    except Exception:
-                        dst.value = src.value
-                else:
-                    dst.value = src.value
-                restored_formulas += 1
-                row_changed = True
-
-            if row_changed:
-                touched_rows += 1
-
-        cf_blocks_updated = _normalize_conditional_formatting_ranges(
+        touched_rows = max(end_row - start_row + 1, 0)
+        restored_styles, restored_formulas = _restore_formula_and_style_window_from_template(
             ws=ws,
+            template_ws=source_ws,
             header_row=tbl_start_row,
-            data_end_row=tbl_end_row,
-            header_to_col=header_to_col,
-            verbose=verbose,
+            target_start_row=start_row,
+            target_end_row=end_row,
+            start_col=tbl_start_col,
+            end_col=tbl_end_col,
+            formula_cols=formula_cols,
+            template_data_end_row=template_end_row,
         )
+
+        if template_ws is not None:
+            cf_blocks_updated = _restore_conditional_formatting_from_template(
+                ws=ws,
+                template_ws=template_ws,
+                header_row=tbl_start_row,
+                data_end_row=tbl_end_row,
+                template_data_end_row=template_end_row,
+                verbose=verbose,
+            )
+            template_wb.close()
+        else:
+            cf_blocks_updated = 0
 
         stats: Dict[str, Any] = {
             "table_ref": table.ref,

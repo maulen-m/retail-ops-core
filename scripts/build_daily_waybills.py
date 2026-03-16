@@ -154,9 +154,34 @@ HEAVY_ITEMS = {
 # Size sort order
 SIZE_ORDER = {
     # Kids numeric sizes
-    '22': 1, '24': 2, '26': 3, '28': 4, '30': 5, '32': 6, '34': 7,
+    '22': 1, '24': 2, '26': 3, '28': 4, '30': 5,
     # Men's letter sizes
     'S': 10, 'M': 11, 'L': 12, 'XL': 13, '2XL': 14, '3XL': 15, '4XL': 16,
+}
+ORDERING_COLOR_TOKENS = {
+    "BLACK", "WHITE", "GRAY", "GREY", "RED", "BLUE", "GREEN", "BROWN", "BEIGE",
+    "PINK", "PURPLE", "YELLOW", "ORANGE",
+    "ЧЕРНЫЙ", "ЧЕРНАЯ", "ЧЕРНОЕ", "ЧЕРНЫЕ",
+    "БЕЛЫЙ", "БЕЛАЯ", "БЕЛОЕ", "БЕЛЫЕ",
+    "СЕРЫЙ", "СЕРАЯ", "СЕРОЕ", "СЕРЫЕ",
+    "КРАСНЫЙ", "КРАСНАЯ", "КРАСНОЕ", "КРАСНЫЕ",
+    "СИНИЙ", "СИНЯЯ", "СИНЕЕ", "СИНИЕ",
+    "ЗЕЛЕНЫЙ", "ЗЕЛЕНАЯ", "ЗЕЛЕНОЕ", "ЗЕЛЕНЫЕ",
+    "КОРИЧНЕВЫЙ", "КОРИЧНЕВАЯ", "КОРИЧНЕВОЕ", "КОРИЧНЕВЫЕ",
+    "БЕЖЕВЫЙ", "БЕЖЕВАЯ", "БЕЖЕВОЕ", "БЕЖЕВЫЕ",
+    "РОЗОВЫЙ", "РОЗОВАЯ", "РОЗОВОЕ", "РОЗОВЫЕ",
+    "ФИОЛЕТОВЫЙ", "ФИОЛЕТОВАЯ", "ФИОЛЕТОВОЕ", "ФИОЛЕТОВЫЕ",
+    "ЖЕЛТЫЙ", "ЖЕЛТАЯ", "ЖЕЛТОЕ", "ЖЕЛТЫЕ",
+    "ОРАНЖЕВЫЙ", "ОРАНЖЕВАЯ", "ОРАНЖЕВОЕ", "ОРАНЖЕВЫЕ",
+}
+ORDERING_NOISE_TOKENS = {
+    "CL", "NEW", "CLO", "MEN", "MAN", "WOMEN", "WOMAN", "KID", "KIDS",
+    "PROD", "SKU", "COLOR", "SIZE", "PP1",
+}
+SEND_CATEGORY_PRIORITY = {
+    "SPECIAL_multi_line": 0,
+    "SPECIAL_multi_qty": 1,
+    "NORMAL_singles": 2,
 }
 
 # Waybill PDF pattern
@@ -1186,6 +1211,162 @@ def manifest_sort_key(group: WaybillGroup) -> tuple:
     )
 
 
+def _category_name_for_group(group: WaybillGroup) -> str:
+    output_filename = str(group.output_filename or "").replace("\\", "/")
+    if output_filename:
+        return Path(output_filename).parent.name
+    return {
+        "NORMAL": "NORMAL_singles",
+        "MULTI_QTY": "SPECIAL_multi_qty",
+        "MULTI_LINE": "SPECIAL_multi_line",
+    }.get(group.group_type, group.group_type or "UNKNOWN")
+
+
+def _ordering_tokens(value: str) -> list[str]:
+    text = sanitize_filename(value).upper()
+    if not text:
+        return []
+    return [token for token in re.split(r"[_\-]+", text) if token]
+
+
+def _ordering_color_key(value: str) -> str:
+    for token in _ordering_tokens(value):
+        if token in ORDERING_COLOR_TOKENS:
+            return token
+    return ""
+
+
+def _ordering_family_key(value: str) -> str:
+    tokens = [
+        token
+        for token in _ordering_tokens(value)
+        if token not in ORDERING_COLOR_TOKENS
+        and token not in ORDERING_NOISE_TOKENS
+        and token not in SIZE_ORDER
+    ]
+    if not tokens:
+        tokens = _ordering_tokens(value)
+    if not tokens:
+        return "UNKNOWN"
+    return "_".join(tokens[:4])
+
+
+def _group_size_token(group: WaybillGroup) -> str:
+    return sanitize_filename(group.my_size).upper()
+
+
+def _build_send_entry_metadata(group: WaybillGroup, base_order: int) -> dict[str, Any]:
+    product_label = sanitize_filename(group.kaspi_name_core or group.sku_key or group.sku_id or "UNKNOWN")
+    size_token = _group_size_token(group)
+    size_rank = size_sort_key(size_token) if size_token else 99
+    item_family_keys = {
+        _ordering_family_key(item.kaspi_name_core or item.sku_key or item.sku_id or "")
+        for item in group.items
+        if (item.kaspi_name_core or item.sku_key or item.sku_id)
+    }
+    multi_line_mixed = group.group_type == "MULTI_LINE" and len(item_family_keys) > 1
+    product_family_key = (
+        f"MULTI_LINE::{base_order}"
+        if multi_line_mixed
+        else _ordering_family_key(product_label)
+    )
+    color_key = "" if multi_line_mixed else _ordering_color_key(product_label)
+    product_color_key = (
+        f"MULTI_LINE::{base_order}"
+        if group.group_type == "MULTI_LINE"
+        else product_label.upper()
+    )
+    return {
+        "base_order": base_order,
+        "category": _category_name_for_group(group),
+        "size_token": size_token,
+        "size_rank": size_rank,
+        "product_family_key": product_family_key,
+        "color_key": color_key,
+        "product_color_key": product_color_key,
+    }
+
+
+def _order_send_category_entries(entries_meta: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not entries_meta:
+        return []
+
+    category_name = str(entries_meta[0].get("category") or "")
+    if category_name == "SPECIAL_multi_line":
+        return sorted(
+            entries_meta,
+            key=lambda meta: (
+                int(meta["base_order"]),
+                str(meta["entry"].get("filename") or "").lower(),
+            ),
+        )
+
+    blocks: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    first_seen: dict[str, int] = {}
+    family_by_block: dict[str, str] = {}
+    for meta in entries_meta:
+        block_key = str(meta.get("product_color_key") or meta["entry"].get("pdf_key") or meta["base_order"])
+        blocks[block_key].append(meta)
+        first_seen.setdefault(block_key, int(meta["base_order"]))
+        family_by_block.setdefault(
+            block_key,
+            str(meta.get("product_family_key") or block_key),
+        )
+
+    for items in blocks.values():
+        items.sort(
+            key=lambda meta: (
+                int(meta.get("size_rank", 99)),
+                str(meta.get("size_token") or "").upper(),
+                int(meta["base_order"]),
+                str(meta["entry"].get("filename") or "").lower(),
+            )
+        )
+
+    remaining = set(blocks.keys())
+    ordered: list[dict[str, Any]] = []
+    previous_family = ""
+
+    while remaining:
+        candidate_blocks = [
+            block_key
+            for block_key in remaining
+            if family_by_block.get(block_key, "") != previous_family
+        ] or list(remaining)
+        next_block = min(
+            candidate_blocks,
+            key=lambda block_key: (
+                first_seen.get(block_key, 0),
+                str(blocks[block_key][0]["entry"].get("filename") or "").lower(),
+                block_key,
+            ),
+        )
+        ordered.extend(blocks[next_block])
+        previous_family = family_by_block.get(next_block, "")
+        remaining.remove(next_block)
+
+    return ordered
+
+
+def _assign_send_sequence(entries_meta: list[dict[str, Any]]) -> None:
+    by_category: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for meta in entries_meta:
+        by_category[str(meta.get("category") or "")].append(meta)
+
+    send_sequence = 1
+    for category in sorted(
+        by_category.keys(),
+        key=lambda category: (
+            SEND_CATEGORY_PRIORITY.get(category, 99),
+            category.lower(),
+        ),
+    ):
+        for meta in _order_send_category_entries(by_category[category]):
+            entry = meta["entry"]
+            entry["send_sequence"] = send_sequence
+            send_sequence += 1
+
+
 def is_heavy_item(item: OrderItem) -> bool:
     """Check if item is heavy (requires separate package)."""
     return (
@@ -1469,9 +1650,27 @@ def build_store_output(
 
 def _store_order_counts(group: WaybillGroup) -> dict[str, int]:
     counts: dict[str, int] = defaultdict(int)
+    order_store: dict[str, str] = {}
     for item in group.items:
-        if item.store_name:
-            counts[item.store_name] += 1
+        store_name = str(item.store_name or "").strip()
+        if not store_name:
+            continue
+
+        order_id = str(item.order_id or "").strip()
+        if not order_id:
+            counts[store_name] += 1
+            continue
+
+        previous_store = order_store.get(order_id)
+        if previous_store and previous_store != store_name:
+            raise ValueError(
+                f"Order {order_id} spans multiple stores in one send bundle: "
+                f"{previous_store} vs {store_name}"
+            )
+        order_store[order_id] = store_name
+
+    for store_name in order_store.values():
+        counts[store_name] += 1
     return dict(counts)
 
 
@@ -1497,6 +1696,12 @@ def _compute_batch_hash(entries: list[dict[str, Any]]) -> str:
                 "logical_group_type": entry["logical_group_type"],
                 "order_ids": entry["order_ids"],
                 "source_row_ids": entry["source_row_ids"],
+                "product_family_key": entry.get("product_family_key", ""),
+                "color_key": entry.get("color_key", ""),
+                "product_color_key": entry.get("product_color_key", ""),
+                "size_token": entry.get("size_token", ""),
+                "size_rank": int(entry.get("size_rank", 0) or 0),
+                "send_sequence": int(entry.get("send_sequence", 0) or 0),
             }
         )
     digest.update(json.dumps(stable_entries, ensure_ascii=False, sort_keys=True).encode("utf-8"))
@@ -1511,10 +1716,11 @@ def write_send_batch_manifest(
 ) -> Path:
     """Write immutable manifest for the operator-safe SEND batch."""
     entries: list[dict[str, Any]] = []
+    entries_meta: list[dict[str, Any]] = []
     send_order_ids: set[str] = set()
     overdue_order_ids: set[str] = set()
 
-    for group in sorted(groups, key=manifest_sort_key):
+    for base_order, group in enumerate(groups, start=1):
         relative_output_path = str(group.output_filename or "").replace("\\", "/")
         if not relative_output_path:
             continue
@@ -1550,26 +1756,31 @@ def write_send_batch_manifest(
             json.dumps(pdf_key_seed, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
 
-        entries.append(
-            {
-                "pdf_key": pdf_key,
-                "relative_output_path": relative_output_path,
-                "relative_to_today": str(output_path.relative_to(today_root)).replace("\\", "/"),
-                "filename": output_path.name,
-                "category": Path(relative_output_path).parent.name,
-                "logical_group_type": group.group_type,
-                "sha256": sha256,
-                "file_size": int(stat.st_size),
-                "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                "order_ids": order_ids,
-                "order_counts_by_store": _store_order_counts(group),
-                "source_row_ids": source_row_ids,
-                "items_detail": items_detail,
-            }
-        )
+        metadata = _build_send_entry_metadata(group, base_order)
+
+        entry = {
+            "pdf_key": pdf_key,
+            "relative_output_path": relative_output_path,
+            "relative_to_today": str(output_path.relative_to(today_root)).replace("\\", "/"),
+            "filename": output_path.name,
+            "category": Path(relative_output_path).parent.name,
+            "logical_group_type": group.group_type,
+            "sha256": sha256,
+            "file_size": int(stat.st_size),
+            "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "order_ids": order_ids,
+            "order_counts_by_store": _store_order_counts(group),
+            "source_row_ids": source_row_ids,
+            "items_detail": items_detail,
+        }
+        entry.update({key: value for key, value in metadata.items() if key != "base_order"})
+        entries.append(entry)
+        entries_meta.append({"entry": entry, **metadata})
+
+    _assign_send_sequence(entries_meta)
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": datetime.now(ALMATY_TZ).isoformat(),
         "target_date": target_date.isoformat(),
         "today_root": str(today_root),

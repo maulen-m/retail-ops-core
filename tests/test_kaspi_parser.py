@@ -202,6 +202,15 @@ class TestExtractSkuFromArticle:
         assert result["my_size"] == "4XL"
         assert result["sku_id"] == "CL_OC_MEN_LINE52_BLACK_4XL"
 
+    def test_losina_alias_maps_to_leggings_family(self):
+        """Compressed LOSINA aliases should map to the leggings sku family."""
+        result = extract_sku_from_article(
+            "LOSINA BLACK M 48",
+            "Леггинсы PRO COMBAT черный M 48",
+        )
+        assert result["sku_key"] == "CL_NEW-CLO_MEN_LEG_BLACK"
+        assert result["product_type"] == "CL"
+
 
 class TestParseActiveOrders:
     """Tests for full file parsing."""

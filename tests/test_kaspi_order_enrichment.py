@@ -279,12 +279,114 @@ def test_enrichment_inserts_entries(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(db_path))
     try:
         rows = conn.execute(
-            "SELECT entry_id, order_id, quantity, unit_price_kzt FROM fact_order_entries_kaspi"
+            "SELECT entry_id, order_id, quantity, unit_price_kzt, updated_at FROM fact_order_entries_kaspi"
         ).fetchall()
     finally:
         conn.close()
 
-    assert rows == [("ENTRY1", "ORD1", 2, 1000.0)]
+    assert rows == [("ENTRY1", "ORD1", 2, 1000.0, "2026-01-20")]
+
+
+def test_enrichment_uses_created_at_when_status_timestamp_missing(tmp_path, monkeypatch):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(
+        db_path,
+        rows=[
+            {
+                "order_id": "ORD_FALLBACK",
+                "store_code": "UNIVERSAL",
+                "status_updated_at": None,
+                "actual_shipment_date": None,
+                "planned_shipment_date": None,
+                "created_at": "2026-01-21 14:15:00",
+                "kaspi_status": "ARCHIVE",
+                "kaspi_status_detail": "COMPLETED",
+                "signature_required": 0,
+                "pre_order": 0,
+                "courier_transmission_date": None,
+                "delivery_mode": "DELIVERY",
+                "returned_to_warehouse": 0,
+            }
+        ],
+    )
+
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text("enabled: true\nfetch_entries: true\n", encoding="utf-8")
+
+    monkeypatch.setenv("ENABLE_KASPI_ENRICHMENT", "1")
+
+    enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-21",
+        until="2026-01-21",
+        apply=True,
+        config_path=config_path,
+        client_factory=lambda store: FakeClient(store),
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT updated_at FROM fact_order_entries_kaspi WHERE order_id='ORD_FALLBACK'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row == ("2026-01-21",)
+
+
+def test_enrichment_clamps_updated_at_to_until_for_historical_backfill(tmp_path, monkeypatch):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(
+        db_path,
+        rows=[
+            {
+                "order_id": "ORD_CLAMP",
+                "store_code": "UNIVERSAL",
+                "status_updated_at": "2026-01-22 09:00:00",
+                "actual_shipment_date": None,
+                "planned_shipment_date": None,
+                "created_at": "2026-01-20 08:00:00",
+                "kaspi_status": "ARCHIVE",
+                "kaspi_status_detail": "COMPLETED",
+                "signature_required": 0,
+                "pre_order": 0,
+                "courier_transmission_date": None,
+                "delivery_mode": "DELIVERY",
+                "returned_to_warehouse": 0,
+            }
+        ],
+    )
+
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text("enabled: true\nfetch_entries: true\n", encoding="utf-8")
+
+    monkeypatch.setenv("ENABLE_KASPI_ENRICHMENT", "1")
+
+    enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-19",
+        until="2026-01-21",
+        apply=True,
+        config_path=config_path,
+        client_factory=lambda store: FakeClient(store),
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT updated_at FROM fact_order_entries_kaspi WHERE order_id='ORD_CLAMP'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row == ("2026-01-21",)
 
 
 def test_enrichment_selection_filters_by_stage(tmp_path):

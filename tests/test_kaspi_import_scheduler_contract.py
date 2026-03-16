@@ -12,7 +12,7 @@ def test_kaspi_import_plist_schedule_is_expected() -> None:
     plist = _read_kaspi_import_plist()
     intervals = plist.get("StartCalendarInterval", [])
     pairs = sorted((int(item["Hour"]), int(item["Minute"])) for item in intervals)
-    assert pairs == [(11, 0), (16, 3)]
+    assert pairs == [(11, 0), (15, 2)]
 
 
 def test_kaspi_import_plist_uses_v2_label() -> None:
@@ -23,11 +23,16 @@ def test_kaspi_import_plist_uses_v2_label() -> None:
 def test_kaspi_import_plist_uses_absolute_command_path() -> None:
     plist = _read_kaspi_import_plist()
     args = plist.get("ProgramArguments", [])
-    assert args[:3] == [
-        "/usr/bin/env",
-        "python3",
+    assert args[:2] == [
+        "~/Docs/Autonomous_business/.venv/bin/python",
         "~/Docs/Autonomous_business/scripts/run_kaspi_import_scheduler.py",
     ]
+
+
+def test_kaspi_import_plist_does_not_set_second_component() -> None:
+    plist = _read_kaspi_import_plist()
+    intervals = plist.get("StartCalendarInterval", [])
+    assert all("Second" not in item for item in intervals)
 
 
 def test_kaspi_import_plist_uses_runtime_log_paths() -> None:
@@ -48,4 +53,4 @@ def test_install_scheduler_script_uses_bootstrap_and_enable() -> None:
     assert "com.example.kaspi-import-v2" in script
     assert "runtime_logs" in script
     assert "11:00" in script
-    assert "16:03" in script
+    assert "15:02" in script

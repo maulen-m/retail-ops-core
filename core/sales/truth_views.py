@@ -97,6 +97,8 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     has_sales_v2 = _table_exists(conn, "sales_fact_v2")
     has_fact_sales = _table_exists(conn, "fact_sales")
     has_sales_ref = _table_exists(conn, "fact_sales_external_ref")
+    has_workbook_anchor = _table_exists(conn, "fact_sales_workbook_anchor")
+    has_workbook_anchor_quarantine = _table_exists(conn, "fact_sales_workbook_anchor_quarantine")
     if not has_sales_v2 and not has_fact_sales:
         raise RuntimeError(
             "Missing internal staging sales tables: sales_fact_v2, fact_sales"
@@ -238,14 +240,166 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             "NULL AS sku_id, NULL AS my_size, 0.0 AS units, 0.0 AS net_rev_kzt, 0.0 AS cogs_kzt, 0.0 AS profit_kzt, "
             "NULL AS status, 0 AS return_flag, NULL AS source_table WHERE 0)"
         )
+    if has_sales_v2:
+        v2_bounds_order_date = "order_date" if _column_exists(conn, "sales_fact_v2", "order_date") else "sale_date"
+        ctes.append(
+            f"""
+            v2_bounds AS (
+                SELECT MIN(date({v2_bounds_order_date})) AS v2_min_sale_date
+                FROM sales_fact_v2
+            )
+            """
+        )
+    else:
+        ctes.append(
+            """
+            v2_bounds AS (
+                SELECT NULL AS v2_min_sale_date
+            )
+            """
+        )
     ctes.append(
         """
-        v2_bounds AS (
-            SELECT MIN(date(sale_date)) AS v2_min_sale_date
+        v2_order_keys AS (
+            SELECT DISTINCT
+                CAST(order_id AS TEXT) AS order_id,
+                UPPER(TRIM(COALESCE(store_code, 'UNIVERSAL'))) AS store_code
             FROM sales_v2
         )
         """
     )
+    if has_sales_v2:
+        any_v2_store = "store_code" if _column_exists(conn, "sales_fact_v2", "store_code") else "'UNIVERSAL'"
+        ctes.append(
+            f"""
+            v2_any_order_keys AS (
+                SELECT DISTINCT
+                    CAST(order_id AS TEXT) AS order_id,
+                    UPPER(TRIM(COALESCE({any_v2_store}, 'UNIVERSAL'))) AS store_code
+                FROM sales_fact_v2
+            )
+            """
+        )
+    else:
+        ctes.append(
+            """
+            v2_any_order_keys AS (
+                SELECT NULL AS order_id, NULL AS store_code WHERE 0
+            )
+            """
+        )
+    if has_workbook_anchor:
+        wa_keys_store = (
+            "store_code"
+            if _column_exists(conn, "fact_sales_workbook_anchor", "store_code")
+            else "'UNKNOWN'"
+        )
+        ctes.append(
+            f"""
+            workbook_anchor_keys AS (
+                SELECT DISTINCT
+                    CAST(order_id AS TEXT) AS order_id,
+                    UPPER(TRIM(COALESCE({wa_keys_store}, 'UNKNOWN'))) AS store_code
+                FROM fact_sales_workbook_anchor
+            )
+            """
+        )
+    else:
+        ctes.append(
+            """
+            workbook_anchor_keys AS (
+                SELECT NULL AS order_id, NULL AS store_code WHERE 0
+            )
+            """
+        )
+    ctes.append(
+        """
+        internal_order_totals AS (
+            SELECT
+                order_id,
+                UPPER(COALESCE(store_code, '')) AS store_code,
+                SUM(COALESCE(units, 0)) AS order_units_total
+            FROM base_lines
+            GROUP BY 1, 2
+        )
+        """
+    )
+    if has_workbook_anchor:
+        wa_store = (
+            "store_code"
+            if _column_exists(conn, "fact_sales_workbook_anchor", "store_code")
+            else "'UNKNOWN'"
+        )
+        wa_sale_date = (
+            "sale_date"
+            if _column_exists(conn, "fact_sales_workbook_anchor", "sale_date")
+            else ("order_date" if _column_exists(conn, "fact_sales_workbook_anchor", "order_date") else "NULL")
+        )
+        wa_qty = (
+            "quantity"
+            if _column_exists(conn, "fact_sales_workbook_anchor", "quantity")
+            else ("units" if _column_exists(conn, "fact_sales_workbook_anchor", "units") else "0")
+        )
+        wa_net = (
+            "net_rev_kzt"
+            if _column_exists(conn, "fact_sales_workbook_anchor", "net_rev_kzt")
+            else ("gross_rev_kzt" if _column_exists(conn, "fact_sales_workbook_anchor", "gross_rev_kzt") else "0")
+        )
+        ctes.append(
+            f"""
+            workbook_anchor AS (
+                SELECT
+                    CAST(order_id AS TEXT) AS order_id,
+                    UPPER(COALESCE({wa_store}, 'UNKNOWN')) AS store_code,
+                    MAX(date({wa_sale_date})) AS anchor_sale_date,
+                    SUM(COALESCE({wa_qty}, 0)) AS anchor_units,
+                    SUM(COALESCE({wa_net}, 0)) AS anchor_net_rev_kzt
+                FROM fact_sales_workbook_anchor
+                GROUP BY 1, 2
+            )
+            """
+        )
+    else:
+        ctes.append(
+            """
+            workbook_anchor AS (
+                SELECT
+                    NULL AS order_id,
+                    NULL AS store_code,
+                    NULL AS anchor_sale_date,
+                    0.0 AS anchor_units,
+                    0.0 AS anchor_net_rev_kzt
+                WHERE 0
+            )
+            """
+        )
+    if has_workbook_anchor_quarantine:
+        waq_store = (
+            "store_code"
+            if _column_exists(conn, "fact_sales_workbook_anchor_quarantine", "store_code")
+            else "'UNKNOWN'"
+        )
+        ctes.append(
+            f"""
+            workbook_anchor_quarantine AS (
+                SELECT DISTINCT
+                    CAST(order_id AS TEXT) AS order_id,
+                    UPPER(COALESCE({waq_store}, 'UNKNOWN')) AS store_code
+                FROM fact_sales_workbook_anchor_quarantine
+            )
+            """
+        )
+    else:
+        ctes.append(
+            """
+            workbook_anchor_quarantine AS (
+                SELECT
+                    NULL AS order_id,
+                    NULL AS store_code
+                WHERE 0
+            )
+            """
+        )
     ctes.append(
         """
         base_lines AS (
@@ -253,9 +407,16 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             UNION ALL
             SELECT sf.*
             FROM sales_fact sf
+            LEFT JOIN v2_any_order_keys v2a
+              ON v2a.order_id = sf.order_id
+             AND v2a.store_code = UPPER(TRIM(COALESCE(sf.store_code, 'UNIVERSAL')))
+            LEFT JOIN workbook_anchor_keys wak
+              ON wak.order_id = sf.order_id
+             AND wak.store_code = UPPER(TRIM(COALESCE(sf.store_code, 'UNIVERSAL')))
             WHERE (
                 (SELECT v2_min_sale_date FROM v2_bounds) IS NULL
                 OR date(sf.sale_date) < date((SELECT v2_min_sale_date FROM v2_bounds))
+                OR (wak.order_id IS NOT NULL AND v2a.order_id IS NULL)
             )
         )
         """
@@ -325,7 +486,7 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         resolved_lines AS (
             SELECT
                 b.order_id,
-                b.sale_date,
+                COALESCE(wa.anchor_sale_date, b.sale_date) AS sale_date,
                 b.store_code,
                 COALESCE(
                     NULLIF(am_key_store.sku_key, ''),
@@ -342,8 +503,18 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
                     b.sku_id
                 ) AS canonical_sku_id,
                 b.my_size,
-                b.units,
-                b.net_rev_kzt,
+                CASE
+                    WHEN COALESCE(wa.anchor_units, 0) > 0
+                     AND COALESCE(iot.order_units_total, 0) > 0
+                        THEN CAST(wa.anchor_units AS REAL) * CAST(COALESCE(b.units, 0) AS REAL) / CAST(iot.order_units_total AS REAL)
+                    ELSE b.units
+                END AS units,
+                CASE
+                    WHEN COALESCE(wa.anchor_net_rev_kzt, 0) > 0
+                     AND COALESCE(iot.order_units_total, 0) > 0
+                        THEN CAST(wa.anchor_net_rev_kzt AS REAL) * CAST(COALESCE(b.units, 0) AS REAL) / CAST(iot.order_units_total AS REAL)
+                    ELSE b.net_rev_kzt
+                END AS net_rev_kzt,
                 b.cogs_kzt AS source_cogs_kzt,
                 b.profit_kzt AS source_profit_kzt,
                 b.source_table,
@@ -352,6 +523,15 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
                 b.units AS source_units,
                 b.net_rev_kzt AS source_net_rev_kzt
             FROM base_lines b
+            LEFT JOIN internal_order_totals iot
+              ON iot.order_id = b.order_id
+             AND iot.store_code = UPPER(TRIM(COALESCE(b.store_code, '')))
+            LEFT JOIN workbook_anchor wa
+              ON wa.order_id = b.order_id
+             AND wa.store_code = UPPER(TRIM(COALESCE(b.store_code, '')))
+            LEFT JOIN workbook_anchor_quarantine waq
+              ON waq.order_id = b.order_id
+             AND waq.store_code = UPPER(TRIM(COALESCE(b.store_code, '')))
             LEFT JOIN article_store_map am_key_store
               ON am_key_store.article_norm = UPPER(TRIM(COALESCE(b.sku_key, '')))
              AND am_key_store.store_norm = UPPER(TRIM(COALESCE(b.store_code, '')))
@@ -362,6 +542,7 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
               ON am_key_any.article_norm = UPPER(TRIM(COALESCE(b.sku_key, '')))
             LEFT JOIN article_any_map am_id_any
               ON am_id_any.article_norm = UPPER(TRIM(COALESCE(b.sku_id, '')))
+            WHERE waq.order_id IS NULL
         )
         """
     )

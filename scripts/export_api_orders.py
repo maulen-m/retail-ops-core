@@ -37,6 +37,12 @@ from core.integrations.kaspi_api_client import (
     KaspiNotFoundError,
     STORE_TOKEN_MAP,
 )
+from core.integrations.kaspi_order_stage import (
+    StageCode,
+    classify_kaspi_order_stage,
+    kaspi_order_to_russian_status,
+    stage_to_crm_indicators,
+)
 from core.utils.kaspi_dates import planned_date_from_order
 
 logger = logging.getLogger(__name__)
@@ -115,27 +121,10 @@ STATUS_MAP = {
 }
 
 
-def get_state_indicators(api_state: str) -> dict:
-    """
-    Map API state to Принял/Выдал/Отменил indicator columns.
-
-    State progression:
-    NEW -> ACCEPTED_BY_MERCHANT -> ASSEMBLY -> KASPI_DELIVERY -> DELIVERY -> COMPLETED
-                                                                          -> CANCELLED/RETURNED
-
-    Returns:
-        dict with keys: Принял, Выдал, Отменил - values are 'Да' or ''
-    """
-    accepted_states = {'ACCEPTED_BY_MERCHANT', 'ASSEMBLY', 'KASPI_DELIVERY',
-                       'DELIVERY', 'PICKUP', 'COMPLETED', 'ARCHIVE'}
-    issued_states = {'KASPI_DELIVERY', 'DELIVERY', 'PICKUP', 'COMPLETED', 'ARCHIVE'}
-    cancelled_states = {'CANCELLED', 'CANCELLING', 'RETURNING', 'RETURNED'}
-
-    return {
-        'Принял': 'Да' if api_state in accepted_states else '',
-        'Выдал': 'Да' if api_state in issued_states else '',
-        'Отменил': 'Да' if api_state in cancelled_states else '',
-    }
+PENDING_EXPORT_STAGES = {
+    StageCode.ACCEPTED_PENDING_ASSEMBLY,
+    StageCode.ASSEMBLED_PENDING_HANDOVER,
+}
 
 
 # Payment mode mapping
@@ -389,19 +378,10 @@ def order_to_rows(
     creation_date = timestamp_to_date(attrs.get('creationDate'))
     status_change_date = timestamp_to_date(attrs.get('statusChangeDate'))
 
-    # Status mapping - Kaspi export shows "Ожидает передачи курьеру" for KASPI_DELIVERY state
-    # even when status is ACCEPTED_BY_MERCHANT
     api_state = attrs.get('state', '')
-    api_status = attrs.get('status', '')
-
-    # Get state indicators for Принял/Выдал/Отменил columns
-    state_indicators = get_state_indicators(api_state)
-
-    # Use state for display if it's KASPI_DELIVERY (matches Kaspi export behavior)
-    if api_state == 'KASPI_DELIVERY':
-        russian_status = 'Ожидает передачи курьеру'
-    else:
-        russian_status = STATUS_MAP.get(api_status, STATUS_MAP.get(api_state, api_status))
+    stage = classify_kaspi_order_stage(order)
+    state_indicators = stage_to_crm_indicators(stage)
+    russian_status = kaspi_order_to_russian_status(order)
 
     # Payment/delivery mapping
     payment_mode = PAYMENT_MAP.get(attrs.get('paymentMode', ''), attrs.get('paymentMode', ''))
@@ -577,6 +557,18 @@ def export_store_orders(
 
     if verbose:
         print(f"    Found {len(orders)} active orders")
+
+    if state == 'KASPI_DELIVERY':
+        pending_orders = []
+        for order in orders:
+            if classify_kaspi_order_stage(order) in PENDING_EXPORT_STAGES:
+                pending_orders.append(order)
+        if verbose and len(pending_orders) != len(orders):
+            print(
+                f"    Pending-stage filter: kept {len(pending_orders)}/{len(orders)} "
+                "orders (excluded already shipped / terminal delivery-stage orders)"
+            )
+        orders = pending_orders
 
     # Also fetch ARCHIVE orders if requested (completed, cancelled, returned)
     if include_archive and state != 'ARCHIVE':

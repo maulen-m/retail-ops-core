@@ -32,6 +32,10 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
+def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({name})").fetchall()}
+
+
 def _norm_token(value: str | None) -> str:
     txt = str(value or "").strip().upper()
     if not txt:
@@ -51,6 +55,21 @@ def _to_float(value: Any) -> float:
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _split_assisted_products(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[,\n;]+", text):
+        token = str(raw or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
 
 
 def _ensure_sidecar_tables(conn: sqlite3.Connection) -> None:
@@ -107,6 +126,10 @@ def _load_sku_maps(conn: sqlite3.Connection) -> dict[str, dict[str, str]]:
                 model_hint["LINE51"] = str(sku_key)
             if "SUIT-61" in upper and "LINE61" not in model_hint:
                 model_hint["LINE61"] = str(sku_key)
+            if "LINE52" in upper and "LINE52" not in model_hint:
+                model_hint["LINE52"] = str(sku_key)
+            if "HUS" in upper and "HUS" not in model_hint:
+                model_hint["HUS"] = str(sku_key)
 
     if _table_exists(conn, "dim_sku_size"):
         rows = conn.execute("SELECT sku_id, sku_key FROM dim_sku_size").fetchall()
@@ -153,6 +176,10 @@ def _resolve_sku_key(
         return model_hint["LINE51"], "model_hint_line51"
     if ("SUIT-61" in merged or "LINE61" in merged) and model_hint.get("LINE61"):
         return model_hint["LINE61"], "model_hint_line61"
+    if "LINE52" in merged and model_hint.get("LINE52"):
+        return model_hint["LINE52"], "model_hint_line52"
+    if "HUS" in merged and model_hint.get("HUS"):
+        return model_hint["HUS"], "model_hint_hus"
 
     return None, "unmapped"
 
@@ -171,6 +198,12 @@ def sync_ads_sidecar(
     app.row_factory = sqlite3.Row
     try:
         maps = _load_sku_maps(app)
+        source_columns = _table_columns(ext, "campaign_product_daily_current")
+        assisted_products_expr = (
+            "assisted_products"
+            if "assisted_products" in source_columns
+            else "'' AS assisted_products"
+        )
         where = ["1=1"]
         params: list[Any] = []
         if since:
@@ -181,7 +214,15 @@ def sync_ads_sidecar(
             params.append(until)
         rows = ext.execute(
             f"""
-            SELECT date, store_code, campaign_id, campaign_name, sku_key, json_merchant_sku, cost
+            SELECT
+                date,
+                store_code,
+                campaign_id,
+                campaign_name,
+                sku_key,
+                json_merchant_sku,
+                {assisted_products_expr},
+                cost
             FROM campaign_product_daily_current
             WHERE {' AND '.join(where)}
             """,
@@ -190,8 +231,10 @@ def sync_ads_sidecar(
 
         mapped_rows = 0
         unmapped_rows = 0
+        coverage_hint_rows = 0
         daily_key: dict[tuple[str, str], dict[str, float]] = {}
         sku_rows: list[tuple[Any, ...]] = []
+        coverage_hint_seen: set[tuple[str, str, str, str]] = set()
         for row in rows:
             ads_cost = _to_float(row["cost"])
             if ads_cost <= 0:
@@ -242,6 +285,38 @@ def sync_ads_sidecar(
                     str(ads_db),
                 )
             )
+            for assisted_product in _split_assisted_products(row["assisted_products"]):
+                assisted_sku, _assisted_method = _resolve_sku_key(
+                    ads_sku_key=str(row["sku_key"] or ""),
+                    merchant_sku=assisted_product,
+                    maps=maps,
+                )
+                if not assisted_sku or assisted_sku == mapped_sku:
+                    continue
+                dedupe_key = (
+                    date_key,
+                    store_code,
+                    str(row["campaign_id"] or ""),
+                    assisted_sku,
+                )
+                if dedupe_key in coverage_hint_seen:
+                    continue
+                coverage_hint_seen.add(dedupe_key)
+                coverage_hint_rows += 1
+                sku_rows.append(
+                    (
+                        date_key,
+                        store_code,
+                        assisted_sku,
+                        0.0,
+                        1,
+                        str(row["sku_key"] or ""),
+                        assisted_product,
+                        str(row["campaign_id"] or ""),
+                        str(row["campaign_name"] or ""),
+                        str(ads_db),
+                    )
+                )
 
         daily_rows: list[tuple[Any, ...]] = []
         for (date_key, store_code), values in sorted(daily_key.items()):
@@ -307,6 +382,7 @@ def sync_ads_sidecar(
             "rows_total": mapped_rows + unmapped_rows,
             "rows_mapped": mapped_rows,
             "rows_unmapped": unmapped_rows,
+            "coverage_hint_rows": coverage_hint_rows,
             "mapping_coverage_pct": round(
                 (mapped_rows / (mapped_rows + unmapped_rows) * 100.0)
                 if (mapped_rows + unmapped_rows)
@@ -326,6 +402,7 @@ def _build_coverage_report(summary: dict[str, Any], source_status: dict[str, Any
     rows_total = int(summary.get("rows_total", 0) or 0)
     rows_mapped = int(summary.get("rows_mapped", 0) or 0)
     rows_unmapped = int(summary.get("rows_unmapped", 0) or 0)
+    coverage_hint_rows = int(summary.get("coverage_hint_rows", 0) or 0)
     coverage = float(summary.get("mapping_coverage_pct", 0.0) or 0.0)
     return "\n".join(
         [
@@ -337,6 +414,7 @@ def _build_coverage_report(summary: dict[str, Any], source_status: dict[str, Any
             f"- Rows total: `{rows_total}`",
             f"- Rows mapped: `{rows_mapped}`",
             f"- Rows unmapped: `{rows_unmapped}`",
+            f"- Coverage hint rows: `{coverage_hint_rows}`",
             f"- Mapping coverage: `{coverage:.2f}%`",
             f"- Days materialized: `{int(summary.get('days_total', 0) or 0)}`",
         ]

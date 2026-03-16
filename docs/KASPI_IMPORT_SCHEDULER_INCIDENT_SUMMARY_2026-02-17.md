@@ -103,5 +103,5 @@
 - This document records incident-time recovery on `2026-02-17`.
 - Current production contract is owned by `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`.
 - Current authoritative schedule:
-  - import: `11:00`, `16:03`
+  - import: `11:00`, `15:02`
   - waybill deadline: `18:30`

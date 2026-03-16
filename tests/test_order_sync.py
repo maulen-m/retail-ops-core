@@ -340,6 +340,26 @@ class TestOrderParsing:
         assert parsed['created_at'] is not None
         assert parsed['planned_shipment_date'] is not None
 
+    def test_parse_dates_prefers_raw_courier_planning_date(self, engine):
+        """Tomorrow courier handover must stay tomorrow in DB sync."""
+        order = {
+            "id": "order-next-day",
+            "attributes": {
+                "code": "848191280",
+                "state": "KASPI_DELIVERY",
+                "status": "ACCEPTED_BY_MERCHANT",
+                "creationDate": 1772877981264,  # 2026-03-07 15:06:21 +05:00
+                "kaspiDelivery": {
+                    "courierTransmissionPlanningDate": 1772982000000,  # 2026-03-08 20:00:00 +05:00
+                    "plannedDeliveryDate": 1773230400000,  # 2026-03-11 19:00:00 +05:00
+                },
+            },
+        }
+
+        parsed = engine._parse_api_order(order, "STOREB")
+
+        assert parsed["planned_shipment_date"] == "2026-03-08"
+
 
 # =============================================================================
 # STATE MAPPING TESTS

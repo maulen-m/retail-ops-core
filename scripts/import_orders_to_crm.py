@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 import zipfile
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -87,6 +87,20 @@ WAREHOUSE_STORE_MAP = {
 from core.paths import data_path, get_data_root
 
 
+CRM_SALES_SHEET_NAME = "SALES_KSP_CRM_1"
+CRM_SALES_TABLE_NAME = "tb_SalesRaw"
+CRM_CANONICAL_TEMPLATE_ENV = "CRM_CANONICAL_TEMPLATE_PATH"
+CRM_CANONICAL_TEMPLATE_DEFAULT = data_path("excel_ui", "templates", "SALES_KSP_CRM_V3.template.xlsx")
+CRM_TEMPLATE_SHEET_EXCLUDE = {
+    CRM_SALES_SHEET_NAME,
+    "pivot",
+    "Подсчет",
+    "Claude Log",
+    "📊 Workbook Summary",
+    "Master_Inventory_Rules_v8.md",
+}
+
+
 # ---------- CRM Backup ----------
 
 def backup_crm(crm_path: Path) -> Path:
@@ -122,16 +136,77 @@ def backup_crm(crm_path: Path) -> Path:
     return backup_path
 
 
+def _resolve_crm_template_path(explicit: Path | None = None, *, required: bool = False) -> Path | None:
+    candidates: List[Path] = []
+    if explicit is not None:
+        candidates.append(Path(explicit).expanduser())
+    raw_env = os.getenv(CRM_CANONICAL_TEMPLATE_ENV, "")
+    if str(raw_env).strip():
+        candidates.append(Path(str(raw_env).strip()).expanduser())
+    candidates.append(CRM_CANONICAL_TEMPLATE_DEFAULT)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.exists():
+            return resolved
+    if required:
+        expected = ", ".join(str(p) for p in candidates)
+        raise FileNotFoundError(
+            "Canonical CRM template workbook not found. "
+            f"Tried: {expected}"
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class ExcelWorkbookSession:
+    pid: int | None
     name: str
     saved: bool
     path: str = ""
 
 
-def _list_excel_workbooks(timeout_sec: int = 10) -> List[ExcelWorkbookSession]:
+class ExcelTargetConflictError(RuntimeError):
+    """Raised when the CRM workbook (or another write target) is already open in Excel."""
+
+
+class AppendVerificationError(RuntimeError):
+    """Raised when post-append verification proves CRM write loss or corruption."""
+
+
+def _is_missing_excel_value(value: Any) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip()
+    if not text:
+        return True
+    return text in {"k.missing_value", "missing value", "None"}
+
+
+def _normalize_excel_session_path(value: Any) -> str:
+    if _is_missing_excel_value(value):
+        return ""
+    text = str(value).strip()
+    try:
+        path_obj = Path(text).expanduser()
+        if path_obj.exists():
+            return str(path_obj.resolve())
+        return str(path_obj)
+    except Exception:
+        return text
+
+
+def _list_excel_workbooks_via_osascript(timeout_sec: int = 10) -> List[ExcelWorkbookSession]:
     """
-    Return currently open Microsoft Excel workbooks without launching Excel.
+    Fallback workbook inventory when xlwings/appscript instance inspection is unavailable.
     """
     script = """
 if application "Microsoft Excel" is running then
@@ -178,6 +253,7 @@ end if
         saved_raw = parts[1].strip().lower() if len(parts) > 1 else "true"
         sessions.append(
             ExcelWorkbookSession(
+                pid=None,
                 name=name,
                 saved=saved_raw == "true",
                 path="",
@@ -186,52 +262,132 @@ end if
     return sessions
 
 
-def _excel_session_preflight(crm_path: Path, verbose: bool = False) -> None:
+def _list_excel_workbooks(timeout_sec: int = 10) -> List[ExcelWorkbookSession]:
     """
-    Fail fast when Excel already has unsafe workbook state that can stall xlwings.
+    Return currently open Microsoft Excel workbooks without launching or mutating them.
+
+    On macOS/xlwings we prefer PID-scoped instance inspection so we can detect whether
+    the canonical CRM workbook is open in another Excel instance while ignoring
+    unrelated side workbooks. Path lookup is best effort because unsaved workbooks can
+    fail AppleEvent path introspection.
+    """
+    if xw is None:
+        return _list_excel_workbooks_via_osascript(timeout_sec=timeout_sec)
+    if not hasattr(xw, "apps"):
+        return []
+
+    try:
+        app_pids = _run_with_posix_alarm_timeout(timeout_sec, lambda: list(xw.apps.keys()))
+    except Exception as exc:
+        raise RuntimeError(f"Excel session inspection failed: {exc}") from exc
+
+    sessions: List[ExcelWorkbookSession] = []
+    per_call_timeout = max(min(int(timeout_sec), 5), 1)
+    for pid in app_pids:
+        try:
+            app = _run_with_posix_alarm_timeout(per_call_timeout, lambda pid=pid: xw.apps[pid])
+            books = _run_with_posix_alarm_timeout(per_call_timeout, lambda app=app: list(app.books))
+        except Exception as exc:
+            raise RuntimeError(f"Excel session inspection failed for pid {pid}: {exc}") from exc
+
+        for book in books:
+            try:
+                name = str(_run_with_posix_alarm_timeout(per_call_timeout, lambda book=book: book.name) or "").strip()
+            except Exception:
+                name = ""
+
+            try:
+                saved_raw = _run_with_posix_alarm_timeout(
+                    per_call_timeout,
+                    lambda book=book: book.api.saved.get(),
+                )
+                saved = str(saved_raw).strip().lower() == "true"
+            except Exception:
+                # If saved-state inspection itself is inconclusive, do not block.
+                saved = True
+
+            path = ""
+            try:
+                full_name = _run_with_posix_alarm_timeout(per_call_timeout, lambda book=book: book.fullname)
+                path = _normalize_excel_session_path(full_name)
+            except Exception:
+                path = ""
+
+            sessions.append(
+                ExcelWorkbookSession(
+                    pid=int(pid),
+                    name=name,
+                    saved=saved,
+                    path=path,
+                )
+            )
+
+    return sessions
+
+
+def _excel_session_preflight(
+    crm_path: Path,
+    *,
+    blocked_paths: Optional[List[Path]] = None,
+    verbose: bool = False,
+) -> None:
+    """
+    Fail fast only when the CRM workbook (or another write target) is already open in
+    Excel. Unrelated dirty workbooks are allowed so operators can keep side work open.
     """
     sessions = _list_excel_workbooks()
     if not sessions:
         return
 
-    crm_resolved = crm_path.expanduser().resolve()
-    target_open = False
-    unsaved_side_workbooks: List[str] = []
+    target_paths = blocked_paths or [crm_path]
+    normalized_targets: List[Path] = []
+    for target in target_paths:
+        try:
+            normalized_targets.append(target.expanduser().resolve())
+        except Exception:
+            normalized_targets.append(target.expanduser())
+    target_path_lookup = {str(path): path for path in normalized_targets}
+    target_name_lookup = {
+        path.name.strip().casefold(): path
+        for path in normalized_targets
+        if path.name.strip()
+    }
 
+    matched_conflicts: List[Tuple[Path, ExcelWorkbookSession]] = []
     for session in sessions:
-        session_path = (session.path or "").strip()
-        matches_target = session.name.strip() == crm_path.name
+        session_path = _normalize_excel_session_path(session.path)
+        matches_target: Optional[Path] = None
         if session_path:
             try:
-                path_obj = Path(session_path)
-                if path_obj.name == crm_path.name:
-                    matches_target = True
-                elif path_obj.expanduser().resolve() == crm_resolved:
-                    matches_target = True
+                resolved = Path(session_path).expanduser().resolve()
+                matches_target = target_path_lookup.get(str(resolved))
             except Exception:
-                matches_target = matches_target or session_path.rstrip(":").endswith(crm_path.name)
-        if matches_target:
-            target_open = True
-            continue
-        if not session.saved:
-            unsaved_side_workbooks.append(session.name or "(unnamed workbook)")
+                matches_target = target_path_lookup.get(session_path)
+        if matches_target is None:
+            session_name = (session.name or "").strip().casefold()
+            if session_name:
+                matches_target = target_name_lookup.get(session_name)
+        if matches_target is not None:
+            matched_conflicts.append((matches_target, session))
 
-    if target_open:
-        raise RuntimeError(
-            "CRM workbook is already open in Excel. Close it before import to avoid concurrent workbook sessions."
-        )
-
-    if unsaved_side_workbooks:
-        sample = ", ".join(unsaved_side_workbooks[:5])
-        if len(unsaved_side_workbooks) > 5:
-            sample += ", ..."
-        raise RuntimeError(
-            "Unsaved Excel workbook(s) are open: "
-            f"{sample}. Save or close them before CRM import to avoid silent Excel automation hangs."
+    if matched_conflicts:
+        target_path, session = matched_conflicts[0]
+        if target_path.name == crm_path.name:
+            raise ExcelTargetConflictError(
+                "CRM workbook is already open in Excel. Close it before import to avoid concurrent workbook sessions."
+            )
+        label = target_path.name or str(target_path)
+        raise ExcelTargetConflictError(
+            "Excel target workbook is already open in Excel: "
+            f"{label}. Close it before import to avoid concurrent workbook sessions."
         )
 
     if verbose:
-        print(f"  Excel session guard OK ({len(sessions)} open workbook(s), all saved side sessions)")
+        dirty_side_count = sum(1 for session in sessions if not session.saved)
+        print(
+            "  Excel session guard OK "
+            f"({len(sessions)} open workbook(s), target-only policy, dirty side books ignored={dirty_side_count})"
+        )
 
 
 def _excel_open_probe(workbook_path: Path, attempts: int = 3, timeout_sec: int = 45) -> Tuple[bool, str]:
@@ -519,6 +675,20 @@ def _xlwings_append_timeout_sec(default_sec: int = 420) -> int:
     return max(parsed, 10)
 
 
+def _xlwings_refresh_timeout_sec(default_sec: int = 120) -> int:
+    """
+    Wall-clock timeout for the post-repair Excel recalculation/save pass.
+    """
+    raw = os.getenv("CRM_XLWINGS_REFRESH_TIMEOUT_SEC", "")
+    if not str(raw).strip():
+        return int(default_sec)
+    try:
+        parsed = int(str(raw).strip())
+    except ValueError:
+        return int(default_sec)
+    return max(parsed, 10)
+
+
 @contextmanager
 def _temporary_manual_calculation(app: Any):
     """
@@ -599,6 +769,92 @@ def _safe_quit_xlwings_app(app: Any, *, context: str) -> None:
             print(f"  WARNING: Excel app force-killed ({context})")
         except Exception as kill_exc:
             print(f"  WARNING: failed to force-kill Excel app ({context}): {kill_exc}")
+
+
+def _create_temporary_workbook_snapshot(workbook_path: Path) -> Path:
+    workbook_path = Path(workbook_path)
+    snapshot_path = workbook_path.parent / (
+        f".{workbook_path.name}.pre_append_snapshot.{os.getpid()}.{time.time_ns()}"
+    )
+    shutil.copy2(workbook_path, snapshot_path)
+    return snapshot_path
+
+
+def _restore_workbook_snapshot(snapshot_path: Path, workbook_path: Path) -> None:
+    workbook_path = Path(workbook_path)
+    snapshot_path = Path(snapshot_path)
+    restore_tmp = workbook_path.parent / (
+        f".{workbook_path.name}.restore.{os.getpid()}.{time.time_ns()}"
+    )
+    try:
+        shutil.copy2(snapshot_path, restore_tmp)
+        os.replace(restore_tmp, workbook_path)
+    finally:
+        try:
+            if restore_tmp.exists():
+                restore_tmp.unlink()
+        except OSError:
+            pass
+
+
+def _cleanup_temporary_workbook_snapshot(snapshot_path: Path | None) -> None:
+    if snapshot_path is None:
+        return
+    try:
+        Path(snapshot_path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _refresh_formula_caches_xlwings(workbook_path: Path, *, verbose: bool = False) -> None:
+    """
+    Re-open the workbook in Excel and save after recalculation so formula
+    result caches are repopulated. This avoids the "empty rows" symptom caused
+    by openpyxl save clearing cached formula values on the live CRM workbook.
+    """
+    def _refresh() -> None:
+        _require_xlwings()
+
+        app = xw.App(visible=False, add_book=False)
+        app.display_alerts = False
+        app.screen_updating = False
+        wb = None
+        previous_mode = None
+
+        try:
+            wb = _open_workbook_xlwings(app, workbook_path, update_links=False, read_only=False)
+            try:
+                previous_mode = getattr(app, "calculation")
+                setattr(app, "calculation", "automatic")
+            except Exception:
+                previous_mode = None
+
+            recalc = getattr(app, "calculate", None)
+            if callable(recalc):
+                recalc()
+            try:
+                api = getattr(app, "api", None)
+                if api is not None:
+                    calculate_full = getattr(api, "calculate_full", None)
+                    if callable(calculate_full):
+                        calculate_full()
+            except Exception:
+                pass
+
+            wb.save()
+            if verbose:
+                print("  Formula caches refreshed via Excel save")
+        finally:
+            if previous_mode is not None:
+                try:
+                    setattr(app, "calculation", previous_mode)
+                except Exception:
+                    pass
+            if wb is not None:
+                _safe_close_xlwings_book(wb, context="formula-cache-refresh")
+            _safe_quit_xlwings_app(app, context="formula-cache-refresh")
+
+    _run_with_posix_alarm_timeout(_xlwings_refresh_timeout_sec(), _refresh)
 
 
 def _is_expected_xlwings_timeout(exc: Exception) -> bool:
@@ -811,7 +1067,7 @@ def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbo
     if lock_file.exists():
         age_seconds = datetime.now().timestamp() - lock_file.stat().st_mtime
         if age_seconds < 30 * 60:
-            raise RuntimeError(
+            raise ExcelTargetConflictError(
                 f"Excel lock file detected ({lock_file.name}). Close workbook and retry."
             )
         if verbose:
@@ -2260,6 +2516,14 @@ def _table_bounds(table) -> Tuple[int, int, int, int]:
     return start_col, start_row, end_col, end_row
 
 
+def _table_header_signature(ws: Any, table: Any) -> List[str]:
+    start_col, header_row, end_col, _end_row = _table_bounds(table)
+    return [
+        norm(str(ws.cell(row=header_row, column=col).value or ""))
+        for col in range(start_col, end_col + 1)
+    ]
+
+
 def _find_header_col(header_to_col: Dict[str, int], normalized_aliases: set[str]) -> Optional[int]:
     for name, col in header_to_col.items():
         if norm(name) in normalized_aliases:
@@ -2301,6 +2565,23 @@ def _formula_template_columns(header_to_col: Dict[str, int]) -> List[int]:
         if col:
             cols.append(col)
     return sorted(set(cols))
+
+
+def _required_formula_cache_columns(header_to_col: Dict[str, int]) -> List[Tuple[str, int]]:
+    required_alias_groups = (
+        ("STORE_NAME", {"storename", "store_name"}),
+        ("Quantity", {"quantity", "количество"}),
+        (
+            "PLANNED_SHIPPING_DATE",
+            {"plannedshippingdate", "planned_shipping_date", "плановаядатапередачикурьеру"},
+        ),
+    )
+    cols: List[Tuple[str, int]] = []
+    for label, aliases in required_alias_groups:
+        col = _find_header_col(header_to_col, aliases)
+        if col:
+            cols.append((label, col))
+    return cols
 
 
 def _find_template_row_for_append(
@@ -2436,6 +2717,465 @@ def _normalize_conditional_formatting_ranges(
     if verbose and updated:
         print(f"  Conditional formatting ranges normalized: {updated} blocks")
     return updated
+
+
+def _restore_conditional_formatting_from_template(
+    ws: Any,
+    template_ws: Any,
+    *,
+    header_row: int,
+    data_end_row: int,
+    template_data_end_row: int,
+    verbose: bool = False,
+) -> int:
+    template_cf = template_ws.conditional_formatting
+    if not template_cf._cf_rules:
+        ws.conditional_formatting._cf_rules = OrderedDict()
+        return 0
+
+    data_start_row = header_row + 1
+    new_rules: OrderedDict = OrderedDict()
+    updated = 0
+
+    for cf_obj, rules in template_cf._cf_rules.items():
+        old_sqref = str(cf_obj.sqref)
+        new_tokens: List[str] = []
+        for part in [token for token in old_sqref.split() if token]:
+            try:
+                cell_range = CellRange(part)
+            except Exception:
+                new_tokens.append(part)
+                continue
+
+            if (
+                data_end_row >= data_start_row
+                and cell_range.max_row >= data_start_row
+                and cell_range.max_row == template_data_end_row
+                and data_end_row > template_data_end_row
+            ):
+                cell_range = CellRange(
+                    min_col=cell_range.min_col,
+                    min_row=cell_range.min_row,
+                    max_col=cell_range.max_col,
+                    max_row=data_end_row,
+                )
+            new_tokens.append(cell_range.coord)
+
+        new_sqref = " ".join(new_tokens) if new_tokens else old_sqref
+        if new_sqref != old_sqref:
+            updated += 1
+
+        new_cf = ConditionalFormatting(
+            sqref=new_sqref,
+            pivot=getattr(cf_obj, "pivot", None),
+            extLst=getattr(cf_obj, "extLst", None),
+        )
+        new_rules[new_cf] = [deepcopy(rule) for rule in rules]
+
+    ws.conditional_formatting._cf_rules = new_rules
+    if verbose and updated:
+        print(f"  Conditional formatting restored from template: {updated} blocks extended")
+    return updated
+
+
+def _restore_formula_and_style_window_from_template(
+    *,
+    ws: Any,
+    template_ws: Any,
+    header_row: int,
+    target_start_row: int,
+    target_end_row: int,
+    start_col: int,
+    end_col: int,
+    formula_cols: List[int],
+    template_data_end_row: int,
+) -> Tuple[int, int]:
+    style_cells_normalized = 0
+    formula_cells_restored = 0
+
+    source_tail_row = _find_template_row_for_append(
+        ws=template_ws,
+        header_row=header_row,
+        table_end_row=template_data_end_row,
+        formula_cols=formula_cols,
+    )
+    if source_tail_row is None:
+        source_tail_row = template_data_end_row
+
+    formula_col_set = set(formula_cols)
+    cross_workbook = ws is not template_ws
+    for row_num in range(target_start_row, target_end_row + 1):
+        source_row = row_num if row_num <= template_data_end_row else source_tail_row
+        for col_num in range(start_col, end_col + 1):
+            src = template_ws.cell(row=source_row, column=col_num)
+            dst = ws.cell(row=row_num, column=col_num)
+
+            if src.has_style and (cross_workbook or dst._style != src._style):
+                if cross_workbook:
+                    dst.font = copy(src.font)
+                    dst.fill = copy(src.fill)
+                    dst.border = copy(src.border)
+                    dst.alignment = copy(src.alignment)
+                    dst.number_format = src.number_format
+                    dst.protection = copy(src.protection)
+                else:
+                    dst._style = copy(src._style)
+                style_cells_normalized += 1
+
+            if col_num not in formula_col_set or not _has_formula_payload(src.value):
+                continue
+
+            translated_value = src.value
+            if isinstance(src.value, str) and src.value.startswith("="):
+                origin = f"{get_column_letter(col_num)}{source_row}"
+                target = f"{get_column_letter(col_num)}{row_num}"
+                try:
+                    translated_value = Translator(src.value, origin=origin).translate_formula(target)
+                except Exception:
+                    translated_value = src.value
+
+            if dst.value != translated_value:
+                dst.value = translated_value
+                formula_cells_restored += 1
+
+    return style_cells_normalized, formula_cells_restored
+
+
+def _copy_sheet_values_from_source(target_ws: Any, source_ws: Any) -> int:
+    max_row = max(int(getattr(target_ws, "max_row", 0) or 0), int(getattr(source_ws, "max_row", 0) or 0))
+    max_col = max(int(getattr(target_ws, "max_column", 0) or 0), int(getattr(source_ws, "max_column", 0) or 0))
+    copied = 0
+    for row_num in range(1, max_row + 1):
+        for col_num in range(1, max_col + 1):
+            src_value = source_ws.cell(row=row_num, column=col_num).value
+            dst = target_ws.cell(row=row_num, column=col_num)
+            if dst.value != src_value:
+                dst.value = src_value
+                copied += 1
+    return copied
+
+
+def _restore_sales_sheet_from_template(
+    *,
+    target_ws: Any,
+    source_ws: Any,
+    template_ws: Any,
+    table_name: str = CRM_SALES_TABLE_NAME,
+    verbose: bool = False,
+) -> Dict[str, int]:
+    target_table = _resolve_table(target_ws, table_name)
+    source_table = _resolve_table(source_ws, table_name)
+    template_table = _resolve_table(template_ws, table_name)
+
+    target_start_col, target_header_row, target_end_col, _target_end_row = _table_bounds(target_table)
+    source_start_col, _source_header_row, source_end_col, source_end_row = _table_bounds(source_table)
+    template_start_col, _template_header_row, template_end_col, template_end_row = _table_bounds(template_table)
+
+    if (target_start_col, target_end_col) != (source_start_col, source_end_col):
+        raise RuntimeError("CRM sales table column bounds differ between current workbook and template.")
+    if (target_start_col, target_end_col) != (template_start_col, template_end_col):
+        raise RuntimeError("CRM sales table column bounds differ between target workbook and canonical template.")
+
+    header_values = [
+        target_ws.cell(row=target_header_row, column=col).value
+        for col in range(target_start_col, target_end_col + 1)
+    ]
+    header_to_col = {
+        str(name).strip(): target_start_col + i
+        for i, name in enumerate(header_values)
+        if str(name or "").strip()
+    }
+    formula_cols = _formula_template_columns(header_to_col)
+    formula_col_set = set(formula_cols)
+
+    source_data_start = target_header_row + 1
+    if source_end_row >= source_data_start:
+        styles_restored, formulas_restored = _restore_formula_and_style_window_from_template(
+            ws=target_ws,
+            template_ws=template_ws,
+            header_row=target_header_row,
+            target_start_row=source_data_start,
+            target_end_row=source_end_row,
+            start_col=target_start_col,
+            end_col=target_end_col,
+            formula_cols=formula_cols,
+            template_data_end_row=template_end_row,
+        )
+    else:
+        styles_restored, formulas_restored = (0, 0)
+
+    preserved_cells = 0
+    for row_num in range(source_data_start, source_end_row + 1):
+        for col_num in range(target_start_col, target_end_col + 1):
+            if col_num in formula_col_set:
+                continue
+            src_value = source_ws.cell(row=row_num, column=col_num).value
+            dst = target_ws.cell(row=row_num, column=col_num)
+            if dst.value != src_value:
+                dst.value = src_value
+                preserved_cells += 1
+
+    for row_num in range(source_end_row + 1, template_end_row + 1):
+        for col_num in range(target_start_col, target_end_col + 1):
+            target_ws.cell(row=row_num, column=col_num).value = None
+
+    target_table.ref = (
+        f"{get_column_letter(target_start_col)}{target_header_row}:"
+        f"{get_column_letter(target_end_col)}{max(source_end_row, target_header_row + 1)}"
+    )
+    cf_blocks_restored = _restore_conditional_formatting_from_template(
+        ws=target_ws,
+        template_ws=template_ws,
+        header_row=target_header_row,
+        data_end_row=source_end_row,
+        template_data_end_row=template_end_row,
+        verbose=verbose,
+    )
+
+    return {
+        "rows_preserved": max(source_end_row - target_header_row, 0),
+        "styles_restored": styles_restored,
+        "formulas_restored": formulas_restored,
+        "preserved_cells": preserved_cells,
+        "cf_blocks_restored": cf_blocks_restored,
+    }
+
+
+def restore_crm_workbook_from_template(
+    *,
+    workbook_path: Path,
+    template_path: Path | None = None,
+    output_path: Path | None = None,
+    verbose: bool = False,
+) -> Dict[str, int]:
+    workbook_path = Path(workbook_path).expanduser().resolve()
+    resolved_template = _resolve_crm_template_path(template_path, required=True)
+    assert resolved_template is not None
+
+    if output_path is None:
+        output_path = workbook_path
+    output_path = Path(output_path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_output = output_path.with_name(
+        f".{output_path.stem}.template_restore.{os.getpid()}.{time.time_ns()}{output_path.suffix}"
+    )
+    shutil.copy2(resolved_template, temp_output)
+
+    current_wb = load_workbook(filename=str(workbook_path), read_only=False, data_only=False)
+    template_wb = load_workbook(filename=str(resolved_template), read_only=False, data_only=False)
+    restored_wb = load_workbook(filename=str(temp_output), read_only=False, data_only=False)
+    try:
+        if CRM_SALES_SHEET_NAME not in current_wb.sheetnames or CRM_SALES_SHEET_NAME not in restored_wb.sheetnames:
+            raise RuntimeError(f"Required sales sheet {CRM_SALES_SHEET_NAME} missing in current or template workbook.")
+
+        sales_stats = _restore_sales_sheet_from_template(
+            target_ws=restored_wb[CRM_SALES_SHEET_NAME],
+            source_ws=current_wb[CRM_SALES_SHEET_NAME],
+            template_ws=template_wb[CRM_SALES_SHEET_NAME],
+            table_name=CRM_SALES_TABLE_NAME,
+            verbose=verbose,
+        )
+
+        sheet_cells_preserved = 0
+        sheet_count = 0
+        for sheet_name in current_wb.sheetnames:
+            if sheet_name not in restored_wb.sheetnames or sheet_name in CRM_TEMPLATE_SHEET_EXCLUDE:
+                continue
+            copied = _copy_sheet_values_from_source(restored_wb[sheet_name], current_wb[sheet_name])
+            sheet_cells_preserved += copied
+            sheet_count += 1
+
+        restored_wb.save(str(temp_output))
+    finally:
+        restored_wb.close()
+        template_wb.close()
+        current_wb.close()
+
+    os.replace(temp_output, output_path)
+
+    return {
+        "sales_rows_preserved": sales_stats["rows_preserved"],
+        "sales_styles_restored": sales_stats["styles_restored"],
+        "sales_formulas_restored": sales_stats["formulas_restored"],
+        "sales_preserved_cells": sales_stats["preserved_cells"],
+        "sales_cf_blocks_restored": sales_stats["cf_blocks_restored"],
+        "sheet_values_preserved": sheet_cells_preserved,
+        "sheet_count_preserved": sheet_count,
+    }
+
+
+def _repair_appended_rows_formatting(
+    workbook_path: Path,
+    sheet_name: str,
+    table_name: str,
+    start_row: int,
+    end_row: int,
+    *,
+    repair_cf_ranges: bool = True,
+    verbose: bool = False,
+) -> Dict[str, int]:
+    if start_row <= 0 or end_row < start_row:
+        return {"style_cells_normalized": 0, "cf_rules_normalized": 0}
+
+    workbook_path = Path(workbook_path)
+    preserved_package_parts = _snapshot_preserved_package_parts(workbook_path)
+    style_cells_normalized = 0
+    cf_rules_normalized = 0
+    formula_cells_restored = 0
+    template_wb = None
+    template_ws = None
+    template_end_row = None
+
+    wb = load_workbook(filename=str(workbook_path), read_only=False, data_only=False)
+    try:
+        ws = wb[sheet_name]
+        table = _resolve_table(ws, table_name)
+        tbl_start_col, tbl_start_row, tbl_end_col, tbl_end_row = _table_bounds(table)
+        if start_row < (tbl_start_row + 1) or end_row > tbl_end_row:
+            raise RuntimeError(
+                f"Append row window {start_row}-{end_row} is outside table bounds {tbl_start_row + 1}-{tbl_end_row}."
+            )
+
+        header_values = [
+            ws.cell(row=tbl_start_row, column=col).value
+            for col in range(tbl_start_col, tbl_end_col + 1)
+        ]
+        header_to_col = {
+            str(name).strip(): tbl_start_col + i
+            for i, name in enumerate(header_values)
+            if str(name or "").strip()
+        }
+        formula_cols = _formula_template_columns(header_to_col)
+        resolved_template = None
+        if sheet_name == CRM_SALES_SHEET_NAME and table_name == CRM_SALES_TABLE_NAME:
+            resolved_template = _resolve_crm_template_path()
+        if resolved_template is not None and resolved_template.resolve() != workbook_path.resolve():
+            template_wb = load_workbook(filename=str(resolved_template), read_only=False, data_only=False)
+            if sheet_name in template_wb.sheetnames:
+                template_ws = template_wb[sheet_name]
+                template_table = _resolve_table(template_ws, table_name)
+                if _table_header_signature(ws, table) == _table_header_signature(template_ws, template_table):
+                    _, _, _, template_end_row = _table_bounds(template_table)
+                else:
+                    template_ws = None
+                    template_wb.close()
+                    template_wb = None
+
+        source_ws = template_ws or ws
+        if template_end_row is None:
+            template_end_row = start_row - 1
+        style_cells_normalized, formula_cells_restored = _restore_formula_and_style_window_from_template(
+            ws=ws,
+            template_ws=source_ws,
+            header_row=tbl_start_row,
+            target_start_row=start_row,
+            target_end_row=end_row,
+            start_col=tbl_start_col,
+            end_col=tbl_end_col,
+            formula_cols=formula_cols,
+            template_data_end_row=template_end_row,
+        )
+
+        if repair_cf_ranges:
+            if template_ws is not None and template_end_row is not None:
+                cf_rules_normalized = _restore_conditional_formatting_from_template(
+                    ws=ws,
+                    template_ws=template_ws,
+                    header_row=tbl_start_row,
+                    data_end_row=tbl_end_row,
+                    template_data_end_row=template_end_row,
+                    verbose=verbose,
+                )
+            else:
+                cf_rules_normalized = _normalize_conditional_formatting_ranges(
+                    ws=ws,
+                    header_row=tbl_start_row,
+                    data_end_row=tbl_end_row,
+                    header_to_col=header_to_col,
+                    verbose=verbose,
+                )
+
+        wb.save(str(workbook_path))
+    finally:
+        wb.close()
+        if template_wb is not None:
+            template_wb.close()
+
+    _restore_preserved_package_parts(workbook_path, preserved_package_parts)
+
+    if verbose and (style_cells_normalized or cf_rules_normalized):
+        print(
+            "  Post-append formatting normalized: "
+            f"styles={style_cells_normalized}, formulas={formula_cells_restored}, cf_rules={cf_rules_normalized}"
+        )
+    return {
+        "style_cells_normalized": style_cells_normalized,
+        "formula_cells_restored": formula_cells_restored,
+        "cf_rules_normalized": cf_rules_normalized,
+    }
+
+
+def _verify_formula_cache_readback(
+    workbook_path: Path,
+    sheet_name: str,
+    table_name: str,
+    start_row: int,
+    end_row: int,
+) -> None:
+    if start_row <= 0 or end_row < start_row:
+        return
+
+    formula_wb = load_workbook(filename=str(workbook_path), read_only=False, data_only=False)
+    data_wb = load_workbook(filename=str(workbook_path), read_only=False, data_only=True)
+    try:
+        formula_ws = formula_wb[sheet_name]
+        data_ws = data_wb[sheet_name]
+        table = _resolve_table(formula_ws, table_name)
+        tbl_start_col, tbl_start_row, _tbl_end_col, tbl_end_row = _table_bounds(table)
+        if start_row < (tbl_start_row + 1) or end_row > tbl_end_row:
+            raise RuntimeError(
+                f"Append row window {start_row}-{end_row} is outside table bounds {tbl_start_row + 1}-{tbl_end_row}."
+            )
+
+        header_values = [
+            formula_ws.cell(row=tbl_start_row, column=col).value
+            for col in range(tbl_start_col, _tbl_end_col + 1)
+        ]
+        header_to_col = {
+            str(name).strip(): tbl_start_col + i
+            for i, name in enumerate(header_values)
+            if str(name or "").strip()
+        }
+        required_cols = _required_formula_cache_columns(header_to_col)
+        if not required_cols:
+            return
+
+        issues: List[str] = []
+        max_issues = 12
+        for row_num in range(start_row, end_row + 1):
+            for label, col_num in required_cols:
+                formula_value = formula_ws.cell(row=row_num, column=col_num).value
+                if not _has_formula_payload(formula_value):
+                    continue
+                cached_value = data_ws.cell(row=row_num, column=col_num).value
+                if _is_missing_excel_value(cached_value):
+                    issues.append(f"row {row_num} {label}({get_column_letter(col_num)})")
+                    if len(issues) >= max_issues:
+                        break
+            if len(issues) >= max_issues:
+                break
+
+        if issues:
+            suffix = " ..." if len(issues) >= max_issues else ""
+            raise AppendVerificationError(
+                "Formula cache readback missing after Excel repair: "
+                + ", ".join(issues[:max_issues])
+                + suffix
+            )
+    finally:
+        formula_wb.close()
+        data_wb.close()
 
 
 def _collect_cf_intervals_for_column(ws: Any, col_num: int) -> List[Tuple[int, int]]:
@@ -3593,33 +4333,34 @@ def excel_append_openpyxl(
             if str(name or "").strip()
         }
         formula_cols = _formula_template_columns(header_to_col)
-        template_row = _find_template_row_for_append(
+        template_wb = None
+        template_ws = None
+        template_end_row = tbl_end_row
+        resolved_template = None
+        if sheet_name == CRM_SALES_SHEET_NAME and table_name == CRM_SALES_TABLE_NAME:
+            resolved_template = _resolve_crm_template_path()
+        if resolved_template is not None and resolved_template.resolve() != Path(out_wb).resolve():
+            template_wb = load_workbook(filename=str(resolved_template), read_only=False, data_only=False)
+            if sheet_name in template_wb.sheetnames:
+                template_ws = template_wb[sheet_name]
+                template_table = _resolve_table(template_ws, table_name)
+                if _table_header_signature(ws, table) == _table_header_signature(template_ws, template_table):
+                    _, _, _, template_end_row = _table_bounds(template_table)
+                else:
+                    template_ws = None
+                    template_wb.close()
+                    template_wb = None
+        _restore_formula_and_style_window_from_template(
             ws=ws,
+            template_ws=template_ws or ws,
             header_row=header_row,
-            table_end_row=tbl_end_row,
+            target_start_row=top_row,
+            target_end_row=bottom_row,
+            start_col=tbl_start_col,
+            end_col=tbl_end_col,
             formula_cols=formula_cols,
+            template_data_end_row=template_end_row,
         )
-        if template_row is None:
-            raise RuntimeError(
-                f"Could not locate a valid template row with formulas on sheet {sheet_name} "
-                f"before append range {top_row}-{bottom_row}."
-            )
-
-        if template_row:
-            for row_num in range(top_row, bottom_row + 1):
-                for col_num in range(tbl_start_col, tbl_end_col + 1):
-                    src = ws.cell(row=template_row, column=col_num)
-                    dst = ws.cell(row=row_num, column=col_num)
-                    if src.has_style:
-                        dst._style = copy(src._style)
-                    src_value = src.value
-                    if isinstance(src_value, str) and src_value.startswith("="):
-                        origin = f"{get_column_letter(col_num)}{template_row}"
-                        target = f"{get_column_letter(col_num)}{row_num}"
-                        try:
-                            dst.value = Translator(src_value, origin=origin).translate_formula(target)
-                        except Exception:
-                            dst.value = src_value
 
         for row_num in range(top_row, bottom_row + 1):
             cell = ws.cell(row=row_num, column=date_col_abs, value=set_date)
@@ -3657,6 +4398,8 @@ def excel_append_openpyxl(
                         cell.value = ""
                     else:
                         cell.value = coerced
+                        if isinstance(coerced, int):
+                            cell.data_type = "n"
                         cell.number_format = "0"
                 else:
                     cell.value = "" if value is None else value
@@ -3686,13 +4429,25 @@ def excel_append_openpyxl(
             f"{get_column_letter(tbl_end_col)}{bottom_row}"
         )
         if repair_cf_ranges:
-            _normalize_conditional_formatting_ranges(
-                ws=ws,
-                header_row=header_row,
-                data_end_row=bottom_row,
-                header_to_col=header_to_col,
-                verbose=verbose,
-            )
+            if template_ws is not None:
+                _restore_conditional_formatting_from_template(
+                    ws=ws,
+                    template_ws=template_ws,
+                    header_row=header_row,
+                    data_end_row=bottom_row,
+                    template_data_end_row=template_end_row,
+                    verbose=verbose,
+                )
+            else:
+                _normalize_conditional_formatting_ranges(
+                    ws=ws,
+                    header_row=header_row,
+                    data_end_row=bottom_row,
+                    header_to_col=header_to_col,
+                    verbose=verbose,
+                )
+        if template_wb is not None:
+            template_wb.close()
         wb.save(str(out_wb))
     finally:
         wb.close()
@@ -3727,8 +4482,10 @@ def append_orders_with_fallback(
     verbose: bool = False,
 ) -> Tuple[int, int]:
     if prefer_xlwings:
+        snapshot_path = _create_temporary_workbook_snapshot(out_wb)
+        snapshot_restored = False
         try:
-            return _run_with_posix_alarm_timeout(
+            appended_rows = _run_with_posix_alarm_timeout(
                 _xlwings_append_timeout_sec(),
                 excel_append_xlwings,
                 out_wb,
@@ -3746,7 +4503,43 @@ def append_orders_with_fallback(
                 kaspi_name_core_values=kaspi_name_core_values,
                 preserved_my_sizes=preserved_my_sizes,
             )
+            if repair_cf_ranges:
+                append_start_row, append_end_row = appended_rows
+                try:
+                    _repair_appended_rows_formatting(
+                        workbook_path=out_wb,
+                        sheet_name=sheet_name,
+                        table_name=table_name,
+                        start_row=append_start_row,
+                        end_row=append_end_row,
+                        repair_cf_ranges=True,
+                        verbose=verbose,
+                    )
+                    _refresh_formula_caches_xlwings(out_wb, verbose=verbose)
+                    _verify_formula_cache_readback(
+                        workbook_path=out_wb,
+                        sheet_name=sheet_name,
+                        table_name=table_name,
+                        start_row=append_start_row,
+                        end_row=append_end_row,
+                    )
+                except Exception as exc:
+                    _restore_workbook_snapshot(snapshot_path, out_wb)
+                    snapshot_restored = True
+                    raise AppendVerificationError(
+                        "xlwings append post-processing failed; workbook restored from pre-append snapshot."
+                    ) from exc
+            return appended_rows
         except Exception as exc:
+            if not snapshot_restored:
+                try:
+                    _restore_workbook_snapshot(snapshot_path, out_wb)
+                    snapshot_restored = True
+                except Exception as restore_exc:
+                    raise AppendVerificationError(
+                        "xlwings append failed and workbook restore failed: "
+                        f"{restore_exc}"
+                    ) from exc
             if not allow_openpyxl_fallback:
                 raise
             timeout_like = _is_expected_xlwings_timeout(exc)
@@ -3758,6 +4551,8 @@ def append_orders_with_fallback(
                 import traceback
 
                 traceback.print_exc()
+        finally:
+            _cleanup_temporary_workbook_snapshot(snapshot_path)
 
     if not allow_openpyxl_fallback:
         raise RuntimeError("Openpyxl append fallback is disabled.")
@@ -4277,13 +5072,47 @@ def sync_pending_orders_to_gdrive_safe(
         return {"rows_synced": 0, "dry_run": dry_run, "error": str(e)}
 
 
+def _finalize_result_status(result: dict) -> dict:
+    if result.get("status"):
+        result.setdefault("retryable_topup", result["status"] in {"success", "noop"})
+        return result
+
+    changed = any(
+        int(result.get(key, 0) or 0) > 0
+        for key in (
+            "orders_imported",
+            "orders_updated",
+            "carryforward_rows_appended",
+            "crm_rows_reconciled_deleted",
+        )
+    )
+    result["status"] = "success" if changed else "noop"
+    result["retryable_topup"] = result["status"] in {"success", "noop"}
+    return result
+
+
+def _classify_import_failure(exc: Exception) -> Tuple[str, bool]:
+    if isinstance(exc, ExcelTargetConflictError):
+        return ("preflight_blocked", False)
+    if isinstance(exc, AppendVerificationError):
+        return ("append_verification_failed", False)
+    msg = str(exc or "")
+    if "Append integrity check failed" in msg or "CRM semantic append verification failed" in msg:
+        return ("append_verification_failed", False)
+    return ("write_failed", False)
+
+
 def write_import_summary(result: dict, summary_path: Path) -> None:
     """Write a small JSON summary for downstream no-op detection."""
     summary_path.parent.mkdir(parents=True, exist_ok=True)
+    finalized = _finalize_result_status(dict(result))
     payload = {
-        "orders_imported": int(result.get("orders_imported", 0) or 0),
-        "orders_updated": int(result.get("orders_updated", 0) or 0),
-        "orders_filtered": int(result.get("orders_filtered", 0) or 0),
+        "orders_imported": int(finalized.get("orders_imported", 0) or 0),
+        "orders_updated": int(finalized.get("orders_updated", 0) or 0),
+        "orders_filtered": int(finalized.get("orders_filtered", 0) or 0),
+        "status": str(finalized.get("status") or "unknown"),
+        "retryable_topup": bool(finalized.get("retryable_topup", False)),
+        "error": str(finalized.get("error") or ""),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -4329,6 +5158,7 @@ def main(
     enforce_crm_path=_UNSET,
     candidate_dir=_UNSET,
     failed_candidate_dir=_UNSET,
+    excel_session_preflight_only=_UNSET,
     summary_file=_UNSET,
 ):
     parser = argparse.ArgumentParser(
@@ -4529,6 +5359,11 @@ def main(
         default=data_path("excel_ui", "backups", "failed_candidates"),
         help="Directory for failed transactional candidates.",
     )
+    parser.add_argument(
+        "--excel-session-preflight-only",
+        action="store_true",
+        help="Check Excel session safety only, then exit without reading ActiveOrders or writing CRM.",
+    )
 
     if (
         orders_dir is _UNSET
@@ -4565,6 +5400,7 @@ def main(
         and enforce_crm_path is _UNSET
         and candidate_dir is _UNSET
         and failed_candidate_dir is _UNSET
+        and excel_session_preflight_only is _UNSET
         and summary_file is _UNSET
     ):
         args = parser.parse_args()
@@ -4638,6 +5474,8 @@ def main(
             args.candidate_dir = Path(candidate_dir)
         if failed_candidate_dir is not _UNSET:
             args.failed_candidate_dir = Path(failed_candidate_dir)
+        if excel_session_preflight_only is not _UNSET:
+            args.excel_session_preflight_only = bool(excel_session_preflight_only)
         if summary_file is not _UNSET:
             args.summary_file = Path(summary_file)
 
@@ -4653,6 +5491,14 @@ def main(
             "CRM path enforcement failed. "
             f"--crm-file resolved to {args.crm_file}, expected {enforced_crm_path}."
         )
+    if getattr(args, "excel_session_preflight_only", False):
+        print("=" * 60)
+        print("  Excel Session Preflight")
+        print("=" * 60)
+        print(f"  CRM file: {args.crm_file}")
+        _excel_session_preflight(args.crm_file, verbose=bool(args.verbose))
+        print("  Excel session preflight OK")
+        return {"excel_session_preflight": "ok"}
 
     result = {
         "orders_imported": 0,
@@ -4665,9 +5511,10 @@ def main(
     candidate_state: Dict[str, Optional[Path]] = {"path": None}
 
     def finalize(outcome: dict) -> dict:
+        finalized = _finalize_result_status(dict(outcome))
         if summary_path:
-            write_import_summary(outcome, summary_path)
-        return outcome
+            write_import_summary(finalized, summary_path)
+        return finalized
 
     def ensure_backup() -> None:
         nonlocal backup_done
@@ -5224,7 +6071,7 @@ def main(
         )
         if missing_after_retry:
             missing_after_retry_ids = [item.order_id for item in missing_after_retry if item.order_id]
-            raise RuntimeError(
+            raise AppendVerificationError(
                 "CRM semantic append verification failed after retry. "
                 "Missing order IDs: "
                 + ", ".join(missing_after_retry_ids[:20])
@@ -5307,4 +6154,19 @@ def main(
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        try:
+            failure_status, retryable_topup = _classify_import_failure(exc)
+            write_import_summary(
+                {
+                    "status": failure_status,
+                    "retryable_topup": retryable_topup,
+                    "error": str(exc),
+                },
+                data_path("logs", "import_orders_to_crm_latest.json"),
+            )
+        except Exception:
+            pass
+        raise

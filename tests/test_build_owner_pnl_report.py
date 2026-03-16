@@ -51,6 +51,11 @@ def _init_db(path: Path) -> None:
             unmapped_rows INTEGER,
             mapping_coverage_pct REAL
         );
+        CREATE TABLE fact_cashflow_commitments (
+            commit_date TEXT,
+            commit_type TEXT,
+            amount_kzt REAL
+        );
         """
     )
     conn.execute(
@@ -71,6 +76,13 @@ def _init_db(path: Path) -> None:
         INSERT INTO ads_spend_sidecar_daily
         (date, store_code, mapped_cost_kzt, unmapped_cost_kzt, total_cost_kzt, mapped_rows, unmapped_rows, mapping_coverage_pct)
         VALUES ('2026-01-15', 'UNIVERSAL', 900, 100, 1000, 9, 1, 90.0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_cashflow_commitments
+        (commit_date, commit_type, amount_kzt)
+        VALUES ('2026-01-20', 'OPEX', 500)
         """
     )
     conn.commit()
@@ -95,11 +107,49 @@ def _write_mapped_csv(path: Path, *, tx_date: str) -> None:
     ).to_csv(path, index=False, encoding="utf-8")
 
 
+def _write_opex_schedule(path: Path) -> None:
+    source = path.parent / "source.xlsx"
+    source.write_text("xlsx", encoding="utf-8")
+    path.write_text(f"source_xlsx: {source}\n", encoding="utf-8")
+
+
+def _write_webui_validation(
+    validation_dir: Path,
+    *,
+    decision: str = "CRM_REMAINS_CHRONOLOGY_AUTHORITY",
+    workbook_status: str = "PASS",
+    db_status: str = "PASS",
+) -> None:
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    (validation_dir / "shipped_day_authority_decision.json").write_text(
+        '{"status":"PASS","ok":true,"decision":"%s"}\n' % decision,
+        encoding="utf-8",
+    )
+    (validation_dir / "sales_against_workbook_report.json").write_text(
+        '{"status":"%s","ok":%s}\n' % (workbook_status, "true" if workbook_status == "PASS" else "false"),
+        encoding="utf-8",
+    )
+    for name, status in {
+        "webui_vs_db_report.json": db_status,
+        "ads_offer_universe_report.json": "PASS",
+        "ads_spend_reality_report.json": "PASS",
+        "cogs_completeness_report.json": "PASS",
+        "cogs_realism_report.json": "PASS",
+        "order_status_audit_report.json": "PASS",
+    }.items():
+        (validation_dir / name).write_text(
+            '{"status":"%s","ok":%s}\n' % (status, "true" if status == "PASS" else "false"),
+            encoding="utf-8",
+        )
+
+
 def test_build_owner_pnl_report_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "app.db"
     _init_db(db_path)
     mapped_csv = tmp_path / "mapped" / "2026-01-01_to_2026-03-02" / "ArchiveSales_ALL_STORES_statusdate_mapped.csv"
     _write_mapped_csv(mapped_csv, tx_date="2026-01-15")
+    opex_schedule = tmp_path / "opex_schedule.yaml"
+    _write_opex_schedule(opex_schedule)
 
     ads_source = tmp_path / "ads.db"
     ads_source.write_text("ok", encoding="utf-8")
@@ -116,6 +166,7 @@ def test_build_owner_pnl_report_pass(tmp_path: Path, monkeypatch: pytest.MonkeyP
         include_store_breakdown=True,
         strict=True,
         statusdate_cutover=date(2026, 1, 1),
+        opex_schedule_yaml=opex_schedule,
     )
     assert report["status"] == "PASS"
     jan = next(r for r in report["monthly_totals"] if r["sale_month"] == "2026-01")
@@ -125,6 +176,7 @@ def test_build_owner_pnl_report_pass(tmp_path: Path, monkeypatch: pytest.MonkeyP
         (jan["net_rev_kzt"] or 0.0) - (jan["cogs_kzt"] or 0.0) - (jan["ads_kzt"] or 0.0),
         abs=0.01,
     )
+    assert Path(report["ascii_path"]).exists()
 
 
 def test_build_owner_pnl_report_strict_fails_when_ads_stale(
@@ -135,6 +187,8 @@ def test_build_owner_pnl_report_strict_fails_when_ads_stale(
     _init_db(db_path)
     mapped_csv = tmp_path / "mapped" / "2026-01-01_to_2026-03-02" / "ArchiveSales_ALL_STORES_statusdate_mapped.csv"
     _write_mapped_csv(mapped_csv, tx_date="2026-01-15")
+    opex_schedule = tmp_path / "opex_schedule.yaml"
+    _write_opex_schedule(opex_schedule)
 
     ads_source = tmp_path / "ads.db"
     ads_source.write_text("stale", encoding="utf-8")
@@ -153,6 +207,7 @@ def test_build_owner_pnl_report_strict_fails_when_ads_stale(
             parity_output_root=tmp_path / "parity",
             include_store_breakdown=False,
             strict=True,
+            opex_schedule_yaml=opex_schedule,
         )
 
 
@@ -161,6 +216,8 @@ def test_build_owner_pnl_locks_pre_cutover_month(tmp_path: Path, monkeypatch: py
     _init_db(db_path)
     mapped_csv = tmp_path / "mapped" / "2025-12-01_to_2026-03-02" / "ArchiveSales_ALL_STORES_statusdate_mapped.csv"
     _write_mapped_csv(mapped_csv, tx_date="2025-12-15")
+    opex_schedule = tmp_path / "opex_schedule.yaml"
+    _write_opex_schedule(opex_schedule)
 
     conn = sqlite3.connect(db_path)
     conn.execute("DELETE FROM sales_fact_v2")
@@ -188,6 +245,7 @@ def test_build_owner_pnl_locks_pre_cutover_month(tmp_path: Path, monkeypatch: py
         parity_output_root=tmp_path / "parity",
         include_store_breakdown=False,
         strict=False,
+        opex_schedule_yaml=opex_schedule,
     )
     dec = next(r for r in report["monthly_totals"] if r["sale_month"] == "2025-12")
     assert dec["decision_grade"] is False
@@ -199,3 +257,228 @@ def test_build_owner_pnl_parser_default_cutover() -> None:
     parser = _build_parser()
     args = parser.parse_args(["--as-of", "2026-03-04"])
     assert args.statusdate_cutover == "2026-02-27"
+
+
+def test_build_owner_pnl_strict_fails_when_opex_required_and_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM fact_cashflow_commitments")
+    conn.commit()
+    conn.close()
+
+    mapped_csv = tmp_path / "mapped" / "2026-01-01_to_2026-03-02" / "ArchiveSales_ALL_STORES_statusdate_mapped.csv"
+    _write_mapped_csv(mapped_csv, tx_date="2026-01-15")
+    opex_schedule = tmp_path / "missing_schedule.yaml"
+
+    ads_source = tmp_path / "ads.db"
+    ads_source.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
+
+    with pytest.raises(OwnerPnlError):
+        build_owner_pnl_report(
+            db_path=db_path,
+            as_of=date(2026, 3, 2),
+            since=date(2026, 1, 1),
+            mapped_root=tmp_path / "mapped",
+            mapped_csv=mapped_csv,
+            output_root=tmp_path / "owner",
+            parity_output_root=tmp_path / "parity",
+            include_store_breakdown=False,
+            strict=True,
+            require_opex_for_net_publication=True,
+            opex_schedule_yaml=opex_schedule,
+        )
+
+
+def test_build_owner_pnl_webui_fallback_passes_with_workbook_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    mapped_csv = tmp_path / "mapped" / "2026-01-01_to_2026-03-02" / "ArchiveSales_ALL_STORES_statusdate_mapped.csv"
+    _write_mapped_csv(mapped_csv, tx_date="2026-01-15")
+    opex_schedule = tmp_path / "opex_schedule.yaml"
+    _write_opex_schedule(opex_schedule)
+    ads_source = tmp_path / "ads.db"
+    ads_source.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
+
+    validation = tmp_path / "validation"
+    _write_webui_validation(validation)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+
+    monkeypatch.setattr(
+        "scripts.build_owner_pnl_report.build_webui_truth_projection",
+        lambda **_kwargs: (
+            pd.DataFrame(
+                [
+                    {
+                        "order_id": "O1",
+                        "sale_date": "2026-01-15",
+                        "store_code": "UNIVERSAL",
+                        "sku_key": "SKU_A",
+                        "units": 2.0,
+                        "net_rev_kzt": 10000.0,
+                        "cogs_kzt": 4000.0,
+                        "db_match_status": "MATCHED",
+                    }
+                ]
+            ),
+            {"projected_rows": 1, "missing_in_db_orders": 0},
+        ),
+    )
+
+    report = build_owner_pnl_report(
+        db_path=db_path,
+        as_of=date(2026, 3, 2),
+        since=date(2026, 1, 1),
+        mapped_root=tmp_path / "mapped",
+        mapped_csv=mapped_csv,
+        output_root=tmp_path / "owner",
+        parity_output_root=tmp_path / "parity",
+        include_store_breakdown=True,
+        strict=True,
+        truth_source="webui_archive",
+        validation_dir=validation,
+        ledger_root=ledger,
+        statusdate_cutover=date(2026, 1, 1),
+        opex_schedule_yaml=opex_schedule,
+    )
+
+    assert report["status"] == "PASS"
+
+
+def test_build_owner_pnl_webui_fallback_fails_when_workbook_gate_red(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    mapped_csv = tmp_path / "mapped" / "2026-01-01_to_2026-03-02" / "ArchiveSales_ALL_STORES_statusdate_mapped.csv"
+    _write_mapped_csv(mapped_csv, tx_date="2026-01-15")
+    opex_schedule = tmp_path / "opex_schedule.yaml"
+    _write_opex_schedule(opex_schedule)
+    ads_source = tmp_path / "ads.db"
+    ads_source.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
+
+    validation = tmp_path / "validation"
+    _write_webui_validation(validation, workbook_status="FAIL")
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+
+    monkeypatch.setattr(
+        "scripts.build_owner_pnl_report.build_webui_truth_projection",
+        lambda **_kwargs: (
+            pd.DataFrame(
+                [
+                    {
+                        "order_id": "O1",
+                        "sale_date": "2026-01-15",
+                        "store_code": "UNIVERSAL",
+                        "sku_key": "SKU_A",
+                        "units": 2.0,
+                        "net_rev_kzt": 10000.0,
+                        "cogs_kzt": 4000.0,
+                        "db_match_status": "MATCHED",
+                    }
+                ]
+            ),
+            {"projected_rows": 1, "missing_in_db_orders": 0},
+        ),
+    )
+
+    with pytest.raises(OwnerPnlError):
+        build_owner_pnl_report(
+            db_path=db_path,
+            as_of=date(2026, 3, 2),
+            since=date(2026, 1, 1),
+            mapped_root=tmp_path / "mapped",
+            mapped_csv=mapped_csv,
+            output_root=tmp_path / "owner",
+            parity_output_root=tmp_path / "parity",
+            include_store_breakdown=True,
+            strict=True,
+            truth_source="webui_archive",
+            validation_dir=validation,
+            ledger_root=ledger,
+            statusdate_cutover=date(2026, 1, 1),
+            opex_schedule_yaml=opex_schedule,
+        )
+
+
+def test_build_owner_pnl_webui_uses_effective_missing_in_db_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    mapped_csv = tmp_path / "mapped" / "2026-01-01_to_2026-03-02" / "ArchiveSales_ALL_STORES_statusdate_mapped.csv"
+    _write_mapped_csv(mapped_csv, tx_date="2026-01-15")
+    opex_schedule = tmp_path / "opex_schedule.yaml"
+    _write_opex_schedule(opex_schedule)
+    ads_source = tmp_path / "ads.db"
+    ads_source.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
+
+    validation = tmp_path / "validation"
+    _write_webui_validation(validation)
+    (validation / "webui_vs_db_report.json").write_text(
+        (
+            "{"
+            "\"status\":\"PASS\","
+            "\"ok\":true,"
+            "\"missing_in_db_orders\":0,"
+            "\"period\":{\"start\":\"2026-01-01\",\"end\":\"2026-03-02\"},"
+            "\"ledger_root\":\"%s\""
+            "}\n"
+        )
+        % str((tmp_path / "ledger").resolve()),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "ledger"
+    ledger.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(
+        "scripts.build_owner_pnl_report.build_webui_truth_projection",
+        lambda **_kwargs: (
+            pd.DataFrame(
+                [
+                    {
+                        "order_id": "O1",
+                        "sale_date": "2026-01-15",
+                        "store_code": "UNIVERSAL",
+                        "sku_key": "SKU_A",
+                        "units": 2.0,
+                        "net_rev_kzt": 10000.0,
+                        "cogs_kzt": 4000.0,
+                        "db_match_status": "MATCHED",
+                    }
+                ]
+            ),
+            {"projected_rows": 1, "missing_in_db_orders": 5},
+        ),
+    )
+
+    report = build_owner_pnl_report(
+        db_path=db_path,
+        as_of=date(2026, 3, 2),
+        since=date(2026, 1, 1),
+        mapped_root=tmp_path / "mapped",
+        mapped_csv=mapped_csv,
+        output_root=tmp_path / "owner",
+        parity_output_root=tmp_path / "parity",
+        include_store_breakdown=False,
+        strict=True,
+        truth_source="webui_archive",
+        validation_dir=validation,
+        ledger_root=ledger,
+        statusdate_cutover=date(2026, 1, 1),
+        opex_schedule_yaml=opex_schedule,
+    )
+
+    assert report["status"] == "PASS"
+    assert report["webui_truth_projection"]["missing_in_db_orders"] == 0

@@ -25,6 +25,35 @@ DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "identity_stabilization"
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
+def _entry_required(row: sqlite3.Row, *, as_of: date) -> bool:
+    status_detail = str(row["kaspi_status_detail"] or "").strip().upper()
+    internal_status = str(row["internal_status"] or "").strip().upper()
+    kaspi_status = str(row["kaspi_status"] or "").strip().upper()
+
+    if status_detail in {"CANCELLED", "RETURNED"}:
+        return False
+    if internal_status in {"CANCELLED", "RETURNED"}:
+        return False
+
+    pending_like = {"ACCEPTED_BY_MERCHANT", "APPROVED_BY_BANK", "NEW", "ASSEMBLY"}
+    if (
+        status_detail in pending_like
+        or internal_status in {"NEW", "ACCEPTED", "READY"}
+        or kaspi_status in {"NEW", "ASSEMBLY"}
+    ):
+        created_text = str(row["created_at"] or "").strip()
+        created_date = created_text[:10] if len(created_text) >= 10 else ""
+        if created_date <= as_of.isoformat():
+            return False
+
+    return True
+
+
 def validate_order_entries_freshness(
     *,
     db_path: Path,
@@ -42,13 +71,22 @@ def validate_order_entries_freshness(
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
+        order_cols = _table_columns(conn, "fact_orders_kaspi")
+        detail_expr = "COALESCE(kaspi_status_detail,'')" if "kaspi_status_detail" in order_cols else "''"
+        internal_expr = "COALESCE(internal_status,'')" if "internal_status" in order_cols else "''"
+        kaspi_expr = "COALESCE(kaspi_status,'')" if "kaspi_status" in order_cols else "''"
         order_rows = conn.execute(
             """
-            SELECT order_id, UPPER(COALESCE(store_code,'')) AS store_code, COALESCE(created_at,'') AS created_at
+            SELECT order_id,
+                   UPPER(COALESCE(store_code,'')) AS store_code,
+                   COALESCE(created_at,'') AS created_at,
+                   {detail_expr} AS kaspi_status_detail,
+                   {internal_expr} AS internal_status,
+                   {kaspi_expr} AS kaspi_status
             FROM fact_orders_kaspi
             WHERE date(created_at) BETWEEN ? AND ?
               AND UPPER(COALESCE(store_code,'')) IN ({})
-            """.format(",".join(["?"] * len(stores))),
+            """.format(",".join(["?"] * len(stores)), detail_expr=detail_expr, internal_expr=internal_expr, kaspi_expr=kaspi_expr),
             (start_day.isoformat(), as_of.isoformat(), *stores),
         ).fetchall()
 
@@ -79,6 +117,8 @@ def validate_order_entries_freshness(
     missing_rows: list[dict[str, str]] = []
 
     for row in order_rows:
+        if not _entry_required(row, as_of=as_of):
+            continue
         store = str(row["store_code"] or "").strip().upper()
         order_id = str(row["order_id"] or "").strip()
         key = f"{store}:{order_id}"

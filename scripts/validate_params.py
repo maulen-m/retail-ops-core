@@ -434,7 +434,10 @@ def main():
             result.add_error(f"single_truth_system error: {exc}")
 
         try:
-            freeze_errors = validate_on_delivery_freeze(db_path=db_path)
+            freeze_errors = validate_on_delivery_freeze(
+                db_path=db_path,
+                until=date.fromisoformat(as_of_iso),
+            )
             if freeze_errors:
                 for err in freeze_errors:
                     result.add_error(f"on_delivery_freeze: {err}")

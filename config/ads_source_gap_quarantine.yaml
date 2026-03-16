@@ -1,0 +1,7 @@
+version: 1
+quarantines:
+  - order_id: "776936815"
+    sale_date: "2026-01-09"
+    store_code: "ACMEWEAR"
+    sku_key: "CL_NEW-CLO2_MEN_HUS_GREEN"
+    reason: "missing_external_marketing_source_evidence_after_fresh_jan_feb_refresh"

@@ -2,10 +2,12 @@
 
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
 from scripts.kaspi_marketing_scrape import (
+    ensure_db_schema,
     parse_campaigns_report_csv,
     merge_campaign_report,
     merge_product_rows,
@@ -18,6 +20,7 @@ from scripts.kaspi_marketing_scrape import (
     wait_for_login,
     login_required,
     should_skip_inactive,
+    record_ads_source_refresh_run,
 )
 
 
@@ -263,6 +266,46 @@ def test_login_required_checks_url_and_password_input() -> None:
     assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 0)) is False
     assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 0, cta_count=1)) is True
     assert login_required(FakePage("https://marketing.kaspi.kz/advertising/", 0, login_link_count=1)) is True
+
+
+def test_record_ads_source_refresh_run_persists_success_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "ads.db"
+    conn = sqlite3.connect(db_path)
+    ensure_db_schema(conn)
+    record_ads_source_refresh_run(
+        conn,
+        {
+            "run_id": "20260308_200503",
+            "started_at": "2026-03-08T20:05:03+06:00",
+            "finished_at": "2026-03-08T20:05:16+06:00",
+            "merchant_id": "761413",
+            "store_code": "30000001",
+            "date_start": "2026-01-01",
+            "date_end": "2026-02-28",
+            "campaign_days_total": 0,
+            "product_rows_total": 0,
+            "download_failure_count": 0,
+            "status": "SUCCESS",
+            "notes_json": '["zero campaigns observed"]',
+        },
+    )
+    row = conn.execute(
+        """
+        SELECT run_id, merchant_id, store_code, date_start, date_end, product_rows_total, status
+        FROM ads_source_refresh_runs
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row == (
+        "20260308_200503",
+        "761413",
+        "30000001",
+        "2026-01-01",
+        "2026-02-28",
+        0,
+        "SUCCESS",
+    )
 
 
 def test_should_skip_inactive_only_after_consecutive_inactive() -> None:

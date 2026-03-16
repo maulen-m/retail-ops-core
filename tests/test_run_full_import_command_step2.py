@@ -66,6 +66,18 @@ def test_dotenv_export_skips_shell_invalid_keys():
     assert "if not SHELL_KEY_RE.match(key):" in text
 
 
+def test_command_only_runs_excel_session_preflight_at_write_boundaries():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    assert "run_excel_session_preflight()" in text
+    assert "read_import_summary_fields()" in text
+    assert "python3 scripts/import_orders_to_crm.py --excel-session-preflight-only" in text
+    assert 'run_excel_session_preflight "Preflight: validating Excel session state..."' not in text
+    assert text.index(
+        'run_excel_session_preflight "Preflight: validating Excel session state before CRM import..."'
+    ) < text.index("# Step 2: Import new orders to CRM (also updates existing order status columns)")
+
+
 def test_step2c_backfill_is_skipped_when_import_is_noop():
     script_path = Path("excel_ui/run_full_import.command")
     text = script_path.read_text(encoding="utf-8")
@@ -85,6 +97,17 @@ def test_step2b_validation_is_skipped_in_no_update_mode():
     text = script_path.read_text(encoding="utf-8")
     assert "STEP2_NO_UPDATE=1" in text
     assert "NO-OP: skipping pending order validation in --no-update mode." in text
+
+
+def test_step2_failure_skips_backfill_health_and_final_gate():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    assert "STEP2_SKIP_DOWNSTREAM=0" in text
+    assert 'if [ "${STEP2_RETRYABLE_TOPUP}" != "1" ]; then' in text
+    assert "NO-OP: skipping Line61 Kaspi_name_core backfill (Step 2 did not reach a safe write-complete state)." in text
+    assert "NO-OP: skipping pending order validation (Step 2 did not reach a safe write-complete state)." in text
+    assert "NO-OP: skipping post-import health report (Step 2 did not reach a safe write-complete state)." in text
+    assert "NO-OP: skipping final success gate (Step 2 did not reach a safe write-complete state)." in text
 
 
 def test_step2_propagates_include_overdue_date_window_flags():
@@ -118,6 +141,7 @@ def test_post_import_health_triggers_bounded_late_arrival_topup_before_gate():
     text = script_path.read_text(encoding="utf-8")
     assert 'LATE_ARRIVAL_RETRY_MAX="${KASPI_LATE_ARRIVAL_RETRY_MAX:-2}"' in text
     assert "Late-arrival top-up pass" in text
+    assert 'run_excel_session_preflight "Preflight: validating Excel session state before late-arrival top-up..."' in text
     assert "Post-import health found ${MISS_CRM} live API orders missing in CRM." in text
     assert "Re-exporting ActiveOrders and rerunning CRM import." in text
     assert 'ACTIVEORDERS_SNAPSHOT=$(mktemp -t activeorders_snapshot_' in text

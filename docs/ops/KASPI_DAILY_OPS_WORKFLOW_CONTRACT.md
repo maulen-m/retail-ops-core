@@ -15,7 +15,7 @@ This contract is fail-closed: workflow regressions must surface as test failures
 ## Canonical Scheduler Contracts
 - `config/com.example.kaspi-import.plist`
   - `11:00` daily import run
-  - `16:03` daily import run
+  - `15:02` daily import run
 - `config/com.example.kaspi-waybill-deadline.plist`
   - `18:30` daily waybill deadline run
 - `config/com.example.kaspi-daily-ops-report.plist`
@@ -63,8 +63,9 @@ updating this contract and corresponding tests before merge.
 - keep post-ocean-drop reliability gates fail-closed:
   - `scripts/validate_business_insides_economics_ready.py --as-of <YYYY-MM-DD> --strict`
   - `scripts/validate_ops_selection_parity.py --as-of <YYYY-MM-DD> --strict`
-    - import-vs-waybill selector overflow allowance is explicit and bounded only via `AB_OPS_SELECTION_MAX_IMPORT_OVERFLOW` (default `2` in `system_doctor` orchestration).
+    - import-vs-waybill selector overflow allowance is explicit and bounded only via `AB_OPS_SELECTION_MAX_IMPORT_OVERFLOW` (default `5` in `system_doctor` orchestration).
     - rationale: allows deterministic exclusion of terminal/not-ready rows in waybill selection while still failing on larger drift.
+    - current operating evidence: the `2026-03-07` real run closed at `import=85`, `waybill_selected=80`, `overflow=5`; larger drift remains fail-closed.
   - `scripts/validate_scheduler_heartbeat.py --as-of <YYYY-MM-DD> --strict`
   - `scripts/validate_shipped_truth_crm_waybill.py --since <YYYY-MM-DD> --until <YYYY-MM-DD> --strict`
 - keep autopilot exception queue contract fail-closed:

@@ -47,6 +47,44 @@ def _summarize_output(output: str) -> str:
     return lines[-1]
 
 
+def _load_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _publication_validation_dir(root: Path, as_of: str) -> Path | None:
+    publication_path = root / "exports" / "north_star_owner_review" / as_of / "publication_readiness.json"
+    payload = _load_json(publication_path)
+    if not isinstance(payload, dict):
+        return None
+    gates = payload.get("gates") or {}
+    if not isinstance(gates, dict):
+        return None
+    candidates: list[Path] = []
+    for gate in gates.values():
+        if not isinstance(gate, dict):
+            continue
+        raw_path = gate.get("path")
+        if not raw_path:
+            continue
+        candidate = Path(str(raw_path))
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        parent = candidate.parent.resolve()
+        if parent.exists():
+            candidates.append(parent)
+    if not candidates:
+        return None
+    counts: dict[Path, int] = {}
+    for candidate in candidates:
+        counts[candidate] = counts.get(candidate, 0) + 1
+    return sorted(counts.items(), key=lambda item: (item[1], str(item[0])))[-1][0]
+
+
 def _render_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# System Doctor Report",
@@ -87,7 +125,16 @@ def _render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
+def _doctor_checks(
+    *,
+    root: Path,
+    as_of: str,
+    truth_source: str = "db",
+    validation_dir: Path | None = None,
+    pack_root: Path | None = None,
+    ledger_root: Path | None = None,
+    download_run_id: str | None = None,
+) -> list[dict[str, str]]:
     quoted_root = shlex.quote(str(root))
     quoted_as_of = shlex.quote(as_of)
     try:
@@ -103,13 +150,30 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
     triage_md_path = shlex.quote(str(root / "exports" / "exceptions" / as_of / "exceptions_triage.md"))
     economics_since = shlex.quote(str(os.environ.get("AB_ECONOMICS_PARITY_SINCE", "2025-06-06")))
     statusdate_cutover = shlex.quote(str(os.environ.get("AB_STATUSDATE_CUTOVER", "2026-02-27")))
-    ops_selection_overflow = int(os.environ.get("AB_OPS_SELECTION_MAX_IMPORT_OVERFLOW", "2"))
+    ops_selection_overflow = int(os.environ.get("AB_OPS_SELECTION_MAX_IMPORT_OVERFLOW", "5"))
     identity_validation_root = root / "exports" / "validation" / "identity_stabilization"
     identity_reference_csv = shlex.quote(
         str(identity_validation_root / as_of / "offer_identity_reference.csv")
     )
+    quoted_truth_source = shlex.quote(truth_source)
+    if validation_dir is not None:
+        resolved_validation_dir = validation_dir
+    elif truth_source == "webui_archive":
+        resolved_validation_dir = root / "exports" / "validation" / "webui_archive_single_truth" / as_of
+    else:
+        default_validation_dir = root / "exports" / "validation" / "crm_north_star_restate" / as_of
+        resolved_validation_dir = default_validation_dir if default_validation_dir.exists() else (
+            _publication_validation_dir(root, as_of) or default_validation_dir
+        )
+    resolved_pack_root = pack_root or (root / "exports" / "webui_archive_packs" / "webui_archive_seed_20260306")
+    resolved_ledger_root = ledger_root or (root / "exports" / "order_status_ledger" / "webui_status_ledger_20260306")
+    resolved_download_run_id = download_run_id or "webui_archive_download_20260306"
+    quoted_validation_dir = shlex.quote(str(resolved_validation_dir))
+    quoted_pack_root = shlex.quote(str(resolved_pack_root))
+    quoted_ledger_root = shlex.quote(str(resolved_ledger_root))
+    quoted_download_run_id = shlex.quote(str(resolved_download_run_id))
 
-    return [
+    checks = [
         {
             "layer": "runtime",
             "check": "scheduler_validate_only",
@@ -209,6 +273,7 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 f"--reference-root {shlex.quote(str(root / 'exports' / 'sales_archive_statusdate_mapped'))} "
                 f"--output-root {shlex.quote(str(identity_validation_root))} "
                 "--max-delivery-lag-days 7 "
+                f"--statusdate-cutover {statusdate_cutover} "
                 "--strict"
             ),
         },
@@ -329,6 +394,42 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
+            "check": "validate_opex_readiness",
+            "cmd": (
+                "python3 scripts/validate_opex_readiness.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'opex_readiness'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_returns_economics_audit",
+            "cmd": (
+                "python3 scripts/validate_returns_economics_audit.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--since {economics_since} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'returns_economics'))} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
+            "check": "validate_monthly_cash_reconciliation",
+            "cmd": (
+                "python3 scripts/validate_monthly_cash_reconciliation.py "
+                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                f"--as-of {quoted_as_of} "
+                f"--since {economics_since} "
+                f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'cash_reconciliation'))} "
+                f"--statusdate-cutover {statusdate_cutover} "
+                "--strict"
+            ),
+        },
+        {
+            "layer": "governance",
             "check": "validate_sales_archive_statusdate_mapped",
             "cmd": (
                 "python3 scripts/validate_sales_archive_statusdate_mapped.py "
@@ -366,8 +467,15 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
                 f"--output-root {shlex.quote(str(root / 'exports' / 'owner_pnl'))} "
                 f"--parity-output-root {shlex.quote(str(root / 'exports' / 'validation' / 'economics_parity'))} "
                 f"--statusdate-cutover {statusdate_cutover} "
-                "--include-store-breakdown "
-                "--strict"
+                f"--truth-source {quoted_truth_source} "
+                f"--validation-dir {quoted_validation_dir} "
+                + (
+                    f"--ledger-root {quoted_ledger_root} "
+                    if truth_source == "webui_archive"
+                    else ""
+                )
+                + "--include-store-breakdown "
+                + "--strict"
             ),
         },
         {
@@ -404,12 +512,21 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
         {
             "layer": "governance",
-            "check": "validate_kaspi_archive_pack_integrity_ui",
+            "check": "triage_owner_truth_stoplines",
             "cmd": (
-                "python3 scripts/validate_kaspi_archive_pack_integrity.py "
-                "--source ui "
+                "python3 scripts/triage_owner_truth_stoplines.py "
                 f"--as-of {quoted_as_of} "
-                "--strict"
+                f"--project-root {quoted_root} "
+                f"--truth-source {quoted_truth_source} "
+                f"--validation-dir {quoted_validation_dir} "
+                + (
+                    f"--pack-root {quoted_pack_root} "
+                    f"--ledger-root {quoted_ledger_root} "
+                    f"--download-run-id {quoted_download_run_id} "
+                    if truth_source == "webui_archive"
+                    else ""
+                )
+                + "--strict"
             ),
         },
         {
@@ -485,6 +602,90 @@ def _doctor_checks(*, root: Path, as_of: str) -> list[dict[str, str]]:
         },
     ]
 
+    if truth_source == "webui_archive":
+        checks.extend(
+            [
+                {
+                    "layer": "governance",
+                    "check": "validate_webui_archive_pack_integrity",
+                    "cmd": (
+                        "python3 scripts/validate_webui_archive_pack_integrity.py "
+                        f"--pack-root {quoted_pack_root} --strict"
+                    ),
+                },
+                {
+                    "layer": "governance",
+                    "check": "validate_status_ledger_continuity",
+                    "cmd": (
+                        "python3 scripts/validate_status_ledger_continuity.py "
+                        f"--ledger-root {quoted_ledger_root} "
+                        "--start 2026-01-01 --end 2026-02-29 --strict"
+                    ),
+                },
+                {
+                    "layer": "governance",
+                    "check": "validate_webui_crm_shipped_day_authority",
+                    "cmd": (
+                        "python3 scripts/validate_webui_crm_shipped_day_authority.py "
+                        "--start 2026-01-01 --end 2026-02-29 "
+                        f"--output-dir {quoted_validation_dir} "
+                        "--strict"
+                    ),
+                },
+                {
+                    "layer": "governance",
+                    "check": "validate_sales_against_workbook",
+                    "cmd": (
+                        "python3 scripts/validate_sales_against_workbook.py "
+                        "--start 2026-01-01 --end 2026-02-29 "
+                        f"--output-dir {quoted_validation_dir} "
+                        "--strict"
+                    ),
+                },
+                {
+                    "layer": "governance",
+                    "check": "validate_webui_archive_vs_current_db",
+                    "cmd": (
+                        "python3 scripts/validate_webui_archive_vs_current_db.py "
+                        "--start 2026-01-01 --end 2026-02-29 "
+                        f"--ledger-root {quoted_ledger_root} "
+                        f"--output-dir {quoted_validation_dir} "
+                        "--strict"
+                    ),
+                },
+                {
+                    "layer": "governance",
+                    "check": "validate_playwright_archive_downloads",
+                    "cmd": (
+                        "python3 scripts/validate_playwright_archive_downloads.py "
+                        f"--run-id {quoted_download_run_id} --strict"
+                    ),
+                },
+                {
+                    "layer": "governance",
+                    "check": "validate_order_status_audit_history",
+                    "cmd": (
+                        "python3 scripts/validate_order_status_audit_history.py "
+                        f"--as-of {quoted_as_of} --strict"
+                    ),
+                },
+            ]
+        )
+    else:
+        checks.append(
+            {
+                "layer": "governance",
+                "check": "validate_kaspi_archive_pack_integrity_ui",
+                "cmd": (
+                    "python3 scripts/validate_kaspi_archive_pack_integrity.py "
+                    "--source ui "
+                    "--strict"
+                ),
+            }
+        )
+
+    return checks
+
 
 def run_system_doctor(
     *,
@@ -493,6 +694,11 @@ def run_system_doctor(
     output_dir: Path,
     strict: bool,
     entry_point: str = "all",
+    truth_source: str = "db",
+    validation_dir: Path | None = None,
+    pack_root: Path | None = None,
+    ledger_root: Path | None = None,
+    download_run_id: str | None = None,
     runner: Runner | None = None,
 ) -> dict[str, Any]:
     root = Path(project_root).resolve()
@@ -500,7 +706,15 @@ def run_system_doctor(
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
 
-    checks = _doctor_checks(root=root, as_of=as_of)
+    checks = _doctor_checks(
+        root=root,
+        as_of=as_of,
+        truth_source=truth_source,
+        validation_dir=validation_dir,
+        pack_root=pack_root,
+        ledger_root=ledger_root,
+        download_run_id=download_run_id,
+    )
     layer_order = ["runtime", "truth", "domain", "execution", "governance"]
 
     check_rows: list[dict[str, Any]] = []
@@ -553,6 +767,7 @@ def run_system_doctor(
         "as_of": as_of,
         "project_root": str(root),
         "entry_point": entry_point,
+        "truth_source": truth_source,
         "ok": overall_ok,
         "status": "GREEN" if overall_ok else "RED",
         "blocked_layer": blocked_layer,
@@ -588,6 +803,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["all", "po", "cashflow", "inventory", "api", "docs"],
         default="all",
     )
+    parser.add_argument("--truth-source", choices=["db", "webui_archive"], default="db")
+    parser.add_argument("--validation-dir", type=Path, default=None)
+    parser.add_argument("--pack-root", type=Path, default=None)
+    parser.add_argument("--ledger-root", type=Path, default=None)
+    parser.add_argument("--download-run-id", default=None)
     parser.add_argument("--strict", action="store_true")
     return parser
 
@@ -608,6 +828,11 @@ def main() -> int:
         output_dir=output_dir,
         strict=bool(args.strict),
         entry_point=args.entry_point,
+        truth_source=str(args.truth_source),
+        validation_dir=args.validation_dir,
+        pack_root=args.pack_root,
+        ledger_root=args.ledger_root,
+        download_run_id=args.download_run_id,
     )
 
     print(f"system_health_json={report['json_path']}")

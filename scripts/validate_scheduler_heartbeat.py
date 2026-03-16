@@ -17,6 +17,7 @@ DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "daily"
 DEFAULT_IMPORT_PLIST = PROJECT_ROOT / "config" / "com.example.kaspi-import.plist"
 DEFAULT_WAYBILL_PLIST = PROJECT_ROOT / "config" / "com.example.kaspi-waybill-deadline.plist"
 DEFAULT_REPORT_PLIST = PROJECT_ROOT / "config" / "com.example.kaspi-daily-ops-report.plist"
+DEFAULT_INSTALLED_IMPORT_PLIST = Path.home() / "Library" / "LaunchAgents" / "com.example.kaspi-import-v2.plist"
 DEFAULT_IMPORT_LOG = PROJECT_ROOT / "runtime_logs" / "kaspi_import_stdout.log"
 DEFAULT_WAYBILL_LOG = PROJECT_ROOT / "runtime_logs" / "kaspi_waybill_deadline_stdout.log"
 DEFAULT_REPORT_LOG = PROJECT_ROOT / "runtime_logs" / "kaspi_daily_ops_report_stdout.log"
@@ -24,6 +25,10 @@ DEFAULT_CONTRACT_DOC = PROJECT_ROOT / "docs" / "ops" / "KASPI_DAILY_OPS_WORKFLOW
 DEFAULT_DAILY_SOP = PROJECT_ROOT / "docs" / "DAILY_SOP.md"
 DEFAULT_WAYBILL_ARCHIVE_ROOT = PROJECT_ROOT / "excel_ui" / "Archive"
 TIME_RE = re.compile(r"Time:\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):(\d{2})")
+EXPECTED_IMPORT_PROGRAM_ARGUMENTS = [
+    str(PROJECT_ROOT / ".venv" / "bin" / "python"),
+    str(PROJECT_ROOT / "scripts" / "run_kaspi_import_scheduler.py"),
+]
 
 
 def _read_plist(path: Path) -> dict[str, Any]:
@@ -47,6 +52,13 @@ def _parse_import_schedule(plist_payload: dict[str, Any]) -> list[tuple[int, int
     return sorted(result)
 
 
+def _import_schedule_has_seconds(plist_payload: dict[str, Any]) -> bool:
+    rows = plist_payload.get("StartCalendarInterval") or []
+    if not isinstance(rows, list):
+        return False
+    return any(isinstance(row, dict) and "Second" in row for row in rows)
+
+
 def _parse_single_schedule(plist_payload: dict[str, Any]) -> tuple[int, int] | None:
     row = plist_payload.get("StartCalendarInterval") or {}
     if not isinstance(row, dict):
@@ -56,6 +68,13 @@ def _parse_single_schedule(plist_payload: dict[str, Any]) -> tuple[int, int] | N
     if hour < 0 or minute < 0:
         return None
     return (hour, minute)
+
+
+def _parse_program_arguments(plist_payload: dict[str, Any]) -> list[str]:
+    args = plist_payload.get("ProgramArguments") or []
+    if not isinstance(args, list):
+        return []
+    return [str(item) for item in args]
 
 
 def _load_day_times(log_path: Path, as_of: str) -> list[tuple[int, int, int]]:
@@ -134,6 +153,7 @@ def validate_scheduler_heartbeat(
     report_log: Path,
     contract_doc: Path,
     daily_sop_doc: Path,
+    installed_import_plist: Path | None = None,
     waybill_archive_root: Path = DEFAULT_WAYBILL_ARCHIVE_ROOT,
     tolerance_minutes: int,
     require_report_job: bool,
@@ -143,7 +163,7 @@ def validate_scheduler_heartbeat(
     checks: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    import_schedule_expected = [(11, 0), (16, 3)]
+    import_schedule_expected = [(11, 0), (15, 2)]
     waybill_schedule_expected = (18, 30)
     report_schedule_expected = (19, 10)
 
@@ -164,6 +184,74 @@ def validate_scheduler_heartbeat(
     )
     if import_schedule_actual != import_schedule_expected:
         errors.append(f"import plist schedule drift: {import_schedule_actual} vs {import_schedule_expected}")
+
+    import_has_seconds = _import_schedule_has_seconds(import_payload)
+    checks.append(
+        {
+            "check": "import_plist_has_no_second_component",
+            "ok": not import_has_seconds,
+            "details": "second keys forbidden for import schedule",
+        }
+    )
+    if import_has_seconds:
+        errors.append("import plist contains forbidden Second schedule component")
+
+    if installed_import_plist is not None:
+        if not installed_import_plist.exists():
+            checks.append(
+                {
+                    "check": "installed_import_plist_present",
+                    "ok": False,
+                    "details": str(installed_import_plist),
+                }
+            )
+            errors.append(f"installed import plist missing: {installed_import_plist}")
+        else:
+            installed_import_payload = _read_plist(installed_import_plist)
+            installed_import_schedule_actual = _parse_import_schedule(installed_import_payload)
+            checks.append(
+                {
+                    "check": "installed_import_plist_schedule_contract",
+                    "ok": installed_import_schedule_actual == import_schedule_expected,
+                    "details": (
+                        f"actual={installed_import_schedule_actual} "
+                        f"expected={import_schedule_expected} path={installed_import_plist}"
+                    ),
+                }
+            )
+            if installed_import_schedule_actual != import_schedule_expected:
+                errors.append(
+                    "installed import plist schedule drift: "
+                    f"{installed_import_schedule_actual} vs {import_schedule_expected}"
+                )
+
+            installed_import_has_seconds = _import_schedule_has_seconds(installed_import_payload)
+            checks.append(
+                {
+                    "check": "installed_import_plist_has_no_second_component",
+                    "ok": not installed_import_has_seconds,
+                    "details": str(installed_import_plist),
+                }
+            )
+            if installed_import_has_seconds:
+                errors.append("installed import plist contains forbidden Second schedule component")
+
+            installed_program_arguments = _parse_program_arguments(installed_import_payload)
+            checks.append(
+                {
+                    "check": "installed_import_plist_program_arguments_contract",
+                    "ok": installed_program_arguments == EXPECTED_IMPORT_PROGRAM_ARGUMENTS,
+                    "details": (
+                        f"actual={installed_program_arguments} "
+                        f"expected={EXPECTED_IMPORT_PROGRAM_ARGUMENTS}"
+                    ),
+                }
+            )
+            if installed_program_arguments != EXPECTED_IMPORT_PROGRAM_ARGUMENTS:
+                errors.append(
+                    "installed import plist ProgramArguments drift: "
+                    f"{installed_program_arguments} vs {EXPECTED_IMPORT_PROGRAM_ARGUMENTS}"
+                )
 
     checks.append(
         {
@@ -189,7 +277,7 @@ def validate_scheduler_heartbeat(
             f"daily ops report plist schedule drift: {report_schedule_actual} vs {report_schedule_expected}"
         )
 
-    schedule_tokens = ["11:00", "16:03", "18:30", "19:10"]
+    schedule_tokens = ["11:00", "15:02", "18:30", "19:10"]
     for path, check_name in (
         (contract_doc, "contract_doc_schedule_tokens"),
         (daily_sop_doc, "daily_sop_schedule_tokens"),
@@ -339,6 +427,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--import-plist", type=Path, default=DEFAULT_IMPORT_PLIST)
+    parser.add_argument("--installed-import-plist", type=Path, default=DEFAULT_INSTALLED_IMPORT_PLIST)
     parser.add_argument("--waybill-plist", type=Path, default=DEFAULT_WAYBILL_PLIST)
     parser.add_argument("--report-plist", type=Path, default=DEFAULT_REPORT_PLIST)
     parser.add_argument("--import-log", type=Path, default=DEFAULT_IMPORT_LOG)
@@ -364,6 +453,7 @@ def main() -> int:
         import_log=args.import_log,
         waybill_log=args.waybill_log,
         report_log=args.report_log,
+        installed_import_plist=args.installed_import_plist,
         waybill_archive_root=args.waybill_archive_root,
         contract_doc=args.contract_doc,
         daily_sop_doc=args.daily_sop_doc,

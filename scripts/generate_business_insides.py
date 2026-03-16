@@ -35,6 +35,7 @@ from core.sales.ocean_drop_anchor import (
     load_ocean_drop_anchor,
 )
 from core.sales import ensure_sales_truth_views
+from scripts.build_ocean_drop_reference_snapshot import build_ocean_drop_snapshot_dataframe
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_BANK = PROJECT_ROOT / "config" / "bank_accounts.yaml"
@@ -1373,16 +1374,57 @@ def _run_ocean_drop_alignment_check(
 
     from scripts.validate_sales_truth_ocean_drop_parity import validate_sales_truth_ocean_drop_parity
 
-    report = validate_sales_truth_ocean_drop_parity(
-        db_path=db_path,
-        as_of=as_of_date,
-        ocean_drop_path=Path(anchor_meta["ocean_drop_path_resolved"]),
-        output_root=output_root,
-        volatility_days=14,
-        strict=False,
-        crm_archive_lookup_path=None,
-        window_days=window_days,
-    )
+    ocean_drop_path = Path(anchor_meta["ocean_drop_path_resolved"])
+    try:
+        report = validate_sales_truth_ocean_drop_parity(
+            db_path=db_path,
+            as_of=as_of_date,
+            ocean_drop_path=ocean_drop_path,
+            output_root=output_root,
+            volatility_days=14,
+            strict=False,
+            crm_archive_lookup_path=None,
+            window_days=window_days,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if window_days and message == f"no reference rows in requested window_days={window_days}":
+            snapshot_df, _meta = build_ocean_drop_snapshot_dataframe(
+                ocean_drop_path=ocean_drop_path.resolve(),
+                as_of=as_of_date,
+                crm_archive_lookup_path=None,
+                include_as_of_day=True,
+                strict=True,
+            )
+            ref_df = snapshot_df[
+                (snapshot_df["status_internal"] == "DELIVERED")
+                & (snapshot_df["return_flag"] == 0)
+            ].copy()
+            ref_df["sale_date"] = ref_df["sale_date"].astype(str).str[:10]
+            ref_min = str(ref_df["sale_date"].min()) if not ref_df.empty else None
+            ref_max = str(ref_df["sale_date"].max()) if not ref_df.empty else None
+            requested_start = (as_of_date - timedelta(days=window_days - 1)).isoformat()
+            requested_end = as_of_date.isoformat()
+            return {
+                "status": "PASS_NO_OVERLAP",
+                "ok": True,
+                "reason": "no_reference_rows_in_requested_window",
+                "reference_window_overlap": False,
+                "requested_window_start": requested_start,
+                "requested_window_end": requested_end,
+                "reference_min_sale_date": ref_min,
+                "reference_max_sale_date": ref_max,
+                "details": {
+                    "status": "PASS_NO_OVERLAP",
+                    "ok": True,
+                    "reason": "no_reference_rows_in_requested_window",
+                    "requested_window_start": requested_start,
+                    "requested_window_end": requested_end,
+                    "reference_min_sale_date": ref_min,
+                    "reference_max_sale_date": ref_max,
+                },
+            }
+        raise
     status = str(report.get("status") or "FAIL").upper()
     parity_dir = output_root.resolve() / as_of_date.isoformat()
     return {

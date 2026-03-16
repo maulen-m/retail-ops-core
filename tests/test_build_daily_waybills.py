@@ -609,6 +609,166 @@ def test_write_send_batch_manifest_contains_stable_pdf_keys_and_overdue_orders(t
         assert entry["source_row_ids"]
 
 
+def test_write_send_batch_manifest_counts_unique_orders_per_store_for_multi_line(tmp_path: Path):
+    today_root = tmp_path / "Today"
+    batch_root = today_root / "MERGED" / "SEND" / "10.03.26_MERGED_qnt1"
+    special_dir = batch_root / "SPECIAL_multi_line"
+    special_dir.mkdir(parents=True, exist_ok=True)
+
+    special_pdf = special_dir / "Местовая-1)_Леггинсы_белый-M-1_Леггинсы_черные-L-1.pdf"
+    special_pdf.write_bytes(b"%PDF-1.4\n%waybill\n")
+
+    first_line = OrderItem(
+        "1002", "Universal", "Леггинсы_белый", "M", "SKU1", "SKU1-M", 1, "offer", date(2026, 3, 9)
+    )
+    second_line = OrderItem(
+        "1002", "Universal", "Леггинсы_черные", "L", "SKU2", "SKU2-L", 1, "offer", date(2026, 3, 9)
+    )
+    first_line.source_row_id = "1002@2026-03-09#1"
+    second_line.source_row_id = "1002@2026-03-09#2"
+
+    groups = [
+        WaybillGroup(
+            group_type="MULTI_LINE",
+            store_name="MERGED",
+            items=[first_line, second_line],
+            pdf_path=special_pdf,
+            pdf_paths=[special_pdf],
+            output_filename="SPECIAL_multi_line/Местовая-1)_Леггинсы_белый-M-1_Леггинсы_черные-L-1.pdf",
+        ),
+    ]
+
+    manifest_path = write_send_batch_manifest(
+        batch_root=batch_root,
+        today_root=today_root,
+        groups=groups,
+        target_date=date(2026, 3, 10),
+    )
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert payload["counts"]["orders"] == 1
+    assert payload["entries"][0]["order_counts_by_store"] == {"Universal": 1}
+
+
+def test_write_send_batch_manifest_assigns_send_sequence_with_color_spacing_and_size_rise(
+    tmp_path: Path,
+):
+    today_root = tmp_path / "Today"
+    batch_root = today_root / "MERGED" / "SEND" / "10.03.26_MERGED_qnt4"
+    normal_dir = batch_root / "NORMAL_singles"
+    normal_dir.mkdir(parents=True, exist_ok=True)
+
+    filenames = [
+        "Nike_Футболка_черная_XL-1.pdf",
+        "Nike_Футболка_черная_2XL-1.pdf",
+        "Nike_Футболка_белая_XL-1.pdf",
+        "Line51_L-1.pdf",
+    ]
+    for filename in filenames:
+        (normal_dir / filename).write_bytes(b"%PDF-1.4\n%waybill\n")
+
+    groups = [
+        WaybillGroup(
+            group_type="NORMAL",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "1001",
+                    "Universal",
+                    "Nike_Футболка_черная",
+                    "XL",
+                    "NIKE_TEE_BLACK",
+                    "NIKE_TEE_BLACK_XL",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=normal_dir / "Nike_Футболка_черная_XL-1.pdf",
+            pdf_paths=[normal_dir / "Nike_Футболка_черная_XL-1.pdf"],
+            output_filename="NORMAL_singles/Nike_Футболка_черная_XL-1.pdf",
+        ),
+        WaybillGroup(
+            group_type="NORMAL",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "1002",
+                    "Universal",
+                    "Nike_Футболка_черная",
+                    "2XL",
+                    "NIKE_TEE_BLACK",
+                    "NIKE_TEE_BLACK_2XL",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=normal_dir / "Nike_Футболка_черная_2XL-1.pdf",
+            pdf_paths=[normal_dir / "Nike_Футболка_черная_2XL-1.pdf"],
+            output_filename="NORMAL_singles/Nike_Футболка_черная_2XL-1.pdf",
+        ),
+        WaybillGroup(
+            group_type="NORMAL",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "1003",
+                    "Universal",
+                    "Nike_Футболка_белая",
+                    "XL",
+                    "NIKE_TEE_WHITE",
+                    "NIKE_TEE_WHITE_XL",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=normal_dir / "Nike_Футболка_белая_XL-1.pdf",
+            pdf_paths=[normal_dir / "Nike_Футболка_белая_XL-1.pdf"],
+            output_filename="NORMAL_singles/Nike_Футболка_белая_XL-1.pdf",
+        ),
+        WaybillGroup(
+            group_type="NORMAL",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "1004",
+                    "AcmeWear",
+                    "Line51",
+                    "L",
+                    "LINE51",
+                    "LINE51_L",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=normal_dir / "Line51_L-1.pdf",
+            pdf_paths=[normal_dir / "Line51_L-1.pdf"],
+            output_filename="NORMAL_singles/Line51_L-1.pdf",
+        ),
+    ]
+
+    manifest_path = write_send_batch_manifest(
+        batch_root=batch_root,
+        today_root=today_root,
+        groups=groups,
+        target_date=date(2026, 3, 10),
+    )
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries_by_sequence = sorted(payload["entries"], key=lambda entry: entry["send_sequence"])
+
+    assert [entry["filename"] for entry in entries_by_sequence] == [
+        "Nike_Футболка_черная_XL-1.pdf",
+        "Nike_Футболка_черная_2XL-1.pdf",
+        "Line51_L-1.pdf",
+        "Nike_Футболка_белая_XL-1.pdf",
+    ]
+    assert [entry["send_sequence"] for entry in entries_by_sequence] == [1, 2, 3, 4]
+
+
 def test_sanitizes_cyrillic():
     """Test that Cyrillic characters are preserved in filenames."""
     result = sanitize_filename("Костюм мужской черный")

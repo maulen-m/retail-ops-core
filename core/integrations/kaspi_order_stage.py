@@ -183,12 +183,25 @@ KASPI_STATUS_RU = {
 
 
 def kaspi_order_to_russian_status(order: Mapping[str, Any]) -> str:
-    """Return CRM status string using Kaspi state/status (legacy-compatible)."""
+    """Return CRM status string using live stage truth."""
     attrs = _get_attrs(order)
+    stage = classify_kaspi_order_stage(order)
+    if stage in {StageCode.ACCEPTED_PENDING_ASSEMBLY, StageCode.ASSEMBLED_PENDING_HANDOVER}:
+        return "Ожидает передачи курьеру"
+    if stage == StageCode.IN_DELIVERY:
+        return "Передан курьеру"
+    if stage == StageCode.ISSUED_COMPLETED:
+        return "Завершен"
+    if stage == StageCode.CANCELLED:
+        return "Отменен"
+    if stage == StageCode.CANCELLING:
+        return "Отменяется"
+    if stage == StageCode.RETURN_REQUESTED:
+        return "Возвращается"
+    if stage == StageCode.RETURNED:
+        return "Возвращен"
     state = _norm(attrs.get("state"))
     status = _norm(attrs.get("status"))
-    if state == "KASPI_DELIVERY":
-        return "Ожидает передачи курьеру"
     return KASPI_STATUS_RU.get(status) or KASPI_STATUS_RU.get(state) or status or state
 
 

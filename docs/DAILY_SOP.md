@@ -13,7 +13,7 @@ Daily import + waybill workflow contract authority: `docs/ops/KASPI_DAILY_OPS_WO
 Promotion minimum merge standard authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.
 
 Current daily scheduler contract (GMT+5):
-- import jobs: `11:00` and `16:03`
+- import jobs: `11:00` and `15:02`
 - waybill deadline job: `18:30`
 - daily ops report job: `19:10`
 

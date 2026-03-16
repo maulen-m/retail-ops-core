@@ -50,18 +50,34 @@ def _load_config(path: Path) -> dict:
     return merged
 
 
+def _normalize_entry_updated_at(row: sqlite3.Row, *, max_date: str | None = None) -> str:
+    limit = str(max_date or "").strip()[:10]
+    for field in ("status_updated_at", "actual_shipment_date", "planned_shipment_date", "created_at"):
+        value = str(row[field] or "").strip()
+        if value:
+            day = value[:10]
+            if limit and day > limit:
+                return limit
+            return day
+    return limit or datetime.now().date().isoformat()
+
+
 def _select_orders(
     conn: sqlite3.Connection,
     store_code: str,
     since: str,
     until: str,
     max_orders: int,
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str]]:
     rows = conn.execute(
         """
         SELECT
             order_id,
             store_code,
+            status_updated_at,
+            actual_shipment_date,
+            planned_shipment_date,
+            created_at,
             kaspi_status,
             kaspi_status_detail,
             signature_required,
@@ -72,14 +88,17 @@ def _select_orders(
             returned_to_warehouse
         FROM fact_orders_kaspi
         WHERE store_code = ?
-          AND date(COALESCE(status_updated_at, actual_shipment_date, planned_shipment_date, created_at))
-              BETWEEN ? AND ?
+          AND (
+                date(COALESCE(status_updated_at, actual_shipment_date, planned_shipment_date, created_at))
+                    BETWEEN ? AND ?
+             OR date(COALESCE(created_at, '1970-01-01')) BETWEEN ? AND ?
+          )
         ORDER BY status_updated_at DESC
         LIMIT ?
         """,
-        (store_code, since, until, max_orders),
+        (store_code, since, until, since, until, max_orders),
     ).fetchall()
-    selected: list[tuple[str, str]] = []
+    selected: list[tuple[str, str, str]] = []
     for row in rows:
         order = {
             "state": row["kaspi_status"],
@@ -93,7 +112,7 @@ def _select_orders(
         stage = classify_kaspi_order_stage(order)
         if stage in {StageCode.SIGN_REQUIRED, StageCode.UNKNOWN}:
             continue
-        selected.append((row["order_id"], row["store_code"]))
+        selected.append((row["order_id"], row["store_code"], _normalize_entry_updated_at(row, max_date=until)))
     return selected
 
 
@@ -242,7 +261,7 @@ def enrich_orders(
         seen_pos_ids: set[str] = set()
         inserted = 0
         skipped = 0
-        for order_id, order_store in orders:
+        for order_id, order_store, entry_updated_at in orders:
             try:
                 if not config.get("fetch_entries", True):
                     continue
@@ -278,8 +297,8 @@ def enrich_orders(
                             unit_type, min_allowed_weight, weight_kg, entry_number,
                             category_code, category_title, delivery_cost_kzt, base_price_kzt,
                             point_of_service_id, delivery_point_of_service_id,
-                            raw_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            raw_json, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             parsed["entry_id"],
@@ -301,6 +320,7 @@ def enrich_orders(
                             parsed.get("point_of_service_id"),
                             parsed.get("delivery_point_of_service_id"),
                             parsed["raw_json"],
+                            entry_updated_at,
                         ),
                     )
                     if cur.rowcount and cur.rowcount > 0:

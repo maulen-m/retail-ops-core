@@ -11,11 +11,11 @@ Authoritative schedule/source-of-truth for automation timing:
 | Time | Activity | Automation |
 |------|----------|------------|
 | 11:00 | First order import | Automated (launchd) |
-| 11:00-15:45 | Order processing, waybill generation | Manual |
-| 15:45-16:03 | Final check, late orders | Manual |
-| 16:00 | SLA cutoff (same-day orders) | - |
-| 16:03 | Second order import | Automated (launchd) |
-| 16:03-17:00 | Next-day order prep | Manual |
+| 11:00-15:00 | Order processing, waybill generation | Manual |
+| 15:00-15:01 | Final same-day check | Manual |
+| 15:01 | SLA cutoff (same-day orders) | - |
+| 15:02 | Second order import | Automated (launchd) |
+| 15:02-17:00 | Next-day order prep | Manual |
 | 17:00-18:00 | Package preparation | Manual |
 | 18:00-18:30 | Courier handover + deadline check | Manual |
 
@@ -54,7 +54,7 @@ This generates:
 - PDF waybills in NORMAL/SPECIAL folders
 - Manifest CSV files
 
-### 4. WhatsApp Distribution (15:00-15:45)
+### 4. WhatsApp Distribution (14:30-15:00)
 
 Send waybills to packing team:
 ```bash
@@ -67,18 +67,18 @@ Send waybills to packing team:
 2. SPECIAL_multi_qty
 3. NORMAL_singles
 
-### 5. SLA Cutoff Check (15:45-16:00)
+### 5. SLA Cutoff Check (15:00-15:01)
 
-**CRITICAL:** Orders received by 16:00:00 must ship same day.
+**CRITICAL:** Orders created before `15:01:00` must ship same day.
 
 Check for late orders:
 - Any order with `planned_delivery_date` = today
 - Status still "Ожидает передачи курьеру"
 
-### 6. Afternoon Import (16:03)
+### 6. Afternoon Import (15:02)
 
 Second automated import captures:
-- Orders received after 11:00
+- Orders created at or after `15:01:00`
 - These are for next-day shipping
 
 ### 7. Package Preparation (17:00-18:00)
@@ -99,11 +99,11 @@ See [PACKAGING_RULES.md](PACKAGING_RULES.md) for:
 
 | Order Received | Ship By | Status |
 |----------------|---------|--------|
-| Before 16:00:00 | Same day | On-time |
-| 16:00:00 exactly | Same day | On-time (inclusive) |
-| After 16:00:00 | Next day | On-time |
+| Before 15:01:00 | Same day | On-time |
+| 15:01:00 exactly | Next day | On-time |
+| After 15:01:00 | Next day | On-time |
 
-**Note:** 16:00:00 is the exact cutoff. Orders at 16:00:00 are same-day; 16:00:01 is next-day.
+**Note:** `15:01:00` is the exact handover cutoff boundary. Orders at `15:00:59` are same-day; orders at `15:01:00` move to next day.
 
 ## Error Handling
 
@@ -149,7 +149,7 @@ logs/
 
 | Script | Purpose | Schedule |
 |--------|---------|----------|
-| `run_full_import.command` | Import orders from API | 11:00, 16:03 (launchd) |
+| `run_full_import.command` | Import orders from API | 11:00, 15:02 (launchd) |
 | `run_build_waybills_v2.command` | Generate waybill PDFs (V2 - optimized) | Manual |
 | `run_send_whatsapp.command` | Send PDFs to WhatsApp | Manual |
 

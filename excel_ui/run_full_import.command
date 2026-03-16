@@ -47,6 +47,37 @@ if [ -z "${AB_DATA_DIR:-}" ] && [ -z "${DATA_DIR:-}" ]; then
 fi
 DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-${PROJECT_ROOT}}}"
 
+run_excel_session_preflight() {
+    local label="${1:-Preflight: validating Excel session state...}"
+    echo ""
+    echo "${label}"
+    echo "----------------------------------------"
+    python3 scripts/import_orders_to_crm.py --excel-session-preflight-only
+}
+
+read_import_summary_fields() {
+    local summary_path="${1}"
+    if [ ! -f "${summary_path}" ]; then
+        return 0
+    fi
+    SUMMARY_PATH="${summary_path}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["SUMMARY_PATH"])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+status = str(payload.get("status") or "")
+retryable_topup = "1" if bool(payload.get("retryable_topup", False)) else "0"
+print(status)
+print(retryable_topup)
+PY
+}
+
 echo "Preflight: validating local app DB..."
 echo "----------------------------------------"
 python3 scripts/check_local_app_db.py --db-path "${PROJECT_ROOT}/db/app.db"
@@ -324,6 +355,15 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+if ! run_excel_session_preflight "Preflight: validating Excel session state before CRM import..."; then
+    echo ""
+    echo "ERROR: Excel session preflight failed."
+    echo "Fix: close SALES_KSP_CRM_V3.xlsx in Excel, then re-run full import."
+    echo "Press Enter to close..."
+    [[ -t 0 ]] && read
+    exit 1
+fi
+
 # Step 2: Import new orders to CRM (also updates existing order status columns)
 echo ""
 echo "Step 2: Importing new orders to CRM..."
@@ -346,6 +386,8 @@ fi
 STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-900}"
 XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-45}"
 XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-420}"
+SUMMARY_PATH="logs/import_orders_to_crm_latest.json"
+rm -f "${SUMMARY_PATH}" 2>/dev/null || true
 # This command intentionally skips existing-row status updates for unattended runs.
 STEP2_NO_UPDATE=1
 echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
@@ -366,18 +408,34 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
         --skip-fixed-backfill
 STEP2_RC=$?
 STEP2_WARN_MSG=""
+STEP2_STATUS=""
+STEP2_RETRYABLE_TOPUP=0
+STEP2_SKIP_DOWNSTREAM=0
+SUMMARY_FIELDS=$(read_import_summary_fields "${SUMMARY_PATH}")
+if [ -n "${SUMMARY_FIELDS}" ]; then
+    STEP2_STATUS=$(printf '%s\n' "${SUMMARY_FIELDS}" | sed -n '1p')
+    STEP2_RETRYABLE_TOPUP=$(printf '%s\n' "${SUMMARY_FIELDS}" | sed -n '2p')
+fi
 if [ ${STEP2_RC} -ne 0 ]; then
     echo "WARNING: CRM import reported errors (see above)."
-    if [ ${STEP2_RC} -eq 124 ]; then
+    if [ "${STEP2_STATUS}" = "preflight_blocked" ]; then
+        STEP2_WARN_MSG="CRM import blocked by CRM workbook conflict. Fix: close SALES_KSP_CRM_V3.xlsx in Excel, then re-run."
+    elif [ "${STEP2_STATUS}" = "append_verification_failed" ]; then
+        STEP2_WARN_MSG="CRM import append verification failed. Fix: inspect import_orders_to_crm.py --verbose before rerun."
+    elif [ ${STEP2_RC} -eq 124 ]; then
         STEP2_WARN_MSG="CRM import timed out after ${STEP2_TIMEOUT_SEC}s. Fix: close Excel and re-run."
     else
         STEP2_WARN_MSG="CRM import errors. Fix: open CRM and re-run import_orders_to_crm.py --verbose."
+    fi
+    if [ "${STEP2_RETRYABLE_TOPUP}" != "1" ]; then
+        STEP2_SKIP_DOWNSTREAM=1
+        HARD_FAIL=1
+        HARD_FAIL_REASONS+=("CRM import failed before a retryable append state (${STEP2_STATUS:-unknown}).")
     fi
 fi
 
 # Determine if import produced any changes (used to skip expensive retry steps)
 IMPORT_NOOP=0
-SUMMARY_PATH="logs/import_orders_to_crm_latest.json"
 if [ -f "${SUMMARY_PATH}" ]; then
     IMPORT_NOOP=$(python - <<'PY'
 import json
@@ -398,7 +456,9 @@ fi
 echo ""
 echo "Step 2c: Backfilling Line61 Kaspi_name_core..."
 echo "----------------------------------------"
-if [ "${IMPORT_NOOP}" -eq 1 ]; then
+if [ "${STEP2_SKIP_DOWNSTREAM}" = "1" ]; then
+    echo "NO-OP: skipping Line61 Kaspi_name_core backfill (Step 2 did not reach a safe write-complete state)."
+elif [ "${IMPORT_NOOP}" -eq 1 ]; then
     echo "NO-OP: skipping Line61 Kaspi_name_core backfill (no CRM changes)."
 else
     python3 scripts/backfill_line61_kaspi_core.py \
@@ -417,7 +477,9 @@ fi
 echo ""
 echo "Step 2b: Validating pending orders..."
 echo "----------------------------------------"
-if [ "${STEP2_NO_UPDATE}" = "1" ]; then
+if [ "${STEP2_SKIP_DOWNSTREAM}" = "1" ]; then
+    echo "NO-OP: skipping pending order validation (Step 2 did not reach a safe write-complete state)."
+elif [ "${STEP2_NO_UPDATE}" = "1" ]; then
     echo "NO-OP: skipping pending order validation in --no-update mode."
 elif [ "${IMPORT_NOOP}" -eq 1 ]; then
     echo "NO-OP: skipping pending order validation (no CRM changes)."
@@ -437,18 +499,22 @@ fi
 echo ""
 echo "Post-import health report..."
 echo "----------------------------------------"
-HEALTH_JSON=$(mktemp -t kaspi_import_health)
-python3 scripts/report_import_status.py --since-days "${LOOKBACK_DAYS}" --json-out "${HEALTH_JSON}"
-if [ $? -ne 0 ]; then
-    echo "WARNING: Post-import health report failed."
-    WARNINGS+=("Post-import health report failed. Fix: run scripts/report_import_status.py manually.")
-    HARD_FAIL=1
-    HARD_FAIL_REASONS+=("Post-import health report command failed.")
-fi
+HEALTH_JSON=""
+if [ "${STEP2_SKIP_DOWNSTREAM}" = "1" ]; then
+    echo "NO-OP: skipping post-import health report (Step 2 did not reach a safe write-complete state)."
+else
+    HEALTH_JSON=$(mktemp -t kaspi_import_health)
+    python3 scripts/report_import_status.py --since-days "${LOOKBACK_DAYS}" --json-out "${HEALTH_JSON}"
+    if [ $? -ne 0 ]; then
+        echo "WARNING: Post-import health report failed."
+        WARNINGS+=("Post-import health report failed. Fix: run scripts/report_import_status.py manually.")
+        HARD_FAIL=1
+        HARD_FAIL_REASONS+=("Post-import health report command failed.")
+    fi
 
-LATE_ARRIVAL_RETRY_COUNT=0
-while [ "${HARD_FAIL}" -eq 0 ] && [ -f "${HEALTH_JSON}" ]; do
-    HEALTH_COUNTS=$(HEALTH_JSON="${HEALTH_JSON}" python3 - <<'PY'
+    LATE_ARRIVAL_RETRY_COUNT=0
+    while [ "${HARD_FAIL}" -eq 0 ] && [ -f "${HEALTH_JSON}" ]; do
+        HEALTH_COUNTS=$(HEALTH_JSON="${HEALTH_JSON}" python3 - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -468,125 +534,135 @@ except Exception:
     print("-1 -1")
 PY
 )
-    MISS_CRM=$(printf '%s\n' "${HEALTH_COUNTS}" | awk '{print $1}')
-    STALE_CRM=$(printf '%s\n' "${HEALTH_COUNTS}" | awk '{print $2}')
-    if [ "${MISS_CRM}" = "-1" ]; then
-        echo "WARNING: unable to parse miss_crm/stale_crm from post-import health report."
-        WARNINGS+=("Unable to parse miss_crm/stale_crm from post-import health report. Fix: inspect ${HEALTH_JSON}.")
-        HARD_FAIL=1
-        HARD_FAIL_REASONS+=("Post-import health JSON parse failed.")
-        break
-    fi
-    if [ -z "${MISS_CRM}" ] || [ "${MISS_CRM}" -le 0 ]; then
-        if [ -n "${STALE_CRM}" ] && [ "${STALE_CRM}" -gt 0 ]; then
-            :
-        else
+        MISS_CRM=$(printf '%s\n' "${HEALTH_COUNTS}" | awk '{print $1}')
+        STALE_CRM=$(printf '%s\n' "${HEALTH_COUNTS}" | awk '{print $2}')
+        if [ "${MISS_CRM}" = "-1" ]; then
+            echo "WARNING: unable to parse miss_crm/stale_crm from post-import health report."
+            WARNINGS+=("Unable to parse miss_crm/stale_crm from post-import health report. Fix: inspect ${HEALTH_JSON}.")
+            HARD_FAIL=1
+            HARD_FAIL_REASONS+=("Post-import health JSON parse failed.")
             break
         fi
-    fi
-    if [ -z "${STALE_CRM}" ]; then
-        STALE_CRM=0
-    fi
-    if [ "${MISS_CRM}" -le 0 ] && [ "${STALE_CRM}" -le 0 ]; then
-        break
-    fi
-    if [ "${LATE_ARRIVAL_RETRY_COUNT}" -ge "${LATE_ARRIVAL_RETRY_MAX}" ]; then
+        if [ -z "${MISS_CRM}" ] || [ "${MISS_CRM}" -le 0 ]; then
+            if [ -n "${STALE_CRM}" ] && [ "${STALE_CRM}" -gt 0 ]; then
+                :
+            else
+                break
+            fi
+        fi
+        if [ -z "${STALE_CRM}" ]; then
+            STALE_CRM=0
+        fi
+        if [ "${MISS_CRM}" -le 0 ] && [ "${STALE_CRM}" -le 0 ]; then
+            break
+        fi
+        if [ "${LATE_ARRIVAL_RETRY_COUNT}" -ge "${LATE_ARRIVAL_RETRY_MAX}" ]; then
+            if [ "${MISS_CRM}" -gt 0 ]; then
+                echo "WARNING: Post-import health still reports ${MISS_CRM} live API orders missing in CRM after ${LATE_ARRIVAL_RETRY_COUNT} late-arrival top-up pass(es)."
+                WARNINGS+=("Post-import health still reports ${MISS_CRM} live API orders missing in CRM after ${LATE_ARRIVAL_RETRY_COUNT} late-arrival top-up pass(es). Fix: rerun full import or inspect live API arrivals.")
+            fi
+            if [ "${STALE_CRM}" -gt 0 ]; then
+                echo "WARNING: Post-import health still reports ${STALE_CRM} stale today rows in CRM after ${LATE_ARRIVAL_RETRY_COUNT} late-arrival top-up pass(es)."
+                WARNINGS+=("Post-import health still reports ${STALE_CRM} stale today rows in CRM after ${LATE_ARRIVAL_RETRY_COUNT} late-arrival top-up pass(es). Fix: rerun full import or inspect today CRM block.")
+            fi
+            break
+        fi
+
+        LATE_ARRIVAL_RETRY_COUNT=$((LATE_ARRIVAL_RETRY_COUNT + 1))
+        echo ""
+        echo "Late-arrival top-up pass ${LATE_ARRIVAL_RETRY_COUNT}/${LATE_ARRIVAL_RETRY_MAX}..."
+        echo "----------------------------------------"
         if [ "${MISS_CRM}" -gt 0 ]; then
-            echo "WARNING: Post-import health still reports ${MISS_CRM} live API orders missing in CRM after ${LATE_ARRIVAL_RETRY_COUNT} late-arrival top-up pass(es)."
-            WARNINGS+=("Post-import health still reports ${MISS_CRM} live API orders missing in CRM after ${LATE_ARRIVAL_RETRY_COUNT} late-arrival top-up pass(es). Fix: rerun full import or inspect live API arrivals.")
+            echo "Post-import health found ${MISS_CRM} live API orders missing in CRM."
         fi
         if [ "${STALE_CRM}" -gt 0 ]; then
-            echo "WARNING: Post-import health still reports ${STALE_CRM} stale today rows in CRM after ${LATE_ARRIVAL_RETRY_COUNT} late-arrival top-up pass(es)."
-            WARNINGS+=("Post-import health still reports ${STALE_CRM} stale today rows in CRM after ${LATE_ARRIVAL_RETRY_COUNT} late-arrival top-up pass(es). Fix: rerun full import or inspect today CRM block.")
+            echo "Post-import health found ${STALE_CRM} stale today rows in CRM."
         fi
-        break
-    fi
+        echo "Re-exporting ActiveOrders and rerunning CRM import."
 
-    LATE_ARRIVAL_RETRY_COUNT=$((LATE_ARRIVAL_RETRY_COUNT + 1))
-    echo ""
-    echo "Late-arrival top-up pass ${LATE_ARRIVAL_RETRY_COUNT}/${LATE_ARRIVAL_RETRY_MAX}..."
-    echo "----------------------------------------"
-    if [ "${MISS_CRM}" -gt 0 ]; then
-        echo "Post-import health found ${MISS_CRM} live API orders missing in CRM."
-    fi
-    if [ "${STALE_CRM}" -gt 0 ]; then
-        echo "Post-import health found ${STALE_CRM} stale today rows in CRM."
-    fi
-    echo "Re-exporting ActiveOrders and rerunning CRM import."
+        if ! run_excel_session_preflight "Preflight: validating Excel session state before late-arrival top-up..."; then
+            echo "WARNING: late-arrival top-up blocked by Excel session preflight."
+            WARNINGS+=("Late-arrival top-up blocked by Excel session preflight. Fix: close SALES_KSP_CRM_V3.xlsx in Excel, then rerun full import.")
+            HARD_FAIL=1
+            HARD_FAIL_REASONS+=("Late-arrival top-up blocked by Excel session preflight.")
+            break
+        fi
 
-    python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --refetch-missing-costs --verbose --no-archive
-    if [ $? -ne 0 ]; then
-        echo "WARNING: late-arrival top-up export failed."
-        WARNINGS+=("Late-arrival top-up export failed. Fix: rerun full import.")
-        HARD_FAIL=1
-        HARD_FAIL_REASONS+=("Late-arrival top-up export failed.")
-        break
-    fi
+        python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --refetch-missing-costs --verbose --no-archive
+        if [ $? -ne 0 ]; then
+            echo "WARNING: late-arrival top-up export failed."
+            WARNINGS+=("Late-arrival top-up export failed. Fix: rerun full import.")
+            HARD_FAIL=1
+            HARD_FAIL_REASONS+=("Late-arrival top-up export failed.")
+            break
+        fi
 
-    if [ -n "${ACTIVEORDERS_SNAPSHOT}" ] && [ -f "${ACTIVEORDERS_SNAPSHOT}" ]; then
-        rm -f "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
-    fi
-    ACTIVEORDERS_SNAPSHOT=$(mktemp -t activeorders_snapshot_XXXXXX.xlsx)
-    if cp "excel_ui/ActiveOrders/ActiveOrders.xlsx" "${ACTIVEORDERS_SNAPSHOT}"; then
-        echo "Refreshed ActiveOrders snapshot for success gate: ${ACTIVEORDERS_SNAPSHOT}"
-    else
-        echo "WARNING: failed to refresh ActiveOrders snapshot during late-arrival top-up."
-        WARNINGS+=("Late-arrival top-up snapshot failed. Fix: check temp dir permissions.")
-        rm -f "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
-        ACTIVEORDERS_SNAPSHOT=""
-    fi
-
-    CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \
-    CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
-    python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
-        python scripts/import_orders_to_crm.py \
-            --verbose \
-            --no-update \
-            --no-transactional \
-            --no-strict-excel \
-                --kaspi-core-override \
-            ${IMPORT_DATE_FLAGS} \
-            ${REFRESH_DELIVERY_FLAGS} \
-            --no-gdrive-sync \
-            --skip-fixed-backfill
-    TOPUP_STEP2_RC=$?
-    if [ ${TOPUP_STEP2_RC} -ne 0 ]; then
-        echo "WARNING: late-arrival top-up CRM import reported errors (see above)."
-        if [ ${TOPUP_STEP2_RC} -eq 124 ]; then
-            WARNINGS+=("Late-arrival top-up CRM import timed out after ${STEP2_TIMEOUT_SEC}s. Fix: close Excel and re-run.")
+        if [ -n "${ACTIVEORDERS_SNAPSHOT}" ] && [ -f "${ACTIVEORDERS_SNAPSHOT}" ]; then
+            rm -f "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
+        fi
+        ACTIVEORDERS_SNAPSHOT=$(mktemp -t activeorders_snapshot_XXXXXX.xlsx)
+        if cp "excel_ui/ActiveOrders/ActiveOrders.xlsx" "${ACTIVEORDERS_SNAPSHOT}"; then
+            echo "Refreshed ActiveOrders snapshot for success gate: ${ACTIVEORDERS_SNAPSHOT}"
         else
-            WARNINGS+=("Late-arrival top-up CRM import errors. Fix: rerun import_orders_to_crm.py --verbose.")
+            echo "WARNING: failed to refresh ActiveOrders snapshot during late-arrival top-up."
+            WARNINGS+=("Late-arrival top-up snapshot failed. Fix: check temp dir permissions.")
+            rm -f "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
+            ACTIVEORDERS_SNAPSHOT=""
         fi
-        STEP2_RC=${TOPUP_STEP2_RC}
-        HARD_FAIL=1
-        HARD_FAIL_REASONS+=("Late-arrival top-up CRM import failed.")
-        break
-    fi
-    STEP2_RC=0
-    STEP2_WARN_MSG=""
 
-    python3 scripts/backfill_line61_kaspi_core.py \
-        --workbook excel_ui/SALES_KSP_CRM_V3.xlsx \
-        --sheet SALES_KSP_CRM_1 \
-        --table tb_SalesRaw \
-        --backup-dir excel_ui/backups \
-        --apply
-    if [ $? -ne 0 ]; then
-        echo "WARNING: Line61 Kaspi_name_core backfill failed after late-arrival top-up (see above)."
-        WARNINGS+=("Line61 Kaspi_name_core backfill failed after late-arrival top-up. Fix: run scripts/backfill_line61_kaspi_core.py manually.")
-    fi
+        rm -f "${SUMMARY_PATH}" 2>/dev/null || true
+        CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \
+        CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
+        python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
+            python scripts/import_orders_to_crm.py \
+                --verbose \
+                --no-update \
+                --no-transactional \
+                --no-strict-excel \
+                    --kaspi-core-override \
+                ${IMPORT_DATE_FLAGS} \
+                ${REFRESH_DELIVERY_FLAGS} \
+                --no-gdrive-sync \
+                --skip-fixed-backfill
+        TOPUP_STEP2_RC=$?
+        if [ ${TOPUP_STEP2_RC} -ne 0 ]; then
+            echo "WARNING: late-arrival top-up CRM import reported errors (see above)."
+            if [ ${TOPUP_STEP2_RC} -eq 124 ]; then
+                WARNINGS+=("Late-arrival top-up CRM import timed out after ${STEP2_TIMEOUT_SEC}s. Fix: close Excel and re-run.")
+            else
+                WARNINGS+=("Late-arrival top-up CRM import errors. Fix: rerun import_orders_to_crm.py --verbose.")
+            fi
+            STEP2_RC=${TOPUP_STEP2_RC}
+            HARD_FAIL=1
+            HARD_FAIL_REASONS+=("Late-arrival top-up CRM import failed.")
+            break
+        fi
+        STEP2_RC=0
+        STEP2_WARN_MSG=""
 
-    rm -f "${HEALTH_JSON}" 2>/dev/null || true
-    HEALTH_JSON=$(mktemp -t kaspi_import_health)
-    python3 scripts/report_import_status.py --since-days "${LOOKBACK_DAYS}" --json-out "${HEALTH_JSON}"
-    if [ $? -ne 0 ]; then
-        echo "WARNING: Post-import health report failed after late-arrival top-up."
-        WARNINGS+=("Post-import health report failed after late-arrival top-up. Fix: run scripts/report_import_status.py manually.")
-        HARD_FAIL=1
-        HARD_FAIL_REASONS+=("Post-import health report failed after late-arrival top-up.")
-        break
-    fi
-done
+        python3 scripts/backfill_line61_kaspi_core.py \
+            --workbook excel_ui/SALES_KSP_CRM_V3.xlsx \
+            --sheet SALES_KSP_CRM_1 \
+            --table tb_SalesRaw \
+            --backup-dir excel_ui/backups \
+            --apply
+        if [ $? -ne 0 ]; then
+            echo "WARNING: Line61 Kaspi_name_core backfill failed after late-arrival top-up (see above)."
+            WARNINGS+=("Line61 Kaspi_name_core backfill failed after late-arrival top-up. Fix: run scripts/backfill_line61_kaspi_core.py manually.")
+        fi
+
+        rm -f "${HEALTH_JSON}" 2>/dev/null || true
+        HEALTH_JSON=$(mktemp -t kaspi_import_health)
+        python3 scripts/report_import_status.py --since-days "${LOOKBACK_DAYS}" --json-out "${HEALTH_JSON}"
+        if [ $? -ne 0 ]; then
+            echo "WARNING: Post-import health report failed after late-arrival top-up."
+            WARNINGS+=("Post-import health report failed after late-arrival top-up. Fix: run scripts/report_import_status.py manually.")
+            HARD_FAIL=1
+            HARD_FAIL_REASONS+=("Post-import health report failed after late-arrival top-up.")
+            break
+        fi
+    done
+fi
 
 if [ -n "${STEP2_WARN_MSG}" ]; then
     WARNINGS+=("${STEP2_WARN_MSG}")
@@ -595,23 +671,27 @@ fi
 echo ""
 echo "Final success gate..."
 echo "----------------------------------------"
-EVAL_CMD=(
-    python3 scripts/evaluate_import_run_result.py
-    --step2-rc "${STEP2_RC}"
-    --health-json "${HEALTH_JSON}"
-)
-if [ -n "${ACTIVEORDERS_SNAPSHOT}" ] && [ -f "${ACTIVEORDERS_SNAPSHOT}" ]; then
-    EVAL_CMD+=(
-        --activeorders-file "${ACTIVEORDERS_SNAPSHOT}"
-        --crm-file "excel_ui/SALES_KSP_CRM_V3.xlsx"
-        --target-date "$(date +%Y-%m-%d)"
+if [ "${STEP2_SKIP_DOWNSTREAM}" = "1" ]; then
+    echo "NO-OP: skipping final success gate (Step 2 did not reach a safe write-complete state)."
+else
+    EVAL_CMD=(
+        python3 scripts/evaluate_import_run_result.py
+        --step2-rc "${STEP2_RC}"
+        --health-json "${HEALTH_JSON}"
     )
-fi
-"${EVAL_CMD[@]}"
-GATE_RC=$?
-if [ ${GATE_RC} -ne 0 ]; then
-    HARD_FAIL=1
-    HARD_FAIL_REASONS+=("Strict success gate failed (Step2 failure or API/CRM mismatch).")
+    if [ -n "${ACTIVEORDERS_SNAPSHOT}" ] && [ -f "${ACTIVEORDERS_SNAPSHOT}" ]; then
+        EVAL_CMD+=(
+            --activeorders-file "${ACTIVEORDERS_SNAPSHOT}"
+            --crm-file "excel_ui/SALES_KSP_CRM_V3.xlsx"
+            --target-date "$(date +%Y-%m-%d)"
+        )
+    fi
+    "${EVAL_CMD[@]}"
+    GATE_RC=$?
+    if [ ${GATE_RC} -ne 0 ]; then
+        HARD_FAIL=1
+        HARD_FAIL_REASONS+=("Strict success gate failed (Step2 failure or API/CRM mismatch).")
+    fi
 fi
 rm -f "${HEALTH_JSON}" "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
 

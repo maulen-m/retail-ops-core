@@ -27,6 +27,9 @@ class RebuildError(RuntimeError):
     """Raised when strict rebuild contracts are violated."""
 
 
+GENERIC_HEADER_SKU_KEYS = {"", "UNKNOWN", "CL", "ELS", "WB", "FUR"}
+
+
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -78,6 +81,15 @@ def _normalize_status(internal_status: str, kaspi_status: str) -> str:
     return "OPEN"
 
 
+def _store_fallback_rank(row_store_code: Any, entry_store_code: str) -> int:
+    row_store = str(row_store_code or "").strip().upper()
+    if row_store == str(entry_store_code or "").strip().upper():
+        return 2
+    if row_store in {"", "UNKNOWN"}:
+        return 1
+    return 0
+
+
 def _resolve_sale_date(order_row: dict[str, Any], status: str) -> str | None:
     status_date = _parse_date(order_row.get("status_updated_at"))
     actual_ship = _parse_date(order_row.get("actual_shipment_date"))
@@ -89,6 +101,10 @@ def _resolve_sale_date(order_row: dict[str, Any], status: str) -> str | None:
     return None
 
 
+def _is_generic_header_sku_key(value: str | None) -> bool:
+    return str(value or "").strip().upper() in GENERIC_HEADER_SKU_KEYS
+
+
 def _load_offer_map(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple[str, str]]:
     if not _table_exists(conn, "dim_kaspi_article_map"):
         return {}
@@ -98,20 +114,27 @@ def _load_offer_map(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple[str
         where_clause = "WHERE COALESCE(active_flag, 1) = 1"
     rows = conn.execute(
         f"""
-        SELECT UPPER(COALESCE(store_code, '')), UPPER(COALESCE(kaspi_offer_name, '')), UPPER(COALESCE(sku_key, '')), UPPER(COALESCE(sku_id, ''))
+        SELECT
+            UPPER(COALESCE(store_code, '')),
+            UPPER(COALESCE(kaspi_article, '')),
+            UPPER(COALESCE(kaspi_offer_name, '')),
+            UPPER(COALESCE(sku_key, '')),
+            UPPER(COALESCE(sku_id, ''))
         FROM dim_kaspi_article_map
         {where_clause}
         """
     ).fetchall()
     mapping: dict[tuple[str, str], tuple[str, str]] = {}
-    for store, offer, sku_key, sku_id in rows:
+    for store, article, offer, sku_key, sku_id in rows:
         store_norm = str(store or "").strip().upper()
-        offer_norm = str(offer or "").strip().upper()
-        if not store_norm or not offer_norm or not str(sku_key or "").strip():
+        sku_key_norm = str(sku_key or "").strip().upper()
+        if not store_norm or not sku_key_norm:
             continue
-        key = str(sku_key).strip().upper()
-        sid = str(sku_id).strip().upper() or key
-        mapping[(store_norm, offer_norm)] = (key, sid)
+        sid = str(sku_id).strip().upper() or sku_key_norm
+        for token in (article, offer):
+            token_norm = str(token or "").strip().upper()
+            if token_norm:
+                mapping[(store_norm, token_norm)] = (sku_key_norm, sid)
     return mapping
 
 
@@ -162,6 +185,7 @@ def build_sales_fact_v2_rows_from_entries(
     ).fetchall()
 
     order_by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    order_by_id: dict[str, list[dict[str, Any]]] = {}
     for row in orders:
         payload = dict(zip(
             [
@@ -185,6 +209,7 @@ def build_sales_fact_v2_rows_from_entries(
         ))
         key = (str(payload["order_id"]), str(payload["store_code"]))
         order_by_pair.setdefault(key, []).append(payload)
+        order_by_id.setdefault(str(payload["order_id"]), []).append(payload)
 
     entries = conn.execute(
         """
@@ -210,15 +235,26 @@ def build_sales_fact_v2_rows_from_entries(
 
     for order_id, store_code, offer_id, qty, total in entries:
         pair = (str(order_id), str(store_code))
-        order_rows = order_by_pair.get(pair, [])
+        order_rows = list(order_by_pair.get(pair, []))
         if not order_rows:
+            order_rows = []
+        fallback_rows = [
+            row
+            for row in order_by_id.get(str(order_id), [])
+            if _store_fallback_rank(row.get("store_code"), str(store_code)) > 0
+            and row not in order_rows
+        ]
+        candidate_rows = order_rows + fallback_rows
+        if not candidate_rows:
             if strict:
                 errors.append(f"order header missing for order_id={order_id} store={store_code}")
             continue
 
         status_row = sorted(
-            order_rows,
+            candidate_rows,
             key=lambda r: (
+                1 if _normalize_status(r.get("internal_status", ""), r.get("kaspi_status", "")) != "OPEN" else 0,
+                _store_fallback_rank(r.get("store_code"), str(store_code)),
                 _parse_date(r.get("status_updated_at")) or "",
                 _parse_date(r.get("actual_shipment_date")) or "",
                 _parse_date(r.get("planned_shipment_date")) or "",
@@ -244,6 +280,10 @@ def build_sales_fact_v2_rows_from_entries(
         sku_key = ""
         sku_id = ""
         my_size = ""
+        parsed = extract_sku_from_article(offer_norm, offer_norm)
+        parsed_key = str(parsed.get("sku_key") or "").strip().upper()
+        parsed_id = str(parsed.get("sku_id") or "").strip().upper()
+        parsed_size = str(parsed.get("my_size") or "").strip().upper()
 
         mapped = offer_map.get((str(store_code), offer_norm))
         if mapped:
@@ -261,11 +301,14 @@ def build_sales_fact_v2_rows_from_entries(
                 if len(sku_id_candidates) == 1:
                     sku_id = next(iter(sku_id_candidates))
 
+        if parsed_key and (_is_generic_header_sku_key(sku_key) or not sku_key):
+            sku_key = parsed_key
+            if parsed_id:
+                sku_id = parsed_id
+            if parsed_size:
+                my_size = parsed_size
+
         if not sku_key:
-            parsed = extract_sku_from_article(offer_norm, offer_norm)
-            parsed_key = str(parsed.get("sku_key") or "").strip().upper()
-            parsed_id = str(parsed.get("sku_id") or "").strip().upper()
-            parsed_size = str(parsed.get("my_size") or "").strip().upper()
             if parsed_key:
                 sku_key = parsed_key
             if parsed_id:
@@ -279,9 +322,6 @@ def build_sales_fact_v2_rows_from_entries(
                     f"missing sku mapping for order_id={order_id} store={store_code} offer_id={offer_norm}"
                 )
             continue
-
-        if not sku_id:
-            sku_id = sku_key
 
         assigned_size_candidates = {
             str(r.get("assigned_size") or "").strip().upper()
@@ -298,6 +338,11 @@ def build_sales_fact_v2_rows_from_entries(
         }
         if not my_size and size_candidates:
             my_size = sorted(size_candidates)[0]
+
+        if my_size:
+            sku_id = f"{sku_key}_{my_size}"
+        elif not sku_id:
+            sku_id = sku_key
 
         order_total = totals_by_order.get(pair, 0.0)
         gross = float(total or 0.0)

@@ -415,6 +415,52 @@ def test_ordering_kids_sizes_before_adult_sizes() -> None:
     ]
 
 
+def test_ordering_prefers_manifest_send_sequence_when_present() -> None:
+    pdfs = [
+        {
+            "filename": "Nike_Футболка_белая_XL-1.pdf",
+            "category": "NORMAL_singles",
+            "family_key": "NIKE_ФУТБОЛКА",
+            "sku_key": "NIKE_TEE_WHITE",
+            "size_rank": 13,
+            "send_sequence": 4,
+        },
+        {
+            "filename": "Line51_L-1.pdf",
+            "category": "NORMAL_singles",
+            "family_key": "LINE51",
+            "sku_key": "LINE51",
+            "size_rank": 12,
+            "send_sequence": 3,
+        },
+        {
+            "filename": "Nike_Футболка_черная_2XL-1.pdf",
+            "category": "NORMAL_singles",
+            "family_key": "NIKE_ФУТБОЛКА",
+            "sku_key": "NIKE_TEE_BLACK",
+            "size_rank": 14,
+            "send_sequence": 2,
+        },
+        {
+            "filename": "Nike_Футболка_черная_XL-1.pdf",
+            "category": "NORMAL_singles",
+            "family_key": "NIKE_ФУТБОЛКА",
+            "sku_key": "NIKE_TEE_BLACK",
+            "size_rank": 13,
+            "send_sequence": 1,
+        },
+    ]
+
+    ordered = order_pdfs_for_sending(pdfs)
+
+    assert [x["filename"] for x in ordered] == [
+        "Nike_Футболка_черная_XL-1.pdf",
+        "Nike_Футболка_черная_2XL-1.pdf",
+        "Line51_L-1.pdf",
+        "Nike_Футболка_белая_XL-1.pdf",
+    ]
+
+
 def test_normalize_chat_key_trims_and_casefolds() -> None:
     assert _normalize_chat_key("  Заказы  ") == _normalize_chat_key("заказы")
 
@@ -535,6 +581,14 @@ class _SidebarReadyPage:
         self.wait_calls.append(ms)
 
 
+class _SessionBlockerLocator:
+    def __init__(self, count: int):
+        self._count = count
+
+    def count(self):
+        return self._count
+
+
 def test_safe_click_selectors_uses_page_level_js_fallback() -> None:
     selector = "button[aria-label='Attach']"
     sender = WhatsAppSender(
@@ -640,6 +694,186 @@ def test_open_chat_retries_visible_candidates_when_sidebar_search_is_absent(monk
     sender.open_chat("Заказы")
 
     assert click_calls["count"] == 2
+
+
+def test_prepare_document_recovers_target_chat_when_active_chat_is_temporarily_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.0\n")
+
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            wait_for_timeout=lambda _ms: None,
+        )
+    )
+
+    state = {"ready": False}
+    recovery_calls = []
+
+    def _fake_assert_active_target_chat() -> None:
+        if not state["ready"]:
+            raise RuntimeError("Could not determine active WhatsApp chat title")
+
+    def _fake_wait_for_chat_list_ready() -> None:
+        recovery_calls.append("wait")
+
+    def _fake_open_chat(title: str) -> None:
+        recovery_calls.append(("open", title))
+        state["ready"] = True
+
+    monkeypatch.setattr(sender, "_assert_active_target_chat", _fake_assert_active_target_chat)
+    monkeypatch.setattr(sender, "_wait_for_chat_list_ready", _fake_wait_for_chat_list_ready)
+    monkeypatch.setattr(sender, "open_chat", _fake_open_chat)
+    monkeypatch.setattr(sender, "_resolve_composer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(sender, "_safe_click_selectors", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sender, "_choose_file_via_document_menu", lambda *_args, **_kwargs: None)
+
+    sender.prepare_document(pdf_path)
+
+    assert recovery_calls == ["wait", ("open", "Заказы")]
+
+
+def test_send_text_message_retries_when_composer_click_detaches_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+
+    class _FakeComposer:
+        def __init__(self) -> None:
+            self.clicks = 0
+
+        def click(self) -> None:
+            self.clicks += 1
+            if self.clicks == 1:
+                raise RuntimeError("element was detached from the DOM")
+
+        def press(self, _key: str) -> None:
+            return None
+
+    keyboard_actions = []
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            keyboard=SimpleNamespace(
+                insert_text=lambda text: keyboard_actions.append(("insert_text", text)),
+                press=lambda key: keyboard_actions.append(("press", key)),
+            ),
+            wait_for_timeout=lambda _ms: None,
+        )
+    )
+    composer = _FakeComposer()
+    recovery_calls = []
+
+    monkeypatch.setattr(sender, "_assert_active_target_chat", lambda: None)
+    monkeypatch.setattr(sender, "_resolve_composer", lambda *args, **kwargs: composer)
+    monkeypatch.setattr(sender, "_outgoing_message_count", lambda: 0)
+    monkeypatch.setattr(sender, "_wait_for_new_outgoing_message", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sender, "_wait_for_last_outgoing_settled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sender, "_wait_for_chat_list_ready", lambda: recovery_calls.append("wait"))
+    monkeypatch.setattr(sender, "open_chat", lambda title: recovery_calls.append(("open", title)))
+
+    sender.send_text_message("hello")
+
+    assert composer.clicks == 2
+    assert recovery_calls == ["wait", ("open", "Заказы")]
+    assert ("insert_text", "hello") in keyboard_actions
+
+
+def test_assert_session_ready_blocks_login_qr_state() -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            locator=lambda selector: {
+                "[data-testid='qrcode']": _SessionBlockerLocator(1),
+                "canvas[aria-label*='QR']": _SessionBlockerLocator(0),
+                "div[aria-label='Scan this QR code to link a device!']": _SessionBlockerLocator(0),
+            }.get(selector, _SessionBlockerLocator(0))
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="QR"):
+        sender._assert_session_ready()
+
+
+def test_assert_active_target_chat_rejects_whatsapp_home_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            wait_for_timeout=lambda _ms: None,
+        )
+    )
+
+    monkeypatch.setattr(sender, "_active_chat_title", lambda: "Заказы")
+    monkeypatch.setattr(sender, "_chat_home_screen_visible", lambda: True)
+
+    with pytest.raises(RuntimeError, match="home screen"):
+        sender._assert_active_target_chat()
+
+
+def test_confirm_document_sent_waits_for_new_outgoing_message_before_matching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            wait_for_timeout=lambda _ms: None,
+        )
+    )
+    calls = []
+
+    monkeypatch.setattr(
+        sender,
+        "_wait_for_new_outgoing_message",
+        lambda previous_count, timeout_ms: calls.append(("new", previous_count, timeout_ms)),
+    )
+    monkeypatch.setattr(
+        sender,
+        "_wait_for_document_bubble",
+        lambda expected_filename, timeout_ms: calls.append(("bubble", expected_filename, timeout_ms)),
+    )
+    monkeypatch.setattr(
+        sender,
+        "_wait_for_document_bubble_settled",
+        lambda expected_filename, timeout_ms: calls.append(("settled", expected_filename, timeout_ms)),
+    )
+    monkeypatch.setattr(sender, "_assert_active_target_chat", lambda: calls.append(("chat",)))
+
+    sender.confirm_document_sent("sample.pdf", previous_outgoing=7)
+
+    assert calls[0][0] == "new"
+    assert calls[0][1] == 7
+    assert calls[1][0] == "bubble"
+    assert calls[2][0] == "settled"
+    assert calls[3][0] == "chat"
 
 
 def test_collect_store_order_bundle_stats_counts_unique_orders(tmp_path: Path) -> None:

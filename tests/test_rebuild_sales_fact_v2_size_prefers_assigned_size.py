@@ -110,3 +110,42 @@ def test_assigned_size_overrides_legacy_my_size(tmp_path: Path) -> None:
 
     assert len(rows) == 1
     assert rows[0]["my_size"] == "XL"
+
+
+def test_assigned_size_rebuilds_sku_id_after_parser_alias_mapping(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, kaspi_offer_name, sku_key, sku_id, assigned_size, my_size,
+            quantity, internal_status, kaspi_status, status_updated_at,
+            actual_shipment_date, planned_shipment_date, created_at, delivery_cost_for_seller
+        ) VALUES (
+            'ORD-LOSINA', 'UNIVERSAL', '', '', '', 'L', '',
+            1, 'COMPLETED', 'Выдан', '2026-03-07T12:00:00',
+            '2026-03-05', '2026-03-05', '2026-03-04', 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_order_entries_kaspi (entry_id, order_id, store_code, offer_id, quantity, total_price_kzt)
+        VALUES ('E-LOSINA', 'ORD-LOSINA', 'UNIVERSAL', 'LOSINA BLACK M 48', 1, 1499)
+        """
+    )
+    conn.commit()
+
+    rows, _summary = build_sales_fact_v2_rows_from_entries(
+        conn,
+        as_of=date(2026, 3, 7),
+        strict=True,
+    )
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["sku_key"] == "CL_NEW-CLO_MEN_LEG_BLACK"
+    assert rows[0]["my_size"] == "L"
+    assert rows[0]["sku_id"] == "CL_NEW-CLO_MEN_LEG_BLACK_L"

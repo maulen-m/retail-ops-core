@@ -20,9 +20,12 @@ python scripts/send_waybills_whatsapp.py \
   --chat-title "Заказы" \
   --forbid-chat "order 2" \
   --status-messages \
+  --fail-fast \
   --verbose
+SENDER_RC=$?
 
 echo ""
 echo "========================================"
 echo "  Done!"
 echo "========================================"
+exit "${SENDER_RC}"

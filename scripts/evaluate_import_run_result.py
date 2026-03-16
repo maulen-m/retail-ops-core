@@ -76,15 +76,30 @@ def _collect_crm_ids(path: Path, sheet_name: str, target_date: date) -> set[str]
         raise ValueError(f"crm file not found: {path}")
     df = pd.read_excel(path, sheet_name=sheet_name)
 
-    order_col = "OrderID" if "OrderID" in df.columns else ("№ заказа" if "№ заказа" in df.columns else None)
-    if not order_col:
+    order_candidates = [col for col in ("OrderID", "№ заказа") if col in df.columns]
+    if not order_candidates:
         raise ValueError("crm missing order id column (OrderID/№ заказа)")
 
-    ids = _normalize_order_ids(df[order_col])
     dates = _date_series(df, ["Date", "PLANNED_SHIPPING_DATE", "Плановая дата передачи курьеру"])
     if dates is None:
         raise ValueError("crm missing date column (Date/PLANNED_SHIPPING_DATE)")
-    ids = ids[dates == target_date]
+
+    target_mask = dates == target_date
+    best_ids: pd.Series | None = None
+    best_count = -1
+    for order_col in order_candidates:
+        candidate_ids = _normalize_order_ids(df[order_col])[target_mask]
+        valid_ids = candidate_ids[
+            candidate_ids.astype(str).str.lower().ne("nan")
+            & candidate_ids.astype(str).str.lower().ne("none")
+            & candidate_ids.astype(str).str.strip().ne("")
+        ]
+        count = int(valid_ids.shape[0])
+        if count > best_count:
+            best_count = count
+            best_ids = candidate_ids
+
+    ids = best_ids if best_ids is not None else _normalize_order_ids(df[order_candidates[0]])[target_mask]
     out = {v for v in ids.tolist() if v and v.lower() != "nan" and v.lower() != "none"}
     return out
 
@@ -107,6 +122,7 @@ def main() -> int:
         value is not None
         for value in (args.activeorders_file, args.crm_file, args.target_date)
     )
+    snapshot_success_message: str | None = None
     if use_snapshot_gate:
         if not (args.activeorders_file and args.crm_file and args.target_date):
             print("HARD_FAIL: snapshot gate requires --activeorders-file, --crm-file, and --target-date")
@@ -128,11 +144,10 @@ def main() -> int:
             )
             return 1
 
-        print(
+        snapshot_success_message = (
             "SUCCESS_GATE_OK: activeorders snapshot parity "
             f"(target_date={target_date}, orders={len(active_ids)})"
         )
-        return 0
 
     if not args.health_json.exists():
         print(f"HARD_FAIL: health json missing: {args.health_json}")
@@ -147,6 +162,7 @@ def main() -> int:
     totals = payload.get("totals", {})
     try:
         miss_crm = _coerce_int(totals.get("miss_crm"), "totals.miss_crm")
+        stale_crm = _coerce_int(totals.get("stale_crm", 0), "totals.stale_crm")
         api_today = _coerce_int(totals.get("api_today"), "totals.api_today")
         crm_today = _coerce_int(totals.get("crm_today"), "totals.crm_today")
     except ValueError as exc:
@@ -156,8 +172,17 @@ def main() -> int:
     if miss_crm > 0:
         print(f"HARD_FAIL: miss_crm={miss_crm} (api_today={api_today}, crm_today={crm_today})")
         return 1
+    if stale_crm > 0:
+        print(f"HARD_FAIL: stale_crm={stale_crm} (api_today={api_today}, crm_today={crm_today})")
+        return 1
 
-    print(f"SUCCESS_GATE_OK: step2_rc=0 api_today={api_today} crm_today={crm_today} miss_crm=0")
+    if snapshot_success_message:
+        print(f"{snapshot_success_message} live_api_miss_crm=0 stale_crm=0")
+    else:
+        print(
+            f"SUCCESS_GATE_OK: step2_rc=0 api_today={api_today} "
+            f"crm_today={crm_today} miss_crm=0 stale_crm=0"
+        )
     return 0
 
 

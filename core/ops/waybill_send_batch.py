@@ -47,6 +47,12 @@ def _batch_hash(entries: Iterable[dict[str, Any]]) -> str:
             "logical_group_type": entry.get("logical_group_type"),
             "sha256": entry.get("sha256"),
             "file_size": int(entry.get("file_size") or 0),
+            "size_token": entry.get("size_token"),
+            "size_rank": int(entry.get("size_rank") or 0),
+            "product_family_key": entry.get("product_family_key"),
+            "color_key": entry.get("color_key"),
+            "product_color_key": entry.get("product_color_key"),
+            "send_sequence": int(entry.get("send_sequence") or 0),
         }
         for entry in entries
     ]
@@ -225,8 +231,9 @@ def initialize_send_ledger(
     ledger_path: Path,
     manifest_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
+    manifest_schema_version = int(manifest_payload.get("schema_version") or 2)
     ledger = {
-        "schema_version": 1,
+        "schema_version": manifest_schema_version,
         "batch_hash": manifest_payload.get("batch_hash"),
         "batch_label": manifest_payload.get("batch_label"),
         "manifest_path": str((ledger_path.parent / SEND_BATCH_MANIFEST_FILE).resolve()),
@@ -245,6 +252,7 @@ def load_send_ledger(
     ledger_path: Path,
     manifest_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
+    manifest_schema_version = int(manifest_payload.get("schema_version") or 2)
     if ledger_path.exists():
         payload = json.loads(ledger_path.read_text(encoding="utf-8"))
         if str(payload.get("batch_hash") or "") not in {
@@ -256,7 +264,7 @@ def load_send_ledger(
             )
     else:
         payload = {
-            "schema_version": 1,
+            "schema_version": manifest_schema_version,
             "batch_hash": manifest_payload.get("batch_hash"),
             "batch_label": manifest_payload.get("batch_label"),
             "manifest_path": str((ledger_path.parent / SEND_BATCH_MANIFEST_FILE).resolve()),
@@ -265,7 +273,7 @@ def load_send_ledger(
             "entries": {},
         }
 
-    payload.setdefault("schema_version", 1)
+    payload.setdefault("schema_version", manifest_schema_version)
     payload.setdefault("batch_hash", manifest_payload.get("batch_hash"))
     payload.setdefault("batch_label", manifest_payload.get("batch_label"))
     payload.setdefault("manifest_path", str((ledger_path.parent / SEND_BATCH_MANIFEST_FILE).resolve()))
@@ -294,6 +302,16 @@ ALLOWED_LEDGER_TRANSITIONS = {
 }
 
 
+def _failed_entry_retryable(entry: Dict[str, Any]) -> bool:
+    history = list(entry.get("history") or [])
+    seen_states = {
+        str(item.get("state") or "").strip()
+        for item in history
+        if str(item.get("state") or "").strip()
+    }
+    return not any(state in seen_states for state in {"clicked", "confirmed", "unsure"})
+
+
 def transition_send_ledger_entry(
     ledger: Dict[str, Any],
     pdf_key: str,
@@ -311,6 +329,8 @@ def transition_send_ledger_entry(
     if new_state == current_state:
         raise RuntimeError(f"Ledger entry {pdf_key} already in state {current_state}")
     allowed = ALLOWED_LEDGER_TRANSITIONS.get(current_state, set())
+    if current_state == "failed" and _failed_entry_retryable(entry):
+        allowed = {"opened"}
     if current_state == "unsure" and allow_unsure_resume:
         allowed = {"opened"}
     if new_state not in allowed:
@@ -351,7 +371,11 @@ def select_manifest_entries_for_send(
             continue
         if ledger_state == "unsure" and not allow_unsure_resume:
             continue
-        if ledger_state not in {"pending", "unsure"}:
+        if ledger_state == "failed" and not _failed_entry_retryable(
+            ledger.get("entries", {}).get(pdf_key, {})
+        ):
+            continue
+        if ledger_state not in {"pending", "unsure", "failed"}:
             continue
         selected.append(entry)
     return selected

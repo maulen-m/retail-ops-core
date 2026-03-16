@@ -10,9 +10,13 @@ def _order(code: str, *, buyer: float | None, seller: float | None) -> dict:
         "id": f"base64-{code}",
         "attributes": {
             "code": code,
+            "state": "KASPI_DELIVERY",
+            "status": "ACCEPTED_BY_MERCHANT",
+            "assembled": False,
             "kaspiDelivery": {
                 "customerDeliveryCost": buyer,
                 "deliveryCostForSeller": seller,
+                "courierTransmissionPlanningDate": 1772920800000,
             },
         },
     }

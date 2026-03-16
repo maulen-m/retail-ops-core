@@ -74,6 +74,21 @@ Strict behavior:
   - strict parity command exits 0
 - Volatile mismatches are diagnostic only unless promoted to explicit blocker in an owning board.
 
+## BUSINESS_INSIDES Alignment Window
+- `validate_business_insides_ocean_drop_alignment.py` is allowed to consume the locked Ocean Drop anchor as a historical reference even when the current `as_of` window extends beyond the anchor's delivered-date coverage.
+- If the requested current window has zero delivered reference rows, the validator must emit an explicit `PASS_NO_OVERLAP` external-check state with:
+  - `reference_window_overlap=false`
+  - `requested_window_start`
+  - `requested_window_end`
+  - `reference_min_sale_date`
+  - `reference_max_sale_date`
+- This is not a silent relaxation. It means:
+  - Ocean Drop remains the historical alignment anchor where rows exist.
+  - Current-window economics/publication governance is carried by current DB-backed validators (`validate_monthly_economics_parity`, `validate_business_insides_economics_ready`, and doctor truth/domain checks), not by synthetic Ocean Drop backfill.
+- Core parity validator behavior is unchanged:
+  - `validate_sales_truth_ocean_drop_parity.py` still fails closed when a requested `--window-days` range has no reference rows.
+  - The `PASS_NO_OVERLAP` handling is only for the BUSINESS_INSIDES wrapper that must explicitly report reference coverage boundaries.
+
 ## Engine Self-Sufficiency Gate
 Command:
 ```bash

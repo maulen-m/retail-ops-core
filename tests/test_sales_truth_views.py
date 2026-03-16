@@ -213,6 +213,132 @@ def test_view_sales_truth_keeps_fact_sales_for_pre_v2_history_only(tmp_path: Pat
     ]
 
 
+def test_view_sales_truth_keeps_fact_sales_overlap_when_workbook_anchor_exists(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        CREATE TABLE fact_sales_workbook_anchor (
+            order_id TEXT,
+            store_code TEXT,
+            sale_date TEXT,
+            quantity REAL,
+            net_rev_kzt REAL,
+            total_price_kzt REAL,
+            source_file TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("ORD-V2-1", "2026-02-10", "SKU_A", "SKU_A_M", "M", "ACMEWEAR", 1, 1500, 300, 1200, "DELIVERED", 0),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fact_sales
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, line_net_rev, cogs_line, profit_line)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("ORD-FS-LATE", "2026-02-10", "SKU_B", "SKU_B_L", "L", "ACMEWEAR", 2, 2400, 800, 1600),
+        ],
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_sales_workbook_anchor
+        (order_id, store_code, sale_date, quantity, net_rev_kzt, total_price_kzt, source_file)
+        VALUES ('ORD-FS-LATE', 'ACMEWEAR', '2026-02-10', 2, 2400, 2400, 'SALES_KSP_CRM_V3.xlsx')
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES (?, ?, ?, 0)
+        """,
+        [
+            ("SKU_A", 25, 0.4),
+            ("SKU_B", 30, 0.5),
+        ],
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    rows = conn.execute(
+        """
+        SELECT order_id, sale_date, source_table, units, net_rev_kzt
+        FROM view_sales_line_truth
+        ORDER BY order_id
+        """
+    ).fetchall()
+    conn.close()
+
+    assert rows == [
+        ("ORD-FS-LATE", "2026-02-10", "fact_sales", 2.0, 2400.0),
+        ("ORD-V2-1", "2026-02-10", "sales_fact_v2", 1.0, 1500.0),
+    ]
+
+
+def test_view_sales_truth_skips_fact_sales_fallback_when_raw_v2_order_exists(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        CREATE TABLE fact_sales_workbook_anchor (
+            order_id TEXT,
+            store_code TEXT,
+            sale_date TEXT,
+            quantity REAL,
+            net_rev_kzt REAL,
+            total_price_kzt REAL,
+            source_file TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-CANCELLED', '2026-02-10', 'SKU_A', 'SKU_A_M', 'M', 'ACMEWEAR', 1, 1500, 300, 1200, 'CANCELLED', 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_sales
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, line_net_rev, cogs_line, profit_line)
+        VALUES ('ORD-CANCELLED', '2026-02-10', 'SKU_A', 'SKU_A_M', 'M', 'ACMEWEAR', 1, 1500, 300, 1200)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_sales_workbook_anchor
+        (order_id, store_code, sale_date, quantity, net_rev_kzt, total_price_kzt, source_file)
+        VALUES ('ORD-CANCELLED', 'ACMEWEAR', '2026-02-10', 1, 1500, 1500, 'SALES_KSP_CRM_V3.xlsx')
+        """
+    )
+    conn.execute("INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt) VALUES ('SKU_A', 25, 0.4, 0)")
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    row_count = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM view_sales_line_truth
+        WHERE order_id='ORD-CANCELLED'
+        """
+    ).fetchone()[0]
+    conn.close()
+
+    assert row_count == 0
+
+
 def test_truth_view_maps_offer_article_to_canonical_line61(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     conn = sqlite3.connect(db)

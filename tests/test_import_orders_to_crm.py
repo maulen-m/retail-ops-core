@@ -4,6 +4,7 @@ Tests for import_orders_to_crm.py
 Phase 11 TASK-194: 12 tests for the order import script.
 """
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -24,7 +25,9 @@ import pytest
 from scripts.import_orders_to_crm import (
     CRMAppendExpectation,
     CRMSnapshot,
+    AppendVerificationError,
     ExcelWorkbookSession,
+    ExcelTargetConflictError,
     READY_STATUS,
     NO_SIGNATURE,
     RAW_KASPI_COLUMNS,
@@ -45,6 +48,9 @@ from scripts.import_orders_to_crm import (
     _workbook_integrity_preflight,
     _find_template_row_for_append,
     _normalize_conditional_formatting_ranges,
+    _restore_conditional_formatting_from_template,
+    _repair_appended_rows_formatting,
+    _verify_formula_cache_readback,
     _verify_appended_rows_integrity,
     _xlwings_open_timeout_sec,
     _temporary_manual_calculation,
@@ -58,6 +64,7 @@ from scripts.import_orders_to_crm import (
     _excel_open_probe,
     _verify_candidate_workbook,
     _xlwings_append_timeout_sec,
+    _classify_import_failure,
     apply_fixed_values_backfill_openpyxl,
     append_orders_with_fallback,
     build_staging,
@@ -75,6 +82,8 @@ from scripts.import_orders_to_crm import (
     main,
     parse_date,
     parse_orders_from_excel,
+    restore_crm_workbook_from_template,
+    write_import_summary,
 )
 
 
@@ -1136,6 +1145,44 @@ def test_append_orders_with_fallback_uses_openpyxl_when_xlwings_fails(monkeypatc
     assert calls["openpyxl"] == 1
 
 
+def test_append_orders_with_fallback_restores_snapshot_before_openpyxl_fallback(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("ORIGINAL", encoding="utf-8")
+
+    def _partial_then_fail(*_args, **_kwargs):
+        workbook.write_text("PARTIAL_XLWINGS_WRITE", encoding="utf-8")
+        raise RuntimeError("xlwings failed mid-write")
+
+    seen = {}
+
+    def _fake_openpyxl(*_args, **_kwargs):
+        seen["content_before_fallback"] = workbook.read_text(encoding="utf-8")
+        return (100, 101)
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", _partial_then_fail)
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_openpyxl", _fake_openpyxl)
+
+    result = append_orders_with_fallback(
+        out_wb=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        date_col_abs=2,
+        phone_col_abs=9,
+        start_col_abs=25,
+        end_col_abs=52,
+        stage_block=[["812000111"]],
+        phone_values=["+77770000000"],
+        set_date=date.today(),
+        slice_headers=["№ заказа"],
+        allow_openpyxl_fallback=True,
+        prefer_xlwings=True,
+        verbose=False,
+    )
+
+    assert result == (100, 101)
+    assert seen["content_before_fallback"] == "ORIGINAL"
+
+
 def test_append_orders_with_fallback_uses_openpyxl_when_xlwings_times_out(monkeypatch, tmp_path):
     workbook = tmp_path / "crm.xlsx"
     workbook.write_text("placeholder", encoding="utf-8")
@@ -1210,6 +1257,262 @@ def test_append_orders_with_fallback_suppresses_traceback_for_apple_event_timeou
     assert printed["traceback"] == 0
 
 
+def test_append_orders_with_fallback_repairs_xlwings_style_and_cf_drift(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+
+    headers = [f"FILLER_{idx}" for idx in range(1, 26)]
+    header_overrides = {
+        1: "Date",
+        2: "STORE_NAME",
+        3: "Quantity",
+        7: "Kaspi_name_core",
+        15: "Sell_price_kzt",
+        16: "Total_price",
+        17: "Total_net_rev",
+        18: "Название товара в Kaspi Магазине",
+        19: "Артикул",
+        20: "Статус",
+        25: "№ заказа",
+    }
+    for idx, header in header_overrides.items():
+        headers[idx - 1] = header
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(1, idx, header)
+
+    template_values = {
+        1: date(2026, 3, 15),
+        2: "Universal",
+        3: 1,
+        7: '=CONCAT("AUTO","_CORE")',
+        15: "=15000",
+        16: "=15000",
+        17: "=12000",
+        18: "Nike_Футболка_черная_XL",
+        19: "SKU-1",
+        20: "Принят",
+        25: 856631060,
+    }
+    for col, value in template_values.items():
+        ws.cell(2, col, value)
+
+    yellow_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="FFF2CC")
+    green_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="E2F0D9")
+    for col in template_values:
+        ws.cell(2, col).fill = yellow_fill
+
+    ws.conditional_formatting.add(
+        "O2:Q2",
+        FormulaRule(formula=["$O2>0"], fill=yellow_fill),
+    )
+    ws.conditional_formatting.add(
+        "Y2:Y2",
+        FormulaRule(formula=["$Y2>0"], fill=yellow_fill),
+    )
+
+    table = Table(displayName="tb_SalesRaw", ref="A1:Y2")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(table)
+    wb.save(workbook)
+    wb.close()
+
+    def _fake_xlwings_append(*_args, **_kwargs):
+        inner_wb = openpyxl.load_workbook(workbook)
+        inner_ws = inner_wb["SALES_KSP_CRM_1"]
+        row_values = {
+            1: date(2026, 3, 15),
+            2: "Universal",
+            3: 1,
+            7: '=CONCAT("AUTO","_CORE")',
+            15: "=15000",
+            16: "=15000",
+            17: "=12000",
+            18: "Nike_Футболка_черная_2XL",
+            19: "SKU-2",
+            20: "Принят",
+            25: 856648172,
+        }
+        for col, value in row_values.items():
+            inner_ws.cell(3, col, value)
+            inner_ws.cell(3, col).fill = yellow_fill
+        inner_ws.cell(3, 7).fill = green_fill
+        inner_ws.tables["tb_SalesRaw"].ref = "A1:Y3"
+        inner_wb.save(workbook)
+        inner_wb.close()
+        return (3, 3)
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", _fake_xlwings_append)
+    monkeypatch.setattr("scripts.import_orders_to_crm._refresh_formula_caches_xlwings", lambda *_args, **_kwargs: None)
+
+    result = append_orders_with_fallback(
+        out_wb=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        date_col_abs=1,
+        phone_col_abs=None,
+        start_col_abs=1,
+        end_col_abs=25,
+        stage_block=[[template_values.get(col, "") for col in range(1, 26)]],
+        phone_values=[],
+        set_date=date(2026, 3, 15),
+        slice_headers=headers,
+        allow_openpyxl_fallback=False,
+        prefer_xlwings=True,
+        repair_cf_ranges=True,
+        verbose=False,
+    )
+
+    assert result == (3, 3)
+    _verify_appended_rows_integrity(
+        workbook_path=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        start_row=3,
+        end_row=3,
+        verbose=False,
+    )
+
+
+def test_append_orders_with_fallback_refreshes_formula_caches_after_xlwings_repair(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("placeholder", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.excel_append_xlwings",
+        lambda *_args, **_kwargs: (10, 12),
+    )
+
+    def _repair_spy(*_args, **_kwargs):
+        calls.append(("repair", _kwargs["start_row"], _kwargs["end_row"]))
+        return {"style_cells_normalized": 5, "cf_rules_normalized": 2}
+
+    def _refresh_spy(*_args, **_kwargs):
+        calls.append(("refresh", str(_args[0])))
+
+    def _verify_spy(*_args, **_kwargs):
+        calls.append(("verify", _kwargs["start_row"], _kwargs["end_row"]))
+
+    monkeypatch.setattr("scripts.import_orders_to_crm._repair_appended_rows_formatting", _repair_spy)
+    monkeypatch.setattr("scripts.import_orders_to_crm._refresh_formula_caches_xlwings", _refresh_spy)
+    monkeypatch.setattr("scripts.import_orders_to_crm._verify_formula_cache_readback", _verify_spy)
+
+    result = append_orders_with_fallback(
+        out_wb=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        date_col_abs=1,
+        phone_col_abs=None,
+        start_col_abs=1,
+        end_col_abs=1,
+        stage_block=[["812000555"]],
+        phone_values=[],
+        set_date=date.today(),
+        slice_headers=["№ заказа"],
+        allow_openpyxl_fallback=False,
+        prefer_xlwings=True,
+        repair_cf_ranges=True,
+        verbose=False,
+    )
+
+    assert result == (10, 12)
+    assert calls == [
+        ("repair", 10, 12),
+        ("refresh", str(workbook)),
+        ("verify", 10, 12),
+    ]
+
+
+def test_append_orders_with_fallback_restores_workbook_when_post_repair_refresh_fails(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("ORIGINAL", encoding="utf-8")
+
+    def _fake_xlwings_append(*_args, **_kwargs):
+        workbook.write_text("BROKEN_AFTER_APPEND", encoding="utf-8")
+        return (10, 12)
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", _fake_xlwings_append)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._repair_appended_rows_formatting",
+        lambda *_args, **_kwargs: {"style_cells_normalized": 5, "cf_rules_normalized": 2},
+    )
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._refresh_formula_caches_xlwings",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("refresh timed out")),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm._verify_formula_cache_readback", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(AppendVerificationError, match="restored from pre-append snapshot"):
+        append_orders_with_fallback(
+            out_wb=workbook,
+            sheet_name="SALES_KSP_CRM_1",
+            table_name="tb_SalesRaw",
+            date_col_abs=1,
+            phone_col_abs=None,
+            start_col_abs=1,
+            end_col_abs=1,
+            stage_block=[["812000555"]],
+            phone_values=[],
+            set_date=date.today(),
+            slice_headers=["№ заказа"],
+            allow_openpyxl_fallback=False,
+            prefer_xlwings=True,
+            repair_cf_ranges=True,
+            verbose=False,
+        )
+
+    assert workbook.read_text(encoding="utf-8") == "ORIGINAL"
+
+
+def test_append_orders_with_fallback_restores_workbook_when_formula_cache_readback_fails(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("ORIGINAL", encoding="utf-8")
+
+    def _fake_xlwings_append(*_args, **_kwargs):
+        workbook.write_text("BROKEN_AFTER_APPEND", encoding="utf-8")
+        return (10, 12)
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.excel_append_xlwings", _fake_xlwings_append)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._repair_appended_rows_formatting",
+        lambda *_args, **_kwargs: {"style_cells_normalized": 5, "cf_rules_normalized": 2},
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm._refresh_formula_caches_xlwings", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._verify_formula_cache_readback",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("formula cache missing")),
+    )
+
+    with pytest.raises(AppendVerificationError, match="restored from pre-append snapshot"):
+        append_orders_with_fallback(
+            out_wb=workbook,
+            sheet_name="SALES_KSP_CRM_1",
+            table_name="tb_SalesRaw",
+            date_col_abs=1,
+            phone_col_abs=None,
+            start_col_abs=1,
+            end_col_abs=1,
+            stage_block=[["812000556"]],
+            phone_values=[],
+            set_date=date.today(),
+            slice_headers=["№ заказа"],
+            allow_openpyxl_fallback=False,
+            prefer_xlwings=True,
+            repair_cf_ranges=True,
+            verbose=False,
+        )
+
+    assert workbook.read_text(encoding="utf-8") == "ORIGINAL"
+
+
 def test_xlwings_append_timeout_sec_respects_env(monkeypatch):
     monkeypatch.setenv("CRM_XLWINGS_APPEND_TIMEOUT_SEC", "75")
     assert _xlwings_append_timeout_sec() == 75
@@ -1234,6 +1537,79 @@ def test_temporary_manual_calculation_switches_and_restores():
         assert app.calculation == "manual"
     assert app.calculation == "automatic"
     assert app.calculate_calls == 1
+
+
+def test_verify_formula_cache_readback_detects_missing_cached_values(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("placeholder", encoding="utf-8")
+
+    formula_wb = openpyxl.Workbook()
+    formula_ws = formula_wb.active
+    formula_ws.title = "SALES_KSP_CRM_1"
+    formula_ws["A1"] = "STORE_NAME"
+    formula_ws["B1"] = "Quantity"
+    formula_ws["A2"] = '="Universal"'
+    formula_ws["B2"] = "=1"
+    formula_ws.add_table(Table(displayName="tb_SalesRaw", ref="A1:B2"))
+
+    data_wb = openpyxl.Workbook()
+    data_ws = data_wb.active
+    data_ws.title = "SALES_KSP_CRM_1"
+    data_ws["A1"] = "STORE_NAME"
+    data_ws["B1"] = "Quantity"
+    data_ws["A2"] = None
+    data_ws["B2"] = None
+    data_ws.add_table(Table(displayName="tb_SalesRaw", ref="A1:B2"))
+
+    def _fake_load_workbook(*_args, **kwargs):
+        return data_wb if kwargs.get("data_only") else formula_wb
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_workbook", _fake_load_workbook)
+
+    with pytest.raises(AppendVerificationError, match="Formula cache readback missing"):
+        _verify_formula_cache_readback(
+            workbook_path=workbook,
+            sheet_name="SALES_KSP_CRM_1",
+            table_name="tb_SalesRaw",
+            start_row=2,
+            end_row=2,
+        )
+
+
+def test_verify_formula_cache_readback_accepts_present_cached_values(monkeypatch, tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_text("placeholder", encoding="utf-8")
+
+    formula_wb = openpyxl.Workbook()
+    formula_ws = formula_wb.active
+    formula_ws.title = "SALES_KSP_CRM_1"
+    formula_ws["A1"] = "STORE_NAME"
+    formula_ws["B1"] = "Quantity"
+    formula_ws["A2"] = '="Universal"'
+    formula_ws["B2"] = "=1"
+    formula_ws.add_table(Table(displayName="tb_SalesRaw", ref="A1:B2"))
+
+    data_wb = openpyxl.Workbook()
+    data_ws = data_wb.active
+    data_ws.title = "SALES_KSP_CRM_1"
+    data_ws["A1"] = "STORE_NAME"
+    data_ws["B1"] = "Quantity"
+    data_ws["A2"] = "Universal"
+    data_ws["B2"] = 1
+    data_ws.add_table(Table(displayName="tb_SalesRaw", ref="A1:B2"))
+
+    def _fake_load_workbook(*_args, **kwargs):
+        return data_wb if kwargs.get("data_only") else formula_wb
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_workbook", _fake_load_workbook)
+
+    _verify_formula_cache_readback(
+        workbook_path=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        start_row=2,
+        end_row=2,
+    )
 
 
 def test_temporary_manual_calculation_restores_on_exception():
@@ -1554,17 +1930,20 @@ def test_list_excel_workbooks_parses_running_excel_output(monkeypatch):
             stderr="",
         )
 
+    monkeypatch.setattr("scripts.import_orders_to_crm.xw", None)
     monkeypatch.setattr("scripts.import_orders_to_crm.subprocess.run", _fake_run)
 
     sessions = _list_excel_workbooks(timeout_sec=10)
 
     assert sessions == [
         ExcelWorkbookSession(
+            pid=None,
             name="CRM_copy.xlsx",
             saved=False,
             path="",
         ),
         ExcelWorkbookSession(
+            pid=None,
             name="SALES_KSP_CRM_V3.xlsx",
             saved=True,
             path="",
@@ -1572,19 +1951,18 @@ def test_list_excel_workbooks_parses_running_excel_output(monkeypatch):
     ]
 
 
-def test_excel_session_preflight_fails_on_unsaved_side_workbook(monkeypatch, tmp_path):
+def test_excel_session_preflight_allows_unsaved_side_workbook(monkeypatch, tmp_path):
     crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
     crm.write_text("placeholder", encoding="utf-8")
 
     monkeypatch.setattr(
         "scripts.import_orders_to_crm._list_excel_workbooks",
         lambda timeout_sec=10: [
-            ExcelWorkbookSession(name="CRM_copy.xlsx", saved=False, path="~/Desktop/CRM_copy.xlsx"),
+            ExcelWorkbookSession(pid=91234, name="CRM_copy.xlsx", saved=False, path="~/Desktop/CRM_copy.xlsx"),
         ],
     )
 
-    with pytest.raises(RuntimeError, match="Unsaved Excel workbook\\(s\\) are open: CRM_copy.xlsx"):
-        _excel_session_preflight(crm, verbose=False)
+    _excel_session_preflight(crm, verbose=True)
 
 
 def test_excel_session_preflight_fails_when_target_workbook_is_open(monkeypatch, tmp_path):
@@ -1594,11 +1972,11 @@ def test_excel_session_preflight_fails_when_target_workbook_is_open(monkeypatch,
     monkeypatch.setattr(
         "scripts.import_orders_to_crm._list_excel_workbooks",
         lambda timeout_sec=10: [
-            ExcelWorkbookSession(name="SALES_KSP_CRM_V3.xlsx", saved=True, path=str(crm.resolve())),
+            ExcelWorkbookSession(pid=91234, name="SALES_KSP_CRM_V3.xlsx", saved=True, path=str(crm.resolve())),
         ],
     )
 
-    with pytest.raises(RuntimeError, match="CRM workbook is already open in Excel"):
+    with pytest.raises(ExcelTargetConflictError, match="CRM workbook is already open in Excel"):
         _excel_session_preflight(crm, verbose=False)
 
 
@@ -1609,12 +1987,70 @@ def test_excel_session_preflight_matches_target_by_name_when_path_missing(monkey
     monkeypatch.setattr(
         "scripts.import_orders_to_crm._list_excel_workbooks",
         lambda timeout_sec=10: [
-            ExcelWorkbookSession(name="SALES_KSP_CRM_V3.xlsx", saved=True, path=""),
+            ExcelWorkbookSession(pid=91234, name="SALES_KSP_CRM_V3.xlsx", saved=True, path=""),
         ],
     )
 
-    with pytest.raises(RuntimeError, match="CRM workbook is already open in Excel"):
+    with pytest.raises(ExcelTargetConflictError, match="CRM workbook is already open in Excel"):
         _excel_session_preflight(crm, verbose=False)
+
+
+def test_main_excel_session_preflight_only_skips_activeorders_read(monkeypatch, tmp_path, capsys):
+    crm = tmp_path / "SALES_KSP_CRM_V3.xlsx"
+    crm.write_text("placeholder", encoding="utf-8")
+    seen = {}
+
+    def _guard(path, verbose=False):
+        seen["path"] = path
+        seen["verbose"] = verbose
+
+    def _unexpected(*_args, **_kwargs):
+        raise AssertionError("read_active_orders should not run during preflight-only mode")
+
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_session_preflight", _guard)
+    monkeypatch.setattr("scripts.import_orders_to_crm.read_active_orders", _unexpected)
+
+    stats = main(
+        crm_path=crm,
+        excel_session_preflight_only=True,
+        verbose=True,
+    )
+
+    assert seen == {"path": crm.resolve(), "verbose": True}
+    assert stats == {"excel_session_preflight": "ok"}
+    captured = capsys.readouterr()
+    assert "Excel Session Preflight" in captured.out
+    assert "Excel session preflight OK" in captured.out
+
+
+def test_write_import_summary_records_status_and_retryability(tmp_path):
+    summary_path = tmp_path / "import_summary.json"
+
+    write_import_summary(
+        {
+            "orders_imported": 0,
+            "orders_updated": 0,
+            "orders_filtered": 12,
+            "status": "preflight_blocked",
+            "retryable_topup": False,
+            "error": "CRM workbook is already open in Excel.",
+        },
+        summary_path,
+    )
+
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "preflight_blocked"
+    assert payload["retryable_topup"] is False
+    assert payload["error"] == "CRM workbook is already open in Excel."
+
+
+def test_classify_import_failure_maps_target_conflict_and_append_verification():
+    assert _classify_import_failure(ExcelTargetConflictError("crm open")) == ("preflight_blocked", False)
+    assert _classify_import_failure(AppendVerificationError("append mismatch")) == (
+        "append_verification_failed",
+        False,
+    )
+    assert _classify_import_failure(RuntimeError("other failure")) == ("write_failed", False)
 
 
 def test_excel_open_probe_retries_after_osascript_timeout(monkeypatch, tmp_path):
@@ -1797,6 +2233,266 @@ def test_normalize_conditional_formatting_ranges_extends_fragmented_ranges():
     assert any("F2:H10" in sqref for sqref in sqrefs)
 
 
+def test_restore_conditional_formatting_from_template_preserves_segments_and_formula_anchors():
+    template_wb = openpyxl.Workbook()
+    template_ws = template_wb.active
+    template_ws.title = "SALES_KSP_CRM_1"
+    template_ws.cell(1, 1, "Date")
+    template_ws.cell(1, 2, "STORE_NAME")
+    template_ws.cell(1, 3, "Kaspi_name_core")
+    template_ws.conditional_formatting.add(
+        "C2:C5",
+        FormulaRule(formula=['$C2="Universal"']),
+    )
+    template_ws.conditional_formatting.add(
+        "C4:C5",
+        FormulaRule(formula=['$C4="Universal"']),
+    )
+
+    current_wb = openpyxl.Workbook()
+    current_ws = current_wb.active
+    current_ws.title = "SALES_KSP_CRM_1"
+    current_ws.cell(1, 1, "Date")
+    current_ws.cell(1, 2, "STORE_NAME")
+    current_ws.cell(1, 3, "Kaspi_name_core")
+    current_ws.conditional_formatting.add(
+        "C2:C7",
+        FormulaRule(formula=['$C4="Universal"']),
+    )
+
+    updated = _restore_conditional_formatting_from_template(
+        ws=current_ws,
+        template_ws=template_ws,
+        header_row=1,
+        data_end_row=7,
+        template_data_end_row=5,
+        verbose=False,
+    )
+
+    cf_items = list(current_ws.conditional_formatting._cf_rules.items())
+    sqrefs = [str(cf.sqref) for cf, _rules in cf_items]
+    formulas = [[rule.formula for rule in rules] for _cf, rules in cf_items]
+    template_wb.close()
+    current_wb.close()
+
+    assert updated == 2
+    assert "C2:C7" in sqrefs
+    assert "C4:C7" in sqrefs
+    assert [['$C2="Universal"']] in formulas
+    assert [['$C4="Universal"']] in formulas
+
+
+def test_restore_crm_workbook_from_template_preserves_live_rows_and_template_formulas(tmp_path):
+    template_path = tmp_path / "template.xlsx"
+    current_path = tmp_path / "current.xlsx"
+    restored_path = tmp_path / "restored.xlsx"
+
+    template_wb = openpyxl.Workbook()
+    template_ws = template_wb.active
+    template_ws.title = "SALES_KSP_CRM_1"
+    headers = [
+        "Date",
+        "STORE_NAME",
+        "Quantity",
+        "Kaspi_name_core",
+        "OrderID",
+        "MY_SIZE",
+        "Sell_price_kzt",
+        "Total_price",
+        "Total_net_rev",
+        "№ заказа",
+    ]
+    for idx, header in enumerate(headers, start=1):
+        template_ws.cell(1, idx, header)
+    template_ws.cell(2, 1, date(2026, 3, 15))
+    template_ws.cell(2, 2, '=IF(J2<>"","Universal","")')
+    template_ws.cell(2, 3, "=1")
+    template_ws.cell(2, 4, '=CONCAT("CORE-",J2)')
+    template_ws.cell(2, 5, 855000001)
+    template_ws.cell(2, 6, "")
+    template_ws.cell(2, 7, "=15000")
+    template_ws.cell(2, 8, "=15000")
+    template_ws.cell(2, 9, "=12000")
+    template_ws.cell(2, 10, 855000001)
+    yellow_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="FFF2CC")
+    template_ws.cell(2, 4).fill = yellow_fill
+    template_ws.conditional_formatting.add(
+        "D2:D2",
+        FormulaRule(formula=['$D2<>""'], fill=yellow_fill),
+    )
+    table = Table(displayName="tb_SalesRaw", ref="A1:J2")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    template_ws.add_table(table)
+    journal_ws = template_wb.create_sheet("AGENT_JOURNAL")
+    journal_ws.cell(1, 1, "ts")
+    journal_ws.cell(2, 1, "template")
+    template_wb.save(template_path)
+    template_wb.close()
+
+    current_wb = openpyxl.Workbook()
+    current_ws = current_wb.active
+    current_ws.title = "SALES_KSP_CRM_1"
+    for idx, header in enumerate(headers, start=1):
+        current_ws.cell(1, idx, header)
+    current_rows = [
+        [date(2026, 3, 15), "", "", "", 855000111, "XL", "", "", "", 855000111],
+        [date(2026, 3, 15), "", "", "", 855000222, "2XL", "", "", "", 855000222],
+    ]
+    for row_idx, row_values in enumerate(current_rows, start=2):
+        for col_idx, value in enumerate(row_values, start=1):
+            current_ws.cell(row_idx, column=col_idx, value=value)
+    broken_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="C00000")
+    current_ws.cell(3, 4).fill = broken_fill
+    current_ws.conditional_formatting.add(
+        "D2:D3",
+        FormulaRule(formula=['$D3<>""'], fill=broken_fill),
+    )
+    current_table = Table(displayName="tb_SalesRaw", ref="A1:J3")
+    current_table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    current_ws.add_table(current_table)
+    current_journal = current_wb.create_sheet("AGENT_JOURNAL")
+    current_journal.cell(1, 1, "ts")
+    current_journal.cell(2, 1, "live-journal")
+    current_wb.save(current_path)
+    current_wb.close()
+
+    stats = restore_crm_workbook_from_template(
+        workbook_path=current_path,
+        template_path=template_path,
+        output_path=restored_path,
+        verbose=False,
+    )
+
+    restored_wb = openpyxl.load_workbook(restored_path, data_only=False)
+    restored_ws = restored_wb["SALES_KSP_CRM_1"]
+    restored_journal = restored_wb["AGENT_JOURNAL"]
+    sqrefs = [str(cf.sqref) for cf in restored_ws.conditional_formatting._cf_rules.keys()]
+
+    assert stats["sales_rows_preserved"] == 2
+    assert restored_ws["F2"].value == "XL"
+    assert restored_ws["F3"].value == "2XL"
+    assert restored_ws["J2"].value == 855000111
+    assert restored_ws["J3"].value == 855000222
+    assert restored_ws["D2"].value == '=CONCAT("CORE-",J2)'
+    assert restored_ws["D3"].value == '=CONCAT("CORE-",J3)'
+    assert restored_ws["D3"].fill.fgColor.rgb == yellow_fill.fgColor.rgb
+    assert restored_ws.tables["tb_SalesRaw"].ref == "A1:J3"
+    assert "D2:D3" in sqrefs
+    assert restored_journal["A2"].value == "live-journal"
+    restored_wb.close()
+
+
+def test_repair_appended_rows_formatting_uses_template_conditional_formatting(monkeypatch, tmp_path):
+    template_path = tmp_path / "template.xlsx"
+    workbook_path = tmp_path / "crm.xlsx"
+
+    template_wb = openpyxl.Workbook()
+    template_ws = template_wb.active
+    template_ws.title = "SALES_KSP_CRM_1"
+    headers = [
+        "Date",
+        "STORE_NAME",
+        "Quantity",
+        "Kaspi_name_core",
+        "OrderID",
+        "MY_SIZE",
+        "Sell_price_kzt",
+        "Total_price",
+        "Total_net_rev",
+        "№ заказа",
+    ]
+    for idx, header in enumerate(headers, start=1):
+        template_ws.cell(1, idx, header)
+    template_ws.cell(2, 1, date(2026, 3, 15))
+    template_ws.cell(2, 2, '=IF(J2<>"","Universal","")')
+    template_ws.cell(2, 3, "=1")
+    template_ws.cell(2, 4, '=CONCAT("CORE-",J2)')
+    template_ws.cell(2, 10, 855000001)
+    good_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="FFF2CC")
+    template_ws.cell(2, 4).fill = good_fill
+    template_ws.conditional_formatting.add(
+        "D2:D2",
+        FormulaRule(formula=['$D2<>""'], fill=good_fill),
+    )
+    table = Table(displayName="tb_SalesRaw", ref="A1:J2")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    template_ws.add_table(table)
+    template_wb.save(template_path)
+    template_wb.close()
+
+    live_wb = openpyxl.Workbook()
+    live_ws = live_wb.active
+    live_ws.title = "SALES_KSP_CRM_1"
+    for idx, header in enumerate(headers, start=1):
+        live_ws.cell(1, idx, header)
+    for row_idx, order_id in ((2, 855000111), (3, 855000222)):
+        live_ws.cell(row_idx, 1, date(2026, 3, 15))
+        live_ws.cell(row_idx, 4, "")
+        live_ws.cell(row_idx, 5, order_id)
+        live_ws.cell(row_idx, 10, order_id)
+    bad_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="C00000")
+    live_ws.cell(3, 4).fill = bad_fill
+    live_ws.conditional_formatting.add(
+        "D2:D3",
+        FormulaRule(formula=['$D3<>""'], fill=bad_fill),
+    )
+    live_table = Table(displayName="tb_SalesRaw", ref="A1:J3")
+    live_table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    live_ws.add_table(live_table)
+    live_wb.save(workbook_path)
+    live_wb.close()
+
+    monkeypatch.setenv("CRM_CANONICAL_TEMPLATE_PATH", str(template_path))
+
+    repaired = _repair_appended_rows_formatting(
+        workbook_path=workbook_path,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        start_row=3,
+        end_row=3,
+        repair_cf_ranges=True,
+        verbose=False,
+    )
+
+    repaired_wb = openpyxl.load_workbook(workbook_path, data_only=False)
+    repaired_ws = repaired_wb["SALES_KSP_CRM_1"]
+    cf_items = list(repaired_ws.conditional_formatting._cf_rules.items())
+    sqrefs = [str(cf.sqref) for cf, _rules in cf_items]
+    formulas = [[rule.formula for rule in rules] for _cf, rules in cf_items]
+
+    assert repaired["style_cells_normalized"] >= 1
+    assert repaired["cf_rules_normalized"] == 1
+    assert repaired_ws["D3"].value == '=CONCAT("CORE-",J3)'
+    assert repaired_ws["D3"].fill.fgColor.rgb == good_fill.fgColor.rgb
+    assert sqrefs == ["D2:D3"]
+    assert formulas == [[['$D2<>""']]]
+    repaired_wb.close()
+
+
 def test_verify_appended_rows_integrity_detects_empty_required_cell(tmp_path):
     workbook = tmp_path / "crm.xlsx"
     wb = openpyxl.Workbook()
@@ -1858,6 +2554,122 @@ def test_verify_appended_rows_integrity_detects_empty_required_cell(tmp_path):
             end_row=3,
             verbose=False,
         )
+
+
+def test_repair_appended_rows_formatting_fixes_style_and_cf_drift(tmp_path):
+    workbook = tmp_path / "crm.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+
+    headers = [f"FILLER_{idx}" for idx in range(1, 26)]
+    header_overrides = {
+        1: "Date",
+        2: "STORE_NAME",
+        3: "Quantity",
+        7: "Kaspi_name_core",
+        15: "Sell_price_kzt",
+        16: "Total_price",
+        17: "Total_net_rev",
+        18: "Название товара в Kaspi Магазине",
+        19: "Артикул",
+        20: "Статус",
+        25: "№ заказа",
+    }
+    for idx, header in header_overrides.items():
+        headers[idx - 1] = header
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(1, idx, header)
+
+    row2_values = {
+        1: date(2026, 3, 15),
+        2: "Universal",
+        3: 1,
+        7: '=CONCAT("AUTO","_CORE")',
+        15: "=15000",
+        16: "=15000",
+        17: "=12000",
+        18: "Nike_Футболка_черная_XL",
+        19: "SKU-1",
+        20: "Принят",
+        25: 856631060,
+    }
+    row3_values = {
+        1: date(2026, 3, 15),
+        2: "Universal",
+        3: 1,
+        7: '=CONCAT("AUTO","_CORE")',
+        15: "=15000",
+        16: "=15000",
+        17: "=12000",
+        18: "Nike_Футболка_черная_2XL",
+        19: "SKU-2",
+        20: "Принят",
+        25: 856648172,
+    }
+    for col, value in row2_values.items():
+        ws.cell(2, col, value)
+        ws.cell(3, col, row3_values[col])
+
+    yellow_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="FFF2CC")
+    green_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="E2F0D9")
+    for col in row2_values:
+        ws.cell(2, col).fill = yellow_fill
+        ws.cell(3, col).fill = yellow_fill
+    ws.cell(3, 7).fill = green_fill
+
+    ws.conditional_formatting.add(
+        "O2:Q2",
+        FormulaRule(formula=["$O2>0"], fill=yellow_fill),
+    )
+    ws.conditional_formatting.add(
+        "Y2:Y2",
+        FormulaRule(formula=["$Y2>0"], fill=yellow_fill),
+    )
+
+    table = Table(displayName="tb_SalesRaw", ref="A1:Y3")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(table)
+    wb.save(workbook)
+    wb.close()
+
+    with pytest.raises(RuntimeError, match="Append integrity check failed"):
+        _verify_appended_rows_integrity(
+            workbook_path=workbook,
+            sheet_name="SALES_KSP_CRM_1",
+            table_name="tb_SalesRaw",
+            start_row=3,
+            end_row=3,
+            verbose=False,
+        )
+
+    repaired = _repair_appended_rows_formatting(
+        workbook_path=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        start_row=3,
+        end_row=3,
+        repair_cf_ranges=True,
+        verbose=False,
+    )
+
+    assert repaired["style_cells_normalized"] >= 1
+    assert repaired["cf_rules_normalized"] >= 1
+
+    _verify_appended_rows_integrity(
+        workbook_path=workbook,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        start_row=3,
+        end_row=3,
+        verbose=False,
+    )
 
 
 def test_build_line_dedupe_key_differentiates_multiline_items():

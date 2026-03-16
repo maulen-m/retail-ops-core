@@ -98,8 +98,6 @@ SIZE_ORDER = {
     "26": 3,
     "28": 4,
     "30": 5,
-    "32": 6,
-    "34": 7,
     # Adult
     "S": 10,
     "M": 11,
@@ -109,13 +107,13 @@ SIZE_ORDER = {
     "3XL": 15,
     "4XL": 16,
 }
-SIZE_TOKEN_RE = re.compile(r"(22|24|26|28|30|32|34|2XL|3XL|4XL|XL|S|M|L)", re.IGNORECASE)
+SIZE_TOKEN_RE = re.compile(r"(22|24|26|28|30|2XL|3XL|4XL|XL|S|M|L)", re.IGNORECASE)
 TRAILING_SIZE_RE = re.compile(
-    r"_(22|24|26|28|30|32|34|2XL|3XL|4XL|XL|S|M|L)-\d+$",
+    r"_(22|24|26|28|30|2XL|3XL|4XL|XL|S|M|L)-\d+$",
     re.IGNORECASE,
 )
 MESSY_MULTI_SIZE_RE = re.compile(
-    r"-(22|24|26|28|30|32|34|2XL|3XL|4XL|XL|S|M|L)-\d+\(",
+    r"-(22|24|26|28|30|2XL|3XL|4XL|XL|S|M|L)-\d+\(",
     re.IGNORECASE,
 )
 COLOR_TOKENS = {
@@ -203,6 +201,12 @@ def _manifest_batch_hash(entries: List[Dict[str, Any]]) -> str:
                 "logical_group_type": entry.get("logical_group_type", ""),
                 "order_ids": list(entry.get("order_ids") or []),
                 "source_row_ids": list(entry.get("source_row_ids") or []),
+                "product_family_key": entry.get("product_family_key", ""),
+                "color_key": entry.get("color_key", ""),
+                "product_color_key": entry.get("product_color_key", ""),
+                "size_token": entry.get("size_token", ""),
+                "size_rank": int(entry.get("size_rank", 0) or 0),
+                "send_sequence": int(entry.get("send_sequence", 0) or 0),
             }
         )
     digest.update(json.dumps(stable_entries, ensure_ascii=False, sort_keys=True).encode("utf-8"))
@@ -331,6 +335,8 @@ def verify_send_batch_preflight(
                 "detail": f"manifest={manifest_batch_hash} computed={computed_hash}",
             }
         )
+
+    issues.extend(_validate_manifest_order_consistency(manifest))
 
     overdue_order_ids = set(manifest.get("overdue_order_ids") or [])
     send_order_ids = set(manifest.get("send_order_ids") or [])
@@ -760,6 +766,22 @@ def order_pdfs_for_sending(pdfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Order PDFs by category, then by contiguous SKU blocks with rising sizes.
     """
+    if pdfs:
+        parsed_sequences: List[tuple[int, Dict[str, Any]]] = []
+        all_have_sequence = True
+        for pdf in pdfs:
+            raw_sequence = pdf.get("send_sequence")
+            try:
+                sequence = int(raw_sequence)
+                if sequence <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                all_have_sequence = False
+                break
+            parsed_sequences.append((sequence, pdf))
+        if all_have_sequence and len({sequence for sequence, _ in parsed_sequences}) == len(pdfs):
+            return [pdf for sequence, pdf in sorted(parsed_sequences, key=lambda item: item[0])]
+
     category_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for pdf in pdfs:
         category_groups[str(pdf.get("category", ""))].append(pdf)
@@ -1089,6 +1111,7 @@ class WhatsAppSender:
             temp_profile_root=temp_root,
         )
 
+        self._assert_session_ready()
         self._wait_for_chat_list_ready()
         self.open_chat(self.chat_title)
 
@@ -1117,6 +1140,37 @@ class WhatsAppSender:
     def _wait_for_chat_list_ready(self) -> None:
         self.page.locator("div[aria-label='Chat list']").wait_for(timeout=CHAT_OPEN_TIMEOUT_MS)
         self._resolve_sidebar_search(timeout_ms=CHAT_OPEN_TIMEOUT_MS, required=False)
+
+    def _assert_session_ready(self, timeout_ms: int = CHAT_OPEN_TIMEOUT_MS) -> None:
+        if not hasattr(self.page, "locator"):
+            return
+
+        qr_selectors = [
+            "[data-testid='qrcode']",
+            "canvas[aria-label*='QR']",
+            "div[aria-label='Scan this QR code to link a device!']",
+        ]
+        login_selectors = [
+            "button[aria-label='Log in']",
+            "button[aria-label='Войти']",
+        ]
+        deadline = time.time() + (timeout_ms / 1000.0)
+        while time.time() < deadline:
+            for selector in qr_selectors:
+                if self.page.locator(selector).count() > 0:
+                    raise RuntimeError(
+                        "WhatsApp session is not ready: QR/login screen is visible"
+                    )
+            for selector in login_selectors:
+                if self.page.locator(selector).count() > 0:
+                    raise RuntimeError(
+                        "WhatsApp session is not ready: login prompt is visible"
+                    )
+            if self.page.locator("div[aria-label='Chat list']").count() > 0:
+                return
+            self.page.wait_for_timeout(250)
+
+        raise RuntimeError("WhatsApp session is not ready: chat list did not load")
 
     @staticmethod
     def _is_navigation_context_error(exc: Exception) -> bool:
@@ -1257,6 +1311,23 @@ class WhatsAppSender:
             raise last_error
         return ""
 
+    def _chat_home_screen_visible(self) -> bool:
+        try:
+            return bool(
+                self.page.evaluate(
+                    """
+                    () => {
+                      const text = String(document.body?.innerText || '');
+                      return text.includes('Download WhatsApp for Mac')
+                        && text.includes('Send document')
+                        && text.includes('Add contact');
+                    }
+                    """
+                )
+            )
+        except Exception:
+            return False
+
     def _assert_active_target_chat(self) -> None:
         deadline = time.time() + 12.0
         last_title = ""
@@ -1275,6 +1346,10 @@ class WhatsAppSender:
                 )
 
             if active_key == self.chat_key:
+                if self._chat_home_screen_visible():
+                    raise RuntimeError(
+                        "WhatsApp home screen is visible; target chat did not open"
+                    )
                 return
 
             self.page.wait_for_timeout(250)
@@ -1284,6 +1359,42 @@ class WhatsAppSender:
         raise RuntimeError(
             f"Safety gate blocked send: active chat mismatch ({last_title!r} != {self.chat_title!r})"
         )
+
+    def _recover_target_chat_after_ui_drift(self) -> None:
+        last_error: Optional[Exception] = None
+        for _ in range(3):
+            try:
+                self._assert_session_ready(timeout_ms=min(self.action_timeout_ms, CHAT_OPEN_TIMEOUT_MS))
+                self._wait_for_chat_list_ready()
+                self.open_chat(self.chat_title)
+                return
+            except Exception as exc:
+                last_error = exc
+                self.page.wait_for_timeout(700)
+        if last_error:
+            raise last_error
+        raise RuntimeError("Could not recover target WhatsApp chat")
+
+    def _ensure_target_chat_ready(
+        self,
+        *,
+        require_composer: bool = True,
+        timeout_ms: Optional[int] = None,
+    ) -> None:
+        resolved_timeout = timeout_ms if timeout_ms is not None else max(self.action_timeout_ms, 12_000)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 3):
+            try:
+                self._assert_active_target_chat()
+                self._resolve_composer(timeout_ms=resolved_timeout, required=require_composer)
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= 2:
+                    break
+                self._recover_target_chat_after_ui_drift()
+        if last_error:
+            raise last_error
 
     def _try_click_candidate(self, candidates: Iterable[Any], timeout_ms: int = 3500) -> bool:
         deadline = time.time() + (timeout_ms / 1000.0)
@@ -1594,7 +1705,7 @@ class WhatsAppSender:
         if not lines:
             return
 
-        self._assert_active_target_chat()
+        self._ensure_target_chat_ready(require_composer=True)
         prev_outgoing = self._outgoing_message_count()
         composer = self._resolve_composer(
             timeout_ms=max(self.action_timeout_ms, 12_000),
@@ -1602,7 +1713,17 @@ class WhatsAppSender:
         )
         if composer is None:
             raise RuntimeError("Composer not available")
-        composer.click()
+        try:
+            composer.click()
+        except Exception:
+            self._recover_target_chat_after_ui_drift()
+            composer = self._resolve_composer(
+                timeout_ms=max(self.action_timeout_ms, 12_000),
+                required=True,
+            )
+            if composer is None:
+                raise RuntimeError("Composer not available after chat recovery")
+            composer.click()
 
         try:
             composer.press("Control+A")
@@ -1624,17 +1745,13 @@ class WhatsAppSender:
         self._wait_for_last_outgoing_settled(
             timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
         )
-        self._assert_active_target_chat()
+        self._ensure_target_chat_ready(require_composer=False)
 
     def prepare_document(self, pdf_path: Path) -> None:
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-        self._assert_active_target_chat()
-        self._resolve_composer(
-            timeout_ms=max(self.action_timeout_ms, 12_000),
-            required=True,
-        )
+        self._ensure_target_chat_ready(require_composer=True)
         self._safe_click_selectors(
             [
                 "button[aria-label='Attach']",
@@ -1668,8 +1785,17 @@ class WhatsAppSender:
             self.page.wait_for_timeout(200)
         raise RuntimeError(f"Failed to click send button once: {last_error}")
 
-    def confirm_document_sent(self, expected_filename: str) -> None:
+    def confirm_document_sent(
+        self,
+        expected_filename: str,
+        previous_outgoing: Optional[int] = None,
+    ) -> None:
         try:
+            if previous_outgoing is not None:
+                self._wait_for_new_outgoing_message(
+                    previous_outgoing,
+                    timeout_ms=max(self.action_timeout_ms, DOCUMENT_SETTLE_TIMEOUT_MS),
+                )
             self._wait_for_document_bubble(
                 expected_filename,
                 timeout_ms=max(self.action_timeout_ms, DOCUMENT_APPEAR_TIMEOUT_MS),
@@ -1701,6 +1827,271 @@ def _store_stats_from_manifest(manifest: Dict[str, Any]) -> Dict[str, Dict[str, 
     return dict(stats)
 
 
+def _manifest_entry_label(entry: Dict[str, Any], index: int) -> str:
+    return (
+        str(entry.get("filename") or "").strip()
+        or str(entry.get("relative_output_path") or "").strip()
+        or str(entry.get("pdf_key") or "").strip()
+        or f"entry#{index}"
+    )
+
+
+def _manifest_entry_order_ids(entry: Dict[str, Any]) -> List[str]:
+    order_ids: List[str] = []
+    for raw in entry.get("order_ids") or []:
+        order_id = str(raw or "").strip()
+        if order_id and order_id not in order_ids:
+            order_ids.append(order_id)
+    return order_ids
+
+
+def _validate_manifest_order_consistency(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    entries = list(manifest.get("entries") or [])
+    order_occurrences: Counter[str] = Counter()
+    seen_pdf_keys: set[str] = set()
+    send_sequences: dict[int, str] = {}
+    total_store_orders = 0
+    all_entries_have_store_counts = True
+
+    for index, entry in enumerate(entries, start=1):
+        label = _manifest_entry_label(entry, index)
+        pdf_key = str(entry.get("pdf_key") or "").strip()
+        if pdf_key:
+            if pdf_key in seen_pdf_keys:
+                issues.append(
+                    {
+                        "code": "duplicate_pdf_key",
+                        "detail": label,
+                    }
+                )
+            seen_pdf_keys.add(pdf_key)
+
+        raw_send_sequence = entry.get("send_sequence")
+        if raw_send_sequence in {"", None}:
+            issues.append(
+                {
+                    "code": "entry_send_sequence_missing",
+                    "detail": label,
+                }
+            )
+        else:
+            try:
+                send_sequence = int(raw_send_sequence)
+            except (TypeError, ValueError):
+                issues.append(
+                    {
+                        "code": "entry_send_sequence_invalid",
+                        "detail": f"{label}: {raw_send_sequence!r}",
+                    }
+                )
+            else:
+                if send_sequence <= 0:
+                    issues.append(
+                        {
+                            "code": "entry_send_sequence_invalid",
+                            "detail": f"{label}: {send_sequence}",
+                        }
+                    )
+                elif send_sequence in send_sequences:
+                    issues.append(
+                        {
+                            "code": "entry_send_sequence_duplicate",
+                            "detail": f"{label}: {send_sequence}",
+                        }
+                    )
+                else:
+                    send_sequences[send_sequence] = label
+
+        raw_order_ids = [str(raw or "").strip() for raw in entry.get("order_ids") or [] if str(raw or "").strip()]
+        entry_order_ids = _manifest_entry_order_ids(entry)
+        if raw_order_ids and len(raw_order_ids) != len(entry_order_ids):
+            issues.append(
+                {
+                    "code": "entry_order_ids_not_unique",
+                    "detail": label,
+                }
+            )
+        if not entry_order_ids:
+            issues.append(
+                {
+                    "code": "entry_missing_order_ids",
+                    "detail": label,
+                }
+            )
+            all_entries_have_store_counts = False
+            continue
+
+        for order_id in entry_order_ids:
+            order_occurrences[order_id] += 1
+
+        counts_raw = dict(entry.get("order_counts_by_store") or {})
+        if not counts_raw:
+            issues.append(
+                {
+                    "code": "entry_store_order_count_missing",
+                    "detail": label,
+                }
+            )
+            all_entries_have_store_counts = False
+            continue
+
+        entry_store_total = 0
+        entry_counts_valid = True
+        for store_name, qty in counts_raw.items():
+            try:
+                qty_int = int(qty)
+            except (TypeError, ValueError):
+                issues.append(
+                    {
+                        "code": "entry_store_order_count_invalid",
+                        "detail": f"{label}: {store_name}={qty!r}",
+                    }
+                )
+                entry_counts_valid = False
+                all_entries_have_store_counts = False
+                continue
+            if qty_int < 0:
+                issues.append(
+                    {
+                        "code": "entry_store_order_count_invalid",
+                        "detail": f"{label}: {store_name}={qty_int}",
+                    }
+                )
+                entry_counts_valid = False
+                all_entries_have_store_counts = False
+                continue
+            entry_store_total += qty_int
+
+        if not entry_counts_valid:
+            continue
+
+        if entry_store_total != len(entry_order_ids):
+            issues.append(
+                {
+                    "code": "entry_store_order_count_mismatch",
+                    "detail": (
+                        f"{label}: store_total={entry_store_total} "
+                        f"unique_orders={len(entry_order_ids)}"
+                    ),
+                }
+            )
+        total_store_orders += entry_store_total
+
+    unique_order_ids = set(order_occurrences)
+    repeated_order_ids = sorted(
+        order_id for order_id, occurrences in order_occurrences.items() if occurrences > 1
+    )
+    if repeated_order_ids:
+        issues.append(
+            {
+                "code": "order_id_repeated_across_entries",
+                "detail": ",".join(repeated_order_ids[:10]),
+            }
+        )
+
+    counts = dict(manifest.get("counts") or {})
+    manifest_pdf_total = int(counts.get("pdfs", 0) or 0)
+    if manifest_pdf_total != len(entries):
+        issues.append(
+            {
+                "code": "manifest_pdf_total_mismatch",
+                "detail": f"manifest={manifest_pdf_total} entries={len(entries)}",
+            }
+        )
+
+    if send_sequences:
+        expected_sequences = list(range(1, len(entries) + 1))
+        actual_sequences = sorted(send_sequences)
+        if actual_sequences != expected_sequences:
+            issues.append(
+                {
+                    "code": "send_sequence_range_mismatch",
+                    "detail": f"actual={actual_sequences} expected={expected_sequences}",
+                }
+            )
+
+    manifest_order_total = int(counts.get("orders", 0) or 0)
+    if manifest_order_total != len(unique_order_ids):
+        issues.append(
+            {
+                "code": "manifest_order_total_mismatch",
+                "detail": f"manifest={manifest_order_total} entries={len(unique_order_ids)}",
+            }
+        )
+
+    overdue_order_ids = {
+        str(raw or "").strip()
+        for raw in manifest.get("overdue_order_ids") or []
+        if str(raw or "").strip()
+    }
+    manifest_overdue_total = int(counts.get("overdue_orders", 0) or 0)
+    if manifest_overdue_total != len(overdue_order_ids):
+        issues.append(
+            {
+                "code": "manifest_overdue_total_mismatch",
+                "detail": f"manifest={manifest_overdue_total} entries={len(overdue_order_ids)}",
+            }
+        )
+
+    send_order_ids = {
+        str(raw or "").strip()
+        for raw in manifest.get("send_order_ids") or []
+        if str(raw or "").strip()
+    }
+    if send_order_ids and send_order_ids != unique_order_ids:
+        issues.append(
+            {
+                "code": "send_order_ids_mismatch",
+                "detail": (
+                    f"manifest={len(send_order_ids)} entries={len(unique_order_ids)}"
+                ),
+            }
+        )
+
+    expected_missing_overdue = sorted(overdue_order_ids - unique_order_ids)
+    manifest_missing_overdue = sorted(
+        {
+            str(raw or "").strip()
+            for raw in manifest.get("missing_overdue_order_ids") or []
+            if str(raw or "").strip()
+        }
+    )
+    if manifest_missing_overdue and manifest_missing_overdue != expected_missing_overdue:
+        issues.append(
+            {
+                "code": "missing_overdue_order_ids_mismatch",
+                "detail": (
+                    f"manifest={','.join(manifest_missing_overdue)} "
+                    f"expected={','.join(expected_missing_overdue)}"
+                ),
+            }
+        )
+
+    if all_entries_have_store_counts and total_store_orders != len(unique_order_ids):
+        issues.append(
+            {
+                "code": "manifest_store_order_total_mismatch",
+                "detail": f"store_total={total_store_orders} unique_orders={len(unique_order_ids)}",
+            }
+        )
+
+    return issues
+
+
+def _record_status_message_failure(results: Dict[str, Any], *, phase: str, error: Exception) -> None:
+    phase_key = "pre" if phase == "pre" else "post"
+    results["status_message_failed"] = 1
+    results["status_message_failures"] = int(results.get("status_message_failures", 0) or 0) + 1
+    phase_counts = results.setdefault(
+        "status_message_failures_by_phase",
+        {"pre": 0, "post": 0},
+    )
+    phase_counts[phase_key] = int(phase_counts.get(phase_key, 0) or 0) + 1
+    details = results.setdefault("status_message_failure_details", [])
+    details.append({"phase": phase_key, "detail": str(error)})
+
+
 def run_sender(
     today_folder: Path,
     chat_title: Optional[str],
@@ -1725,6 +2116,9 @@ def run_sender(
         "target_chat": chat_title or "",
         "source_root": "",
         "status_message_failed": 0,
+        "status_message_failures": 0,
+        "status_message_failures_by_phase": {"pre": 0, "post": 0},
+        "status_message_failure_details": [],
         "halted": False,
         "halt_reason": "",
     }
@@ -1868,7 +2262,7 @@ def run_sender(
                 try:
                     sender.send_text_message(pre_status_text)
                 except Exception as exc:
-                    results["status_message_failed"] = 1
+                    _record_status_message_failure(results, phase="pre", error=exc)
                     print(f"\nWARNING: Failed to send pre-send status message: {exc}")
 
             for i, pdf in enumerate(pdfs_to_send, start=1):
@@ -1894,10 +2288,14 @@ def run_sender(
                     )
                     save_send_ledger(ledger_path, ledger)
                     sender.prepare_document(pdf_path)
+                    previous_outgoing = sender._outgoing_message_count()
                     sender.click_document_send()
                     transition_send_ledger_entry(ledger, pdf_key, "clicked")
                     save_send_ledger(ledger_path, ledger)
-                    sender.confirm_document_sent(pdf["filename"])
+                    sender.confirm_document_sent(
+                        pdf["filename"],
+                        previous_outgoing=previous_outgoing,
+                    )
                     transition_send_ledger_entry(ledger, pdf_key, "confirmed")
                     save_send_ledger(ledger_path, ledger)
                 except Exception as exc:
@@ -1960,7 +2358,7 @@ def run_sender(
                 try:
                     sender.send_text_message(post_status_text)
                 except Exception as exc:
-                    results["status_message_failed"] = 1
+                    _record_status_message_failure(results, phase="post", error=exc)
                     print(f"\nWARNING: Failed to send post-send status message: {exc}")
 
             # Ensure final message/doc upload state is synced before browser closes.
@@ -2159,7 +2557,14 @@ def main() -> None:
     print(f"    Failed: {results['failed']}")
     print(f"    Halted: {'Yes' if results.get('halted') else 'No'}")
     print(f"    Halt reason: {results.get('halt_reason', '')}")
-    print(f"    Status message failures: {results['status_message_failed']}")
+    print(f"    Status message failures: {results.get('status_message_failures', results['status_message_failed'])}")
+    phase_failures = results.get("status_message_failures_by_phase") or {}
+    if any(int(phase_failures.get(phase, 0) or 0) for phase in ("pre", "post")):
+        print(
+            "    Status message failure phases: "
+            f"pre={int(phase_failures.get('pre', 0) or 0)}, "
+            f"post={int(phase_failures.get('post', 0) or 0)}"
+        )
     print(f"    Source root: {results.get('source_root', '')}")
     print(f"    Duration: {mins}m {secs}s")
     print("=" * 60)

@@ -1,0 +1,124 @@
+You are in ~/Docs/Autonomous_business
+Branch: codex/TASK-webui-archive-single-truth-v1
+Goal: unblock WebUI archive truth projection by proving whether the source files contain usable status-change timestamps for DELIVERED rows, or whether the exporter/export-variant is wrong.
+PLan: docs/solving_web_ui_automation.md
+
+Hard constraint:
+- Do NOT spend time on ads/COGS/owner publication while WebUI projection is empty.
+- The only objective right now is to resolve the root stopline:
+  "delivered rows missing status_change_at => projection empty".
+
+READCHECK + journal (mandatory)
+1) Append to ~/Docs/Autonomous_business/claude/journal.md (timestamped):
+   - git rev-parse --abbrev-ref HEAD
+   - git rev-parse HEAD
+   - git status --short
+2) Confirm the current stopline artifacts exist (do not regenerate yet):
+   - exports/webui_archive_packs/*/integrity_report.json
+   - exports/order_status_ledger/*/continuity_report.json
+   - exports/validation/webui_archive_single_truth/*/open_stopline_items.md
+
+PHASE A: Raw-source viability (this is the decision point)
+Create a forensic report that answers:
+- Does the RAW WebUI export file actually contain nonblank "Дата изменения статуса" for delivered rows?
+- Or is the raw file missing it (meaning the export variant is wrong)?
+
+Implementation tasks:
+A1) Add a script:
+   scripts/profile_webui_status_change_source.py
+   Inputs:
+     --input <path to RAW WebUI exported file(s)>
+     --store-code <STORE>
+   Outputs:
+     exports/validation/webui_archive_single_truth/2026-03-06/raw_status_change_profile.csv
+     exports/validation/webui_archive_single_truth/2026-03-06/raw_status_change_profile.md
+   The profile must include per file and per status:
+     - total rows
+     - delivered/completed rows
+     - nonblank count of status-change column
+     - example 10 rows where delivered but status-change blank (with order_id, status, raw status-change cell)
+     - example 10 rows where delivered and status-change present (same)
+   Also include the EXACT header name(s) detected in the file for status-change date.
+
+A2) Add a second script:
+   scripts/profile_webui_normalized_status_change.py
+   Inputs:
+     --pack-root exports/webui_archive_packs/<PACK_ID>
+   Outputs:
+     exports/validation/webui_archive_single_truth/2026-03-06/normalized_status_change_profile.csv
+   Must include:
+     - delivered rows
+     - count status_change_at nonblank
+     - count blank
+     - by store_code
+     - by source_pack_id
+
+A3) Write a decision memo:
+   exports/validation/webui_archive_single_truth/2026-03-06/source_viability_decision.md
+   It MUST end with exactly one of:
+     - DECISION: RAW_HAS_TIMESTAMPS__PARSER_BUG
+     - DECISION: RAW_MISSING_TIMESTAMPS__EXPORT_VARIANT_WRONG
+   Include evidence links to the two profile CSVs and a 5-line summary.
+
+Acceptance gate for Phase A:
+- The decision memo exists and is consistent with the raw profile counts.
+- pytest includes tests for the profiler(s) on fixtures.
+- No DB writes.
+
+PHASE B: If RAW_HAS_TIMESTAMPS__PARSER_BUG (fix parser only)
+B1) Patch ONLY the WebUI pack normalizer/parser so it correctly maps the raw status-change column into normalized status_change_at.
+B2) Rebuild:
+   - normalize pack
+   - integrity report
+   - ledger
+   - projection
+B3) Rerun ONLY these gates (in order):
+   - python3 scripts/validate_webui_archive_pack_integrity.py --pack-root <PACK_ROOT> --strict
+     => delivered_missing_status_change_at must be 0 (or within explicit contract threshold if contract changed first)
+   - python3 scripts/build_webui_status_ledger.py --strict
+   - python3 scripts/validate_status_ledger_continuity.py --start 2026-01-01 --end 2026-02-29 --strict
+   - python3 scripts/validate_webui_archive_vs_crm_band.py --start 2026-01-01 --end 2026-02-29 --strict
+   - python3 scripts/validate_webui_archive_vs_current_db.py --start 2026-01-01 --end 2026-02-29 --strict
+   - python3 scripts/validate_order_status_audit_history.py --as-of 2026-03-06 --strict
+     => must show WEBUI observations > 0 (not only API)
+B4) Emit one transcript:
+   exports/validation/webui_archive_single_truth/2026-03-06/full_gates_source_fix.md
+
+Stop-the-line in Phase B:
+- Any attempt to relax integrity by silently substituting creationDate for status-change date.
+- Any attempt to touch ads/COGS/owner publication before projection is non-empty.
+
+PHASE C: If RAW_MISSING_TIMESTAMPS__EXPORT_VARIANT_WRONG (stop and request reseed)
+C1) Do NOT change logic further. Prepare a reseed request packet:
+   exports/validation/webui_archive_single_truth/2026-03-06/reseed_request.md
+   It must include:
+     - exact column names found in raw export
+     - proof delivered rows have blank status-change in raw file
+     - the required export variant characteristics:
+       "must include nonblank status-change date/time for delivered rows"
+     - recommended manual steps for user:
+       "download a different WebUI export variant / toggle that includes the status-change timestamp"
+C2) Mark stopline as SOURCE_NOT_PROMOTABLE and keep publication locked.
+
+PHASE D: Secondary blocker (only after Phase A/B/C done)
+After Phase A decision is made, also address the separate red:
+- validate_params.py --strict --as-of 2026-03-06 (on_delivery_freeze)
+But do NOT mix it into the WebUI viability loop unless it blocks the above gates.
+
+Global gates (run only after Phase A is complete; then as needed):
+- PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
+- python3 scripts/validate_single_truth_system.py
+- bash scripts/lint_docs.sh
+
+Deliverable at the end of this task:
+- source_viability_decision.md (binary decision)
+- raw_status_change_profile.csv
+- normalized_status_change_profile.csv
+- if parser fixed: full_gates_source_fix.md and promotion gates rerun results
+- if export variant wrong: reseed_request.md
+- Updated stoplines in open_stopline_items.md with explicit SOURCE_NOT_PROMOTABLE vs PARSER_BUG classification
+- Append-only journal entries for each phase in claude/journal.md (timestamps)
+
+Do not claim completion unless:
+- Either promotion gates are green after parser fix, OR
+- You have produced a reseed_request.md with proof that raw exports lack the required timestamps.
