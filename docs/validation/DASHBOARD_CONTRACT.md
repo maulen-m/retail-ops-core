@@ -106,6 +106,10 @@ The dashboard is only considered functional when coverage is complete:
 ## Owner monitoring scope
 - When `production_scope=OWNER_MONITORING_ONLY` and `po_execution_ready=false`, stale stock snapshot vs cutoff remains visible in the payload, but it is not treated as a hard execution blocker by `validate_po_dashboard_invariants.py`.
 - This scope does **not** upgrade the PO dashboard to execution-ready status; it only allows owner-facing monitoring surfaces to consume explicitly stale planning inputs with trust labels.
+- Any owner-facing consumer built on top of PO dashboard output must preserve:
+  - `planning_snapshot.freshness`
+  - stale trust labeling in its own trust banner or brief text
+  - clear separation between monitoring-only planning advice and execution-ready PO action
 
 ## Dim SKU Weight Truth
 - Canonical weight source: `Dim sku light v5.xlsx` (see `scripts/sync_dim_sku_from_dim_sku_light.py`).

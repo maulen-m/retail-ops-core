@@ -109,6 +109,33 @@ Cold-start proving expectations:
 - if a frozen board-runtime seed exists for the requested `as_of`, automation may materialize repo-local ops-selection artifacts from that seed
 - publication remains fail-closed; locked months must still stay locked
 
+### 1.1.3 Refresh the owner cockpit review bundle
+
+```bash
+python3 scripts/run_owner_review_cycle.py \
+  --as-of <YYYY-MM-DD> \
+  --scorecard-report-path exports/validation/owner_cockpit_reactivation/<run-date>/review_cycle_reprove.md
+```
+
+Owner cockpit interpretation rules:
+- raw recent order/sales recency can be ahead of published owner-facing sales truth
+- owner surfaces must consume published truth or higher-level owner artifacts, not raw `sales_fact_v2`
+- before explaining a recency gap, generate:
+
+```bash
+python3 scripts/report_sales_truth_max_dates.py \
+  --as-of <YYYY-MM-DD> \
+  --db db/app.db \
+  --owner-truth-summary exports/daily/<YYYY-MM-DD>/owner_truth_summary.json \
+  --system-health exports/diagnostics/<YYYY-MM-DD>/system_health.json \
+  --output-json exports/validation/owner_cockpit_reactivation/<run-date>/raw_vs_published_sales_max_dates.json \
+  --output-md exports/validation/owner_cockpit_reactivation/<run-date>/raw_vs_published_sales_max_dates.md
+```
+
+- operator-facing source-map authority:
+  - `docs/OWNER_TRUTH_SOURCE_MAP_AND_DB_RECENCY_2026-03-14.md`
+  - `docs/OWNER_SURFACE_CONSISTENCY_CONTRACT_2026-03-14.md`
+
 ### 1.2 Run on-delivery residual dry-run check
 Run this daily before any write-side cashflow reconciliation:
 

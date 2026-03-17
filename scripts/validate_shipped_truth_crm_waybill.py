@@ -75,6 +75,50 @@ class DbOrderSnapshot:
     courier_transmission_date: str
 
 
+def _load_existing_report_if_compatible(
+    out_dir: Path,
+    *,
+    since: str,
+    until: str,
+    include_today_provisional: bool,
+    volatility_days: int,
+    date_shift_tolerance_days: int,
+    mismatch_threshold_pct: float,
+    waybill_missing_threshold_pct: float,
+    cancel_drift_threshold_pct: float,
+    api_creation_lookback_days: int,
+) -> dict[str, Any] | None:
+    summary_path = out_dir / "summary.json"
+    if not summary_path.exists():
+        return None
+    try:
+        report = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    expected = {
+        "since": since,
+        "until": until,
+        "include_today_provisional": bool(include_today_provisional),
+        "volatility_days": int(volatility_days),
+        "date_shift_tolerance_days": int(date_shift_tolerance_days),
+        "mismatch_threshold_pct": float(mismatch_threshold_pct),
+        "waybill_missing_threshold_pct": float(waybill_missing_threshold_pct),
+        "cancel_drift_threshold_pct": float(cancel_drift_threshold_pct),
+        "api_creation_lookback_days": int(api_creation_lookback_days),
+    }
+    for key, value in expected.items():
+        if report.get(key) != value:
+            return None
+    report["reused_existing_report"] = True
+    report["json_path"] = str(summary_path)
+    report["md_path"] = str(out_dir / "report.md")
+    report["summary_csv"] = str(out_dir / "summary_by_day_store.csv")
+    report["mismatch_csv"] = str(out_dir / "mismatch_ids.csv")
+    report["shifted_csv"] = str(out_dir / "shifted_ids.csv")
+    report["waybill_missing_csv"] = str(out_dir / "missing_waybill_ids.csv")
+    return report
+
+
 def _normalize_order_id(value: Any) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -544,6 +588,21 @@ def validate_shipped_truth_crm_waybill(
     today = datetime.now(ALMATY_TZ).date()
     out_dir = output_root.resolve() / f"{since_date.isoformat()}_to_{until_date.isoformat()}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    if api_fetcher is None and until_date < today:
+        existing = _load_existing_report_if_compatible(
+            out_dir,
+            since=since,
+            until=until,
+            include_today_provisional=bool(include_today_provisional),
+            volatility_days=int(volatility_days),
+            date_shift_tolerance_days=int(date_shift_tolerance_days),
+            mismatch_threshold_pct=float(mismatch_threshold_pct),
+            waybill_missing_threshold_pct=float(waybill_missing_threshold_pct),
+            cancel_drift_threshold_pct=float(cancel_drift_threshold_pct),
+            api_creation_lookback_days=int(api_creation_lookback_days),
+        )
+        if existing is not None:
+            return existing
 
     errors: list[str] = []
     rows: list[dict[str, Any]] = []

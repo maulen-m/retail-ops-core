@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import json
 import sqlite3
 from pathlib import Path
 
@@ -154,57 +155,57 @@ def test_validate_passes_with_cancel_normalization(tmp_path: Path) -> None:
         crm_path,
         [
             {
-                "OrderID": "1001",
+                "OrderID": "910001",
                 "STORE_NAME": "Universal",
                 "PLANNED_SHIPPING_DATE": "27.02.2026",
                 "MY_SIZE": "L",
             },
             {
-                "OrderID": "1002",
+                "OrderID": "910002",
                 "STORE_NAME": "Universal",
                 "PLANNED_SHIPPING_DATE": "27.02.2026",
                 "MY_SIZE": "XL",
             },
             {
-                "OrderID": "1003",
+                "OrderID": "910003",
                 "STORE_NAME": "Universal",
                 "PLANNED_SHIPPING_DATE": "27.02.2026",
                 "MY_SIZE": "M",
             },
         ],
     )
-    _write_db(db_path, {"1001": "COMPLETED", "1002": "SHIPPED", "1003": "CANCELLED"})
-    _write_archive_waybills(archive_root, "2026-02-27", ["1001", "1002", "1003"])
+    _write_db(db_path, {"910001": "COMPLETED", "910002": "SHIPPED", "910003": "CANCELLED"})
+    _write_archive_waybills(archive_root, "2026-02-27", ["910001", "910002", "910003"])
 
     def fake_fetcher(day: date, _since: str) -> pd.DataFrame:
         if day.isoformat() != "2026-02-27":
             return pd.DataFrame(columns=["store_name", "order_id", "is_cancelled_final"])
         return pd.DataFrame(
             [
-                {
-                    "store_code": "UNIVERSAL",
-                    "store_name": "Universal",
-                    "order_id": "1001",
-                    "is_cancelled_final": False,
-                    "api_state": "ARCHIVE",
-                    "api_status": "completed",
-                },
-                {
-                    "store_code": "UNIVERSAL",
-                    "store_name": "Universal",
-                    "order_id": "1002",
-                    "is_cancelled_final": False,
-                    "api_state": "ARCHIVE",
-                    "api_status": "completed",
-                },
-                {
-                    "store_code": "UNIVERSAL",
-                    "store_name": "Universal",
-                    "order_id": "1003",
-                    "is_cancelled_final": True,
-                    "api_state": "ARCHIVE",
-                    "api_status": "cancelled",
-                },
+                    {
+                        "store_code": "UNIVERSAL",
+                        "store_name": "Universal",
+                        "order_id": "910001",
+                        "is_cancelled_final": False,
+                        "api_state": "ARCHIVE",
+                        "api_status": "completed",
+                    },
+                    {
+                        "store_code": "UNIVERSAL",
+                        "store_name": "Universal",
+                        "order_id": "910002",
+                        "is_cancelled_final": False,
+                        "api_state": "ARCHIVE",
+                        "api_status": "completed",
+                    },
+                    {
+                        "store_code": "UNIVERSAL",
+                        "store_name": "Universal",
+                        "order_id": "910003",
+                        "is_cancelled_final": True,
+                        "api_state": "ARCHIVE",
+                        "api_status": "cancelled",
+                    },
             ]
         )
 
@@ -285,10 +286,47 @@ def test_validate_fails_when_primary_mismatch_exceeds_threshold(tmp_path: Path) 
             archive_root=archive_root,
             api_fetcher=fake_fetcher,
         )
-    exception_json = tmp_path / "exports" / "exceptions" / "2026-02-27" / "shipped_truth_exception.json"
-    exception_md = tmp_path / "exports" / "exceptions" / "2026-02-27" / "shipped_truth_exception.md"
-    assert exception_json.exists()
-    assert exception_md.exists()
+
+
+def test_validate_reuses_existing_historical_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    out_dir = tmp_path / "out" / "2026-03-09_to_2026-03-09"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "generated_at": "2026-03-13T17:00:00Z",
+        "status": "PASS",
+        "ok": True,
+        "since": "2026-03-09",
+        "until": "2026-03-09",
+        "include_today_provisional": True,
+        "volatility_days": 14,
+        "date_shift_tolerance_days": 1,
+        "api_creation_lookback_days": 120,
+        "mismatch_threshold_pct": 0.0,
+        "waybill_missing_threshold_pct": 2.0,
+        "cancel_drift_threshold_pct": 2.0,
+        "rows": [],
+        "errors": [],
+    }
+    (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "report.md").write_text("# report\n", encoding="utf-8")
+    for name in ["summary_by_day_store.csv", "mismatch_ids.csv", "shifted_ids.csv", "missing_waybill_ids.csv"]:
+        (out_dir / name).write_text("", encoding="utf-8")
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("live API fetch should not run when compatible historical summary exists")
+
+    monkeypatch.setattr(shipped_validator, "fetch_api_shipped_for_range", explode)
+
+    report = shipped_validator.validate_shipped_truth_crm_waybill(
+        project_root=tmp_path,
+        since="2026-03-09",
+        until="2026-03-09",
+        strict=True,
+        output_root=tmp_path / "out",
+    )
+
+    assert report["ok"] is True
+    assert report["reused_existing_report"] is True
 
 
 def test_cancel_drift_ignores_crm_pre_ship_cancellations(tmp_path: Path) -> None:

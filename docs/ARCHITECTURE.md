@@ -46,6 +46,12 @@ The operational truth chain is enforced as:
    - strict parity gate: `scripts/validate_sales_truth_external_reference.py`
    - Static consumer gate: `scripts/validate_sales_truth_consumers.py`
    - Runtime SQL guard module: `core/db/sales_truth_query_guard.py` (strict paths)
+   - owner-operating recency note:
+     - raw recent sales staging (`sales_fact_v2`) can be newer than published owner-facing sales truth
+     - workbook chronology (`fact_sales_workbook_anchor`) is allowed to cap recent published `sale_date`
+     - operator-facing source map / max-date evidence:
+       - `docs/OWNER_TRUTH_SOURCE_MAP_AND_DB_RECENCY_2026-03-14.md`
+       - `scripts/report_sales_truth_max_dates.py`
 11. Published COGS/profit are valid only when full landed formula inputs exist (`base + delivery`).
    - strict gates: `scripts/validate_cogs_integrity.py`, `scripts/validate_dim_sku_light_alignment.py`
    - publication gate: `scripts/validate_profit_publication_integrity.py`
@@ -64,6 +70,15 @@ The operational truth chain is enforced as:
    - emits single-truth drift pack after strict PASS (`exports/validation/<date>/single_truth_drift_pack.{md,json}`)
    - bootstraps to repo `.venv/bin/python` when available for deterministic scheduler runtime
    - launchd entrypoint: `config/com.example.single-truth-preflight.plist`
+14. Owner cockpit daily surfaces are layered, not interchangeable:
+   - `owner_profit_daily`: monitoring profit from publication-gated monthly review outputs
+   - `cash_risk_daily`: runway / PO burden lens
+   - `cashflow_calendar_daily`: day-by-day modeled cash pressure lens
+   - `po_sku_daily`: stale-visible planning / tied-up-capital lens
+   - `owner_daily_brief`: cockpit summary only; no new business math
+   - semantic contract:
+     - `docs/OWNER_SURFACE_CONSISTENCY_CONTRACT_2026-03-14.md`
+     - `scripts/validate_owner_surface_consistency.py`
 
 Rules:
 - `PLAN-*` rows are recommendations only.

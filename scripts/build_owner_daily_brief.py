@@ -51,9 +51,15 @@ def _build_headline(
     critical_days = cashflow_calendar.get("critical_days") or []
     if critical_days:
         first_critical = critical_days[0]
-        parts.append(
-            f"Cashflow calendar flags {first_critical.get('date')} as a critical day driven by {first_critical.get('primary_driver')}."
-        )
+        driver = str(first_critical.get("primary_driver") or "").strip()
+        if driver and driver != "UNKNOWN":
+            parts.append(
+                f"Cashflow calendar flags {first_critical.get('date')} as a critical day driven by {driver}."
+            )
+        else:
+            parts.append(
+                f"Cashflow calendar flags {first_critical.get('date')} as a critical day with unresolved modeled driver."
+            )
     if top_capital:
         top = top_capital[0]
         parts.append(f"Biggest PO capital tie-up is {top.get('sku_key')} at {top.get('po_cogs_kzt')} KZT.")
@@ -81,9 +87,15 @@ def _build_owner_actions(
     critical_days = cashflow_calendar.get("critical_days") or []
     if critical_days:
         row = critical_days[0]
-        actions.append(
-            f"Prepare for {row.get('primary_driver')} pressure on {row.get('date')} with modeled cash close {row.get('cash_close')} KZT."
-        )
+        driver = str(row.get("primary_driver") or "").strip()
+        if driver and driver != "UNKNOWN":
+            actions.append(
+                f"Prepare for {driver} pressure on {row.get('date')} with modeled cash close {row.get('cash_close')} KZT."
+            )
+        else:
+            actions.append(
+                f"Prepare for modeled cash pressure on {row.get('date')} with unresolved driver and cash close {row.get('cash_close')} KZT."
+            )
     reorder_rows = ((po_sku.get("action_buckets") or {}).get("reorder_now") or [])
     if reorder_rows:
         row = reorder_rows[0]

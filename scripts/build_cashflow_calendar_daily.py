@@ -61,6 +61,11 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _largest_outflow_days(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    negative_rows = [row for row in rows if _to_float(row.get("cash_flow_kzt")) < 0]
+    return sorted(negative_rows, key=lambda row: (row["cash_flow_kzt"], row["date"]))[:5]
+
+
 def _render_md(payload: dict[str, Any]) -> str:
     lines = [
         "# Cashflow Calendar Daily",
@@ -163,7 +168,7 @@ def build_cashflow_calendar_daily(
     base_floor_breach_dates = [row["date"] for row in rows if row["cash_close"] <= base_floor]
     conservative_floor_breach_dates = [row["date"] for row in rows if row["cash_close"] <= conservative_floor]
     critical_days = sorted(rows, key=lambda row: (row["cash_close"], row["date"]))[:5]
-    largest_outflow_days = sorted(rows, key=lambda row: (row["cash_flow_kzt"], row["date"]))[:5]
+    largest_outflow_days = _largest_outflow_days(rows)
 
     payload = {
         "generated_at": _now_utc(),
