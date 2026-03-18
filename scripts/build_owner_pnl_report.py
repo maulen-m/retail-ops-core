@@ -43,6 +43,14 @@ class OwnerPnlError(RuntimeError):
     """Raised when strict owner PnL build fails."""
 
 
+def _cap_pct(value: Any) -> float:
+    try:
+        numeric = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(max(0.0, min(100.0, numeric)), 2)
+
+
 def _resolve_mapped_csv(*, mapped_root: Path, since: date, until: date, explicit: Path | None) -> Path:
     if explicit is not None:
         path = explicit.expanduser().resolve()
@@ -467,9 +475,8 @@ def build_owner_pnl_report(
         for row in coverage_df.to_dict("records"):
             projected = float(row.get("projected_orders") or 0.0)
             total = float(row.get("db_orders") or 0.0)
-            coverage_map[(str(row["sale_month"]), str(row["store_code"]).upper())] = round(
+            coverage_map[(str(row["sale_month"]), str(row["store_code"]).upper())] = _cap_pct(
                 (projected / total) * 100.0 if total > 0 else (100.0 if projected > 0 else 0.0),
-                2,
             )
 
         parity_store_map = {
@@ -493,7 +500,7 @@ def build_owner_pnl_report(
             month = str(row["sale_month"])
             store = str(row["store_code"]).upper()
             decision_grade = bool(parity_store_map.get((month, store), False) and webui_truth_ready)
-            coverage_pct = coverage_map.get((month, store), 0.0)
+            coverage_pct = _cap_pct(coverage_map.get((month, store), 0.0))
             ads_kzt = ads_monthly_map.get((month, store))
             publishable = bool(decision_grade and ads_readiness["ok"])
             net_rev = round(float(row.get("net_rev_kzt") or 0.0), 2) if publishable else None
@@ -528,7 +535,7 @@ def build_owner_pnl_report(
             month_rows = df[df["sale_month"] == month]
             decision_grade = bool((month_rows["decision_grade"] == True).all())  # noqa: E712
             publishable = bool(decision_grade and ads_readiness["ok"])
-            coverage_pct = round(float(month_rows["statusdate_coverage_pct"].max() if not month_rows.empty else 0.0), 2)
+            coverage_pct = _cap_pct(month_rows["statusdate_coverage_pct"].max() if not month_rows.empty else 0.0)
             net_rev_val = round(sum(float(v or 0.0) for v in month_rows["net_rev_kzt"].tolist()), 2)
             cogs_val = round(sum(float(v or 0.0) for v in month_rows["cogs_kzt"].tolist()), 2)
             profit_val = round(net_rev_val - cogs_val, 2)
@@ -565,7 +572,7 @@ def build_owner_pnl_report(
             month = str(row["sale_month"])
             store = str(row["store_code"]).upper()
             decision_grade = bool(row.get("decision_grade"))
-            coverage_pct = round(float(row.get("status_date_coverage") or 0.0) * 100.0, 2)
+            coverage_pct = _cap_pct(float(row.get("status_date_coverage") or 0.0) * 100.0)
             ads_kzt = ads_monthly_map.get((month, store))
             publishable = bool(decision_grade and ads_readiness["ok"])
 
@@ -610,10 +617,10 @@ def build_owner_pnl_report(
                         / float(archive_rows)
                     )
                     * 100.0,
-                    2,
                 )
             else:
                 coverage_pct = 0.0
+            coverage_pct = _cap_pct(coverage_pct)
 
             net_rev_val = round(sum(float(r.get("db_net_rev_kzt") or 0.0) for r in parity_rows), 2)
             cogs_val = round(sum(float(r.get("db_cogs_kzt") or 0.0) for r in parity_rows), 2)

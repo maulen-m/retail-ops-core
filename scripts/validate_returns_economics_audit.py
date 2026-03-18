@@ -62,6 +62,52 @@ def _render_md(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _load_leaked_sales_for_returned_orders(
+    conn: sqlite3.Connection,
+    *,
+    returned: pd.DataFrame,
+    as_of: date,
+) -> pd.DataFrame:
+    """Load delivered sales only for returned orders within the requested window."""
+    if returned.empty:
+        return pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date"])
+
+    scoped = returned.copy()
+    scoped["order_id"] = scoped["order_id"].astype(str)
+    scoped = scoped[scoped["order_id"].str.len() > 0].copy()
+    scoped["return_date"] = pd.to_datetime(scoped["return_date"], errors="coerce").dt.date
+    scoped = scoped[scoped["return_date"].notna()].copy()
+    if scoped.empty:
+        return pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date"])
+
+    order_ids = sorted(scoped["order_id"].drop_duplicates().tolist())
+    sales_frames: list[pd.DataFrame] = []
+    chunk_size = 500
+    for start in range(0, len(order_ids), chunk_size):
+        chunk = order_ids[start : start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        query = f"""
+            SELECT
+                CAST(order_id AS TEXT) AS order_id,
+                UPPER(COALESCE(store_code, 'UNKNOWN')) AS store_code,
+                date(sale_date) AS sale_date
+            FROM view_sales_line_truth
+            WHERE CAST(order_id AS TEXT) IN ({placeholders})
+              AND date(sale_date) <= ?
+        """
+        params = [*chunk, as_of.isoformat()]
+        sales_frames.append(pd.read_sql_query(query, conn, params=params))
+
+    sales = (
+        pd.concat(sales_frames, ignore_index=True)
+        if sales_frames
+        else pd.DataFrame(columns=["order_id", "store_code", "sale_date"])
+    )
+    if sales.empty:
+        return pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date"])
+    return sales.merge(scoped[["order_id", "return_date"]], on="order_id", how="inner")
+
+
 def validate_returns_economics_audit(
     *,
     db_path: Path,
@@ -96,26 +142,7 @@ def validate_returns_economics_audit(
             params=(since.isoformat(), as_of.isoformat()),
         )
 
-        leaked = pd.read_sql_query(
-            """
-            SELECT
-                CAST(v.order_id AS TEXT) AS order_id,
-                UPPER(COALESCE(v.store_code, 'UNKNOWN')) AS store_code,
-                date(v.sale_date) AS sale_date,
-                r.return_date
-            FROM view_sales_line_truth v
-            INNER JOIN (
-                SELECT CAST(order_id AS TEXT) AS order_id,
-                       date(COALESCE(status_updated_at, updated_at, created_at)) AS return_date
-                FROM fact_orders_kaspi
-                WHERE UPPER(COALESCE(internal_status, '')) = 'RETURNED'
-            ) r
-              ON r.order_id = CAST(v.order_id AS TEXT)
-            WHERE date(v.sale_date) <= ?
-            """,
-            conn,
-            params=(as_of.isoformat(),),
-        )
+        leaked = _load_leaked_sales_for_returned_orders(conn, returned=returned, as_of=as_of)
 
         refunds = pd.read_sql_query(
             """

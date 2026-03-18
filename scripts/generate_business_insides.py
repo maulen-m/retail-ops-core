@@ -1017,9 +1017,6 @@ def compute_sales_metrics(
     fallback_completed_daily_rows: list[sqlite3.Row] = []
     try:
         ensure_sales_truth_views(conn)
-        if enforce_query_guard:
-            install_sales_truth_query_guard(conn)
-            guard_installed = True
         line_rows = conn.execute(
             """
             SELECT sale_date, sku_key, cogs_source
@@ -1054,6 +1051,9 @@ def compute_sales_metrics(
             """,
             (start_30.isoformat(), as_of_date.isoformat()),
         ).fetchall()
+        if enforce_query_guard:
+            install_sales_truth_query_guard(conn)
+            guard_installed = True
 
         if _table_exists(conn, "fact_orders_kaspi") and _column_exists(
             conn, "fact_orders_kaspi", "internal_status"

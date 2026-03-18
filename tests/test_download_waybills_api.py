@@ -124,7 +124,7 @@ def test_db_fallback_includes_overdue_pending_row_with_raw_courier_datetime(tmp_
     assert selected == {"STOREB": {"846479842"}}
 
 
-def test_download_all_waybills_keeps_cached_overdue_fallback_targets(monkeypatch, tmp_path):
+def test_download_all_waybills_excludes_cached_overdue_fallback_targets(monkeypatch, tmp_path):
     output_dir = tmp_path / "waybills"
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "845784291.pdf").write_bytes(b"%PDF-1.4\n")
@@ -178,7 +178,7 @@ def test_download_all_waybills_keeps_cached_overdue_fallback_targets(monkeypatch
         fallback_crm=True,
     )
 
-    assert captured == {"STOREB": {"847016620", "845784291"}}
+    assert captured == {"STOREB": {"847016620"}}
 
     payload = json.loads((output_dir / "_waybill_selection_orders.json").read_text(encoding="utf-8"))
-    assert payload["stores"] == {"STOREB": ["845784291", "847016620"]}
+    assert payload["stores"] == {"STOREB": ["847016620"]}

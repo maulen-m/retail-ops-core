@@ -411,6 +411,28 @@ def get_target_order_ids_from_db(
             for row in conn.execute("PRAGMA table_info(fact_orders_kaspi)").fetchall()
         }
         waybill_select = "waybill_url" if "waybill_url" in columns else "NULL AS waybill_url"
+        courier_planning_select = (
+            "courier_transmission_planning_date"
+            if "courier_transmission_planning_date" in columns
+            else "NULL AS courier_transmission_planning_date"
+        )
+        signature_required_select = (
+            "signature_required"
+            if "signature_required" in columns
+            else "0 AS signature_required"
+        )
+        courier_transmission_select = (
+            "courier_transmission_date"
+            if "courier_transmission_date" in columns
+            else "NULL AS courier_transmission_date"
+        )
+        kaspi_status_select = "kaspi_status" if "kaspi_status" in columns else "NULL AS kaspi_status"
+        kaspi_status_detail_select = (
+            "kaspi_status_detail" if "kaspi_status_detail" in columns else "NULL AS kaspi_status_detail"
+        )
+        returned_to_warehouse_select = (
+            "returned_to_warehouse" if "returned_to_warehouse" in columns else "0 AS returned_to_warehouse"
+        )
 
         query = """
             SELECT
@@ -419,19 +441,27 @@ def get_target_order_ids_from_db(
                 assigned_size,
                 my_size,
                 planned_shipment_date,
-                courier_transmission_planning_date,
+                {courier_planning_select},
                 {waybill_select},
-                signature_required,
-                courier_transmission_date,
-                kaspi_status,
-                kaspi_status_detail,
-                returned_to_warehouse
+                {signature_required_select},
+                {courier_transmission_select},
+                {kaspi_status_select},
+                {kaspi_status_detail_select},
+                {returned_to_warehouse_select}
             FROM fact_orders_kaspi
                 WHERE (
                     (assigned_size IS NOT NULL AND assigned_size != '')
                     OR (my_size IS NOT NULL AND my_size != '')
                 )
-        """.format(waybill_select=waybill_select)
+        """.format(
+            waybill_select=waybill_select,
+            courier_planning_select=courier_planning_select,
+            signature_required_select=signature_required_select,
+            courier_transmission_select=courier_transmission_select,
+            kaspi_status_select=kaspi_status_select,
+            kaspi_status_detail_select=kaspi_status_detail_select,
+            returned_to_warehouse_select=returned_to_warehouse_select,
+        )
         rows = conn.execute(query).fetchall()
 
     orders_by_store: dict[str, set[str]] = defaultdict(set)
@@ -1090,16 +1120,14 @@ def download_all_waybills(
             if crm_fallback_orders_by_store:
                 source_label = "Kaspi API (planned date) + CRM/DB fallback"
                 for store_code, ids in crm_fallback_orders_by_store.items():
-                    # DB sync runs immediately before waybill selection and carries the
-                    # raw courier planning date, so when DB fallback exists it is the
-                    # authoritative fallback source for that store. CRM-only fallback
-                    # stays available only for stores missing DB coverage.
-                    if store_code in db_fallback_orders_by_store:
-                        continue
+                    # Keep CRM-only IDs available even when DB fallback exists for the
+                    # same store. Cached-PDF filtering runs later and removes stale DB
+                    # carry-over rows, while CRM can still contribute genuinely missing
+                    # pending orders that have no cached waybill yet.
                     fallback_orders_by_store.setdefault(store_code, set()).update(ids)
 
         for store_code, ids in db_fallback_orders_by_store.items():
-            fallback_orders_by_store[store_code] = set(ids)
+            fallback_orders_by_store.setdefault(store_code, set()).update(ids)
 
     if not target_orders_by_store and not fallback_orders_by_store:
         print("  No orders found for the target date.")
@@ -1122,15 +1150,16 @@ def download_all_waybills(
     fallback_stores = sorted(fallback_orders_by_store.keys())
 
     def _exclude_cached_waybills(order_ids: set[str]) -> tuple[set[str], set[str]]:
-        """
-        Keep fallback-only pending orders in the target set even if their PDF is cached.
-
-        Cached waybill PDFs are a reuse optimization, not proof that the order was
-        actually shipped in the warehouse. Excluding them from the target set lets
-        overdue still-pending orders disappear from merged bundles and WhatsApp send
-        sources, which is exactly the drift we must avoid.
-        """
-        return set(order_ids), set()
+        """Exclude fallback-only orders that already have a cached PDF in the output dir."""
+        allowed: set[str] = set()
+        excluded: set[str] = set()
+        for order_id in order_ids:
+            pdf_path = output_dir / f"{order_id}.pdf"
+            if pdf_path.exists():
+                excluded.add(order_id)
+            else:
+                allowed.add(order_id)
+        return allowed, excluded
 
     if fallback_orders_by_store:
         merged_orders_by_store: dict[str, set[str]] = {}

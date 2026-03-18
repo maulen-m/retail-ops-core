@@ -206,6 +206,14 @@ def _merchant_to_store_map(stores_config: Path) -> dict[str, str]:
     return out
 
 
+def _cap_pct(value: object) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(max(0.0, min(100.0, numeric)), 2)
+
+
 def build_north_star_owner_review(
     *,
     as_of: str,
@@ -303,6 +311,7 @@ def build_north_star_owner_review(
         lambda row: owner_flags.get((row["sale_month"], row["store_code"]), {}).get("statusdate_coverage_pct", 0.0),
         axis=1,
     )
+    sku["statusdate_coverage_pct"] = sku["statusdate_coverage_pct"].map(_cap_pct)
     sku["profit_locked"] = (~sku["decision_grade"]) | bool(not publication_ready)
     sku["profit_after_ads_kzt"] = sku["profit_after_ads_kzt_raw"].where(~sku["profit_locked"])
 
@@ -352,6 +361,7 @@ def build_north_star_owner_review(
         lambda row: owner_flags.get((row["sale_month"], row["store_code"]), {}).get("statusdate_coverage_pct", 0.0),
         axis=1,
     )
+    daily["statusdate_coverage_pct"] = daily["statusdate_coverage_pct"].map(_cap_pct)
     daily["profit_after_ads_kzt_raw"] = daily["net_rev_kzt"] - daily["cogs_kzt"] - daily["ads_kzt_alloc"]
     daily["profit_locked"] = (~daily["decision_grade"]) | bool(not publication_ready)
     daily["profit_after_ads_kzt"] = daily["profit_after_ads_kzt_raw"].where(~daily["profit_locked"])
@@ -382,6 +392,7 @@ def build_north_star_owner_review(
         lambda row: owner_flags_month.get(row["sale_month"], {}).get("statusdate_coverage_pct", row["statusdate_coverage_pct"]),
         axis=1,
     )
+    monthly["statusdate_coverage_pct"] = monthly["statusdate_coverage_pct"].map(_cap_pct)
     monthly.loc[monthly["profit_locked"], ["profit_after_ads_kzt", "profit_after_ads_and_opex_kzt"]] = pd.NA
     monthly["provisional"] = ~monthly["decision_grade"].fillna(False)
 
@@ -418,7 +429,7 @@ def build_north_star_owner_review(
     ].copy()
     locked_store = daily[
         ["sale_month", "store_code", "decision_grade", "statusdate_coverage_pct", "profit_locked", "provisional"]
-    ].copy()
+    ].drop_duplicates(subset=["sale_month", "store_code"]).copy()
 
     # Persist
     monthly_csv = output_dir / "monthly_totals_review.csv"

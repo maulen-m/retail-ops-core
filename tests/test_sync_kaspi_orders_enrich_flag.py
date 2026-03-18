@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date, timedelta
 from typing import Any
 
 import scripts.sync_kaspi_orders as mod
@@ -98,5 +99,6 @@ def test_main_calls_enrichment_for_single_store_mode(monkeypatch) -> None:
     assert rc == 0
     assert len(calls) == 1
     assert calls[0]["stores"] == ["UNIVERSAL"]
-    assert calls[0]["since"] == "2026-03-01"
+    expected_since = max(date.fromisoformat("2026-03-01"), date.today() - timedelta(days=13)).isoformat()
+    assert calls[0]["since"] == expected_since
     assert calls[0]["dry_run"] is False

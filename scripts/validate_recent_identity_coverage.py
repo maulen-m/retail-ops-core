@@ -175,6 +175,20 @@ def validate_recent_identity_coverage(
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
+        columns = {
+            str(row[1] or "").strip()
+            for row in conn.execute("PRAGMA table_info(fact_orders_kaspi)").fetchall()
+        }
+        internal_status_select = (
+            "COALESCE(internal_status, '') AS internal_status"
+            if "internal_status" in columns
+            else "'' AS internal_status"
+        )
+        kaspi_status_select = (
+            "COALESCE(kaspi_status, '') AS kaspi_status"
+            if "kaspi_status" in columns
+            else "'' AS kaspi_status"
+        )
         rows = conn.execute(
             """
             SELECT
@@ -185,13 +199,17 @@ def validate_recent_identity_coverage(
                 COALESCE(my_size, '') AS my_size,
                 COALESCE(kaspi_offer_name, '') AS kaspi_offer_name,
                 COALESCE(kaspi_status_detail, '') AS kaspi_status_detail,
-                COALESCE(internal_status, '') AS internal_status,
-                COALESCE(kaspi_status, '') AS kaspi_status,
+                {internal_status_select},
+                {kaspi_status_select},
                 COALESCE(created_at, '') AS created_at
             FROM fact_orders_kaspi
             WHERE date(created_at) BETWEEN ? AND ?
               AND UPPER(COALESCE(store_code, '')) IN ({})
-            """.format(",".join(["?"] * len(stores))),
+            """.format(
+                ",".join(["?"] * len(stores)),
+                internal_status_select=internal_status_select,
+                kaspi_status_select=kaspi_status_select,
+            ),
             (start_day.isoformat(), as_of.isoformat(), *stores),
         ).fetchall()
         latest_status_by_order, observation_watermarks = _load_latest_status_context(

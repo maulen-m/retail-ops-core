@@ -109,3 +109,38 @@ def test_validate_returns_economics_fails_stale_leak(tmp_path: Path) -> None:
             volatility_days=14,
             strict=True,
         )
+
+
+def test_validate_returns_economics_ignores_returns_before_window(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (order_id, store_code, internal_status, status_updated_at, updated_at, created_at)
+        VALUES ('OLD', 'UNIVERSAL', 'RETURNED', '2025-01-10', '2025-01-10', '2024-12-20')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2 (
+            order_id, order_date, store_code, quantity, net_rev, cogs, profit, status,
+            return_flag, sku_key, sku_id, my_size
+        ) VALUES ('OLD', '2024-12-28', 'UNIVERSAL', 1, 3000, 1000, 2000, 'DELIVERED', 0, 'SKU', 'SKU_1', 'L')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    report = validate_returns_economics_audit(
+        db_path=db_path,
+        as_of=date(2026, 3, 25),
+        since=date(2026, 2, 1),
+        output_root=tmp_path / "out",
+        volatility_days=14,
+        strict=True,
+    )
+
+    assert report["status"] == "PASS"
+    assert report["stale_leaked_orders"] == 0

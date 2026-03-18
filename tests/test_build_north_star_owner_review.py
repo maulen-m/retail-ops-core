@@ -217,6 +217,53 @@ def test_locked_month_never_exposes_numeric_profit(tmp_path: Path) -> None:
     assert pd.isna(monthly.iloc[0]["profit_after_ads_kzt"])
 
 
+def test_locked_flags_store_rows_are_deduped_and_coverage_is_capped(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    _seed_db(db)
+    validation = tmp_path / "validation"
+    _write_validation(validation, "PASS")
+    stores = tmp_path / "stores.yaml"
+    _write_stores(stores)
+    owner = tmp_path / "owner.json"
+    owner_payload = {
+        "monthly_totals": [
+            {"sale_month": "2026-01", "decision_grade": False, "statusdate_coverage_pct": 132.45}
+        ],
+        "monthly_by_store": [
+            {
+                "sale_month": "2026-01",
+                "store_code": "ACMEWEAR",
+                "decision_grade": False,
+                "statusdate_coverage_pct": 132.45,
+            }
+        ],
+    }
+    owner.write_text(json.dumps(owner_payload), encoding="utf-8")
+    out = tmp_path / "out"
+
+    build_north_star_owner_review(
+        as_of="2026-03-05",
+        start="2026-01-01",
+        end="2026-01-31",
+        strict=False,
+        db_path=db,
+        stores_config=stores,
+        truth_source="db",
+        ledger_root=None,
+        validation_dir=validation,
+        owner_pnl_json=owner,
+        output_dir=out,
+    )
+
+    locked_monthly = pd.read_csv(out / "locked_flags_monthly.csv")
+    locked_store = pd.read_csv(out / "locked_flags_monthly_by_store.csv")
+
+    assert len(locked_monthly) == 1
+    assert locked_monthly.iloc[0]["statusdate_coverage_pct"] == pytest.approx(100.0)
+    assert len(locked_store) == 1
+    assert locked_store.iloc[0]["statusdate_coverage_pct"] == pytest.approx(100.0)
+
+
 def test_build_north_star_owner_review_webui_uses_projection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = tmp_path / "app.db"
     _seed_db(db)
