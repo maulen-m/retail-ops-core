@@ -28,3 +28,10 @@ Promote the monitoring-grade owner cockpit into `main` without widening deferred
 - cherry-pick conflict that changes business meaning
 - any required gate failure
 - any hidden write path or semantic widening
+
+
+## 2026-03-20 scope correction
+- Initial path-B cherry-pick attempt onto `origin/main` failed the exact-head replay immediately: `validate_params.py --strict --as-of 2026-03-09` raised `ModuleNotFoundError: core.sales.ocean_drop_anchor`.
+- This proved that `origin/main` does not contain the canonical owner-runtime green-center dependency chain needed by the owner cockpit.
+- Revised promotion path: PR the current branch tip instead of continuing a misleading minimal cherry-pick lane.
+- Reason: the six-commit set is not self-sufficient on top of current `origin/main`; direct promotion from the working branch is the only honest path unless a much larger dependency-chain cherry-pick is assembled and reproven.
