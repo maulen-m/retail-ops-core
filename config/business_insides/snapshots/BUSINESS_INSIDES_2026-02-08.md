@@ -1,6 +1,6 @@
 # Business Insides Snapshot
 
-- Generated at: `2026-02-09 20:51:45`
+- Generated at: `2026-03-03 14:58:28`
 - As of date: `2026-02-08`
 - Paid-capital snapshot date: `2026-02-08`
 - Bank snapshot date: `2026-02-08`
@@ -11,13 +11,13 @@
 +-----------------------------------+---------------+
 | Metric                            | Value KZT     |
 +-----------------------------------+---------------+
-| Cash (actual, bank_accounts.yaml) | 2,003,917.38  |
+| Cash (actual, bank_accounts.yaml) | 467,804.38    |
 | Inventory on-hand paid            | 7,263,594.00  |
-| Inventory inbound paid            | 12,145,974.20 |
-| Inventory on-delivery paid        | 380,250.00    |
-| Total capital (paid truth)        | 21,793,735.58 |
-| Inbound unpaid obligations        | 19,228,238.50 |
-| Capital + unpaid inbound          | 41,021,974.08 |
+| Inventory inbound paid            | 18,407,100.58 |
+| Inventory on-delivery paid        | 384,750.00    |
+| Total capital (paid truth)        | 26,523,248.96 |
+| Inbound unpaid obligations        | 12,967,110.00 |
+| Capital + unpaid inbound          | 39,490,358.96 |
 +-----------------------------------+---------------+
 ```
 
@@ -27,45 +27,107 @@
 +--------------------------+------------+
 | Metric                   | Value KZT  |
 +--------------------------+------------+
-| Avg 30d Net Rev          | 360,508.73 |
-| Avg 30d COGS             | 211,076.62 |
-| Avg 30d Profit           | 149,432.10 |
-| Avg 30d Ads Spend        | 0.00       |
-| Avg 30d Profit After Ads | 149,432.10 |
-| Avg 7d Net Rev           | 346,635.51 |
-| Avg 7d COGS              | 197,688.37 |
-| Avg 7d Profit            | 148,947.13 |
-| Avg 7d Ads Spend         | 0.00       |
-| Avg 7d Profit After Ads  | 148,947.13 |
+| Avg 30d Net Rev          | 429,658.24 |
+| Avg 30d COGS             | N/A        |
+| Avg 30d Profit           | N/A        |
+| Avg 30d Ads Spend        | N/A        |
+| Avg 30d Profit After Ads | N/A        |
+| Avg 7d Net Rev           | 366,716.14 |
+| Avg 7d COGS              | N/A        |
+| Avg 7d Profit            | N/A        |
+| Avg 7d Ads Spend         | N/A        |
+| Avg 7d Profit After Ads  | N/A        |
 +--------------------------+------------+
 ```
 
 ## Last 7 Days Values (KZT)
 
 ```text
-+------------+---------------+------------+------------+-----------+------------+------------------+
-| Date       | Units Shipped | Net Rev    | COGS       | Ads Spend | Profit     | Profit After Ads |
-+------------+---------------+------------+------------+-----------+------------+------------------+
-| 2026-02-02 | 60            | 369,205.40 | 217,537.91 | 0.00      | 151,667.45 | 151,667.45       |
-| 2026-02-03 | 49            | 294,228.04 | 167,936.65 | 0.00      | 126,291.38 | 126,291.38       |
-| 2026-02-04 | 51            | 428,146.24 | 262,210.96 | 0.00      | 165,935.25 | 165,935.25       |
-| 2026-02-05 | 41            | 235,971.05 | 130,985.17 | 0.00      | 104,985.89 | 104,985.89       |
-| 2026-02-06 | 46            | 278,560.36 | 158,788.63 | 0.00      | 119,771.71 | 119,771.71       |
-| 2026-02-07 | 50            | 326,488.18 | 174,908.73 | 0.00      | 151,579.46 | 151,579.46       |
-| 2026-02-08 | 48            | 493,849.31 | 271,450.52 | 0.00      | 222,398.75 | 222,398.75       |
-+------------+---------------+------------+------------+-----------+------------+------------------+
++------------+-----------------------------+------------+------------+-----------+------------+------------------+
+| Date       | Units Delivered (COMPLETED) | Net Rev    | COGS       | Ads Spend | Profit     | Profit After Ads |
++------------+-----------------------------+------------+------------+-----------+------------+------------------+
+| 2026-02-02 | 48                          | 371,491.00 | 174,664.64 | N/A       | 196,826.36 | N/A              |
+| 2026-02-03 | 49                          | 384,726.00 | 182,401.45 | N/A       | 202,324.55 | N/A              |
+| 2026-02-04 | 37                          | 311,803.00 | 143,442.41 | N/A       | 168,360.59 | N/A              |
+| 2026-02-05 | 52                          | 497,821.00 | 255,822.29 | N/A       | 241,998.71 | N/A              |
+| 2026-02-06 | 48                          | 373,814.00 | 169,145.75 | N/A       | 204,668.25 | N/A              |
+| 2026-02-07 | 36                          | 272,005.00 | 120,932.72 | N/A       | 151,072.28 | N/A              |
+| 2026-02-08 | 45                          | 355,353.00 | 158,981.90 | N/A       | 196,371.10 | N/A              |
++------------+-----------------------------+------------+------------+-----------+------------+------------------+
 ```
+
+## Sales Truth Freshness
+
+- Latest observed sale date (truth): `2026-02-08`
+- Freshness lag (days): `0`
+- Freshness status: `fresh`
+- Observed rows in last 7 calendar days: `7`
+
+## Latest Observed Sales Days (Truth)
+
+```text
++------------+-----------------------------+------------+------------+-----------+------------+------------------+
+| Date       | Units Delivered (COMPLETED) | Net Rev    | COGS       | Ads Spend | Profit     | Profit After Ads |
++------------+-----------------------------+------------+------------+-----------+------------+------------------+
+| 2026-02-02 | 48                          | 371,491.00 | 174,664.64 | N/A       | 196,826.36 | N/A              |
+| 2026-02-03 | 49                          | 384,726.00 | 182,401.45 | N/A       | 202,324.55 | N/A              |
+| 2026-02-04 | 37                          | 311,803.00 | 143,442.41 | N/A       | 168,360.59 | N/A              |
+| 2026-02-05 | 52                          | 497,821.00 | 255,822.29 | N/A       | 241,998.71 | N/A              |
+| 2026-02-06 | 48                          | 373,814.00 | 169,145.75 | N/A       | 204,668.25 | N/A              |
+| 2026-02-07 | 36                          | 272,005.00 | 120,932.72 | N/A       | 151,072.28 | N/A              |
+| 2026-02-08 | 45                          | 355,353.00 | 158,981.90 | N/A       | 196,371.10 | N/A              |
++------------+-----------------------------+------------+------------+-----------+------------+------------------+
+```
+
+## Waybill-State Shipment Snapshot
+
+- Snapshot status: `available_shipped_truth`
+- Cache file: `~/Docs/Autonomous_business/exports/validation/shipped_truth_crm_waybill/2026-02-01_to_2026-03-01/summary.json`
+- Target date in cache: `2026-02-08`
+- Include overdue: `None`
+- Mode all_dates: `None`
+
+```text
++-----------+------------------------------------+------------------------+
+| Store     | Orders Shipped (Waybill Selection) | Units Shipped (DB qty) |
++-----------+------------------------------------+------------------------+
+| STORE-B   | 16                                 | 16                     |
+| AcmeWear   | 15                                 | 15                     |
+| Universal | 12                                 | 12                     |
+| TOTAL     | 43                                 | 43                     |
++-----------+------------------------------------+------------------------+
+```
+
+## Ocean Drop Provenance
+
+- Anchor configured: `true`
+- Anchor registry: `~/Docs/Autonomous_business/config/anchors/ocean_drop_sales_anchor.json`
+- Anchor path: `~/Docs/Autonomous_business/exports/ocean_drop/20260228_214554/ArchiveOrders_ALL_STORES_ocean_drop_20260228_214554.csv`
+- Anchor sha256: `8381f979e2863009f6d0ff92b469764260f5e34047dadfaf03eaa1e91e6b604d` (computed: `8381f979e2863009f6d0ff92b469764260f5e34047dadfaf03eaa1e91e6b604d`)
+- Anchor as_of_end: `2026-02-26`
+- Transaction date mode: `delivered_status_date`
+- Anchor source tag: `merged_api_ui_statusdate`
 
 ## Data Quality
 
-- Sales source: `view_sales_line_truth` / `view_sales_daily_truth` (canonical interface over staging).
-- COGS fallback rows: `0/1645` (0.00%).
+- Sales source: `view_sales_line_truth / view_sales_daily_truth (canonical interface over staging) + fact_orders_kaspi COMPLETED revenue-only fallback (days added: 1)`.
+- Metric definition: `Units Delivered (COMPLETED)` come from canonical sales truth views.
+- Metric definition: `Orders/Units Shipped (Waybill Selection)` come from waybill selection cache + DB quantities.
+- COGS fallback rows: `0/1424` (0.00%).
 - Unresolved COGS rows: `0`.
 - Unresolved SKU count: `0`.
-- Ads mapping coverage: `0.00%`.
-- Ads mapped/unmapped cost: `0.00` / `0.00`.
+- Economics volatility window (days): `14`.
+- Economics missing days (COGS/profit): `1` (2026-01-14).
+- Economics missing nonvolatile days: `1` (2026-01-14).
+- Profit publication locked: `true`.
+- Ads source status: `unavailable` (reason: `stale`).
+- Ads mapping coverage: `N/A`.
+- Ads mapped/unmapped cost: `N/A` / `N/A`.
+- ArchiveOrders source status: `disabled` (reason: `disabled_by_default`).
+- ArchiveOrders files used: `0`.
 
 ## External Reference Check
 
 - Status: `skipped`
-- Details: `{'status': 'skipped', 'reason': 'no external csv provided'}`
+- Details: `{'status': 'skipped', 'reason': 'strict_not_requested', 'anchor_configured': True, 'anchor_registry': '~/Docs/Autonomous_business/config/anchors/ocean_drop_sales_anchor.json'}`
+

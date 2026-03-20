@@ -8,7 +8,7 @@ WORKFLOW = Path(".github/workflows/single_truth_headless.yml")
 
 REQUIRED_SNIPPETS = [
     "DIM_SKU_LIGHT_WORKBOOK_PATH: config/anchors/fixtures/DIM_SKU_LIGHT_V5.fixture.xlsx",
-    "python3 scripts/validate_params.py --strict",
+    'python3 scripts/validate_params.py --strict --as-of "$(date -u +%F)"',
     "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q",
     "python3 scripts/run_contract_suite.py --fixture small",
     "python3 scripts/validate_single_truth_system.py",

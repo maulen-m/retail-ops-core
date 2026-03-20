@@ -101,6 +101,37 @@ def test_download_waybills_cli_accepts_include_overdue(monkeypatch) -> None:
     download_waybills_api.main()
 
 
+def test_download_waybills_cli_allow_partial_health_overrides_nonzero(monkeypatch) -> None:
+    monkeypatch.setattr(
+        download_waybills_api,
+        "download_all_waybills",
+        lambda **_: {
+            "downloaded": 1,
+            "already_exists": 0,
+            "missing_waybill": 3,
+            "invalid_pdf": 0,
+            "skipped_not_target": 0,
+            "errors": [],
+            "selection_status": "API_FALLBACK",
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "download_waybills_api.py",
+            "--include-overdue",
+            "--allow-partial-health",
+            "--dry-run",
+            "--date",
+            "2026-02-20",
+        ],
+    )
+
+    rc = download_waybills_api.main()
+    assert rc == 0
+
+
 def test_ship_orders_cli_accepts_store-c_store(monkeypatch) -> None:
     monkeypatch.setattr(ship_orders_api, "load_dotenv", lambda: None)
     monkeypatch.setattr(

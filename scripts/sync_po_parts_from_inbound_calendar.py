@@ -52,13 +52,21 @@ REQUIRED_PART_COLS = [
     "PO_part_id",
     "PO_id",
     "supplier_id",
+    "Cargo_freight_id",
     "message_date",
     "cargo_send_date",
     "Estimated_Arrival_date",
     "Actual_Arrival_date",
+    "Actual_DLV_PAY_date",
     "Status",
     "Total Units",
     "Base_cost_CNY",
+    "Actual_Weight_kg",
+    "Paid_DLV_USD",
+    "Paid_DLV_KZT",
+    "Final_USD_per_kg",
+    "USD_KZT_rate",
+    "Actual_DLV_days",
 ]
 
 
@@ -78,9 +86,24 @@ def _parse_date(value: Any) -> str | None:
         return value.date().isoformat() if isinstance(value, datetime) else value.isoformat()
     if isinstance(value, float) and pd.isna(value):
         return None
+    # Excel serial date support (e.g., 46035 -> 2026-01-13)
+    if isinstance(value, (int, float)):
+        try:
+            serial = float(value)
+            if serial > 0:
+                return (pd.Timestamp("1899-12-30") + pd.to_timedelta(serial, unit="D")).date().isoformat()
+        except Exception:
+            pass
     raw = str(value).strip()
     if not raw:
         return None
+    if re.fullmatch(r"\d+(\.\d+)?", raw):
+        try:
+            serial = float(raw)
+            if serial > 0:
+                return (pd.Timestamp("1899-12-30") + pd.to_timedelta(serial, unit="D")).date().isoformat()
+        except Exception:
+            pass
     for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y", "%d/%m/%Y"):
         try:
             return datetime.strptime(raw, fmt).date().isoformat()
@@ -386,10 +409,12 @@ def sync_po_parts_from_workbook(
                 "po_part_id": po_part_id,
                 "po_id": po_id,
                 "supplier_id": str(row.get("supplier_id") or "").strip(),
+                "cargo_freight_id": str(row.get("Cargo_freight_id") or "").strip(),
                 "message_date": _parse_date(row.get("message_date")),
                 "cargo_send_date": _parse_date(row.get("cargo_send_date")),
                 "estimated_arrival_date": _parse_date(row.get("Estimated_Arrival_date")),
                 "actual_arrival_date": _parse_date(row.get("Actual_Arrival_date")),
+                "actual_dlv_pay_date": _parse_date(row.get("Actual_DLV_PAY_date")),
                 "status": _map_part_status(row.get("Status")),
                 "total_sku_keys": _to_int(row.get("Total SKU Keys")),
                 "total_units": _to_int(row.get("Total Units")),
@@ -400,6 +425,12 @@ def sync_po_parts_from_workbook(
                 "total_bags": _to_int(row.get("Total Bags")),
                 "qty_delta": _to_int(row.get("Qty Delta")),
                 "est_delivery_kzt": _to_float(row.get("Est. Delivery (KZT)")),
+                "actual_weight_kg": _to_float(row.get("Actual_Weight_kg")),
+                "paid_dlv_usd": _to_float(row.get("Paid_DLV_USD")),
+                "paid_dlv_kzt": _to_float(row.get("Paid_DLV_KZT")),
+                "final_usd_per_kg": _to_float(row.get("Final_USD_per_kg")),
+                "usd_kzt_rate": _to_float(row.get("USD_KZT_rate")),
+                "actual_dlv_days": _to_int(row.get("Actual_DLV_days")),
                 "is_paid_base": _to_paid_flag(row.get("is_paid_BASE")),
                 "is_paid_dlv": _to_paid_flag(row.get("is_paid_DLV")),
                 "to_pay_base_kzt": _to_float(row.get("To_pay_BASE_KZT")),

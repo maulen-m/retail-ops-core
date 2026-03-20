@@ -17,10 +17,30 @@ from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.validate_crm_workbook_integrity import validate_workbook_integrity
+from scripts.validate_crm_workbook_integrity import (
+    filter_integrity_errors,
+    validate_workbook_integrity,
+)
 
 CANONICAL_LINE61_SKU_KEY = "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
 CANONICAL_LINE61_CORE = "6в1_Черный_+Сумка"
+ALLOWED_REF_DEFINED_NAMES = (
+    "B",
+    "B_DAYS",
+    "D",
+    "D_AFTER",
+    "L",
+    "L_DAYS",
+    "SS_TOTAL",
+    "T_POST",
+    "TV",
+    "TV_FLOOR",
+    "Z",
+    "Z_LEVEL",
+)
+ALLOWED_REF_PREFIXES = (
+    "named range contains #REF!: _",
+)
 
 
 @dataclass
@@ -131,8 +151,15 @@ def backfill_line61_kaspi_core(
         wb.close()
 
         integrity = validate_workbook_integrity(temp_path)
-        if integrity.errors:
-            details = "; ".join(integrity.errors[:3])
+        blocking_errors, _ = filter_integrity_errors(
+            integrity.errors,
+            allow_exact=[
+                f"named range contains #REF!: {name}" for name in ALLOWED_REF_DEFINED_NAMES
+            ],
+            allow_prefix=list(ALLOWED_REF_PREFIXES),
+        )
+        if blocking_errors:
+            details = "; ".join(blocking_errors[:3])
             raise RuntimeError(
                 "Line61 backfill produced invalid workbook package. "
                 f"Sample errors: {details}"

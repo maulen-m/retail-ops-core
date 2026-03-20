@@ -25,6 +25,9 @@ Authority: `docs/ops/KASPI_DAILY_OPS_ORCHESTRATOR_RUNBOOK.md`
 Daily report contract:
 - `scripts/generate_daily_ops_report.py`
 - `scripts/validate_daily_ops_report.py --strict`
+- `scripts/run_owner_truth_daily.py --as-of <YYYY-MM-DD> --strict`
+  - deterministically regenerates `daily_ops_report`, `exceptions`, and any repo-local frozen ops-selection prerequisites before strict doctor/publication gates
+  - fails closed if those prerequisites cannot be regenerated from repo-local inputs
 
 Board V10 autopilot contract:
 - `scripts/run_daily_autopilot.py --as-of <YYYY-MM-DD> --strict`
@@ -39,8 +42,8 @@ AB_INBOUND_WORKBOOK_PATH="config/anchors/INBOUND_CALENDAR_LATEST.xlsx" \
 ```
 
 Notes:
-- `AB_CRM_WORKBOOK_PATH` gate is optional by design; if unset, workbook anchor check is skipped.
-- In production operations, set it explicitly so daily published sales truth cannot exceed workbook anchor tolerance.
+- production-grade live `run_owner_truth_daily.py` and `system_doctor.py` runs must set `AB_CRM_WORKBOOK_PATH`
+- strict live proving now fails closed if `config/anchors/SALES_KSP_CRM_LATEST.xlsx` is missing
 - Content freshness guard also enforces workbook max-date lag/future windows:
   - `AB_CRM_WORKBOOK_MAX_LAG_DAYS` (default `1`)
   - `AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS` (default `0`)
@@ -94,6 +97,44 @@ Run this before launchd smoke/manual starts to verify anchor health + scheduler 
 
 Expected outcome:
 - `OPS_STATUS PASS` with zero exit code.
+
+### 1.1.2 Run strict owner-truth replay when proving a release anchor
+
+```bash
+./.venv/bin/python scripts/run_owner_truth_daily.py --as-of <YYYY-MM-DD> --strict
+```
+
+Cold-start proving expectations:
+- no manual stopline or governance artifacts should be required
+- if a frozen board-runtime seed exists for the requested `as_of`, automation may materialize repo-local ops-selection artifacts from that seed
+- publication remains fail-closed; locked months must still stay locked
+
+### 1.1.3 Refresh the owner cockpit review bundle
+
+```bash
+python3 scripts/run_owner_review_cycle.py \
+  --as-of <YYYY-MM-DD> \
+  --scorecard-report-path exports/validation/owner_cockpit_reactivation/<run-date>/review_cycle_reprove.md
+```
+
+Owner cockpit interpretation rules:
+- raw recent order/sales recency can be ahead of published owner-facing sales truth
+- owner surfaces must consume published truth or higher-level owner artifacts, not raw `sales_fact_v2`
+- before explaining a recency gap, generate:
+
+```bash
+python3 scripts/report_sales_truth_max_dates.py \
+  --as-of <YYYY-MM-DD> \
+  --db db/app.db \
+  --owner-truth-summary exports/daily/<YYYY-MM-DD>/owner_truth_summary.json \
+  --system-health exports/diagnostics/<YYYY-MM-DD>/system_health.json \
+  --output-json exports/validation/owner_cockpit_reactivation/<run-date>/raw_vs_published_sales_max_dates.json \
+  --output-md exports/validation/owner_cockpit_reactivation/<run-date>/raw_vs_published_sales_max_dates.md
+```
+
+- operator-facing source-map authority:
+  - `docs/OWNER_TRUTH_SOURCE_MAP_AND_DB_RECENCY_2026-03-14.md`
+  - `docs/OWNER_SURFACE_CONSISTENCY_CONTRACT_2026-03-14.md`
 
 ### 1.2 Run on-delivery residual dry-run check
 Run this daily before any write-side cashflow reconciliation:
@@ -751,7 +792,7 @@ Two `.command` files are provided for non-technical users:
 
 ```
 excel_ui/run_import_orders.command   -- Import new orders
-excel_ui/run_build_waybills.command  -- Build waybill bundles
+excel_ui/run_merged_build_waybills.command  -- Build waybill bundles
 ```
 
 Double-click to run. Terminal will show progress and results.
@@ -812,7 +853,7 @@ After importing orders, open CRM and fill the `MY_SIZE` column:
 **Run Builder:**
 ```bash
 # Using .command file
-Double-click: excel_ui/run_build_waybills.command
+Double-click: excel_ui/run_merged_build_waybills.command
 
 # Using CLI
 python scripts/build_daily_waybills.py --verbose
@@ -938,7 +979,7 @@ Each store folder contains 3 manifest files:
 - [ ] Run import: `run_import_orders.command`
 - [ ] Open CRM, fill MY_SIZE for new orders
 - [ ] Save CRM
-- [ ] Run builder: `run_build_waybills.command`
+- [ ] Run builder: `run_merged_build_waybills.command`
 - [ ] Print manifests from each store folder
 - [ ] Pack orders according to manifests
 
@@ -1069,7 +1110,7 @@ python scripts/build_daily_waybills.py --verbose
 
 ### Step 4: Archive and Retention Rules (Current Policy)
 
-`excel_ui/run_build_waybills.command` now calls `scripts/archive_waybill_inputs.py` after build.
+`excel_ui/run_merged_build_waybills.command` now calls `scripts/archive_waybill_inputs.py` after build.
 
 **Archive scope:**
 - Local run archive (`excel_ui/Archive/input_*`) includes:

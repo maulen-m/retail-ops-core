@@ -12,12 +12,15 @@ cd "${PROJECT_ROOT}"
 source .venv/bin/activate 2>/dev/null || true
 if [ -f ".env" ]; then
     ENV_EXPORTS=$(python3 - <<'PY'
+import re
 import shlex
 from pathlib import Path
 
 p = Path(".env")
 if not p.exists():
     raise SystemExit(0)
+
+SHELL_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 for raw in p.read_text(encoding="utf-8").splitlines():
     line = raw.strip()
@@ -30,6 +33,8 @@ for raw in p.read_text(encoding="utf-8").splitlines():
     key, val = line.split("=", 1)
     key = key.strip()
     if not key:
+        continue
+    if not SHELL_KEY_RE.match(key):
         continue
     print(f"export {key}={shlex.quote(val.strip())}")
 PY
@@ -97,6 +102,7 @@ echo "========================================"
 echo ""
 echo "Data root: ${DATA_ROOT}"
 echo "Lookback days: ${LOOKBACK_DAYS}"
+echo "Carry-forward mode: include overdue pending orders within ${LOOKBACK_DAYS} days"
 echo ""
 
 if [ "${SKIP_PREFLIGHT:-0}" != "1" ]; then
@@ -117,7 +123,12 @@ fi
 
 echo "Step: Shipping orders (set package count)"
 echo "----------------------------------------"
-python scripts/ship_orders_api.py --verbose --since-days "${LOOKBACK_DAYS}" --store "${STORE_NAME}"
+python scripts/ship_orders_api.py \
+    --verbose \
+    --since-days "${LOOKBACK_DAYS}" \
+    --include-overdue \
+    --overdue-lookback-days "${LOOKBACK_DAYS}" \
+    --store "${STORE_NAME}"
 
 if [ $? -ne 0 ]; then
     echo ""

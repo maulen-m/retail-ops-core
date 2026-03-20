@@ -59,6 +59,14 @@ python3 scripts/validate_daily_ops_report.py --strict \
   --path exports/daily/<YYYY-MM-DD>/daily_ops_report.json
 ```
 
+Post-ocean-drop reliability gates:
+
+```bash
+python3 scripts/validate_business_insides_economics_ready.py --as-of <YYYY-MM-DD> --strict
+python3 scripts/validate_ops_selection_parity.py --as-of <YYYY-MM-DD> --strict
+python3 scripts/validate_scheduler_heartbeat.py --as-of <YYYY-MM-DD> --strict
+```
+
 Exception queue (Board V10):
 - `exports/exceptions/<YYYY-MM-DD>/exceptions.json`
 - `exports/exceptions/<YYYY-MM-DD>/exceptions.md`

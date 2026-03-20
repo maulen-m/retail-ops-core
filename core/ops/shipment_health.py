@@ -21,10 +21,18 @@ def _to_int(value: Any) -> int:
 def classify_ship_health(result: dict[str, Any]) -> HealthState:
     shipped = _to_int(result.get("shipped"))
     skipped = _to_int(result.get("skipped"))
+    remaining_overdue = _to_int(result.get("remaining_overdue_pending"))
+    remaining_stale = _to_int(result.get("remaining_stale_pending"))
     errors = result.get("errors") or []
 
     if errors:
         return HealthState("api_error", 1, f"shipping errors={len(errors)}")
+    if remaining_overdue > 0 or remaining_stale > 0:
+        return HealthState(
+            "backlog",
+            1,
+            f"shipped={shipped} overdue_pending={remaining_overdue} stale_pending={remaining_stale}",
+        )
     if shipped == 0 and skipped == 0:
         return HealthState("no_pending", 0, "no pending orders to ship")
     if shipped > 0 and skipped == 0:

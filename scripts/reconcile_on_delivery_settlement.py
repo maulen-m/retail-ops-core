@@ -101,6 +101,18 @@ def find_settlement_gaps(
                 params.append(since_date.isoformat())
 
         status_col = "internal_status" if "internal_status" in order_cols else "status"
+        has_sku_cols = "sku_key" in order_cols or "sku_id" in order_cols
+        if has_sku_cols:
+            sku_expr = (
+                "CASE WHEN ("
+                "(COALESCE(TRIM(sku_key), '') <> '' AND UPPER(TRIM(sku_key)) NOT IN ('CL', 'UNKNOWN')) "
+                "OR (COALESCE(TRIM(sku_key), '') = '' "
+                "AND COALESCE(TRIM(sku_id), '') <> '' "
+                "AND UPPER(TRIM(sku_id)) NOT IN ('CL', 'UNKNOWN'))"
+                ") THEN 1 ELSE 0 END"
+            )
+        else:
+            sku_expr = "1"
         rows = conn.execute(
             f"""
             SELECT DISTINCT
@@ -108,7 +120,8 @@ def find_settlement_gaps(
                 store_code,
                 sku_key,
                 sku_id,
-                UPPER(TRIM(COALESCE({status_col}, ''))) AS status
+                UPPER(TRIM(COALESCE({status_col}, ''))) AS status,
+                {sku_expr} AS has_sku_identity
             FROM fact_orders_kaspi
             WHERE COALESCE(TRIM(order_id), '') <> ''
               AND UPPER(TRIM(COALESCE({status_col}, ''))) IN ('COMPLETED', 'CANCELLED', 'RETURNED')
@@ -131,14 +144,25 @@ def find_settlement_gaps(
         balance_map = {
             (str(r["order_id"]), str(r["sku_id"] or "")): float(r["balance_kzt"] or 0.0) for r in balances
         }
+        order_balance_map: dict[str, float] = {}
+        for row in balances:
+            order_id = str(row["order_id"])
+            order_balance_map[order_id] = order_balance_map.get(order_id, 0.0) + float(row["balance_kzt"] or 0.0)
 
         gaps: list[dict[str, Any]] = []
+        seen_orders: set[str] = set()
         for row in rows:
             order_id = str(row["order_id"])
+            if order_id in seen_orders:
+                continue
             sku_id = str(row["sku_id"] or "")
-            bal = float(balance_map.get((order_id, sku_id), balance_map.get((order_id, ""), 0.0)))
+            has_identity = bool(int(row["has_sku_identity"] or 0))
+            if not has_identity:
+                continue
+            bal = float(order_balance_map.get(order_id, 0.0))
             if abs(bal) <= float(tolerance_kzt):
                 continue
+            seen_orders.add(order_id)
             event_date = until_date.isoformat()
             if date_col and date_col in row.keys():
                 parsed = _parse_date_maybe(row[date_col])

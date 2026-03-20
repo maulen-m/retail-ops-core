@@ -1,0 +1,18 @@
+version: 1
+default_active: false
+stores:
+  STOREB:
+    windows:
+      - start: "2026-03-08"
+        active: true
+        reason: "operator_active_current"
+  ACMEWEAR:
+    windows:
+      - start: "2025-01-01"
+        active: true
+        reason: "historical_source_present"
+  UNIVERSAL:
+    windows:
+      - start: "2026-02-22"
+        active: false
+        reason: "operator_stop_date_and_no_historical_source"

@@ -182,6 +182,79 @@ def test_translate_orders_errors_when_sku_unresolved(tmp_path, monkeypatch):
         assert "dim_kaspi_article_map" in msg
 
 
+def test_translate_orders_allow_missing_continues_for_resolved_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            ("SKU_OK", 0.2, 500.0, 0.0),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_OK",
+                "UNIVERSAL",
+                "KASPI_DELIVERY",
+                "SHIPPED",
+                "2026-01-20",
+                1,
+                12000,
+                "SKU_OK",
+                "SKU_OK_M",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, internal_status, status_updated_at,
+                quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ORD_MISS",
+                "UNIVERSAL",
+                "KASPI_DELIVERY",
+                "SHIPPED",
+                "2026-01-20",
+                1,
+                12000,
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(
+        db_path,
+        since=date(2026, 1, 19),
+        until=date(2026, 1, 21),
+        apply=True,
+        run_id="test",
+        allow_missing=True,
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            "SELECT ref_id, event_type FROM fact_cashflow_events ORDER BY ref_id, event_type"
+        ).fetchall()
+        assert ("ORD_OK", "INVENTORY_MOVE") in rows
+        assert all(ref_id != "ORD_MISS" for ref_id, _ in rows)
+    finally:
+        conn.close()
+
+
 def test_translate_orders_resolves_from_sales_fact_v2_when_entries_missing(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     _init_db(db_path)

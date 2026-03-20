@@ -109,3 +109,106 @@ def test_reconcile_script_generates_settlement_events_idempotently(tmp_path: Pat
     assert second["inserted"] == 0
     assert count == 1
     assert float(balance or 0.0) == 0.0
+
+
+def test_detects_gap_when_order_sku_id_drift_differs_from_cashflow_sku_id(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi
+        (order_id, store_code, internal_status, status_updated_at, sku_key, sku_id)
+        VALUES ('ORD-DRIFT', 'STOREB', 'COMPLETED', '2026-03-08', 'SKU_B', 'SKU_B_M')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_cashflow_events
+        (event_date, event_type, account, amount_kzt, store_code, sku_key, sku_id, ref_type, ref_id, source, event_hash)
+        VALUES ('2026-03-08', 'INVENTORY_MOVE', 'INVENTORY_ON_DELIVERY_COST', 375, 'STOREB', 'SKU_B', 'SKU_B_L', 'ORDER', 'ORD-DRIFT', 'ORDER_MODELLED', 'h-drift')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    gaps = find_settlement_gaps(db_path=db_path, since="2026-03-08", until="2026-03-08")
+
+    assert len(gaps) == 1
+    assert gaps[0]["order_id"] == "ORD-DRIFT"
+    assert gaps[0]["balance_kzt"] == 375.0
+
+
+def test_skips_orders_without_deterministic_sku_identity(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi
+        (order_id, store_code, internal_status, status_updated_at, sku_key, sku_id)
+        VALUES ('ORD-NO-SKU', 'ACMEWEAR', 'COMPLETED', '2026-03-08', NULL, '')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_cashflow_events
+        (event_date, event_type, account, amount_kzt, store_code, sku_key, sku_id, ref_type, ref_id, source, event_hash)
+        VALUES ('2026-03-08', 'INVENTORY_MOVE', 'INVENTORY_ON_DELIVERY_COST', 3975, 'ACMEWEAR', NULL, '', 'ORDER', 'ORD-NO-SKU', 'ORDER_MODELLED', 'h-nosku')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    gaps = find_settlement_gaps(db_path=db_path, since="2026-03-08", until="2026-03-08")
+
+    assert gaps == []
+
+
+def test_reconcile_drifted_order_uses_order_level_balance_idempotently(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi
+        (order_id, store_code, internal_status, status_updated_at, sku_key, sku_id)
+        VALUES ('ORD-DRIFT-APPLY', 'STOREB', 'COMPLETED', '2026-03-08', 'SKU_B', 'SKU_B_M')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_cashflow_events
+        (event_date, event_type, account, amount_kzt, store_code, sku_key, sku_id, ref_type, ref_id, source, event_hash)
+        VALUES ('2026-03-08', 'INVENTORY_MOVE', 'INVENTORY_ON_DELIVERY_COST', 375, 'STOREB', 'SKU_B', 'SKU_B_L', 'ORDER', 'ORD-DRIFT-APPLY', 'ORDER_MODELLED', 'h-drift-apply')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+
+    first = reconcile_on_delivery_settlement(
+        db_path=db_path,
+        since="2026-03-08",
+        until="2026-03-08",
+        apply=True,
+        run_id="DRIFT-RUN",
+    )
+    second = reconcile_on_delivery_settlement(
+        db_path=db_path,
+        since="2026-03-08",
+        until="2026-03-08",
+        apply=True,
+        run_id="DRIFT-RUN",
+    )
+
+    assert first["inserted"] == 1
+    assert second["inserted"] == 0
+    assert find_settlement_gaps(db_path=db_path, since="2026-03-08", until="2026-03-08") == []

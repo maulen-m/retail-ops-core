@@ -25,8 +25,28 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- steps_failed: `{payload['steps_failed']}` / `{payload['steps_total']}`",
         f"- stores_red: `{payload['stores_red']}` / `{payload['stores_total']}`",
         "",
-        "## Store Results",
+        "## Shipping Backlog",
     ]
+    shipping_backlog = payload.get("shipping_backlog") or {}
+    if shipping_backlog.get("present"):
+        lines.extend(
+            [
+                f"- scope: `{shipping_backlog.get('scope', '')}`",
+                f"- initial_overdue_pending: `{shipping_backlog.get('initial_overdue_pending', 0)}`",
+                f"- initial_stale_pending: `{shipping_backlog.get('initial_stale_pending', 0)}`",
+                f"- remaining_overdue_pending: `{shipping_backlog.get('remaining_overdue_pending', 0)}`",
+                f"- remaining_stale_pending: `{shipping_backlog.get('remaining_stale_pending', 0)}`",
+                f"- report_md: `{shipping_backlog.get('md_path', '')}`",
+            ]
+        )
+    else:
+        lines.append("- present: `False`")
+    lines.extend(
+        [
+            "",
+        "## Store Results",
+        ]
+    )
     for store, meta in sorted(payload["store_results"].items()):
         state = "GREEN" if meta.get("ok") else "RED"
         lines.append(f"- `{store}`: {state} rc={meta.get('rc')} | {meta.get('summary', '')}")
@@ -64,9 +84,21 @@ def generate_daily_ops_report(*, summary_json: Path, output_dir: Path) -> dict[s
     stores_green = stores_total - stores_red
     steps_total = len(steps)
     steps_failed = sum(1 for row in steps if not bool(row.get("ok", False)))
+    failed_step_names = [str(row.get("step") or "") for row in steps if not bool(row.get("ok", False))]
+    red_store_codes = sorted([store for store, meta in store_results.items() if not bool(meta.get("ok", False))])
 
     ok = bool(summary.get("ok", False)) and stores_red == 0
     status = "GREEN" if ok else "RED"
+    shipping_backlog = summary.get("shipping_backlog_latest") or {
+        "present": False,
+        "scope": "",
+        "json_path": "",
+        "md_path": "",
+        "initial_overdue_pending": 0,
+        "initial_stale_pending": 0,
+        "remaining_overdue_pending": 0,
+        "remaining_stale_pending": 0,
+    }
 
     payload = {
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -77,10 +109,13 @@ def generate_daily_ops_report(*, summary_json: Path, output_dir: Path) -> dict[s
         "profile": str(summary.get("profile", "")),
         "steps_total": steps_total,
         "steps_failed": steps_failed,
+        "failed_step_names": failed_step_names,
         "stores_total": stores_total,
         "stores_red": stores_red,
         "stores_green": stores_green,
+        "red_store_codes": red_store_codes,
         "store_results": store_results,
+        "shipping_backlog": shipping_backlog,
         "summary_json": str(summary_json),
     }
 

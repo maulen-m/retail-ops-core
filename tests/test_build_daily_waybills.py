@@ -21,6 +21,7 @@ from scripts.build_daily_waybills import (
     WAYBILL_PATTERN,
     OrderItem,
     WaybillGroup,
+    build_cross_store_groups,
     build_store_output,
     count_packages,
     extract_waybills_from_zips,
@@ -109,6 +110,10 @@ def test_parse_date_formats():
     result = parse_date("2025-12-25")
     assert result is not None
     assert result.day == 25
+
+    # ISO datetime must not flip day/month
+    result = parse_date("2026-03-06 20:00:00")
+    assert result == date(2026, 3, 6)
 
 
 def test_filters_by_date():
@@ -242,6 +247,45 @@ def test_split_groups_by_overdue():
 
     assert today["AcmeWear"] == [today_group]
     assert overdue["AcmeWear"] == [overdue_group]
+
+
+def test_build_cross_store_groups_merges_normal_groups():
+    group_acmewear = WaybillGroup(
+        group_type="NORMAL",
+        store_name="AcmeWear",
+        items=[
+            OrderItem("111", "AcmeWear", "Prod1", "M", "SKU1", "ID1", 1, "Prod 1", None),
+        ],
+        pdf_paths=[Path("/tmp/111.pdf")],
+    )
+    group_universal = WaybillGroup(
+        group_type="NORMAL",
+        store_name="Universal",
+        items=[
+            OrderItem("222", "Universal", "Prod1", "M", "SKU1", "ID1", 1, "Prod 1", None),
+        ],
+        pdf_paths=[Path("/tmp/222.pdf")],
+    )
+    group_multi_qty = WaybillGroup(
+        group_type="MULTI_QTY",
+        store_name="AcmeWear",
+        items=[
+            OrderItem("333", "AcmeWear", "ProdX", "L", "SKUX", "IDX", 2, "Prod X", None),
+        ],
+        pdf_path=Path("/tmp/333.pdf"),
+        pdf_paths=[Path("/tmp/333.pdf")],
+    )
+
+    merged = build_cross_store_groups([group_acmewear, group_universal, group_multi_qty])
+
+    normals = [g for g in merged if g.group_type == "NORMAL"]
+    multi = [g for g in merged if g.group_type == "MULTI_QTY"]
+    assert len(normals) == 1
+    assert len(normals[0].items) == 2
+    assert normals[0].store_name == "MERGED"
+    assert len(normals[0].pdf_paths) == 2
+    assert len(multi) == 1
+    assert multi[0].store_name == "AcmeWear"
 
 
 def test_build_store_output_skips_empty_categories(tmp_path):

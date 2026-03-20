@@ -3,43 +3,43 @@
 ## Amounts are raw balances in account currency.
 
 # ==============================================================================
-# TOTALS (as of 2026-02-17)
+# TOTALS (as of 2026-03-02)
 # ==============================================================================
 #
 # By Currency (FX rates from binance_p2p 2026-02-10 + dim_fx_rates 2026-02-06):
 #   | Currency | Amount    | Rate | KZT Equivalent |
 #   |----------|-----------|------|----------------|
-#   | KZT      | 4,276,710 |    1 |      4,276,710 |
+#   | KZT      |   315,780 |    1 |        315,780 |
 #   | RUB      |    10,000 |  6.6 |         66,000 |
-#   | USD      |     6,100 |  514 |      3,135,400 |
+#   | USD      |         7 |  514 |          3,598 |
 #   | USDT     |    160.36 |  490 |         78,578 |
-#   | Total    |           |      |  7,556,688 KZT |
+#   | Total    |           |      |    463,956 KZT |
 #
 # By Store:
-#   - UNIVERSAL: 3,894,710 KZT + 10,000 RUB + 6,100 USD + 160.36 USDT
-#   - 11KZ: 3,000 KZT + 0 USDT
-#   - STOREB: 24,000 KZT
-#   - ACMEWEAR: 355,000 KZT
+#   - UNIVERSAL: 301,780 KZT + 10,000 RUB + 7 USD + 160.36 USDT
+#   - 11KZ: 0 KZT + 0 USDT
+#   - STOREB: 14,000 KZT
+#   - ACMEWEAR: 0 KZT
 #   - MELVIS: 0 KZT
 #
 # ==============================================================================
 
-as_of: 2026-02-17 14:20:41 GMT+5
+as_of: 2026-03-02 14:41:00 GMT+5
 stores:
   UNIVERSAL:
     accounts:
       kaspi_gold:
-        balance_kzt: 757710
+        balance_kzt: 46780
       kaspi_pay:
         balance_kzt: 0
       bcc:
-        balance_kzt: 110000
+        balance_kzt: 128000
       freedom:
         balance_kzt: 27000
       cash_kzt:
-        balance_kzt: 3000000
+        balance_kzt: 100000
       cash_usd:
-        balance_usd: 6100
+        balance_usd: 7
       cash_rub:
         balance_rub: 10000
       binance_usdt:
@@ -47,7 +47,7 @@ stores:
   "11KZ":
     accounts:
       kaspi_gold:
-        balance_kzt: 3000
+        balance_kzt: 0
       kaspi_pay:
         balance_kzt: 0
       binance_usdt:
@@ -55,17 +55,17 @@ stores:
   STOREB:
     accounts:
       kaspi_gold:
-        balance_kzt: 0
+        balance_kzt: -10000
       kaspi_pay:
         balance_kzt: 24000
   ACMEWEAR:
     accounts:
       kaspi_gold:
-        balance_kzt: 245000
+        balance_kzt: 0
       kaspi_pay:
         balance_kzt: 0
       cash_kzt:
-        balance_kzt: 110000
+        balance_kzt: 0
   MELVIS:
     accounts:
       kaspi_gold:

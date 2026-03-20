@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timezone
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -63,10 +64,27 @@ def validate_h5_artifact_set(
 
     required_files: list[tuple[str, Path, bool]] = [
         ("daily_ops_report", root / "exports" / "daily" / as_of / "daily_ops_report.json", True),
+        ("scheduler_heartbeat", root / "exports" / "daily" / as_of / "scheduler_heartbeat.json", True),
+        ("sales_vs_waybill_parity", root / "exports" / "daily" / as_of / "sales_vs_waybill_parity.json", True),
         ("exceptions", root / "exports" / "exceptions" / as_of / "exceptions.json", True),
         ("system_health", root / "exports" / "diagnostics" / as_of / "system_health.json", True),
         ("daily_ops_timings", root / "exports" / "perf" / as_of / "daily_ops_timings.json", True),
         ("truth_drift_report", root / "exports" / "daily" / as_of / "truth_drift_report.json", True),
+        (
+            "business_insides_economics_ready",
+            root / "exports" / "validation" / "business_insides_economics" / as_of / "economics_ready_report.json",
+            True,
+        ),
+        (
+            "ops_selection_parity",
+            root / "exports" / "validation" / "ops_selection_parity" / as_of / "parity_report.json",
+            True,
+        ),
+        (
+            "sales_truth_external_reference_parity",
+            root / "exports" / "daily" / as_of / "sales_truth_external_reference_parity.json",
+            bool(os.environ.get("AB_KASPI_ETL_ARCHIVE_DIR") or os.environ.get("AB_KASPI_ETL_REFERENCE_DIR")),
+        ),
         (
             "weekly_health_scorecard",
             root / "exports" / "health" / "weekly" / week_key / "weekly_health_scorecard.json",

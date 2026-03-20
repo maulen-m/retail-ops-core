@@ -49,6 +49,7 @@ if [[ -n "$PROJECT_DIR_OVERRIDE" ]]; then
     PROJECT_DIR="$PROJECT_DIR_OVERRIDE"
 fi
 CHECK_ANCHOR_SCRIPT="$SCRIPT_DIR/check_anchor_health.py"
+RENDER_PLISTS_SCRIPT="$SCRIPT_DIR/render_launchd_plists.py"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 
 PREFLIGHT_PLIST="com.example.single-truth-preflight.plist"
@@ -72,6 +73,9 @@ if ! "$VENV_PYTHON" -c "import pandas; import requests; import openpyxl" >/dev/n
 fi
 
 echo "runtime checks passed: $VENV_PYTHON imports pandas/requests/openpyxl"
+
+python3 "$RENDER_PLISTS_SCRIPT" --project-root "$PROJECT_DIR" --output-dir "$PROJECT_DIR/config/launchd_rendered" >/dev/null
+echo "launchd templates rendered"
 
 if [[ ! -f "$CHECK_ANCHOR_SCRIPT" ]]; then
     echo "FAIL: missing anchor health script at $CHECK_ANCHOR_SCRIPT" >&2

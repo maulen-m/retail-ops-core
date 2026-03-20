@@ -308,3 +308,109 @@ def test_real_archive_requires_po_part_id_on_ordered_size_rows() -> None:
 
     errors = validate_payload(payload, db_path=None, strict_portfolio=False)
     assert any("po_part_id" in err for err in errors)
+
+
+def test_owner_monitoring_scope_allows_stale_stock_snapshot_blocker(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _make_db(db_path, with_portfolio=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO portfolio_active (sku_key, active_flag) VALUES ('SKU_A', 1)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE fact_inventory_snapshot_size (
+            snapshot_date TEXT,
+            sku_id TEXT,
+            sku_key TEXT,
+            my_size TEXT,
+            current_stock INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_inventory_snapshot_size
+        (snapshot_date, sku_id, sku_key, my_size, current_stock)
+        VALUES ('2026-02-09', 'SKU_A_M', 'SKU_A', 'M', 5)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    payload = {
+        "production_scope": "OWNER_MONITORING_ONLY",
+        "po_execution_ready": False,
+        "base_stock_date": "2026-02-09",
+        "cutoff_date": "2026-03-12",
+        "summary": {"total_skus": 1},
+        "pos": {
+            "PLAN-0": {
+                "po_name": "PLAN-0",
+                "po_kind": "PLAN",
+                "sku_level": [
+                    {
+                        "sku_key": "SKU_A",
+                        "notes": "",
+                    }
+                ],
+            }
+        },
+        "archived_pos": [],
+        "real_pos": [],
+    }
+
+    errors = validate_payload(payload, db_path=db_path, strict_portfolio=True)
+    assert not any("Stock snapshot stale vs cutoff" in err for err in errors)
+
+
+def test_stale_stock_snapshot_still_blocks_without_owner_monitoring_scope(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _make_db(db_path, with_portfolio=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO portfolio_active (sku_key, active_flag) VALUES ('SKU_A', 1)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE fact_inventory_snapshot_size (
+            snapshot_date TEXT,
+            sku_id TEXT,
+            sku_key TEXT,
+            my_size TEXT,
+            current_stock INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_inventory_snapshot_size
+        (snapshot_date, sku_id, sku_key, my_size, current_stock)
+        VALUES ('2026-02-09', 'SKU_A_M', 'SKU_A', 'M', 5)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    payload = {
+        "base_stock_date": "2026-02-09",
+        "cutoff_date": "2026-03-12",
+        "summary": {"total_skus": 1},
+        "pos": {
+            "PLAN-0": {
+                "po_name": "PLAN-0",
+                "po_kind": "PLAN",
+                "sku_level": [
+                    {
+                        "sku_key": "SKU_A",
+                        "notes": "",
+                    }
+                ],
+            }
+        },
+        "archived_pos": [],
+        "real_pos": [],
+    }
+
+    errors = validate_payload(payload, db_path=db_path, strict_portfolio=True)
+    assert any("Stock snapshot stale vs cutoff" in err for err in errors)

@@ -1,0 +1,667 @@
+#!/usr/bin/env python3
+"""Rebuild sales_fact_v2 from internal Kaspi order entries + status change dates (fail-closed)."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import date, datetime
+import json
+import os
+from pathlib import Path
+import sqlite3
+import sys
+from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.parsers.kaspi_parser import extract_sku_from_article
+
+DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "sales_fact_v2_rebuild"
+DEFAULT_BACKUP_ROOT = PROJECT_ROOT / "runtime" / "backups"
+
+
+class RebuildError(RuntimeError):
+    """Raised when strict rebuild contracts are violated."""
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone() is not None
+
+
+def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({name})").fetchall()}
+
+
+def _backup_db(db_path: Path, backup_root: Path) -> Path:
+    backup_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_root / f"app_db_before_sales_fact_v2_rebuild_{stamp}.sqlite"
+    src = sqlite3.connect(str(db_path))
+    dst = sqlite3.connect(str(backup_path))
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    return backup_path
+
+
+def _parse_date(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parsed = datetime.fromisoformat(text[:10]) if len(text) >= 10 and text[4] == "-" else None
+    if parsed is not None:
+        return parsed.date().isoformat()
+    try:
+        return datetime.strptime(text[:10], "%d.%m.%Y").date().isoformat()
+    except ValueError:
+        return None
+
+
+def _normalize_status(internal_status: str, kaspi_status: str) -> str:
+    raw_internal = str(internal_status or "").strip().upper()
+    raw_kaspi = str(kaspi_status or "").strip().upper()
+    if raw_internal in {"CANCELLED", "CANCELED"} or raw_kaspi in {"ОТМЕНЕН", "CANCELLED", "CANCELED"}:
+        return "CANCELLED"
+    if raw_internal in {"RETURNED"} or raw_kaspi in {"ВОЗВРАЩЕН", "RETURNED", "RETURN"}:
+        return "RETURNED"
+    # SHIPPED is an in-transit state and must not be counted as delivered sales truth.
+    if raw_internal in {"COMPLETED", "DELIVERED"} or raw_kaspi in {"ВЫДАН", "ЗАВЕРШЕН", "DELIVERED", "COMPLETED"}:
+        return "DELIVERED"
+    return "OPEN"
+
+
+def _resolve_sale_date(order_row: dict[str, Any], status: str) -> str | None:
+    status_date = _parse_date(order_row.get("status_updated_at"))
+    actual_ship = _parse_date(order_row.get("actual_shipment_date"))
+    planned_ship = _parse_date(order_row.get("planned_shipment_date"))
+    created = _parse_date(order_row.get("created_at"))
+
+    if status in {"DELIVERED", "RETURNED", "CANCELLED"}:
+        return status_date or actual_ship or planned_ship or created
+    return None
+
+
+def _load_offer_map(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple[str, str]]:
+    if not _table_exists(conn, "dim_kaspi_article_map"):
+        return {}
+    cols = _table_columns(conn, "dim_kaspi_article_map")
+    where_clause = ""
+    if "active_flag" in cols:
+        where_clause = "WHERE COALESCE(active_flag, 1) = 1"
+    rows = conn.execute(
+        f"""
+        SELECT UPPER(COALESCE(store_code, '')), UPPER(COALESCE(kaspi_offer_name, '')), UPPER(COALESCE(sku_key, '')), UPPER(COALESCE(sku_id, ''))
+        FROM dim_kaspi_article_map
+        {where_clause}
+        """
+    ).fetchall()
+    mapping: dict[tuple[str, str], tuple[str, str]] = {}
+    for store, offer, sku_key, sku_id in rows:
+        store_norm = str(store or "").strip().upper()
+        offer_norm = str(offer or "").strip().upper()
+        if not store_norm or not offer_norm or not str(sku_key or "").strip():
+            continue
+        key = str(sku_key).strip().upper()
+        sid = str(sku_id).strip().upper() or key
+        mapping[(store_norm, offer_norm)] = (key, sid)
+    return mapping
+
+
+def build_sales_fact_v2_rows_from_entries(
+    conn: sqlite3.Connection,
+    *,
+    as_of: date,
+    start_date: date | None = None,
+    strict: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    for table in ("fact_orders_kaspi", "fact_order_entries_kaspi", "sales_fact_v2"):
+        if not _table_exists(conn, table):
+            raise RebuildError(f"missing required table: {table}")
+
+    offer_map = _load_offer_map(conn)
+    order_cols = _table_columns(conn, "fact_orders_kaspi")
+    entry_cols = _table_columns(conn, "fact_order_entries_kaspi")
+    if "offer_id" not in entry_cols:
+        raise RebuildError("fact_order_entries_kaspi missing offer_id")
+
+    assigned_size_sql = (
+        "COALESCE(assigned_size, '') AS assigned_size,"
+        if "assigned_size" in order_cols
+        else "'' AS assigned_size,"
+    )
+    orders = conn.execute(
+        """
+        SELECT
+            order_id,
+            UPPER(COALESCE(store_code, '')) AS store_code,
+            COALESCE(kaspi_offer_name, '') AS kaspi_offer_name,
+            COALESCE(sku_key, '') AS sku_key,
+            COALESCE(sku_id, '') AS sku_id,
+            """
+        + assigned_size_sql
+        + """
+            COALESCE(my_size, '') AS my_size,
+            COALESCE(quantity, 1) AS quantity,
+            COALESCE(delivery_cost_for_seller, delivery_cost, 0) AS delivery_fee,
+            COALESCE(status_updated_at, '') AS status_updated_at,
+            COALESCE(actual_shipment_date, '') AS actual_shipment_date,
+            COALESCE(planned_shipment_date, '') AS planned_shipment_date,
+            COALESCE(created_at, '') AS created_at,
+            COALESCE(internal_status, '') AS internal_status,
+            COALESCE(kaspi_status, '') AS kaspi_status
+        FROM fact_orders_kaspi
+        """
+    ).fetchall()
+
+    order_by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in orders:
+        payload = dict(zip(
+            [
+                "order_id",
+                "store_code",
+                "kaspi_offer_name",
+                "sku_key",
+                "sku_id",
+                "assigned_size",
+                "my_size",
+                "quantity",
+                "delivery_fee",
+                "status_updated_at",
+                "actual_shipment_date",
+                "planned_shipment_date",
+                "created_at",
+                "internal_status",
+                "kaspi_status",
+            ],
+            row,
+        ))
+        key = (str(payload["order_id"]), str(payload["store_code"]))
+        order_by_pair.setdefault(key, []).append(payload)
+
+    entries = conn.execute(
+        """
+        SELECT
+            order_id,
+            UPPER(COALESCE(store_code, '')) AS store_code,
+            UPPER(COALESCE(offer_id, '')) AS offer_id,
+            SUM(COALESCE(quantity, 0)) AS quantity,
+            SUM(COALESCE(total_price_kzt, 0)) AS total_price_kzt
+        FROM fact_order_entries_kaspi
+        GROUP BY order_id, UPPER(COALESCE(store_code, '')), UPPER(COALESCE(offer_id, ''))
+        """
+    ).fetchall()
+
+    totals_by_order: dict[tuple[str, str], float] = {}
+    for order_id, store_code, _offer_id, _qty, total in entries:
+        key = (str(order_id), str(store_code))
+        totals_by_order[key] = totals_by_order.get(key, 0.0) + float(total or 0.0)
+
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    skipped_open = 0
+
+    for order_id, store_code, offer_id, qty, total in entries:
+        pair = (str(order_id), str(store_code))
+        order_rows = order_by_pair.get(pair, [])
+        if not order_rows:
+            if strict:
+                errors.append(f"order header missing for order_id={order_id} store={store_code}")
+            continue
+
+        status_row = sorted(
+            order_rows,
+            key=lambda r: (
+                _parse_date(r.get("status_updated_at")) or "",
+                _parse_date(r.get("actual_shipment_date")) or "",
+                _parse_date(r.get("planned_shipment_date")) or "",
+            ),
+            reverse=True,
+        )[0]
+        status = _normalize_status(status_row.get("internal_status", ""), status_row.get("kaspi_status", ""))
+        if status == "OPEN":
+            skipped_open += 1
+            continue
+
+        sale_date = _resolve_sale_date(status_row, status)
+        if not sale_date:
+            if strict:
+                errors.append(f"missing sale_date for order_id={order_id} store={store_code}")
+            continue
+        if start_date and sale_date < start_date.isoformat():
+            continue
+        if sale_date > as_of.isoformat():
+            continue
+
+        offer_norm = str(offer_id or "").strip().upper()
+        sku_key = ""
+        sku_id = ""
+        my_size = ""
+
+        mapped = offer_map.get((str(store_code), offer_norm))
+        if mapped:
+            sku_key, sku_id = mapped
+
+        if not sku_key:
+            sku_candidates = {str(r.get("sku_key") or "").strip().upper() for r in order_rows if str(r.get("sku_key") or "").strip()}
+            if len(sku_candidates) == 1:
+                sku_key = next(iter(sku_candidates))
+                sku_id_candidates = {
+                    str(r.get("sku_id") or "").strip().upper()
+                    for r in order_rows
+                    if str(r.get("sku_id") or "").strip()
+                }
+                if len(sku_id_candidates) == 1:
+                    sku_id = next(iter(sku_id_candidates))
+
+        if not sku_key:
+            parsed = extract_sku_from_article(offer_norm, offer_norm)
+            parsed_key = str(parsed.get("sku_key") or "").strip().upper()
+            parsed_id = str(parsed.get("sku_id") or "").strip().upper()
+            parsed_size = str(parsed.get("my_size") or "").strip().upper()
+            if parsed_key:
+                sku_key = parsed_key
+            if parsed_id:
+                sku_id = parsed_id
+            if parsed_size:
+                my_size = parsed_size
+
+        if not sku_key:
+            if strict:
+                errors.append(
+                    f"missing sku mapping for order_id={order_id} store={store_code} offer_id={offer_norm}"
+                )
+            continue
+
+        if not sku_id:
+            sku_id = sku_key
+
+        assigned_size_candidates = {
+            str(r.get("assigned_size") or "").strip().upper()
+            for r in order_rows
+            if str(r.get("assigned_size") or "").strip()
+        }
+        if assigned_size_candidates:
+            my_size = sorted(assigned_size_candidates)[0]
+
+        size_candidates = {
+            str(r.get("my_size") or "").strip().upper()
+            for r in order_rows
+            if str(r.get("my_size") or "").strip()
+        }
+        if not my_size and size_candidates:
+            my_size = sorted(size_candidates)[0]
+
+        order_total = totals_by_order.get(pair, 0.0)
+        gross = float(total or 0.0)
+        quantity = float(qty or 0.0)
+        if quantity <= 0:
+            quantity = 1.0
+        sell_price = gross / quantity if quantity > 0 else gross
+        delivery_fee_total = float(status_row.get("delivery_fee") or 0.0)
+        delivery_fee = delivery_fee_total * (gross / order_total) if order_total > 0 else delivery_fee_total
+        net_rev = gross - delivery_fee
+
+        offer_name = offer_norm or sku_key
+        rows.append(
+            {
+                "order_id": str(order_id),
+                "order_date": sale_date,
+                "sku_key": sku_key,
+                "sku_id": sku_id,
+                "my_size": my_size,
+                "kaspi_offer_name": offer_name,
+                "store_code": str(store_code),
+                "quantity": int(round(quantity)),
+                "sell_price_kzt": float(sell_price),
+                "delivery_fee": round(float(delivery_fee), 2),
+                "cogs": None,
+                "net_rev": round(float(net_rev), 2),
+                "profit": None,
+                "status": status,
+                "return_flag": 1 if status == "RETURNED" else 0,
+                "return_date": sale_date if status == "RETURNED" else None,
+                "source_file": "KASPI_API_ENTRIES_REBUILD",
+                "api_updated_at": None,
+            }
+        )
+
+    if strict and errors:
+        raise RebuildError("; ".join(errors[:30]))
+
+    rows.sort(
+        key=lambda r: (
+            r["order_date"],
+            r["store_code"],
+            r["order_id"],
+            r["sku_id"],
+            r["kaspi_offer_name"],
+        )
+    )
+    summary = {
+        "rows_source": len(entries),
+        "rows_built": len(rows),
+        "errors_count": len(errors),
+        "errors_sample": errors[:50],
+        "skipped_open": skipped_open,
+    }
+    return rows, summary
+
+
+def _load_existing_by_keys(conn: sqlite3.Connection, keys: list[tuple[str, str, str, str]]) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    if not keys:
+        return {}
+    order_ids = sorted({k[0] for k in keys})
+    placeholders = ",".join("?" for _ in order_ids)
+    rows = conn.execute(
+        f"""
+        SELECT order_id, sku_id, UPPER(COALESCE(store_code, '')), kaspi_offer_name,
+               order_date, sku_key, my_size, quantity, sell_price_kzt, delivery_fee, net_rev,
+               status, return_flag, return_date
+        FROM sales_fact_v2
+        WHERE order_id IN ({placeholders})
+        """,
+        tuple(order_ids),
+    ).fetchall()
+    payload: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    key_set = set(keys)
+    for row in rows:
+        key = (str(row[0]), str(row[1]), str(row[2]), str(row[3]))
+        if key not in key_set:
+            continue
+        payload[key] = {
+            "order_date": str(row[4] or ""),
+            "sku_key": str(row[5] or ""),
+            "my_size": str(row[6] or ""),
+            "quantity": int(round(float(row[7] or 0))),
+            "sell_price_kzt": float(row[8] or 0.0),
+            "delivery_fee": float(row[9] or 0.0),
+            "net_rev": float(row[10] or 0.0),
+            "status": str(row[11] or ""),
+            "return_flag": int(row[12] or 0),
+            "return_date": str(row[13] or "") if row[13] is not None else None,
+        }
+    return payload
+
+
+def _load_anchor_order_store_keys(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT CAST(order_id AS TEXT) AS order_id, UPPER(COALESCE(store_code, '')) AS store_code
+        FROM sales_fact_v2
+        WHERE UPPER(COALESCE(source_file, '')) = 'OCEAN_DROP_ANCHOR'
+          AND UPPER(COALESCE(status, 'DELIVERED')) = 'DELIVERED'
+          AND COALESCE(return_flag, 0) = 0
+        """
+    ).fetchall()
+    return {(str(row[0]), str(row[1])) for row in rows}
+
+
+def _load_existing_kaspi_rebuild_keys(conn: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
+    rows = conn.execute(
+        """
+        SELECT
+            CAST(order_id AS TEXT) AS order_id,
+            CAST(sku_id AS TEXT) AS sku_id,
+            UPPER(COALESCE(store_code, '')) AS store_code,
+            CAST(kaspi_offer_name AS TEXT) AS kaspi_offer_name
+        FROM sales_fact_v2
+        WHERE UPPER(COALESCE(source_file, '')) = 'KASPI_API_ENTRIES_REBUILD'
+        """
+    ).fetchall()
+    return [(str(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
+
+
+def build_rebuild_plan(*, rows: list[dict[str, Any]], conn: sqlite3.Connection) -> dict[str, Any]:
+    anchor_order_store = _load_anchor_order_store_keys(conn)
+    filtered_rows: list[dict[str, Any]] = []
+    skipped_anchor_overlap = 0
+    for row in rows:
+        order_store = (str(row["order_id"]), str(row["store_code"]))
+        if order_store in anchor_order_store:
+            skipped_anchor_overlap += 1
+            continue
+        filtered_rows.append(row)
+
+    keys = [
+        (r["order_id"], r["sku_id"], r["store_code"], r["kaspi_offer_name"])
+        for r in filtered_rows
+    ]
+    existing = _load_existing_by_keys(conn, keys)
+
+    inserts: list[dict[str, Any]] = []
+    updates: list[dict[str, Any]] = []
+    unchanged = 0
+
+    for row in filtered_rows:
+        key = (row["order_id"], row["sku_id"], row["store_code"], row["kaspi_offer_name"])
+        current = existing.get(key)
+        if current is None:
+            inserts.append(row)
+            continue
+        changed = False
+        for field in ("order_date", "sku_key", "my_size", "quantity", "sell_price_kzt", "delivery_fee", "net_rev", "status", "return_flag", "return_date"):
+            left = current.get(field)
+            right = row.get(field)
+            if isinstance(left, float) or isinstance(right, float):
+                if abs(float(left or 0.0) - float(right or 0.0)) > 1e-6:
+                    changed = True
+                    break
+            elif str(left or "") != str(right or ""):
+                changed = True
+                break
+        if changed:
+            updates.append(row)
+        else:
+            unchanged += 1
+
+    target_keys = set(keys)
+    existing_kaspi_rebuild_keys = _load_existing_kaspi_rebuild_keys(conn)
+    delete_keys = sorted(key for key in existing_kaspi_rebuild_keys if key not in target_keys)
+
+    return {
+        "rows_input_count": len(rows),
+        "rows_filtered_count": len(filtered_rows),
+        "skipped_anchor_overlap_count": skipped_anchor_overlap,
+        "insert_count": len(inserts),
+        "update_count": len(updates),
+        "unchanged_count": unchanged,
+        "delete_count": len(delete_keys),
+        "rows_insert": inserts,
+        "rows_update": updates,
+        "rows_delete_keys": delete_keys,
+    }
+
+
+def _upsert(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    conn.executemany(
+        """
+        INSERT INTO sales_fact_v2 (
+            order_id, order_date, sku_key, sku_id, my_size, kaspi_offer_name, store_code,
+            quantity, sell_price_kzt, delivery_fee, cogs, net_rev, profit,
+            status, return_flag, return_date, source_file, api_updated_at
+        ) VALUES (
+            :order_id, :order_date, :sku_key, :sku_id, :my_size, :kaspi_offer_name, :store_code,
+            :quantity, :sell_price_kzt, :delivery_fee, :cogs, :net_rev, :profit,
+            :status, :return_flag, :return_date, :source_file, :api_updated_at
+        )
+        ON CONFLICT(order_id, sku_id, store_code, kaspi_offer_name)
+        DO UPDATE SET
+            order_date=excluded.order_date,
+            sku_key=excluded.sku_key,
+            my_size=excluded.my_size,
+            quantity=excluded.quantity,
+            sell_price_kzt=excluded.sell_price_kzt,
+            delivery_fee=excluded.delivery_fee,
+            cogs=excluded.cogs,
+            net_rev=excluded.net_rev,
+            profit=excluded.profit,
+            status=excluded.status,
+            return_flag=excluded.return_flag,
+            return_date=excluded.return_date,
+            source_file=excluded.source_file,
+            api_updated_at=excluded.api_updated_at,
+            ingested_at=CURRENT_TIMESTAMP
+        """,
+        rows,
+    )
+    return len(rows)
+
+
+def _delete_by_keys(conn: sqlite3.Connection, keys: list[tuple[str, str, str, str]]) -> int:
+    if not keys:
+        return 0
+    conn.executemany(
+        """
+        DELETE FROM sales_fact_v2
+        WHERE order_id = ?
+          AND sku_id = ?
+          AND UPPER(COALESCE(store_code, '')) = ?
+          AND kaspi_offer_name = ?
+        """,
+        keys,
+    )
+    return len(keys)
+
+
+def run_rebuild(
+    *,
+    db_path: Path,
+    as_of: date,
+    output_root: Path,
+    strict: bool,
+    apply: bool,
+    start_date: date | None,
+    backup_root: Path,
+) -> dict[str, Any]:
+    if not db_path.exists():
+        raise RebuildError(f"db not found: {db_path}")
+
+    out_dir = output_root.resolve() / as_of.isoformat()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plan_json = out_dir / "rebuild_plan.json"
+    plan_md = out_dir / "rebuild_plan.md"
+    summary_json = out_dir / "rebuild_summary.json"
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows, summary = build_sales_fact_v2_rows_from_entries(
+            conn,
+            as_of=as_of,
+            start_date=start_date,
+            strict=strict,
+        )
+        plan = build_rebuild_plan(rows=rows, conn=conn)
+
+        payload = {
+            "generated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "as_of": as_of.isoformat(),
+            "start_date": start_date.isoformat() if start_date else None,
+            "rows_source": summary["rows_source"],
+            "rows_built": summary["rows_built"],
+            "rows_input_count": plan["rows_input_count"],
+            "rows_filtered_count": plan["rows_filtered_count"],
+            "skipped_anchor_overlap_count": plan["skipped_anchor_overlap_count"],
+            "insert_count": plan["insert_count"],
+            "update_count": plan["update_count"],
+            "delete_count": plan["delete_count"],
+            "unchanged_count": plan["unchanged_count"],
+            "errors_count": summary["errors_count"],
+            "errors_sample": summary["errors_sample"],
+            "skipped_open": summary["skipped_open"],
+            "apply_status": "DRY_RUN",
+            "rows_applied": 0,
+            "rows_deleted": 0,
+            "backup_path": None,
+        }
+
+        plan_payload = {
+            "as_of": as_of.isoformat(),
+            "start_date": start_date.isoformat() if start_date else None,
+            **plan,
+        }
+        plan_json.write_text(json.dumps(plan_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        plan_md.write_text(
+            "\n".join(
+                [
+                    "# sales_fact_v2 rebuild plan",
+                    "",
+                    f"- as_of: `{as_of.isoformat()}`",
+                    f"- start_date: `{start_date.isoformat() if start_date else ''}`",
+                    f"- rows_input_count: `{plan['rows_input_count']}`",
+                    f"- rows_filtered_count: `{plan['rows_filtered_count']}`",
+                    f"- skipped_anchor_overlap_count: `{plan['skipped_anchor_overlap_count']}`",
+                    f"- rows_built: `{summary['rows_built']}`",
+                    f"- insert_count: `{plan['insert_count']}`",
+                    f"- update_count: `{plan['update_count']}`",
+                    f"- delete_count: `{plan['delete_count']}`",
+                    f"- unchanged_count: `{plan['unchanged_count']}`",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        if apply:
+            if str(os.environ.get("ENABLE_SALES_FACT_V2_REBUILD_APPLY") or "").strip() != "1":
+                raise RebuildError("ENABLE_SALES_FACT_V2_REBUILD_APPLY=1 is required for --apply")
+            backup = _backup_db(db_path, backup_root)
+            rows_deleted = _delete_by_keys(conn, plan["rows_delete_keys"])
+            rows_applied = _upsert(conn, plan["rows_insert"] + plan["rows_update"])
+            conn.commit()
+            payload["apply_status"] = "APPLIED"
+            payload["rows_applied"] = rows_applied
+            payload["rows_deleted"] = rows_deleted
+            payload["backup_path"] = str(backup)
+
+        summary_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    finally:
+        conn.close()
+
+    return {
+        "plan_json": str(plan_json),
+        "plan_md": str(plan_md),
+        "summary_json": str(summary_json),
+    }
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Rebuild sales_fact_v2 from internal order entries")
+    parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument("--as-of", required=True)
+    parser.add_argument("--start-date", default=None)
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--backup-root", type=Path, default=DEFAULT_BACKUP_ROOT)
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--apply", action="store_true")
+    return parser
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
+    report = run_rebuild(
+        db_path=args.db,
+        as_of=date.fromisoformat(str(args.as_of)),
+        start_date=date.fromisoformat(str(args.start_date)) if args.start_date else None,
+        output_root=args.output_root,
+        backup_root=args.backup_root,
+        strict=bool(args.strict),
+        apply=bool(args.apply),
+    )
+    print(f"rebuild_plan_json={report['plan_json']}")
+    print(f"rebuild_plan_md={report['plan_md']}")
+    print(f"rebuild_summary_json={report['summary_json']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

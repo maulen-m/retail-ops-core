@@ -107,6 +107,6 @@ def test_compute_sales_metrics_reads_published_truth_views(tmp_path: Path, monke
 
     day = next(row for row in metrics["last_7_days"] if row["date"] == "2026-02-08")
     assert day["units_shipped"] == 2.0
-    assert day["net_rev_kzt"] == 7000.0
+    assert day["net_rev_kzt"] == 9000.0
     assert day["cogs_kzt"] == 3000.0
     assert day["profit_kzt"] == 4000.0

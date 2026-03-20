@@ -1,4 +1,6 @@
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 from core.sales.truth_views import ensure_sales_truth_views
@@ -256,6 +258,47 @@ def test_truth_view_maps_offer_article_to_canonical_line61(tmp_path: Path) -> No
     )
 
 
+def test_truth_view_uses_inactive_article_map_when_no_active_row_exists(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO dim_kaspi_article_map (store_code, kaspi_article, sku_key, sku_id, active_flag)
+        VALUES ('ACMEWEAR', '108381956_872156561', 'CL_OC_MEN_LINE52_BLACK', 'CL_OC_MEN_LINE52_BLACK', 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('CL_OC_MEN_LINE52_BLACK', 47, 0.95, 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-INACTIVE-MAP', '2026-02-08', '108381956_872156561', '108381956_872156561', '', 'ACMEWEAR', 1, 9900, 0, 0, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    row = conn.execute(
+        """
+        SELECT sku_key, cogs_source, cogs_kzt
+        FROM view_sales_line_truth
+        WHERE order_id='ORD-INACTIVE-MAP'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row[0] == "CL_OC_MEN_LINE52_BLACK"
+    assert row[1] == "formula_full"
+    assert row[2] is not None and row[2] > 0
+
+
 def test_truth_view_cogs_uses_full_formula_not_partial_source_cogs(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     conn = sqlite3.connect(db)
@@ -355,3 +398,114 @@ def test_truth_view_preserves_source_columns_for_audit(tmp_path: Path) -> None:
     conn.close()
 
     assert row == ("SKU_A", "SKU_A_XL", 1.0, 8000.0, 1234.0, "sales_fact_v2")
+
+
+def test_view_sales_truth_keeps_internal_source_when_external_reference_exists(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        CREATE TABLE fact_sales_external_ref (
+            line_id TEXT PRIMARY KEY,
+            sale_date TEXT,
+            store_code TEXT,
+            order_id TEXT,
+            sku_key TEXT,
+            sku_id TEXT,
+            quantity REAL,
+            net_rev_kzt REAL,
+            status TEXT,
+            return_flag INTEGER
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("ORD-V2-OF", "2026-02-25", "SKU_A", "SKU_A", "L", "ACMEWEAR", 1, 1000, 0, 0, "DELIVERED", 0),
+            ("ORD-V2-UNI", "2026-02-25", "SKU_B", "SKU_B", "L", "UNIVERSAL", 1, 2000, 0, 0, "DELIVERED", 0),
+        ],
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_sales_external_ref
+        (line_id, sale_date, store_code, order_id, sku_key, sku_id, quantity, net_rev_kzt, status, return_flag)
+        VALUES ('ref-1', '2026-02-25', 'ACMEWEAR', 'ORD-REF-OF', 'SKU_X', 'SKU_X', 3, 5000, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    truth_rows = conn.execute(
+        """
+        SELECT store_code, SUM(units) AS units, SUM(revenue_kzt) AS rev
+        FROM view_sales_daily_truth
+        WHERE sale_date='2026-02-25'
+        GROUP BY store_code
+        ORDER BY store_code
+        """
+    ).fetchall()
+    reference_rows = conn.execute(
+        """
+        SELECT store_code, SUM(units) AS units, SUM(revenue_kzt) AS rev
+        FROM view_sales_daily_reference
+        WHERE sale_date='2026-02-25'
+        GROUP BY store_code
+        ORDER BY store_code
+        """
+    ).fetchall()
+    conn.close()
+
+    assert truth_rows == [("ACMEWEAR", 1.0, 1000.0), ("UNIVERSAL", 1.0, 2000.0)]
+    assert reference_rows == [("ACMEWEAR", 3.0, 5000.0)]
+
+
+def test_ensure_sales_truth_views_waits_for_transient_db_lock(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    locker = sqlite3.connect(db, check_same_thread=False)
+    _seed_schema(locker)
+    locker.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_LOCK', 40, 0.5, 0)
+        """
+    )
+    locker.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-LOCK', '2026-02-08', 'SKU_LOCK', 'SKU_LOCK_M', 'M', 'ACMEWEAR', 1, 1000, 300, 700, 'DELIVERED', 0)
+        """
+    )
+    locker.commit()
+
+    runner = sqlite3.connect(db, timeout=0.1)
+    try:
+        locker.execute("BEGIN EXCLUSIVE")
+
+        def _release_lock() -> None:
+            time.sleep(0.3)
+            locker.rollback()
+
+        release_thread = threading.Thread(target=_release_lock)
+        release_thread.start()
+
+        ensure_sales_truth_views(runner)
+        row = runner.execute(
+            """
+            SELECT order_id, source_table
+            FROM view_sales_line_truth
+            WHERE order_id='ORD-LOCK'
+            """
+        ).fetchone()
+        release_thread.join(timeout=2.0)
+    finally:
+        runner.close()
+        locker.close()
+
+    assert row == ("ORD-LOCK", "sales_fact_v2")

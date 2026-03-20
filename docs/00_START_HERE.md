@@ -60,6 +60,7 @@ Read in this order:
 - `inventory/Automation_Handoff_V16.md` ✅
 - `inventory/Sales_Data_Model_V16.md` ✅
 - `protocol/active/PO_making_logic_v2.md` ✅
+- `validation/SALES_TRUTH_EXTERNAL_REFERENCE_CONTRACT.md` ✅
 
 ### B) Operating procedures (how to run the machine)
 - `docs/DAILY_SOP.md`

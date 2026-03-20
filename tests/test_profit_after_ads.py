@@ -115,6 +115,7 @@ def test_business_insides_reports_profit_after_ads_and_mapping_coverage(tmp_path
         bank_accounts_path=bank,
         as_of="2026-02-08",
         output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
     )
     perf = result["performance"]
     assert perf["avg_7d_profit_kzt"] > perf["avg_7d_profit_after_ads_kzt"]

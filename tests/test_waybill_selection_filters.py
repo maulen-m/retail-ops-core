@@ -228,6 +228,28 @@ def test_get_target_order_ids_from_db_filters_status_signature(tmp_path):
     assert result == {"UNIVERSAL": {"2001", "2003", "2004", "2006"}}
 
 
+def test_get_target_order_ids_from_db_include_overdue_uses_lookback_window(tmp_path):
+    db_path = tmp_path / "app.db"
+    _init_fact_orders_db(db_path)
+    target_date = date(2026, 1, 27)
+
+    rows = [
+        ("2101", "ACMEWEAR", "Item", "SKU", "SKU-1", 1, "XL", "", "2026-01-27", "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 0, None),
+        ("2102", "ACMEWEAR", "Item", "SKU", "SKU-2", 1, "XL", "", "2026-01-26", "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 0, None),
+        ("2103", "ACMEWEAR", "Item", "SKU", "SKU-3", 1, "XL", "", "2026-01-22", "KASPI_DELIVERY", "ACCEPTED_BY_MERCHANT", "READY", 0, None),
+    ]
+    _insert_fact_orders(db_path, rows)
+
+    result = download_waybills_api.get_target_order_ids_from_db(
+        db_path=db_path,
+        target_date=target_date,
+        exact_date=False,
+        lookback_days=2,
+    )
+
+    assert result == {"ACMEWEAR": {"2101", "2102"}}
+
+
 def test_get_target_order_ids_from_crm_filters_status_signature(tmp_path):
     target_date = date(2026, 1, 27)
     crm_path = tmp_path / "crm.xlsx"
@@ -435,6 +457,60 @@ def test_download_waybills_for_store_processes_fallback_targets_not_in_prefetch(
     assert (output_dir / "7002.pdf").exists()
 
 
+def test_download_waybills_for_store_skips_cancelled_fallback_without_retry(
+    tmp_path, monkeypatch
+):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    calls = {"get_order": 0, "download": 0}
+
+    class FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def get_waybill_url(self, order: dict) -> Optional[str]:
+            return order.get("attributes", {}).get("kaspiDelivery", {}).get("waybill")
+
+        def get_order(self, order_code: str) -> APIResponse:
+            calls["get_order"] += 1
+            order = _make_order(
+                code=order_code,
+                status="CANCELLED",
+                signature=False,
+                planned=date(2026, 2, 22),
+                assembled=False,
+            )
+            return APIResponse(success=True, data=order, status_code=200)
+
+        def download_waybill(self, waybill_url: str, timeout: Optional[int] = None) -> APIResponse:
+            calls["download"] += 1
+            return APIResponse(success=True, data=b"%PDF-1.4 test\n", status_code=200)
+
+    monkeypatch.setattr(download_waybills_api, "KaspiAPIClient", FakeClient)
+    monkeypatch.setattr(download_waybills_api, "WAYBILL_RETRY_DELAY", 0)
+    monkeypatch.setattr(download_waybills_api, "WAYBILL_RETRY_PASSES", 3)
+    monkeypatch.setattr(download_waybills_api, "WAYBILL_RETRY_DELAY_UNIVERSAL", 0)
+    monkeypatch.setattr(download_waybills_api, "WAYBILL_RETRY_PASSES_UNIVERSAL", 3)
+
+    result = download_waybills_api.download_waybills_for_store(
+        store_code="UNIVERSAL",
+        target_order_ids={"835522716"},
+        output_dir=output_dir,
+        since_days=1,
+        download_timeout=10,
+        dry_run=False,
+        verbose=False,
+        prefetched_orders=[],
+    )
+
+    assert result["downloaded"] == 0
+    assert result["missing_waybill"] == 0
+    assert result["skipped_terminal"] == 1
+    assert calls["get_order"] == 1
+    assert calls["download"] == 0
+
+
 def test_download_all_waybills_writes_selection_cache(tmp_path, monkeypatch):
     output_dir = tmp_path / "waybills"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -486,6 +562,72 @@ def test_download_all_waybills_writes_selection_cache(tmp_path, monkeypatch):
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     assert payload["target_date"] == target_date.isoformat()
     assert payload["stores"]["UNIVERSAL"] == ["8801"]
+
+
+def test_download_all_waybills_excludes_terminal_orders_from_selection_cache(
+    tmp_path, monkeypatch
+):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    target_date = date(2026, 2, 22)
+    api_order = _make_order(
+        code="API100",
+        status="ACCEPTED_BY_MERCHANT",
+        signature=False,
+        planned=target_date,
+        assembled=True,
+    )
+
+    def _fake_get_target_orders_from_api(*args, **kwargs):
+        return ([api_order], False)
+
+    def _fake_get_target_order_ids_from_db(*_args, **_kwargs):
+        return {"UNIVERSAL": {"API100", "CANCEL1"}}
+
+    def _fake_get_target_order_ids_from_crm(*_args, **_kwargs):
+        return {}
+
+    def _fake_download_waybills_for_store(**kwargs):
+        # Store receives fallback union, but terminal orders must be removed
+        # from persisted target selection for downstream parity.
+        assert kwargs["target_order_ids"] == {"API100", "CANCEL1"}
+        return {
+            "downloaded": 1,
+            "skipped_not_target": 0,
+            "missing_waybill": 0,
+            "already_exists": 0,
+            "invalid_pdf": 0,
+            "skipped_terminal": 1,
+            "terminal_skipped_order_ids": ["CANCEL1"],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
+    monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_db", _fake_get_target_order_ids_from_db)
+    monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_crm", _fake_get_target_order_ids_from_crm)
+    monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
+
+    result = download_waybills_api.download_all_waybills(
+        output_dir=output_dir,
+        crm_path=tmp_path / "crm.xlsx",
+        sheet_name="Sheet1",
+        target_date=target_date,
+        db_path=tmp_path / "app.db",
+        store_filter="UNIVERSAL",
+        since_days=3,
+        download_timeout=20,
+        dry_run=False,
+        verbose=False,
+        all_dates=False,
+        exact_date=False,
+        fallback_crm=True,
+    )
+
+    assert result["skipped_terminal"] == 1
+    cache_path = output_dir / "_waybill_selection_orders.json"
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["stores"]["UNIVERSAL"] == ["API100"]
 
 
 def test_download_all_waybills_fallback_does_not_expand_store_when_api_has_orders(tmp_path, monkeypatch):
@@ -557,11 +699,13 @@ def test_download_all_waybills_fallback_does_not_expand_store_when_api_has_order
     assert captured_targets["ACMEWEAR"] == {"ACMEWEAR_FALLBACK"}
 
 
-def test_download_all_waybills_include_overdue_merges_fallback_when_api_has_orders(
+def test_download_all_waybills_include_overdue_skips_cached_fallback_when_api_has_orders(
     tmp_path, monkeypatch
 ):
     output_dir = tmp_path / "waybills"
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "DB_EXTRA.pdf").write_bytes(b"%PDF-1.4")
+    (output_dir / "CRM_EXTRA.pdf").write_bytes(b"%PDF-1.4")
 
     target_date = date(2026, 2, 23)
     api_order = _make_order(
@@ -624,5 +768,74 @@ def test_download_all_waybills_include_overdue_merges_fallback_when_api_has_orde
     )
 
     assert result["fallback_used"] is True
-    assert captured_targets["UNIVERSAL"] == {"API100", "DB_EXTRA", "CRM_EXTRA"}
+    assert captured_targets["UNIVERSAL"] == {"API100"}
     assert captured_targets["ACMEWEAR"] == {"ACMEWEAR_FALLBACK"}
+
+
+def test_download_all_waybills_include_overdue_keeps_missing_pdf_fallback_when_api_has_orders(
+    tmp_path, monkeypatch
+):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "DB_EXTRA.pdf").write_bytes(b"%PDF-1.4")
+
+    target_date = date(2026, 2, 23)
+    api_order = _make_order(
+        code="API100",
+        status="ACCEPTED_BY_MERCHANT",
+        signature=False,
+        planned=target_date,
+        assembled=True,
+    )
+
+    def _fake_get_target_orders_from_api(store_code: str, *_args, **_kwargs):
+        if store_code == "UNIVERSAL":
+            return [api_order], False
+        return [], False
+
+    def _fake_get_target_order_ids_from_db(*_args, **_kwargs):
+        return {
+            "UNIVERSAL": {"API100", "DB_EXTRA"},
+        }
+
+    def _fake_get_target_order_ids_from_crm(*_args, **_kwargs):
+        return {
+            "UNIVERSAL": {"CRM_EXTRA"},
+        }
+
+    captured_targets: dict[str, set[str]] = {}
+
+    def _fake_download_waybills_for_store(**kwargs):
+        captured_targets[kwargs["store_code"]] = set(kwargs["target_order_ids"])
+        return {
+            "downloaded": 0,
+            "skipped_not_target": 0,
+            "missing_waybill": 0,
+            "already_exists": 0,
+            "invalid_pdf": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
+    monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_db", _fake_get_target_order_ids_from_db)
+    monkeypatch.setattr(download_waybills_api, "get_target_order_ids_from_crm", _fake_get_target_order_ids_from_crm)
+    monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
+
+    result = download_waybills_api.download_all_waybills(
+        output_dir=output_dir,
+        crm_path=tmp_path / "crm.xlsx",
+        sheet_name="Sheet1",
+        target_date=target_date,
+        db_path=tmp_path / "app.db",
+        store_filter=None,
+        since_days=3,
+        download_timeout=20,
+        dry_run=False,
+        verbose=False,
+        all_dates=False,
+        exact_date=False,
+        fallback_crm=True,
+    )
+
+    assert result["fallback_used"] is True
+    assert captured_targets["UNIVERSAL"] == {"API100", "CRM_EXTRA"}

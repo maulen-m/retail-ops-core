@@ -23,6 +23,18 @@ def _seed_required_artifacts(root: Path, as_of: str) -> None:
     _write_json(root / "exports" / "perf" / as_of / "daily_ops_timings.json", {"as_of": as_of})
     _write_json(root / "exports" / "diagnostics" / as_of / "system_health.json", {"as_of": as_of, "ok": True, "status": "GREEN"})
     _write_json(root / "exports" / "exceptions" / as_of / "exceptions.json", {"as_of": as_of, "exceptions": [], "ok": True, "status": "GREEN"})
+    _write_json(
+        root / "config" / "business_insides" / f"BUSINESS_INSIDES_{as_of}.json",
+        {"as_of": as_of, "waybill_snapshot": {"status": "available", "target_date": as_of, "stores": {}}},
+    )
+
+
+@pytest.fixture(autouse=True)
+def _seed_workbook_anchor_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    anchor = tmp_path / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
+    anchor.parent.mkdir(parents=True, exist_ok=True)
+    anchor.write_text("anchor", encoding="utf-8")
+    monkeypatch.setenv("AB_CRM_WORKBOOK_PATH", str(anchor))
 
 
 def test_as_of_consistency_passes_when_all_required_artifacts_match(tmp_path: Path) -> None:
@@ -69,3 +81,26 @@ def test_system_doctor_includes_as_of_consistency_check() -> None:
     )
     assert report["ok"] is True
     assert any("validate_as_of_consistency.py" in cmd for cmd in calls)
+
+
+def test_as_of_consistency_tolerates_waybill_selection_date_mismatch_when_optional(tmp_path: Path) -> None:
+    as_of = "2026-02-26"
+    _seed_required_artifacts(tmp_path, as_of)
+    _write_json(
+        tmp_path / "excel_ui" / "ActiveOrders" / "waybills" / "_waybill_selection_orders.json",
+        {"target_date": "2026-02-25", "stores": {"ACMEWEAR": ["1"]}},
+    )
+    report = validate_as_of_consistency(
+        project_root=tmp_path,
+        as_of=as_of,
+        as_of_source="explicit",
+        output_root=tmp_path / "exports" / "diagnostics",
+        strict=True,
+    )
+    assert report["ok"] is True
+    waybill_rows = [
+        row for row in report["checks"] if row["artifact"].endswith("_waybill_selection_orders.json")
+    ]
+    assert len(waybill_rows) == 1
+    assert waybill_rows[0]["required"] is False
+    assert waybill_rows[0]["ok"] is False

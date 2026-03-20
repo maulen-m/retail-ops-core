@@ -8,6 +8,8 @@ Reads orders from SALES_KSP_CRM_V3.xlsx (with MY_SIZE filled), extracts waybill 
 from ZIP files, groups them by store/type, and creates organized output folders with manifests.
 
 If --include-overdue is used, outputs are split into TODAY/OVERDUE subfolders.
+For dual-layout output, a dedicated MERGED/SEND root is also produced so the
+WhatsApp sender can use one fully merged source across stores and partitions.
 
 Usage:
     python scripts/build_daily_waybills.py
@@ -30,6 +32,7 @@ import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from itertools import chain
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Optional
@@ -64,6 +67,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 from core.db import DEFAULT_DB_PATH, get_db
 from core.paths import data_path, get_data_root
+from core.utils.kaspi_dates import parse_kaspi_date
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
 from core.waybill.pdf_grouper import merge_pdfs
 from core.integrations.kaspi_api_client import KaspiAPIClient, STORE_TOKEN_MAP, KaspiAuthError
@@ -80,6 +84,9 @@ DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
 DEFAULT_WAYBILL_DIR = data_path("excel_ui", "ActiveOrders")
 DEFAULT_OUTPUT_DIR = data_path("excel_ui", "Kaspi_orders", "Today")
 DEFAULT_SHEET_NAME = "SALES_KSP_CRM_1"
+OUTPUT_LAYOUT_LEGACY = "legacy"
+OUTPUT_LAYOUT_PER_STORE_AND_MERGED = "per-store-and-merged"
+WHATSAPP_SEND_ROOT_NAME = "SEND"
 
 # Store code mapping (Kaspi warehouse codes -> display names)
 STORE_MAP = {
@@ -233,36 +240,8 @@ def sanitize_filename(name: str) -> str:
 
 
 def parse_date(value: Any) -> Optional[date]:
-    """Parse date from various formats."""
-    if pd.isna(value) or value is None:
-        return None
-
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-
-    value_str = str(value).strip()
-
-    # DD.MM.YYYY format
-    try:
-        return datetime.strptime(value_str, "%d.%m.%Y").date()
-    except ValueError:
-        pass
-
-    # YYYY-MM-DD format
-    try:
-        return datetime.strptime(value_str, "%Y-%m-%d").date()
-    except ValueError:
-        pass
-
-    # Try pandas
-    try:
-        return pd.to_datetime(value, dayfirst=True).date()
-    except (ValueError, TypeError):
-        pass
-
-    return None
+    """Parse mixed CRM/DB date values without flipping ISO month/day order."""
+    return parse_kaspi_date(value)
 
 
 def normalize_store_name(value: Any) -> str:
@@ -1230,6 +1209,87 @@ def split_groups_by_overdue(
     return dict(today), dict(overdue)
 
 
+def _group_pdf_paths(group: WaybillGroup) -> list[Path]:
+    """Return unique PDF paths for a group, preserving order."""
+    pdf_paths = group.pdf_paths or ([group.pdf_path] if group.pdf_path else [])
+    result: list[Path] = []
+    seen: set[str] = set()
+    for pdf_path in pdf_paths:
+        if not pdf_path:
+            continue
+        key = str(pdf_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(pdf_path)
+    return result
+
+
+def clone_waybill_group(group: WaybillGroup) -> WaybillGroup:
+    """Clone group metadata so secondary outputs don't overwrite primary logs."""
+    return WaybillGroup(
+        group_type=group.group_type,
+        store_name=group.store_name,
+        items=list(group.items),
+        pdf_path=group.pdf_path,
+        pdf_paths=list(group.pdf_paths),
+    )
+
+
+def build_cross_store_groups(groups: list[WaybillGroup]) -> list[WaybillGroup]:
+    """
+    Build merged grouping across stores.
+
+    - NORMAL groups are merged by (kaspi_name_core, my_size) across all stores.
+    - MULTI_QTY and MULTI_LINE remain one-group-per-order (cloned).
+    """
+    merged_groups: list[WaybillGroup] = []
+    normal_buckets: dict[tuple[str, str], list[WaybillGroup]] = defaultdict(list)
+
+    for group in groups:
+        if group.group_type == "NORMAL":
+            normal_buckets[(group.kaspi_name_core, group.my_size)].append(group)
+        else:
+            merged_groups.append(clone_waybill_group(group))
+
+    for _, bucket in normal_buckets.items():
+        items: list[OrderItem] = []
+        seen_order_ids: set[str] = set()
+        pdf_paths: list[Path] = []
+        seen_pdf_paths: set[str] = set()
+
+        for group in bucket:
+            for item in group.items:
+                order_id = item.order_id or ""
+                if order_id and order_id in seen_order_ids:
+                    continue
+                if order_id:
+                    seen_order_ids.add(order_id)
+                items.append(item)
+
+            for pdf_path in _group_pdf_paths(group):
+                path_key = str(pdf_path)
+                if path_key in seen_pdf_paths:
+                    continue
+                seen_pdf_paths.add(path_key)
+                pdf_paths.append(pdf_path)
+
+        if not items or not pdf_paths:
+            continue
+
+        merged_groups.append(
+            WaybillGroup(
+                group_type="NORMAL",
+                store_name="MERGED",
+                items=items,
+                pdf_path=pdf_paths[0],
+                pdf_paths=pdf_paths,
+            )
+        )
+
+    return merged_groups
+
+
 def build_store_output(
     store_name: str,
     groups: list[WaybillGroup],
@@ -1575,6 +1635,7 @@ def main(
     lookback_days: Optional[int] = 14,
     exact_date: bool = False,
     include_overdue: bool = False,
+    output_layout: str = OUTPUT_LAYOUT_LEGACY,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> dict:
@@ -1595,6 +1656,14 @@ def main(
     if include_overdue and exact_date:
         logger.warning("Both include_overdue and exact_date set; using include_overdue.")
         exact_date = False
+    if output_layout not in {
+        OUTPUT_LAYOUT_LEGACY,
+        OUTPUT_LAYOUT_PER_STORE_AND_MERGED,
+    }:
+        raise ValueError(
+            f"Unsupported output_layout={output_layout}. "
+            f"Use {OUTPUT_LAYOUT_LEGACY} or {OUTPUT_LAYOUT_PER_STORE_AND_MERGED}."
+        )
     if exact_date and not include_overdue:
         lookback_days = 0
 
@@ -1621,6 +1690,16 @@ def main(
         'normal': 0,
         'multi_qty': 0,
         'multi_line': 0,
+        'merged_groups': 0,
+        'merged_packages': 0,
+        'merged_normal': 0,
+        'merged_multi_qty': 0,
+        'merged_multi_line': 0,
+        'whatsapp_groups': 0,
+        'whatsapp_packages': 0,
+        'whatsapp_normal': 0,
+        'whatsapp_multi_qty': 0,
+        'whatsapp_multi_line': 0,
     }
 
     crm_df = load_crm_dataframe(crm_path, sheet_name)
@@ -1778,6 +1857,12 @@ def main(
                 shutil.rmtree(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
 
+        per_store_root = output_dir
+        merged_root: Optional[Path] = None
+        if output_layout == OUTPUT_LAYOUT_PER_STORE_AND_MERGED:
+            per_store_root = output_dir / "PER_STORE"
+            merged_root = output_dir / "MERGED"
+
         # Date prefix for folders (DD.MM.YY)
         date_prefix = target_date.strftime("%d.%m.%y")
 
@@ -1792,10 +1877,11 @@ def main(
                 output_sets.append(("OVERDUE", overdue_groups))
         else:
             output_sets.append(("", dict(groups_by_store)))
+        has_partitioned_sets = len(output_sets) > 1
 
         # Build output for each store
         for label, store_groups_map in output_sets:
-            base_dir = output_dir / label if label else output_dir
+            base_dir = per_store_root / label if label else per_store_root
             if not dry_run and store_groups_map:
                 base_dir.mkdir(parents=True, exist_ok=True)
             for store_name, store_groups in store_groups_map.items():
@@ -1812,6 +1898,64 @@ def main(
                 stats['normal'] += store_stats['normal']
                 stats['multi_qty'] += store_stats['multi_qty']
                 stats['multi_line'] += store_stats['multi_line']
+
+            if merged_root and store_groups_map:
+                merged_base_dir = merged_root / label if label else merged_root
+                if not dry_run:
+                    merged_base_dir.mkdir(parents=True, exist_ok=True)
+
+                merged_groups = build_cross_store_groups(
+                    list(chain.from_iterable(store_groups_map.values()))
+                )
+                if merged_groups:
+                    logger.info(
+                        f"Processing merged groups ({label or 'ALL'}) "
+                        f"({len(merged_groups)} groups)"
+                    )
+                    merged_stats = build_store_output(
+                        "MERGED",
+                        merged_groups,
+                        merged_base_dir,
+                        date_prefix,
+                        dry_run,
+                    )
+                    stats['merged_groups'] += len(merged_groups)
+                    stats['merged_packages'] += int(merged_stats.get('packages', 0))
+                    stats['merged_normal'] += int(merged_stats.get('normal', 0))
+                    stats['merged_multi_qty'] += int(merged_stats.get('multi_qty', 0))
+                    stats['merged_multi_line'] += int(merged_stats.get('multi_line', 0))
+
+        if merged_root and has_partitioned_sets:
+            send_base_dir = merged_root / WHATSAPP_SEND_ROOT_NAME
+            if not dry_run:
+                send_base_dir.mkdir(parents=True, exist_ok=True)
+
+            send_groups = build_cross_store_groups(
+                list(chain.from_iterable(groups_by_store.values()))
+            )
+            if send_groups:
+                logger.info(
+                    f"Processing WhatsApp merged groups ({WHATSAPP_SEND_ROOT_NAME}) "
+                    f"({len(send_groups)} groups)"
+                )
+                send_stats = build_store_output(
+                    "MERGED",
+                    send_groups,
+                    send_base_dir,
+                    date_prefix,
+                    dry_run,
+                )
+                stats['whatsapp_groups'] = len(send_groups)
+                stats['whatsapp_packages'] = int(send_stats.get('packages', 0))
+                stats['whatsapp_normal'] = int(send_stats.get('normal', 0))
+                stats['whatsapp_multi_qty'] = int(send_stats.get('multi_qty', 0))
+                stats['whatsapp_multi_line'] = int(send_stats.get('multi_line', 0))
+        elif merged_root:
+            stats['whatsapp_groups'] = stats['merged_groups']
+            stats['whatsapp_packages'] = stats['merged_packages']
+            stats['whatsapp_normal'] = stats['merged_normal']
+            stats['whatsapp_multi_qty'] = stats['merged_multi_qty']
+            stats['whatsapp_multi_line'] = stats['merged_multi_line']
 
         # Write top-level files
         if not dry_run:
@@ -1835,6 +1979,17 @@ def main(
     logger.info(f"  NORMAL: {stats['normal']}")
     logger.info(f"  MULTI_QTY: {stats['multi_qty']}")
     logger.info(f"  MULTI_LINE: {stats['multi_line']}")
+    if output_layout == OUTPUT_LAYOUT_PER_STORE_AND_MERGED:
+        logger.info(f"  Merged bundles: {stats['merged_groups']}")
+        logger.info(f"  Merged packages: {stats['merged_packages']}")
+        logger.info(f"  Merged NORMAL: {stats['merged_normal']}")
+        logger.info(f"  Merged MULTI_QTY: {stats['merged_multi_qty']}")
+        logger.info(f"  Merged MULTI_LINE: {stats['merged_multi_line']}")
+        logger.info(f"  WhatsApp merged bundles: {stats['whatsapp_groups']}")
+        logger.info(f"  WhatsApp merged packages: {stats['whatsapp_packages']}")
+        logger.info(f"  WhatsApp merged NORMAL: {stats['whatsapp_normal']}")
+        logger.info(f"  WhatsApp merged MULTI_QTY: {stats['whatsapp_multi_qty']}")
+        logger.info(f"  WhatsApp merged MULTI_LINE: {stats['whatsapp_multi_line']}")
     if missing_rows:
         logger.warning("Missing orders (first 5):")
         for row in missing_rows[:5]:
@@ -1903,6 +2058,17 @@ if __name__ == "__main__":
         help="Include orders with planned date <= target_date (bounded by lookback)"
     )
     parser.add_argument(
+        "--output-layout",
+        choices=[OUTPUT_LAYOUT_LEGACY, OUTPUT_LAYOUT_PER_STORE_AND_MERGED],
+        default=OUTPUT_LAYOUT_LEGACY,
+        help=(
+            "Output folder layout: "
+            "'legacy' keeps current structure; "
+            "'per-store-and-merged' writes per-store output to PER_STORE and "
+            "adds cross-store merged output to MERGED."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Don't create output files, just show what would be built"
@@ -1934,6 +2100,7 @@ if __name__ == "__main__":
         lookback_days=args.lookback_days,
         exact_date=args.exact_date,
         include_overdue=args.include_overdue,
+        output_layout=args.output_layout,
         dry_run=args.dry_run,
         verbose=args.verbose,
     )

@@ -15,10 +15,20 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _seed_daily_artifacts(root: Path, as_of: str) -> None:
     _write_json(root / "exports" / "daily" / as_of / "daily_ops_report.json", {"as_of": as_of})
+    _write_json(root / "exports" / "daily" / as_of / "scheduler_heartbeat.json", {"as_of": as_of})
+    _write_json(root / "exports" / "daily" / as_of / "sales_vs_waybill_parity.json", {"as_of": as_of})
     _write_json(root / "exports" / "exceptions" / as_of / "exceptions.json", {"as_of": as_of})
     _write_json(root / "exports" / "diagnostics" / as_of / "system_health.json", {"as_of": as_of})
     _write_json(root / "exports" / "perf" / as_of / "daily_ops_timings.json", {"as_of": as_of})
     _write_json(root / "exports" / "daily" / as_of / "truth_drift_report.json", {"as_of": as_of})
+    _write_json(
+        root / "exports" / "validation" / "business_insides_economics" / as_of / "economics_ready_report.json",
+        {"as_of": as_of},
+    )
+    _write_json(
+        root / "exports" / "validation" / "ops_selection_parity" / as_of / "parity_report.json",
+        {"as_of": as_of},
+    )
 
 
 def test_h5_artifact_set_passes_without_weekly_requirement(tmp_path: Path) -> None:

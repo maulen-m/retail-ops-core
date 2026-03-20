@@ -299,6 +299,13 @@ def main():
             states=states,
             dry_run=args.dry_run,
         )
+        if args.enrich:
+            _run_enrichment(
+                ["UNIVERSAL", "ACMEWEAR", "11KZ", "MELVIS", "STOREB"],
+                args.since,
+                args.until,
+                args.dry_run,
+            )
         print_multi_result(result)
 
         return 0 if not result.errors else 1
@@ -317,6 +324,13 @@ def main():
             states=states,
             dry_run=args.dry_run,
         )
+        if args.enrich:
+            _run_enrichment(
+                [store_code],
+                args.since,
+                args.until,
+                args.dry_run,
+            )
         print_sync_result(result)
 
         return 0 if result.success else 1

@@ -9,6 +9,20 @@ def test_ship_partial_classified_and_nonzero() -> None:
     assert state.exit_code == 1
 
 
+def test_ship_backlog_classified_and_nonzero() -> None:
+    state = classify_ship_health(
+        {
+            "shipped": 12,
+            "skipped": 0,
+            "errors": [],
+            "remaining_overdue_pending": 2,
+            "remaining_stale_pending": 1,
+        }
+    )
+    assert state.code == "backlog"
+    assert state.exit_code == 1
+
+
 def test_waybill_delayed_classified_and_nonzero() -> None:
     state = classify_waybill_health(
         {

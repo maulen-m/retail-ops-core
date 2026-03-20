@@ -37,6 +37,7 @@ from core.integrations.kaspi_api_client import (
     KaspiNotFoundError,
     STORE_TOKEN_MAP,
 )
+from core.utils.kaspi_dates import planned_date_from_order
 
 logger = logging.getLogger(__name__)
 
@@ -406,8 +407,13 @@ def order_to_rows(
     payment_mode = PAYMENT_MAP.get(attrs.get('paymentMode', ''), attrs.get('paymentMode', ''))
     delivery_mode = DELIVERY_MAP.get(attrs.get('deliveryMode', ''), attrs.get('deliveryMode', ''))
 
-    # Planned delivery date (API uses courierTransmissionPlanningDate)
-    planned_date = timestamp_to_date(delivery.get('courierTransmissionPlanningDate'))
+    # Planned handover date: keep consistent with DB sync/reporting logic
+    # (creation-time cutoff based) to avoid API/DB/CRM date mismatches.
+    planned_date_obj = planned_date_from_order(order)
+    if planned_date_obj:
+        planned_date = planned_date_obj.strftime("%d.%m.%Y")
+    else:
+        planned_date = timestamp_to_date(delivery.get('courierTransmissionPlanningDate'))
 
     # Warehouse
     warehouse = STORE_WAREHOUSE_MAP.get(store_code, '')

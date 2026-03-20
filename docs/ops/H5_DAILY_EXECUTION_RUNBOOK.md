@@ -16,7 +16,13 @@ Run a deterministic daily proving loop with low human time and strict fail-close
 cd <REPO_PATH>
 DAY="<YYYY-MM-DD>"
 
+# Preferred one-command chain (doctor + as_of + exceptions + parity + artifact gate):
+python3 scripts/run_h5_proving_day.py --strict --project-root . --as-of "$DAY"
+
+# Expanded commands (debug mode):
 python3 scripts/system_doctor.py --strict --project-root . --as-of "$DAY"
+python3 scripts/run_sales_truth_ocean_drop_cycle.py --strict --project-root . --as-of "$DAY"
+python3 scripts/validate_sales_engine_self_sufficient.py --strict --as-of "$DAY"
 python3 scripts/validate_as_of_consistency.py --strict --project-root . --as-of "$DAY"
 python3 scripts/triage_exceptions.py \
   --exceptions "exports/exceptions/$DAY/exceptions.json" \
@@ -37,6 +43,13 @@ python3 scripts/validate_h5_artifact_set.py --strict --project-root . --as-of "$
   - No operational/capital decisions from daily scorecards.
   - Fix root cause and rerun same day.
 
+## Volatility Semantics
+- Sales parity defaults to `--volatility-days 14`.
+- Non-volatile mismatches are stop-the-line blockers.
+- Volatile mismatches are treated as warnings unless an active board upgrades them to blockers.
+- Self-sufficiency validator currently checks a bounded operational window (`--window-days 14`) and must report:
+  - `nonvolatile_mismatch_count = 0`
+
 ## Weekly Rollup
 ```bash
 python3 scripts/build_weekly_health_scorecard.py --as-of "$DAY" --strict
@@ -51,6 +64,15 @@ python3 scripts/build_green_streak_tracker.py --as-of "$DAY" --strict --target-d
 - Daily H5 validator:
   - `exports/validation/h5_artifact_set/<DAY>/h5_artifact_set_report.json`
   - `exports/validation/h5_artifact_set/<DAY>/h5_artifact_set_report.md`
+- One-command proving summary:
+  - `exports/validation/h5_proving_day/<DAY>/h5_proving_day_summary.json`
+  - `exports/validation/h5_proving_day/<DAY>/h5_proving_day_summary.md`
+- Ocean-drop cycle manifest:
+  - `exports/validation/sales_ocean_drop_cycle/<DAY>/sales_truth_ocean_drop_cycle_manifest.json`
+  - `exports/validation/sales_ocean_drop_cycle/<DAY>/sales_truth_ocean_drop_cycle_manifest.md`
+- Engine self-sufficiency:
+  - `exports/validation/sales_engine_self_sufficient/<DAY>/self_sufficient_report.json`
+  - `exports/validation/sales_engine_self_sufficient/<DAY>/self_sufficient_report.md`
 - Streak:
   - `exports/health/streak/<DAY>/green_streak.json`
 - Weekly:

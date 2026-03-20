@@ -24,6 +24,16 @@ def test_daily_ops_report_generator_and_validator_contract(tmp_path: Path) -> No
             "UNIVERSAL": {"ok": True, "rc": 0},
             "ACMEWEAR": {"ok": True, "rc": 0},
         },
+        "shipping_backlog_latest": {
+            "present": True,
+            "scope": "ALL_STORES",
+            "json_path": "/tmp/ship_orders_backlog_ALL_STORES_latest.json",
+            "md_path": "/tmp/ship_orders_backlog_ALL_STORES_latest.md",
+            "initial_overdue_pending": 3,
+            "initial_stale_pending": 1,
+            "remaining_overdue_pending": 2,
+            "remaining_stale_pending": 1,
+        },
     }
     summary_path = tmp_path / "daily_ops_summary.json"
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
@@ -39,6 +49,13 @@ def test_daily_ops_report_generator_and_validator_contract(tmp_path: Path) -> No
     assert payload["status"] == "GREEN"
     assert payload["stores_total"] == 2
     assert payload["stores_red"] == 0
+    assert payload["failed_step_names"] == []
+    assert payload["red_store_codes"] == []
+    assert payload["shipping_backlog"]["present"] is True
+    assert payload["shipping_backlog"]["remaining_overdue_pending"] == 2
+
+    report_md_text = Path(report["md_path"]).read_text(encoding="utf-8")
+    assert "ship_orders_backlog_ALL_STORES_latest.md" in report_md_text
 
     validation = validate_daily_ops_report(Path(report["json_path"]), strict=True)
     assert validation["ok"] is True

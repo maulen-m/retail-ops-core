@@ -15,6 +15,8 @@ Source of truth:
 ## Required output schema (minimal)
 Top-level keys:
 - `generated_at` (ISO string)
+- `production_scope` (string; `OWNER_MONITORING_ONLY` when the payload is being consumed as a monitoring/planning surface rather than a PO-execution release)
+- `po_execution_ready` (boolean; `false` when stale planning inputs are explicitly trust-labeled and must not be interpreted as execution-ready)
 - `cutoff_date` (YYYY-MM-DD string)
 - `summary` (object)
 - `pos` (object)
@@ -100,6 +102,14 @@ The dashboard is only considered functional when coverage is complete:
 - **Demand coverage:** SKUs with recent sales must have demand estimates (no `NO_DEMAND_ESTIMATE` allowed).
 - **Size mapping:** any SKU that appears in sales/orders OR in the latest snapshot date (<= cutoff) must have size mapping; missing MY_SIZE is a hard error.
 - **Day complete:** if day_complete is red, exports/writes are blocked (see `DAY_COMPLETE_CONTRACT.md`).
+
+## Owner monitoring scope
+- When `production_scope=OWNER_MONITORING_ONLY` and `po_execution_ready=false`, stale stock snapshot vs cutoff remains visible in the payload, but it is not treated as a hard execution blocker by `validate_po_dashboard_invariants.py`.
+- This scope does **not** upgrade the PO dashboard to execution-ready status; it only allows owner-facing monitoring surfaces to consume explicitly stale planning inputs with trust labels.
+- Any owner-facing consumer built on top of PO dashboard output must preserve:
+  - `planning_snapshot.freshness`
+  - stale trust labeling in its own trust banner or brief text
+  - clear separation between monitoring-only planning advice and execution-ready PO action
 
 ## Dim SKU Weight Truth
 - Canonical weight source: `Dim sku light v5.xlsx` (see `scripts/sync_dim_sku_from_dim_sku_light.py`).

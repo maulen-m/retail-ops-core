@@ -8,7 +8,7 @@ import pytest
 
 from core.integrations.kaspi_api_client import APIResponse
 from scripts import ship_orders_api as ship_mod
-from scripts.ship_orders_api import read_crm_orders
+from scripts.ship_orders_api import parse_date, read_crm_orders
 
 
 def _write_crm(tmp_path, rows):
@@ -61,6 +61,10 @@ def test_read_crm_orders_can_require_size(tmp_path):
     orders = read_crm_orders(crm_path, "Sheet1", date.today(), allow_missing_size=False)
 
     assert orders == {}
+
+
+def test_parse_date_handles_iso_datetime_without_dayfirst_flip():
+    assert parse_date("2026-03-06 20:00:00") == date(2026, 3, 6)
 
 
 def test_get_pending_assembly_orders_status_first_without_creation_lookback(monkeypatch):
@@ -156,6 +160,90 @@ def test_get_pending_assembly_orders_status_first_without_creation_lookback(monk
     assert calls[0]["status"] == "ACCEPTED_BY_MERCHANT"
 
 
+def test_get_pending_assembly_orders_include_overdue_honors_lookback(monkeypatch):
+    tz = ZoneInfo("Asia/Almaty")
+
+    def _ms(dt_str: str) -> int:
+        dt = datetime.fromisoformat(dt_str).replace(tzinfo=tz)
+        return int(dt.timestamp() * 1000)
+
+    class _FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def list_orders(
+            self,
+            state=None,
+            status=None,
+            since=None,
+            until=None,
+            page_number=0,
+            page_size=100,
+            delivery_type=None,
+            signature_required=None,
+            include_orders=None,
+        ):
+            if page_number > 0:
+                return APIResponse(success=True, data={"data": [], "meta": {"pageCount": 1}}, status_code=200)
+            return APIResponse(
+                success=True,
+                data={
+                    "data": [
+                        {
+                            "id": "base64-today",
+                            "attributes": {
+                                "code": "845767451",
+                                "assembled": False,
+                                "status": "ACCEPTED_BY_MERCHANT",
+                                "creationDate": _ms("2026-03-05T14:11:44"),
+                                "kaspiDelivery": {"courierTransmissionPlanningDate": _ms("2026-03-07T20:00:00")},
+                            },
+                        },
+                        {
+                            "id": "base64-overdue",
+                            "attributes": {
+                                "code": "845784291",
+                                "assembled": False,
+                                "status": "ACCEPTED_BY_MERCHANT",
+                                "creationDate": _ms("2026-03-05T15:11:44"),
+                                "kaspiDelivery": {"courierTransmissionPlanningDate": _ms("2026-03-06T20:00:00")},
+                            },
+                        },
+                        {
+                            "id": "base64-too-old",
+                            "attributes": {
+                                "code": "845785318",
+                                "assembled": False,
+                                "status": "ACCEPTED_BY_MERCHANT",
+                                "creationDate": _ms("2026-03-04T15:11:44"),
+                                "kaspiDelivery": {"courierTransmissionPlanningDate": _ms("2026-03-04T20:00:00")},
+                            },
+                        },
+                    ],
+                    "meta": {"pageCount": 1},
+                },
+                status_code=200,
+            )
+
+    monkeypatch.setattr(ship_mod, "STORE_TOKEN_MAP", {"STOREB": "token"})
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _FakeClient)
+
+    pending, base64_map, planned_map, _pending_meta = ship_mod.get_pending_assembly_orders(
+        target_date=date(2026, 3, 7),
+        since_days=None,
+        store_codes={"STOREB"},
+        include_overdue=True,
+        overdue_lookback_days=1,
+    )
+
+    assert pending == {"STOREB": {"845767451", "845784291"}}
+    assert base64_map["STOREB"]["845767451"] == "base64-today"
+    assert base64_map["STOREB"]["845784291"] == "base64-overdue"
+    assert planned_map["STOREB"]["845767451"] == date(2026, 3, 7)
+    assert planned_map["STOREB"]["845784291"] == date(2026, 3, 6)
+    assert "845785318" not in pending["STOREB"]
+
+
 def test_summarize_pending_backlog_flags_stale_overdue_orders():
     pending_meta = {
         "STOREB": {
@@ -181,6 +269,66 @@ def test_summarize_pending_backlog_flags_stale_overdue_orders():
     assert report["overdue_pending"] == 1
     assert report["stale_pending"] == 1
     assert report["stale_orders"][0]["order_id"] == "818884703"
+
+
+def test_build_pending_backlog_report_includes_age_buckets_and_exact_ids():
+    pending_meta = {
+        "STOREB": {
+            "818884703": {
+                "planned_date": date(2026, 2, 17),
+                "created_at": datetime(2026, 2, 12, 14, 11, 44),
+                "fetch_mode": "status_first",
+            },
+            "900000001": {
+                "planned_date": date(2026, 2, 14),
+                "created_at": datetime(2026, 2, 13, 8, 0, 0),
+                "fetch_mode": "fallback_since",
+            },
+        }
+    }
+
+    report = ship_mod.build_pending_backlog_report(
+        pending_meta,
+        target_date=date(2026, 2, 17),
+        stale_hours=24,
+        now_dt=datetime(2026, 2, 18, 12, 0, 0),
+    )
+
+    assert report["summary"]["overdue_pending"] == 2
+    assert report["age_buckets"]["1d"] == 1
+    assert report["age_buckets"]["4-7d"] == 1
+    assert [row["order_id"] for row in report["overdue_orders"]] == ["900000001", "818884703"]
+
+
+def test_write_pending_backlog_report_creates_json_and_md(tmp_path):
+    report = ship_mod.build_pending_backlog_report(
+        {
+            "STOREB": {
+                "818884703": {
+                    "planned_date": date(2026, 2, 17),
+                    "created_at": datetime(2026, 2, 12, 14, 11, 44),
+                }
+            }
+        },
+        target_date=date(2026, 2, 17),
+        now_dt=datetime(2026, 2, 18, 12, 0, 0),
+    )
+
+    json_path, md_path = ship_mod.write_pending_backlog_report(
+        target_date=date(2026, 2, 17),
+        store_scope="STORE-B",
+        dry_run=True,
+        include_overdue=True,
+        overdue_lookback_days=7,
+        initial_report=report,
+        remaining_report=None,
+        output_root=tmp_path,
+    )
+
+    assert json_path.exists()
+    assert md_path.exists()
+    assert "818884703" in md_path.read_text(encoding="utf-8")
+    assert '"store_scope": "STORE-B"' in json_path.read_text(encoding="utf-8")
 
 
 def test_get_pending_assembly_orders_falls_back_when_status_first_api_requires_since(monkeypatch):
@@ -362,11 +510,21 @@ def test_ship_orders_does_not_count_unconfirmed_assemble(monkeypatch):
 def test_main_limits_pending_fetch_scope_when_store_filter_is_set(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
-    def fake_get_pending_assembly_orders(*, target_date, since_days, store_codes=None, fallback_since_days=30):
+    def fake_get_pending_assembly_orders(
+        *,
+        target_date,
+        since_days,
+        store_codes=None,
+        fallback_since_days=30,
+        include_overdue=False,
+        overdue_lookback_days=None,
+    ):
         captured["target_date"] = target_date
         captured["since_days"] = since_days
         captured["store_codes"] = store_codes
         captured["fallback_since_days"] = fallback_since_days
+        captured["include_overdue"] = include_overdue
+        captured["overdue_lookback_days"] = overdue_lookback_days
         return {"UNIVERSAL": set()}, {}, {}, {}
 
     monkeypatch.setattr(ship_mod, "get_pending_assembly_orders", fake_get_pending_assembly_orders)
@@ -388,6 +546,83 @@ def test_main_limits_pending_fetch_scope_when_store_filter_is_set(monkeypatch, t
 
     assert rc == 0
     assert captured["store_codes"] == {"UNIVERSAL"}
+    assert captured["include_overdue"] is True
+    assert captured["overdue_lookback_days"] == 7
+
+
+def test_main_returns_nonzero_when_overdue_backlog_remains(monkeypatch, tmp_path):
+    calls = {"count": 0}
+    pending_meta = {
+        "STOREB": {
+            "845767451": {
+                "planned_date": date(2026, 3, 5),
+                "created_at": datetime(2026, 3, 5, 8, 0, 0),
+            }
+        }
+    }
+
+    def fake_get_pending_assembly_orders(
+        *,
+        target_date,
+        since_days,
+        store_codes=None,
+        fallback_since_days=30,
+        include_overdue=False,
+        overdue_lookback_days=None,
+    ):
+        calls["count"] += 1
+        return {"STOREB": {"845767451"}}, {"STOREB": {"845767451": "base64"}}, {}, pending_meta
+
+    monkeypatch.setattr(ship_mod, "get_pending_assembly_orders", fake_get_pending_assembly_orders)
+    monkeypatch.setattr(ship_mod, "load_dotenv", lambda: None)
+    monkeypatch.setattr(ship_mod, "resolve_db_path", lambda _path: tmp_path / "app.db")
+    monkeypatch.setattr(ship_mod, "load_db_order_info", lambda _db, _ids: {})
+    monkeypatch.setattr(
+        ship_mod,
+        "read_crm_orders",
+        lambda *args, **kwargs: {
+            "845767451": [
+                ship_mod.OrderItem(
+                    order_id="845767451",
+                    store_name="STORE-B",
+                    kaspi_name_core="Принт_5в1_черный",
+                    my_size="XL",
+                    sku_key="CL_OC_MEN_LINE52_BLACK",
+                    sku_id="CL_OC_MEN_LINE52_BLACK_XL",
+                    quantity=1,
+                    planned_date=date(2026, 3, 5),
+                )
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        ship_mod,
+        "ship_orders",
+        lambda *args, **kwargs: {"shipped": 1, "skipped": 0, "errors": []},
+    )
+    monkeypatch.setattr(
+        ship_mod,
+        "write_pending_backlog_report",
+        lambda **kwargs: (tmp_path / "backlog.json", tmp_path / "backlog.md"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ship_orders_api.py",
+            "--store",
+            "STORE-B",
+            "--crm-file",
+            str(tmp_path / "unused.xlsx"),
+            "--date",
+            "2026-03-06",
+        ],
+    )
+
+    rc = ship_mod.main()
+
+    assert rc == 1
+    assert calls["count"] == 2
 
 
 def test_ship_orders_counts_when_assemble_is_confirmed(monkeypatch):

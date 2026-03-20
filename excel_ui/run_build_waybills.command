@@ -15,12 +15,15 @@ cd ~/Docs/Autonomous_business
 source .venv/bin/activate 2>/dev/null || true
 if [ -f ".env" ]; then
     ENV_EXPORTS=$(python3 - <<'PY'
+import re
 import shlex
 from pathlib import Path
 
 p = Path(".env")
 if not p.exists():
     raise SystemExit(0)
+
+SHELL_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 for raw in p.read_text(encoding="utf-8").splitlines():
     line = raw.strip()
@@ -33,6 +36,8 @@ for raw in p.read_text(encoding="utf-8").splitlines():
     key, val = line.split("=", 1)
     key = key.strip()
     if not key:
+        continue
+    if not SHELL_KEY_RE.match(key):
         continue
     print(f"export {key}={shlex.quote(val.strip())}")
 PY
@@ -68,6 +73,7 @@ if [ -z "${AB_DATA_DIR:-}" ] && [ -z "${DATA_DIR:-}" ]; then
     export DATA_DIR="~/Docs/Autonomous_business"
 fi
 DATA_ROOT="${AB_DATA_DIR:-${DATA_DIR:-~/Docs/Autonomous_business}}"
+OUTPUT_TODAY_DIR="${DATA_ROOT}/excel_ui/Kaspi_orders/Today"
 
 # Merchant UID headers (store-specific). Prefer config/kaspi_stores.yaml when available.
 MERCHANT_EXPORTS=$(python3 - <<'PY' 2>/dev/null
@@ -241,7 +247,12 @@ if [ "${SHIPPING_ENABLED}" -eq 1 ]; then
         if [ -x "${SCRIPT_PATH}" ]; then
             SKIP_PREFLIGHT=1 SKIP_WAIT=1 "${SCRIPT_PATH}"
         else
-            python scripts/ship_orders_api.py --verbose --since-days "${LOOKBACK_DAYS}" --store "${STORE_LABEL}"
+            python scripts/ship_orders_api.py \
+                --verbose \
+                --since-days "${LOOKBACK_DAYS}" \
+                --include-overdue \
+                --overdue-lookback-days "${LOOKBACK_DAYS}" \
+                --store "${STORE_LABEL}"
         fi
         if [ $? -ne 0 ]; then
             echo ""
@@ -264,7 +275,12 @@ DATE_FLAG="--exact-date"
 if [ "${INCLUDE_OVERDUE}" = "1" ]; then
     DATE_FLAG="--include-overdue"
 fi
-python scripts/download_waybills_api.py --verbose --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --fallback-crm
+ALLOW_PARTIAL_WAYBILL_HEALTH="${KASPI_ALLOW_PARTIAL_WAYBILL_HEALTH:-1}"
+PARTIAL_HEALTH_FLAG=""
+if [ "${ALLOW_PARTIAL_WAYBILL_HEALTH}" = "1" ]; then
+    PARTIAL_HEALTH_FLAG="--allow-partial-health"
+fi
+python scripts/download_waybills_api.py --verbose --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --fallback-crm ${PARTIAL_HEALTH_FLAG}
 
 if [ $? -ne 0 ]; then
     echo ""
@@ -278,11 +294,20 @@ echo ""
 # Step 3: Build waybill bundles
 echo "Step 3: Building waybill bundles..."
 echo "----------------------------------------"
-python scripts/build_daily_waybills.py --verbose --lookback-days "${LOOKBACK_DAYS}" ${DATE_FLAG}
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "WARNING: Build waybill bundles encountered errors (see above)"
-    HARD_FAIL=1
+if [ "${HARD_FAIL}" -ne 0 ]; then
+    echo "SKIPPED: build step blocked by earlier hard failure."
+    if [ -d "${OUTPUT_TODAY_DIR}" ]; then
+        rm -rf "${OUTPUT_TODAY_DIR}"
+    fi
+    mkdir -p "${OUTPUT_TODAY_DIR}"
+    echo "Cleared stale output folder: ${OUTPUT_TODAY_DIR}"
+else
+    python scripts/build_daily_waybills.py --verbose --lookback-days "${LOOKBACK_DAYS}" ${DATE_FLAG}
+    if [ $? -ne 0 ]; then
+        echo ""
+        echo "WARNING: Build waybill bundles encountered errors (see above)"
+        HARD_FAIL=1
+    fi
 fi
 
 echo ""
@@ -337,7 +362,7 @@ echo "========================================"
 echo "  Workflow Complete!"
 echo "========================================"
 echo "Output folder: excel_ui/Kaspi_orders/Today/"
-echo "Output folder (resolved): ${DATA_ROOT}/excel_ui/Kaspi_orders/Today/"
+echo "Output folder (resolved): ${OUTPUT_TODAY_DIR}/"
 
 echo ""
 echo "Final Report: waybill health"

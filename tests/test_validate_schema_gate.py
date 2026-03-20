@@ -29,10 +29,18 @@ def _seed_min_schema(db_path: Path) -> None:
             po_id TEXT,
             status TEXT,
             est_weight_kg REAL,
+            actual_weight_kg REAL,
             total_bags INTEGER,
+            cargo_freight_id TEXT,
             total_units INTEGER,
             is_paid_base INTEGER,
             is_paid_dlv INTEGER,
+            actual_dlv_pay_date TEXT,
+            paid_dlv_usd REAL,
+            paid_dlv_kzt REAL,
+            final_usd_per_kg REAL,
+            usd_kzt_rate REAL,
+            actual_dlv_days INTEGER,
             to_pay_base_kzt REAL,
             to_pay_dlv_kzt REAL
         );

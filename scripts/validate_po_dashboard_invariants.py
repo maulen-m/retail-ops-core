@@ -41,6 +41,13 @@ FATAL_FALLBACK_NOTES = [
 REAL_POS_MIN_FIELDS = ["po_id", "status", "message_date", "units_total", "units_received"]
 
 
+def _allow_stale_stock_snapshot_for_owner_monitoring(payload: dict) -> bool:
+    return (
+        str(payload.get("production_scope") or "").upper() == "OWNER_MONITORING_ONLY"
+        and payload.get("po_execution_ready") is False
+    )
+
+
 def _normalize_size(size: str | None) -> str:
     if not size:
         return ""
@@ -313,6 +320,11 @@ def validate_payload(
         try:
             report = evaluate_production_readiness(payload, db_path=db_path)
             for blocker in report.blockers:
+                if (
+                    "Stock snapshot stale vs cutoff" in blocker
+                    and _allow_stale_stock_snapshot_for_owner_monitoring(payload)
+                ):
+                    continue
                 errors.append(f"production_readiness: {blocker}")
         except Exception as exc:
             errors.append(f"production_readiness error: {exc}")

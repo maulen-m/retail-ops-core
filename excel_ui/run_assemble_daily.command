@@ -84,6 +84,9 @@ if [ -n "${KASPI_ASSEMBLE_SINCE_DAYS:-}" ]; then
 else
     echo "Running in status-first mode (no creation-date lookback filter)."
 fi
+ASSEMBLE_OVERDUE_LOOKBACK_DAYS="${KASPI_ASSEMBLE_OVERDUE_LOOKBACK_DAYS:-${KASPI_ASSEMBLE_SINCE_DAYS:-5}}"
+echo "Carry-forward mode enabled: overdue pending orders stay in queue for ${ASSEMBLE_OVERDUE_LOOKBACK_DAYS} days."
+ASSEMBLE_EXTRA_ARGS+=(--include-overdue --overdue-lookback-days "${ASSEMBLE_OVERDUE_LOOKBACK_DAYS}")
 
 echo "========================================"
 echo "  Kaspi Assemble (Daily)"

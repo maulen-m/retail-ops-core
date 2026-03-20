@@ -8,9 +8,11 @@ from datetime import date, datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Callable
 
@@ -36,16 +38,38 @@ PROFILE_CONFIG = {
     },
 }
 
+WAYBILL_TABLE_HEADERS = [
+    "store",
+    "api",
+    "crm",
+    "crm_size",
+    "db_size",
+    "pdfs",
+    "bundled",
+    "bundles",
+    "packages",
+    "miss_crm",
+    "miss_size",
+    "miss_pdf",
+    "miss_bundle",
+]
+MISSING_IDS_RE = re.compile(r"Missing (?:in CRM|PDF|in bundles) \(first 5\): (.+)")
+PREFLIGHT_FAIL_RE = re.compile(r"^- ([^:]+): FAIL \(rc=(\d+)\)", re.MULTILINE)
+
 
 def _run_shell(cmd: str, cwd: Path) -> tuple[int, str]:
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        shell=True,
-        text=True,
-        capture_output=True,
-    )
-    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as capture:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            shell=True,
+            text=True,
+            stdout=capture,
+            stderr=subprocess.STDOUT,
+            capture_output=False,
+        )
+        capture.seek(0)
+        output = capture.read().strip()
     return int(proc.returncode), output
 
 
@@ -79,6 +103,92 @@ def _append_step(
     return ok
 
 
+def _parse_waybill_stopline_details(output: str) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "miss_crm": 0,
+        "miss_size": 0,
+        "miss_pdf": 0,
+        "miss_bundle": 0,
+        "missing_order_ids": [],
+    }
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) != len(WAYBILL_TABLE_HEADERS):
+            continue
+        header_marker = cells[0].upper()
+        if header_marker in {"STORE", "TOTAL"}:
+            continue
+        try:
+            details["miss_crm"] = int(float(cells[9]))
+            details["miss_size"] = int(float(cells[10]))
+            details["miss_pdf"] = int(float(cells[11]))
+            details["miss_bundle"] = int(float(cells[12]))
+        except ValueError:
+            pass
+        break
+
+    missing_ids: list[str] = []
+    for line in output.splitlines():
+        match = MISSING_IDS_RE.search(line.strip())
+        if not match:
+            continue
+        for order_id in [item.strip() for item in match.group(1).split(",")]:
+            if order_id and order_id not in missing_ids:
+                missing_ids.append(order_id)
+    details["missing_order_ids"] = missing_ids
+    return details
+
+
+def classify_store_blocker(store_code: str, rc: int, output: str) -> dict[str, Any]:
+    if rc == 0:
+        return {
+            "blocker_class": "GREEN",
+            "blocker_details": {},
+        }
+    if "Auth error" in output:
+        return {
+            "blocker_class": "AUTH_ERROR",
+            "blocker_details": {},
+        }
+    if "API error" in output:
+        return {
+            "blocker_class": "API_ERROR",
+            "blocker_details": {},
+        }
+    if "STOP-LINE: strict waybill health gate failed" in output:
+        return {
+            "blocker_class": "WAYBILL_STOPLINE",
+            "blocker_details": _parse_waybill_stopline_details(output),
+        }
+    return {
+        "blocker_class": "UNKNOWN",
+        "blocker_details": {"store_code": store_code},
+    }
+
+
+def classify_preflight_blocker(output: str) -> dict[str, Any]:
+    failed_checks = [match.group(1) for match in PREFLIGHT_FAIL_RE.finditer(output)]
+    if not failed_checks:
+        return {"blocker_class": "GREEN", "failed_checks": []}
+    if "validate_params_strict" in failed_checks:
+        blocker_class = "PREFLIGHT_VALIDATE_PARAMS"
+    elif "anchor_health" in failed_checks:
+        blocker_class = "PREFLIGHT_ANCHOR_HEALTH"
+    elif "scheduler_validate_only" in failed_checks:
+        blocker_class = "PREFLIGHT_SCHEDULER"
+    elif "ops_status" in failed_checks:
+        blocker_class = "PREFLIGHT_OPS_STATUS"
+    else:
+        blocker_class = "PREFLIGHT_UNKNOWN"
+    return {
+        "blocker_class": blocker_class,
+        "failed_checks": failed_checks,
+    }
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -86,6 +196,49 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _discover_shipping_backlog_latest(project_root: Path, as_of: str) -> dict[str, Any]:
+    report_dir = project_root / "reports" / "kaspi_pending_backlog" / as_of
+    base = {
+        "present": False,
+        "scope": "",
+        "json_path": "",
+        "md_path": "",
+        "initial_overdue_pending": 0,
+        "initial_stale_pending": 0,
+        "remaining_overdue_pending": 0,
+        "remaining_stale_pending": 0,
+    }
+    if not report_dir.exists():
+        return base
+
+    candidates = sorted(report_dir.glob("ship_orders_backlog_*_latest.json"))
+    if not candidates:
+        return base
+    preferred = next((path for path in candidates if "ALL_STORES_latest.json" in path.name), None)
+    latest_json = preferred or max(candidates, key=lambda path: path.stat().st_mtime)
+    latest_md = latest_json.with_suffix(".md")
+
+    try:
+        payload = _load_json(latest_json)
+    except Exception as exc:
+        out = dict(base)
+        out["error"] = f"failed to parse shipping backlog report: {exc}"
+        return out
+
+    initial_summary = ((payload.get("initial") or {}).get("summary") or {})
+    remaining_summary = ((payload.get("remaining") or {}).get("summary") or {})
+    return {
+        "present": True,
+        "scope": str(payload.get("store_scope") or ""),
+        "json_path": str(latest_json),
+        "md_path": str(latest_md),
+        "initial_overdue_pending": int(initial_summary.get("overdue_pending", 0) or 0),
+        "initial_stale_pending": int(initial_summary.get("stale_pending", 0) or 0),
+        "remaining_overdue_pending": int(remaining_summary.get("overdue_pending", 0) or 0),
+        "remaining_stale_pending": int(remaining_summary.get("stale_pending", 0) or 0),
+    }
 
 
 def _render_markdown(report: dict[str, Any]) -> str:
@@ -100,8 +253,28 @@ def _render_markdown(report: dict[str, Any]) -> str:
         f"- total_duration_sec: `{report['total_duration_sec']}`",
         f"- red_stores: `{','.join(report.get('red_stores', []))}`",
         "",
-        "## Steps",
+        "## Shipping Backlog",
     ]
+    shipping_backlog = report.get("shipping_backlog_latest") or {}
+    if shipping_backlog.get("present"):
+        lines.extend(
+            [
+                f"- scope: `{shipping_backlog.get('scope', '')}`",
+                f"- initial_overdue_pending: `{shipping_backlog.get('initial_overdue_pending', 0)}`",
+                f"- initial_stale_pending: `{shipping_backlog.get('initial_stale_pending', 0)}`",
+                f"- remaining_overdue_pending: `{shipping_backlog.get('remaining_overdue_pending', 0)}`",
+                f"- remaining_stale_pending: `{shipping_backlog.get('remaining_stale_pending', 0)}`",
+                f"- report_md: `{shipping_backlog.get('md_path', '')}`",
+            ]
+        )
+    else:
+        lines.append("- present: `False`")
+    lines.extend(
+        [
+            "",
+        "## Steps",
+        ]
+    )
     for row in report["steps"]:
         status = "OK" if row["ok"] else "FAIL"
         allow = " (allowed)" if row.get("allow_failure") and row["rc"] != 0 else ""
@@ -132,6 +305,14 @@ def run_kaspi_daily_ops(
     if profile not in PROFILE_CONFIG:
         raise RuntimeError(f"unknown daily ops profile: {profile}")
     profile_cfg = PROFILE_CONFIG[profile]
+    try:
+        as_of_date = date.fromisoformat(as_of)
+    except ValueError:
+        as_of_date = date.today()
+    historical_future_allowance = max(0, (date.today() - as_of_date).days)
+    env_future_allowance = int(os.environ.get("AB_CRM_WORKBOOK_MAX_FUTURE_CONTENT_DAYS", "0"))
+    max_future_content_days = max(env_future_allowance, historical_future_allowance)
+
     stores_cfg_path = Path(stores_config) if stores_config else (root / "config" / "stores.yaml")
     stores = load_active_store_codes(stores_cfg_path)
     allowed = {store.upper() for store in allow_store_failures}
@@ -174,19 +355,20 @@ def run_kaspi_daily_ops(
         cmd: str,
         allow_failure: bool = False,
         cache_key: str | None = None,
-    ) -> bool:
+    ) -> tuple[bool, int, str]:
         if step in checkpoint_rows:
             prev = checkpoint_rows[step]
-            return _append_step(
+            ok = _append_step(
                 steps=steps,
                 step=step,
                 cmd=cmd,
                 rc=int(prev.get("rc", 0)),
-                output=str(prev.get("summary", "")),
+                output=str(prev.get("output", prev.get("summary", ""))),
                 duration_sec=0.0,
                 allow_failure=allow_failure,
                 from_checkpoint=True,
             )
+            return ok, int(prev.get("rc", 0)), str(prev.get("output", prev.get("summary", "")))
 
         cache_path = None
         if enable_cache and cache_key:
@@ -195,7 +377,7 @@ def run_kaspi_daily_ops(
             if cache_path.exists():
                 cached_payload = _load_json(cache_path)
                 if str(cached_payload.get("cmd", "")) == cmd:
-                    return _append_step(
+                    ok = _append_step(
                         steps=steps,
                         step=step,
                         cmd=cmd,
@@ -205,6 +387,7 @@ def run_kaspi_daily_ops(
                         allow_failure=allow_failure,
                         from_cache=True,
                     )
+                    return ok, int(cached_payload.get("rc", 1)), str(cached_payload.get("output", ""))
 
         step_started = time.perf_counter()
         rc, output = run(cmd, root)
@@ -225,6 +408,7 @@ def run_kaspi_daily_ops(
             "rc": int(rc),
             "ok": bool(ok),
             "summary": output.splitlines()[-1] if output else "",
+            "output": output,
             "duration_sec": float(duration),
             "allow_failure": bool(allow_failure),
         }
@@ -242,7 +426,7 @@ def run_kaspi_daily_ops(
                     "profile": profile,
                 },
             )
-        return ok
+        return ok, rc, output
 
     static_checks = [
         (
@@ -255,7 +439,12 @@ def run_kaspi_daily_ops(
         ),
         (
             "anchor_health",
-            f"python3 scripts/check_anchor_health.py --project-root {shlex.quote(str(root))} --as-of {shlex.quote(as_of)}",
+            (
+                "python3 scripts/check_anchor_health.py "
+                f"--project-root {shlex.quote(str(root))} "
+                f"--as-of {shlex.quote(as_of)} "
+                f"--max-future-content-days {max_future_content_days}"
+            ),
         ),
         (
             "ops_status",
@@ -263,12 +452,20 @@ def run_kaspi_daily_ops(
         ),
         (
             "shipment_preflight",
-            f"python3 scripts/preflight_shipment.py --project-root {shlex.quote(str(root))}",
+            (
+                "python3 scripts/preflight_shipment.py "
+                f"--project-root {shlex.quote(str(root))} "
+                f"--as-of {shlex.quote(as_of)}"
+            ),
         ),
     ]
 
+    preflight_blocker = {"blocker_class": "GREEN", "failed_checks": []}
     for step, cmd in static_checks:
-        if not _record_step(step=step, cmd=cmd):
+        ok, rc, output = _record_step(step=step, cmd=cmd)
+        if step == "shipment_preflight":
+            preflight_blocker = classify_preflight_blocker(output)
+        if not ok:
             overall_ok = False
 
     for store in stores:
@@ -280,21 +477,22 @@ def run_kaspi_daily_ops(
         )
         allow_failure = store in allowed
         step_name = f"waybill_status_{store}"
-        if not _record_step(
+        ok, rc, output = _record_step(
             step=step_name,
             cmd=cmd,
             allow_failure=allow_failure,
             cache_key=step_name,
-        ):
+        )
+        if not ok:
             overall_ok = False
-        current = steps[-1]
         store_results[store] = {
-            "ok": bool(current["ok"]),
-            "rc": int(current["rc"]),
+            "ok": bool(ok),
+            "rc": int(rc),
             "allow_failure": bool(allow_failure),
-            "from_checkpoint": bool(current.get("from_checkpoint", False)),
-            "from_cache": bool(current.get("from_cache", False)),
-            "summary": str(current.get("summary", "")),
+            "from_checkpoint": bool(steps[-1].get("from_checkpoint", False)),
+            "from_cache": bool(steps[-1].get("from_cache", False)),
+            "summary": str(steps[-1].get("summary", "")),
+            **classify_store_blocker(store, rc, output),
         }
 
     drift_commands = [
@@ -308,7 +506,8 @@ def run_kaspi_daily_ops(
         ),
     ]
     for step, cmd in drift_commands:
-        if not _record_step(step=step, cmd=cmd):
+        ok, _rc, _output = _record_step(step=step, cmd=cmd)
+        if not ok:
             overall_ok = False
 
     run_dir = output_root / as_of
@@ -326,6 +525,7 @@ def run_kaspi_daily_ops(
         "stores": stores,
         "store_results": store_results,
         "red_stores": sorted([store for store, meta in store_results.items() if not bool(meta.get("ok", False))]),
+        "preflight_blocker": preflight_blocker,
         "allow_store_failures": sorted(allowed),
         "checkpoint_path": str(checkpoint),
         "resume": bool(resume),
@@ -334,6 +534,7 @@ def run_kaspi_daily_ops(
         "ok": bool(overall_ok),
         "exit_code": 0 if overall_ok else 1,
         "total_duration_sec": round(time.perf_counter() - started, 3),
+        "shipping_backlog_latest": _discover_shipping_backlog_latest(root, as_of),
         "steps": steps,
         "summary_json": str(summary_json),
         "summary_md": str(summary_md),

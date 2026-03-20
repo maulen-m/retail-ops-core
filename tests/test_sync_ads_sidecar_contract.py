@@ -32,6 +32,7 @@ def _init_ads_db(path: Path) -> None:
             campaign_name TEXT,
             sku_key TEXT,
             json_merchant_sku TEXT,
+            assisted_products TEXT,
             cost REAL
         );
         """

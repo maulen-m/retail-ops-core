@@ -88,10 +88,11 @@ def _write_bank(path: Path) -> None:
     )
 
 
-def test_business_insides_sales_parity_passes_on_fresh_window(tmp_path: Path) -> None:
+def test_business_insides_sales_parity_passes_on_fresh_window(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "app.db"
     bank_path = tmp_path / "bank_accounts.yaml"
     output_dir = tmp_path / "business_insides"
+    monkeypatch.setenv("AB_ARCHIVE_ORDERS_GLOBS", str(tmp_path / "missing_archive_*.xlsx"))
     _init_db(db_path, max_sale_date="2026-02-08")
     _write_bank(bank_path)
     generate_business_insides(
@@ -99,6 +100,7 @@ def test_business_insides_sales_parity_passes_on_fresh_window(tmp_path: Path) ->
         bank_accounts_path=bank_path,
         as_of="2026-02-08",
         output_dir=output_dir,
+        archive_orders_globs=[],
     )
 
     report = validate_business_insides_sales_parity(
@@ -114,10 +116,11 @@ def test_business_insides_sales_parity_passes_on_fresh_window(tmp_path: Path) ->
     assert report["status"] == "PASS"
 
 
-def test_business_insides_sales_parity_fails_on_stale_truth(tmp_path: Path) -> None:
+def test_business_insides_sales_parity_fails_on_stale_truth(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "app.db"
     bank_path = tmp_path / "bank_accounts.yaml"
     output_dir = tmp_path / "business_insides"
+    monkeypatch.setenv("AB_ARCHIVE_ORDERS_GLOBS", str(tmp_path / "missing_archive_*.xlsx"))
     _init_db(db_path, max_sale_date="2026-02-08")
     _write_bank(bank_path)
     generate_business_insides(
@@ -125,6 +128,7 @@ def test_business_insides_sales_parity_fails_on_stale_truth(tmp_path: Path) -> N
         bank_accounts_path=bank_path,
         as_of="2026-02-20",
         output_dir=output_dir,
+        archive_orders_globs=[],
     )
 
     with pytest.raises(RuntimeError, match="business_insides sales parity validation failed"):

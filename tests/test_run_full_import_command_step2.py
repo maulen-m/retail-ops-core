@@ -44,7 +44,9 @@ def test_step2_uses_unattended_safe_xlwings_first_mode():
     # Keep no-gui unattended mode and do not rely on env-side toggles.
     assert "--strict-excel" not in flags
     assert "CRM_OPENPYXL_APPEND_FALLBACK=1" not in step2_block
-    assert "--refresh-delivery-fees" not in flags
+    assert 'REFRESH_DELIVERY_FEES="${KASPI_REFRESH_DELIVERY_FEES:-1}"' in text
+    assert 'REFRESH_DELIVERY_FLAGS="--refresh-delivery-fees --refresh-fees-from ${REFRESH_FEES_FROM} --refresh-fees-to ${REFRESH_FEES_TO}"' in text
+    assert "${REFRESH_DELIVERY_FLAGS}" in step2_block
 
 
 def test_step2_append_timeout_default_is_not_overly_aggressive():
@@ -75,6 +77,15 @@ def test_step2b_validation_is_skipped_in_no_update_mode():
     text = script_path.read_text(encoding="utf-8")
     assert "STEP2_NO_UPDATE=1" in text
     assert "NO-OP: skipping pending order validation in --no-update mode." in text
+
+
+def test_step2_propagates_include_overdue_date_window_flags():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    step2_block = _extract_step2_block(text)
+    assert 'IMPORT_DATE_FLAGS=""' in text
+    assert 'IMPORT_DATE_FLAGS="--include-overdue --overdue-lookback-days ${LOOKBACK_DAYS}"' in text
+    assert "${IMPORT_DATE_FLAGS}" in step2_block
 
 
 def test_post_import_runs_machine_readable_health_report_and_gate():

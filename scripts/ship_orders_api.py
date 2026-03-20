@@ -13,9 +13,11 @@ Usage:
     python scripts/ship_orders_api.py --verbose
     python scripts/ship_orders_api.py --dry-run
     python scripts/ship_orders_api.py --store UNIVERSAL
+    python scripts/ship_orders_api.py --today-only
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -36,6 +38,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db import DEFAULT_DB_PATH, get_db
 from core.paths import data_path, get_data_root
+from core.utils.kaspi_dates import parse_kaspi_date
 from core.integrations.kaspi_api_client import (
     APIResponse,
     KaspiAPIClient,
@@ -195,36 +198,8 @@ def resolve_db_path(explicit: Optional[Path]) -> Optional[Path]:
 
 
 def parse_date(value: Any) -> Optional[date]:
-    """Parse date from various formats."""
-    if pd.isna(value) or value is None:
-        return None
-
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-
-    value_str = str(value).strip()
-
-    # DD.MM.YYYY format
-    try:
-        return datetime.strptime(value_str, "%d.%m.%Y").date()
-    except ValueError:
-        pass
-
-    # YYYY-MM-DD format
-    try:
-        return datetime.strptime(value_str, "%Y-%m-%d").date()
-    except ValueError:
-        pass
-
-    # Try pandas
-    try:
-        return pd.to_datetime(value, dayfirst=True).date()
-    except (ValueError, TypeError):
-        pass
-
-    return None
+    """Parse mixed CRM/DB date values without flipping ISO month/day order."""
+    return parse_kaspi_date(value)
 
 
 def _timestamp_to_date(ts: Optional[int]) -> Optional[date]:
@@ -510,6 +485,8 @@ def get_pending_assembly_orders(
     *,
     store_codes: Optional[set[str]] = None,
     fallback_since_days: int = 30,
+    include_overdue: bool = False,
+    overdue_lookback_days: Optional[int] = None,
 ) -> tuple[
     dict[str, set[str]],
     dict[str, dict[str, str]],
@@ -588,8 +565,19 @@ def get_pending_assembly_orders(
                 order_code = attrs.get("code", "")
                 base64_id = order.get("id", "")
                 planned_date = _planned_date_from_order(order)
-                if target_date and planned_date != target_date:
-                    continue
+                if target_date:
+                    if include_overdue:
+                        min_date: Optional[date] = None
+                        if overdue_lookback_days is not None:
+                            min_date = target_date - timedelta(days=max(int(overdue_lookback_days), 0))
+                        if (
+                            planned_date is None
+                            or planned_date > target_date
+                            or (min_date is not None and planned_date < min_date)
+                        ):
+                            continue
+                    elif planned_date != target_date:
+                        continue
                 if order_code:
                     order_ids.add(order_code)
                     if base64_id:
@@ -651,6 +639,249 @@ def summarize_pending_backlog(
         "stale_pending": stale_pending,
         "stale_orders": stale_orders,
     }
+
+
+def print_pending_backlog(label: str, backlog: dict[str, Any]) -> None:
+    """Emit a compact backlog summary with a small stale-order sample."""
+    print(f"\n{label}")
+    print(
+        "  Pending backlog: "
+        f"total={backlog.get('total_pending', 0)} "
+        f"overdue={backlog.get('overdue_pending', 0)} "
+        f"stale={backlog.get('stale_pending', 0)}"
+    )
+    stale_orders = backlog.get("stale_orders") or []
+    if stale_orders:
+        print("  Oldest stale pending orders:")
+        for row in stale_orders[:5]:
+            planned = row.get("planned_date") or "unknown"
+            created_at = row.get("created_at") or "unknown"
+            age_hours = row.get("age_hours")
+            print(
+                f"    - {row.get('store_code')} {row.get('order_id')} | "
+                f"planned={planned} | created={created_at} | age_hours={age_hours}"
+            )
+        if len(stale_orders) > 5:
+            print(f"    ... and {len(stale_orders) - 5} more")
+
+
+def _serialize_backlog_date(value: Any) -> Optional[str]:
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    if isinstance(value, date):
+        return value.isoformat()
+    return None
+
+
+def _overdue_age_bucket(days_overdue: int) -> str:
+    if days_overdue <= 1:
+        return "1d"
+    if days_overdue <= 3:
+        return "2-3d"
+    if days_overdue <= 7:
+        return "4-7d"
+    return "8d+"
+
+
+def build_pending_backlog_report(
+    pending_meta_by_store: dict[str, dict[str, dict[str, Any]]],
+    *,
+    target_date: date,
+    stale_hours: int = 24,
+    now_dt: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Build a detailed backlog payload with age buckets and exact overdue IDs."""
+    now_dt = now_dt or datetime.now(ALMATY_TZ).replace(tzinfo=None)
+    summary = summarize_pending_backlog(
+        pending_meta_by_store=pending_meta_by_store,
+        target_date=target_date,
+        stale_hours=stale_hours,
+        now_dt=now_dt,
+    )
+    age_buckets: dict[str, int] = defaultdict(int)
+    pending_rows: list[dict[str, Any]] = []
+    overdue_rows: list[dict[str, Any]] = []
+
+    for store_code in sorted(pending_meta_by_store):
+        store_rows = pending_meta_by_store.get(store_code) or {}
+        for order_id in sorted(store_rows):
+            meta = store_rows.get(order_id) or {}
+            planned_date = meta.get("planned_date")
+            created_at = meta.get("created_at")
+            days_overdue = None
+            if isinstance(planned_date, date):
+                days_overdue = max((now_dt.date() - planned_date).days, 0)
+            age_hours = None
+            if isinstance(created_at, datetime):
+                age_hours = round((now_dt - created_at).total_seconds() / 3600, 1)
+            row = {
+                "store_code": store_code,
+                "order_id": order_id,
+                "planned_date": _serialize_backlog_date(planned_date),
+                "created_at": _serialize_backlog_date(created_at),
+                "days_overdue": days_overdue,
+                "age_hours": age_hours,
+                "fetch_mode": meta.get("fetch_mode"),
+            }
+            pending_rows.append(row)
+            if days_overdue and days_overdue > 0:
+                age_buckets[_overdue_age_bucket(days_overdue)] += 1
+                overdue_rows.append(row)
+
+    overdue_rows.sort(
+        key=lambda row: (
+            -(row.get("days_overdue") or 0),
+            -(row.get("age_hours") or 0.0),
+            row.get("store_code") or "",
+            row.get("order_id") or "",
+        )
+    )
+    return {
+        "generated_at": now_dt.isoformat(sep=" "),
+        "target_date": target_date.isoformat(),
+        "stale_hours": stale_hours,
+        "summary": summary,
+        "age_buckets": dict(age_buckets),
+        "pending_orders": pending_rows,
+        "overdue_orders": overdue_rows,
+    }
+
+
+def _render_pending_backlog_report_md(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Pending Assembly Backlog Report",
+        "",
+        f"- Generated: {payload.get('generated_at')}",
+        f"- Target date: {payload.get('target_date')}",
+        f"- Scope: {payload.get('store_scope')}",
+        f"- Mode: {'DRY_RUN' if payload.get('dry_run') else 'LIVE'}",
+        f"- Include overdue: {payload.get('include_overdue')}",
+        f"- Overdue lookback days: {payload.get('overdue_lookback_days')}",
+        "",
+    ]
+    for label, section in (("Initial", payload.get("initial")), ("Remaining", payload.get("remaining"))):
+        if not section:
+            continue
+        summary = section.get("summary") or {}
+        lines.extend(
+            [
+                f"## {label} Snapshot",
+                "",
+                f"- Total pending: {summary.get('total_pending', 0)}",
+                f"- Overdue pending: {summary.get('overdue_pending', 0)}",
+                f"- Stale pending: {summary.get('stale_pending', 0)}",
+            ]
+        )
+        age_buckets = section.get("age_buckets") or {}
+        if age_buckets:
+            lines.append(f"- Overdue age buckets: {json.dumps(age_buckets, ensure_ascii=False, sort_keys=True)}")
+        lines.extend(["", "### Exact Pending Orders", ""])
+        pending_rows = section.get("pending_orders") or []
+        if pending_rows:
+            lines.extend(
+                [
+                    "| Store | Order ID | Planned | Days Overdue | Created | Age Hours | Fetch Mode |",
+                    "|---|---|---|---:|---|---:|---|",
+                ]
+            )
+            for row in pending_rows:
+                lines.append(
+                    "| {store} | {order} | {planned} | {days} | {created} | {hours} | {mode} |".format(
+                        store=row.get("store_code") or "",
+                        order=row.get("order_id") or "",
+                        planned=row.get("planned_date") or "",
+                        days=row.get("days_overdue") or 0,
+                        created=row.get("created_at") or "",
+                        hours=row.get("age_hours") or 0,
+                        mode=row.get("fetch_mode") or "",
+                    )
+                )
+        else:
+            lines.append("None.")
+        lines.extend(["", "### Exact Overdue Orders", ""])
+        overdue_rows = section.get("overdue_orders") or []
+        if overdue_rows:
+            lines.extend(
+                [
+                    "| Store | Order ID | Planned | Days Overdue | Created | Age Hours | Fetch Mode |",
+                    "|---|---|---|---:|---|---:|---|",
+                ]
+            )
+            for row in overdue_rows:
+                lines.append(
+                    "| {store} | {order} | {planned} | {days} | {created} | {hours} | {mode} |".format(
+                        store=row.get("store_code") or "",
+                        order=row.get("order_id") or "",
+                        planned=row.get("planned_date") or "",
+                        days=row.get("days_overdue") or 0,
+                        created=row.get("created_at") or "",
+                        hours=row.get("age_hours") or 0,
+                        mode=row.get("fetch_mode") or "",
+                    )
+                )
+        else:
+            lines.append("None.")
+        lines.extend(["", "### Exact Stale Orders", ""])
+        stale_rows = summary.get("stale_orders") or []
+        if stale_rows:
+            lines.extend(
+                [
+                    "| Store | Order ID | Planned | Created | Age Hours |",
+                    "|---|---|---|---|---:|",
+                ]
+            )
+            for row in stale_rows:
+                lines.append(
+                    "| {store} | {order} | {planned} | {created} | {hours} |".format(
+                        store=row.get("store_code") or "",
+                        order=row.get("order_id") or "",
+                        planned=row.get("planned_date") or "",
+                        created=row.get("created_at") or "",
+                        hours=row.get("age_hours") or 0,
+                    )
+                )
+        else:
+            lines.append("None.")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_pending_backlog_report(
+    *,
+    target_date: date,
+    store_scope: str,
+    dry_run: bool,
+    include_overdue: bool,
+    overdue_lookback_days: Optional[int],
+    initial_report: dict[str, Any],
+    remaining_report: Optional[dict[str, Any]] = None,
+    output_root: Optional[Path] = None,
+) -> tuple[Path, Path]:
+    """Write JSON + Markdown backlog reports for audit visibility."""
+    timestamp = datetime.now(ALMATY_TZ).strftime("%Y%m%d_%H%M%S")
+    base_dir = output_root or data_path("reports", "kaspi_pending_backlog", target_date.isoformat())
+    base_dir.mkdir(parents=True, exist_ok=True)
+    scope_slug = (store_scope or "ALL_STORES").replace("-", "_").replace(" ", "_")
+    payload = {
+        "generated_at": datetime.now(ALMATY_TZ).isoformat(sep=" "),
+        "target_date": target_date.isoformat(),
+        "store_scope": store_scope or "ALL_STORES",
+        "dry_run": dry_run,
+        "include_overdue": include_overdue,
+        "overdue_lookback_days": overdue_lookback_days,
+        "initial": initial_report,
+        "remaining": remaining_report,
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n"
+    json_path = base_dir / f"ship_orders_backlog_{scope_slug}_{timestamp}.json"
+    md_path = base_dir / f"ship_orders_backlog_{scope_slug}_{timestamp}.md"
+    json_path.write_text(payload_json, encoding="utf-8")
+    md_path.write_text(_render_pending_backlog_report_md(payload), encoding="utf-8")
+    latest_json = base_dir / f"ship_orders_backlog_{scope_slug}_latest.json"
+    latest_md = base_dir / f"ship_orders_backlog_{scope_slug}_latest.md"
+    latest_json.write_text(payload_json, encoding="utf-8")
+    latest_md.write_text(_render_pending_backlog_report_md(payload), encoding="utf-8")
+    return json_path, md_path
 
 
 def derive_dynamic_since_days(
@@ -998,6 +1229,27 @@ def main() -> int:
         help='Days to look back in API (default: 7)'
     )
     parser.add_argument(
+        '--include-overdue',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            'Include overdue pending assembly orders within --overdue-lookback-days '
+            '(default: on). Use --no-include-overdue or --today-only for strict '
+            'current-day only mode.'
+        ),
+    )
+    parser.add_argument(
+        '--today-only',
+        action='store_true',
+        help='Strict current-day mode: exclude overdue pending assembly orders.',
+    )
+    parser.add_argument(
+        '--overdue-lookback-days',
+        type=int,
+        default=None,
+        help='Lookback window for overdue carry-forward. Defaults to --since-days when omitted.',
+    )
+    parser.add_argument(
         '--dry-run',
         action='store_true',
         help='Preview only, do not call API'
@@ -1023,6 +1275,10 @@ def main() -> int:
         target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
     else:
         target_date = datetime.now(ALMATY_TZ).date()
+    include_overdue = bool(args.include_overdue) and not bool(args.today_only)
+    overdue_lookback_days = args.overdue_lookback_days
+    if include_overdue and overdue_lookback_days is None:
+        overdue_lookback_days = args.since_days
 
     print("=" * 60)
     print("  Kaspi Order Shipping (Set Package Count)")
@@ -1030,6 +1286,11 @@ def main() -> int:
     print(f"  Data root: {get_data_root()}")
     print(f"  CRM file: {args.crm_file}")
     print(f"  Target date: {target_date}")
+    if include_overdue:
+        lookback_label = overdue_lookback_days if overdue_lookback_days is not None else "all"
+        print(f"  Date mode: planned <= target (lookback {lookback_label}d)")
+    else:
+        print("  Date mode: planned == target only")
     if args.store:
         print(f"  Store filter: {args.store}")
     if args.dry_run:
@@ -1042,10 +1303,12 @@ def main() -> int:
     if args.store:
         selected_code = STORE_NAME_TO_API_CODE.get(args.store, args.store.upper())
         selected_store_codes = {selected_code}
-    pending_orders, order_id_to_base64, _planned_map, _pending_meta = get_pending_assembly_orders(
+    pending_orders, order_id_to_base64, _planned_map, pending_meta = get_pending_assembly_orders(
         target_date=target_date,
         since_days=args.since_days,
         store_codes=selected_store_codes,
+        include_overdue=include_overdue,
+        overdue_lookback_days=overdue_lookback_days,
     )
 
     total_pending = sum(len(ids) for ids in pending_orders.values())
@@ -1054,6 +1317,11 @@ def main() -> int:
         return 0
 
     print(f"  Found {total_pending} orders pending assembly across all stores")
+    initial_backlog = build_pending_backlog_report(
+        pending_meta,
+        target_date=target_date,
+    )
+    print_pending_backlog("  Initial backlog snapshot...", initial_backlog["summary"])
 
     all_pending = set()
     for order_ids in pending_orders.values():
@@ -1199,6 +1467,40 @@ def main() -> int:
 
     if args.dry_run:
         print("\n  [DRY RUN] No API calls were made.")
+        remaining_backlog = None
+    else:
+        remaining_pending, _remaining_base64, _remaining_planned, remaining_meta = get_pending_assembly_orders(
+            target_date=target_date,
+            since_days=args.since_days,
+            store_codes=selected_store_codes,
+            include_overdue=include_overdue,
+            overdue_lookback_days=overdue_lookback_days,
+        )
+        remaining_backlog = build_pending_backlog_report(
+            remaining_meta,
+            target_date=target_date,
+        )
+        remaining_total = sum(len(ids) for ids in remaining_pending.values())
+        result["remaining_pending"] = remaining_total
+        result["remaining_overdue_pending"] = int(remaining_backlog["summary"].get("overdue_pending", 0))
+        result["remaining_stale_pending"] = int(remaining_backlog["summary"].get("stale_pending", 0))
+        result["remaining_backlog"] = remaining_backlog
+        print_pending_backlog("  Remaining backlog after shipping...", remaining_backlog["summary"])
+
+    report_json, report_md = write_pending_backlog_report(
+        target_date=target_date,
+        store_scope=args.store or "ALL_STORES",
+        dry_run=bool(args.dry_run),
+        include_overdue=include_overdue,
+        overdue_lookback_days=overdue_lookback_days,
+        initial_report=initial_backlog,
+        remaining_report=remaining_backlog,
+    )
+    result["backlog_report_json"] = str(report_json)
+    result["backlog_report_md"] = str(report_md)
+    print(f"  Backlog report (md): {report_md}")
+    print(f"  Backlog report (json): {report_json}")
+
     health = classify_ship_health(result)
     print(f"  Health: {health.code} ({health.message})")
     return health.exit_code

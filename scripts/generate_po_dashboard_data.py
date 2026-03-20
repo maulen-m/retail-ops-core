@@ -403,6 +403,31 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
+def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({name})").fetchall()}
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    if row is None:
+        return default
+    try:
+        if key in row.keys():
+            return row[key]
+    except Exception:
+        return default
+    return default
+
+
+def _to_float_or_none(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return number
+
+
 def _po_line_has_part_rows(conn: sqlite3.Connection, po_id: str) -> bool:
     row = conn.execute(
         """
@@ -2300,9 +2325,33 @@ def load_po_orders(
         ).fetchone()
         part_meta = None
         if po_part_id and _table_exists(conn, "po_part"):
+            part_cols = _table_columns(conn, "po_part")
+            select_cols = [
+                "po_part_id",
+                "po_id",
+                "message_date",
+                "cargo_send_date",
+                "status",
+                "est_weight_kg",
+                "total_bags",
+            ]
+            for col in (
+                "cargo_freight_id",
+                "actual_dlv_pay_date",
+                "actual_weight_kg",
+                "paid_dlv_usd",
+                "paid_dlv_kzt",
+                "final_usd_per_kg",
+                "usd_kzt_rate",
+                "actual_dlv_days",
+            ):
+                if col in part_cols:
+                    select_cols.append(col)
+                else:
+                    select_cols.append(f"NULL AS {col}")
             part_meta = conn.execute(
-                """
-                SELECT po_part_id, po_id, message_date, cargo_send_date, status, est_weight_kg, total_bags
+                f"""
+                SELECT {", ".join(select_cols)}
                 FROM po_part
                 WHERE po_part_id = ?
                 """,
@@ -2355,7 +2404,16 @@ def load_po_orders(
             "ship_date_cargo": (part_meta["cargo_send_date"] if part_meta else None) or (header["ship_date_cargo"] if header else None),
             "status": (part_meta["status"] if part_meta else None) or (header["status"] if header else None),
             "weight_nom_kg": (part_meta["est_weight_kg"] if part_meta else None) or (header["weight_nom_kg"] if header else None),
+            "weight_real_kg": (part_meta["actual_weight_kg"] if part_meta else None),
             "total_places": (part_meta["total_bags"] if part_meta else None) or (header["total_places"] if header else None),
+            "cargo_freight_id": (part_meta["cargo_freight_id"] if part_meta else None),
+            "actual_dlv_pay_date": (part_meta["actual_dlv_pay_date"] if part_meta else None),
+            "actual_weight_kg": (part_meta["actual_weight_kg"] if part_meta else None),
+            "paid_dlv_usd": (part_meta["paid_dlv_usd"] if part_meta else None),
+            "paid_dlv_kzt": (part_meta["paid_dlv_kzt"] if part_meta else None),
+            "final_usd_per_kg": (part_meta["final_usd_per_kg"] if part_meta else None),
+            "usd_kzt_rate": (part_meta["usd_kzt_rate"] if part_meta else None),
+            "actual_dlv_days": (part_meta["actual_dlv_days"] if part_meta else None),
             "orders_by_sku": orders_by_sku,
             "orders_by_sku_parts": normalized_parts,
         }
@@ -2497,6 +2555,34 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
                 parent_po_id = str(part["po_id"] or "").strip()
                 header = header_map.get(parent_po_id)
                 status = str(part["status"] or (header["status"] if header else "") or "").upper()
+                est_weight_kg = _to_float_or_none(_row_value(part, "est_weight_kg"))
+                actual_weight_kg = _to_float_or_none(_row_value(part, "actual_weight_kg"))
+                use_actual_weight = status == "RECEIVED" and (actual_weight_kg or 0.0) > 0
+                weight_nom_kg = actual_weight_kg if use_actual_weight else (
+                    est_weight_kg if est_weight_kg is not None else (header["weight_nom_kg"] if header else None)
+                )
+                weight_real_kg = (
+                    actual_weight_kg
+                    if actual_weight_kg is not None
+                    else (header["weight_real_kg"] if header and "weight_real_kg" in header.keys() else None)
+                )
+
+                usd_kzt_rate = _to_float_or_none(_row_value(part, "usd_kzt_rate"))
+                paid_dlv_usd = _to_float_or_none(_row_value(part, "paid_dlv_usd"))
+                paid_dlv_kzt = _to_float_or_none(_row_value(part, "paid_dlv_kzt"))
+                final_usd_per_kg = _to_float_or_none(_row_value(part, "final_usd_per_kg"))
+                dlv_total_usd = paid_dlv_usd
+                dlv_total_kzt = paid_dlv_kzt
+                if status == "RECEIVED":
+                    if dlv_total_usd is None and final_usd_per_kg is not None:
+                        weight_for_dlv = actual_weight_kg if (actual_weight_kg or 0.0) > 0 else est_weight_kg
+                        if (weight_for_dlv or 0.0) > 0:
+                            dlv_total_usd = final_usd_per_kg * weight_for_dlv
+                    if dlv_total_usd is None and dlv_total_kzt is not None and (usd_kzt_rate or 0.0) > 0:
+                        dlv_total_usd = dlv_total_kzt / usd_kzt_rate
+                    if dlv_total_kzt is None and dlv_total_usd is not None and (usd_kzt_rate or 0.0) > 0:
+                        dlv_total_kzt = dlv_total_usd * usd_kzt_rate
+                dlv_basis = "actual" if status == "RECEIVED" and (dlv_total_usd is not None or dlv_total_kzt is not None) else "estimated"
 
                 summary = line_summary.get(po_part_id, {})
                 units_total = int(part["total_units"] or summary.get("units_total", 0) or 0)
@@ -2519,9 +2605,18 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
                         "ast_arrival_real": part["actual_arrival_date"] or (header["ast_arrival_real"] if header else None),
                         "units_total": units_total,
                         "units_received": units_received,
-                        "weight_nom_kg": part["est_weight_kg"] if part["est_weight_kg"] is not None else (header["weight_nom_kg"] if header else None),
-                        "weight_real_kg": header["weight_real_kg"] if header else None,
+                        "weight_nom_kg": weight_nom_kg,
+                        "weight_real_kg": weight_real_kg,
+                        "po_weight_basis": "actual" if use_actual_weight else "estimated",
                         "total_places": part["total_bags"] if part["total_bags"] is not None else (header["total_places"] if header else None),
+                        "cargo_freight_id": _row_value(part, "cargo_freight_id"),
+                        "actual_dlv_pay_date": _row_value(part, "actual_dlv_pay_date"),
+                        "actual_dlv_days": _row_value(part, "actual_dlv_days"),
+                        "paid_dlv_usd": dlv_total_usd,
+                        "paid_dlv_kzt": dlv_total_kzt,
+                        "final_usd_per_kg": final_usd_per_kg,
+                        "usd_kzt_rate": usd_kzt_rate,
+                        "po_dlv_basis": dlv_basis,
                         "total_cost_cny": header["total_cost_cny"] if header else None,
                         "total_cost_kzt_supplier": header["total_cost_kzt_supplier"] if header else None,
                         "total_landed_cost_kzt": header["total_landed_cost_kzt"] if header else None,
@@ -2626,7 +2721,16 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
                 "units_received": int(units_received or 0),
                 "weight_nom_kg": row["weight_nom_kg"],
                 "weight_real_kg": row["weight_real_kg"],
+                "po_weight_basis": "estimated",
                 "total_places": row["total_places"],
+                "cargo_freight_id": None,
+                "actual_dlv_pay_date": None,
+                "actual_dlv_days": None,
+                "paid_dlv_usd": None,
+                "paid_dlv_kzt": None,
+                "final_usd_per_kg": None,
+                "usd_kzt_rate": None,
+                "po_dlv_basis": "estimated",
                 "total_cost_cny": row["total_cost_cny"],
                 "total_cost_kzt_supplier": row["total_cost_kzt_supplier"],
                 "total_landed_cost_kzt": row["total_landed_cost_kzt"],
@@ -2827,6 +2931,14 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
         sku_key = size_line.get("sku_key")
         weight_by_sku[sku_key] = weight_by_sku.get(sku_key, 0.0) + (size_line.get("weight_kg") or 0.0)
 
+    status_norm = str(po_data.get("status") or "").strip().upper()
+    actual_weight_kg = _to_float_or_none(po_data.get("actual_weight_kg"))
+    use_actual_weight = status_norm == "RECEIVED" and (actual_weight_kg or 0.0) > 0
+    weight_basis = "actual" if use_actual_weight else "estimated"
+    ordered_sku_lines: list[dict[str, Any]] = []
+    estimated_weight_total = 0.0
+    ordered_qty_total = 0
+
     for sku_line in base_data.get("sku_level", []):
         sku_key = sku_line.get("sku_key")
         total_qty = int(sku_line.get("po_qty_total") or 0)
@@ -2845,6 +2957,101 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
         sku_line["po_dlv_usd"] = round(po_dlv_usd, 2)
         sku_line["po_dlv_kzt"] = round(po_dlv_usd * fx_rates.usd_kzt, 2)
         sku_line["po_cogs_kzt"] = round(unit_cogs * total_qty, 2)
+        sku_line["po_weight_basis"] = "estimated"
+        sku_line["po_dlv_basis"] = "estimated"
+        if total_qty > 0:
+            ordered_sku_lines.append(sku_line)
+            estimated_weight_total += float(sku_line.get("po_weight_kg") or 0.0)
+            ordered_qty_total += total_qty
+
+    if use_actual_weight and ordered_sku_lines:
+        remaining_weight = round(float(actual_weight_kg or 0.0), 2)
+        for idx, sku_line in enumerate(ordered_sku_lines):
+            qty = int(sku_line.get("po_qty_total") or 0)
+            if estimated_weight_total > 0:
+                share = float(sku_line.get("po_weight_kg") or 0.0) / estimated_weight_total
+            else:
+                share = (qty / ordered_qty_total) if ordered_qty_total > 0 else 0.0
+            if idx == len(ordered_sku_lines) - 1:
+                alloc_weight = max(0.0, remaining_weight)
+            else:
+                alloc_weight = round(float(actual_weight_kg or 0.0) * share, 2)
+                remaining_weight = round(remaining_weight - alloc_weight, 2)
+            sku_line["po_weight_kg"] = round(alloc_weight, 2)
+            sku_line["po_weight_basis"] = "actual"
+
+    usd_kzt_rate_actual = _to_float_or_none(po_data.get("usd_kzt_rate"))
+    if usd_kzt_rate_actual is None or usd_kzt_rate_actual <= 0:
+        usd_kzt_rate_actual = float(fx_rates.usd_kzt or 0.0)
+    paid_dlv_usd = _to_float_or_none(po_data.get("paid_dlv_usd"))
+    paid_dlv_kzt = _to_float_or_none(po_data.get("paid_dlv_kzt"))
+    final_usd_per_kg = _to_float_or_none(po_data.get("final_usd_per_kg"))
+    actual_dlv_usd_total = paid_dlv_usd
+    actual_dlv_kzt_total = paid_dlv_kzt
+    if status_norm == "RECEIVED":
+        if actual_dlv_usd_total is None and final_usd_per_kg is not None:
+            weight_for_dlv = actual_weight_kg if (actual_weight_kg or 0.0) > 0 else _to_float_or_none(po_data.get("weight_nom_kg"))
+            if (weight_for_dlv or 0.0) > 0:
+                actual_dlv_usd_total = final_usd_per_kg * weight_for_dlv
+        if actual_dlv_usd_total is None and actual_dlv_kzt_total is not None and usd_kzt_rate_actual > 0:
+            actual_dlv_usd_total = actual_dlv_kzt_total / usd_kzt_rate_actual
+        if actual_dlv_kzt_total is None and actual_dlv_usd_total is not None and usd_kzt_rate_actual > 0:
+            actual_dlv_kzt_total = actual_dlv_usd_total * usd_kzt_rate_actual
+    use_actual_dlv = status_norm == "RECEIVED" and (
+        actual_dlv_usd_total is not None or actual_dlv_kzt_total is not None
+    )
+    dlv_basis = "actual" if use_actual_dlv else "estimated"
+
+    alloc_weight_total = sum(float(line.get("po_weight_kg") or 0.0) for line in ordered_sku_lines)
+    remaining_dlv_usd = round(float(actual_dlv_usd_total or 0.0), 2) if use_actual_dlv and actual_dlv_usd_total is not None else None
+    remaining_dlv_kzt = round(float(actual_dlv_kzt_total or 0.0), 2) if use_actual_dlv and actual_dlv_kzt_total is not None else None
+    for idx, sku_line in enumerate(ordered_sku_lines):
+        qty = int(sku_line.get("po_qty_total") or 0)
+        if alloc_weight_total > 0:
+            share = float(sku_line.get("po_weight_kg") or 0.0) / alloc_weight_total
+        else:
+            share = (qty / ordered_qty_total) if ordered_qty_total > 0 else 0.0
+
+        if use_actual_dlv:
+            if actual_dlv_usd_total is not None:
+                if idx == len(ordered_sku_lines) - 1:
+                    alloc_dlv_usd = max(0.0, float(remaining_dlv_usd or 0.0))
+                else:
+                    alloc_dlv_usd = round(float(actual_dlv_usd_total) * share, 2)
+                    remaining_dlv_usd = round(float(remaining_dlv_usd or 0.0) - alloc_dlv_usd, 2)
+            else:
+                alloc_dlv_usd = None
+
+            if actual_dlv_kzt_total is not None:
+                if idx == len(ordered_sku_lines) - 1:
+                    alloc_dlv_kzt = max(0.0, float(remaining_dlv_kzt or 0.0))
+                else:
+                    alloc_dlv_kzt = round(float(actual_dlv_kzt_total) * share, 2)
+                    remaining_dlv_kzt = round(float(remaining_dlv_kzt or 0.0) - alloc_dlv_kzt, 2)
+            else:
+                alloc_dlv_kzt = None
+
+            if alloc_dlv_usd is None and alloc_dlv_kzt is not None and usd_kzt_rate_actual > 0:
+                alloc_dlv_usd = round(alloc_dlv_kzt / usd_kzt_rate_actual, 2)
+            if alloc_dlv_kzt is None and alloc_dlv_usd is not None and usd_kzt_rate_actual > 0:
+                alloc_dlv_kzt = round(alloc_dlv_usd * usd_kzt_rate_actual, 2)
+
+            sku_line["po_dlv_usd"] = round(float(alloc_dlv_usd or 0.0), 2)
+            sku_line["po_dlv_kzt"] = round(float(alloc_dlv_kzt or 0.0), 2)
+        else:
+            po_weight = float(sku_line.get("po_weight_kg") or 0.0)
+            po_dlv_usd = po_weight * fx_rates.dlv_rate_usd_kg
+            sku_line["po_dlv_usd"] = round(po_dlv_usd, 2)
+            sku_line["po_dlv_kzt"] = round(po_dlv_usd * fx_rates.usd_kzt, 2)
+
+        sku_line["po_dlv_basis"] = dlv_basis
+
+    ordered_sku_keys = {line.get("sku_key") for line in ordered_sku_lines}
+    for sku_line in base_data.get("sku_level", []):
+        if sku_line.get("sku_key") in ordered_sku_keys:
+            continue
+        sku_line["po_weight_basis"] = weight_basis
+        sku_line["po_dlv_basis"] = dlv_basis
 
     size_horizontal = []
     for sku_line in base_data.get("sku_level", []):
@@ -2885,6 +3092,34 @@ def apply_po_overrides(base_data: dict, po_data: dict, params, fx_rates) -> dict
     base_data["summary"]["total_weight_kg"] = round(
         sum(s.get("po_weight_kg", 0.0) for s in base_data.get("sku_level", [])), 1
     )
+    base_data["summary"]["total_po_base_cost_cny"] = round(
+        sum(float(s.get("po_base_cost_cny", 0.0) or 0.0) for s in base_data.get("sku_level", [])),
+        2,
+    )
+    base_data["summary"]["total_po_base_cost_kzt"] = round(
+        sum(float(s.get("po_base_cost_kzt", 0.0) or 0.0) for s in base_data.get("sku_level", [])),
+        2,
+    )
+    base_data["summary"]["total_po_dlv_usd"] = round(
+        sum(float(s.get("po_dlv_usd", 0.0) or 0.0) for s in base_data.get("sku_level", [])),
+        2,
+    )
+    base_data["summary"]["total_po_dlv_kzt"] = round(
+        sum(float(s.get("po_dlv_kzt", 0.0) or 0.0) for s in base_data.get("sku_level", [])),
+        2,
+    )
+    base_data["summary"]["total_po_cogs_kzt"] = round(
+        sum(float(s.get("po_cogs_kzt", 0.0) or 0.0) for s in base_data.get("sku_level", [])),
+        2,
+    )
+    base_data["summary"]["po_weight_basis"] = weight_basis
+    base_data["summary"]["po_dlv_basis"] = dlv_basis
+    if po_data.get("cargo_freight_id") not in (None, ""):
+        base_data["summary"]["cargo_freight_id"] = po_data.get("cargo_freight_id")
+    if po_data.get("actual_dlv_pay_date") not in (None, ""):
+        base_data["summary"]["actual_dlv_pay_date"] = po_data.get("actual_dlv_pay_date")
+    if po_data.get("actual_dlv_days") not in (None, ""):
+        base_data["summary"]["actual_dlv_days"] = po_data.get("actual_dlv_days")
 
     total_cl_weight = sum(
         s.get("po_weight_kg", 0.0) for s in base_data.get("sku_level", [])
@@ -3212,12 +3447,55 @@ def build_real_archive_data(
         sum(float(row.get("po_weight_kg") or 0.0) for row in sku_rows_all),
         1,
     )
+    summary["total_po_base_cost_cny"] = round(
+        sum(float(row.get("po_base_cost_cny") or 0.0) for row in sku_rows_all),
+        2,
+    )
+    summary["total_po_base_cost_kzt"] = round(
+        sum(float(row.get("po_base_cost_kzt") or 0.0) for row in sku_rows_all),
+        2,
+    )
+    summary["total_po_dlv_usd"] = round(
+        sum(float(row.get("po_dlv_usd") or 0.0) for row in sku_rows_all),
+        2,
+    )
+    summary["total_po_dlv_kzt"] = round(
+        sum(float(row.get("po_dlv_kzt") or 0.0) for row in sku_rows_all),
+        2,
+    )
+    summary["total_po_cogs_kzt"] = round(
+        sum(float(row.get("po_cogs_kzt") or 0.0) for row in sku_rows_all),
+        2,
+    )
+
+    status_norm = str(po_payload.get("status") or "").strip().upper()
+    actual_weight_kg = _to_float_or_none(po_payload.get("actual_weight_kg"))
+    if status_norm == "RECEIVED" and (actual_weight_kg or 0.0) > 0:
+        summary["total_weight_kg"] = round(float(actual_weight_kg or 0.0), 1)
+        summary["po_weight_basis"] = "actual"
+    else:
+        summary["po_weight_basis"] = str(summary.get("po_weight_basis") or "estimated")
 
     if po_payload.get("weight_nom_kg") not in (None, ""):
         try:
-            summary["total_weight_kg"] = round(float(po_payload.get("weight_nom_kg") or 0.0), 1)
+            if summary.get("po_weight_basis") != "actual":
+                summary["total_weight_kg"] = round(float(po_payload.get("weight_nom_kg") or 0.0), 1)
         except (TypeError, ValueError):
             pass
+    if po_payload.get("paid_dlv_usd") not in (None, ""):
+        try:
+            summary["total_po_dlv_usd"] = round(float(po_payload.get("paid_dlv_usd") or 0.0), 2)
+            summary["po_dlv_basis"] = "actual"
+        except (TypeError, ValueError):
+            pass
+    if po_payload.get("paid_dlv_kzt") not in (None, ""):
+        try:
+            summary["total_po_dlv_kzt"] = round(float(po_payload.get("paid_dlv_kzt") or 0.0), 2)
+            summary["po_dlv_basis"] = "actual"
+        except (TypeError, ValueError):
+            pass
+    if "po_dlv_basis" not in summary:
+        summary["po_dlv_basis"] = "estimated"
     if po_payload.get("total_places") not in (None, ""):
         try:
             summary["total_bags"] = int(round(float(po_payload.get("total_places") or 0.0)))
@@ -4220,6 +4498,8 @@ if __name__ == "__main__":
         "generated_at": TODAY.isoformat(),
         "base_stock_date": STOCK_DATE,
         "cutoff_date": DATA_CUTOFF,
+        "production_scope": "OWNER_MONITORING_ONLY",
+        "po_execution_ready": False,
         "day_complete_ok": day_complete_ok,
         "summary": base_summary,
         "pos": all_pos,

@@ -20,11 +20,22 @@ if str(PROJECT_ROOT) not in sys.path:
 DEFAULT_CRM_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
 DEFAULT_INBOUND_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
 DEFAULT_STOCK_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "STOCK_SNAPSHOT_LATEST.xlsx"
+DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
+DEFAULT_WAYBILL_SELECTION_ANCHOR = (
+    PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "waybills"
+)
 DEFAULT_VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
 DEFAULT_MAX_AGE_HOURS = 36.0
 DEFAULT_MAX_FUTURE_SKEW_SECONDS = 120.0
 DEFAULT_MAX_LAG_DAYS = 1
 DEFAULT_MAX_FUTURE_CONTENT_DAYS = 0
+REQUIRED_KASPI_TOKEN_KEYS = (
+    "KASPI_TOKEN_11KZ",
+    "KASPI_TOKEN_MELVIS",
+    "KASPI_TOKEN_STOREB",
+    "KASPI_TOKEN_ACMEWEAR",
+    "KASPI_TOKEN_UNIVERSAL",
+)
 
 
 def _resolve_float(arg_value: float | None, env_key: str, default: float) -> float:
@@ -149,12 +160,55 @@ def _validate_venv_imports(venv_python: Path) -> list[str]:
     return []
 
 
+def _load_env_keys(env_path: Path) -> set[str]:
+    keys: set[str] = set()
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, _value = line.split("=", 1)
+        key = key.strip()
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _validate_env_file(env_path: Path) -> tuple[Path | None, list[str]]:
+    errors: list[str] = []
+    if not env_path.exists() and not env_path.is_symlink():
+        errors.append(f"missing env file: path={env_path}")
+        return None, errors
+    if env_path.is_symlink():
+        try:
+            target = env_path.resolve(strict=True)
+        except FileNotFoundError:
+            errors.append(f"broken env symlink: path={env_path}")
+            return None, errors
+    else:
+        target = env_path.resolve()
+    try:
+        keys = _load_env_keys(target)
+    except Exception as exc:
+        errors.append(f"unable to read env file: path={target} error={exc}")
+        return target, errors
+    missing_keys = [key for key in REQUIRED_KASPI_TOKEN_KEYS if key not in keys]
+    if missing_keys:
+        errors.append("missing required kaspi token keys: " + ", ".join(missing_keys))
+    return target, errors
+
+
 def check_anchor_health(
     *,
     project_root: Path = PROJECT_ROOT,
     crm_anchor: Path | None = None,
     inbound_anchor: Path | None = None,
     stock_anchor: Path | None = None,
+    env_file: Path | None = None,
+    waybill_selection_anchor: Path | None = None,
     venv_python: Path | None = None,
     max_age_hours: float | None = None,
     max_future_skew_seconds: float | None = None,
@@ -167,6 +221,10 @@ def check_anchor_health(
     crm_anchor_path = crm_anchor or (root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx")
     inbound_anchor_path = inbound_anchor or (root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx")
     stock_anchor_path = stock_anchor or (root / "config" / "anchors" / "STOCK_SNAPSHOT_LATEST.xlsx")
+    env_file_path = env_file or (root / ".env")
+    waybill_selection_anchor_path = waybill_selection_anchor or (
+        root / "excel_ui" / "ActiveOrders" / "waybills"
+    )
     venv_path = venv_python or (root / ".venv" / "bin" / "python")
     now = float(now_ts if now_ts is not None else time.time())
     current_day = as_of or date.today()
@@ -189,9 +247,14 @@ def check_anchor_health(
     crm_target, crm_errors = _validate_anchor_symlink(crm_anchor_path, name="crm_anchor")
     inbound_target, inbound_errors = _validate_anchor_symlink(inbound_anchor_path, name="inbound_anchor")
     stock_target, stock_errors = _validate_anchor_symlink(stock_anchor_path, name="stock_anchor")
+    waybill_selection_target, waybill_selection_errors = _validate_anchor_symlink(
+        waybill_selection_anchor_path,
+        name="waybill_selection_anchor",
+    )
     errors.extend(crm_errors)
     errors.extend(inbound_errors)
     errors.extend(stock_errors)
+    errors.extend(waybill_selection_errors)
 
     if crm_target is not None:
         errors.extend(
@@ -215,6 +278,12 @@ def check_anchor_health(
         lines.append(f"inbound_anchor={inbound_anchor_path} -> {inbound_target}")
     if stock_target is not None:
         lines.append(f"stock_anchor={stock_anchor_path} -> {stock_target}")
+    if waybill_selection_target is not None:
+        lines.append(f"waybill_selection_anchor={waybill_selection_anchor_path} -> {waybill_selection_target}")
+    env_target, env_errors = _validate_env_file(env_file_path)
+    errors.extend(env_errors)
+    if env_target is not None:
+        lines.append(f"env_file={env_file_path} -> {env_target}")
 
     errors.extend(_validate_venv_imports(venv_path))
     lines.append(
@@ -243,6 +312,13 @@ def main() -> int:
     parser.add_argument("--crm-anchor", type=Path, default=None, help="CRM anchor symlink")
     parser.add_argument("--inbound-anchor", type=Path, default=None, help="Inbound anchor symlink")
     parser.add_argument("--stock-anchor", type=Path, default=None, help="Stock snapshot anchor symlink")
+    parser.add_argument("--env-file", type=Path, default=None, help="Repo env file or symlink")
+    parser.add_argument(
+        "--waybill-selection-anchor",
+        type=Path,
+        default=None,
+        help="Waybill selection cache symlink",
+    )
     parser.add_argument("--venv-python", type=Path, default=None, help="Repo venv python path")
     parser.add_argument("--max-age-hours", type=float, default=None, help="Override workbook max age hours")
     parser.add_argument(
@@ -267,6 +343,8 @@ def main() -> int:
         crm_anchor=args.crm_anchor,
         inbound_anchor=args.inbound_anchor,
         stock_anchor=args.stock_anchor,
+        env_file=args.env_file,
+        waybill_selection_anchor=args.waybill_selection_anchor,
         venv_python=args.venv_python,
         max_age_hours=args.max_age_hours,
         max_future_skew_seconds=args.max_future_skew_seconds,
