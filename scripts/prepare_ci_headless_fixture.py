@@ -497,6 +497,33 @@ def _write_business_insides_snapshot(path: Path, *, as_of: date) -> None:
     path.write_text(snapshot_text, encoding="utf-8")
 
 
+def _write_env_fixture(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "KASPI_TOKEN_11KZ=fixture",
+                "KASPI_TOKEN_MELVIS=fixture",
+                "KASPI_TOKEN_STOREB=fixture",
+                "KASPI_TOKEN_ACMEWEAR=fixture",
+                "KASPI_TOKEN_UNIVERSAL=fixture",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_waybill_selection_fixture(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "_waybill_selection_orders.json").write_text(
+        json.dumps({"target_date": "2026-02-20", "selection_status": "CI_FIXTURE"}, ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    (path / "850084962.pdf").write_bytes(b"%PDF-1.4\n%fixture\n")
+
+
 def prepare_ci_headless_fixture(*, project_root: Path, as_of: date) -> dict[str, str]:
     root = project_root.resolve()
     fixture_dir = root / "config" / "anchors" / "fixtures"
@@ -504,10 +531,14 @@ def prepare_ci_headless_fixture(*, project_root: Path, as_of: date) -> dict[str,
     inbound_target = fixture_dir / "INBOUND_CALENDAR_V10.002.fixture.xlsx"
     stock_target = fixture_dir / "STOCK_SNAPSHOT.fixture.xlsx"
     dim_sku_light_target = fixture_dir / "DIM_SKU_LIGHT_V5.fixture.xlsx"
+    env_target = fixture_dir / ".env.fixture"
+    waybill_target = fixture_dir / "waybills.fixture"
     db_target = root / "db" / "app.db"
     crm_anchor = root / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
     inbound_anchor = root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
     stock_anchor = root / "config" / "anchors" / "STOCK_SNAPSHOT_LATEST.xlsx"
+    env_path = root / ".env"
+    waybill_anchor = root / "excel_ui" / "ActiveOrders" / "waybills"
     dashboard_path = root / "exports" / "po_dashboard_data.json"
     business_insides_path = root / "config" / "business_insides" / f"BUSINESS_INSIDES_{as_of.isoformat()}.md"
     business_insides_snapshot = (
@@ -518,6 +549,8 @@ def prepare_ci_headless_fixture(*, project_root: Path, as_of: date) -> dict[str,
     _write_inbound_workbook(inbound_target, as_of=as_of)
     _write_stock_snapshot_workbook(stock_target, as_of=as_of)
     _write_dim_sku_light_workbook(dim_sku_light_target)
+    _write_env_fixture(env_target)
+    _write_waybill_selection_fixture(waybill_target)
     _init_headless_db(db_target, as_of=as_of)
     _write_po_dashboard_payload(dashboard_path)
     _write_business_insides_snapshot(business_insides_path, as_of=as_of)
@@ -525,6 +558,10 @@ def prepare_ci_headless_fixture(*, project_root: Path, as_of: date) -> dict[str,
     _replace_with_symlink(crm_anchor, sales_target)
     _replace_with_symlink(inbound_anchor, inbound_target)
     _replace_with_symlink(stock_anchor, stock_target)
+    _replace_with_symlink(waybill_anchor, waybill_target)
+    if env_path.exists() or env_path.is_symlink():
+        env_path.unlink()
+    env_path.write_text(env_target.read_text(encoding="utf-8"), encoding="utf-8")
 
     return {
         "project_root": str(root),
@@ -533,12 +570,16 @@ def prepare_ci_headless_fixture(*, project_root: Path, as_of: date) -> dict[str,
         "inbound_target": str(inbound_target),
         "stock_target": str(stock_target),
         "dim_sku_light_target": str(dim_sku_light_target),
+        "env_target": str(env_target),
+        "waybill_target": str(waybill_target),
         "db_target": str(db_target),
         "dashboard_path": str(dashboard_path),
         "business_insides_path": str(business_insides_path),
         "crm_anchor": str(crm_anchor),
         "inbound_anchor": str(inbound_anchor),
         "stock_anchor": str(stock_anchor),
+        "env_path": str(env_path),
+        "waybill_anchor": str(waybill_anchor),
     }
 
 
