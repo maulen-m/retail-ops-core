@@ -699,15 +699,26 @@ def validate_shipped_truth_crm_waybill(
 
             # API detail fallback: some returned/completed orders are not surfaced by list-orders state buckets.
             # For orders expected by CRM but absent in API shipped set, verify by direct order-code lookup.
+            # Skip fallback for IDs already explainable by adjacent-day tolerance; otherwise tokenless
+            # CI/headless runs incorrectly fail on a problem that is already classified as a shifted match.
             detail_fallback_hits = 0
             store_code = CRM_NAME_TO_STORE_CODE.get(store, "")
-            if api_fetcher is None and crm_expected:
+            unresolved_detail_ids = sorted(
+                order_id
+                for order_id in (crm_expected - api_secondary)
+                if not _within_shift_window(
+                    day,
+                    api_primary_day_map.get((store, order_id), set()),
+                    int(date_shift_tolerance_days),
+                )
+            )
+            if api_fetcher is None and unresolved_detail_ids:
                 if store_code:
                     try:
                         if store_code not in detail_clients:
                             detail_clients[store_code] = KaspiAPIClient(store_code=store_code)
                         detail_client = detail_clients[store_code]
-                        for order_id in sorted(crm_expected - api_secondary):
+                        for order_id in unresolved_detail_ids:
                             cache_key = (store_code, order_id)
                             if cache_key in detail_cache:
                                 ship_day, is_cancelled, has_waybill = detail_cache[cache_key]

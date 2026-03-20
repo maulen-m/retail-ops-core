@@ -29,6 +29,14 @@ def _seed_required_artifacts(root: Path, as_of: str) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _seed_workbook_anchor_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    anchor = tmp_path / "config" / "anchors" / "SALES_KSP_CRM_LATEST.xlsx"
+    anchor.parent.mkdir(parents=True, exist_ok=True)
+    anchor.write_text("anchor", encoding="utf-8")
+    monkeypatch.setenv("AB_CRM_WORKBOOK_PATH", str(anchor))
+
+
 def test_as_of_consistency_passes_when_all_required_artifacts_match(tmp_path: Path) -> None:
     as_of = "2026-02-26"
     _seed_required_artifacts(tmp_path, as_of)

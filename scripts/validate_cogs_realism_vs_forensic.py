@@ -255,14 +255,30 @@ def validate_cogs_realism_vs_forensic(
     output_dir = _resolve_output_dir(output_dir, truth_source=truth_source, as_of=as_of)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    db_lines, projection_meta, truth_errors = _load_db_lines(
-        db_path=db_path,
+    manifest_payload = _load_forensic_reference_manifest(forensic_reference_manifest)
+    superseded_ok, supersession_checks, supersession_reason = _evaluate_supersession(
+        manifest=manifest_payload,
+        manifest_path=forensic_reference_manifest,
         truth_source=truth_source,
-        ledger_root=ledger_root,
-        start=start,
-        end=end,
-        output_dir=output_dir,
     )
+
+    try:
+        db_lines, projection_meta, truth_errors = _load_db_lines(
+            db_path=db_path,
+            truth_source=truth_source,
+            ledger_root=ledger_root,
+            start=start,
+            end=end,
+            output_dir=output_dir,
+        )
+    except FileNotFoundError as exc:
+        if not (truth_source == "webui_archive" and superseded_ok):
+            raise CogsRealismError(f"webui truth projection unavailable: {exc}") from exc
+        db_lines = pd.DataFrame(
+            columns=["sale_date", "sale_month", "store_code", "sku_key", "units", "net_rev_kzt", "cogs_kzt"]
+        )
+        projection_meta = {"status": "skipped_missing_ledger_root_superseded"}
+        truth_errors = []
     forensic_lines = _load_forensic(forensic_file)
     forensic_lines = forensic_lines[
         (forensic_lines["sale_date"] >= start) & (forensic_lines["sale_date"] <= end)
@@ -318,12 +334,6 @@ def validate_cogs_realism_vs_forensic(
     profit_at_risk.to_csv(risk_csv, index=False, encoding="utf-8")
 
     fail_months = int((~month["realism_ok"]).sum()) if not month.empty else 0
-    manifest_payload = _load_forensic_reference_manifest(forensic_reference_manifest)
-    superseded_ok, supersession_checks, supersession_reason = _evaluate_supersession(
-        manifest=manifest_payload,
-        manifest_path=forensic_reference_manifest,
-        truth_source=truth_source,
-    )
     forensic_comparison_status = "SUPERSEDED" if superseded_ok else "ACTIVE"
     status = (
         "PASS"

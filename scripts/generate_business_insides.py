@@ -1072,10 +1072,15 @@ def compute_sales_metrics(
                 if _column_exists(conn, "fact_orders_kaspi", candidate)
             ]
             if sale_date_candidates:
-                sale_ts_expr = "COALESCE(" + ", ".join(
+                sale_candidate_exprs = [
                     f"NULLIF(TRIM(CAST({candidate} AS TEXT)), '')"
                     for candidate in sale_date_candidates
-                ) + ")"
+                ]
+                sale_ts_expr = (
+                    sale_candidate_exprs[0]
+                    if len(sale_candidate_exprs) == 1
+                    else "COALESCE(" + ", ".join(sale_candidate_exprs) + ")"
+                )
                 sale_date_expr = f"date({sale_ts_expr})"
                 qty_expr = (
                     "COALESCE(quantity, 1)"

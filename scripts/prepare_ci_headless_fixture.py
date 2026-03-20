@@ -37,6 +37,8 @@ def _write_inbound_workbook(path: Path, *, as_of: date) -> None:
         [
             "PO_part_id",
             "Status",
+            "Cargo_freight_id",
+            "Actual_DLV_PAY_date",
             "Actual_Arrival_date",
             "is_paid_BASE",
             "is_paid_DLV",
@@ -45,13 +47,71 @@ def _write_inbound_workbook(path: Path, *, as_of: date) -> None:
             "Est. Weight (kg)",
             "Total Bags",
             "Total Units",
+            "Base_cost_CNY",
+            "Actual_Weight_kg",
+            "Paid_DLV_USD",
+            "Paid_DLV_KZT",
+            "Final_USD_per_kg",
+            "USD_KZT_rate",
+            "Actual_DLV_days",
         ]
     )
-    ws.append(["PO-1.0", "Transit", as_of.isoformat(), "YES", "YES", 0.0, 0.0, 12.5, 5, 14])
+    ws.append(
+        [
+            "PO-1.0",
+            "Transit",
+            "CARGO-CI-1",
+            as_of.isoformat(),
+            as_of.isoformat(),
+            "YES",
+            "YES",
+            0.0,
+            0.0,
+            12.5,
+            5,
+            14,
+            1000.0,
+            12.5,
+            240.0,
+            120000.0,
+            19.2,
+            500.0,
+            7,
+        ]
+    )
 
     ws_inbounds = wb.create_sheet("Inbounds_sheet")
     ws_inbounds.append(["PO_part_id", "SKU_key", "Qty", "Actual_qty", "Status", "Actual_Arrival_date"])
     ws_inbounds.append(["PO-1.0", "CL_FIX_SKU", 14, 14, "Transit", as_of.isoformat()])
+
+    ws_cargo = wb.create_sheet("cargo_send_ci")
+    ws_cargo.append(["PO_part_id", "SKU_key", "Qty"])
+    ws_cargo.append(["PO-1.0", "CL_FIX_SKU", 14])
+
+    ws_astana = wb.create_sheet("2.3.26_astana_totals")
+    ws_astana["B8"] = 5
+    ws_astana["B9"] = 14
+    ws_astana["B10"] = 12.5
+    ws_astana["B11"] = 240.0
+    ws_astana["B12"] = 120000.0
+    ws_astana["C3"] = "PO-1.0"
+    ws_astana["C8"] = 5
+    ws_astana["C9"] = 14
+    ws_astana["C10"] = 12.5
+    ws_astana["C11"] = 240.0
+    ws_astana["C12"] = 120000.0
+    ws_astana["A20"] = "PO-1.0"
+    ws_astana["F20"] = 1000.0
+    ws_astana["A30"] = "GRAND TOTAL"
+    ws_astana["E30"] = 5
+    ws_astana["F30"] = 12.5
+
+    ws_dlv = wb.create_sheet("dlv_payment_2.3.26")
+    ws_dlv["A1"] = "Total Actual Weight (kg)"
+    ws_dlv["B1"] = 12.5
+    ws_dlv["A2"] = "TOTAL DELIVERY COST"
+    ws_dlv["B2"] = 240.0
+    ws_dlv["C2"] = 120000.0
     wb.save(path)
 
 
@@ -173,9 +233,17 @@ def _init_headless_db(path: Path, *, as_of: date, days: int = 14) -> None:
                 po_part_id TEXT PRIMARY KEY,
                 po_id TEXT,
                 status TEXT,
+                cargo_freight_id TEXT,
+                actual_dlv_pay_date TEXT,
                 est_weight_kg REAL,
+                actual_weight_kg REAL,
                 total_bags INTEGER,
                 total_units INTEGER,
+                paid_dlv_usd REAL,
+                paid_dlv_kzt REAL,
+                final_usd_per_kg REAL,
+                usd_kzt_rate REAL,
+                actual_dlv_days INTEGER,
                 is_paid_base INTEGER,
                 is_paid_dlv INTEGER,
                 to_pay_base_kzt REAL,
@@ -291,11 +359,19 @@ def _init_headless_db(path: Path, *, as_of: date, days: int = 14) -> None:
         conn.execute(
             """
             INSERT INTO po_part (
-                po_part_id, po_id, status, est_weight_kg, total_bags, total_units,
+                po_part_id, po_id, status, cargo_freight_id, actual_dlv_pay_date,
+                est_weight_kg, actual_weight_kg, total_bags, total_units,
+                paid_dlv_usd, paid_dlv_kzt, final_usd_per_kg, usd_kzt_rate, actual_dlv_days,
                 is_paid_base, is_paid_dlv, to_pay_base_kzt, to_pay_dlv_kzt,
                 base_cost_kzt, est_delivery_kzt
-            ) VALUES ('PO-1.0', 'PO-1', 'IN_TRANSIT', 12.5, 5, 14, 1, 1, 0, 0, 500000, 120000)
+            ) VALUES (
+                'PO-1.0', 'PO-1', 'IN_TRANSIT', 'CARGO-CI-1', ?, 12.5, 12.5, 5, 14,
+                240.0, 120000.0, 19.2, 500.0, 7,
+                1, 1, 0, 0, 500000, 120000
+            )
             """
+            ,
+            (as_of.isoformat(),),
         )
         conn.execute(
             """

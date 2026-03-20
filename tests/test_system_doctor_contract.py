@@ -16,6 +16,19 @@ def _seed_crm_anchor(project_root: Path) -> Path:
     return anchor
 
 
+@pytest.fixture(autouse=True)
+def _seed_workbook_anchor_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    if request.node.name == "test_system_doctor_fails_closed_when_workbook_anchor_missing":
+        monkeypatch.delenv("AB_CRM_WORKBOOK_PATH", raising=False)
+        return
+    anchor = _seed_crm_anchor(tmp_path)
+    monkeypatch.setenv("AB_CRM_WORKBOOK_PATH", str(anchor))
+
+
 def test_system_doctor_run_shell_uses_file_backed_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 

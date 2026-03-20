@@ -44,7 +44,7 @@ jobs:
 
       - name: Run required headless gate chain
         run: |
-          python3 scripts/validate_params.py --strict
+          python3 scripts/validate_params.py --strict --as-of "$(date -u +%F)"
           PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q \
             tests/test_ci_headless_workflow_contract.py \
             tests/test_prepare_ci_headless_fixture.py \

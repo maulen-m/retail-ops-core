@@ -284,9 +284,9 @@ def test_load_shipped_truth_snapshot_prefers_newest_summary(tmp_path: Path) -> N
         ),
         encoding="utf-8",
     )
-    # Ensure deterministic ordering by mtime.
-    older.touch()
-    newer.touch()
+    # Ensure deterministic ordering even on filesystems with coarse timestamp precision.
+    os.utime(older, (1_700_000_000, 1_700_000_000))
+    os.utime(newer, (1_700_000_100, 1_700_000_100))
 
     snapshot = load_shipped_truth_snapshot(
         as_of_date=date.fromisoformat("2026-02-17"),

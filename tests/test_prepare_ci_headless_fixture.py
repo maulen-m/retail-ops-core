@@ -118,3 +118,80 @@ def test_prepare_ci_headless_fixture_creates_inbounds_sheet_for_strict_validator
 
     assert {"PO_part_id", "SKU_key"}.issubset(set(header))
     assert ("Qty" in header) or ("Actual_qty" in header)
+
+
+def test_prepare_ci_headless_fixture_includes_strict_single_truth_columns_and_sheets(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    (project_root / "config" / "anchors").mkdir(parents=True, exist_ok=True)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--project-root",
+            str(project_root),
+            "--as-of",
+            "2026-02-20",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    inbound_anchor = project_root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+    wb = load_workbook(inbound_anchor.resolve(strict=True), read_only=True, data_only=True)
+    try:
+        assert "2.3.26_astana_totals" in wb.sheetnames
+        assert "dlv_payment_2.3.26" in wb.sheetnames
+        assert "cargo_send_ci" in wb.sheetnames
+        totals = wb["PO_part_id_Totals"]
+        header = [cell.value for cell in totals[1]]
+    finally:
+        wb.close()
+
+    assert {
+        "Cargo_freight_id",
+        "Actual_DLV_PAY_date",
+        "Actual_Weight_kg",
+        "Paid_DLV_USD",
+        "Paid_DLV_KZT",
+        "Final_USD_per_kg",
+        "USD_KZT_rate",
+        "Actual_DLV_days",
+    }.issubset(set(header))
+
+
+def test_prepare_ci_headless_fixture_po_part_schema_matches_strict_validator(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    (project_root / "config" / "anchors").mkdir(parents=True, exist_ok=True)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--project-root",
+            str(project_root),
+            "--as-of",
+            "2026-02-20",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    db_path = project_root / "db" / "app.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(po_part)").fetchall()}
+
+    assert {
+        "cargo_freight_id",
+        "actual_dlv_pay_date",
+        "actual_weight_kg",
+        "paid_dlv_usd",
+        "paid_dlv_kzt",
+        "final_usd_per_kg",
+        "usd_kzt_rate",
+        "actual_dlv_days",
+    }.issubset(cols)
