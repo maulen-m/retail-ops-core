@@ -18,7 +18,7 @@ def _extract_cli_flags(step2_block: str) -> set[str]:
     return flags
 
 
-def test_step2_uses_unattended_safe_xlwings_first_mode():
+def test_step2_uses_transactional_strict_xlwings_mode():
     script_path = Path("excel_ui/run_full_import.command")
     text = script_path.read_text(encoding="utf-8")
     assert "Preflight: validating local app DB..." in text
@@ -30,9 +30,9 @@ def test_step2_uses_unattended_safe_xlwings_first_mode():
     assert 'python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \\' in step2_block
     assert 'CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \\' in step2_block
 
-    # Unattended mode: avoid candidate writes and keep strict probe disabled.
-    assert "--no-transactional" in flags
-    assert "--no-strict-excel" in flags
+    # Step 2 must now write through the transactional + strict Excel path.
+    assert "--no-transactional" not in flags
+    assert "--no-strict-excel" not in flags
     assert "--no-update" in flags
 
     # Keep Excel-safe append path first; openpyxl append can corrupt pivot caches.
@@ -43,11 +43,14 @@ def test_step2_uses_unattended_safe_xlwings_first_mode():
     assert "--no-gdrive-sync" in flags
 
     # Keep no-gui unattended mode and do not rely on env-side toggles.
-    assert "--strict-excel" not in flags
+    assert "--strict-excel" in flags
     assert "CRM_OPENPYXL_APPEND_FALLBACK=1" not in step2_block
     assert 'REFRESH_DELIVERY_FEES="${KASPI_REFRESH_DELIVERY_FEES:-1}"' in text
     assert 'REFRESH_DELIVERY_FLAGS="--refresh-delivery-fees --refresh-fees-from ${REFRESH_FEES_FROM} --refresh-fees-to ${REFRESH_FEES_TO}"' in text
     assert "${REFRESH_DELIVERY_FLAGS}" in step2_block
+    assert "--skip-fixed-backfill" not in flags
+    assert 'FIXED_BACKFILL_FLAGS="--fixed-backfill-from ${REFRESH_FEES_FROM} --fixed-backfill-to ${REFRESH_FEES_TO}"' in text
+    assert "${FIXED_BACKFILL_FLAGS}" in step2_block
 
 
 def test_step2_append_timeout_default_is_not_overly_aggressive():
@@ -57,6 +60,20 @@ def test_step2_append_timeout_default_is_not_overly_aggressive():
 
     # 180s is too low for larger day volumes; keep a safer unattended default.
     assert 'XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-420}"' in step2_block
+
+
+def test_late_arrival_topup_uses_transactional_strict_xlwings_mode():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    late_marker = 'TOPUP_STEP2_RC=$?'
+    topup_block = text[text.index('python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \\', text.index("Late-arrival top-up pass")):text.index(late_marker)]
+    flags = _extract_cli_flags(topup_block)
+
+    assert "--no-transactional" not in flags
+    assert "--no-strict-excel" not in flags
+    assert "--strict-excel" in flags
+    assert "--skip-fixed-backfill" not in flags
+    assert "${FIXED_BACKFILL_FLAGS}" in topup_block
 
 
 def test_dotenv_export_skips_shell_invalid_keys():
@@ -119,6 +136,15 @@ def test_step2_propagates_include_overdue_date_window_flags():
     assert "${IMPORT_DATE_FLAGS}" in step2_block
 
 
+def test_step2_final_flag_does_not_accidentally_continue_into_shell_assignments():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    step2_block = _extract_step2_block(text)
+    lines = step2_block.splitlines()
+    last_flag_line = next(line for line in lines[::-1] if "--no-gdrive-sync" in line)
+    assert not last_flag_line.rstrip().endswith("\\")
+
+
 def test_post_import_runs_machine_readable_health_report_and_gate():
     script_path = Path("excel_ui/run_full_import.command")
     text = script_path.read_text(encoding="utf-8")
@@ -166,6 +192,16 @@ def test_successful_topup_clears_initial_step2_failure_before_final_gate():
     assert "STEP2_RC=${TOPUP_STEP2_RC}" in text
     assert "STEP2_RC=0" in text
     assert text.index("STEP2_RC=0") > text.index("TOPUP_STEP2_RC=$?")
+
+
+def test_late_arrival_topup_final_flag_does_not_accidentally_continue_into_shell_assignments():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    late_marker = 'TOPUP_STEP2_RC=$?'
+    topup_block = text[text.index('python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \\', text.index("Late-arrival top-up pass")):text.index(late_marker)]
+    lines = topup_block.splitlines()
+    last_flag_line = next(line for line in lines[::-1] if "--no-gdrive-sync" in line)
+    assert not last_flag_line.rstrip().endswith("\\")
 
 
 def test_successful_topup_defers_initial_step2_warning_until_final_state_is_known():

@@ -109,10 +109,11 @@ if [ "${INCLUDE_OVERDUE}" = "1" ]; then
 fi
 
 REFRESH_DELIVERY_FEES="${KASPI_REFRESH_DELIVERY_FEES:-1}"
+REFRESH_FEES_FROM=$(date -v-"${LOOKBACK_DAYS}"d +%Y-%m-%d)
+REFRESH_FEES_TO=$(date +%Y-%m-%d)
 REFRESH_DELIVERY_FLAGS=""
+FIXED_BACKFILL_FLAGS="--fixed-backfill-from ${REFRESH_FEES_FROM} --fixed-backfill-to ${REFRESH_FEES_TO}"
 if [ "${REFRESH_DELIVERY_FEES}" = "1" ]; then
-    REFRESH_FEES_FROM=$(date -v-"${LOOKBACK_DAYS}"d +%Y-%m-%d)
-    REFRESH_FEES_TO=$(date +%Y-%m-%d)
     REFRESH_DELIVERY_FLAGS="--refresh-delivery-fees --refresh-fees-from ${REFRESH_FEES_FROM} --refresh-fees-to ${REFRESH_FEES_TO}"
 fi
 
@@ -399,13 +400,12 @@ python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
     python scripts/import_orders_to_crm.py \
         --verbose \
         --no-update \
-        --no-transactional \
-        --no-strict-excel \
+        --strict-excel \
         --kaspi-core-override \
         ${IMPORT_DATE_FLAGS} \
         ${REFRESH_DELIVERY_FLAGS} \
-        --no-gdrive-sync \
-        --skip-fixed-backfill
+        ${FIXED_BACKFILL_FLAGS} \
+        --no-gdrive-sync
 STEP2_RC=$?
 STEP2_WARN_MSG=""
 STEP2_STATUS=""
@@ -617,13 +617,12 @@ PY
             python scripts/import_orders_to_crm.py \
                 --verbose \
                 --no-update \
-                --no-transactional \
-                --no-strict-excel \
-                    --kaspi-core-override \
+                --strict-excel \
+                --kaspi-core-override \
                 ${IMPORT_DATE_FLAGS} \
                 ${REFRESH_DELIVERY_FLAGS} \
-                --no-gdrive-sync \
-                --skip-fixed-backfill
+                ${FIXED_BACKFILL_FLAGS} \
+                --no-gdrive-sync
         TOPUP_STEP2_RC=$?
         if [ ${TOPUP_STEP2_RC} -ne 0 ]; then
             echo "WARNING: late-arrival top-up CRM import reported errors (see above)."

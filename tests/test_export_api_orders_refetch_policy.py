@@ -70,6 +70,47 @@ def test_refetch_missing_costs_only_for_orders_with_missing_delivery_fields(monk
     assert calls == ["B2"]
 
 
+def test_refetch_missing_costs_when_seller_delivery_fee_is_zero(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def list_all_orders(self, **_kwargs):
+            return [_order("A1", buyer=500.0, seller=0.0)]
+
+        def get_order_entries_by_id(self, _order_id: str):
+            return _response({"data": []})
+
+    monkeypatch.setattr(mod, "KaspiAPIClient", FakeClient)
+
+    def fake_refetch(client, order, verbose=False, force=False):
+        del client, verbose, force
+        calls.append(order.get("attributes", {}).get("code", ""))
+        return order
+
+    monkeypatch.setattr(mod, "_maybe_refetch_order_details", fake_refetch)
+    monkeypatch.setattr(
+        mod,
+        "order_to_rows",
+        lambda order, entries, store_code, client=None: [
+            {"№ заказа": order.get("attributes", {}).get("code", ""), "store": store_code, "entries": len(entries)}
+        ],
+    )
+
+    rows = mod.export_store_orders(
+        store_code="UNIVERSAL",
+        state="KASPI_DELIVERY",
+        days=3,
+        include_archive=False,
+        refetch_missing_costs=True,
+    )
+
+    assert len(rows) == 1
+    assert calls == ["A1"]
+
+
 def test_export_uses_order_id_entries_endpoint_when_available(monkeypatch) -> None:
     by_id_calls: list[str] = []
     by_code_calls: list[str] = []

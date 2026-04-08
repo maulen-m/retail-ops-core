@@ -14,7 +14,7 @@ import os
 import sqlite3
 import tempfile
 import pytest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -359,6 +359,34 @@ class TestOrderParsing:
         parsed = engine._parse_api_order(order, "STOREB")
 
         assert parsed["planned_shipment_date"] == "2026-03-08"
+
+    def test_parse_dates_passes_store_code_into_planned_date_resolution(self, engine, monkeypatch):
+        captured = {}
+
+        def _fake_planned_date_from_order(order, *, store_code=None):
+            captured["store_code"] = store_code
+            return date(2026, 3, 14)
+
+        monkeypatch.setattr(
+            "core.sync.order_sync_engine.planned_date_from_order",
+            _fake_planned_date_from_order,
+        )
+
+        order = {
+            "id": "order-acmewear-cutoff",
+            "attributes": {
+                "code": "848191281",
+                "state": "KASPI_DELIVERY",
+                "status": "ACCEPTED_BY_MERCHANT",
+                "creationDate": int(datetime(2026, 3, 14, 15, 30).timestamp() * 1000),
+                "kaspiDelivery": {},
+            },
+        }
+
+        parsed = engine._parse_api_order(order, "ACMEWEAR")
+
+        assert parsed["planned_shipment_date"] == "2026-03-14"
+        assert captured["store_code"] == "ACMEWEAR"
 
 
 # =============================================================================

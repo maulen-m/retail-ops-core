@@ -7,6 +7,8 @@
 Primary contract docs:
 - `docs/offer_creation/KASPI_TEMPLATE_FIELD_MAPPING_CONTRACT.md`
 - `docs/offer_creation/KASPI_SKU_ALIGNMENT_GATE.md`
+- `docs/offer_creation/OFFER_MANIFEST_SCHEMA.md`
+- `docs/offer_creation/KASPI_MANIFEST_WORKFLOW.md`
 
 ---
 
@@ -18,6 +20,9 @@ V10 succeeded after these changes:
 1) **Clean ZIP structure**
    - XLSM at ZIP root.
    - `images/` (lowercase) folder at ZIP root.
+   - Inside `images/`, create a folder named exactly as the shared image/article code:
+     - `images/<image_code>/1.png`
+     - `images/<image_code>/2.png`
    - No nested top-level folder, no `__MACOSX`, no `Images/` (capital).
 2) **Unique `merchant_sku` after swap**
    - We swapped `Артикул` (merchant_sku) with `Артикул производителя`.
@@ -52,6 +57,7 @@ V10 succeeded after these changes:
 
 1) **ZIP layout must be clean**
    - Root: XLSM + `images/`
+   - Image files must live inside `images/<image_code>/...`, not flat `images/1.png`
    - No extra folders, no macOS artifacts
 2) **`merchant_sku` must be unique per row**
 3) **Multi‑value fields must use `, ` (comma + space)**
@@ -78,16 +84,42 @@ Kaspi’s validation report often embeds **error messages as cell comments** ins
 
 ## Future workflow (repeatable)
 
-1) **Start from the latest accepted template** (not old cached files).
-2) **Fill product data** and validate against `values` sheet.
-3) **Run hard gate (mandatory before ZIP):**
-   - `python3 scripts/validate_kaspi_offer_template.py --xlsm <FILE> --category <CATEGORY> --store <STORE>`
-4) **Ensure `merchant_sku` uniqueness**.
-5) **Normalize delimiters** for multi‑value fields.
-6) **Package ZIP correctly**:
+1) **Start from the latest fresh merchant template**
+   - Re-download the category template from Kaspi merchant UI from time to time.
+   - Categories and template contracts can change; stale templates may be rejected.
+   - For the LINE31 2026-03-19 failure, template age was not the suspected cause because the women templates were downloaded ~3 hours before upload.
+2) **Prefer manifest-driven build**
+   - Create/update `offer_manifest.yaml` inside the product/color root.
+   - Use `python3 scripts/build_kaspi_offer_from_manifest.py --manifest <FILE> --apply`
+3) **Fill product data** and validate against `values` sheet.
+4) **Run hard gate (mandatory before ZIP):**
+   - repeat color / same proven category:
+     - `python3 scripts/validate_kaspi_offer_template.py --xlsm <FILE> --category <CATEGORY> --store <STORE> --mode fast`
+   - new product / proven category:
+     - `... --mode balanced`
+   - new category / refreshed template / row-level rejection debugging:
+     - `... --mode strict`
+5) **Run technical package gate (mandatory before upload):**
+   - `python3 scripts/validate_kaspi_offer_package.py --package-dir <DIR> --zip <ZIP>`
+6) **Ensure `merchant_sku` uniqueness**.
+7) **Normalize delimiters** for multi‑value fields.
+8) **Package ZIP correctly**:
    - XLSM root
-   - images in `images/<merchant_sku>/1.png`
-7) **Upload** and read error comments if rejected.
+   - images in `images/<image_code>/1.png`
+9) **Generate workbook ingest payload / append mappings if needed**
+   - `python3 scripts/build_kaspi_offer_from_manifest.py --manifest <FILE> --apply --apply-workbook`
+10) **Upload** and read error comments if rejected.
+
+## Processing-error triage
+
+If Kaspi upload history shows:
+- `Ошибка при обработке`
+- `0` parsed offers
+
+Then debug in this order:
+1. ZIP structure and nested image folders
+2. Template preservation / workbook container drift
+3. Only then row-level values and returned XLSM comments
 
 ---
 

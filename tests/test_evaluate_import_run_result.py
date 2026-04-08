@@ -12,6 +12,7 @@ def _write_health(
     *,
     miss_crm: int,
     stale_crm: int = 0,
+    miss_seller_fee: int = 0,
     partial_api: bool = False,
     warnings: list[str] | None = None,
 ) -> None:
@@ -23,6 +24,9 @@ def _write_health(
             "crm_today": 71 - miss_crm + stale_crm,
             "miss_crm": miss_crm,
             "stale_crm": stale_crm,
+            "seller_fee_expected": 71,
+            "seller_fee_filled": 71 - miss_seller_fee,
+            "miss_seller_fee": miss_seller_fee,
         },
         "warnings": warnings or [],
     }
@@ -89,6 +93,25 @@ def test_evaluator_fails_when_miss_crm_nonzero(tmp_path, monkeypatch):
 def test_evaluator_fails_when_stale_crm_nonzero(tmp_path, monkeypatch):
     health = tmp_path / "health.json"
     _write_health(health, miss_crm=0, stale_crm=2)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate_import_run_result.py",
+            "--step2-rc",
+            "0",
+            "--health-json",
+            str(health),
+        ],
+    )
+
+    assert eval_mod.main() != 0
+
+
+def test_evaluator_fails_when_seller_fee_coverage_incomplete(tmp_path, monkeypatch):
+    health = tmp_path / "health.json"
+    _write_health(health, miss_crm=0, miss_seller_fee=2)
 
     monkeypatch.setattr(
         sys,

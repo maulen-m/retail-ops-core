@@ -48,8 +48,13 @@ from core.integrations.kaspi_order_stage import (
     classify_kaspi_order_stage,
     classify_kaspi_stage_from_db_row,
 )
-from core.ops.crm_operational_view import select_operational_crm_rows
+from core.ops.crm_operational_view import (
+    select_operational_crm_rows_with_targeted_fallback,
+)
 from core.paths import data_path, get_data_root
+from core.ops.waybill_overdue_carryforward import (
+    get_overdue_waybill_ready_order_ids_from_db,
+)
 from core.ops.shipment_health import classify_waybill_health
 from core.utils.kaspi_dates import parse_kaspi_date
 
@@ -528,6 +533,7 @@ def get_target_order_ids_from_crm(
     store_filter: Optional[str] = None,
     exact_date: bool = True,
     lookback_days: Optional[int] = None,
+    db_path: Optional[Path] = None,
 ) -> dict[str, set[str]]:
     """
     Get order IDs from CRM that are ready for waybill download.
@@ -547,10 +553,21 @@ def get_target_order_ids_from_crm(
 
     logger.info(f"Reading CRM from {crm_path}")
     df = pd.read_excel(crm_path, sheet_name=sheet_name)
-    df, operational_stats = select_operational_crm_rows(
+    carryforward_by_store = (
+        get_overdue_waybill_ready_order_ids_from_db(
+            db_path,
+            target_date=target_date,
+            lookback_days=lookback_days,
+            store_filter=store_filter,
+        )
+        if not exact_date
+        else {}
+    )
+    carryforward_ids = set().union(*carryforward_by_store.values()) if carryforward_by_store else set()
+    df, operational_stats = select_operational_crm_rows_with_targeted_fallback(
         df,
         target_date=target_date,
-        allow_historical_fallback=False,
+        historical_fallback_order_ids=carryforward_ids,
         backfill_overdue_my_size_from_history=True,
     )
     logger.info(
@@ -561,7 +578,9 @@ def get_target_order_ids_from_crm(
         f"dropped_no_today={operational_stats['orders_without_today_row_dropped']} "
         f"historical_dropped={operational_stats['historical_rows_dropped']} "
         f"line_dupes_dropped={operational_stats['same_day_line_duplicates_dropped']} "
-        f"overdue_size_backfilled={operational_stats['overdue_my_size_backfilled_rows']}"
+        f"overdue_size_backfilled={operational_stats['overdue_my_size_backfilled_rows']} "
+        f"targeted_fallback_requested={operational_stats.get('targeted_fallback_orders_requested', 0)} "
+        f"targeted_fallback_selected={operational_stats.get('targeted_fallback_orders_selected', 0)}"
     )
 
     orders_by_store: dict[str, set[str]] = defaultdict(set)
@@ -648,6 +667,9 @@ def get_target_order_ids_from_crm(
     logger.info(f"Skipped {skipped_no_size} without MY_SIZE, {skipped_wrong_date} wrong date")
     if skipped_unknown_store:
         logger.info(f"Skipped {skipped_unknown_store} with unknown stores")
+    if carryforward_by_store:
+        carryforward_total = sum(len(order_ids) for order_ids in carryforward_by_store.values())
+        logger.info(f"Added {carryforward_total} overdue waybill-ready DB carry-forward orders")
 
     return dict(orders_by_store)
 
@@ -1055,6 +1077,7 @@ def download_all_waybills(
         output_dir.mkdir(parents=True, exist_ok=True)
     elif verbose:
         print(f"  [DRY RUN] Would create directory: {output_dir}")
+    resolved_db_path = resolve_db_path(db_path)
 
     # Primary selection: Kaspi API planned date (freshest)
     target_orders_by_store: dict[str, set[str]] = {}
@@ -1102,6 +1125,7 @@ def download_all_waybills(
             store_filter,
             exact_date=exact_date,
             lookback_days=None if all_dates or exact_date else since_days,
+            db_path=resolved_db_path,
         )
         if manual_orders_by_store:
             source_label = "CRM current-batch manual sizes + API detail lookup"

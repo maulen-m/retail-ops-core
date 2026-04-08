@@ -24,11 +24,14 @@ import shutil
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from zoneinfo import ZoneInfo
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +43,7 @@ from core.ops.waybill_send_batch import (
     SEND_LEDGER_FILE,
     SEND_STOPLINE_FILE,
     load_send_ledger as core_load_send_ledger,
+    resolve_unsure_ledger_entry as core_resolve_unsure_ledger_entry,
     resolve_manifest_entry_path as core_resolve_manifest_entry_path,
     save_send_ledger as core_save_send_ledger,
     select_manifest_entries_for_send as core_select_manifest_entries_for_send,
@@ -56,7 +60,13 @@ BLOCKED_CHAT_TITLES_DEFAULT = ("order 2",)
 
 # Browser profile used for WhatsApp Web session
 DEFAULT_CHROME_USER_DATA_DIR = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+DEFAULT_CHROME_PROFILE_NAME = "Universal"
 DEFAULT_CHROME_PROFILE_DIR = "Profile 2"
+DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222"
+BROWSER_MODE_ATTACH = "attach"
+BROWSER_MODE_LAUNCH = "launch-temp"
+BROWSER_MODE_CHOICES = [BROWSER_MODE_ATTACH, BROWSER_MODE_LAUNCH]
+DEFAULT_BROWSER_MODE = BROWSER_MODE_ATTACH
 
 # Copy profile to temp to avoid Chrome singleton lock when user's Chrome is open
 COPY_PROFILE_TO_TEMP = True
@@ -79,6 +89,8 @@ SOURCE_PER_STORE = "per-store"
 SOURCE_LEGACY = "legacy"
 SOURCE_CHOICES = [SOURCE_AUTO, SOURCE_MERGED, SOURCE_PER_STORE, SOURCE_LEGACY]
 MERGED_SEND_ROOT_NAME = "SEND"
+ALMATY_TZ = ZoneInfo("Asia/Almaty")
+WHATSAPP_DIAGNOSTICS_DIR_NAME = "whatsapp_diagnostics"
 
 STORE_DISPLAY = {
     "STOREB": "STORE-B",
@@ -134,10 +146,28 @@ DOCUMENT_SETTLE_TIMEOUT_MS = 30_000
 DOCUMENT_POLL_INTERVAL_MS = 250
 TEXT_SETTLE_TIMEOUT_MS = 20_000
 UNSURE_REASON_PREFIX = "UNSURE:"
+DOCUMENT_INPUT_SELECTORS = [
+    "input[type='file'][accept='*']",
+    "input[type='file'][accept='*/*']",
+    "input[type='file']:not([accept])",
+]
+ATTACH_BUTTON_SELECTORS = [
+    "button[aria-label='Attach']",
+    "button[aria-label='Прикрепить']",
+]
+DOCUMENT_MENU_SELECTORS = [
+    "button[aria-label='Document']",
+    "button[aria-label='Документ']",
+    "div[role='button'][aria-label='Document']",
+    "div[role='button'][aria-label='Документ']",
+    "div[role='menuitem'][aria-label='Document']",
+    "div[role='menuitem'][aria-label='Документ']",
+]
 
 WHATSAPP_WEB_URL = "https://web.whatsapp.com"
 CHAT_OPEN_TIMEOUT_MS = 90_000
 ACTION_TIMEOUT_MS = 45_000
+WHATSAPP_DEBUG_CHROME_HELPER = PROJECT_ROOT / "excel_ui" / "start_whatsapp_debug_chrome.command"
 
 
 # =============================================================================
@@ -235,11 +265,18 @@ def _resolve_batch_folder(today_folder: Path, source_mode: str = SOURCE_AUTO) ->
         ]
     if not batch_folders:
         raise FileNotFoundError(f"No batch folders found under {source_root}")
-    if len(batch_folders) != 1:
-        raise RuntimeError(
-            f"Expected exactly one immutable send batch under {source_root}, found {len(batch_folders)}"
-        )
-    return batch_folders[0]
+    if len(batch_folders) == 1:
+        return batch_folders[0]
+
+    def _manifest_sort_key(path: Path) -> tuple[float, str]:
+        manifest_path = path / SEND_BATCH_MANIFEST_FILE
+        try:
+            manifest_mtime = manifest_path.stat().st_mtime
+        except OSError:
+            manifest_mtime = 0.0
+        return (manifest_mtime, path.name)
+
+    return sorted(batch_folders, key=_manifest_sort_key)[-1]
 
 
 def _resolve_manifest_entry_path(batch_root: Path, entry: Dict[str, Any]) -> Path:
@@ -292,6 +329,23 @@ def transition_send_ledger_entry(
     )
 
 
+def resolve_unsure_ledger_entry(
+    manifest: Dict[str, Any],
+    ledger: Dict[str, Any],
+    *,
+    filename: str,
+    resolution: str,
+    note: str = "",
+) -> str:
+    return core_resolve_unsure_ledger_entry(
+        manifest,
+        ledger,
+        filename=filename,
+        resolution=resolution,
+        note=note,
+    )
+
+
 def select_manifest_entries_for_send(
     manifest: Dict[str, Any],
     ledger: Dict[str, Any],
@@ -311,11 +365,175 @@ def _write_send_stopline(today_folder: Path, payload: Dict[str, Any]) -> Path:
     return output_path
 
 
+def _default_recovery_ladder(chat_title: str, batch_root: Optional[Path]) -> List[Dict[str, str]]:
+    batch_label = batch_root.name if batch_root else "current SEND batch"
+    return [
+        {
+            "code": "playwright_retry",
+            "detail": (
+                "Retry the sender after confirming WhatsApp Web is logged in and the target chat is open. "
+                "The sender already retries one layer automatically before this point."
+            ),
+        },
+        {
+            "code": "chrome_existing_tab",
+            "detail": (
+                f"If Playwright still drifts, inspect the already-open Google Chrome WhatsApp Web tab, "
+                f"select chat '{chat_title}', and verify the document attach controls are visible for batch {batch_label}."
+            ),
+        },
+        {
+            "code": "macos_whatsapp_fallback",
+            "detail": (
+                f"If Web UI remains blocked, use the macOS WhatsApp app as the final manual recovery surface "
+                f"to verify the batch tail and post the final status for {batch_label}."
+            ),
+        },
+    ]
+
+
+def capture_sender_failure_diagnostics(
+    sender: Any,
+    *,
+    today_folder: Path,
+    failure_code: str,
+    batch_root: Optional[Path],
+    manifest_path: Optional[Path],
+    pdf_filename: Optional[str],
+    detail: str,
+) -> Dict[str, Any]:
+    timestamp = datetime.now(ALMATY_TZ).strftime("%Y%m%d_%H%M%S")
+    diagnostics_dir = today_folder / WHATSAPP_DIAGNOSTICS_DIR_NAME / f"{timestamp}_{failure_code.lower()}"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        page = sender.page
+    except Exception:
+        page = None
+    screenshot_path = diagnostics_dir / "page.png"
+    html_path = diagnostics_dir / "page.html"
+    summary_path = diagnostics_dir / "dom_summary.json"
+    context_path = diagnostics_dir / "failure_context.json"
+
+    summary: Dict[str, Any] = {
+        "failure_code": failure_code,
+        "detail": detail,
+        "pdf_filename": pdf_filename or "",
+        "manifest_path": str(manifest_path or ""),
+        "batch_root": str(batch_root or ""),
+        "captured_at": datetime.now(ALMATY_TZ).isoformat(),
+        "browser_mode": str(getattr(sender, "browser_mode", "") or ""),
+        "profile_name": str(getattr(sender, "profile_name", "") or ""),
+        "profile_directory": str(getattr(sender, "profile_directory", "") or ""),
+        "cdp_endpoint": str(getattr(sender, "cdp_endpoint", "") or ""),
+        "ui_invalidated": bool(getattr(sender, "_ui_invalidated", False)),
+        "ui_invalidation_reason": str(getattr(sender, "_ui_invalidation_reason", "") or ""),
+        "document_send_inflight": bool(getattr(sender, "_document_send_inflight", False)),
+        "document_send_filename": str(getattr(sender, "_document_send_filename", "") or ""),
+    }
+
+    if page is not None:
+        try:
+            page.screenshot(path=str(screenshot_path), full_page=True)
+            summary["screenshot_path"] = str(screenshot_path)
+        except Exception as exc:
+            summary["screenshot_error"] = str(exc)
+
+        try:
+            html = page.content()
+            html_path.write_text(str(html), encoding="utf-8")
+            summary["html_path"] = str(html_path)
+        except Exception as exc:
+            summary["html_error"] = str(exc)
+
+        try:
+            dom_summary = page.evaluate(
+                f"""
+                () => {{
+                  const activeTitle = (() => {{
+                    const selectedRow = document.querySelector("div[aria-label='Chat list'] [aria-selected='true']");
+                    if (selectedRow) {{
+                      const rowName = selectedRow.querySelector("span[title], span[dir='auto']");
+                      if (rowName) {{
+                        return String(rowName.getAttribute?.('title') || rowName.textContent || '').trim();
+                      }}
+                    }}
+                    const headers = Array.from(document.querySelectorAll('header')).reverse();
+                    for (const header of headers) {{
+                      const nodes = [
+                        ...header.querySelectorAll("span[dir='auto']"),
+                        ...header.querySelectorAll('span[title]'),
+                        ...header.querySelectorAll('h1, h2'),
+                      ];
+                      for (const node of nodes) {{
+                        const text = String(node.getAttribute?.('title') || node.textContent || '').trim();
+                        if (text) return text;
+                      }}
+                    }}
+                    return '';
+                  }})();
+                  return {{
+                    document_title: document.title || '',
+                    url: location.href || '',
+                    active_chat_title: activeTitle,
+                    chat_home_visible: document.body?.innerText?.includes('Download WhatsApp for Mac') || false,
+                    chat_list_visible: !!document.querySelector("div[aria-label='Chat list']"),
+                    composer_visible: !!document.querySelector("footer div[contenteditable='true'][role='textbox'], footer div[contenteditable='true'][data-lexical-editor='true'], div[contenteditable='true'][aria-label='Type a message'], div[contenteditable='true'][aria-label^='Type to group'], footer div[contenteditable='true']"),
+                    attach_button_visible: !!document.querySelector("{ATTACH_BUTTON_SELECTORS[0]}, {ATTACH_BUTTON_SELECTORS[1]}"),
+                    document_controls_visible: !!document.querySelector("{DOCUMENT_INPUT_SELECTORS[0]}, {DOCUMENT_INPUT_SELECTORS[1]}, {DOCUMENT_INPUT_SELECTORS[2]}, {', '.join(DOCUMENT_MENU_SELECTORS)}"),
+                  }};
+                }}
+                """
+            )
+            if isinstance(dom_summary, dict):
+                summary.update(dom_summary)
+        except Exception as exc:
+            summary["dom_summary_error"] = str(exc)
+
+    recovery_ladder = _default_recovery_ladder(getattr(sender, "chat_title", ""), batch_root)
+    summary["recovery_ladder"] = recovery_ladder
+
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    context_path.write_text(
+        json.dumps(
+            {
+                "failure_code": failure_code,
+                "detail": detail,
+                "pdf_filename": pdf_filename or "",
+                "manifest_path": str(manifest_path or ""),
+                "batch_root": str(batch_root or ""),
+                "diagnostics_dir": str(diagnostics_dir),
+                "browser_mode": str(getattr(sender, "browser_mode", "") or ""),
+                "profile_name": str(getattr(sender, "profile_name", "") or ""),
+                "profile_directory": str(getattr(sender, "profile_directory", "") or ""),
+                "cdp_endpoint": str(getattr(sender, "cdp_endpoint", "") or ""),
+                "ui_invalidated": bool(getattr(sender, "_ui_invalidated", False)),
+                "ui_invalidation_reason": str(getattr(sender, "_ui_invalidation_reason", "") or ""),
+                "document_send_inflight": bool(getattr(sender, "_document_send_inflight", False)),
+                "document_send_filename": str(getattr(sender, "_document_send_filename", "") or ""),
+                "recovery_ladder": recovery_ladder,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "diagnostics_dir": str(diagnostics_dir),
+        "screenshot_path": str(screenshot_path) if screenshot_path.exists() else "",
+        "html_path": str(html_path) if html_path.exists() else "",
+        "dom_summary_path": str(summary_path),
+        "recovery_ladder": recovery_ladder,
+    }
+
+
 def verify_send_batch_preflight(
     today_folder: Path,
     source_mode: str = SOURCE_AUTO,
     *,
     allow_unsure_resume: bool = False,
+    expected_target_date: Optional[date] = None,
+    allow_stale_batch: bool = False,
 ) -> Dict[str, Any]:
     issues: List[Dict[str, Any]] = []
     try:
@@ -337,6 +555,42 @@ def verify_send_batch_preflight(
         )
 
     issues.extend(_validate_manifest_order_consistency(manifest))
+
+    manifest_target_raw = str(manifest.get("target_date") or "").strip()
+    manifest_target_date: Optional[date] = None
+    if manifest_target_raw:
+        try:
+            manifest_target_date = date.fromisoformat(manifest_target_raw)
+        except ValueError:
+            issues.append(
+                {
+                    "code": "target_date_invalid",
+                    "detail": manifest_target_raw,
+                }
+            )
+    elif expected_target_date is not None and not allow_stale_batch:
+        issues.append(
+            {
+                "code": "target_date_missing",
+                "detail": "manifest target_date is empty",
+            }
+        )
+
+    if (
+        expected_target_date is not None
+        and manifest_target_date is not None
+        and manifest_target_date != expected_target_date
+        and not allow_stale_batch
+    ):
+        issues.append(
+            {
+                "code": "target_date_mismatch",
+                "detail": (
+                    f"manifest={manifest_target_date.isoformat()} "
+                    f"expected={expected_target_date.isoformat()}"
+                ),
+            }
+        )
 
     overdue_order_ids = set(manifest.get("overdue_order_ids") or [])
     send_order_ids = set(manifest.get("send_order_ids") or [])
@@ -401,9 +655,95 @@ def verify_send_batch_preflight(
         "manifest_path": manifest["manifest_path"],
         "batch_root": manifest["batch_root"],
         "batch_hash": manifest.get("batch_hash", ""),
+        "target_date": manifest_target_date.isoformat() if manifest_target_date else manifest_target_raw,
+        "expected_target_date": expected_target_date.isoformat() if expected_target_date else None,
         "send_pdf_count": int(manifest.get("counts", {}).get("pdfs", 0) or 0),
         "send_order_count": int(manifest.get("counts", {}).get("orders", 0) or 0),
     }
+
+
+def run_sender_smoke_check(
+    *,
+    today_folder: Path,
+    chat_title: str,
+    bundle_source: str,
+    chrome_user_data_dir: Path,
+    chrome_profile_directory: str,
+    chrome_profile_name: Optional[str] = DEFAULT_CHROME_PROFILE_NAME,
+    cdp_endpoint: str = DEFAULT_CDP_ENDPOINT,
+    browser_mode: str = DEFAULT_BROWSER_MODE,
+    blocked_chat_titles: Iterable[str] = BLOCKED_CHAT_TITLES_DEFAULT,
+    expected_target_date: Optional[date] = None,
+    allow_stale_batch: bool = False,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    preflight = verify_send_batch_preflight(
+        today_folder,
+        source_mode=bundle_source,
+        expected_target_date=expected_target_date,
+        allow_stale_batch=allow_stale_batch,
+    )
+    if not preflight.get("ok"):
+        return preflight
+
+    batch_root = Path(str(preflight.get("batch_root") or "")) if preflight.get("batch_root") else None
+    manifest_path = Path(str(preflight.get("manifest_path") or "")) if preflight.get("manifest_path") else None
+
+    if not check_playwright():
+        return {
+            "ok": False,
+            "issues": [{"code": "playwright_unavailable", "detail": "Playwright is not installed"}],
+            "manifest_path": str(manifest_path or ""),
+            "batch_root": str(batch_root or ""),
+            "batch_hash": preflight.get("batch_hash", ""),
+            "target_date": preflight.get("target_date"),
+            "recovery_ladder": _default_recovery_ladder(chat_title, batch_root),
+        }
+
+    sender = WhatsAppSender(
+        chat_title=chat_title,
+        user_data_dir=Path(chrome_user_data_dir),
+        profile_directory=chrome_profile_directory,
+        profile_name=chrome_profile_name,
+        cdp_endpoint=cdp_endpoint,
+        browser_mode=browser_mode,
+        blocked_chat_titles=blocked_chat_titles,
+        action_timeout_ms=ACTION_TIMEOUT_MS,
+        verbose=verbose,
+    )
+    try:
+        with sender:
+            sender.assert_document_send_ready()
+            return {
+                "ok": True,
+                "issues": [],
+                "manifest_path": str(manifest_path or ""),
+                "batch_root": str(batch_root or ""),
+                "batch_hash": preflight.get("batch_hash", ""),
+                "target_date": preflight.get("target_date"),
+                "active_chat_title": sender._active_chat_title(),
+                "recovery_ladder": _default_recovery_ladder(chat_title, batch_root),
+            }
+    except Exception as exc:
+        diagnostics = capture_sender_failure_diagnostics(
+            sender,
+            today_folder=today_folder,
+            failure_code="SMOKE_CHECK_FAILED",
+            batch_root=batch_root,
+            manifest_path=manifest_path,
+            pdf_filename=None,
+            detail=str(exc),
+        )
+        return {
+            "ok": False,
+            "issues": [{"code": "smoke_check_failed", "detail": str(exc)}],
+            "manifest_path": str(manifest_path or ""),
+            "batch_root": str(batch_root or ""),
+            "batch_hash": preflight.get("batch_hash", ""),
+            "target_date": preflight.get("target_date"),
+            "diagnostics_dir": diagnostics.get("diagnostics_dir", ""),
+            "recovery_ladder": diagnostics.get("recovery_ladder", []),
+        }
 
 
 # =============================================================================
@@ -1043,12 +1383,106 @@ def _copy_profile_to_temp(user_data_dir: Path, profile_directory: str, verbose: 
     return tmp_root
 
 
+def _load_chrome_local_state(user_data_dir: Path) -> Dict[str, Any]:
+    local_state_path = Path(user_data_dir) / "Local State"
+    if not local_state_path.exists():
+        raise FileNotFoundError(f"Chrome Local State not found: {local_state_path}")
+    try:
+        payload = json.loads(local_state_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Chrome Local State is not valid JSON: {local_state_path}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Chrome Local State has unexpected structure: {local_state_path}")
+    return payload
+
+
+def _profile_info_cache(user_data_dir: Path) -> Dict[str, Dict[str, Any]]:
+    payload = _load_chrome_local_state(user_data_dir)
+    cache = payload.get("profile", {}).get("info_cache", {})
+    if not isinstance(cache, dict):
+        raise RuntimeError("Chrome profile info_cache is missing from Local State")
+    return {
+        str(key): value
+        for key, value in cache.items()
+        if isinstance(value, dict)
+    }
+
+
+def resolve_chrome_profile_directory(
+    user_data_dir: Path,
+    *,
+    profile_name: Optional[str] = None,
+    profile_directory: Optional[str] = None,
+) -> str:
+    resolved_directory = str(profile_directory or "").strip()
+    resolved_name = str(profile_name or "").strip()
+    if not resolved_name:
+        if not resolved_directory:
+            raise RuntimeError("Chrome profile name or directory is required")
+        return resolved_directory
+
+    info_cache = _profile_info_cache(user_data_dir)
+    matches = [
+        directory
+        for directory, meta in info_cache.items()
+        if _normalize_chat_key(str(meta.get("name") or "")) == _normalize_chat_key(resolved_name)
+    ]
+    if not matches:
+        available = ", ".join(
+            sorted(
+                {
+                    str(meta.get("name") or directory)
+                    for directory, meta in info_cache.items()
+                }
+            )
+        )
+        raise RuntimeError(
+            f"Chrome profile named {resolved_name!r} was not found under {user_data_dir}. "
+            f"Available profiles: {available}"
+        )
+    chosen_directory = sorted(matches)[0]
+    if resolved_directory and resolved_directory != chosen_directory:
+        raise RuntimeError(
+            f"Chrome profile mismatch: name {resolved_name!r} resolves to {chosen_directory!r}, "
+            f"not {resolved_directory!r}"
+        )
+    return chosen_directory
+
+
+def resolve_chrome_profile_name(user_data_dir: Path, profile_directory: str) -> str:
+    info_cache = _profile_info_cache(user_data_dir)
+    meta = info_cache.get(str(profile_directory).strip())
+    if not meta:
+        return str(profile_directory).strip()
+    return str(meta.get("name") or profile_directory).strip()
+
+
+def _fetch_cdp_json(endpoint: str, path: str) -> Any:
+    target_url = f"{str(endpoint).rstrip('/')}/{path.lstrip('/')}"
+    try:
+        with urllib.request.urlopen(target_url, timeout=3) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        helper_hint = ""
+        if WHATSAPP_DEBUG_CHROME_HELPER.exists():
+            helper_hint = f" Use {WHATSAPP_DEBUG_CHROME_HELPER} to launch the Universal debug session."
+        raise RuntimeError(
+            f"Chrome DevTools endpoint is unavailable at {endpoint}. "
+            "Start Chrome with remote debugging enabled and keep the Universal profile open."
+            f"{helper_hint}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Chrome DevTools endpoint returned invalid JSON: {target_url}") from exc
+
+
 @dataclass
 class _SendContext:
     page: Any
-    context: Any
+    context: Optional[Any]
+    browser: Optional[Any]
     playwright: Any
     temp_profile_root: Optional[Path]
+    close_context_on_shutdown: bool = True
 
 
 class WhatsAppSender:
@@ -1058,19 +1492,34 @@ class WhatsAppSender:
         self,
         chat_title: str,
         user_data_dir: Path,
-        profile_directory: str,
-        blocked_chat_titles: Iterable[str],
+        profile_directory: str = DEFAULT_CHROME_PROFILE_DIR,
+        blocked_chat_titles: Iterable[str] = BLOCKED_CHAT_TITLES_DEFAULT,
+        profile_name: Optional[str] = DEFAULT_CHROME_PROFILE_NAME,
+        cdp_endpoint: str = DEFAULT_CDP_ENDPOINT,
+        browser_mode: str = DEFAULT_BROWSER_MODE,
         action_timeout_ms: int = ACTION_TIMEOUT_MS,
         verbose: bool = False,
     ) -> None:
         self.chat_title = chat_title
         self.chat_key = _normalize_chat_key(chat_title)
         self.user_data_dir = Path(user_data_dir)
-        self.profile_directory = profile_directory
+        self.requested_profile_name = str(profile_name or "").strip()
+        self.profile_name = self.requested_profile_name
+        self.profile_directory = str(profile_directory or "").strip()
+        self.cdp_endpoint = str(cdp_endpoint or "").strip() or DEFAULT_CDP_ENDPOINT
+        if browser_mode not in BROWSER_MODE_CHOICES:
+            raise ValueError(f"Unsupported browser_mode {browser_mode!r}")
+        self.browser_mode = browser_mode
         self.blocked_chat_keys = {_normalize_chat_key(x) for x in blocked_chat_titles if x}
         self.action_timeout_ms = action_timeout_ms
         self.verbose = verbose
         self._ctx: Optional[_SendContext] = None
+        self._last_outgoing_snapshot: List[str] = []
+        self._ui_invalidated = False
+        self._ui_invalidation_reason = ""
+        self._document_send_inflight = False
+        self._document_send_filename = ""
+        self._page_watchers_registered = False
 
         if not self.chat_title:
             raise ValueError("chat_title is required")
@@ -1083,9 +1532,132 @@ class WhatsAppSender:
             raise RuntimeError("WhatsApp sender not started")
         return self._ctx.page
 
-    def start(self) -> None:
-        from playwright.sync_api import sync_playwright
+    def _log(self, message: str) -> None:
+        if self.verbose:
+            print(message)
 
+    def _resolve_browser_profile(self) -> None:
+        if self.requested_profile_name:
+            self.profile_directory = resolve_chrome_profile_directory(
+                self.user_data_dir,
+                profile_name=self.requested_profile_name,
+                profile_directory=self.profile_directory or None,
+            )
+            self.profile_name = self.requested_profile_name
+            return
+        if not self.profile_directory:
+            self.profile_directory = DEFAULT_CHROME_PROFILE_DIR
+        try:
+            self.profile_name = resolve_chrome_profile_name(self.user_data_dir, self.profile_directory)
+        except Exception:
+            self.profile_name = self.profile_directory
+
+    def _mark_ui_invalidated(self, reason: str) -> None:
+        message = str(reason or "").strip() or "page invalidated"
+        if self._ui_invalidated and self._ui_invalidation_reason == message:
+            return
+        self._ui_invalidated = True
+        self._ui_invalidation_reason = message
+        self._log(f"WhatsApp UI invalidated: {message}")
+
+    def _clear_ui_invalidated(self) -> None:
+        self._ui_invalidated = False
+        self._ui_invalidation_reason = ""
+
+    def _reset_document_send_tracking(self) -> None:
+        self._document_send_inflight = False
+        self._document_send_filename = ""
+
+    def mark_document_send_clicked(self, expected_filename: str) -> None:
+        self._document_send_inflight = True
+        self._document_send_filename = str(expected_filename or "").strip()
+        self._clear_ui_invalidated()
+
+    def _raise_if_document_send_invalidated(self, expected_filename: str) -> None:
+        if not self._document_send_inflight or not self._ui_invalidated:
+            return
+        detail = self._ui_invalidation_reason or "WhatsApp page reloaded or lost the active chat"
+        raise RuntimeError(
+            f"reload detected after send click for {expected_filename}: {detail}"
+        )
+
+    def _register_page_watchers(self, page: Any) -> None:
+        if self._page_watchers_registered or not hasattr(page, "on"):
+            return
+
+        def _handle_main_frame_navigation(frame: Any) -> None:
+            try:
+                if frame != page.main_frame:
+                    return
+            except Exception:
+                return
+            frame_url = ""
+            try:
+                frame_url = str(getattr(frame, "url", "") or page.url or "")
+            except Exception:
+                frame_url = ""
+            self._mark_ui_invalidated(f"main frame navigated to {frame_url or '<unknown>'}")
+
+        def _handle_page_load() -> None:
+            try:
+                page_url = str(page.url or "")
+            except Exception:
+                page_url = ""
+            self._mark_ui_invalidated(f"page loaded at {page_url or '<unknown>'}")
+
+        page.on("framenavigated", _handle_main_frame_navigation)
+        page.on("load", _handle_page_load)
+        self._page_watchers_registered = True
+
+    def _select_existing_whatsapp_page(self, browser: Any) -> Any:
+        candidates: List[Any] = []
+        for context in list(getattr(browser, "contexts", []) or []):
+            for page in list(getattr(context, "pages", []) or []):
+                try:
+                    url = str(page.url or "")
+                except Exception:
+                    url = ""
+                if url.startswith(WHATSAPP_WEB_URL):
+                    candidates.append(page)
+        if candidates:
+            return candidates[-1]
+
+        tabs_payload = _fetch_cdp_json(self.cdp_endpoint, "/json/list")
+        tab_urls = []
+        if isinstance(tabs_payload, list):
+            tab_urls = [
+                str(item.get("url") or "").strip()
+                for item in tabs_payload
+                if isinstance(item, dict)
+            ]
+        raise RuntimeError(
+            "No existing WhatsApp Web tab was found in the attached Chrome session. "
+            f"Open {WHATSAPP_WEB_URL} in the Chrome profile {self.profile_name!r} "
+            f"({self.profile_directory}) before running the sender. "
+            f"Observed CDP tabs: {tab_urls[:8]}"
+        )
+
+    def _start_with_attached_chrome(self, playwright: Any) -> _SendContext:
+        _fetch_cdp_json(self.cdp_endpoint, "/json/version")
+        self._log(f"Attaching to existing Chrome via CDP: {self.cdp_endpoint}")
+        browser = playwright.chromium.connect_over_cdp(self.cdp_endpoint)
+        page = self._select_existing_whatsapp_page(browser)
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        page.set_default_timeout(self.action_timeout_ms)
+        self._register_page_watchers(page)
+        return _SendContext(
+            page=page,
+            context=getattr(page, "context", None),
+            browser=browser,
+            playwright=playwright,
+            temp_profile_root=None,
+            close_context_on_shutdown=False,
+        )
+
+    def _start_with_temp_profile(self, playwright: Any) -> _SendContext:
         temp_root: Optional[Path] = None
         if COPY_PROFILE_TO_TEMP:
             temp_root = _copy_profile_to_temp(self.user_data_dir, self.profile_directory, verbose=self.verbose)
@@ -1093,27 +1665,52 @@ class WhatsAppSender:
         else:
             launch_user_data_dir = self.user_data_dir
 
-        playwright = sync_playwright().start()
+        self._log("Launching Chrome persistent context...")
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(launch_user_data_dir),
             channel="chrome",
             headless=False,
-            args=[f"--profile-directory={self.profile_directory}"],
+            no_viewport=True,
+            args=[
+                f"--profile-directory={self.profile_directory}",
+                "--start-maximized",
+            ],
         )
-        page = context.pages[0] if context.pages else context.new_page()
+        page = context.new_page()
         page.set_default_timeout(self.action_timeout_ms)
+        self._log(f"Navigating to {WHATSAPP_WEB_URL} ...")
         page.goto(WHATSAPP_WEB_URL, wait_until="domcontentloaded")
-
-        self._ctx = _SendContext(
+        self._register_page_watchers(page)
+        self._clear_ui_invalidated()
+        return _SendContext(
             page=page,
             context=context,
+            browser=None,
             playwright=playwright,
             temp_profile_root=temp_root,
+            close_context_on_shutdown=True,
         )
 
+    def start(self) -> None:
+        from playwright.sync_api import sync_playwright
+
+        self._resolve_browser_profile()
+        playwright = sync_playwright().start()
+        self._page_watchers_registered = False
+        self._clear_ui_invalidated()
+        self._reset_document_send_tracking()
+        if self.browser_mode == BROWSER_MODE_ATTACH:
+            self._ctx = self._start_with_attached_chrome(playwright)
+        else:
+            self._ctx = self._start_with_temp_profile(playwright)
+
+        self._log("Waiting for WhatsApp session readiness...")
         self._assert_session_ready()
+        self._log("Waiting for chat list...")
         self._wait_for_chat_list_ready()
+        self._log(f"Opening target chat: {self.chat_title}")
         self.open_chat(self.chat_title)
+        self._clear_ui_invalidated()
 
     def close(self) -> None:
         if not self._ctx:
@@ -1121,7 +1718,8 @@ class WhatsAppSender:
 
         temp_root = self._ctx.temp_profile_root
         try:
-            self._ctx.context.close()
+            if self._ctx.close_context_on_shutdown and self._ctx.context is not None:
+                self._ctx.context.close()
         finally:
             try:
                 self._ctx.playwright.stop()
@@ -1129,6 +1727,9 @@ class WhatsAppSender:
                 if temp_root:
                     shutil.rmtree(temp_root, ignore_errors=True)
         self._ctx = None
+        self._page_watchers_registered = False
+        self._clear_ui_invalidated()
+        self._reset_document_send_tracking()
 
     def __enter__(self) -> "WhatsAppSender":
         self.start()
@@ -1139,7 +1740,7 @@ class WhatsAppSender:
 
     def _wait_for_chat_list_ready(self) -> None:
         self.page.locator("div[aria-label='Chat list']").wait_for(timeout=CHAT_OPEN_TIMEOUT_MS)
-        self._resolve_sidebar_search(timeout_ms=CHAT_OPEN_TIMEOUT_MS, required=False)
+        self._resolve_sidebar_search(timeout_ms=min(CHAT_OPEN_TIMEOUT_MS, 8_000), required=False)
 
     def _assert_session_ready(self, timeout_ms: int = CHAT_OPEN_TIMEOUT_MS) -> None:
         if not hasattr(self.page, "locator"):
@@ -1193,6 +1794,8 @@ class WhatsAppSender:
 
     def _sidebar_search_candidates(self) -> List[Any]:
         return [
+            self.page.locator("input[role='textbox'][aria-label='Search or start a new chat']").first,
+            self.page.locator("input[placeholder='Search or start a new chat']").first,
             self.page.locator("div[aria-label='Search input textbox']").first,
             self.page.locator(
                 "div[role='textbox'][contenteditable='true'][aria-label='Search input textbox']"
@@ -1328,10 +1931,21 @@ class WhatsAppSender:
         except Exception:
             return False
 
+    def _attach_button_available(self) -> bool:
+        for selector in ATTACH_BUTTON_SELECTORS:
+            try:
+                if self.page.locator(selector).count() > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _assert_active_target_chat(self) -> None:
         deadline = time.time() + 12.0
         last_title = ""
         while time.time() < deadline:
+            if self._chat_home_screen_visible():
+                raise RuntimeError("WhatsApp home screen is visible; no chat is currently open")
             active_title = self._active_chat_title()
             active_key = _normalize_chat_key(active_title)
             last_title = active_title
@@ -1364,9 +1978,12 @@ class WhatsAppSender:
         last_error: Optional[Exception] = None
         for _ in range(3):
             try:
+                self._log("Recovering target chat after WhatsApp UI drift...")
                 self._assert_session_ready(timeout_ms=min(self.action_timeout_ms, CHAT_OPEN_TIMEOUT_MS))
                 self._wait_for_chat_list_ready()
                 self.open_chat(self.chat_title)
+                self._clear_ui_invalidated()
+                self._log(f"Target chat reopened: {self.chat_title}")
                 return
             except Exception as exc:
                 last_error = exc
@@ -1379,14 +1996,20 @@ class WhatsAppSender:
         self,
         *,
         require_composer: bool = True,
+        require_attach_button: bool = False,
         timeout_ms: Optional[int] = None,
     ) -> None:
         resolved_timeout = timeout_ms if timeout_ms is not None else max(self.action_timeout_ms, 12_000)
         last_error: Optional[Exception] = None
         for attempt in range(1, 3):
             try:
+                if self._ui_invalidated and not self._document_send_inflight:
+                    self._recover_target_chat_after_ui_drift()
                 self._assert_active_target_chat()
                 self._resolve_composer(timeout_ms=resolved_timeout, required=require_composer)
+                if require_attach_button and not self._attach_button_available():
+                    raise RuntimeError("Attach button is not visible in target chat")
+                self._clear_ui_invalidated()
                 return
             except Exception as exc:
                 last_error = exc
@@ -1464,6 +2087,7 @@ class WhatsAppSender:
 
         self._assert_active_target_chat()
         self._resolve_composer(timeout_ms=min(self.action_timeout_ms, 20_000), required=False)
+        self._clear_ui_invalidated()
 
         if self.verbose:
             print(f"WhatsApp active chat: {self._active_chat_title()}")
@@ -1529,15 +2153,15 @@ class WhatsAppSender:
     def _choose_file_via_document_menu(self, pdf_path: Path) -> None:
         from playwright.sync_api import TimeoutError as PWTimeoutError
 
+        if self._try_set_document_input_files(pdf_path):
+            return
+
         last_error: Optional[Exception] = None
         for _ in range(3):
             try:
                 with self.page.expect_file_chooser(timeout=7000) as chooser_info:
                     self._safe_click_selectors(
-                        [
-                            "div[role='menuitem'][aria-label='Document']",
-                            "div[role='menuitem'][aria-label='Документ']",
-                        ],
+                        DOCUMENT_MENU_SELECTORS,
                         "document menu item",
                         timeout_ms=5000,
                     )
@@ -1546,27 +2170,127 @@ class WhatsAppSender:
                 return
             except PWTimeoutError as exc:
                 last_error = exc
+                if self._try_set_document_input_files(pdf_path):
+                    return
                 self.page.wait_for_timeout(500)
             except Exception as exc:
                 last_error = exc
+                if self._try_set_document_input_files(pdf_path):
+                    return
                 self.page.wait_for_timeout(500)
 
         if last_error:
             raise last_error
         raise RuntimeError("Failed to open document file chooser")
 
+    def _try_set_document_input_files(self, pdf_path: Path) -> bool:
+        for selector in DOCUMENT_INPUT_SELECTORS:
+            locator = self.page.locator(selector)
+            if locator.count() <= 0:
+                continue
+            try:
+                locator.first.set_input_files(str(pdf_path), timeout=1500)
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _document_controls_available(self) -> bool:
+        for selector in [*DOCUMENT_INPUT_SELECTORS, *DOCUMENT_MENU_SELECTORS]:
+            try:
+                if self.page.locator(selector).count() > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _wait_for_document_controls(self, timeout_ms: int = 4000) -> bool:
+        deadline = time.time() + (timeout_ms / 1000.0)
+        while time.time() < deadline:
+            if self._document_controls_available():
+                return True
+            self.page.wait_for_timeout(200)
+        return False
+
+    def assert_document_send_ready(self) -> None:
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 3):
+            try:
+                if self.verbose:
+                    print(f"Checking document controls (attempt {attempt}/2)...")
+                self._ensure_target_chat_ready(
+                    require_composer=True,
+                    require_attach_button=True,
+                )
+                if self._document_controls_available():
+                    if self.verbose:
+                        print("Document controls already visible.")
+                    return
+                self._safe_click_selectors(
+                    ATTACH_BUTTON_SELECTORS,
+                    "attach button",
+                    timeout_ms=8_000,
+                )
+                if not self._wait_for_document_controls(timeout_ms=4_000):
+                    raise RuntimeError("Document upload controls not ready in target chat")
+                try:
+                    self.page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                self._ensure_target_chat_ready(
+                    require_composer=True,
+                    require_attach_button=True,
+                )
+                if self.verbose:
+                    print("Document controls verified.")
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= 2:
+                    break
+                self._recover_target_chat_after_ui_drift()
+                self.page.wait_for_timeout(500)
+        if last_error:
+            raise last_error
+        raise RuntimeError("Document upload controls not ready in target chat")
+
     def _outgoing_message_count(self) -> int:
         try:
             value = self.page.evaluate(
                 """
                 () => {
-                  return document.querySelectorAll("div.message-out").length;
+                  const normalize = (raw) =>
+                    String(raw || "")
+                      .replace(/\\s+/g, " ")
+                      .trim()
+                      .toLowerCase();
+                  const outgoing = Array.from(document.querySelectorAll("div.message-out"));
+                  return {
+                    count: outgoing.length,
+                    tail: outgoing
+                      .slice(-8)
+                      .map((node) => normalize(node.innerText || node.textContent || ""))
+                      .filter(Boolean),
+                  };
                 }
                 """
             )
+            if isinstance(value, dict):
+                self._last_outgoing_snapshot = [
+                    self._normalize_outgoing_text(item)
+                    for item in (value.get("tail") or [])
+                    if self._normalize_outgoing_text(item)
+                ]
+                return int(value.get("count") or 0)
+            self._last_outgoing_snapshot = []
             return int(value or 0)
         except Exception:
+            self._last_outgoing_snapshot = []
             return 0
+
+    @staticmethod
+    def _normalize_outgoing_text(value: str) -> str:
+        return " ".join(str(value or "").split()).strip().lower()
 
     def _wait_for_new_outgoing_message(self, previous_count: int, timeout_ms: int) -> None:
         last_error: Optional[Exception] = None
@@ -1596,6 +2320,40 @@ class WhatsAppSender:
             return
         if last_error:
             raise last_error
+
+    def _wait_for_text_message_bubble(self, text: str, timeout_ms: int) -> None:
+        collapsed = self._normalize_outgoing_text(text)
+        lines = [
+            normalized
+            for normalized in (
+                self._normalize_outgoing_text(line)
+                for line in str(text or "").splitlines()
+            )
+            if normalized
+        ]
+        self.page.wait_for_function(
+            """
+            (payload) => {
+              const normalize = (value) =>
+                String(value || "")
+                  .replace(/\\s+/g, " ")
+                  .trim()
+                  .toLowerCase();
+              const outgoing = Array.from(document.querySelectorAll("div.message-out")).slice(-12).reverse();
+              return outgoing.some((node) => {
+                const normalized = normalize(node.innerText || node.textContent || "");
+                if (!normalized) return false;
+                if (payload.collapsed && normalized.includes(payload.collapsed)) return true;
+                if (payload.lines && payload.lines.length) {
+                  return payload.lines.every((line) => normalized.includes(line));
+                }
+                return false;
+              });
+            }
+            """,
+            arg={"collapsed": collapsed, "lines": lines},
+            timeout=timeout_ms,
+        )
 
     def _wait_for_last_outgoing_settled(self, timeout_ms: int) -> None:
         """
@@ -1654,15 +2412,26 @@ class WhatsAppSender:
         self.page.wait_for_function(
             """
             (payload) => {
+              const normalize = (raw) =>
+                String(raw || "")
+                  .replace(/\\s+/g, " ")
+                  .trim()
+                  .toLowerCase();
+              const seen = new Set((payload.seen || []).map((value) => normalize(value)));
               const outgoing = Array.from(document.querySelectorAll("div.message-out")).slice(-12);
               const candidates = [payload.filename, payload.stem].filter(Boolean).map((x) => x.toLowerCase());
               return outgoing.some((node) => {
-                const text = String(node.innerText || node.textContent || '').toLowerCase();
+                const text = normalize(node.innerText || node.textContent || '');
+                if (!text || seen.has(text)) return false;
                 return candidates.some((candidate) => candidate && text.includes(candidate));
               });
             }
             """,
-            arg={"filename": expected_name, "stem": expected_stem},
+            arg={
+                "filename": expected_name,
+                "stem": expected_stem,
+                "seen": list(self._last_outgoing_snapshot),
+            },
             timeout=timeout_ms,
         )
 
@@ -1672,10 +2441,17 @@ class WhatsAppSender:
         self.page.wait_for_function(
             """
             (payload) => {
+              const normalize = (raw) =>
+                String(raw || "")
+                  .replace(/\\s+/g, " ")
+                  .trim()
+                  .toLowerCase();
               const outgoing = Array.from(document.querySelectorAll("div.message-out")).slice(-12).reverse();
+              const seen = new Set((payload.seen || []).map((value) => normalize(value)));
               const candidates = [payload.filename, payload.stem].filter(Boolean).map((x) => x.toLowerCase());
               const matched = outgoing.find((node) => {
-                const text = String(node.innerText || node.textContent || '').toLowerCase();
+                const text = normalize(node.innerText || node.textContent || '');
+                if (!text || seen.has(text)) return false;
                 return candidates.some((candidate) => candidate && text.includes(candidate));
               });
               if (!matched) return false;
@@ -1693,7 +2469,11 @@ class WhatsAppSender:
               return !pending;
             }
             """,
-            arg={"filename": expected_name, "stem": expected_stem},
+            arg={
+                "filename": expected_name,
+                "stem": expected_stem,
+                "seen": list(self._last_outgoing_snapshot),
+            },
             timeout=timeout_ms,
         )
 
@@ -1706,7 +2486,6 @@ class WhatsAppSender:
             return
 
         self._ensure_target_chat_ready(require_composer=True)
-        prev_outgoing = self._outgoing_message_count()
         composer = self._resolve_composer(
             timeout_ms=max(self.action_timeout_ms, 12_000),
             required=True,
@@ -1738,8 +2517,8 @@ class WhatsAppSender:
                 self.page.keyboard.press("Shift+Enter")
 
         self.page.keyboard.press("Enter")
-        self._wait_for_new_outgoing_message(
-            prev_outgoing,
+        self._wait_for_text_message_bubble(
+            text,
             timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
         )
         self._wait_for_last_outgoing_settled(
@@ -1751,17 +2530,29 @@ class WhatsAppSender:
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-        self._ensure_target_chat_ready(require_composer=True)
-        self._safe_click_selectors(
-            [
-                "button[aria-label='Attach']",
-                "button[aria-label='Прикрепить']",
-            ],
-            "attach button",
-            timeout_ms=8_000,
-        )
-        self._choose_file_via_document_menu(pdf_path)
-        self.page.wait_for_timeout(300)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 3):
+            try:
+                self._ensure_target_chat_ready(
+                    require_composer=True,
+                    require_attach_button=True,
+                )
+                self._safe_click_selectors(
+                    ATTACH_BUTTON_SELECTORS,
+                    "attach button",
+                    timeout_ms=8_000,
+                )
+                self._choose_file_via_document_menu(pdf_path)
+                self.page.wait_for_timeout(300)
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= 2:
+                    break
+                self._recover_target_chat_after_ui_drift()
+                self.page.wait_for_timeout(500)
+        if last_error:
+            raise last_error
 
     def click_document_send(self) -> None:
         selectors = [
@@ -1790,22 +2581,39 @@ class WhatsAppSender:
         expected_filename: str,
         previous_outgoing: Optional[int] = None,
     ) -> None:
+        count_gate_error: Optional[Exception] = None
         try:
+            self._raise_if_document_send_invalidated(expected_filename)
             if previous_outgoing is not None:
-                self._wait_for_new_outgoing_message(
-                    previous_outgoing,
-                    timeout_ms=max(self.action_timeout_ms, DOCUMENT_SETTLE_TIMEOUT_MS),
-                )
+                try:
+                    self._wait_for_new_outgoing_message(
+                        previous_outgoing,
+                        timeout_ms=max(self.action_timeout_ms, DOCUMENT_SETTLE_TIMEOUT_MS),
+                    )
+                except Exception as exc:
+                    count_gate_error = exc
+            self._raise_if_document_send_invalidated(expected_filename)
             self._wait_for_document_bubble(
                 expected_filename,
                 timeout_ms=max(self.action_timeout_ms, DOCUMENT_APPEAR_TIMEOUT_MS),
             )
+            self._raise_if_document_send_invalidated(expected_filename)
             self._wait_for_document_bubble_settled(
                 expected_filename,
                 timeout_ms=max(self.action_timeout_ms, DOCUMENT_SETTLE_TIMEOUT_MS),
             )
+            self._raise_if_document_send_invalidated(expected_filename)
             self._assert_active_target_chat()
+            self._clear_ui_invalidated()
+            self._reset_document_send_tracking()
         except Exception as exc:
+            self._reset_document_send_tracking()
+            if count_gate_error is not None:
+                raise RuntimeError(
+                    f"{UNSURE_REASON_PREFIX} document confirmation failed for {expected_filename}: "
+                    f"outgoing count gate failed ({count_gate_error}); "
+                    f"filename bubble confirmation failed: {exc}"
+                ) from exc
             raise RuntimeError(
                 f"{UNSURE_REASON_PREFIX} document confirmation failed for {expected_filename}: {exc}"
             ) from exc
@@ -2092,6 +2900,23 @@ def _record_status_message_failure(results: Dict[str, Any], *, phase: str, error
     details.append({"phase": phase_key, "detail": str(error)})
 
 
+def _confirmed_progress_snapshot(
+    entries: List[Dict[str, Any]],
+    ledger: Dict[str, Any],
+) -> tuple[int, Counter[str]]:
+    confirmed_bundles = 0
+    sent_orders_by_store: Counter[str] = Counter()
+    ledger_entries = dict(ledger.get("entries") or {})
+    for entry in entries:
+        entry_state = str(ledger_entries.get(entry["pdf_key"], {}).get("state") or "pending")
+        if entry_state != "confirmed":
+            continue
+        confirmed_bundles += 1
+        for store_name, qty in dict(entry.get("order_counts_by_store") or {}).items():
+            sent_orders_by_store[_normalize_store_label(store_name)] += int(qty)
+    return confirmed_bundles, sent_orders_by_store
+
+
 def run_sender(
     today_folder: Path,
     chat_title: Optional[str],
@@ -2099,12 +2924,19 @@ def run_sender(
     resume: bool = True,
     bundle_source: str = SOURCE_AUTO,
     status_messages: bool = True,
+    post_status_message_only: bool = False,
+    expected_target_date: Optional[date] = None,
+    allow_stale_batch: bool = False,
     send_delay: float = SEND_DELAY,
     chrome_user_data_dir: Path = DEFAULT_CHROME_USER_DATA_DIR,
     chrome_profile_directory: str = DEFAULT_CHROME_PROFILE_DIR,
+    chrome_profile_name: Optional[str] = DEFAULT_CHROME_PROFILE_NAME,
+    cdp_endpoint: str = DEFAULT_CDP_ENDPOINT,
+    browser_mode: str = DEFAULT_BROWSER_MODE,
     blocked_chat_titles: Iterable[str] = BLOCKED_CHAT_TITLES_DEFAULT,
     fail_fast: bool = False,
     allow_unsure_resume: bool = False,
+    max_pdfs: Optional[int] = None,
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """Run WhatsApp PDF sender workflow."""
@@ -2121,11 +2953,16 @@ def run_sender(
         "status_message_failure_details": [],
         "halted": False,
         "halt_reason": "",
+        "diagnostics_dir": "",
+        "recovery_ladder": [],
     }
 
     if not chat_title and not dry_run:
         print("ERROR: --chat-title is required for live send.")
         return results
+
+    send_pre_status_message = bool(status_messages and not post_status_message_only)
+    send_post_status_message = bool(status_messages or post_status_message_only)
 
     if not dry_run and not check_playwright():
         print("ERROR: playwright not installed.")
@@ -2136,6 +2973,8 @@ def run_sender(
         today_folder,
         source_mode=bundle_source,
         allow_unsure_resume=allow_unsure_resume,
+        expected_target_date=expected_target_date,
+        allow_stale_batch=allow_stale_batch,
     )
     if not preflight["ok"]:
         results["failed"] += 1
@@ -2172,44 +3011,75 @@ def run_sender(
         print("No PDFs found in send batch manifest")
         return results
 
+    def _make_sender() -> WhatsAppSender:
+        return WhatsAppSender(
+            chat_title=chat_title or "",
+            user_data_dir=Path(chrome_user_data_dir),
+            profile_directory=chrome_profile_directory,
+            profile_name=chrome_profile_name,
+            cdp_endpoint=cdp_endpoint,
+            browser_mode=browser_mode,
+            blocked_chat_titles=blocked_chat_titles,
+            action_timeout_ms=ACTION_TIMEOUT_MS,
+            verbose=verbose,
+        )
+
     pdfs_to_send = select_manifest_entries_for_send(
         manifest,
         ledger,
         allow_unsure_resume=allow_unsure_resume,
     )
     pdfs_to_send = order_pdfs_for_sending(pdfs_to_send)
+    if max_pdfs is not None:
+        pdfs_to_send = pdfs_to_send[: max(0, int(max_pdfs))]
     results["skipped"] = len(entries) - len(pdfs_to_send)
+    confirmed_bundles_before_run, confirmed_orders_by_store_before_run = _confirmed_progress_snapshot(
+        entries,
+        ledger,
+    )
 
     if results["skipped"] > 0 and verbose:
         print(f"Skipping {results['skipped']} ledger-complete PDFs")
 
     if not pdfs_to_send:
         print("All PDFs already sent or blocked by ledger state!")
-        sent_orders_snapshot: Counter[str] = Counter()
-        for entry in entries:
-            entry_state = str(ledger.get("entries", {}).get(entry["pdf_key"], {}).get("state") or "pending")
-            if entry_state == "confirmed":
-                for store_name, qty in dict(entry.get("order_counts_by_store") or {}).items():
-                    sent_orders_snapshot[_normalize_store_label(store_name)] += int(qty)
         pre_status_text = format_pre_send_status_table(
             store_stats,
             bundles_target=len(entries),
         )
         post_status_text = format_post_send_status_table(
             store_stats,
-            dict(sent_orders_snapshot),
+            dict(confirmed_orders_by_store_before_run),
             bundles_target=len(entries),
-            bundles_sent=sum(1 for entry in entries if ledger.get("entries", {}).get(entry["pdf_key"], {}).get("state") == "confirmed"),
+            bundles_sent=confirmed_bundles_before_run,
         )
         print("\nPre-send status:")
         print(pre_status_text)
         print("\nPost-send status:")
         print(post_status_text)
+        if send_post_status_message and not dry_run and post_status_message_only:
+            sender = _make_sender()
+            try:
+                with sender:
+                    sender.send_text_message(post_status_text)
+                    try:
+                        sender.wait_for_outgoing_sync(timeout_ms=120_000)
+                    except Exception as exc:
+                        if verbose:
+                            print(f"WARNING: final outgoing sync check failed: {exc}")
+            except Exception as exc:
+                _record_status_message_failure(results, phase="post", error=exc)
+                print(f"\nWARNING: Failed to send post-send status message: {exc}")
+        elif verbose and send_post_status_message and not dry_run:
+            print(
+                "Skipping post-send WhatsApp status message because no PDFs are pending; "
+                "use --post-status-message-only to force a corrected summary resend."
+            )
         return results
 
     bundles_target = len(pdfs_to_send)
-    bundles_sent = 0
-    sent_orders_by_store: Counter[str] = Counter()
+    bundles_sent = confirmed_bundles_before_run
+    sent_orders_by_store: Counter[str] = Counter(confirmed_orders_by_store_before_run)
 
     print(f"\n{'[DRY RUN] ' if dry_run else ''}PDFs to send: {len(pdfs_to_send)}")
     print("-" * 50)
@@ -2240,25 +3110,41 @@ def run_sender(
         post_status_text = format_post_send_status_table(
             store_stats,
             dict(sent_orders_by_store),
-            bundles_target=bundles_target,
+            bundles_target=len(entries),
             bundles_sent=bundles_sent,
         )
         print("\nPost-send status:")
         print(post_status_text)
         return results
 
-    sender = WhatsAppSender(
-        chat_title=chat_title or "",
-        user_data_dir=Path(chrome_user_data_dir),
-        profile_directory=chrome_profile_directory,
-        blocked_chat_titles=blocked_chat_titles,
-        action_timeout_ms=ACTION_TIMEOUT_MS,
-        verbose=verbose,
-    )
+    sender = _make_sender()
+
+    def _capture_failure(
+        *,
+        failure_code: str,
+        detail: str,
+        pdf: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        diagnostics = capture_sender_failure_diagnostics(
+            sender,
+            today_folder=today_folder,
+            failure_code=failure_code,
+            batch_root=batch_root,
+            manifest_path=Path(manifest["manifest_path"]),
+            pdf_filename=str(pdf.get("filename") or "") if pdf else None,
+            detail=detail,
+        )
+        results["diagnostics_dir"] = diagnostics.get("diagnostics_dir", "")
+        results["recovery_ladder"] = diagnostics.get("recovery_ladder", [])
+        if diagnostics.get("diagnostics_dir"):
+            print(f"Diagnostics artifact: {diagnostics['diagnostics_dir']}")
+        return diagnostics
 
     try:
         with sender:
-            if status_messages:
+            if pdfs_to_send and hasattr(sender, "assert_document_send_ready"):
+                sender.assert_document_send_ready()
+            if send_pre_status_message:
                 try:
                     sender.send_text_message(pre_status_text)
                 except Exception as exc:
@@ -2289,6 +3175,8 @@ def run_sender(
                     save_send_ledger(ledger_path, ledger)
                     sender.prepare_document(pdf_path)
                     previous_outgoing = sender._outgoing_message_count()
+                    if hasattr(sender, "mark_document_send_clicked"):
+                        sender.mark_document_send_clicked(pdf["filename"])
                     sender.click_document_send()
                     transition_send_ledger_entry(ledger, pdf_key, "clicked")
                     save_send_ledger(ledger_path, ledger)
@@ -2299,8 +3187,19 @@ def run_sender(
                     transition_send_ledger_entry(ledger, pdf_key, "confirmed")
                     save_send_ledger(ledger_path, ledger)
                 except Exception as exc:
+                    reset_tracking = getattr(sender, "_reset_document_send_tracking", None)
+                    if callable(reset_tracking):
+                        try:
+                            reset_tracking()
+                        except Exception:
+                            pass
                     message = str(exc)
                     if message.startswith(UNSURE_REASON_PREFIX):
+                        diagnostics = _capture_failure(
+                            failure_code="UNSURE",
+                            detail=message,
+                            pdf=pdf,
+                        )
                         transition_send_ledger_entry(ledger, pdf_key, "unsure")
                         save_send_ledger(ledger_path, ledger)
                         results["failed"] += 1
@@ -2317,12 +3216,19 @@ def run_sender(
                                 "manifest_path": manifest["manifest_path"],
                                 "ledger_path": str(ledger_path),
                                 "captured_at": datetime.now().isoformat(),
+                                "diagnostics_dir": diagnostics.get("diagnostics_dir", ""),
+                                "recovery_ladder": diagnostics.get("recovery_ladder", []),
                             },
                         )
                         print(f"\nSTOPPING: {message}")
                         break
 
                     results["failed"] += 1
+                    diagnostics = _capture_failure(
+                        failure_code="FAILED",
+                        detail=str(exc),
+                        pdf=pdf,
+                    )
                     if ledger.get("entries", {}).get(pdf_key, {}).get("state") == "opened":
                         try:
                             transition_send_ledger_entry(ledger, pdf_key, "failed")
@@ -2334,6 +3240,21 @@ def run_sender(
                         print("Use --resume after fixing WhatsApp UI/session")
                         results["halted"] = True
                         results["halt_reason"] = "FAILED"
+                        _write_send_stopline(
+                            today_folder,
+                            {
+                                "halt_reason": "FAILED",
+                                "pdf_key": pdf_key,
+                                "filename": pdf["filename"],
+                                "detail": str(exc),
+                                "batch_root": str(batch_root),
+                                "manifest_path": manifest["manifest_path"],
+                                "ledger_path": str(ledger_path),
+                                "captured_at": datetime.now().isoformat(),
+                                "diagnostics_dir": diagnostics.get("diagnostics_dir", ""),
+                                "recovery_ladder": diagnostics.get("recovery_ladder", []),
+                            },
+                        )
                         break
                     print(f"\nWARNING: Failed to send {pdf['filename']}: {exc}")
                     continue
@@ -2349,12 +3270,12 @@ def run_sender(
             post_status_text = format_post_send_status_table(
                 store_stats,
                 dict(sent_orders_by_store),
-                bundles_target=bundles_target,
+                bundles_target=len(entries),
                 bundles_sent=bundles_sent,
             )
             print("\nPost-send status:")
             print(post_status_text)
-            if status_messages:
+            if send_post_status_message:
                 try:
                     sender.send_text_message(post_status_text)
                 except Exception as exc:
@@ -2371,6 +3292,23 @@ def run_sender(
         results["failed"] += 1
         results["halted"] = True
         results["halt_reason"] = "RUNTIME_ERROR"
+        diagnostics = _capture_failure(
+            failure_code="RUNTIME_ERROR",
+            detail=str(exc),
+        )
+        _write_send_stopline(
+            today_folder,
+            {
+                "halt_reason": results["halt_reason"],
+                "detail": str(exc),
+                "batch_root": str(batch_root),
+                "manifest_path": manifest["manifest_path"],
+                "ledger_path": str(ledger_path),
+                "captured_at": datetime.now().isoformat(),
+                "diagnostics_dir": diagnostics.get("diagnostics_dir", ""),
+                "recovery_ladder": diagnostics.get("recovery_ladder", []),
+            },
+        )
         if fail_fast:
             print(f"\nSTOPPING: Sender runtime error: {exc}")
         else:
@@ -2387,6 +3325,14 @@ def run_sender(
 
 
 def main() -> None:
+    def _parse_iso_date(value: str) -> date:
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"Invalid ISO date {value!r}; expected YYYY-MM-DD"
+            ) from exc
+
     parser = argparse.ArgumentParser(description="Send waybill PDFs to WhatsApp chat")
     parser.add_argument(
         "--today-folder",
@@ -2429,13 +3375,31 @@ def main() -> None:
         "--chrome-user-data-dir",
         type=Path,
         default=DEFAULT_CHROME_USER_DATA_DIR,
-        help="Chrome user data dir used to clone logged-in profile",
+        help="Chrome user data dir containing the named profile and WhatsApp session",
+    )
+    parser.add_argument(
+        "--chrome-profile-name",
+        type=str,
+        default=DEFAULT_CHROME_PROFILE_NAME,
+        help="Chrome profile display name (default: Universal)",
     )
     parser.add_argument(
         "--chrome-profile-directory",
         type=str,
         default=DEFAULT_CHROME_PROFILE_DIR,
-        help="Chrome profile directory name (e.g. 'Profile 2')",
+        help="Chrome profile directory name (e.g. 'Profile 2'); validated against --chrome-profile-name when provided",
+    )
+    parser.add_argument(
+        "--cdp-endpoint",
+        type=str,
+        default=DEFAULT_CDP_ENDPOINT,
+        help="Chrome DevTools endpoint used for attach mode (default: http://127.0.0.1:9222)",
+    )
+    parser.add_argument(
+        "--browser-mode",
+        choices=BROWSER_MODE_CHOICES,
+        default=DEFAULT_BROWSER_MODE,
+        help="Browser control mode: attach to an existing Chrome session or launch a temp-profile browser",
     )
     parser.add_argument(
         "--forbid-chat",
@@ -2463,6 +3427,22 @@ def main() -> None:
         help="Disable sending pre/post ASCII status tables to WhatsApp chat",
     )
     parser.add_argument(
+        "--post-status-message-only",
+        action="store_true",
+        help="Send only the final post-send ASCII status table to WhatsApp chat",
+    )
+    parser.add_argument(
+        "--expected-target-date",
+        type=_parse_iso_date,
+        default=None,
+        help="Expected send-batch target date in YYYY-MM-DD format (default: today in Asia/Almaty)",
+    )
+    parser.add_argument(
+        "--allow-stale-batch",
+        action="store_true",
+        help="Allow sending a batch whose manifest target date does not match the expected target date",
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="Stop on first send/runtime error (default: continue and report failures)",
@@ -2473,10 +3453,39 @@ def main() -> None:
         help="Validate immutable send batch contract and exit without sending",
     )
     parser.add_argument(
+        "--smoke-check-only",
+        action="store_true",
+        help="Open WhatsApp, verify target chat + document controls, and exit without sending PDFs",
+    )
+    parser.add_argument(
+        "--resolve-unsure-filename",
+        type=str,
+        default=None,
+        help="Resolve one existing UNSURE ledger entry by exact filename and exit",
+    )
+    parser.add_argument(
+        "--resolve-unsure-as",
+        choices=("confirmed", "pending"),
+        default=None,
+        help="Resolution to apply with --resolve-unsure-filename",
+    )
+    parser.add_argument(
+        "--resolve-unsure-note",
+        type=str,
+        default="",
+        help="Optional ledger history note stored with --resolve-unsure-filename",
+    )
+    parser.add_argument(
         "--json-out",
         type=Path,
         default=None,
         help="Optional JSON output path for preflight or live run summary",
+    )
+    parser.add_argument(
+        "--max-pdfs",
+        type=int,
+        default=None,
+        help="Optional cap on how many pending PDFs to send in this run",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
@@ -2488,6 +3497,14 @@ def main() -> None:
         if key and key not in seen_blocked:
             seen_blocked.add(key)
             dedup_blocked.append(name)
+    try:
+        resolved_profile_directory = resolve_chrome_profile_directory(
+            args.chrome_user_data_dir,
+            profile_name=args.chrome_profile_name,
+            profile_directory=args.chrome_profile_directory,
+        )
+    except Exception:
+        resolved_profile_directory = str(args.chrome_profile_directory)
 
     print("=" * 60)
     print("  WhatsApp PDF Sender")
@@ -2496,20 +3513,45 @@ def main() -> None:
     print(f"  Bundle source: {args.bundle_source}")
     print(f"  Target chat: {args.chat_title}")
     print(f"  Blocked chats: {', '.join(dedup_blocked)}")
-    print(f"  Browser profile: {args.chrome_user_data_dir} / {args.chrome_profile_directory}")
+    print(
+        "  Browser profile: "
+        f"{args.chrome_user_data_dir} / {args.chrome_profile_name} / {resolved_profile_directory}"
+    )
+    print(f"  Browser mode: {args.browser_mode}")
+    print(f"  CDP endpoint: {args.cdp_endpoint}")
     print(f"  Mode: {'DRY RUN' if args.dry_run else 'LIVE'}")
-    print(f"  Status messages: {'Yes' if args.status_messages else 'No'}")
+    if args.post_status_message_only:
+        status_mode_label = "Post only"
+    else:
+        status_mode_label = "Yes" if args.status_messages else "No"
+    expected_target_date = args.expected_target_date or datetime.now(ALMATY_TZ).date()
+    print(f"  Status messages: {status_mode_label}")
+    print(f"  Expected target date: {expected_target_date.isoformat()}")
+    print(f"  Allow stale batch: {'Yes' if args.allow_stale_batch else 'No'}")
     print(f"  Fail fast: {'Yes' if args.fail_fast else 'No'}")
     print(f"  Resume: {'No' if args.no_resume else 'Yes'}")
     print(f"  Allow UNSURE resume: {'Yes' if args.allow_unsure_resume else 'No'}")
     print(f"  Preflight only: {'Yes' if args.preflight_only else 'No'}")
+    print(f"  Smoke check only: {'Yes' if args.smoke_check_only else 'No'}")
+    print(f"  Resolve UNSURE filename: {args.resolve_unsure_filename or 'No'}")
+    print(f"  Max PDFs this run: {args.max_pdfs if args.max_pdfs is not None else 'All pending'}")
     print()
+
+    if args.resolve_unsure_filename and not args.resolve_unsure_as:
+        raise SystemExit("--resolve-unsure-as is required with --resolve-unsure-filename")
+    if args.resolve_unsure_as and not args.resolve_unsure_filename:
+        raise SystemExit("--resolve-unsure-filename is required with --resolve-unsure-as")
+
+    if args.preflight_only and args.smoke_check_only:
+        raise SystemExit("--preflight-only and --smoke-check-only are mutually exclusive")
 
     if args.preflight_only:
         preflight = verify_send_batch_preflight(
             args.today_folder,
             source_mode=args.bundle_source,
             allow_unsure_resume=bool(args.allow_unsure_resume),
+            expected_target_date=expected_target_date,
+            allow_stale_batch=bool(args.allow_stale_batch),
         )
         if args.json_out:
             args.json_out.parent.mkdir(parents=True, exist_ok=True)
@@ -2519,11 +3561,65 @@ def main() -> None:
             print(f"  Manifest: {preflight['manifest_path']}")
             print(f"  Batch root: {preflight['batch_root']}")
             print(f"  Batch hash: {preflight['batch_hash']}")
+            print(f"  Target date: {preflight.get('target_date')}")
             raise SystemExit(0)
         print("Preflight FAIL")
         for issue in preflight["issues"]:
             print(f"  - {issue['code']}: {issue['detail']}")
         raise SystemExit(1)
+
+    if args.smoke_check_only:
+        smoke = run_sender_smoke_check(
+            today_folder=args.today_folder,
+            chat_title=args.chat_title,
+            bundle_source=args.bundle_source,
+            chrome_user_data_dir=args.chrome_user_data_dir,
+            chrome_profile_directory=args.chrome_profile_directory,
+            chrome_profile_name=args.chrome_profile_name,
+            cdp_endpoint=args.cdp_endpoint,
+            browser_mode=args.browser_mode,
+            blocked_chat_titles=dedup_blocked,
+            expected_target_date=expected_target_date,
+            allow_stale_batch=bool(args.allow_stale_batch),
+            verbose=args.verbose,
+        )
+        if args.json_out:
+            args.json_out.parent.mkdir(parents=True, exist_ok=True)
+            args.json_out.write_text(json.dumps(smoke, ensure_ascii=False, indent=2), encoding="utf-8")
+        if smoke.get("ok"):
+            print("Smoke check OK")
+            print(f"  Manifest: {smoke.get('manifest_path')}")
+            print(f"  Batch root: {smoke.get('batch_root')}")
+            print(f"  Target date: {smoke.get('target_date')}")
+            print(f"  Active chat: {smoke.get('active_chat_title') or args.chat_title}")
+            raise SystemExit(0)
+        print("Smoke check FAIL")
+        for issue in smoke.get("issues", []):
+            print(f"  - {issue['code']}: {issue['detail']}")
+        if smoke.get("diagnostics_dir"):
+            print(f"  Diagnostics: {smoke['diagnostics_dir']}")
+        for step in smoke.get("recovery_ladder", []):
+            print(f"  - recovery/{step.get('code')}: {step.get('detail')}")
+        raise SystemExit(1)
+
+    if args.resolve_unsure_filename:
+        manifest = load_send_batch_manifest(args.today_folder, source_mode=args.bundle_source)
+        ledger_path = Path(manifest["batch_root"]) / SEND_LEDGER_FILE
+        ledger = load_send_ledger(ledger_path, manifest)
+        pdf_key = resolve_unsure_ledger_entry(
+            manifest,
+            ledger,
+            filename=str(args.resolve_unsure_filename),
+            resolution=str(args.resolve_unsure_as),
+            note=str(args.resolve_unsure_note or ""),
+        )
+        save_send_ledger(ledger_path, ledger)
+        print("UNSURE ledger entry resolved")
+        print(f"  Batch root: {manifest['batch_root']}")
+        print(f"  PDF key: {pdf_key}")
+        print(f"  Filename: {args.resolve_unsure_filename}")
+        print(f"  New state: {args.resolve_unsure_as}")
+        raise SystemExit(0)
 
     started_at = time.monotonic()
     results = run_sender(
@@ -2534,11 +3630,18 @@ def main() -> None:
         bundle_source=args.bundle_source,
         send_delay=float(args.send_delay),
         status_messages=bool(args.status_messages),
+        post_status_message_only=bool(args.post_status_message_only),
+        expected_target_date=expected_target_date,
+        allow_stale_batch=bool(args.allow_stale_batch),
         chrome_user_data_dir=args.chrome_user_data_dir,
         chrome_profile_directory=args.chrome_profile_directory,
+        chrome_profile_name=args.chrome_profile_name,
+        cdp_endpoint=args.cdp_endpoint,
+        browser_mode=args.browser_mode,
         blocked_chat_titles=dedup_blocked,
         fail_fast=bool(args.fail_fast),
         allow_unsure_resume=bool(args.allow_unsure_resume),
+        max_pdfs=args.max_pdfs,
         verbose=args.verbose,
     )
     elapsed = max(0, int(time.monotonic() - started_at))

@@ -15,7 +15,9 @@ Authoritative schedule/source-of-truth for automation timing:
 | 15:00-15:01 | Final same-day check | Manual |
 | 15:01 | SLA cutoff (same-day orders) | - |
 | 15:02 | Second order import | Automated (launchd) |
-| 15:02-17:00 | Next-day order prep | Manual |
+| 15:02-16:00 | Next-day order prep | Manual |
+| 16:01 | Third order import | Automated (launchd) |
+| 16:01-17:00 | Late catch-up order prep | Manual |
 | 17:00-18:00 | Package preparation | Manual |
 | 18:00-18:30 | Courier handover + deadline check | Manual |
 
@@ -80,6 +82,12 @@ Check for late orders:
 Second automated import captures:
 - Orders created at or after `15:01:00`
 - These are for next-day shipping
+
+### 6.1 Late Catch-Up Import (16:01)
+
+Third automated import captures:
+- additional late-arriving orders after the `15:02` pass
+- the same next-day prep window, with no manual fetch required
 
 ### 7. Package Preparation (17:00-18:00)
 
@@ -149,7 +157,7 @@ logs/
 
 | Script | Purpose | Schedule |
 |--------|---------|----------|
-| `run_full_import.command` | Import orders from API | 11:00, 15:02 (launchd) |
+| `run_full_import.command` | Import orders from API | 11:00, 15:02, 16:01 (launchd) |
 | `run_build_waybills_v2.command` | Generate waybill PDFs (V2 - optimized) | Manual |
 | `run_send_whatsapp.command` | Send PDFs to WhatsApp | Manual |
 

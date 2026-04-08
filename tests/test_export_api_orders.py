@@ -1,3 +1,5 @@
+from datetime import date
+
 from scripts import export_api_orders as mod
 from scripts.export_api_orders import filter_rows_by_planned_date
 
@@ -121,3 +123,22 @@ def test_order_to_rows_uses_raw_courier_planning_date_for_next_day_orders():
 
     assert len(rows) == 1
     assert rows[0]["Плановая дата передачи курьеру"] == "08.03.2026"
+
+
+def test_order_to_rows_passes_store_code_into_planned_date_resolution(monkeypatch):
+    captured = {}
+
+    def _fake_planned_date_from_order(order, *, store_code=None):
+        captured["store_code"] = store_code
+        return date(2026, 3, 14)
+
+    monkeypatch.setattr(mod, "planned_date_from_order", _fake_planned_date_from_order)
+
+    rows = mod.order_to_rows(
+        _delivery_order("ACMEWEAR-CUTOFF", courier_transmission_planning_date=None),
+        entries=[],
+        store_code="ACMEWEAR",
+    )
+
+    assert rows[0]["Плановая дата передачи курьеру"] == "14.03.2026"
+    assert captured["store_code"] == "ACMEWEAR"

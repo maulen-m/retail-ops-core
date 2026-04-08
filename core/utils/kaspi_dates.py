@@ -12,6 +12,20 @@ ALMATY_TZ = ZoneInfo("Asia/Almaty")
 _CUTOFF_HOUR_ENV = "KASPI_PLANNED_CUTOFF_HOUR"
 _CUTOFF_MINUTE_ENV = "KASPI_PLANNED_CUTOFF_MINUTE"
 _ISO_LIKE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[ T].*)?$")
+_STORE_CUTOFF_HOUR_ENV_PREFIX = "KASPI_PLANNED_CUTOFF_HOUR_"
+_STORE_CUTOFF_MINUTE_ENV_PREFIX = "KASPI_PLANNED_CUTOFF_MINUTE_"
+_STORE_ALIASES = {
+    "UNIVERSAL": "UNIVERSAL",
+    "30000001PP1": "UNIVERSAL",
+    "ACMEWEAR": "ACMEWEAR",
+    "30137883PP1": "ACMEWEAR",
+    "11KZ": "11KZ",
+    "30290083PP1": "11KZ",
+    "STOREB": "STOREB",
+    "30000002PP1": "STOREB",
+    "MELVIS": "MELVIS",
+    "30362323PP1": "MELVIS",
+}
 
 
 def _safe_int(value: str, default: int) -> int:
@@ -21,10 +35,33 @@ def _safe_int(value: str, default: int) -> int:
         return default
 
 
-def _get_cutoff_time() -> time:
+def _normalize_store_code(store_code: Optional[str]) -> Optional[str]:
+    if store_code is None:
+        return None
+    normalized = re.sub(r"[^A-Za-z0-9]+", "", str(store_code).strip()).upper()
+    if not normalized:
+        return None
+    return _STORE_ALIASES.get(normalized, normalized)
+
+
+def _get_cutoff_time(store_code: Optional[str] = None) -> time:
     """Return cutoff time for planned date (local Kaspi rule)."""
-    hour = _safe_int(os.environ.get(_CUTOFF_HOUR_ENV, "15"), 15)
-    minute = _safe_int(os.environ.get(_CUTOFF_MINUTE_ENV, "1"), 1)
+    normalized_store = _normalize_store_code(store_code)
+    default_hour = _safe_int(os.environ.get(_CUTOFF_HOUR_ENV, "15"), 15)
+    default_minute = _safe_int(os.environ.get(_CUTOFF_MINUTE_ENV, "1"), 1)
+
+    hour = default_hour
+    minute = default_minute
+    if normalized_store:
+        hour = _safe_int(
+            os.environ.get(f"{_STORE_CUTOFF_HOUR_ENV_PREFIX}{normalized_store}", default_hour),
+            default_hour,
+        )
+        minute = _safe_int(
+            os.environ.get(f"{_STORE_CUTOFF_MINUTE_ENV_PREFIX}{normalized_store}", default_minute),
+            default_minute,
+        )
+
     # Clamp to valid ranges to avoid ValueError.
     hour = min(max(hour, 0), 23)
     minute = min(max(minute, 0), 59)
@@ -90,7 +127,7 @@ def parse_kaspi_date(value: object) -> Optional[date]:
         return None
 
 
-def planned_date_from_order(order: dict) -> Optional[date]:
+def planned_date_from_order(order: dict, store_code: Optional[str] = None) -> Optional[date]:
     """
     Resolve the operator-facing planned handover date for a Kaspi order.
 
@@ -115,7 +152,7 @@ def planned_date_from_order(order: dict) -> Optional[date]:
     if not created_dt:
         return None
 
-    cutoff = _get_cutoff_time()
+    cutoff = _get_cutoff_time(store_code=store_code)
     cutoff_dt = created_dt.replace(
         hour=cutoff.hour, minute=cutoff.minute, second=0, microsecond=0
     )

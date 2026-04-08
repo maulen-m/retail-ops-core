@@ -18,6 +18,7 @@ from collections import Counter, OrderedDict
 from contextlib import contextmanager
 import json
 import os
+import posixpath
 import re
 import signal
 import shutil
@@ -31,6 +32,7 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 from zoneinfo import ZoneInfo
+from xml.etree import ElementTree as ET
 
 import pandas as pd
 from dateutil import parser as dtp
@@ -50,8 +52,10 @@ from openpyxl.utils.cell import (
     coordinate_from_string,
     column_index_from_string,
     get_column_letter,
+    range_boundaries,
 )
 from openpyxl.worksheet.cell_range import CellRange
+from openpyxl.worksheet.formula import ArrayFormula
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -70,6 +74,10 @@ from scripts.validate_crm_workbook_integrity import (
     filter_integrity_errors,
     repair_missing_shared_strings_part,
     validate_workbook_integrity,
+)
+from scripts.repair_crm_workbook import (
+    normalize_sales_sheet_sku_key_array_formula_refs,
+    prune_stale_calcchain_refs,
 )
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
@@ -282,13 +290,15 @@ def _list_excel_workbooks(timeout_sec: int = 10) -> List[ExcelWorkbookSession]:
         raise RuntimeError(f"Excel session inspection failed: {exc}") from exc
 
     sessions: List[ExcelWorkbookSession] = []
+    pid_failures: List[Tuple[int, Exception]] = []
     per_call_timeout = max(min(int(timeout_sec), 5), 1)
     for pid in app_pids:
         try:
             app = _run_with_posix_alarm_timeout(per_call_timeout, lambda pid=pid: xw.apps[pid])
             books = _run_with_posix_alarm_timeout(per_call_timeout, lambda app=app: list(app.books))
         except Exception as exc:
-            raise RuntimeError(f"Excel session inspection failed for pid {pid}: {exc}") from exc
+            pid_failures.append((int(pid), exc))
+            continue
 
         for book in books:
             try:
@@ -321,6 +331,9 @@ def _list_excel_workbooks(timeout_sec: int = 10) -> List[ExcelWorkbookSession]:
                     path=path,
                 )
             )
+
+    if pid_failures and not sessions:
+        return _list_excel_workbooks_via_osascript(timeout_sec=timeout_sec)
 
     return sessions
 
@@ -417,6 +430,8 @@ def _excel_open_probe(workbook_path: Path, attempts: int = 3, timeout_sec: int =
     escaped = str(workbook_path).replace("\\", "\\\\").replace('"', '\\"')
     open_script = f"""
 set workbookPath to POSIX file "{escaped}"
+set workbookPosixPath to POSIX path of workbookPath
+set workbookName to do shell script "/usr/bin/basename " & quoted form of workbookPosixPath
 tell application "Microsoft Excel"
     try
         set display alerts to false
@@ -424,20 +439,45 @@ tell application "Microsoft Excel"
     try
         activate
         open workbookPath
-        delay 1
-        if (count of workbooks) > 0 then
-            close active workbook saving no
+        set wbList to get workbooks
+        set matchedWorkbook to false
+        repeat with wb in wbList
+            try
+                set wbName to name of wb
+                if wbName is workbookName then
+                    close wb saving no
+                    set matchedWorkbook to true
+                    exit repeat
+                end if
+            end try
+        end repeat
+        if matchedWorkbook then
+            return "OK"
         end if
-        return "OK"
+        return "ERR:-1728:Could not match opened workbook by full path"
     on error errMsg number errNum
         return "ERR:" & errNum & ":" & errMsg
     end try
 end tell
 """
-    quit_script = """
+    close_script = f"""
+set workbookPath to POSIX path of (POSIX file "{escaped}")
+set workbookName to do shell script "/usr/bin/basename " & quoted form of workbookPath
 tell application "Microsoft Excel"
     try
-        quit
+        set display alerts to false
+    end try
+    try
+        set wbList to get workbooks
+        repeat with wb in wbList
+            try
+                set wbName to name of wb
+                if wbName is workbookName then
+                    close wb saving no
+                    exit repeat
+                end if
+            end try
+        end repeat
     end try
 end tell
 """
@@ -448,7 +488,7 @@ end tell
         if code == 0 and out.strip() == "OK":
             return True, "OK"
         last_msg = out or f"osascript rc={code}"
-        _run_osascript(quit_script, script_timeout=8)
+        _run_osascript(close_script, script_timeout=8)
     return False, last_msg
 
 
@@ -497,16 +537,115 @@ def _verify_candidate_workbook(
                 raise RuntimeError(f"Excel open probe failed for candidate workbook: {detail}")
 
 
+def _workbook_external_link_targets(workbook_path: Path) -> Tuple[str, ...]:
+    workbook_path = Path(workbook_path).expanduser()
+    try:
+        with zipfile.ZipFile(workbook_path, "r") as zf:
+            rel_payload = zf.read("xl/_rels/workbook.xml.rels")
+    except Exception:
+        return tuple()
+
+    try:
+        rels_root = ET.fromstring(rel_payload)
+    except Exception:
+        return tuple()
+
+    rel_ns = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+    external_type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink"
+    targets: List[str] = []
+    for rel in rels_root.findall(f"{rel_ns}Relationship"):
+        if rel.attrib.get("Type") != external_type:
+            continue
+        target = str(rel.attrib.get("Target") or "").strip()
+        if target:
+            normalized = target.replace("\\", "/").strip()
+            if normalized.startswith("/"):
+                normalized = normalized[1:]
+            if normalized.startswith("xl/"):
+                normalized = normalized[3:]
+            normalized = posixpath.normpath(normalized)
+            targets.append(normalized)
+    return tuple(sorted(targets))
+
+
+def _prefer_excel_native_postprocess(workbook_path: Path) -> bool:
+    """
+    On macOS, keep post-append processing inside Excel for workbooks that carry
+    external-link relationships. Read-only verification remains safe.
+    """
+    return sys.platform == "darwin" and bool(_workbook_external_link_targets(workbook_path))
+
+
+def _candidate_source_requires_template_normalization(
+    source_path: Path,
+    *,
+    template_path: Path | None = None,
+) -> bool:
+    source_path = Path(source_path).expanduser().resolve()
+    result = validate_workbook_integrity(source_path)
+    blocking_errors, _allowed_errors = filter_integrity_errors(
+        result.errors,
+        allow_exact=KNOWN_BASELINE_INTEGRITY_ERRORS,
+        allow_prefix=RUNTIME_ALLOWED_INTEGRITY_ERROR_PREFIXES,
+    )
+    if blocking_errors:
+        return True
+    for err in result.errors or []:
+        if str(err or "").startswith("CRM sales sheet contains self-externalized formulas:"):
+            return True
+    return False
+
+
+def _candidate_workbook_path(source_path: Path, candidate_dir: Path) -> Path:
+    source_path = Path(source_path).expanduser()
+    candidate_dir = Path(candidate_dir).expanduser()
+    return candidate_dir / f"{source_path.stem}.candidate{source_path.suffix}"
+
+
 def _prepare_candidate_workbook(source_path: Path, candidate_dir: Path, verbose: bool = False) -> Path:
     """
-    Create timestamped candidate workbook copy for transactional writes.
+    Create the stable transactional candidate workbook.
+
+    Keep the Excel-facing candidate path stable on macOS so Excel does not get
+    pointed at a fresh hidden filename every run, which can trigger repeated
+    file-access prompts. The workbook contents are still rebuilt atomically from
+    the source on each run.
     """
     candidate_dir.mkdir(parents=True, exist_ok=True)
+    candidate_path = _candidate_workbook_path(source_path, candidate_dir)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    candidate_path = candidate_dir / f"{source_path.stem}.candidate_{ts}{source_path.suffix}"
-    shutil.copy2(source_path, candidate_path)
+    temp_candidate_path = candidate_dir / f"{source_path.stem}.candidate_tmp_{ts}{source_path.suffix}"
+    if _candidate_source_requires_template_normalization(source_path):
+        try:
+            restore_stats = restore_crm_workbook_from_template(
+                workbook_path=source_path,
+                output_path=temp_candidate_path,
+                verbose=verbose,
+            )
+            os.replace(str(temp_candidate_path), str(candidate_path))
+            if verbose:
+                print(f"  Candidate workbook created: {candidate_path}")
+                print(
+                    "  Candidate template-restore stats: "
+                    f"rows={restore_stats.get('sales_rows_preserved', 0)}, "
+                    f"formulas={restore_stats.get('sales_formulas_restored', 0)}, "
+                    f"styles={restore_stats.get('sales_styles_restored', 0)}, "
+                    f"externalized_cleared={restore_stats.get('sales_externalized_formulas_cleared', 0)}"
+                )
+            return candidate_path
+        finally:
+            if temp_candidate_path.exists():
+                temp_candidate_path.unlink()
+
+    try:
+        shutil.copy2(source_path, temp_candidate_path)
+        os.replace(str(temp_candidate_path), str(candidate_path))
+    finally:
+        if temp_candidate_path.exists():
+            temp_candidate_path.unlink()
     if verbose:
         print(f"  Candidate workbook created: {candidate_path}")
+        print("  Candidate fast-path: direct copy (source workbook already matches canonical contract)")
     return candidate_path
 
 
@@ -537,10 +676,16 @@ def _promote_candidate_workbook(
                 f"continuing with empty baseline ({source_exc})"
             )
 
+    probe_promoted_source = (
+        bool(strict_excel)
+        and sys.platform == "darwin"
+        and _is_transactional_candidate_target(candidate_path, source_path)
+    )
+
     try:
         _verify_candidate_workbook(
             candidate_path,
-            strict_excel=strict_excel,
+            strict_excel=(False if probe_promoted_source else strict_excel),
             verbose=verbose,
             allowed_integrity_errors=baseline_errors,
         )
@@ -557,6 +702,17 @@ def _promote_candidate_workbook(
         ) from exc
 
     os.replace(str(candidate_path), str(source_path))
+    if probe_promoted_source:
+        ok, detail = _excel_open_probe(source_path, attempts=2, timeout_sec=35)
+        if not ok:
+            detail_lower = (detail or "").lower()
+            if "timeout" not in detail_lower:
+                raise RuntimeError(f"Promoted workbook Excel open probe failed: {detail}")
+            if verbose:
+                print(
+                    "  WARNING: promoted workbook Excel open probe timed out; "
+                    "continuing after integrity pass."
+                )
     if verbose:
         print(f"  Candidate promoted: {source_path.name}")
 
@@ -629,6 +785,31 @@ KNOWN_BASELINE_INTEGRITY_ERRORS = {
     "named range contains #REF!: Z_LEVEL",
 }
 
+KNOWN_BASELINE_INTEGRITY_ERROR_PREFIXES = (
+    # Legacy date-scoped names can be regenerated by Excel as broken refs.
+    # They do not affect CRM import data integrity and are already allowed
+    # by the canonical wrapper command.
+    "named range contains #REF!: _",
+)
+
+RUNTIME_ALLOWED_INTEGRITY_ERROR_PREFIXES = (
+    *KNOWN_BASELINE_INTEGRITY_ERROR_PREFIXES,
+    # Older operator-approved CRM baselines can contain self-externalized
+    # formulas in pre-existing sales rows. Treat that as a tolerated source
+    # baseline for candidate/preflight decisions, but still block any new
+    # append-region regressions via _verify_appended_rows_integrity().
+    "CRM sales sheet contains self-externalized formulas:",
+)
+
+
+def _default_candidate_dirs_for_workbook(workbook_path: Path) -> Tuple[Path, Path]:
+    workbook_path = Path(workbook_path).expanduser()
+    base_dir = workbook_path.parent
+    return (
+        base_dir,
+        base_dir / ".crm_failed_candidates",
+    )
+
 
 def _allow_openpyxl_backfill_fallback() -> bool:
     """
@@ -645,6 +826,40 @@ def _allow_openpyxl_append_fallback() -> bool:
     """
     raw = os.getenv("CRM_OPENPYXL_APPEND_FALLBACK", "")
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_openpyxl_append_fallback_enabled() -> bool:
+    """
+    Keep openpyxl append fallback opt-in by default.
+    This workbook carries external-link and package features that Excel itself
+    preserves more safely than openpyxl saves do.
+    """
+    return False
+
+
+def _default_prefer_xlwings_append() -> bool:
+    """
+    Prefer Excel-native writes for CRM append by default.
+    """
+    return True
+
+
+def _use_transactional_candidate_workbook(transactional: bool) -> bool:
+    """
+    On macOS, Excel automation against a secondary candidate path triggers the
+    system "Grant Access" chooser. Keep transactional candidate promotion for
+    non-macOS paths, but use backup-first live writes on macOS.
+    """
+    return bool(transactional) and sys.platform != "darwin"
+
+
+def _prefer_openpyxl_safe_write_path() -> bool:
+    """
+    Keep openpyxl write helpers opt-in on macOS. They remain available as a
+    bounded fallback, but should not be the default write path for the live CRM
+    workbook.
+    """
+    return False
 
 
 def _xlwings_open_timeout_sec(default_sec: int = 45) -> int:
@@ -857,6 +1072,13 @@ def _refresh_formula_caches_xlwings(workbook_path: Path, *, verbose: bool = Fals
     _run_with_posix_alarm_timeout(_xlwings_refresh_timeout_sec(), _refresh)
 
 
+def _is_transactional_candidate_target(workbook_path: Path, source_path: Path) -> bool:
+    try:
+        return Path(workbook_path).expanduser().resolve() != Path(source_path).expanduser().resolve()
+    except Exception:
+        return str(Path(workbook_path).expanduser()) != str(Path(source_path).expanduser())
+
+
 def _is_expected_xlwings_timeout(exc: Exception) -> bool:
     if isinstance(exc, TimeoutError):
         return True
@@ -966,6 +1188,54 @@ def _clear_my_size_range(
                 time.sleep(0.2)
 
 
+def _write_single_column_updates_xlwings(
+    sheet: Any,
+    col_abs: int,
+    updates: List[Tuple[int, Any]],
+) -> None:
+    """
+    Write sparse single-column updates via contiguous range assignments.
+
+    This keeps AppleEvent traffic low on macOS Excel while still recovering
+    gracefully if a larger batch times out.
+    """
+    if not updates:
+        return
+
+    ordered = sorted((int(row_num), value) for row_num, value in updates)
+
+    def _write_batch(batch: List[Tuple[int, Any]]) -> None:
+        if not batch:
+            return
+        start_row = batch[0][0]
+        end_row = batch[-1][0]
+        target = sheet.range((start_row, col_abs), (end_row, col_abs))
+        payload: Any
+        if len(batch) == 1:
+            payload = batch[0][1]
+        else:
+            payload = [[value] for _row_num, value in batch]
+        try:
+            target.value = payload
+            return
+        except Exception as exc:
+            if len(batch) == 1 or not _is_expected_xlwings_timeout(exc):
+                raise
+
+        mid = max(len(batch) // 2, 1)
+        _write_batch(batch[:mid])
+        _write_batch(batch[mid:])
+
+    current_batch: List[Tuple[int, Any]] = [ordered[0]]
+    for row_num, value in ordered[1:]:
+        if row_num == current_batch[-1][0] + 1:
+            current_batch.append((row_num, value))
+            continue
+        _write_batch(current_batch)
+        current_batch = [(row_num, value)]
+    _write_batch(current_batch)
+
+
 def _open_workbook_xlwings_without_timeout_kwarg(
     app: Any,
     workbook_path: Path,
@@ -1007,6 +1277,12 @@ def _open_workbook_xlwings(
     """
     Open workbook via xlwings with explicit wall-clock timeout to avoid indefinite hangs.
     """
+    if sys.platform == "darwin":
+        # macOS Excel automation is materially more reliable with the old minimal open
+        # contract. Extra kwargs like timeout/read_only/update_links have caused hangs
+        # and parameter errors on live operator machines.
+        return app.books.open(str(workbook_path))
+
     timeout_sec = _xlwings_open_timeout_sec()
     open_kwargs: Dict[str, Any] = {
         "update_links": update_links,
@@ -1036,6 +1312,7 @@ def _workbook_integrity_preflight(crm_path: Path, verbose: bool = False) -> None
     blocking_errors, allowed_errors = filter_integrity_errors(
         result.errors,
         allow_exact=KNOWN_BASELINE_INTEGRITY_ERRORS,
+        allow_prefix=RUNTIME_ALLOWED_INTEGRITY_ERROR_PREFIXES,
     )
     if blocking_errors:
         sample = "; ".join(blocking_errors[:3])
@@ -1054,12 +1331,22 @@ def _workbook_integrity_preflight(crm_path: Path, verbose: bool = False) -> None
             print(f"  WARNING: integrity check: {msg}")
 
 
-def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbose: bool = False) -> None:
+def _excel_automation_preflight(
+    crm_path: Path,
+    strict_excel: bool = True,
+    verbose: bool = False,
+    transactional: bool = True,
+    candidate_dir: Optional[Path] = None,
+    allow_open_probe_fallback: bool = False,
+) -> None:
     """
     Validate that Excel automation can safely control the workbook before writes.
     Excel session guard always runs; strict mode adds workbook-open probing.
     """
-    _excel_session_preflight(crm_path, verbose=verbose)
+    blocked_paths = [crm_path]
+    if _use_transactional_candidate_workbook(transactional) and candidate_dir is not None:
+        blocked_paths.append(_candidate_workbook_path(crm_path, candidate_dir))
+    _excel_session_preflight(crm_path, blocked_paths=blocked_paths, verbose=verbose)
 
     if not strict_excel:
         return
@@ -1076,10 +1363,45 @@ def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbo
                 f"({lock_file.name}, age={int(age_seconds)}s)"
             )
 
-    if xw is None:
-        raise RuntimeError("xlwings is required for strict Excel mode.")
-
     _workbook_integrity_preflight(crm_path, verbose=verbose)
+
+    skip_source_open_probe = (
+        _use_transactional_candidate_workbook(transactional)
+        and _candidate_source_requires_template_normalization(crm_path)
+    )
+    if skip_source_open_probe:
+        if verbose:
+            print(
+                "  WARNING: skipping source workbook Excel open probe on macOS; "
+                "transactional candidate normalization will verify the candidate workbook instead."
+            )
+        return
+
+    def _run_open_probe_fallback() -> None:
+        ok, detail = _excel_open_probe(crm_path, attempts=2, timeout_sec=35)
+        if ok:
+            if verbose:
+                print("  Strict Excel preflight OK (Excel open probe)")
+            return
+        detail_lower = (detail or "").lower()
+        if "timeout" in detail_lower:
+            if verbose:
+                print(
+                    "  WARNING: Excel open probe timed out after workbook/session preflight; "
+                    "continuing."
+                )
+            return
+        raise RuntimeError(f"Excel open probe failed: {detail}")
+
+    if sys.platform == "darwin":
+        _run_open_probe_fallback()
+        return
+
+    if xw is None:
+        if allow_open_probe_fallback:
+            _run_open_probe_fallback()
+            return
+        raise RuntimeError("xlwings is required for strict Excel mode.")
 
     app = xw.App(visible=False, add_book=False)
     app.display_alerts = False
@@ -1095,6 +1417,14 @@ def _excel_automation_preflight(crm_path: Path, strict_excel: bool = True, verbo
         if verbose:
             print("  Strict Excel preflight OK")
     except Exception as exc:
+        if allow_open_probe_fallback:
+            if verbose:
+                print(
+                    "  WARNING: xlwings strict preflight open failed; "
+                    "retrying via Excel open probe."
+                )
+            _run_open_probe_fallback()
+            return
         raise RuntimeError(
             "Excel automation preflight failed (macOS Automation/Excel state issue). "
             "Grant python automation access to Excel and close all open workbook sessions."
@@ -1448,6 +1778,77 @@ def _load_article_identity_for_articles(articles: List[str]) -> Dict[str, Dict[s
     return mapped
 
 
+def _load_seller_delivery_fees_from_db(order_ids: List[str]) -> Dict[str, float]:
+    clean_order_ids = sorted({clean_order_id(v) for v in order_ids if clean_order_id(v)})
+    clean_order_ids = [oid for oid in clean_order_ids if oid]
+    if not clean_order_ids:
+        return {}
+
+    seller_fee_by_order: Dict[str, float] = {}
+    chunk_size = 800
+    with get_db() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fact_orders_kaspi'"
+        ).fetchone():
+            return {}
+        for i in range(0, len(clean_order_ids), chunk_size):
+            batch = clean_order_ids[i : i + chunk_size]
+            placeholders = ",".join("?" for _ in batch)
+            rows = conn.execute(
+                f"""
+                SELECT order_id, delivery_cost_for_seller
+                FROM fact_orders_kaspi
+                WHERE order_id IN ({placeholders})
+                  AND delivery_cost_for_seller IS NOT NULL
+                  AND delivery_cost_for_seller != 0
+                """,
+                batch,
+            ).fetchall()
+            for row in rows:
+                order_id = clean_order_id(row["order_id"])
+                if not order_id or order_id in seller_fee_by_order:
+                    continue
+                seller_fee_by_order[order_id] = float(row["delivery_cost_for_seller"])
+    return seller_fee_by_order
+
+
+def overlay_missing_seller_delivery_fees_from_db(df: pd.DataFrame) -> int:
+    """Fill missing/zero seller delivery fee values in-place from DB truth."""
+    if df.empty:
+        return 0
+
+    colmap = map_headers(df)
+    order_col = colmap.get("order_id")
+    seller_col = None
+    for col in df.columns:
+        if norm(col) == "стоимостьдоставкидляпродавца":
+            seller_col = col
+            break
+
+    if not order_col or not seller_col:
+        return 0
+
+    seller_fee_by_order = _load_seller_delivery_fees_from_db(df[order_col].tolist())
+    if not seller_fee_by_order:
+        return 0
+
+    updated = 0
+    for idx, raw_order_id in df[order_col].items():
+        order_id = clean_order_id(raw_order_id)
+        if not order_id:
+            continue
+        db_fee = seller_fee_by_order.get(order_id)
+        if db_fee is None or db_fee == 0:
+            continue
+        current_fee = _to_float(df.at[idx, seller_col], 0.0)
+        if current_fee != 0.0:
+            continue
+        df.at[idx, seller_col] = db_fee
+        updated += 1
+
+    return updated
+
+
 def _derive_identity_from_raw_row(
     raw_row: Dict[str, Any],
     article_identity_by_article: Optional[Dict[str, Dict[str, str]]] = None,
@@ -1793,6 +2194,34 @@ def _resolve_refresh_date(value: Optional[str], default_date: date) -> date:
     return parsed
 
 
+def _plan_seller_delivery_fee_backfill_updates(
+    delivery_fee_rows: list[tuple[int, Optional[date], float, float]],
+    row_to_order_id: Dict[int, str],
+    *,
+    date_from: date,
+    date_to: date,
+    seller_fee_by_order: Optional[Dict[str, float]] = None,
+) -> list[tuple[int, float]]:
+    seller_fee_by_order = seller_fee_by_order or {}
+    updates: list[tuple[int, float]] = []
+    for row_num, parsed_date, seller_num, fee_num in delivery_fee_rows:
+        if not parsed_date:
+            continue
+        if parsed_date < date_from or parsed_date > date_to:
+            continue
+        if seller_num != 0.0:
+            continue
+
+        order_id = clean_order_id(row_to_order_id.get(row_num))
+        db_fee = seller_fee_by_order.get(order_id) if order_id else None
+        if db_fee is not None and db_fee != 0:
+            updates.append((row_num, float(db_fee)))
+            continue
+        if fee_num != 0.0:
+            updates.append((row_num, fee_num))
+    return updates
+
+
 def backfill_seller_delivery_fee(
     crm_path: Path,
     sheet_name: str,
@@ -1802,25 +2231,34 @@ def backfill_seller_delivery_fee(
     dry_run: bool = False,
     verbose: bool = False,
     snapshot: Optional[CRMSnapshot] = None,
+    prefer_openpyxl: bool = False,
 ) -> int:
     """
-    Backfill seller delivery fee from Delivery_fee_kzt for rows in date range.
+    Backfill seller delivery fee from DB truth first, then Delivery_fee_kzt fallback.
 
-    Sets 'Стоимость доставки для продавца' when it is blank/0 but Delivery_fee_kzt is present.
+    Sets 'Стоимость доставки для продавца' when it is blank/0 and a better
+    value is available.
     Returns number of rows updated.
     """
     updates: list[tuple[int, float]] = []
     seller_col = None
+    row_to_order_id: Dict[int, str] = {}
+    delivery_fee_rows: list[tuple[int, Optional[date], float, float]] = []
 
     if snapshot and snapshot.delivery_fee_rows and snapshot.seller_fee_col:
         seller_col = snapshot.seller_fee_col
-        for row_num, parsed_date, seller_num, fee_num in snapshot.delivery_fee_rows:
-            if not parsed_date:
-                continue
-            if parsed_date < date_from or parsed_date > date_to:
-                continue
-            if seller_num == 0.0 and fee_num != 0.0:
-                updates.append((row_num, fee_num))
+        row_to_order_id = {row_num: order_id for order_id, row_num in snapshot.order_rows.items()}
+        seller_fee_by_order = _load_seller_delivery_fees_from_db(
+            [row_to_order_id[row_num] for row_num, _parsed_date, seller_num, _fee_num in snapshot.delivery_fee_rows
+             if row_num in row_to_order_id and seller_num == 0.0]
+        )
+        updates = _plan_seller_delivery_fee_backfill_updates(
+            snapshot.delivery_fee_rows,
+            row_to_order_id,
+            date_from=date_from,
+            date_to=date_to,
+            seller_fee_by_order=seller_fee_by_order,
+        )
     else:
         wb = load_workbook(filename=str(crm_path), read_only=False, data_only=True)
         try:
@@ -1839,6 +2277,7 @@ def backfill_seller_delivery_fee(
             date_col = col_map.get("Date") or col_map.get("Дата поступления заказа")
             fee_col = col_map.get("Delivery_fee_kzt") or col_map.get("Delivery_fee")
             seller_col = col_map.get("Стоимость доставки для продавца")
+            order_col = col_map.get("№ заказа") or col_map.get("OrderID")
 
             if not date_col or not fee_col or not seller_col:
                 if verbose:
@@ -1853,6 +2292,11 @@ def backfill_seller_delivery_fee(
                 if parsed_date < date_from or parsed_date > date_to:
                     continue
 
+                if order_col:
+                    order_id = clean_order_id(ws.cell(row=row_num, column=order_col).value)
+                    if order_id:
+                        row_to_order_id[row_num] = order_id
+
                 seller_val = ws.cell(row=row_num, column=seller_col).value
                 fee_val = ws.cell(row=row_num, column=fee_col).value
 
@@ -1865,10 +2309,18 @@ def backfill_seller_delivery_fee(
                 except (TypeError, ValueError):
                     fee_num = 0.0
 
-                if seller_num == 0.0 and fee_num != 0.0:
-                    updates.append((row_num, fee_num))
+                delivery_fee_rows.append((row_num, parsed_date, seller_num, fee_num))
         finally:
             wb.close()
+
+        seller_fee_by_order = _load_seller_delivery_fees_from_db(row_to_order_id.values())
+        updates = _plan_seller_delivery_fee_backfill_updates(
+            delivery_fee_rows,
+            row_to_order_id,
+            date_from=date_from,
+            date_to=date_to,
+            seller_fee_by_order=seller_fee_by_order,
+        )
 
     if verbose:
         print(f"  Delivery fee backfill candidates: {len(updates)} rows")
@@ -1876,16 +2328,39 @@ def backfill_seller_delivery_fee(
     if dry_run or not updates or seller_col is None:
         return len(updates)
 
+    if prefer_openpyxl:
+        preserved_package_parts = _snapshot_preserved_package_parts(crm_path)
+        tmp_path = crm_path.with_name(f"{crm_path.stem}.seller_fee_tmp{crm_path.suffix}")
+        wb = load_workbook(filename=str(crm_path), read_only=False, data_only=False)
+        try:
+            ws = wb[sheet_name]
+            for row_num, value in updates:
+                ws.cell(row=row_num, column=seller_col).value = value
+            wb.save(str(tmp_path))
+        finally:
+            wb.close()
+
+        try:
+            _restore_preserved_package_parts(tmp_path, preserved_package_parts)
+            os.replace(str(tmp_path), str(crm_path))
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        return len(updates)
+
     _require_xlwings()
     app = xw.App(visible=False, add_book=False)
+    app.display_alerts = False
+    app.screen_updating = False
+    book = None
     try:
         book = _open_workbook_xlwings(app, crm_path, update_links=False, read_only=False)
         sheet = book.sheets[sheet_name]
-        for row_num, value in updates:
-            sheet.cells(row_num, seller_col).value = value
+        with _temporary_manual_calculation(app):
+            _write_single_column_updates_xlwings(sheet, seller_col, updates)
         book.save()
-        book.close()
     finally:
+        _safe_close_xlwings_book(book, context="delivery-fee backfill")
         _safe_quit_xlwings_app(app, context="delivery-fee backfill")
 
     return len(updates)
@@ -1956,13 +2431,13 @@ def _extract_delivery_costs(order: dict) -> tuple[Optional[float], Optional[floa
     return buyer_cost, seller_cost
 
 
-def _order_to_update_fields(order: dict) -> Dict[str, object]:
+def _order_to_update_fields(order: dict, *, store_code: Optional[str] = None) -> Dict[str, object]:
     attrs = order.get('attributes', {})
     delivery = attrs.get('kaspiDelivery', {})
     stage = classify_kaspi_order_stage(order)
     russian_status = kaspi_order_to_russian_status(order)
     indicators = stage_to_crm_indicators(stage)
-    planned_date_obj = planned_date_from_order(order)
+    planned_date_obj = planned_date_from_order(order, store_code=store_code)
     planned_date = planned_date_obj.strftime('%d.%m.%Y') if planned_date_obj else None
     status_change_date = _timestamp_to_ddmmyyyy(attrs.get('statusChangeDate'))
     buyer_cost, seller_cost = _extract_delivery_costs(order)
@@ -2079,7 +2554,7 @@ def fetch_missing_status_updates(
                 if 'data' in data and isinstance(data['data'], list) and data['data']:
                     data = data['data'][0]
             if isinstance(data, dict) and data.get('type') == 'orders':
-                updates[order_id] = _order_to_update_fields(data)
+                updates[order_id] = _order_to_update_fields(data, store_code=store_code)
                 break
 
         if order_id not in updates and verbose:
@@ -2540,13 +3015,101 @@ def _has_formula_payload(value: Any) -> bool:
     return isinstance(text, str) and bool(text.strip())
 
 
+def _formula_payload_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value if value.startswith("=") else ""
+    if value is None:
+        return ""
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return text
+    return ""
+
+
+def _contains_self_external_formula_payload(value: Any) -> bool:
+    text = _formula_payload_text(value)
+    return bool(text and re.search(r"\[\d+\]!", text))
+
+
+def _translate_formula_payload(
+    value: Any,
+    *,
+    source_col: int,
+    source_row: int,
+    target_col: int,
+    target_row: int,
+    force_plain_formula: bool = False,
+) -> Any:
+    origin = f"{get_column_letter(source_col)}{source_row}"
+    target = f"{get_column_letter(target_col)}{target_row}"
+
+    if isinstance(value, str) and value.startswith("="):
+        try:
+            return Translator(value, origin=origin).translate_formula(target)
+        except Exception:
+            return value
+
+    if isinstance(value, ArrayFormula):
+        translated_text = value.text
+        if isinstance(translated_text, str) and translated_text.startswith("="):
+            try:
+                translated_text = Translator(translated_text, origin=origin).translate_formula(target)
+            except Exception:
+                translated_text = value.text
+
+        translated_ref = value.ref
+        if isinstance(translated_ref, str) and translated_ref.strip():
+            try:
+                translated_ref = Translator.translate_range(
+                    translated_ref,
+                    target_row - source_row,
+                    target_col - source_col,
+                )
+            except Exception:
+                translated_ref = value.ref
+
+        if force_plain_formula:
+            if isinstance(translated_text, str) and translated_text.strip():
+                return translated_text
+            if isinstance(value.text, str) and value.text.strip():
+                return value.text
+            return translated_text
+
+        return ArrayFormula(ref=translated_ref, text=translated_text)
+
+    return value
+
+
+def _formula_payload_equals(left: Any, right: Any) -> bool:
+    if isinstance(left, ArrayFormula) and isinstance(right, ArrayFormula):
+        return left.ref == right.ref and left.text == right.text
+    return left == right
+
+
+def _cell_style_signature(cell: Any) -> Tuple[str, str, str, str, str, str]:
+    return (
+        repr(copy(cell.font)),
+        repr(copy(cell.fill)),
+        repr(copy(cell.border)),
+        repr(copy(cell.alignment)),
+        str(cell.number_format or ""),
+        repr(copy(cell.protection)),
+    )
+
+
+def _cell_styles_equivalent(left: Any, right: Any) -> bool:
+    return _cell_style_signature(left) == _cell_style_signature(right)
+
+
 def _formula_template_columns(header_to_col: Dict[str, int]) -> List[int]:
     formula_alias_groups = (
         {"storename", "store_name"},
         {"quantity", "количество"},
         {"kaspinamecore", "kaspi_name_core"},
+        {"orderid"},
         {"probablesize", "probable_size"},
         {"kaspioffername", "kaspi_offer_name"},
+        {"skukey", "sku_key"},
         {"skuid", "sku_id"},
         {"sellpricekzt", "sell_price_kzt"},
         {"totalprice", "total_price"},
@@ -2565,6 +3128,10 @@ def _formula_template_columns(header_to_col: Dict[str, int]) -> List[int]:
         if col:
             cols.append(col)
     return sorted(set(cols))
+
+
+def _formula_contract_plain_formula_columns(header_to_col: Dict[str, int]) -> set[int]:
+    return set()
 
 
 def _required_formula_cache_columns(header_to_col: Dict[str, int]) -> List[Tuple[str, int]]:
@@ -2639,6 +3206,48 @@ def _build_cf_replacement_by_col(
     return replacements
 
 
+def _clone_cf_rules_with_translated_formulas(
+    rules: List[Any],
+    *,
+    source_anchor: CellRange | None = None,
+    target_anchor: CellRange | None = None,
+) -> List[Any]:
+    cloned_rules = [deepcopy(rule) for rule in rules]
+    if (
+        source_anchor is None
+        or target_anchor is None
+        or (
+            source_anchor.min_col == target_anchor.min_col
+            and source_anchor.min_row == target_anchor.min_row
+        )
+    ):
+        return cloned_rules
+
+    origin = f"{get_column_letter(source_anchor.min_col)}{source_anchor.min_row}"
+    target = f"{get_column_letter(target_anchor.min_col)}{target_anchor.min_row}"
+    for rule in cloned_rules:
+        formulas = getattr(rule, "formula", None)
+        if not formulas:
+            continue
+        translated_formulas = []
+        for formula in formulas:
+            if not isinstance(formula, str) or not formula:
+                translated_formulas.append(formula)
+                continue
+            try:
+                translator_formula = formula if formula.startswith("=") else f"={formula}"
+                translated = Translator(translator_formula, origin=origin).translate_formula(target)
+                if not formula.startswith("=") and translated.startswith("="):
+                    translated = translated[1:]
+                translated_formulas.append(
+                    translated
+                )
+            except Exception:
+                translated_formulas.append(formula)
+        rule.formula = translated_formulas
+    return cloned_rules
+
+
 def _normalize_conditional_formatting_ranges(
     ws: Any,
     header_row: int,
@@ -2675,10 +3284,11 @@ def _normalize_conditional_formatting_ranges(
                 pivot=getattr(cf_obj, "pivot", None),
                 extLst=getattr(cf_obj, "extLst", None),
             )
-            new_rules[new_cf] = rules
+            new_rules[new_cf] = _clone_cf_rules_with_translated_formulas(rules)
             continue
 
         touched_cols: List[int] = []
+        touched_ranges: List[CellRange] = []
         untouched_tokens: List[str] = []
         for cell_range in token_ranges:
             touched = False
@@ -2688,6 +3298,8 @@ def _normalize_conditional_formatting_ranges(
                     touched = True
             if not touched:
                 untouched_tokens.append(cell_range.coord)
+            else:
+                touched_ranges.append(cell_range)
 
         if touched_cols:
             normalized_tokens: List[str] = []
@@ -2698,20 +3310,43 @@ def _normalize_conditional_formatting_ranges(
                     continue
                 normalized_tokens.append(replacement)
                 seen.add(replacement)
-            normalized_tokens.extend(untouched_tokens)
-            new_sqref = " ".join(normalized_tokens)
-        else:
-            new_sqref = old_sqref
-
-        if new_sqref != old_sqref:
-            updated += 1
+            source_anchor = min(
+                touched_ranges,
+                key=lambda rng: (rng.min_row, rng.min_col, rng.max_row, rng.max_col),
+            )
+            normalized_ranges = [CellRange(token) for token in normalized_tokens]
+            target_anchor = min(
+                normalized_ranges,
+                key=lambda rng: (rng.min_row, rng.min_col, rng.max_row, rng.max_col),
+            )
+            normalized_sqref = " ".join(normalized_tokens)
+            if normalized_sqref != old_sqref or untouched_tokens:
+                updated += 1
+            normalized_cf = ConditionalFormatting(
+                sqref=normalized_sqref,
+                pivot=getattr(cf_obj, "pivot", None),
+                extLst=getattr(cf_obj, "extLst", None),
+            )
+            new_rules[normalized_cf] = _clone_cf_rules_with_translated_formulas(
+                rules,
+                source_anchor=source_anchor,
+                target_anchor=target_anchor,
+            )
+            if untouched_tokens:
+                untouched_cf = ConditionalFormatting(
+                    sqref=" ".join(untouched_tokens),
+                    pivot=getattr(cf_obj, "pivot", None),
+                    extLst=getattr(cf_obj, "extLst", None),
+                )
+                new_rules[untouched_cf] = _clone_cf_rules_with_translated_formulas(rules)
+            continue
 
         new_cf = ConditionalFormatting(
-            sqref=new_sqref,
+            sqref=old_sqref,
             pivot=getattr(cf_obj, "pivot", None),
             extLst=getattr(cf_obj, "extLst", None),
         )
-        new_rules[new_cf] = rules
+        new_rules[new_cf] = _clone_cf_rules_with_translated_formulas(rules)
 
     cf._cf_rules = new_rules
     if verbose and updated:
@@ -2802,7 +3437,17 @@ def _restore_formula_and_style_window_from_template(
     if source_tail_row is None:
         source_tail_row = template_data_end_row
 
+    header_values = [
+        ws.cell(row=header_row, column=col).value
+        for col in range(start_col, end_col + 1)
+    ]
+    header_to_col = {
+        str(name).strip(): start_col + i
+        for i, name in enumerate(header_values)
+        if str(name or "").strip()
+    }
     formula_col_set = set(formula_cols)
+    plain_formula_cols = _formula_contract_plain_formula_columns(header_to_col)
     cross_workbook = ws is not template_ws
     for row_num in range(target_start_row, target_end_row + 1):
         source_row = row_num if row_num <= template_data_end_row else source_tail_row
@@ -2825,20 +3470,78 @@ def _restore_formula_and_style_window_from_template(
             if col_num not in formula_col_set or not _has_formula_payload(src.value):
                 continue
 
-            translated_value = src.value
-            if isinstance(src.value, str) and src.value.startswith("="):
-                origin = f"{get_column_letter(col_num)}{source_row}"
-                target = f"{get_column_letter(col_num)}{row_num}"
-                try:
-                    translated_value = Translator(src.value, origin=origin).translate_formula(target)
-                except Exception:
-                    translated_value = src.value
+            translated_value = _translate_formula_payload(
+                src.value,
+                source_col=col_num,
+                source_row=source_row,
+                target_col=col_num,
+                target_row=row_num,
+                force_plain_formula=col_num in plain_formula_cols,
+            )
 
-            if dst.value != translated_value:
+            if not _formula_payload_equals(dst.value, translated_value):
                 dst.value = translated_value
                 formula_cells_restored += 1
 
     return style_cells_normalized, formula_cells_restored
+
+
+def _sanitize_self_externalized_formula_window(
+    *,
+    ws: Any,
+    template_ws: Any,
+    header_row: int,
+    target_start_row: int,
+    target_end_row: int,
+    start_col: int,
+    end_col: int,
+    formula_cols: List[int],
+    template_data_end_row: int,
+) -> int:
+    if target_start_row > target_end_row:
+        return 0
+
+    header_values = [
+        ws.cell(row=header_row, column=col).value
+        for col in range(start_col, end_col + 1)
+    ]
+    header_to_col = {
+        str(name).strip(): start_col + i
+        for i, name in enumerate(header_values)
+        if str(name or "").strip()
+    }
+    plain_formula_cols = _formula_contract_plain_formula_columns(header_to_col)
+    source_tail_row = _find_template_row_for_append(
+        ws=template_ws,
+        header_row=header_row,
+        table_end_row=template_data_end_row,
+        formula_cols=formula_cols,
+    )
+    if source_tail_row is None:
+        source_tail_row = template_data_end_row
+
+    repaired = 0
+    for row_num in range(target_start_row, target_end_row + 1):
+        source_row = row_num if row_num <= template_data_end_row else source_tail_row
+        for col_num in range(start_col, end_col + 1):
+            dst = ws.cell(row=row_num, column=col_num)
+            if not _contains_self_external_formula_payload(dst.value):
+                continue
+            src = template_ws.cell(row=source_row, column=col_num)
+            replacement = src.value
+            if _has_formula_payload(src.value):
+                replacement = _translate_formula_payload(
+                    src.value,
+                    source_col=col_num,
+                    source_row=source_row,
+                    target_col=col_num,
+                    target_row=row_num,
+                    force_plain_formula=col_num in plain_formula_cols,
+                )
+            if not _formula_payload_equals(dst.value, replacement):
+                dst.value = replacement
+                repaired += 1
+    return repaired
 
 
 def _copy_sheet_values_from_source(target_ws: Any, source_ws: Any) -> int:
@@ -2915,6 +3618,20 @@ def _restore_sales_sheet_from_template(
                 dst.value = src_value
                 preserved_cells += 1
 
+    externalized_formulas_cleared = 0
+    if source_end_row >= source_data_start:
+        externalized_formulas_cleared = _sanitize_self_externalized_formula_window(
+            ws=target_ws,
+            template_ws=template_ws,
+            header_row=target_header_row,
+            target_start_row=source_data_start,
+            target_end_row=source_end_row,
+            start_col=target_start_col,
+            end_col=target_end_col,
+            formula_cols=formula_cols,
+            template_data_end_row=template_end_row,
+        )
+
     for row_num in range(source_end_row + 1, template_end_row + 1):
         for col_num in range(target_start_col, target_end_col + 1):
             target_ws.cell(row=row_num, column=col_num).value = None
@@ -2937,6 +3654,7 @@ def _restore_sales_sheet_from_template(
         "styles_restored": styles_restored,
         "formulas_restored": formulas_restored,
         "preserved_cells": preserved_cells,
+        "externalized_formulas_cleared": externalized_formulas_cleared,
         "cf_blocks_restored": cf_blocks_restored,
     }
 
@@ -2999,6 +3717,7 @@ def restore_crm_workbook_from_template(
         "sales_styles_restored": sales_stats["styles_restored"],
         "sales_formulas_restored": sales_stats["formulas_restored"],
         "sales_preserved_cells": sales_stats["preserved_cells"],
+        "sales_externalized_formulas_cleared": sales_stats["externalized_formulas_cleared"],
         "sales_cf_blocks_restored": sales_stats["cf_blocks_restored"],
         "sheet_values_preserved": sheet_cells_preserved,
         "sheet_count_preserved": sheet_count,
@@ -3076,6 +3795,17 @@ def _repair_appended_rows_formatting(
             formula_cols=formula_cols,
             template_data_end_row=template_end_row,
         )
+        externalized_formulas_cleared = _sanitize_self_externalized_formula_window(
+            ws=ws,
+            template_ws=source_ws,
+            header_row=tbl_start_row,
+            target_start_row=start_row,
+            target_end_row=end_row,
+            start_col=tbl_start_col,
+            end_col=tbl_end_col,
+            formula_cols=formula_cols,
+            template_data_end_row=template_end_row,
+        )
 
         if repair_cf_ranges:
             if template_ws is not None and template_end_row is not None:
@@ -3085,6 +3815,13 @@ def _repair_appended_rows_formatting(
                     header_row=tbl_start_row,
                     data_end_row=tbl_end_row,
                     template_data_end_row=template_end_row,
+                    verbose=verbose,
+                )
+                cf_rules_normalized += _normalize_conditional_formatting_ranges(
+                    ws=ws,
+                    header_row=tbl_start_row,
+                    data_end_row=tbl_end_row,
+                    header_to_col=header_to_col,
                     verbose=verbose,
                 )
             else:
@@ -3107,11 +3844,13 @@ def _repair_appended_rows_formatting(
     if verbose and (style_cells_normalized or cf_rules_normalized):
         print(
             "  Post-append formatting normalized: "
-            f"styles={style_cells_normalized}, formulas={formula_cells_restored}, cf_rules={cf_rules_normalized}"
+            f"styles={style_cells_normalized}, formulas={formula_cells_restored}, "
+            f"externalized_formulas={externalized_formulas_cleared}, cf_rules={cf_rules_normalized}"
         )
     return {
         "style_cells_normalized": style_cells_normalized,
         "formula_cells_restored": formula_cells_restored,
+        "externalized_formulas_cleared": externalized_formulas_cleared,
         "cf_rules_normalized": cf_rules_normalized,
     }
 
@@ -3257,6 +3996,21 @@ def _verify_appended_rows_integrity(
         for row_num in range(start_row, end_row + 1):
             for col_num in required_cols:
                 value = ws.cell(row=row_num, column=col_num).value
+                if isinstance(value, ArrayFormula):
+                    expected_ref = f"{get_column_letter(col_num)}{row_num}"
+                    actual_ref = str(value.ref or "").strip()
+                    if actual_ref != expected_ref:
+                        issues.append(
+                            f"row {row_num} col {get_column_letter(col_num)} array ref {actual_ref or '<blank>'} != {expected_ref}"
+                        )
+                        if len(issues) >= max_issues:
+                            break
+                if _contains_self_external_formula_payload(value):
+                    issues.append(
+                        f"row {row_num} col {get_column_letter(col_num)} contains self-externalized formula"
+                    )
+                    if len(issues) >= max_issues:
+                        break
                 if value in (None, ""):
                     issues.append(f"row {row_num} col {get_column_letter(col_num)} is empty")
                     if len(issues) >= max_issues:
@@ -3264,22 +4018,66 @@ def _verify_appended_rows_integrity(
             if len(issues) >= max_issues:
                 break
 
-        template_row = start_row - 1
-        if template_row > tbl_start_row:
-            for col_num in required_cols:
-                src_style = ws.cell(row=template_row, column=col_num).style_id
-                if src_style is None:
-                    continue
-                for row_num in range(start_row, end_row + 1):
-                    if ws.cell(row=row_num, column=col_num).style_id != src_style:
-                        issues.append(
-                            f"row {row_num} col {get_column_letter(col_num)} style mismatch vs template row {template_row}"
+        style_reference_wb = None
+        style_reference_ws = None
+        style_reference_end_row = None
+        reference_tail_row = None
+        reference_desc = None
+        try:
+            resolved_template = None
+            if sheet_name == CRM_SALES_SHEET_NAME and table_name == CRM_SALES_TABLE_NAME:
+                resolved_template = _resolve_crm_template_path()
+            if resolved_template is not None and resolved_template.resolve() != Path(workbook_path).resolve():
+                style_reference_wb = load_workbook(filename=str(resolved_template), read_only=False, data_only=False)
+                if sheet_name in style_reference_wb.sheetnames:
+                    candidate_ws = style_reference_wb[sheet_name]
+                    candidate_table = _resolve_table(candidate_ws, table_name)
+                    if _table_header_signature(ws, table) == _table_header_signature(candidate_ws, candidate_table):
+                        style_reference_ws = candidate_ws
+                        _, _, _, style_reference_end_row = _table_bounds(candidate_table)
+                        reference_tail_row = _find_template_row_for_append(
+                            ws=style_reference_ws,
+                            header_row=tbl_start_row,
+                            table_end_row=style_reference_end_row,
+                            formula_cols=required_cols,
                         )
+                        if reference_tail_row is None:
+                            reference_tail_row = style_reference_end_row
+                        reference_desc = f"canonical template row {reference_tail_row}"
+            if style_reference_ws is None:
+                template_row = start_row - 1
+                if template_row > tbl_start_row:
+                    style_reference_ws = ws
+                    style_reference_end_row = tbl_end_row
+                    reference_tail_row = template_row
+                    reference_desc = f"template row {template_row}"
+
+            if style_reference_ws is not None and reference_tail_row is not None:
+                for col_num in required_cols:
+                    for row_num in range(start_row, end_row + 1):
+                        if style_reference_ws is ws:
+                            source_row = reference_tail_row
+                        else:
+                            source_row = (
+                                row_num
+                                if style_reference_end_row is not None and row_num <= style_reference_end_row
+                                else reference_tail_row
+                            )
+                        src_cell = style_reference_ws.cell(row=source_row, column=col_num)
+                        dst_cell = ws.cell(row=row_num, column=col_num)
+                        if not _cell_styles_equivalent(dst_cell, src_cell):
+                            issues.append(
+                                f"row {row_num} col {get_column_letter(col_num)} style mismatch vs {reference_desc}"
+                            )
+                            break
+                    if len(issues) >= max_issues:
                         break
-                if len(issues) >= max_issues:
-                    break
+        finally:
+            if style_reference_wb is not None:
+                style_reference_wb.close()
 
         cf_replacements = _build_cf_replacement_by_col(header_to_col, tbl_start_row + 1, tbl_end_row)
+        sku_key_col = _find_header_col(header_to_col, {"skukey", "sku_key"})
         for col_num in sorted(set(cf_replacements.keys())):
             intervals = _collect_cf_intervals_for_column(ws, col_num)
             if not intervals:
@@ -3303,11 +4101,16 @@ def _verify_appended_rows_integrity(
 
 _PRESERVED_PARTS_EXACT = {
     "[Content_Types].xml",
+    "docProps/custom.xml",
     "xl/workbook.xml",
     "xl/_rels/workbook.xml.rels",
+    "xl/calcChain.xml",
+    "xl/metadata.xml",
     "xl/sharedStrings.xml",
 }
 _PRESERVED_PART_PREFIXES = (
+    "customXml/",
+    "xl/externalLinks/",
     "xl/pivotTables/",
     "xl/pivotCache/",
 )
@@ -3348,6 +4151,8 @@ def _restore_preserved_package_parts(workbook_path: Path, preserved_parts: Dict[
                 zout.writestr(missing_name, preserved_parts[missing_name])
 
     os.replace(str(tmp_path), str(workbook_path))
+    normalize_sales_sheet_sku_key_array_formula_refs(workbook_path)
+    prune_stale_calcchain_refs(workbook_path)
 
 
 def _file_fingerprint(path: Path) -> str:
@@ -4438,6 +5243,13 @@ def excel_append_openpyxl(
                     template_data_end_row=template_end_row,
                     verbose=verbose,
                 )
+                _normalize_conditional_formatting_ranges(
+                    ws=ws,
+                    header_row=header_row,
+                    data_end_row=bottom_row,
+                    header_to_col=header_to_col,
+                    verbose=verbose,
+                )
             else:
                 _normalize_conditional_formatting_ranges(
                     ws=ws,
@@ -4481,6 +5293,8 @@ def append_orders_with_fallback(
     repair_cf_ranges: bool = True,
     verbose: bool = False,
 ) -> Tuple[int, int]:
+    use_openpyxl_direct = not prefer_xlwings
+
     if prefer_xlwings:
         snapshot_path = _create_temporary_workbook_snapshot(out_wb)
         snapshot_restored = False
@@ -4503,9 +5317,9 @@ def append_orders_with_fallback(
                 kaspi_name_core_values=kaspi_name_core_values,
                 preserved_my_sizes=preserved_my_sizes,
             )
-            if repair_cf_ranges:
-                append_start_row, append_end_row = appended_rows
-                try:
+            append_start_row, append_end_row = appended_rows
+            try:
+                if repair_cf_ranges:
                     _repair_appended_rows_formatting(
                         workbook_path=out_wb,
                         sheet_name=sheet_name,
@@ -4515,20 +5329,29 @@ def append_orders_with_fallback(
                         repair_cf_ranges=True,
                         verbose=verbose,
                     )
-                    _refresh_formula_caches_xlwings(out_wb, verbose=verbose)
-                    _verify_formula_cache_readback(
-                        workbook_path=out_wb,
-                        sheet_name=sheet_name,
-                        table_name=table_name,
-                        start_row=append_start_row,
-                        end_row=append_end_row,
-                    )
-                except Exception as exc:
-                    _restore_workbook_snapshot(snapshot_path, out_wb)
-                    snapshot_restored = True
-                    raise AppendVerificationError(
-                        "xlwings append post-processing failed; workbook restored from pre-append snapshot."
-                    ) from exc
+
+                _refresh_formula_caches_xlwings(out_wb, verbose=verbose)
+                _verify_formula_cache_readback(
+                    workbook_path=out_wb,
+                    sheet_name=sheet_name,
+                    table_name=table_name,
+                    start_row=append_start_row,
+                    end_row=append_end_row,
+                )
+                _verify_appended_rows_integrity(
+                    workbook_path=out_wb,
+                    sheet_name=sheet_name,
+                    table_name=table_name,
+                    start_row=append_start_row,
+                    end_row=append_end_row,
+                    verbose=verbose,
+                )
+            except Exception as exc:
+                _restore_workbook_snapshot(snapshot_path, out_wb)
+                snapshot_restored = True
+                raise AppendVerificationError(
+                    "xlwings append post-processing failed; workbook restored from pre-append snapshot."
+                ) from exc
             return appended_rows
         except Exception as exc:
             if not snapshot_restored:
@@ -4554,10 +5377,14 @@ def append_orders_with_fallback(
         finally:
             _cleanup_temporary_workbook_snapshot(snapshot_path)
 
-    if not allow_openpyxl_fallback:
+    if not allow_openpyxl_fallback and not use_openpyxl_direct:
         raise RuntimeError("Openpyxl append fallback is disabled.")
 
-    print("  WARNING: using openpyxl append fallback.")
+    if use_openpyxl_direct:
+        if verbose:
+            print("  Using openpyxl append path.")
+    else:
+        print("  WARNING: using openpyxl append fallback.")
     return excel_append_openpyxl(
         out_wb,
         sheet_name,
@@ -4632,6 +5459,58 @@ def delete_crm_rows_xlwings(
         if wb is not None:
             _safe_close_xlwings_book(wb, context="reconcile-delete")
         _safe_quit_xlwings_app(app, context="reconcile-delete")
+
+
+def delete_crm_rows_openpyxl(
+    out_wb: Path,
+    sheet_name: str,
+    table_name: str,
+    row_numbers: List[int],
+) -> int:
+    """Delete CRM worksheet rows bottom-up via openpyxl and keep table bounds valid."""
+    row_numbers = sorted({int(r) for r in row_numbers if int(r) > 0}, reverse=True)
+    if not row_numbers:
+        return 0
+
+    preserved_package_parts = _snapshot_preserved_package_parts(out_wb)
+    tmp_path = out_wb.with_name(f"{out_wb.stem}.reconcile_tmp{out_wb.suffix}")
+    wb = load_workbook(filename=str(out_wb), read_only=False, data_only=False)
+    try:
+        sh = wb[sheet_name]
+        table = _resolve_table(sh, table_name)
+        header_row = table.ref and range_boundaries(table.ref)[1]
+        tbl_start_col, _tbl_start_row, tbl_end_col, _tbl_end_row = _table_bounds(table)
+
+        for row_num in row_numbers:
+            sh.delete_rows(row_num, 1)
+
+        last_data_row = header_row
+        for row_num in range(int(sh.max_row or header_row), header_row, -1):
+            if any(
+                sh.cell(row=row_num, column=col_num).value not in (None, "")
+                for col_num in range(tbl_start_col, tbl_end_col + 1)
+            ):
+                last_data_row = row_num
+                break
+
+        new_bottom_row = max(header_row + 1, int(last_data_row))
+        table.ref = (
+            f"{get_column_letter(tbl_start_col)}{header_row}:"
+            f"{get_column_letter(tbl_end_col)}{new_bottom_row}"
+        )
+        wb.save(str(tmp_path))
+    finally:
+        wb.close()
+
+    try:
+        _restore_preserved_package_parts(tmp_path, preserved_package_parts)
+        os.replace(str(tmp_path), str(out_wb))
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+    print(f"  Reconciled {len(row_numbers)} stale CRM row(s) in {out_wb.name} (openpyxl)")
+    return len(row_numbers)
 
 
 def backfill_append_date_my_sizes_openpyxl(
@@ -5020,11 +5899,12 @@ def archive_run(orders_dir: Path, source_files: List[Path], df_filt: pd.DataFram
     run_dir = archive_root / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
     
-    # Move source files
+    # Copy source files so the canonical ActiveOrders.xlsx stays available for
+    # late-arrival top-up and final health gates in the wrapper workflow.
     for src in source_files:
         dest = run_dir / src.name
         try:
-            shutil.move(str(src), str(dest))
+            shutil.copy2(src, dest)
             print(f"  Archived: {src.name}")
         except Exception as e:
             print(f"  WARN: could not archive {src.name}: {e}")
@@ -5308,13 +6188,13 @@ def main(
     parser.add_argument(
         "--openpyxl-append-fallback",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=_default_openpyxl_append_fallback_enabled(),
         help="Allow openpyxl append fallback when xlwings append is unavailable (default: off).",
     )
     parser.add_argument(
         "--prefer-xlwings-append",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=_default_prefer_xlwings_append(),
         help="Try xlwings append first before openpyxl fallback (default: on).",
     )
     parser.add_argument(
@@ -5350,14 +6230,14 @@ def main(
     parser.add_argument(
         "--candidate-dir",
         type=Path,
-        default=data_path("excel_ui", "backups", "candidates"),
-        help="Directory for transactional candidate workbooks.",
+        default=None,
+        help="Directory for transactional candidate workbooks. Defaults beside the target workbook.",
     )
     parser.add_argument(
         "--failed-candidate-dir",
         type=Path,
-        default=data_path("excel_ui", "backups", "failed_candidates"),
-        help="Directory for failed transactional candidates.",
+        default=None,
+        help="Directory for failed transactional candidates. Defaults beside the target workbook.",
     )
     parser.add_argument(
         "--excel-session-preflight-only",
@@ -5474,12 +6354,30 @@ def main(
             args.candidate_dir = Path(candidate_dir)
         if failed_candidate_dir is not _UNSET:
             args.failed_candidate_dir = Path(failed_candidate_dir)
+        if args.candidate_dir is None or args.failed_candidate_dir is None:
+            default_candidate_dir, default_failed_candidate_dir = _default_candidate_dirs_for_workbook(
+                Path(args.crm_file)
+            )
+            if args.candidate_dir is None:
+                args.candidate_dir = default_candidate_dir
+            if args.failed_candidate_dir is None:
+                args.failed_candidate_dir = default_failed_candidate_dir
         if excel_session_preflight_only is not _UNSET:
             args.excel_session_preflight_only = bool(excel_session_preflight_only)
         if summary_file is not _UNSET:
             args.summary_file = Path(summary_file)
 
     args.crm_file = Path(args.crm_file).expanduser().resolve()
+    if args.candidate_dir is None or args.failed_candidate_dir is None:
+        default_candidate_dir, default_failed_candidate_dir = _default_candidate_dirs_for_workbook(
+            args.crm_file
+        )
+        if args.candidate_dir is None:
+            args.candidate_dir = default_candidate_dir
+        if args.failed_candidate_dir is None:
+            args.failed_candidate_dir = default_failed_candidate_dir
+    args.candidate_dir = Path(args.candidate_dir).expanduser()
+    args.failed_candidate_dir = Path(args.failed_candidate_dir).expanduser()
     canonical_crm_path = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx").expanduser().resolve()
     enforced_crm_path = (
         Path(args.enforce_crm_path).expanduser().resolve()
@@ -5496,7 +6394,10 @@ def main(
         print("  Excel Session Preflight")
         print("=" * 60)
         print(f"  CRM file: {args.crm_file}")
-        _excel_session_preflight(args.crm_file, verbose=bool(args.verbose))
+        blocked_paths = [args.crm_file]
+        if _use_transactional_candidate_workbook(bool(getattr(args, "transactional", True))):
+            blocked_paths.append(_candidate_workbook_path(args.crm_file, Path(args.candidate_dir)))
+        _excel_session_preflight(args.crm_file, blocked_paths=blocked_paths, verbose=bool(args.verbose))
         print("  Excel session preflight OK")
         return {"excel_session_preflight": "ok"}
 
@@ -5528,7 +6429,7 @@ def main(
         if args.dry_run:
             return args.crm_file
         ensure_backup()
-        if not bool(getattr(args, "transactional", True)):
+        if not _use_transactional_candidate_workbook(bool(getattr(args, "transactional", True))):
             return args.crm_file
         candidate = candidate_state.get("path")
         if candidate is None:
@@ -5539,6 +6440,14 @@ def main(
             )
             candidate_state["path"] = candidate
         return candidate
+
+    def load_current_snapshot_for_backfills() -> CRMSnapshot:
+        return load_crm_snapshot(
+            write_crm_path(),
+            args.sheet,
+            args.table,
+            append_date=append_date,
+        )
 
     def finalize_candidate_if_needed() -> None:
         candidate = candidate_state.get("path")
@@ -5565,41 +6474,43 @@ def main(
         if int(args.backfill_fixed_days or 0) <= 0 and not (explicit_from or explicit_to):
             return 0
         target_path = write_crm_path()
-        try:
-            return apply_fixed_values_backfill_xlwings(
-                crm_path=target_path,
-                sheet_name=args.sheet,
-                table_name=args.table,
-                days=max(int(args.backfill_fixed_days or 0), 0),
-                date_from=explicit_from,
-                date_to=explicit_to,
-                dry_run=args.dry_run,
-                verbose=args.verbose,
-            )
-        except Exception as exc:
-            print(f"  WARNING: xlwings fixed-value backfill failed ({exc})")
-            if args.verbose:
-                import traceback
-
-                traceback.print_exc()
-            if not _allow_openpyxl_backfill_fallback():
-                print(
-                    "  WARNING: openpyxl fallback is disabled "
-                    "(set CRM_FIXED_BACKFILL_OPENPYXL_FALLBACK=1 to enable)."
+        prefer_openpyxl_backfill = _prefer_openpyxl_safe_write_path()
+        if xlwings_write_available and not prefer_openpyxl_backfill:
+            try:
+                return apply_fixed_values_backfill_xlwings(
+                    crm_path=target_path,
+                    sheet_name=args.sheet,
+                    table_name=args.table,
+                    days=max(int(args.backfill_fixed_days or 0), 0),
+                    date_from=explicit_from,
+                    date_to=explicit_to,
+                    dry_run=args.dry_run,
+                    verbose=args.verbose,
                 )
-                print("  WARNING: skipping fixed-value backfill to protect workbook structure.")
-                return 0
-            print("  WARNING: using openpyxl fallback for fixed-value backfill.")
-            return apply_fixed_values_backfill_openpyxl(
-                crm_path=target_path,
-                sheet_name=args.sheet,
-                table_name=args.table,
-                days=max(int(args.backfill_fixed_days or 0), 0),
-                date_from=explicit_from,
-                date_to=explicit_to,
-                dry_run=args.dry_run,
-                verbose=args.verbose,
-            )
+            except Exception as exc:
+                print(f"  WARNING: xlwings fixed-value backfill failed ({exc})")
+                if args.verbose:
+                    import traceback
+
+                    traceback.print_exc()
+                if not _allow_openpyxl_backfill_fallback():
+                    print(
+                        "  WARNING: openpyxl fallback is disabled "
+                        "(set CRM_FIXED_BACKFILL_OPENPYXL_FALLBACK=1 to enable)."
+                    )
+                    print("  WARNING: skipping fixed-value backfill to protect workbook structure.")
+                    return 0
+                print("  WARNING: using openpyxl fallback for fixed-value backfill.")
+        return apply_fixed_values_backfill_openpyxl(
+            crm_path=target_path,
+            sheet_name=args.sheet,
+            table_name=args.table,
+            days=max(int(args.backfill_fixed_days or 0), 0),
+            date_from=explicit_from,
+            date_to=explicit_to,
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+        )
     
     # Parse dates
     if args.date_end.lower() == "today":
@@ -5635,6 +6546,12 @@ def main(
     else:
         print(f"  Date filter: == {end_date} (TODAY only)")
     print(f"  Append date: {append_date}")
+    if (
+        not args.dry_run
+        and bool(getattr(args, "transactional", True))
+        and not _use_transactional_candidate_workbook(True)
+    ):
+        print("  Write mode: backup-first live workbook (macOS Excel candidate prompt avoidance)")
     if args.verbose and args.fixed_values:
         print(f"  Fixed append columns: {', '.join(FIXED_APPEND_COLUMNS)}")
         print(f"  Fixed backfill columns: {', '.join(FIXED_BACKFILL_COLUMNS)}")
@@ -5699,8 +6616,13 @@ def main(
     existing_ids = snapshot.order_ids
     print(f"Existing orders in CRM: {len(existing_ids)}")
 
+    seller_fee_overlay_count = overlay_missing_seller_delivery_fees_from_db(df_filt)
+    if seller_fee_overlay_count:
+        print(f"  Seller delivery fee rows enriched from DB: {seller_fee_overlay_count}")
+
     allow_openpyxl_append_fallback = bool(
-        getattr(args, "openpyxl_append_fallback", False) or _allow_openpyxl_append_fallback()
+        getattr(args, "openpyxl_append_fallback", _default_openpyxl_append_fallback_enabled())
+        or _allow_openpyxl_append_fallback()
     )
     xlwings_write_available = True
 
@@ -5710,6 +6632,9 @@ def main(
                 crm_path=args.crm_file,
                 strict_excel=bool(getattr(args, "strict_excel", True)),
                 verbose=bool(args.verbose),
+                transactional=bool(getattr(args, "transactional", True)),
+                candidate_dir=Path(args.candidate_dir),
+                allow_open_probe_fallback=bool(getattr(args, "transactional", True)),
             )
         except Exception as exc:
             if not allow_openpyxl_append_fallback:
@@ -5851,12 +6776,20 @@ def main(
             )
             if not args.dry_run:
                 target_crm_path = write_crm_path()
-                delete_crm_rows_xlwings(
-                    target_crm_path,
-                    args.sheet,
-                    args.table,
-                    reconcile_plan.delete_row_numbers,
-                )
+                if xlwings_write_available:
+                    delete_crm_rows_xlwings(
+                        target_crm_path,
+                        args.sheet,
+                        args.table,
+                        reconcile_plan.delete_row_numbers,
+                    )
+                else:
+                    delete_crm_rows_openpyxl(
+                        target_crm_path,
+                        args.sheet,
+                        args.table,
+                        reconcile_plan.delete_row_numbers,
+                    )
             result["crm_rows_reconciled_deleted"] = reconcile_delete_count
 
         # Filter stage and phone values to match
@@ -5913,27 +6846,28 @@ def main(
                 detail_bits.append(f"reconciled {reconcile_delete_count} stale today row(s)")
             print(f"   No new orders to append ({'; '.join(detail_bits)})")
             if args.refresh_delivery_fees:
-                if not xlwings_write_available and allow_openpyxl_append_fallback:
-                    print("   WARNING: skipping delivery fee backfill (Excel automation unavailable).")
-                else:
-                    refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
-                    refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
-                    try:
-                        backfilled = backfill_seller_delivery_fee(
-                            write_crm_path(),
-                            args.sheet,
-                            args.table,
-                            refresh_from,
-                            refresh_to,
-                            dry_run=args.dry_run,
-                            verbose=args.verbose,
-                            snapshot=snapshot,
-                        )
-                        print(f"   Delivery fee backfill rows updated: {backfilled}")
-                    except Exception as exc:
-                        if not allow_openpyxl_append_fallback:
-                            raise
-                        print(f"   WARNING: delivery fee backfill failed ({exc}); continuing.")
+                fee_target_path = write_crm_path()
+                prefer_openpyxl_fee = (not xlwings_write_available) or _prefer_openpyxl_safe_write_path()
+                refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
+                refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
+                try:
+                    fee_snapshot = load_current_snapshot_for_backfills()
+                    backfilled = backfill_seller_delivery_fee(
+                        fee_target_path,
+                        args.sheet,
+                        args.table,
+                        refresh_from,
+                        refresh_to,
+                        dry_run=args.dry_run,
+                        verbose=args.verbose,
+                        snapshot=fee_snapshot,
+                        prefer_openpyxl=prefer_openpyxl_fee,
+                    )
+                    print(f"   Delivery fee backfill rows updated: {backfilled}")
+                except Exception as exc:
+                    if not allow_openpyxl_append_fallback or prefer_openpyxl_fee:
+                        raise
+                    print(f"   WARNING: delivery fee backfill failed ({exc}); continuing.")
             fixed_backfilled = maybe_run_fixed_backfill()
             if fixed_backfilled:
                 print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
@@ -5950,6 +6884,29 @@ def main(
         else:
             print("   All orders already in CRM. Nothing to import or update.")
             print("   NO-OP: skipping Google Drive sync.")
+            if args.refresh_delivery_fees:
+                fee_target_path = write_crm_path()
+                prefer_openpyxl_fee = (not xlwings_write_available) or _prefer_openpyxl_safe_write_path()
+                refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
+                refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
+                try:
+                    fee_snapshot = load_current_snapshot_for_backfills()
+                    backfilled = backfill_seller_delivery_fee(
+                        fee_target_path,
+                        args.sheet,
+                        args.table,
+                        refresh_from,
+                        refresh_to,
+                        dry_run=args.dry_run,
+                        verbose=args.verbose,
+                        snapshot=fee_snapshot,
+                        prefer_openpyxl=prefer_openpyxl_fee,
+                    )
+                    print(f"   Delivery fee backfill rows updated: {backfilled}")
+                except Exception as exc:
+                    if not allow_openpyxl_append_fallback or prefer_openpyxl_fee:
+                        raise
+                    print(f"   WARNING: delivery fee backfill failed ({exc}); continuing.")
             fixed_backfilled = maybe_run_fixed_backfill()
             if fixed_backfilled:
                 print(f"   Fixed-value backfill rows updated: {fixed_backfilled}")
@@ -5963,7 +6920,10 @@ def main(
 
     # Append via xlwings with openpyxl fallback (if enabled).
     target_crm_path = write_crm_path()
-    prefer_xlwings_append = bool(getattr(args, "prefer_xlwings_append", True)) and xlwings_write_available
+    prefer_xlwings_append = (
+        bool(getattr(args, "prefer_xlwings_append", _default_prefer_xlwings_append()))
+        and xlwings_write_available
+    )
     append_start_row, append_end_row = append_orders_with_fallback(
         target_crm_path,
         args.sheet,
@@ -6082,27 +7042,28 @@ def main(
 
     # Backfill seller delivery fee from Delivery_fee_kzt (if requested)
     if args.refresh_delivery_fees:
-        if not xlwings_write_available and allow_openpyxl_append_fallback:
-            print("   WARNING: skipping delivery fee backfill (Excel automation unavailable).")
-        else:
-            refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
-            refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
-            try:
-                backfilled = backfill_seller_delivery_fee(
-                    write_crm_path(),
-                    args.sheet,
-                    args.table,
-                    refresh_from,
-                    refresh_to,
-                    dry_run=args.dry_run,
-                    verbose=args.verbose,
-                    snapshot=snapshot,
-                )
-                print(f"   Delivery fee backfill rows updated: {backfilled}")
-            except Exception as exc:
-                if not allow_openpyxl_append_fallback:
-                    raise
-                print(f"   WARNING: delivery fee backfill failed ({exc}); continuing.")
+        fee_target_path = write_crm_path()
+        prefer_openpyxl_fee = (not xlwings_write_available) or _prefer_openpyxl_safe_write_path()
+        refresh_from = _resolve_refresh_date(args.refresh_fees_from, today_local() - timedelta(days=1))
+        refresh_to = _resolve_refresh_date(args.refresh_fees_to, today_local())
+        try:
+            fee_snapshot = load_current_snapshot_for_backfills()
+            backfilled = backfill_seller_delivery_fee(
+                fee_target_path,
+                args.sheet,
+                args.table,
+                refresh_from,
+                refresh_to,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+                snapshot=fee_snapshot,
+                prefer_openpyxl=prefer_openpyxl_fee,
+            )
+            print(f"   Delivery fee backfill rows updated: {backfilled}")
+        except Exception as exc:
+            if not allow_openpyxl_append_fallback or prefer_openpyxl_fee:
+                raise
+            print(f"   WARNING: delivery fee backfill failed ({exc}); continuing.")
 
     finalize_candidate_if_needed()
 

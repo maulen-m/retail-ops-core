@@ -205,3 +205,65 @@ def select_operational_crm_rows(
 
     work = work.sort_values(["_order_id", "_row_ordinal"]).reset_index(drop=True)
     return work, stats
+
+
+def select_operational_crm_rows_with_targeted_fallback(
+    df: pd.DataFrame,
+    target_date: date,
+    order_id_filter: Optional[set[str]] = None,
+    historical_fallback_order_ids: Optional[set[str]] = None,
+    backfill_overdue_my_size_from_history: bool = False,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """
+    Reduce CRM rows to the operational batch view with narrow historical fallback.
+
+    This keeps the default fail-closed behavior for the workbook's current-day
+    operational slice, then selectively re-adds only explicitly approved order
+    IDs from their latest historical rows. It avoids broad historical fallback
+    that can pull in large stale backlogs.
+    """
+    primary, stats = select_operational_crm_rows(
+        df,
+        target_date=target_date,
+        order_id_filter=order_id_filter,
+        allow_historical_fallback=False,
+        backfill_overdue_my_size_from_history=backfill_overdue_my_size_from_history,
+    )
+
+    requested_fallback_ids = {str(order_id).strip() for order_id in historical_fallback_order_ids or set() if str(order_id).strip()}
+    if order_id_filter is not None:
+        requested_fallback_ids &= {str(order_id).strip() for order_id in order_id_filter if str(order_id).strip()}
+
+    primary_selected_ids = set(primary["_order_id"].tolist()) if "_order_id" in primary.columns else set()
+    fallback_ids = requested_fallback_ids - primary_selected_ids
+
+    stats["targeted_fallback_orders_requested"] = len(requested_fallback_ids)
+    stats["targeted_fallback_orders_selected"] = 0
+    stats["targeted_fallback_rows_added"] = 0
+
+    if not fallback_ids:
+        return primary, stats
+
+    fallback, fallback_stats = select_operational_crm_rows(
+        df,
+        target_date=target_date,
+        order_id_filter=fallback_ids,
+        allow_historical_fallback=True,
+        backfill_overdue_my_size_from_history=backfill_overdue_my_size_from_history,
+    )
+    if fallback.empty:
+        return primary, stats
+
+    combined = pd.concat([primary, fallback], ignore_index=True, sort=False)
+    if "_order_id" in combined.columns and "_line_key" in combined.columns:
+        combined = combined.sort_values(["_order_id", "_batch_date", "_row_ordinal"]).drop_duplicates(
+            subset=["_order_id", "_line_key"],
+            keep="last",
+        )
+    combined = combined.sort_values(["_order_id", "_row_ordinal"]).reset_index(drop=True)
+
+    stats["orders_selected"] += int(fallback_stats.get("orders_selected", 0))
+    stats["selected_fallback_orders"] += int(fallback_stats.get("orders_selected", 0))
+    stats["targeted_fallback_orders_selected"] = int(fallback_stats.get("orders_selected", 0))
+    stats["targeted_fallback_rows_added"] = int(len(fallback.index))
+    return combined, stats

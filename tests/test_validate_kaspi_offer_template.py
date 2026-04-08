@@ -120,9 +120,12 @@ def test_validate_offer_template_passes_for_line51_mapping(tmp_path: Path) -> No
         category="men-sport-suits",
         store_code="ACMEWEAR",
         expect_sku_key="CL_OC_MEN_LINE51_WHITE",
+        mode="fast",
     )
     assert report["ok"] is True
     assert report["error_count"] == 0
+    assert report["mode"] == "fast"
+    assert report["value_dict_scope"] == "skipped"
 
 
 def test_validate_offer_template_fails_on_model_mismatch(tmp_path: Path) -> None:
@@ -148,6 +151,7 @@ def test_validate_offer_template_fails_on_model_mismatch(tmp_path: Path) -> None
         db_path=db_path,
         category="men-sport-suits",
         store_code="ACMEWEAR",
+        mode="fast",
     )
     assert report["ok"] is False
     assert any("model token mismatch" in err.lower() for err in report["errors"])
@@ -168,14 +172,37 @@ def test_validate_offer_template_fails_on_invalid_dictionary_value(tmp_path: Pat
         collection="Весна-Лето 2026",
     )
 
-    report = validate_kaspi_offer_template(
+    report_fast = validate_kaspi_offer_template(
         xlsm_path=xlsm_path,
         db_path=db_path,
         category="men-sport-suits",
         store_code="ACMEWEAR",
+        mode="fast",
     )
-    assert report["ok"] is False
-    assert any("not present in values dictionary" in err.lower() for err in report["errors"])
+    assert report_fast["ok"] is True
+    assert report_fast["value_dict_scope"] == "skipped"
+
+    report_balanced = validate_kaspi_offer_template(
+        xlsm_path=xlsm_path,
+        db_path=db_path,
+        category="men-sport-suits",
+        store_code="ACMEWEAR",
+        mode="balanced",
+    )
+    assert report_balanced["ok"] is False
+    assert report_balanced["value_dict_scope"] == "populated_list_bound_columns"
+    assert any("not present in values dictionary" in err.lower() for err in report_balanced["errors"])
+
+    report_strict = validate_kaspi_offer_template(
+        xlsm_path=xlsm_path,
+        db_path=db_path,
+        category="men-sport-suits",
+        store_code="ACMEWEAR",
+        mode="strict",
+    )
+    assert report_strict["ok"] is False
+    assert report_strict["value_dict_scope"] == "all_list_bound_columns"
+    assert any("not present in values dictionary" in err.lower() for err in report_strict["errors"])
 
 
 def test_validate_offer_template_fails_on_missing_required_field(tmp_path: Path) -> None:
@@ -198,6 +225,7 @@ def test_validate_offer_template_fails_on_missing_required_field(tmp_path: Path)
         db_path=db_path,
         category="men-sport-suits",
         store_code="ACMEWEAR",
+        mode="fast",
     )
     assert report["ok"] is False
     assert any("missing required value" in err.lower() for err in report["errors"])
@@ -227,6 +255,124 @@ def test_validate_offer_template_fails_on_ambiguous_mapping(tmp_path: Path) -> N
         db_path=db_path,
         category="men-sport-suits",
         store_code="ACMEWEAR",
+        mode="fast",
     )
     assert report["ok"] is False
     assert any("ambiguous sku mapping" in err.lower() for err in report["errors"])
+
+
+def test_validate_offer_template_passes_for_women_sport_suits_category(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsm_path = tmp_path / "offer_line31_sport.xlsm"
+    _setup_db(db_path)
+
+    _insert_dim_sku(db_path, ["CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK"])
+    _insert_article_map(
+        db_path,
+        "ACMEWEAR",
+        "OF_LINE31_ST_SB_S",
+        "CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK",
+    )
+    _build_offer_xlsm(
+        xlsm_path,
+        merchant_sku="CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK_ST_S",
+        manufacturer_code="OF_LINE31_ST_SB_S",
+        color="черный",
+        collection="Весна-Лето 2026",
+    )
+
+    report = validate_kaspi_offer_template(
+        xlsm_path=xlsm_path,
+        db_path=db_path,
+        category="women-sport-suits",
+        store_code="ACMEWEAR",
+        expect_sku_key="CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK",
+        mode="fast",
+    )
+    assert report["ok"] is True
+    assert report["error_count"] == 0
+
+
+def test_validate_offer_template_passes_for_women_thermal_underwear_category(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsm_path = tmp_path / "offer_line31_thermal.xlsm"
+    _setup_db(db_path)
+
+    _insert_dim_sku(db_path, ["CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK"])
+    _insert_article_map(
+        db_path,
+        "ACMEWEAR",
+        "OF_LINE31_TRM_SB_S",
+        "CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK",
+    )
+    _build_offer_xlsm(
+        xlsm_path,
+        merchant_sku="CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK_TRM_S",
+        manufacturer_code="OF_LINE31_TRM_SB_S",
+        color="черный",
+        collection="Весна-Лето 2026",
+    )
+
+    report = validate_kaspi_offer_template(
+        xlsm_path=xlsm_path,
+        db_path=db_path,
+        category="women-thermal-underwear",
+        store_code="ACMEWEAR",
+        expect_sku_key="CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK",
+        mode="fast",
+    )
+    assert report["ok"] is True
+    assert report["error_count"] == 0
+
+
+def test_validate_offer_template_accepts_new_external_offer_token_when_expect_sku_key_is_locked(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    xlsm_path = tmp_path / "offer_line31_new_token.xlsm"
+    _setup_db(db_path)
+
+    _insert_dim_sku(db_path, ["CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK"])
+    _build_offer_xlsm(
+        xlsm_path,
+        merchant_sku="CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK_ST_S",
+        manufacturer_code="OF_LINE31_ST_SB_S",
+        color="черный",
+        collection="Весна-Лето 2026",
+    )
+
+    report = validate_kaspi_offer_template(
+        xlsm_path=xlsm_path,
+        db_path=db_path,
+        category="women-sport-suits",
+        store_code="ACMEWEAR",
+        expect_sku_key="CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK",
+        mode="fast",
+    )
+    assert report["ok"] is True
+
+
+def test_validate_offer_template_balanced_checks_only_populated_list_bound_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsm_path = tmp_path / "offer_balanced.xlsm"
+    _setup_db(db_path)
+    _insert_dim_sku(db_path, ["CL_OC_MEN_LINE51_WHITE"])
+    _insert_article_map(db_path, "ACMEWEAR", "OF_LINE51_K-O_XL_48", "CL_OC_MEN_LINE51_WHITE")
+    _build_offer_xlsm(
+        xlsm_path,
+        merchant_sku="OF_LINE51_K-O_XL_48",
+        manufacturer_code="OF_LINE51_K-O_XL_48",
+        color="черный",
+        collection="Весна-Лето 2026",
+    )
+
+    report = validate_kaspi_offer_template(
+        xlsm_path=xlsm_path,
+        db_path=db_path,
+        category="men-sport-suits",
+        store_code="ACMEWEAR",
+        mode="balanced",
+    )
+    assert report["ok"] is True
+    assert report["value_dict_scope"] == "populated_list_bound_columns"
+    assert report["error_count"] == 0

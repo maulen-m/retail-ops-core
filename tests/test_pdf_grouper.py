@@ -4,7 +4,9 @@ Unit tests for pdf_grouper.py (Phase 9.5)
 TASK-118: Tests for waybill PDF grouping.
 """
 import pytest
+import sys
 import tempfile
+import types
 import zipfile
 from pathlib import Path
 
@@ -388,6 +390,17 @@ startxref
         assert result == output
         assert output.exists()
 
+    def test_single_pdf_copy_creates_nested_output_dir(self, sample_pdfs, tmp_path):
+        """Test that single PDF copy recreates nested output dirs safely."""
+        pytest.importorskip("PyPDF2")
+        from core.waybill.pdf_grouper import merge_pdfs
+
+        output = tmp_path / "nested" / "NORMAL_singles" / "output.pdf"
+        result = merge_pdfs([sample_pdfs[0]], output)
+
+        assert result == output
+        assert output.exists()
+
     def test_multiple_pdf_merge(self, sample_pdfs, tmp_path):
         """Test merging multiple PDFs."""
         pytest.importorskip("PyPDF2")
@@ -400,6 +413,36 @@ startxref
         assert output.exists()
         # Merged file should be larger than individual files
         assert output.stat().st_size > 0
+
+    def test_multiple_pdf_merge_writes_to_open_file_handle(self, sample_pdfs, tmp_path, monkeypatch):
+        """Test merge writes through an open file handle, not a raw path string."""
+        from core.waybill.pdf_grouper import merge_pdfs
+
+        class FakePdfMerger:
+            def __init__(self):
+                self.appended = []
+                self.closed = False
+
+            def append(self, pdf_path):
+                self.appended.append(pdf_path)
+
+            def write(self, fileobj):
+                assert hasattr(fileobj, "write")
+                assert not isinstance(fileobj, (str, Path))
+                fileobj.write(b"%PDF-1.4\nfake-merge\n")
+
+            def close(self):
+                self.closed = True
+
+        fake_module = types.SimpleNamespace(PdfMerger=FakePdfMerger)
+        monkeypatch.setitem(sys.modules, "pypdf", fake_module)
+
+        output = tmp_path / "merged.pdf"
+        result = merge_pdfs(sample_pdfs, output)
+
+        assert result == output
+        assert output.exists()
+        assert output.read_bytes().startswith(b"%PDF-1.4")
 
     def test_empty_list_error(self, tmp_path):
         """Test error on empty PDF list."""

@@ -491,8 +491,10 @@ if [ "${AUTO_SEND_WHATSAPP}" = "1" ]; then
         else
             WHATSAPP_PREFLIGHT_OK=1
             if [ "${HARD_FAIL}" -ne 0 ]; then
-                echo "WARNING: Waybill health reported mismatches, but ready merged bundles will still be sent."
+                echo "WARNING: WhatsApp auto-send blocked by strict waybill health mismatches."
                 echo "WhatsApp source root: ${WHATSAPP_SOURCE_ROOT}"
+                echo "Resolve missing PDFs/bundles first, then run: ${DATA_ROOT}/excel_ui/run_send_whatsapp.command"
+                WHATSAPP_PREFLIGHT_OK=0
             fi
         fi
         if [ -x "${WHATSAPP_RUNNER}" ] && [ "${WHATSAPP_PREFLIGHT_OK}" -eq 1 ]; then

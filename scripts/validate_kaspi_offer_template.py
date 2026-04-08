@@ -34,6 +34,27 @@ MODEL_TOKEN_STOPWORDS = {
     "GRAY",
 }
 
+VALIDATION_MODES = {"fast", "balanced", "strict"}
+
+OWNED_REQUIRED_DISPLAYS_BASE = {
+    "Артикул",
+    "Название товара",
+    "Бренд",
+    "Код изображений",
+    "Описание (мин. 100 символов, макс. 7 000 символов)",
+    "Объединить в одну карточку",
+    "Артикул производителя",
+    "Размер производителя",
+    "Цвет",
+}
+
+OWNED_REQUIRED_DISPLAYS_BY_CATEGORY = {
+    "men-sport-suits": {"Стиль", "Вид спорта"},
+    "women-sport-suits": {"Стиль", "Вид спорта"},
+    "men-thermal-underwear": {"Модель", "Пол"},
+    "women-thermal-underwear": {"Модель", "Пол"},
+}
+
 
 def _norm(value: Any) -> str:
     return str(value or "").strip()
@@ -69,14 +90,19 @@ def _parse_bool_hint(value: Any, hint: str) -> bool:
     return hint in _norm(value).lower()
 
 
-def _load_values_dict(ws_values) -> dict[str, set[str]]:
+def _load_values_dict(ws_values, required_displays: set[str] | None = None) -> dict[str, set[str]]:
     by_display: dict[str, set[str]] = {}
     max_col = int(ws_values.max_column or 0)
     max_row = int(ws_values.max_row or 0)
+    requested_cols: list[tuple[int, str]] = []
     for col_num in range(1, max_col + 1):
         display_name = _norm(ws_values.cell(1, col_num).value)
         if not display_name:
             continue
+        if required_displays is not None and display_name not in required_displays:
+            continue
+        requested_cols.append((col_num, display_name))
+    for col_num, display_name in requested_cols:
         allowed: set[str] = set()
         for row_num in range(2, max_row + 1):
             value = _norm(ws_values.cell(row_num, col_num).value)
@@ -84,6 +110,30 @@ def _load_values_dict(ws_values) -> dict[str, set[str]]:
                 allowed.add(value.lower())
         by_display[display_name] = allowed
     return by_display
+
+
+def _populated_list_bound_displays(
+    columns: list[dict[str, Any]],
+    data_rows: list[dict[str, Any]],
+) -> set[str]:
+    displays: set[str] = set()
+    for col in columns:
+        if not col["list_bound"] or not col["display_name"]:
+            continue
+        col_num = col["col_num"]
+        if any(row["values"].get(col_num) for row in data_rows):
+            displays.add(col["display_name"])
+    return displays
+
+
+def _owned_required_columns(
+    columns: list[dict[str, Any]],
+    *,
+    category_norm: str,
+) -> list[dict[str, Any]]:
+    required_displays = set(OWNED_REQUIRED_DISPLAYS_BASE)
+    required_displays.update(OWNED_REQUIRED_DISPLAYS_BY_CATEGORY.get(category_norm, set()))
+    return [col for col in columns if col.get("display_name") in required_displays]
 
 
 def _token_variants(raw_token: str) -> set[str]:
@@ -107,6 +157,8 @@ def _extract_model_token(raw: str) -> str | None:
     matches = re.findall(r"[A-Z]+-?\d+[A-Z0-9-]*", text)
     for token in reversed(matches):
         cleaned = token.strip("-")
+        if re.fullmatch(r"[A-Z]-\d+", cleaned):
+            continue
         if cleaned and cleaned not in MODEL_TOKEN_STOPWORDS:
             return cleaned
     return None
@@ -218,6 +270,26 @@ def _resolve_sku_candidates(
     return candidates
 
 
+def _resolve_expected_prefix_candidate(token: str, expect_sku_key: str | None) -> set[str]:
+    token_norm = _norm_token(token)
+    expect_norm = _norm_token(expect_sku_key)
+    if not token_norm or not expect_norm:
+        return set()
+    if token_norm.startswith(expect_norm):
+        return {_norm(expect_sku_key)}
+    return set()
+
+
+def _resolve_expected_model_candidate(token: str, expect_sku_key: str | None) -> set[str]:
+    if not expect_sku_key:
+        return set()
+    source_model = _extract_model_token(token)
+    expected_model = _extract_model_token(expect_sku_key)
+    if source_model and expected_model and source_model == expected_model:
+        return {_norm(expect_sku_key)}
+    return set()
+
+
 def validate_kaspi_offer_template(
     *,
     xlsm_path: Path,
@@ -226,6 +298,7 @@ def validate_kaspi_offer_template(
     store_code: str | None = None,
     expect_sku_key: str | None = None,
     expect_sku_prefix: str | None = None,
+    mode: str = "fast",
 ) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -233,9 +306,17 @@ def validate_kaspi_offer_template(
         raise FileNotFoundError(f"XLSM file not found: {xlsm_path}")
 
     category_norm = _norm(category).lower()
-    allowed_categories = {"men-sport-suits", "men-thermal-underwear"}
+    allowed_categories = {
+        "men-sport-suits",
+        "men-thermal-underwear",
+        "women-sport-suits",
+        "women-thermal-underwear",
+    }
     if category_norm not in allowed_categories:
         raise ValueError(f"Unsupported category: {category}")
+    mode_norm = _norm(mode).lower()
+    if mode_norm not in VALIDATION_MODES:
+        raise ValueError(f"Unsupported validation mode: {mode}")
 
     wb = load_workbook(xlsm_path, read_only=True, data_only=True)
     try:
@@ -270,6 +351,7 @@ def validate_kaspi_offer_template(
 
         by_machine = {col["machine_key"]: col for col in columns if col["machine_key"]}
         by_display = {col["display_name"]: col for col in columns if col["display_name"]}
+        owned_required_columns = _owned_required_columns(columns, category_norm=category_norm)
 
         merchant_col = by_machine.get("merchant_sku") or by_display.get("Артикул")
         manufacturer_col = None
@@ -285,13 +367,6 @@ def validate_kaspi_offer_template(
         if manufacturer_col is None:
             raise RuntimeError("attributes sheet missing manufacturer code / Артикул производителя column")
 
-        value_dict = _load_values_dict(ws_values)
-
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.row_factory = sqlite3.Row
-            sku_catalog = _load_sku_catalog(conn)
-            token_to_sku = _load_token_to_sku(conn, store_code=store_code)
-
         data_rows: list[dict[str, Any]] = []
         for row_num in range(4, max_row + 1):
             values = {col["col_num"]: _norm(ws_attr.cell(row_num, col["col_num"]).value) for col in columns}
@@ -299,18 +374,46 @@ def validate_kaspi_offer_template(
                 continue
             data_rows.append({"row_num": row_num, "values": values})
 
+        if mode_norm == "strict":
+            required_value_displays = {
+                col["display_name"]
+                for col in columns
+                if col["list_bound"] and col["display_name"]
+            }
+            value_dict_scope = "all_list_bound_columns"
+        elif mode_norm == "balanced":
+            required_value_displays = _populated_list_bound_displays(columns, data_rows)
+            value_dict_scope = "populated_list_bound_columns"
+        else:
+            required_value_displays = set()
+            value_dict_scope = "skipped"
+
+        value_dict = (
+            _load_values_dict(ws_values, required_value_displays)
+            if required_value_displays
+            else {}
+        )
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            sku_catalog = _load_sku_catalog(conn)
+            token_to_sku = _load_token_to_sku(conn, store_code=store_code)
+
         resolved_sku_keys: list[str] = []
         for row in data_rows:
             row_num = row["row_num"]
             values = row["values"]
 
+            for col in owned_required_columns:
+                value = values[col["col_num"]]
+                display = col["display_name"] or col["machine_key"] or f"col_{col['col_num']}"
+                if not value:
+                    errors.append(f"row {row_num}: missing required value in '{display}'")
+
             for col in columns:
                 value = values[col["col_num"]]
                 display = col["display_name"] or col["machine_key"] or f"col_{col['col_num']}"
-                if col["required"] and not value:
-                    errors.append(f"row {row_num}: missing required value in '{display}'")
-
-                if value and col["list_bound"]:
+                if value and col["list_bound"] and mode_norm != "fast":
                     if display not in value_dict:
                         errors.append(
                             f"row {row_num}: values dictionary missing for list-bound column '{display}'"
@@ -335,6 +438,14 @@ def validate_kaspi_offer_template(
 
             for token in resolve_targets:
                 candidates = _resolve_sku_candidates(token, token_to_sku)
+                if not candidates:
+                    candidates = _resolve_expected_prefix_candidate(token, expect_sku_key)
+                if not candidates:
+                    candidates = _resolve_expected_model_candidate(token, expect_sku_key)
+                    if candidates:
+                        warnings.append(
+                            f"row {row_num}: token '{token}' resolved via expect_sku_key model fallback"
+                        )
                 if not candidates:
                     errors.append(f"row {row_num}: unresolved SKU mapping for token '{token}'")
                     continue
@@ -378,12 +489,14 @@ def validate_kaspi_offer_template(
 
         return {
             "ok": len(errors) == 0,
+            "mode": mode_norm,
             "category": category_norm,
             "store_code": _norm(store_code).upper() if store_code else None,
             "xlsm_path": str(xlsm_path),
             "db_path": str(db_path),
             "row_count": len(data_rows),
             "resolved_sku_keys": sorted(set(resolved_sku_keys)),
+            "value_dict_scope": value_dict_scope,
             "error_count": len(errors),
             "warning_count": len(warnings),
             "errors": errors,
@@ -401,13 +514,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="Path to app.db")
     parser.add_argument(
         "--category",
-        choices=["men-sport-suits", "men-thermal-underwear"],
+        choices=[
+            "men-sport-suits",
+            "men-thermal-underwear",
+            "women-sport-suits",
+            "women-thermal-underwear",
+        ],
         required=True,
         help="Kaspi template category",
     )
     parser.add_argument("--store", type=str, default=None, help="Store code scope, e.g. ACMEWEAR")
     parser.add_argument("--expect-sku-key", type=str, default=None, help="Expected sku_key for all rows")
     parser.add_argument("--expect-sku-prefix", type=str, default=None, help="Expected sku_key prefix")
+    parser.add_argument(
+        "--mode",
+        choices=["fast", "balanced", "strict"],
+        default="fast",
+        help="Validation depth. fast=required+SKU only, balanced=fast+filled list values, strict=full list-value replay.",
+    )
     parser.add_argument("--report-json", type=Path, default=None, help="Write full report as JSON")
     return parser.parse_args()
 
@@ -421,13 +545,15 @@ def main() -> int:
         store_code=args.store,
         expect_sku_key=args.expect_sku_key,
         expect_sku_prefix=args.expect_sku_prefix,
+        mode=args.mode,
     )
 
     print(
         "kaspi_offer_template: "
-        f"ok={report['ok']} rows={report['row_count']} "
+        f"ok={report['ok']} mode={report['mode']} rows={report['row_count']} "
         f"errors={report['error_count']} warnings={report['warning_count']}"
     )
+    print(f"value_dict_scope: {report['value_dict_scope']}")
     if report["resolved_sku_keys"]:
         print("resolved_sku_keys: " + ", ".join(report["resolved_sku_keys"]))
 

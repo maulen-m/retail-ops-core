@@ -67,8 +67,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
 from core.db import DEFAULT_DB_PATH, get_db
-from core.ops.crm_operational_view import select_operational_crm_rows
+from core.ops.crm_operational_view import (
+    select_operational_crm_rows,
+    select_operational_crm_rows_with_targeted_fallback,
+)
 from core.ops.waybill_send_batch import SEND_LEDGER_FILE, initialize_send_ledger
+from core.ops.waybill_overdue_carryforward import (
+    get_overdue_waybill_ready_order_ids_from_db,
+)
 from core.paths import data_path, get_data_root
 from core.utils.kaspi_dates import parse_kaspi_date
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
@@ -182,6 +188,13 @@ SEND_CATEGORY_PRIORITY = {
     "SPECIAL_multi_line": 0,
     "SPECIAL_multi_qty": 1,
     "NORMAL_singles": 2,
+}
+SEND_PRIORITY_FAMILY_ALIASES = {
+    "LINE51",
+    "BLE51",
+    "6В1_+СУМКА",
+    "LINE61",
+    "SUT61",
 }
 
 # Waybill PDF pattern
@@ -318,9 +331,9 @@ def resolve_db_path(explicit: Optional[Path]) -> Optional[Path]:
     return None
 
 
-def _planned_date_from_order(order: dict) -> Optional[date]:
+def _planned_date_from_order(order: dict, store_code: Optional[str] = None) -> Optional[date]:
     """Extract planned courier transmission date from API order."""
-    return planned_date_from_order(order)
+    return planned_date_from_order(order, store_code=store_code)
 
 
 def get_api_order_ids_for_date(
@@ -368,7 +381,7 @@ def get_api_order_ids_for_date(
             attrs = order.get("attributes", {}) or {}
             if not _is_pending_handover_stage(order):
                 continue
-            planned_date = _planned_date_from_order(order)
+            planned_date = _planned_date_from_order(order, store_code=store_code)
             if include_overdue:
                 if planned_date and min_date <= planned_date <= target_date:
                     order_code = order.get('attributes', {}).get('code', '')
@@ -625,6 +638,7 @@ def read_crm_orders(
     sheet_name: str,
     target_date: date = None,
     order_id_filter: Optional[set[str]] = None,
+    historical_fallback_order_ids: Optional[set[str]] = None,
     lookback_days: Optional[int] = None,
     apply_date_filter: bool = True,
     crm_df: Optional[pd.DataFrame] = None,
@@ -651,11 +665,11 @@ def read_crm_orders(
         df = pd.read_excel(crm_path, sheet_name=sheet_name)
 
     if target_date:
-        df, operational_stats = select_operational_crm_rows(
+        df, operational_stats = select_operational_crm_rows_with_targeted_fallback(
             df,
             target_date=target_date,
             order_id_filter=order_id_filter,
-            allow_historical_fallback=False,
+            historical_fallback_order_ids=historical_fallback_order_ids,
             backfill_overdue_my_size_from_history=True,
         )
         logger.info(
@@ -666,7 +680,9 @@ def read_crm_orders(
             f"dropped_no_today={operational_stats['orders_without_today_row_dropped']} "
             f"historical_dropped={operational_stats['historical_rows_dropped']} "
             f"line_dupes_dropped={operational_stats['same_day_line_duplicates_dropped']} "
-            f"overdue_size_backfilled={operational_stats['overdue_my_size_backfilled_rows']}"
+            f"overdue_size_backfilled={operational_stats['overdue_my_size_backfilled_rows']} "
+            f"targeted_fallback_requested={operational_stats.get('targeted_fallback_orders_requested', 0)} "
+            f"targeted_fallback_selected={operational_stats.get('targeted_fallback_orders_selected', 0)}"
         )
 
     status_col = None
@@ -1255,10 +1271,29 @@ def _group_size_token(group: WaybillGroup) -> str:
     return sanitize_filename(group.my_size).upper()
 
 
+def stable_group_sort_key(group: WaybillGroup) -> tuple:
+    """Deterministic tie-breaker for send ordering and special bundle numbering."""
+    product_label = sanitize_filename(group.kaspi_name_core or group.sku_key or group.sku_id or "UNKNOWN")
+    return (
+        tuple(group.order_ids),
+        sanitize_filename(group.store_name or ""),
+        sanitize_filename(group.group_type or ""),
+        size_sort_key(group.my_size),
+        sanitize_filename(group.my_size).upper(),
+        _ordering_family_key(product_label),
+        _ordering_color_key(product_label),
+        sanitize_filename(group.kaspi_name_core or ""),
+        sanitize_filename(group.sku_key or ""),
+        sanitize_filename(group.sku_id or ""),
+        tuple(sorted(format_item_detail(item) for item in group.items)),
+    )
+
+
 def _build_send_entry_metadata(group: WaybillGroup, base_order: int) -> dict[str, Any]:
     product_label = sanitize_filename(group.kaspi_name_core or group.sku_key or group.sku_id or "UNKNOWN")
     size_token = _group_size_token(group)
     size_rank = size_sort_key(size_token) if size_token else 99
+    stable_order_key = stable_group_sort_key(group)
     item_family_keys = {
         _ordering_family_key(item.kaspi_name_core or item.sku_key or item.sku_id or "")
         for item in group.items
@@ -1266,18 +1301,19 @@ def _build_send_entry_metadata(group: WaybillGroup, base_order: int) -> dict[str
     }
     multi_line_mixed = group.group_type == "MULTI_LINE" and len(item_family_keys) > 1
     product_family_key = (
-        f"MULTI_LINE::{base_order}"
+        f"MULTI_LINE::{stable_order_key!r}"
         if multi_line_mixed
         else _ordering_family_key(product_label)
     )
     color_key = "" if multi_line_mixed else _ordering_color_key(product_label)
     product_color_key = (
-        f"MULTI_LINE::{base_order}"
+        f"MULTI_LINE::{stable_order_key!r}"
         if group.group_type == "MULTI_LINE"
         else product_label.upper()
     )
     return {
         "base_order": base_order,
+        "stable_order_key": stable_order_key,
         "category": _category_name_for_group(group),
         "size_token": size_token,
         "size_rank": size_rank,
@@ -1287,7 +1323,11 @@ def _build_send_entry_metadata(group: WaybillGroup, base_order: int) -> dict[str
     }
 
 
-def _order_send_category_entries(entries_meta: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _order_send_category_entries(
+    entries_meta: list[dict[str, Any]],
+    *,
+    prioritize_video_bundles: bool = False,
+) -> list[dict[str, Any]]:
     if not entries_meta:
         return []
 
@@ -1296,18 +1336,21 @@ def _order_send_category_entries(entries_meta: list[dict[str, Any]]) -> list[dic
         return sorted(
             entries_meta,
             key=lambda meta: (
-                int(meta["base_order"]),
+                tuple(meta.get("stable_order_key") or ()),
                 str(meta["entry"].get("filename") or "").lower(),
             ),
         )
 
     blocks: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    first_seen: dict[str, int] = {}
+    first_seen: dict[str, tuple] = {}
     family_by_block: dict[str, str] = {}
     for meta in entries_meta:
         block_key = str(meta.get("product_color_key") or meta["entry"].get("pdf_key") or meta["base_order"])
         blocks[block_key].append(meta)
-        first_seen.setdefault(block_key, int(meta["base_order"]))
+        stable_key = tuple(meta.get("stable_order_key") or ())
+        current = first_seen.get(block_key)
+        if current is None or stable_key < current:
+            first_seen[block_key] = stable_key
         family_by_block.setdefault(
             block_key,
             str(meta.get("product_family_key") or block_key),
@@ -1318,7 +1361,7 @@ def _order_send_category_entries(entries_meta: list[dict[str, Any]]) -> list[dic
             key=lambda meta: (
                 int(meta.get("size_rank", 99)),
                 str(meta.get("size_token") or "").upper(),
-                int(meta["base_order"]),
+                tuple(meta.get("stable_order_key") or ()),
                 str(meta["entry"].get("filename") or "").lower(),
             )
         )
@@ -1326,6 +1369,12 @@ def _order_send_category_entries(entries_meta: list[dict[str, Any]]) -> list[dic
     remaining = set(blocks.keys())
     ordered: list[dict[str, Any]] = []
     previous_family = ""
+
+    def _block_priority(block_key: str) -> int:
+        if not prioritize_video_bundles or category_name != "NORMAL_singles":
+            return 1
+        family_key = str(family_by_block.get(block_key, "")).upper()
+        return 0 if family_key in SEND_PRIORITY_FAMILY_ALIASES else 1
 
     while remaining:
         candidate_blocks = [
@@ -1336,7 +1385,8 @@ def _order_send_category_entries(entries_meta: list[dict[str, Any]]) -> list[dic
         next_block = min(
             candidate_blocks,
             key=lambda block_key: (
-                first_seen.get(block_key, 0),
+                _block_priority(block_key),
+                first_seen.get(block_key, ()),
                 str(blocks[block_key][0]["entry"].get("filename") or "").lower(),
                 block_key,
             ),
@@ -1353,6 +1403,9 @@ def _assign_send_sequence(entries_meta: list[dict[str, Any]]) -> None:
     for meta in entries_meta:
         by_category[str(meta.get("category") or "")].append(meta)
 
+    prioritize_video_bundles = bool(
+        by_category.get("SPECIAL_multi_line") or by_category.get("SPECIAL_multi_qty")
+    )
     send_sequence = 1
     for category in sorted(
         by_category.keys(),
@@ -1361,10 +1414,44 @@ def _assign_send_sequence(entries_meta: list[dict[str, Any]]) -> None:
             category.lower(),
         ),
     ):
-        for meta in _order_send_category_entries(by_category[category]):
+        for meta in _order_send_category_entries(
+            by_category[category],
+            prioritize_video_bundles=prioritize_video_bundles,
+        ):
             entry = meta["entry"]
             entry["send_sequence"] = send_sequence
             send_sequence += 1
+
+
+def _special_send_filename_indices(groups: list[WaybillGroup]) -> dict[int, int]:
+    by_category: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for base_order, group in enumerate(groups, start=1):
+        metadata = _build_send_entry_metadata(group, base_order)
+        category = str(metadata.get("category") or "")
+        if category not in {"SPECIAL_multi_line", "SPECIAL_multi_qty"}:
+            continue
+        preview_index = base_order if group.group_type != "NORMAL" else 0
+        by_category[category].append(
+            {
+                "group": group,
+                "entry": {"filename": generate_filename(group, preview_index)},
+                **metadata,
+            }
+        )
+
+    overrides: dict[int, int] = {}
+    next_index = 1
+    for category in sorted(
+        by_category.keys(),
+        key=lambda category: (
+            SEND_CATEGORY_PRIORITY.get(category, 99),
+            category.lower(),
+        ),
+    ):
+        for meta in _order_send_category_entries(by_category[category]):
+            overrides[id(meta["group"])] = next_index
+            next_index += 1
+    return overrides
 
 
 def is_heavy_item(item: OrderItem) -> bool:
@@ -1524,6 +1611,7 @@ def build_store_output(
     base_output_dir: Path,
     date_prefix: str,
     dry_run: bool = False,
+    send_batch_order_labels: bool = False,
 ) -> dict:
     """
     Build output directory for one store.
@@ -1539,7 +1627,10 @@ def build_store_output(
     """
     total_qty = sum(g.total_quantity for g in groups)
     folder_name = f"{date_prefix}_{store_name}_qnt{total_qty}"
-    store_dir = base_output_dir / folder_name
+    if send_batch_order_labels:
+        store_dir = allocate_immutable_send_batch_dir(base_output_dir, folder_name)
+    else:
+        store_dir = base_output_dir / folder_name
 
     stats = {
         'normal': 0,
@@ -1574,6 +1665,9 @@ def build_store_output(
     normal_groups.sort(key=manifest_sort_key)
     multi_qty_groups.sort(key=manifest_sort_key)
     multi_line_groups.sort(key=manifest_sort_key)
+    special_filename_indices = (
+        _special_send_filename_indices(groups) if send_batch_order_labels else {}
+    )
 
     used_filenames: set[str] = set()
 
@@ -1601,43 +1695,33 @@ def build_store_output(
 
         pdf_paths = group.pdf_paths or ([group.pdf_path] if group.pdf_path else [])
         if pdf_paths:
-            if len(pdf_paths) > 1:
-                merge_pdfs(pdf_paths, output_path)
-            else:
-                if pdf_paths[0].exists():
-                    shutil.copy2(pdf_paths[0], output_path)
+            merge_pdfs(pdf_paths, output_path)
             stats['normal'] += 1
 
     # Process MULTI_QTY
     for i, group in enumerate(multi_qty_groups, 1):
-        filename = generate_filename(group, i)
+        display_index = special_filename_indices.get(id(group), i)
+        filename = generate_filename(group, display_index)
         filename = ensure_unique(filename, group.order_id)
         output_path = multi_qty_dir / filename
         group.output_filename = f"SPECIAL_multi_qty/{filename}"
 
         pdf_paths = group.pdf_paths or ([group.pdf_path] if group.pdf_path else [])
         if pdf_paths:
-            if len(pdf_paths) > 1:
-                merge_pdfs(pdf_paths, output_path)
-            else:
-                if pdf_paths[0].exists():
-                    shutil.copy2(pdf_paths[0], output_path)
+            merge_pdfs(pdf_paths, output_path)
             stats['multi_qty'] += 1
 
     # Process MULTI_LINE
     for i, group in enumerate(multi_line_groups, 1):
-        filename = generate_filename(group, i)
+        display_index = special_filename_indices.get(id(group), i)
+        filename = generate_filename(group, display_index)
         filename = ensure_unique(filename, group.order_id)
         output_path = multi_line_dir / filename
         group.output_filename = f"SPECIAL_multi_line/{filename}"
 
         pdf_paths = group.pdf_paths or ([group.pdf_path] if group.pdf_path else [])
         if pdf_paths:
-            if len(pdf_paths) > 1:
-                merge_pdfs(pdf_paths, output_path)
-            else:
-                if pdf_paths[0].exists():
-                    shutil.copy2(pdf_paths[0], output_path)
+            merge_pdfs(pdf_paths, output_path)
             stats['multi_line'] += 1
 
     # Generate manifests
@@ -1646,6 +1730,116 @@ def build_store_output(
     write_manifest(multi_line_groups, store_dir / "manifest_special_multi_line.csv", "MULTI_LINE")
 
     return stats
+
+
+def allocate_immutable_send_batch_dir(base_output_dir: Path, folder_name: str) -> Path:
+    """Allocate a unique immutable SEND batch directory, preserving older rebuilds."""
+    candidate = base_output_dir / folder_name
+    if not candidate.exists():
+        return candidate
+
+    revision = 2
+    while True:
+        revised = base_output_dir / f"{folder_name}_r{revision}"
+        if not revised.exists():
+            return revised
+        revision += 1
+
+
+def _parse_send_batch_date(folder_name: str) -> Optional[date]:
+    match = re.match(r"^(\d{2})\.(\d{2})\.(\d{2})_", folder_name)
+    if not match:
+        return None
+    day, month, year = match.groups()
+    try:
+        return date(2000 + int(year), int(month), int(day))
+    except ValueError:
+        return None
+
+
+def _allocate_archive_destination(archive_root: Path, folder_name: str) -> Path:
+    candidate = archive_root / folder_name
+    if not candidate.exists():
+        return candidate
+    revision = 2
+    while True:
+        revised = archive_root / f"{folder_name}_arch{revision}"
+        if not revised.exists():
+            return revised
+        revision += 1
+
+
+def archive_past_send_batches(output_dir: Path, target_date: date) -> int:
+    """
+    Move past-day immutable SEND batches out of Today/ into Archive/.
+
+    Current-day batches remain in place so rebuilds and manual resumes still work.
+    """
+    send_root = output_dir / "MERGED" / WHATSAPP_SEND_ROOT_NAME
+    if not send_root.exists():
+        return 0
+
+    archive_root = output_dir.parent / "Archive" / "SEND"
+    moved = 0
+    for child in sorted(send_root.iterdir(), key=lambda path: path.name):
+        if not child.is_dir():
+            continue
+        batch_date = _parse_send_batch_date(child.name)
+        if batch_date is None or batch_date >= target_date:
+            continue
+        day_archive_root = archive_root / batch_date.isoformat()
+        day_archive_root.mkdir(parents=True, exist_ok=True)
+        destination = _allocate_archive_destination(day_archive_root, child.name)
+        shutil.move(str(child), str(destination))
+        moved += 1
+    return moved
+
+
+def reset_today_output_dir(output_dir: Path, output_layout: str, *, target_date: Optional[date] = None) -> None:
+    """
+    Clear rebuildable Today outputs while preserving current-day immutable SEND batches.
+
+    The operator may still be sending from an older MERGED/SEND batch while a
+    fresh waybill build is running. For per-store-and-merged output we therefore
+    clear PER_STORE, MERGED/TODAY, MERGED/OVERDUE, and top-level reports, but
+    keep current-day MERGED/SEND batches intact so existing manifests/ledgers
+    remain resumable. Older dated SEND batches are archived out of Today first.
+    """
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return
+
+    if output_layout != OUTPUT_LAYOUT_PER_STORE_AND_MERGED:
+        shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    merged_root = output_dir / "MERGED"
+    send_root = merged_root / WHATSAPP_SEND_ROOT_NAME
+    if target_date is not None:
+        archived_count = archive_past_send_batches(output_dir, target_date)
+        if archived_count:
+            logger.info(f"Archived {archived_count} past SEND batches out of Today/")
+
+    for child in list(output_dir.iterdir()):
+        if child == merged_root:
+            merged_root.mkdir(parents=True, exist_ok=True)
+            for merged_child in list(merged_root.iterdir()):
+                if merged_child == send_root:
+                    continue
+                if merged_child.is_dir():
+                    shutil.rmtree(merged_child)
+                else:
+                    merged_child.unlink(missing_ok=True)
+            continue
+
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink(missing_ok=True)
+
+    merged_root.mkdir(parents=True, exist_ok=True)
 
 
 def _store_order_counts(group: WaybillGroup) -> dict[str, int]:
@@ -1713,12 +1907,13 @@ def write_send_batch_manifest(
     today_root: Path,
     groups: list[WaybillGroup],
     target_date: date,
+    expected_overdue_order_ids: Optional[set[str]] = None,
 ) -> Path:
     """Write immutable manifest for the operator-safe SEND batch."""
     entries: list[dict[str, Any]] = []
     entries_meta: list[dict[str, Any]] = []
     send_order_ids: set[str] = set()
-    overdue_order_ids: set[str] = set()
+    overdue_order_ids: set[str] = {str(order_id).strip() for order_id in expected_overdue_order_ids or set() if str(order_id).strip()}
 
     for base_order, group in enumerate(groups, start=1):
         relative_output_path = str(group.output_filename or "").replace("\\", "/")
@@ -1793,7 +1988,7 @@ def write_send_batch_manifest(
         },
         "send_order_ids": sorted(send_order_ids),
         "overdue_order_ids": sorted(overdue_order_ids),
-        "missing_overdue_order_ids": [],
+        "missing_overdue_order_ids": sorted(overdue_order_ids - send_order_ids),
         "terminal_orders_excluded": True,
         "entries": entries,
     }
@@ -2094,6 +2289,8 @@ def main(
     orders: list[OrderItem] = []
     db_orders: list[OrderItem] = []
     api_order_ids: set[str] = set()
+    carryforward_orders_by_store: dict[str, set[str]] = {}
+    carryforward_order_ids: set[str] = set()
 
     # Prefer Kaspi API planned date for selection (freshest)
     api_since_days = max(lookback_days if lookback_days is not None else 7, 7)
@@ -2130,12 +2327,31 @@ def main(
 
     if resolved_db_path:
         logger.info(f"DB: {resolved_db_path}")
+        if include_overdue:
+            carryforward_orders_by_store = get_overdue_waybill_ready_order_ids_from_db(
+                resolved_db_path,
+                target_date=target_date,
+                lookback_days=lookback_days,
+            )
+            carryforward_order_ids = (
+                set().union(*carryforward_orders_by_store.values())
+                if carryforward_orders_by_store
+                else set()
+            )
+            if carryforward_order_ids:
+                logger.info(
+                    f"Added {len(carryforward_order_ids)} overdue waybill-ready DB carry-forward orders"
+                )
+
+    if carryforward_order_ids:
+        api_order_ids |= carryforward_order_ids
 
     orders = read_crm_orders(
         crm_path,
         sheet_name,
         target_date,
         order_id_filter=api_order_ids if api_order_ids else None,
+        historical_fallback_order_ids=carryforward_order_ids,
         lookback_days=lookback_days,
         apply_date_filter=not bool(api_order_ids),
         crm_df=crm_df,
@@ -2201,10 +2417,7 @@ def main(
 
         # Create output directory
         if not dry_run:
-            # Clear existing Today directory
-            if output_dir.exists():
-                shutil.rmtree(output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
+            reset_today_output_dir(output_dir, output_layout, target_date=target_date)
 
         per_store_root = output_dir
         merged_root: Optional[Path] = None
@@ -2293,6 +2506,7 @@ def main(
                     send_base_dir,
                     date_prefix,
                     dry_run,
+                    send_batch_order_labels=True,
                 )
                 if not dry_run:
                     manifest_path = write_send_batch_manifest(
@@ -2300,6 +2514,7 @@ def main(
                         today_root=output_dir,
                         groups=send_groups,
                         target_date=target_date,
+                        expected_overdue_order_ids=carryforward_order_ids,
                     )
                     initialize_send_ledger(
                         send_stats["batch_dir"] / SEND_LEDGER_FILE,

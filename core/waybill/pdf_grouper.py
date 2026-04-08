@@ -27,6 +27,13 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _replace_file_atomically(source_path: Path, output_path: Path) -> Path:
+    """Move a prepared temp file into place after recreating the parent path."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.replace(output_path)
+    return output_path
+
+
 @dataclass
 class WaybillGroup:
     """Represents a group of waybills to be merged/processed together."""
@@ -400,8 +407,21 @@ def merge_pdfs(pdf_paths: list[Path], output_path: Path) -> Path:
 
     if len(pdf_paths) == 1:
         # Just copy the single file
-        shutil.copy2(pdf_paths[0], output_path)
-        return output_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_output_path: Path | None = None
+        with tempfile.NamedTemporaryFile(
+            dir=output_path.parent,
+            prefix=".waybill-copy-",
+            suffix=output_path.suffix,
+            delete=False,
+        ) as tmp_file:
+            temp_output_path = Path(tmp_file.name)
+        try:
+            shutil.copy2(pdf_paths[0], temp_output_path)
+            return _replace_file_atomically(temp_output_path, output_path)
+        finally:
+            if temp_output_path is not None:
+                temp_output_path.unlink(missing_ok=True)
 
     # Create output directory if needed
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -414,8 +434,22 @@ def merge_pdfs(pdf_paths: list[Path], output_path: Path) -> Path:
         else:
             logger.warning(f"PDF not found, skipping: {pdf_path}")
 
-    merger.write(str(output_path))
-    merger.close()
+    temp_output_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=output_path.parent,
+            prefix=".waybill-merge-",
+            suffix=output_path.suffix,
+            delete=False,
+        ) as tmp_file:
+            temp_output_path = Path(tmp_file.name)
+            merger.write(tmp_file)
+
+        _replace_file_atomically(temp_output_path, output_path)
+    finally:
+        merger.close()
+        if temp_output_path is not None:
+            temp_output_path.unlink(missing_ok=True)
 
     logger.debug(f"Merged {len(pdf_paths)} PDFs -> {output_path}")
     return output_path

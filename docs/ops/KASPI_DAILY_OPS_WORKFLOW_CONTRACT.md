@@ -16,6 +16,7 @@ This contract is fail-closed: workflow regressions must surface as test failures
 - `config/com.example.kaspi-import.plist`
   - `11:00` daily import run
   - `15:02` daily import run
+  - `16:01` daily import run
 - `config/com.example.kaspi-waybill-deadline.plist`
   - `18:30` daily waybill deadline run
 - `config/com.example.kaspi-daily-ops-report.plist`

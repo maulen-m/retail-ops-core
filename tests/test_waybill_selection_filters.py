@@ -347,6 +347,93 @@ def test_get_target_order_ids_from_crm_requires_current_batch_rows(tmp_path):
     assert result == {"UNIVERSAL": {"850902537"}}
 
 
+def test_get_target_order_ids_from_crm_includes_narrow_db_carryforward_overdue_rows(tmp_path):
+    target_date = date(2026, 3, 10)
+    crm_path = tmp_path / "crm.xlsx"
+    db_path = tmp_path / "app.db"
+    _init_fact_orders_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("ALTER TABLE fact_orders_kaspi ADD COLUMN waybill_url TEXT")
+    conn.execute("ALTER TABLE fact_orders_kaspi ADD COLUMN waybill_downloaded INTEGER DEFAULT 0")
+    conn.execute("ALTER TABLE fact_orders_kaspi ADD COLUMN returned_to_warehouse INTEGER")
+    conn.commit()
+    conn.close()
+
+    _insert_fact_orders(
+        db_path,
+        [
+            (
+                "876647717",
+                "ACMEWEAR",
+                "Item OF",
+                "SKU-OF",
+                "SKU-OF-M",
+                1,
+                "M",
+                "",
+                "2026-03-09",
+                "KASPI_DELIVERY",
+                "ACCEPTED_BY_MERCHANT",
+                "READY",
+                0,
+                None,
+            ),
+        ],
+    )
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "UPDATE fact_orders_kaspi SET waybill_url = ?, waybill_downloaded = 1 WHERE order_id = ?",
+        ("https://example.local/876647717.pdf", "876647717"),
+    )
+    conn.commit()
+    conn.close()
+
+    df = pd.DataFrame(
+        [
+            {
+                "Date": "2026-03-09",
+                "OrderID": "876647717",
+                "MY_SIZE": "M",
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "STORE_NAME": "AcmeWear",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+                "KASPI_OFFER_NAME": "AcmeWear top M",
+                "SKU_ID": "SKU-OF-M",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850902537",
+                "MY_SIZE": "XL",
+                "PLANNED_SHIPPING_DATE": "2026-03-10",
+                "STORE_NAME": "Universal",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+                "KASPI_OFFER_NAME": "Universal top XL",
+                "SKU_ID": "SKU-UNI-XL",
+                "Quantity": 1,
+            },
+        ]
+    )
+    df.to_excel(crm_path, index=False)
+
+    result = download_waybills_api.get_target_order_ids_from_crm(
+        crm_path=crm_path,
+        sheet_name="Sheet1",
+        target_date=target_date,
+        exact_date=False,
+        lookback_days=3,
+        db_path=db_path,
+    )
+
+    assert result == {
+        "ACMEWEAR": {"876647717"},
+        "UNIVERSAL": {"850902537"},
+    }
+
+
 def test_get_target_order_ids_from_crm_backfills_blank_current_day_size_for_overdue_rows(
     tmp_path,
 ):
@@ -435,6 +522,84 @@ def test_get_target_order_ids_from_crm_does_not_backfill_same_day_blank_size(tmp
     )
 
     assert result == {}
+
+
+def test_build_read_crm_orders_includes_targeted_historical_carryforward_rows(tmp_path):
+    target_date = date(2026, 3, 10)
+    crm_path = tmp_path / "crm.xlsx"
+    df = pd.DataFrame(
+        [
+            {
+                "Date": "2026-03-09",
+                "OrderID": "876647717",
+                "MY_SIZE": "M",
+                "PLANNED_SHIPPING_DATE": "2026-03-09",
+                "STORE_NAME": "AcmeWear",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+                "KASPI_OFFER_NAME": "AcmeWear top M",
+                "Kaspi_name_core": "AcmeWear_top",
+                "SKU_ID": "SKU-OF-M",
+                "SKU_key": "SKU-OF",
+                "Quantity": 1,
+            },
+            {
+                "Date": "2026-03-10",
+                "OrderID": "850902537",
+                "MY_SIZE": "XL",
+                "PLANNED_SHIPPING_DATE": "2026-03-10",
+                "STORE_NAME": "Universal",
+                "Статус": "Ожидает передачи курьеру",
+                "Требуется подписание": "Не требуется",
+                "KASPI_OFFER_NAME": "Universal top XL",
+                "Kaspi_name_core": "Universal_top",
+                "SKU_ID": "SKU-UNI-XL",
+                "SKU_key": "SKU-UNI",
+                "Quantity": 1,
+            },
+        ]
+    )
+    df.to_excel(crm_path, index=False)
+
+    orders = build_daily_waybills.read_crm_orders(
+        crm_path=crm_path,
+        sheet_name="Sheet1",
+        target_date=target_date,
+        order_id_filter={"876647717", "850902537"},
+        historical_fallback_order_ids={"876647717"},
+        lookback_days=3,
+        apply_date_filter=False,
+    )
+
+    assert {order.order_id for order in orders} == {"876647717", "850902537"}
+    carryforward = next(order for order in orders if order.order_id == "876647717")
+    assert carryforward.store_name == "AcmeWear"
+    assert carryforward.my_size == "M"
+
+
+def test_reset_today_output_dir_archives_past_send_batches(tmp_path):
+    today_root = tmp_path / "Today"
+    old_send = today_root / "MERGED" / "SEND" / "03.04.26_MERGED_qnt68"
+    current_send = today_root / "MERGED" / "SEND" / "04.04.26_MERGED_qnt70_r2"
+    per_store = today_root / "PER_STORE" / "TODAY" / "04.04.26_Universal_qnt1"
+    old_send.mkdir(parents=True, exist_ok=True)
+    current_send.mkdir(parents=True, exist_ok=True)
+    per_store.mkdir(parents=True, exist_ok=True)
+    (old_send / "send_batch_manifest.json").write_text("{}", encoding="utf-8")
+    (current_send / "send_batch_manifest.json").write_text("{}", encoding="utf-8")
+    (per_store / "sample.pdf").write_bytes(b"%PDF-1.4\n")
+
+    build_daily_waybills.reset_today_output_dir(
+        today_root,
+        build_daily_waybills.OUTPUT_LAYOUT_PER_STORE_AND_MERGED,
+        target_date=date(2026, 4, 4),
+    )
+
+    archived_old = tmp_path / "Archive" / "SEND" / "2026-04-03" / "03.04.26_MERGED_qnt68"
+    assert archived_old.exists()
+    assert (archived_old / "send_batch_manifest.json").exists()
+    assert current_send.exists()
+    assert not per_store.exists()
 
 
 def test_download_all_waybills_uses_current_batch_crm_sizes_as_authoritative_targets(

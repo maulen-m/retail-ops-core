@@ -106,8 +106,8 @@ def parse_date(value: Any) -> Optional[date]:
     return parse_kaspi_date(value)
 
 
-def _planned_date_from_order(order: dict) -> Optional[date]:
-    return planned_date_from_order(order)
+def _planned_date_from_order(order: dict, store_code: Optional[str] = None) -> Optional[date]:
+    return planned_date_from_order(order, store_code=store_code)
 
 
 def get_api_orders_by_store(
@@ -155,7 +155,7 @@ def get_api_orders_by_store(
             attrs = order.get("attributes", {}) or {}
             if not _is_pending_handover_stage(order):
                 continue
-            planned = _planned_date_from_order(order)
+            planned = _planned_date_from_order(order, store_code=store_code)
             if include_overdue:
                 if planned and min_date <= planned <= target_date:
                     code = order.get("attributes", {}).get("code", "")

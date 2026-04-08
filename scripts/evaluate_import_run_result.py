@@ -163,6 +163,7 @@ def main() -> int:
     try:
         miss_crm = _coerce_int(totals.get("miss_crm"), "totals.miss_crm")
         stale_crm = _coerce_int(totals.get("stale_crm", 0), "totals.stale_crm")
+        miss_seller_fee = _coerce_int(totals.get("miss_seller_fee", 0), "totals.miss_seller_fee")
         api_today = _coerce_int(totals.get("api_today"), "totals.api_today")
         crm_today = _coerce_int(totals.get("crm_today"), "totals.crm_today")
     except ValueError as exc:
@@ -175,13 +176,22 @@ def main() -> int:
     if stale_crm > 0:
         print(f"HARD_FAIL: stale_crm={stale_crm} (api_today={api_today}, crm_today={crm_today})")
         return 1
+    if miss_seller_fee > 0:
+        print(
+            "HARD_FAIL: "
+            f"miss_seller_fee={miss_seller_fee} (api_today={api_today}, crm_today={crm_today})"
+        )
+        return 1
 
     if snapshot_success_message:
-        print(f"{snapshot_success_message} live_api_miss_crm=0 stale_crm=0")
+        print(
+            f"{snapshot_success_message} live_api_miss_crm=0 stale_crm=0 "
+            "miss_seller_fee=0"
+        )
     else:
         print(
             f"SUCCESS_GATE_OK: step2_rc=0 api_today={api_today} "
-            f"crm_today={crm_today} miss_crm=0 stale_crm=0"
+            f"crm_today={crm_today} miss_crm=0 stale_crm=0 miss_seller_fee=0"
         )
     return 0
 

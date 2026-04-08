@@ -40,6 +40,17 @@ def test_report_import_status_writes_json_summary(monkeypatch, tmp_path):
         "get_db_orders",
         lambda *_args, **_kwargs: ({"Universal": {"1", "2"}}, {"Universal": {"1"}}),
     )
+    monkeypatch.setattr(
+        report_mod,
+        "get_crm_seller_fee_coverage",
+        lambda *_args, **_kwargs: {
+            "Universal": {
+                "seller_fee_expected": 1,
+                "seller_fee_filled": 1,
+                "miss_seller_fee": 0,
+            }
+        },
+    )
 
     monkeypatch.setattr(
         sys,
@@ -66,6 +77,9 @@ def test_report_import_status_writes_json_summary(monkeypatch, tmp_path):
     assert payload["totals"]["crm_today"] == 1
     assert payload["totals"]["miss_crm"] == 1
     assert payload["totals"]["stale_crm"] == 0
+    assert payload["totals"]["seller_fee_expected"] == 1
+    assert payload["totals"]["seller_fee_filled"] == 1
+    assert payload["totals"]["miss_seller_fee"] == 0
 
 
 def test_get_api_orders_by_store_uses_kaspi_delivery_state(monkeypatch):
@@ -113,6 +127,17 @@ def test_report_import_status_counts_stale_today_crm_rows(monkeypatch, tmp_path)
         "get_db_orders",
         lambda *_args, **_kwargs: ({"Universal": {"1"}}, {"Universal": {"1"}}),
     )
+    monkeypatch.setattr(
+        report_mod,
+        "get_crm_seller_fee_coverage",
+        lambda *_args, **_kwargs: {
+            "Universal": {
+                "seller_fee_expected": 2,
+                "seller_fee_filled": 1,
+                "miss_seller_fee": 1,
+            }
+        },
+    )
 
     monkeypatch.setattr(
         sys,
@@ -135,6 +160,79 @@ def test_report_import_status_counts_stale_today_crm_rows(monkeypatch, tmp_path)
     payload = json.loads(out_json.read_text(encoding="utf-8"))
     assert payload["totals"]["miss_crm"] == 0
     assert payload["totals"]["stale_crm"] == 1
+    assert payload["totals"]["seller_fee_expected"] == 2
+    assert payload["totals"]["seller_fee_filled"] == 1
+    assert payload["totals"]["miss_seller_fee"] == 1
+
+
+def test_report_import_status_includes_seller_fee_metrics_per_store(monkeypatch, tmp_path):
+    crm_path = tmp_path / "crm.xlsx"
+    db_path = tmp_path / "app.db"
+    out_json = tmp_path / "health.json"
+
+    monkeypatch.setattr(
+        report_mod,
+        "get_api_orders_by_store",
+        lambda *_args, **_kwargs: ({"ACMEWEAR": {"1"}, "UNIVERSAL": {"2", "3"}}, set()),
+    )
+    monkeypatch.setattr(
+        report_mod,
+        "get_crm_orders",
+        lambda *_args, **_kwargs: (
+            {"AcmeWear": {"1"}, "Universal": {"2", "3"}},
+            {"AcmeWear": {"1"}, "Universal": {"2", "3"}},
+        ),
+    )
+    monkeypatch.setattr(
+        report_mod,
+        "get_db_orders",
+        lambda *_args, **_kwargs: (
+            {"AcmeWear": {"1"}, "Universal": {"2", "3"}},
+            {"AcmeWear": {"1"}, "Universal": {"2", "3"}},
+        ),
+    )
+    monkeypatch.setattr(
+        report_mod,
+        "get_crm_seller_fee_coverage",
+        lambda *_args, **_kwargs: {
+            "AcmeWear": {
+                "seller_fee_expected": 1,
+                "seller_fee_filled": 1,
+                "miss_seller_fee": 0,
+            },
+            "Universal": {
+                "seller_fee_expected": 2,
+                "seller_fee_filled": 1,
+                "miss_seller_fee": 1,
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "report_import_status.py",
+            "--date",
+            "2026-02-16",
+            "--crm-file",
+            str(crm_path),
+            "--db-path",
+            str(db_path),
+            "--json-out",
+            str(out_json),
+        ],
+    )
+
+    rc = report_mod.main()
+    assert rc == 0
+    payload = json.loads(out_json.read_text(encoding="utf-8"))
+    assert payload["stores"]["AcmeWear"]["seller_fee_expected"] == 1
+    assert payload["stores"]["AcmeWear"]["seller_fee_filled"] == 1
+    assert payload["stores"]["AcmeWear"]["miss_seller_fee"] == 0
+    assert payload["stores"]["Universal"]["seller_fee_expected"] == 2
+    assert payload["stores"]["Universal"]["seller_fee_filled"] == 1
+    assert payload["stores"]["Universal"]["miss_seller_fee"] == 1
 
 
 def test_get_api_orders_by_store_excludes_next_day_courier_planning(monkeypatch):

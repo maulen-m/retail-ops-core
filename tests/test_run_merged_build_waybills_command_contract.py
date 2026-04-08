@@ -44,6 +44,12 @@ def test_merged_waybill_command_supports_partial_health_override() -> None:
     assert "--allow-partial-health" in text
 
 
+def test_merged_waybill_command_blocks_auto_send_when_waybill_health_is_red() -> None:
+    text = Path("excel_ui/run_merged_build_waybills.command").read_text(encoding="utf-8")
+    assert 'WARNING: Waybill health reported mismatches, but ready merged bundles will still be sent.' not in text
+    assert 'WARNING: WhatsApp auto-send blocked by strict waybill health mismatches.' in text
+
+
 def test_merged_waybill_command_ships_with_overdue_carry_forward() -> None:
     text = Path("excel_ui/run_merged_build_waybills.command").read_text(encoding="utf-8")
     assert "--include-overdue" in text

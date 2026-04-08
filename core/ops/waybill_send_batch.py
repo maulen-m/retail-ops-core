@@ -349,6 +349,60 @@ def transition_send_ledger_entry(
     return entry
 
 
+def resolve_unsure_ledger_entry(
+    manifest_payload: Dict[str, Any],
+    ledger: Dict[str, Any],
+    *,
+    filename: str,
+    resolution: str,
+    note: str = "",
+) -> str:
+    normalized_filename = str(filename or "").strip()
+    if not normalized_filename:
+        raise ValueError("Filename is required to resolve an UNSURE ledger entry")
+
+    normalized_resolution = str(resolution or "").strip().lower()
+    if normalized_resolution not in {"confirmed", "pending"}:
+        raise ValueError(f"Unsupported UNSURE resolution: {resolution}")
+
+    matches = [
+        entry
+        for entry in manifest_payload.get("entries", [])
+        if str(entry.get("filename") or "").strip() == normalized_filename
+    ]
+    if not matches:
+        raise KeyError(f"Manifest entry not found for filename: {normalized_filename}")
+    if len(matches) > 1:
+        raise RuntimeError(f"Multiple manifest entries matched filename: {normalized_filename}")
+
+    manifest_entry = matches[0]
+    pdf_key = str(manifest_entry.get("pdf_key") or "").strip()
+    if not pdf_key:
+        raise RuntimeError(f"Manifest entry missing pdf_key for filename: {normalized_filename}")
+
+    ledger_entry = ledger.setdefault("entries", {}).get(pdf_key)
+    if ledger_entry is None:
+        raise KeyError(f"Ledger entry not found for filename: {normalized_filename}")
+
+    current_state = str(ledger_entry.get("state") or "pending")
+    if current_state != "unsure":
+        raise RuntimeError(
+            f"Can only resolve UNSURE ledger entries: {normalized_filename} is {current_state}"
+        )
+
+    note_text = note.strip() or f"manual_resolve:{normalized_resolution}"
+    ledger_entry["state"] = normalized_resolution
+    ledger_entry["last_updated"] = _now_iso()
+    ledger_entry.setdefault("history", []).append(
+        {
+            "state": normalized_resolution,
+            "at": _now_iso(),
+            "note": note_text,
+        }
+    )
+    return pdf_key
+
+
 def select_manifest_entries_for_send(
     manifest_payload: Dict[str, Any],
     ledger: Dict[str, Any],

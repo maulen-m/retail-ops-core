@@ -13,17 +13,23 @@ This contract is category-aware and uses LINE51 as the worked example.
 
 ## Required Workflow
 1. Start from the current Kaspi category template (`intro`, `attributes`, `values` sheets).
+   - Re-download templates from merchant UI periodically; stale templates can be rejected after category changes.
 2. Back up the template before any edits.
 3. Fill only data rows in `attributes` (rows 4+), never rename/reorder sheets or columns.
 4. Validate list-bound values against `values` sheet.
 5. Run hard gate:
-`python3 scripts/validate_kaspi_offer_template.py --xlsm <FILE> --category <CATEGORY> --store ACMEWEAR --expect-sku-key <SKU_KEY>`
-6. Package ZIP with exact structure:
+`python3 scripts/validate_kaspi_offer_template.py --xlsm <FILE> --category <CATEGORY> --store ACMEWEAR --mode <fast|balanced|strict> --expect-sku-key <SKU_KEY>`
+6. Run technical package gate:
+`python3 scripts/validate_kaspi_offer_package.py --package-dir <DIR> --zip <ZIP>`
+7. Package ZIP with exact structure:
   - XLSM at ZIP root
   - `images/` lowercase at ZIP root
+  - `images/<image_code>/1.png ... 5.png`
   - no `__MACOSX`, no nested parent directory
-7. Store ZIP externally at:
-`~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/kaspi_offer_uploads/<MODEL>/<CATEGORY>/<YYYY-MM-DD_HHMMSS>/`
+8. Store live workflow files under:
+`~/Docs/Business2/Content/Content_db_1/Kaspi/Product_offers/<PRODUCT>/<COLOR>/`
+9. Prefer manifest-driven build:
+`python3 scripts/build_kaspi_offer_from_manifest.py --manifest <FILE> --apply`
 
 ## Template Semantics
 In `attributes` sheet:
@@ -74,6 +80,17 @@ For each row:
 2. Multi-value fields use `, ` (comma + space), never semicolon.
 3. Color values must come from template dictionary (for LINE51 batch: `черный, белый` when dictionary allows both).
 
+## Validation Mode Policy
+- `fast`:
+  - default for repeat color variants in the same already-proven category
+  - checks business-owned required fields + SKU alignment only
+- `balanced`:
+  - use for a new product in a category we already proved before
+  - checks business-owned required fields + SKU alignment + only the list-bound columns we actually filled
+- `strict`:
+  - use for the first upload in a new category, first batch from a refreshed template, or when Kaspi returns row-level validation comments
+  - replays the full list-bound template dictionary on top of the business-owned required-field gate
+
 ## Category Notes
 ### Men sport suits
 - Uses `Women sport suits*...` machine keys in current template; this is normal template naming.
@@ -86,8 +103,9 @@ For each row:
 ## Images and ZIP
 1. Kaspi image limit for this workflow: max 5 images in upload ZIP per offer package.
 2. Folder format:
-`images/<merchant_sku>/1.png`
+`images/<image_code>/1.png`
 3. Keep extra image sets outside upload ZIP (separate operator archive).
+4. The `<image_code>` folder name must match the value written in `Код изображений`.
 
 ## Backups and Audit
 1. Keep timestamped XLSM backup before edits.
@@ -99,3 +117,6 @@ For each row:
 2. No manual overrides bypassing DB SKU alignment.
 3. No template structural edits (sheet/column reorder/rename).
 4. No ZIPs in repo; external storage only for heavy files.
+
+## Live Manifest Reference
+- `~/Docs/Business2/Content/Content_db_1/Kaspi/Product_offers/LINE31/Starry_Black/offer_manifest.yaml`

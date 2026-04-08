@@ -90,8 +90,8 @@ def parse_date(value: Any) -> Optional[date]:
     return parse_kaspi_date(value)
 
 
-def _planned_date_from_order(order: dict) -> Optional[date]:
-    return planned_date_from_order(order)
+def _planned_date_from_order(order: dict, store_code: Optional[str] = None) -> Optional[date]:
+    return planned_date_from_order(order, store_code=store_code)
 
 
 def _db_row_planned_date(row: Any) -> Optional[date]:
@@ -142,7 +142,7 @@ def get_api_orders_by_store(
         ids = set()
         min_date = target_date - timedelta(days=max(int(since_days), 0))
         for order in orders:
-            planned = _planned_date_from_order(order)
+            planned = _planned_date_from_order(order, store_code=store_code)
             stage = classify_kaspi_order_stage(order)
             if stage in PENDING_STAGES and planned and min_date <= planned <= target_date:
                 code = order.get("attributes", {}).get("code", "")
@@ -270,6 +270,122 @@ def get_db_orders(
     return dict(db_all), dict(db_size)
 
 
+def _crm_numeric(value: Any) -> float:
+    if value is None or pd.isna(value):
+        return 0.0
+    text = str(value).strip().replace(",", ".")
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _load_db_seller_fee_truth(db_path: Path, order_ids: set[str]) -> dict[str, float]:
+    if not db_path.exists() or not order_ids:
+        return {}
+
+    with get_db(db_path) as conn:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_orders_kaspi'"
+        ).fetchone()
+        if not table:
+            return {}
+
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(fact_orders_kaspi)").fetchall()
+        }
+        if "order_id" not in cols or "delivery_cost_for_seller" not in cols:
+            return {}
+
+        out: dict[str, float] = {}
+        ordered_ids = sorted(order_ids)
+        for i in range(0, len(ordered_ids), 900):
+            chunk = ordered_ids[i : i + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""
+                SELECT order_id, delivery_cost_for_seller
+                FROM fact_orders_kaspi
+                WHERE order_id IN ({placeholders})
+                """,
+                chunk,
+            ).fetchall()
+            for row in rows:
+                order_id = _coerce_str(row["order_id"])
+                fee = _crm_numeric(row["delivery_cost_for_seller"])
+                if order_id and fee != 0.0:
+                    out[order_id] = fee
+        return out
+
+
+def get_crm_seller_fee_coverage(
+    crm_path: Path,
+    sheet_name: str,
+    target_date: date,
+    db_path: Path,
+) -> dict[str, dict[str, int]]:
+    if not crm_path.exists():
+        return {}
+
+    df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    if df.empty:
+        return {}
+
+    order_col = "OrderID" if "OrderID" in df.columns else ("№ заказа" if "№ заказа" in df.columns else None)
+    date_col = "Date" if "Date" in df.columns else None
+    if order_col is None or date_col is None:
+        return {}
+
+    store_col = "STORE_NAME" if "STORE_NAME" in df.columns else ("Склад передачи КД" if "Склад передачи КД" in df.columns else None)
+    seller_fee_col = "Стоимость доставки для продавца" if "Стоимость доставки для продавца" in df.columns else None
+    raw_delivery_col = "Delivery_fee_kzt" if "Delivery_fee_kzt" in df.columns else ("Delivery_fee" if "Delivery_fee" in df.columns else None)
+    if seller_fee_col is None:
+        return {}
+
+    row_dates = df[date_col].apply(parse_date)
+    today_df = df.loc[row_dates == target_date].copy()
+    if today_df.empty:
+        return {}
+
+    normalized_order_ids = set()
+    order_values: list[str] = []
+    for value in today_df[order_col].tolist():
+        order_id = _coerce_str(value)
+        if order_id.endswith(".0"):
+            order_id = order_id[:-2]
+        order_values.append(order_id)
+        if order_id:
+            normalized_order_ids.add(order_id)
+
+    db_truth = _load_db_seller_fee_truth(db_path, normalized_order_ids)
+    totals: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "seller_fee_expected": 0,
+            "seller_fee_filled": 0,
+            "miss_seller_fee": 0,
+        }
+    )
+
+    for idx, (_, row) in enumerate(today_df.iterrows()):
+        order_id = order_values[idx]
+        store_name = normalize_store_name(row.get(store_col) if store_col else None)
+        db_fee = _crm_numeric(db_truth.get(order_id))
+        raw_fee = _crm_numeric(row.get(raw_delivery_col)) if raw_delivery_col else 0.0
+        seller_fee = _crm_numeric(row.get(seller_fee_col))
+        expected = db_fee != 0.0 or raw_fee != 0.0
+        if not expected:
+            continue
+        totals[store_name]["seller_fee_expected"] += 1
+        if seller_fee != 0.0:
+            totals[store_name]["seller_fee_filled"] += 1
+        else:
+            totals[store_name]["miss_seller_fee"] += 1
+
+    return dict(totals)
+
+
 def format_table(headers: list[str], rows: list[list[str]]) -> str:
     widths = [len(h) for h in headers]
     for row in rows:
@@ -329,12 +445,15 @@ def main() -> int:
     all_stores.update(crm_all.keys())
     all_stores.update(db_all.keys())
 
+    seller_fee_coverage = get_crm_seller_fee_coverage(args.crm_file, args.sheet, target_date, db_path)
+
     headers = [
         "STORE", "API_TODAY", "CRM_TODAY", "DB_TODAY", "CRM_SIZE", "DB_SIZE",
-        "MISS_CRM", "STALE_CRM", "MISS_SIZE",
+        "MISS_CRM", "STALE_CRM", "MISS_SIZE", "SELLER_FEE_EXPECTED", "SELLER_FEE_FILLED", "MISS_SELLER_FEE",
     ]
     rows = []
-    store_rows: list[dict[str, Any]] = []
+    store_rows_list: list[dict[str, Any]] = []
+    store_rows: dict[str, dict[str, Any]] = {}
     totals = defaultdict(int)
 
     for store in sorted(all_stores):
@@ -350,6 +469,14 @@ def main() -> int:
         db_ids = db_all.get(store, set())
         crm_size_ids = crm_size.get(store, set())
         db_size_ids = db_size.get(store, set())
+        seller_fee_stats = seller_fee_coverage.get(
+            store,
+            {
+                "seller_fee_expected": 0,
+                "seller_fee_filled": 0,
+                "miss_seller_fee": 0,
+            },
+        )
 
         miss_crm = len(api_ids - crm_ids)
         stale_crm = len(crm_ids - api_ids)
@@ -357,21 +484,22 @@ def main() -> int:
         miss_size = len(api_ids - size_ok)
 
         if api_failed:
-            row = [store, "ERR", "-", "-", "-", "-", "-", "-", "-"]
-            store_rows.append(
-                {
-                    "store": store,
-                    "api_error": True,
-                    "api_today": None,
-                    "crm_today": None,
-                    "db_today": None,
-                    "crm_size": None,
-                    "db_size": None,
-                    "miss_crm": None,
-                    "stale_crm": None,
-                    "miss_size": None,
-                }
-            )
+            row = [store, "ERR", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"]
+            store_payload = {
+                "store": store,
+                "api_error": True,
+                "api_today": None,
+                "crm_today": None,
+                "db_today": None,
+                "crm_size": None,
+                "db_size": None,
+                "miss_crm": None,
+                "stale_crm": None,
+                "miss_size": None,
+                "seller_fee_expected": int(seller_fee_stats["seller_fee_expected"]),
+                "seller_fee_filled": int(seller_fee_stats["seller_fee_filled"]),
+                "miss_seller_fee": int(seller_fee_stats["miss_seller_fee"]),
+            }
         else:
             row = [
                 store,
@@ -383,6 +511,9 @@ def main() -> int:
                 str(miss_crm),
                 str(stale_crm),
                 str(miss_size),
+                str(int(seller_fee_stats["seller_fee_expected"])),
+                str(int(seller_fee_stats["seller_fee_filled"])),
+                str(int(seller_fee_stats["miss_seller_fee"])),
             ]
             totals["API"] += len(api_ids)
             totals["CRM"] += len(crm_ids)
@@ -392,25 +523,31 @@ def main() -> int:
             totals["MISS_CRM"] += miss_crm
             totals["STALE_CRM"] += stale_crm
             totals["MISS_SIZE"] += miss_size
-            store_rows.append(
-                {
-                    "store": store,
-                    "api_error": False,
-                    "api_today": len(api_ids),
-                    "crm_today": len(crm_ids),
-                    "db_today": len(db_ids),
-                    "crm_size": len(crm_size_ids),
-                    "db_size": len(db_size_ids),
-                    "miss_crm": miss_crm,
-                    "stale_crm": stale_crm,
-                    "miss_size": miss_size,
-                }
-            )
+            totals["SELLER_FEE_EXPECTED"] += int(seller_fee_stats["seller_fee_expected"])
+            totals["SELLER_FEE_FILLED"] += int(seller_fee_stats["seller_fee_filled"])
+            totals["MISS_SELLER_FEE"] += int(seller_fee_stats["miss_seller_fee"])
+            store_payload = {
+                "store": store,
+                "api_error": False,
+                "api_today": len(api_ids),
+                "crm_today": len(crm_ids),
+                "db_today": len(db_ids),
+                "crm_size": len(crm_size_ids),
+                "db_size": len(db_size_ids),
+                "miss_crm": miss_crm,
+                "stale_crm": stale_crm,
+                "miss_size": miss_size,
+                "seller_fee_expected": int(seller_fee_stats["seller_fee_expected"]),
+                "seller_fee_filled": int(seller_fee_stats["seller_fee_filled"]),
+                "miss_seller_fee": int(seller_fee_stats["miss_seller_fee"]),
+            }
 
         rows.append(row)
+        store_rows[store] = store_payload
+        store_rows_list.append(store_payload)
 
     if api_errors:
-        totals_row = ["TOTAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL"]
+        totals_row = ["TOTAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL"]
     else:
         totals_row = [
             "TOTAL",
@@ -422,6 +559,9 @@ def main() -> int:
             str(totals["MISS_CRM"]),
             str(totals["STALE_CRM"]),
             str(totals["MISS_SIZE"]),
+            str(totals["SELLER_FEE_EXPECTED"]),
+            str(totals["SELLER_FEE_FILLED"]),
+            str(totals["MISS_SELLER_FEE"]),
         ]
     rows.append(totals_row)
 
@@ -440,8 +580,12 @@ def main() -> int:
             "miss_crm": int(totals["MISS_CRM"]),
             "stale_crm": int(totals["STALE_CRM"]),
             "miss_size": int(totals["MISS_SIZE"]),
+            "seller_fee_expected": int(totals["SELLER_FEE_EXPECTED"]),
+            "seller_fee_filled": int(totals["SELLER_FEE_FILLED"]),
+            "miss_seller_fee": int(totals["MISS_SELLER_FEE"]),
         },
         "stores": store_rows,
+        "store_rows": store_rows_list,
     }
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)

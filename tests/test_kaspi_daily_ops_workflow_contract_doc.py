@@ -12,6 +12,7 @@ def test_daily_ops_workflow_contract_doc_exists_and_maps_critical_paths() -> Non
     assert "config/com.example.kaspi-waybill-deadline.plist" in text
     assert "11:00" in text
     assert "15:02" in text
+    assert "16:01" in text
     assert "18:30" in text
     assert "fail-closed" in text.lower()
 

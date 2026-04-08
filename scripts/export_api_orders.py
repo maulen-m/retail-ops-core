@@ -197,7 +197,7 @@ def _extract_delivery_costs(order: dict) -> tuple[Optional[float], Optional[floa
 def _order_missing_delivery_costs(order: dict) -> bool:
     """Return True when delivery fields required for export are missing."""
     buyer_cost, seller_cost = _extract_delivery_costs(order)
-    return buyer_cost is None or seller_cost is None
+    return buyer_cost is None or seller_cost is None or seller_cost == 0
 
 
 def _maybe_refetch_order_details(
@@ -212,10 +212,8 @@ def _maybe_refetch_order_details(
     Some list responses return deliveryCostForSeller=0 even when the detail
     endpoint has a non-zero value, so allow forcing a refresh.
     """
-    if not force:
-        buyer_cost, seller_cost = _extract_delivery_costs(order)
-        if buyer_cost is not None and seller_cost is not None:
-            return order
+    if not force and not _order_missing_delivery_costs(order):
+        return order
 
     order_id = order.get('id')
     order_code = order.get('attributes', {}).get('code', '')
@@ -389,7 +387,7 @@ def order_to_rows(
 
     # Planned handover date: keep consistent with DB sync/reporting logic
     # (creation-time cutoff based) to avoid API/DB/CRM date mismatches.
-    planned_date_obj = planned_date_from_order(order)
+    planned_date_obj = planned_date_from_order(order, store_code=store_code)
     if planned_date_obj:
         planned_date = planned_date_obj.strftime("%d.%m.%Y")
     else:

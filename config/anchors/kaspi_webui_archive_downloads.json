@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-03-06T23:04:49+05:00",
-  "latest_run_root": "/private/var/folders/mg/9njfkxw57q1342nqp8xc63k00000gn/T/pytest-of-adil/pytest-146/test_download_kaspi_archive_we2/exports/run_fail",
-  "latest_run_manifest": "/private/var/folders/mg/9njfkxw57q1342nqp8xc63k00000gn/T/pytest-of-adil/pytest-146/test_download_kaspi_archive_we2/exports/run_fail/run_manifest.json"
+  "updated_at": "2026-03-20T07:42:22+05:00",
+  "latest_run_root": "~/Docs/Autonomous_business/exports/webui_archive_download_runs/webui_archive_delta_2026-03-06_to_2026-03-19_20260320_live__UNIVERSAL__2026-03-06_to_2026-03-19",
+  "latest_run_manifest": "~/Docs/Autonomous_business/exports/webui_archive_download_runs/webui_archive_delta_2026-03-06_to_2026-03-19_20260320_live__UNIVERSAL__2026-03-06_to_2026-03-19/run_manifest.json"
 }

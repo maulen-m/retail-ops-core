@@ -419,7 +419,7 @@ class OrderSyncEngine:
             ).strftime('%Y-%m-%d %H:%M:%S')
 
         planned_date = None
-        effective_planned = planned_date_from_order(api_order)
+        effective_planned = planned_date_from_order(api_order, store_code=store_code)
         if effective_planned:
             planned_date = effective_planned.isoformat()
 

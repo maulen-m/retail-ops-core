@@ -15,6 +15,7 @@ import openpyxl
 import pandas as pd
 import pytest
 
+import scripts.build_daily_waybills as build_daily_waybills_module
 from scripts.build_daily_waybills import (
     HEAVY_ITEMS,
     SIZE_ORDER,
@@ -36,6 +37,7 @@ from scripts.build_daily_waybills import (
     split_groups_by_overdue,
     size_sort_key,
     write_manifest,
+    main as build_daily_waybills_main,
     write_send_batch_manifest,
 )
 
@@ -767,6 +769,470 @@ def test_write_send_batch_manifest_assigns_send_sequence_with_color_spacing_and_
         "Nike_Футболка_белая_XL-1.pdf",
     ]
     assert [entry["send_sequence"] for entry in entries_by_sequence] == [1, 2, 3, 4]
+
+
+def test_write_send_batch_manifest_prioritizes_line51_and_6v1_after_specials(
+    tmp_path: Path,
+):
+    today_root = tmp_path / "Today"
+    batch_root = today_root / "MERGED" / "SEND" / "10.03.26_MERGED_qnt5"
+    normal_dir = batch_root / "NORMAL_singles"
+    special_line_dir = batch_root / "SPECIAL_multi_line"
+    special_qty_dir = batch_root / "SPECIAL_multi_qty"
+    normal_dir.mkdir(parents=True, exist_ok=True)
+    special_line_dir.mkdir(parents=True, exist_ok=True)
+    special_qty_dir.mkdir(parents=True, exist_ok=True)
+
+    for rel_path in [
+        special_line_dir / "Местовая-1)_Леггинсы_белый-L-1_Nike_Футболка_белая-XL-1.pdf",
+        special_qty_dir / "Местовая-2)_Футболка_черная-M-3.pdf",
+        normal_dir / "Nike_Футболка_черная_XL-1.pdf",
+        normal_dir / "Line51_L-1.pdf",
+        normal_dir / "6в1_Черный_+Сумка_M-1.pdf",
+    ]:
+        rel_path.write_bytes(b"%PDF-1.4\n%waybill\n")
+
+    groups = [
+        WaybillGroup(
+            group_type="MULTI_LINE",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2001",
+                    "Universal",
+                    "Леггинсы_белый",
+                    "L",
+                    "LEGGINGS_WHITE",
+                    "LEGGINGS_WHITE_L",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                ),
+                OrderItem(
+                    "2001",
+                    "Universal",
+                    "Nike_Футболка_белая",
+                    "XL",
+                    "NIKE_TEE_WHITE",
+                    "NIKE_TEE_WHITE_XL",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                ),
+            ],
+            pdf_path=special_line_dir / "Местовая-1)_Леггинсы_белый-L-1_Nike_Футболка_белая-XL-1.pdf",
+            pdf_paths=[special_line_dir / "Местовая-1)_Леггинсы_белый-L-1_Nike_Футболка_белая-XL-1.pdf"],
+            output_filename="SPECIAL_multi_line/Местовая-1)_Леггинсы_белый-L-1_Nike_Футболка_белая-XL-1.pdf",
+        ),
+        WaybillGroup(
+            group_type="MULTI_QTY",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2002",
+                    "STORE-B",
+                    "Футболка_черная",
+                    "M",
+                    "TEE_BLACK",
+                    "TEE_BLACK_M",
+                    3,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=special_qty_dir / "Местовая-2)_Футболка_черная-M-3.pdf",
+            pdf_paths=[special_qty_dir / "Местовая-2)_Футболка_черная-M-3.pdf"],
+            output_filename="SPECIAL_multi_qty/Местовая-2)_Футболка_черная-M-3.pdf",
+        ),
+        WaybillGroup(
+            group_type="NORMAL",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2003",
+                    "Universal",
+                    "Nike_Футболка_черная",
+                    "XL",
+                    "NIKE_TEE_BLACK",
+                    "NIKE_TEE_BLACK_XL",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=normal_dir / "Nike_Футболка_черная_XL-1.pdf",
+            pdf_paths=[normal_dir / "Nike_Футболка_черная_XL-1.pdf"],
+            output_filename="NORMAL_singles/Nike_Футболка_черная_XL-1.pdf",
+        ),
+        WaybillGroup(
+            group_type="NORMAL",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2004",
+                    "AcmeWear",
+                    "Line51",
+                    "L",
+                    "LINE51",
+                    "LINE51_L",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=normal_dir / "Line51_L-1.pdf",
+            pdf_paths=[normal_dir / "Line51_L-1.pdf"],
+            output_filename="NORMAL_singles/Line51_L-1.pdf",
+        ),
+        WaybillGroup(
+            group_type="NORMAL",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2005",
+                    "AcmeWear",
+                    "6в1_Черный_+Сумка",
+                    "M",
+                    "LINE61_BLACK_BAG",
+                    "LINE61_BLACK_BAG_M",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=normal_dir / "6в1_Черный_+Сумка_M-1.pdf",
+            pdf_paths=[normal_dir / "6в1_Черный_+Сумка_M-1.pdf"],
+            output_filename="NORMAL_singles/6в1_Черный_+Сумка_M-1.pdf",
+        ),
+    ]
+
+    manifest_path = write_send_batch_manifest(
+        batch_root=batch_root,
+        today_root=today_root,
+        groups=groups,
+        target_date=date(2026, 3, 10),
+    )
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries_by_sequence = sorted(payload["entries"], key=lambda entry: entry["send_sequence"])
+
+    assert [entry["filename"] for entry in entries_by_sequence] == [
+        "Местовая-1)_Леггинсы_белый-L-1_Nike_Футболка_белая-XL-1.pdf",
+        "Местовая-2)_Футболка_черная-M-3.pdf",
+        "Line51_L-1.pdf",
+        "6в1_Черный_+Сумка_M-1.pdf",
+        "Nike_Футболка_черная_XL-1.pdf",
+    ]
+
+
+def test_build_store_output_send_batch_special_filenames_follow_send_sequence(
+    tmp_path: Path,
+):
+    source_dir = tmp_path / "source_pdfs"
+    source_dir.mkdir(parents=True, exist_ok=True)
+
+    def make_pdf(name: str) -> Path:
+        path = source_dir / name
+        path.write_bytes(b"%PDF-1.4\n%waybill\n")
+        return path
+
+    leggings_pdf = make_pdf("leggings_multi_line.pdf")
+    nike_multi_line_pdf = make_pdf("nike_multi_line.pdf")
+    trusy_pdf = make_pdf("trusy_multi_qty.pdf")
+    futbolka_m_pdf = make_pdf("futbolka_m_multi_qty.pdf")
+    futbolka_l_pdf = make_pdf("futbolka_l_multi_qty.pdf")
+
+    groups = [
+        WaybillGroup(
+            group_type="MULTI_LINE",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2001",
+                    "Universal",
+                    "Леггинсы_белый",
+                    "L",
+                    "LEGGINGS_WHITE",
+                    "LEGGINGS_WHITE_L",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                ),
+                OrderItem(
+                    "2001",
+                    "Universal",
+                    "Nike_Футболка_белая",
+                    "XL",
+                    "NIKE_TEE_WHITE",
+                    "NIKE_TEE_WHITE_XL",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                ),
+            ],
+            pdf_path=leggings_pdf,
+            pdf_paths=[leggings_pdf],
+        ),
+        WaybillGroup(
+            group_type="MULTI_LINE",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2002",
+                    "Universal",
+                    "Nike_Футболка_белая",
+                    "XL",
+                    "NIKE_TEE_WHITE",
+                    "NIKE_TEE_WHITE_XL",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                ),
+                OrderItem(
+                    "2002",
+                    "Universal",
+                    "Nike_Футболка_черная",
+                    "XL",
+                    "NIKE_TEE_BLACK",
+                    "NIKE_TEE_BLACK_XL",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                ),
+                OrderItem(
+                    "2002",
+                    "Universal",
+                    "Футболка_черная",
+                    "L",
+                    "TEE_BLACK",
+                    "TEE_BLACK_L",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                ),
+            ],
+            pdf_path=nike_multi_line_pdf,
+            pdf_paths=[nike_multi_line_pdf],
+        ),
+        WaybillGroup(
+            group_type="MULTI_QTY",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2003",
+                    "STORE-B",
+                    "Трусы_черные",
+                    "XL",
+                    "BOXER_BLACK",
+                    "BOXER_BLACK_XL",
+                    3,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=trusy_pdf,
+            pdf_paths=[trusy_pdf],
+        ),
+        WaybillGroup(
+            group_type="MULTI_QTY",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2004",
+                    "STORE-B",
+                    "Футболка_черная",
+                    "M",
+                    "TEE_BLACK",
+                    "TEE_BLACK_M",
+                    3,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=futbolka_m_pdf,
+            pdf_paths=[futbolka_m_pdf],
+        ),
+        WaybillGroup(
+            group_type="MULTI_QTY",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "2005",
+                    "STORE-B",
+                    "Футболка_черная",
+                    "L",
+                    "TEE_BLACK",
+                    "TEE_BLACK_L",
+                    2,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=futbolka_l_pdf,
+            pdf_paths=[futbolka_l_pdf],
+        ),
+    ]
+
+    today_root = tmp_path / "Today"
+    send_root = today_root / "MERGED" / "SEND"
+    stats = build_store_output(
+        "MERGED",
+        groups,
+        send_root,
+        "10.03.26",
+        send_batch_order_labels=True,
+    )
+
+    manifest_path = write_send_batch_manifest(
+        batch_root=stats["batch_dir"],
+        today_root=today_root,
+        groups=groups,
+        target_date=date(2026, 3, 10),
+    )
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries_by_sequence = sorted(payload["entries"], key=lambda entry: entry["send_sequence"])
+    special_entries = [
+        entry
+        for entry in entries_by_sequence
+        if entry["category"] in {"SPECIAL_multi_line", "SPECIAL_multi_qty"}
+    ]
+
+    assert [entry["filename"] for entry in special_entries] == [
+        "Местовая-1)_Леггинсы_белый-L-1_Nike_Футболка_белая-XL-1.pdf",
+        "Местовая-2)_Nike_Футболка_белая-XL-1_Nike_Футболка_черная-XL-1_Футболка_черная-L-1.pdf",
+        "Местовая-3)_Трусы_черные-XL-3.pdf",
+        "Местовая-4)_Футболка_черная-M-3.pdf",
+        "Местовая-5)_Футболка_черная-L-2.pdf",
+    ]
+
+    for entry in special_entries:
+        assert (stats["batch_dir"] / entry["relative_output_path"]).exists()
+
+
+def test_build_store_output_send_batch_rebuild_uses_revision_suffix(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source_pdfs"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = source_dir / "single.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%waybill\n")
+
+    groups = [
+        WaybillGroup(
+            group_type="NORMAL",
+            store_name="MERGED",
+            items=[
+                OrderItem(
+                    "3001",
+                    "Universal",
+                    "Nike_Футболка_черная",
+                    "M",
+                    "NIKE_TEE_BLACK",
+                    "NIKE_TEE_BLACK_M",
+                    1,
+                    "offer",
+                    date(2026, 3, 10),
+                )
+            ],
+            pdf_path=pdf_path,
+            pdf_paths=[pdf_path],
+        )
+    ]
+
+    send_root = tmp_path / "Today" / "MERGED" / "SEND"
+    first = build_store_output(
+        "MERGED",
+        groups,
+        send_root,
+        "10.03.26",
+        send_batch_order_labels=True,
+    )
+    (first["batch_dir"] / "send_batch_manifest.json").write_text("{}", encoding="utf-8")
+
+    second = build_store_output(
+        "MERGED",
+        groups,
+        send_root,
+        "10.03.26",
+        send_batch_order_labels=True,
+    )
+
+    assert first["batch_dir"].name == "10.03.26_MERGED_qnt1"
+    assert second["batch_dir"].name == "10.03.26_MERGED_qnt1_r2"
+
+
+def test_main_preserves_existing_send_batches_when_rebuilding_today_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "Today"
+    preserved_batch = output_dir / "MERGED" / "SEND" / "10.03.26_MERGED_qnt1"
+    preserved_batch.mkdir(parents=True, exist_ok=True)
+    (preserved_batch / "send_batch_manifest.json").write_text("{}", encoding="utf-8")
+    (preserved_batch / "send_ledger.json").write_text("{}", encoding="utf-8")
+
+    stale_per_store = output_dir / "PER_STORE" / "TODAY" / "stale.txt"
+    stale_per_store.parent.mkdir(parents=True, exist_ok=True)
+    stale_per_store.write_text("stale", encoding="utf-8")
+
+    stale_merged_today = output_dir / "MERGED" / "TODAY" / "stale.txt"
+    stale_merged_today.parent.mkdir(parents=True, exist_ok=True)
+    stale_merged_today.write_text("stale", encoding="utf-8")
+
+    waybill_dir = tmp_path / "waybills"
+    waybill_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = waybill_dir / "KASPI_SHOP-1001.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\npreserve-send-batch\n")
+
+    order = OrderItem(
+        order_id="1001",
+        store_name="Universal",
+        kaspi_name_core="Nike_Футболка_черная",
+        my_size="M",
+        sku_key="NIKE_TEE_BLACK",
+        sku_id="NIKE_TEE_BLACK_M",
+        quantity=1,
+        kaspi_offer_name="Nike футболка черная M",
+        planned_date=date(2026, 3, 10),
+    )
+
+    monkeypatch.setattr(build_daily_waybills_module, "ensure_pdf_merger", lambda: None)
+    monkeypatch.setattr(build_daily_waybills_module, "load_crm_dataframe", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(build_daily_waybills_module, "resolve_db_path", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_selection_cache",
+        lambda *args, **kwargs: {"Universal": {"1001"}},
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "read_crm_orders",
+        lambda *args, **kwargs: [order],
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_all_waybills",
+        lambda *args, **kwargs: {"1001": pdf_path},
+    )
+
+    build_daily_waybills_main(
+        crm_path=tmp_path / "CRM.xlsx",
+        waybill_dir=waybill_dir,
+        output_dir=output_dir,
+        target_date=date(2026, 3, 10),
+        lookback_days=0,
+        output_layout="per-store-and-merged",
+        dry_run=False,
+    )
+
+    assert preserved_batch.exists()
+    assert (preserved_batch / "send_ledger.json").exists()
+    assert not stale_per_store.exists()
+    assert not stale_merged_today.exists()
+
+    rebuilt_batches = sorted(
+        path.name for path in (output_dir / "MERGED" / "SEND").iterdir() if path.is_dir()
+    )
+    assert rebuilt_batches == ["10.03.26_MERGED_qnt1", "10.03.26_MERGED_qnt1_r2"]
 
 
 def test_sanitizes_cyrillic():
