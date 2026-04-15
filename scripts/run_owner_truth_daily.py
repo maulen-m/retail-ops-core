@@ -216,6 +216,18 @@ def _parse_backup_path(output: str, cwd: Path) -> str | None:
     return None
 
 
+def _resolve_opex_schedule_override(root: Path) -> Path | None:
+    raw = os.environ.get("AB_OPEX_SCHEDULE_YAML", "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = (root / candidate).resolve()
+    if not candidate.exists():
+        raise OwnerTruthDailyError(f"AB_OPEX_SCHEDULE_YAML does not exist: {candidate}")
+    return candidate.resolve()
+
+
 def run_owner_truth_daily(
     *,
     as_of: date,
@@ -296,6 +308,7 @@ def run_owner_truth_daily(
     resolved_workbook_map_output = root / "exports" / "validation" / "workbook_catalog_offer_map_sync"
     identity_validation_root = root / "exports" / "validation" / "identity_stabilization"
     identity_replay_output_root = root / "exports" / "validation" / "identity_replay_anchor"
+    resolved_opex_schedule = _resolve_opex_schedule_override(root)
     try:
         runtime_mode_report = resolve_owner_truth_runtime_mode(
             project_root=root,
@@ -430,7 +443,13 @@ def run_owner_truth_daily(
             "validate_opex_readiness",
             (
                 "python3 scripts/validate_opex_readiness.py "
-                f"--as-of {shlex.quote(as_of_str)} --strict"
+                f"--as-of {shlex.quote(as_of_str)} "
+                + (
+                    f"--schedule-yaml {shlex.quote(str(resolved_opex_schedule))} "
+                    if resolved_opex_schedule is not None
+                    else ""
+                )
+                + "--strict"
             ),
             None,
         ),
@@ -478,6 +497,11 @@ def run_owner_truth_daily(
                 + (
                     f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
                     if truth_source == "webui_archive"
+                    else ""
+                )
+                + (
+                    f"--opex-schedule-yaml {shlex.quote(str(resolved_opex_schedule))} "
+                    if resolved_opex_schedule is not None
                     else ""
                 )
                 + "--include-store-breakdown --strict"
@@ -568,6 +592,11 @@ def run_owner_truth_daily(
                         if truth_source == "webui_archive"
                         else ""
                     )
+                    + (
+                        f"--opex-schedule-yaml {shlex.quote(str(resolved_opex_schedule))} "
+                        if resolved_opex_schedule is not None
+                        else ""
+                    )
                     + "--include-store-breakdown --strict"
                 ),
                 None,
@@ -621,6 +650,21 @@ def run_owner_truth_daily(
                         "python3 scripts/generate_ops_selection_artifacts.py "
                         f"--as-of {shlex.quote(as_of_str)} "
                         f"--seed-json {shlex.quote(str(ops_selection_seed_json))} "
+                        "--strict"
+                    ),
+                    None,
+                ),
+            )
+        if resolved_opex_schedule is not None:
+            triage_idx = next(i for i, existing in enumerate(step_cmds) if existing[0] == "triage_owner_truth_stoplines")
+            step_cmds.insert(
+                triage_idx,
+                (
+                    "validate_opex_readiness",
+                    (
+                        "python3 scripts/validate_opex_readiness.py "
+                        f"--as-of {shlex.quote(as_of_str)} "
+                        f"--schedule-yaml {shlex.quote(str(resolved_opex_schedule))} "
                         "--strict"
                     ),
                     None,

@@ -17,6 +17,12 @@ def _seed_crm_anchor(project_root: Path) -> Path:
     return anchor
 
 
+def _seed_replay_daily_ops_summary(project_root: Path, as_of: str) -> None:
+    runtime_root = project_root / "exports" / "validation" / "board_v8_runtime" / as_of
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (runtime_root / "daily_ops_summary.json").write_text("{}", encoding="utf-8")
+
+
 def test_run_helper_uses_file_backed_capture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     seen: dict[str, object] = {}
 
@@ -283,6 +289,49 @@ def test_run_owner_truth_daily_live_uses_live_ads_readiness_mode(
     assert summary["status"] == "PASS"
     ads_cmd = next(cmd for cmd in calls if "validate_ads_sidecar_readiness.py" in cmd)
     assert "--readiness-mode live" in ads_cmd
+
+
+def test_run_owner_truth_daily_passes_opex_schedule_override_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    _seed_crm_anchor(tmp_path)
+    _seed_replay_daily_ops_summary(tmp_path, "2026-03-19")
+    frozen_schedule = tmp_path / "frozen" / "opex_schedule.yaml"
+    frozen_schedule.parent.mkdir(parents=True, exist_ok=True)
+    frozen_schedule.write_text("schedule: frozen\n", encoding="utf-8")
+
+    def fake_run(cmd: str, *, cwd: Path, env=None):
+        calls.append(cmd)
+        return 0, "status=PASS", 0.01
+
+    monkeypatch.setenv("AB_OPEX_SCHEDULE_YAML", str(frozen_schedule))
+    monkeypatch.setattr(runner_mod, "_run", fake_run)
+
+    summary = run_owner_truth_daily(
+        as_of=date(2026, 3, 19),
+        since=date(2025, 6, 6),
+        north_star_start=date(2026, 1, 1),
+        north_star_end=date(2026, 2, 28),
+        project_root=tmp_path,
+        output_root=tmp_path / "out",
+        summary_root=tmp_path / "daily",
+        strict=True,
+        apply=False,
+        truth_source="webui_archive",
+        validation_dir=tmp_path / "validation",
+        pack_root=tmp_path / "pack",
+        ledger_root=tmp_path / "ledger",
+        download_run_id="download_run",
+        runtime_mode="replay",
+    )
+
+    assert summary["status"] == "PASS"
+    opex_cmd = next(cmd for cmd in calls if "validate_opex_readiness.py" in cmd)
+    assert f"--schedule-yaml {runner_mod.shlex.quote(str(frozen_schedule))}" in opex_cmd
+    pnl_cmd = next(cmd for cmd in calls if "build_owner_pnl_report.py" in cmd)
+    assert f"--opex-schedule-yaml {runner_mod.shlex.quote(str(frozen_schedule))}" in pnl_cmd
 
 
 def test_run_owner_truth_daily_uses_publication_fallback_validation_dir_for_db(

@@ -26,6 +26,7 @@ from scripts.resolve_as_of_date import resolve_as_of_date
 from scripts.run_owner_truth_daily import (
     _default_webui_ledger_root,
     _resolve_default_download_run_id,
+    _resolve_opex_schedule_override,
     _resolve_pack_root_from_ledger,
 )
 
@@ -212,6 +213,7 @@ def _doctor_checks(
         if isinstance(download_run_id, Path)
         else (download_run_id or _resolve_default_download_run_id(root, resolved_pack_root))
     )
+    resolved_opex_schedule = _resolve_opex_schedule_override(root)
     validation_dir_path = Path(resolved_validation_dir)
     quoted_validation_dir = shlex.quote(str(validation_dir_path))
     quoted_pack_root = shlex.quote(str(resolved_pack_root))
@@ -468,7 +470,12 @@ def _doctor_checks(
                 f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
                 f"--as-of {quoted_as_of} "
                 f"--output-root {shlex.quote(str(root / 'exports' / 'validation' / 'opex_readiness'))} "
-                "--strict"
+                + (
+                    f"--schedule-yaml {shlex.quote(str(resolved_opex_schedule))} "
+                    if resolved_opex_schedule is not None
+                    else ""
+                )
+                + "--strict"
             ),
         },
         {
@@ -540,6 +547,11 @@ def _doctor_checks(
                 + (
                     f"--ledger-root {quoted_ledger_root} "
                     if truth_source == "webui_archive"
+                    else ""
+                )
+                + (
+                    f"--opex-schedule-yaml {shlex.quote(str(resolved_opex_schedule))} "
+                    if resolved_opex_schedule is not None
                     else ""
                 )
                 + "--include-store-breakdown "

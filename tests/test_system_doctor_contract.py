@@ -171,6 +171,40 @@ def test_system_doctor_uses_live_ads_readiness_mode(tmp_path: Path) -> None:
     assert "--readiness-mode live" in ads_cmd
 
 
+def test_system_doctor_passes_opex_schedule_override_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    frozen_schedule = tmp_path / "frozen" / "opex_schedule.yaml"
+    frozen_schedule.parent.mkdir(parents=True, exist_ok=True)
+    frozen_schedule.write_text("schedule: frozen\n", encoding="utf-8")
+    monkeypatch.setenv("AB_OPEX_SCHEDULE_YAML", str(frozen_schedule))
+
+    def fake_runner(cmd: str, _cwd: Path) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, "ok"
+
+    report = run_system_doctor(
+        project_root=tmp_path,
+        as_of="2026-03-19",
+        output_dir=tmp_path / "exports" / "diagnostics" / "2026-03-19",
+        strict=True,
+        truth_source="webui_archive",
+        validation_dir=tmp_path / "validation",
+        pack_root=tmp_path / "pack",
+        ledger_root=tmp_path / "ledger",
+        download_run_id="download_run",
+        runner=fake_runner,
+    )
+
+    assert report["ok"] is True
+    opex_cmd = next(cmd for cmd in calls if "validate_opex_readiness.py" in cmd)
+    assert f"--schedule-yaml {doctor_mod.shlex.quote(str(frozen_schedule))}" in opex_cmd
+    pnl_cmd = next(cmd for cmd in calls if "build_owner_pnl_report.py" in cmd)
+    assert f"--opex-schedule-yaml {doctor_mod.shlex.quote(str(frozen_schedule))}" in pnl_cmd
+
+
 def test_system_doctor_cli_defaults_to_webui_archive_truth_source() -> None:
     parser = _build_parser()
     args = parser.parse_args([])
