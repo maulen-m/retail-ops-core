@@ -159,6 +159,7 @@ def _doctor_checks(
     *,
     root: Path,
     as_of: str,
+    runtime_mode: str = "live",
     truth_source: str = "db",
     validation_dir: Path | None = None,
     pack_root: Path | None = None,
@@ -186,6 +187,7 @@ def _doctor_checks(
     include_ops_selection_parity = os.environ.get("AB_INCLUDE_OPS_SELECTION_PARITY", "").strip() == "1"
     include_scheduler_heartbeat = os.environ.get("AB_INCLUDE_SCHEDULER_HEARTBEAT", "").strip() == "1"
     identity_validation_root = root / "exports" / "validation" / "identity_stabilization"
+    identity_replay_output_root = root / "exports" / "validation" / "identity_replay_anchor"
     identity_reference_csv = shlex.quote(
         str(identity_validation_root / as_of / "offer_identity_reference.csv")
     )
@@ -218,6 +220,67 @@ def _doctor_checks(
     workbook_env_prefix = ""
     if workbook_anchor is not None:
         workbook_env_prefix = f"AB_CRM_WORKBOOK_PATH={shlex.quote(str(workbook_anchor))} "
+
+    if runtime_mode == "replay":
+        identity_checks = [
+            {
+                "layer": "governance",
+                "check": "validate_identity_replay_anchor",
+                "cmd": (
+                    "python3 scripts/validate_identity_replay_anchor.py "
+                    f"--as-of {quoted_as_of} "
+                    f"--identity-root {shlex.quote(str(identity_validation_root))} "
+                    f"--output-root {shlex.quote(str(identity_replay_output_root))} "
+                    "--strict"
+                ),
+            },
+        ]
+    else:
+        identity_checks = [
+            {
+                "layer": "governance",
+                "check": "import_web_automation_offer_identity",
+                "cmd": (
+                    "python3 scripts/import_web_automation_offer_identity.py "
+                    f"--as-of {quoted_as_of} "
+                    f"--output-root {shlex.quote(str(identity_validation_root))} "
+                    "--strict"
+                ),
+            },
+            {
+                "layer": "governance",
+                "check": "validate_external_snapshot_parity",
+                "cmd": (
+                    "python3 scripts/validate_external_snapshot_parity.py "
+                    f"--as-of {quoted_as_of} "
+                    f"--reference-csv {identity_reference_csv} "
+                    f"--output-root {shlex.quote(str(identity_validation_root))} "
+                    "--strict"
+                ),
+            },
+            {
+                "layer": "governance",
+                "check": "validate_recent_identity_coverage",
+                "cmd": (
+                    "python3 scripts/validate_recent_identity_coverage.py "
+                    f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                    f"--as-of {quoted_as_of} "
+                    f"--output-root {shlex.quote(str(identity_validation_root))} "
+                    "--strict"
+                ),
+            },
+            {
+                "layer": "governance",
+                "check": "validate_order_entries_freshness",
+                "cmd": (
+                    "python3 scripts/validate_order_entries_freshness.py "
+                    f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
+                    f"--as-of {quoted_as_of} "
+                    f"--output-root {shlex.quote(str(identity_validation_root))} "
+                    "--strict"
+                ),
+            },
+        ]
 
     checks = [
         {
@@ -323,49 +386,7 @@ def _doctor_checks(
                 "--strict"
             ),
         },
-        {
-            "layer": "governance",
-            "check": "import_web_automation_offer_identity",
-            "cmd": (
-                "python3 scripts/import_web_automation_offer_identity.py "
-                f"--as-of {quoted_as_of} "
-                f"--output-root {shlex.quote(str(identity_validation_root))} "
-                "--strict"
-            ),
-        },
-        {
-            "layer": "governance",
-            "check": "validate_external_snapshot_parity",
-            "cmd": (
-                "python3 scripts/validate_external_snapshot_parity.py "
-                f"--as-of {quoted_as_of} "
-                f"--reference-csv {identity_reference_csv} "
-                f"--output-root {shlex.quote(str(identity_validation_root))} "
-                "--strict"
-            ),
-        },
-        {
-            "layer": "governance",
-            "check": "validate_recent_identity_coverage",
-            "cmd": (
-                "python3 scripts/validate_recent_identity_coverage.py "
-                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
-                f"--as-of {quoted_as_of} "
-                f"--output-root {shlex.quote(str(identity_validation_root))} "
-                "--strict"
-            ),
-        },
-        {
-            "layer": "governance",
-            "check": "validate_order_entries_freshness",
-            "cmd": (
-                "python3 scripts/validate_order_entries_freshness.py "
-                f"--db {shlex.quote(str(root / 'db' / 'app.db'))} "
-                f"--as-of {quoted_as_of} "
-                f"--output-root {shlex.quote(str(identity_validation_root))} "
-                "--strict"
-            ),
-        },
+        *identity_checks,
         {
             "layer": "governance",
             "check": "validate_exceptions_schema",
@@ -544,6 +565,7 @@ def _doctor_checks(
                 f"--as-of {quoted_as_of} "
                 f"--project-root {quoted_root} "
                 f"--truth-source {quoted_truth_source} "
+                f"--runtime-mode {shlex.quote(runtime_mode)} "
                 f"--validation-dir {quoted_validation_dir} "
                 + (
                     f"--pack-root {quoted_pack_root} "
@@ -765,6 +787,13 @@ def _doctor_checks(
             },
         )
 
+    if runtime_mode == "replay":
+        replay_excluded_checks = {
+            "validate_shipped_truth_crm_waybill",
+            "validate_business_insides_shipped_truth",
+        }
+        checks = [item for item in checks if item["check"] not in replay_excluded_checks]
+
     return checks
 
 
@@ -839,6 +868,7 @@ def run_system_doctor(
     checks = _doctor_checks(
         root=root,
         as_of=as_of,
+        runtime_mode=runtime_mode,
         truth_source=truth_source,
         validation_dir=validation_dir,
         pack_root=pack_root,

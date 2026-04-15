@@ -165,6 +165,7 @@ def triage_owner_truth_stoplines(
     as_of: date,
     project_root: Path,
     truth_source: str,
+    runtime_mode: str = "live",
     validation_dir: Path | None,
     pack_root: Path | None,
     ledger_root: Path | None,
@@ -192,17 +193,28 @@ def triage_owner_truth_stoplines(
             "reference_freshness",
             root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_reference_freshness.json",
         ),
-        _entry(
-            "external_snapshot_parity",
-            root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_external_snapshot_parity.json",
-        ),
-        _entry(
-            "recent_identity_coverage",
-            root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_recent_identity_coverage.json",
-        ),
-        _entry(
-            "order_entries_freshness",
-            root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_order_entries_freshness.json",
+        *(
+            [
+                _entry(
+                    "identity_replay_anchor",
+                    root / "exports" / "validation" / "identity_replay_anchor" / as_of_str / "validate_identity_replay_anchor.json",
+                ),
+            ]
+            if runtime_mode == "replay"
+            else [
+                _entry(
+                    "external_snapshot_parity",
+                    root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_external_snapshot_parity.json",
+                ),
+                _entry(
+                    "recent_identity_coverage",
+                    root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_recent_identity_coverage.json",
+                ),
+                _entry(
+                    "order_entries_freshness",
+                    root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_order_entries_freshness.json",
+                ),
+            ]
         ),
         _entry(
             "ads_readiness",
@@ -318,6 +330,7 @@ def triage_owner_truth_stoplines(
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "as_of": as_of_str,
         "truth_source": truth_source,
+        "runtime_mode": runtime_mode,
         "validation_dir": str(validation_root),
         "status": "PASS" if not stoplines else "FAIL",
         "ok": len(stoplines) == 0,
@@ -365,6 +378,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--truth-source", choices=["db", "webui_archive"], default="db")
+    parser.add_argument("--runtime-mode", choices=["live", "replay"], default="live")
     parser.add_argument("--validation-dir", type=Path, default=None)
     parser.add_argument("--pack-root", type=Path, default=None)
     parser.add_argument("--ledger-root", type=Path, default=None)
@@ -382,14 +396,15 @@ def main() -> int:
             as_of=date.fromisoformat(str(args.as_of)),
             project_root=args.project_root,
             truth_source=str(args.truth_source),
+            runtime_mode=str(args.runtime_mode),
             validation_dir=args.validation_dir,
             pack_root=args.pack_root,
             ledger_root=args.ledger_root,
-        download_run_id=args.download_run_id,
-        output_path=args.output_path,
-        strict=bool(args.strict),
-        allow_missing_publication_readiness=bool(args.allow_missing_publication_readiness),
-    )
+            download_run_id=args.download_run_id,
+            output_path=args.output_path,
+            strict=bool(args.strict),
+            allow_missing_publication_readiness=bool(args.allow_missing_publication_readiness),
+        )
     except Exception as exc:
         print("status=FAIL")
         print("error_code=OWNER_TRUTH_STOPLINE")

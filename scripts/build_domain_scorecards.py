@@ -109,7 +109,15 @@ def build_domain_scorecards(
     }
 
     specs = [
-        ("po", f"python3 scripts/validate_po_money_gate.py --project-root {quoted_root} --json"),
+        (
+            "po",
+            (
+                "python3 scripts/validate_po_money_gate.py "
+                f"--project-root {quoted_root} "
+                f"--as-of {quoted_as_of} "
+                "--json"
+            ),
+        ),
         ("inventory", "python3 scripts/validate_inventory_cost_drift.py"),
         ("cashflow", "python3 scripts/validate_cashflow_invariants.py"),
         (

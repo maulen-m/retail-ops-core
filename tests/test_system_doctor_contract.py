@@ -328,6 +328,38 @@ def test_system_doctor_records_runtime_mode_in_report(tmp_path: Path) -> None:
     assert report["runtime_mode"] == "replay"
 
 
+def test_system_doctor_replay_mode_uses_identity_replay_anchor_instead_of_live_identity_steps(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def fake_runner(cmd: str, _cwd: Path) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, "ok"
+
+    report = run_system_doctor(
+        project_root=Path(".").resolve(),
+        as_of="2026-03-19",
+        output_dir=tmp_path,
+        strict=True,
+        runtime_mode="replay",
+        truth_source="webui_archive",
+        runner=fake_runner,
+    )
+
+    assert report["ok"] is True
+    joined = "\n".join(calls)
+    assert "validate_identity_replay_anchor.py" in joined
+    assert "import_web_automation_offer_identity.py" not in joined
+    assert "validate_external_snapshot_parity.py" not in joined
+    assert "validate_recent_identity_coverage.py" not in joined
+    assert "validate_order_entries_freshness.py" not in joined
+    assert "validate_shipped_truth_crm_waybill.py" not in joined
+    assert "validate_business_insides_shipped_truth.py" not in joined
+    triage_cmd = next(cmd for cmd in calls if "triage_owner_truth_stoplines.py" in cmd)
+    assert "--runtime-mode replay" in triage_cmd
+
+
 def test_system_doctor_passes_statusdate_cutover_to_reference_freshness(tmp_path: Path) -> None:
     calls: list[str] = []
 

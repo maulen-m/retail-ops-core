@@ -294,6 +294,8 @@ def run_owner_truth_daily(
         else root / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
     )
     resolved_workbook_map_output = root / "exports" / "validation" / "workbook_catalog_offer_map_sync"
+    identity_validation_root = root / "exports" / "validation" / "identity_stabilization"
+    identity_replay_output_root = root / "exports" / "validation" / "identity_replay_anchor"
     try:
         runtime_mode_report = resolve_owner_truth_runtime_mode(
             project_root=root,
@@ -386,7 +388,7 @@ def run_owner_truth_daily(
             (
                 "python3 scripts/validate_external_snapshot_parity.py "
                 f"--as-of {shlex.quote(as_of_str)} "
-                f"--reference-csv {shlex.quote(str(root / 'exports' / 'validation' / 'identity_stabilization' / as_of_str / 'offer_identity_reference.csv'))} "
+                f"--reference-csv {shlex.quote(str(identity_validation_root / as_of_str / 'offer_identity_reference.csv'))} "
                 "--strict"
             ),
             None,
@@ -488,6 +490,7 @@ def run_owner_truth_daily(
                 "python3 scripts/triage_owner_truth_stoplines.py "
                 f"--as-of {shlex.quote(as_of_str)} "
                 f"--truth-source {shlex.quote(truth_source)} "
+                f"--runtime-mode {shlex.quote(str(runtime_mode_report['mode']))} "
                 f"--validation-dir {shlex.quote(str(resolved_validation_dir))} "
                 + (
                     f"--pack-root {shlex.quote(str(resolved_pack_root))} "
@@ -542,6 +545,17 @@ def run_owner_truth_daily(
                 None,
             ),
             (
+                "validate_identity_replay_anchor",
+                (
+                    "python3 scripts/validate_identity_replay_anchor.py "
+                    f"--as-of {shlex.quote(as_of_str)} "
+                    f"--identity-root {shlex.quote(str(identity_validation_root))} "
+                    f"--output-root {shlex.quote(str(identity_replay_output_root))} "
+                    "--strict"
+                ),
+                None,
+            ),
+            (
                 "build_owner_pnl_report",
                 (
                     "python3 scripts/build_owner_pnl_report.py "
@@ -571,6 +585,25 @@ def run_owner_truth_daily(
                     f"--output-dir {shlex.quote(str(root / 'exports' / 'north_star_owner_review' / as_of_str))} "
                     + (
                         f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                        if truth_source == "webui_archive"
+                        else ""
+                    )
+                    + "--strict"
+                ),
+                None,
+            ),
+            (
+                "triage_owner_truth_stoplines",
+                (
+                    "python3 scripts/triage_owner_truth_stoplines.py "
+                    f"--as-of {shlex.quote(as_of_str)} "
+                    f"--truth-source {shlex.quote(truth_source)} "
+                    f"--runtime-mode {shlex.quote(str(runtime_mode_report['mode']))} "
+                    f"--validation-dir {shlex.quote(str(resolved_validation_dir))} "
+                    + (
+                        f"--pack-root {shlex.quote(str(resolved_pack_root))} "
+                        f"--ledger-root {shlex.quote(str(resolved_ledger_root))} "
+                        f"--download-run-id {shlex.quote(str(resolved_download_run_id))} "
                         if truth_source == "webui_archive"
                         else ""
                     )

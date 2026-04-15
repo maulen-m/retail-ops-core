@@ -843,11 +843,18 @@ def test_run_owner_truth_daily_replay_mode_regenerates_deterministic_outputs_fro
     assert "generate_daily_ops_report.py" in joined
     assert "generate_ops_selection_artifacts.py" in joined
     assert "generate_owner_truth_exceptions.py" in joined
+    assert "validate_identity_replay_anchor.py" in joined
     assert "build_owner_pnl_report.py" in joined
     assert "build_north_star_owner_review.py" in joined
+    assert "import_web_automation_offer_identity.py" not in joined
+    assert "validate_external_snapshot_parity.py" not in joined
+    assert "validate_recent_identity_coverage.py" not in joined
+    assert "validate_order_entries_freshness.py" not in joined
     assert "validate_webui_archive_pack_integrity.py" not in joined
     assert "system_doctor.py" not in joined
     assert "run_kaspi_daily_ops.py" not in joined
+    triage_cmd = next(cmd for cmd in calls if "triage_owner_truth_stoplines.py" in cmd)
+    assert "--runtime-mode replay" in triage_cmd
 
     export_idx = next(i for i, cmd in enumerate(calls) if "export_sales_archive_statusdate_mapped.py" in cmd)
     bi_idx = next(i for i, cmd in enumerate(calls) if "generate_business_insides.py" in cmd)

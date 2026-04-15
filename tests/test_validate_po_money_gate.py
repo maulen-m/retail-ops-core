@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from scripts.validate_po_money_gate import GateCheck, run_po_money_gate, summarize_gate_checks
@@ -63,3 +64,30 @@ def test_run_po_money_gate_offer_linkage_blocks_when_strict(tmp_path: Path) -> N
     )
     assert report["ok"] is False
     assert "offer_linkage" in report["required_failed"]
+
+
+def test_run_po_money_gate_passes_as_of_to_cogs_integrity(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    (project_root / "scripts").mkdir(parents=True)
+    (project_root / "config" / "anchors").mkdir(parents=True)
+    workbook = project_root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+    workbook.write_bytes(b"fake")
+
+    seen_commands: list[list[str]] = []
+
+    def runner(cmd: list[str], cwd: Path) -> tuple[int, str, str]:
+        seen_commands.append(cmd)
+        return 0, "ok", ""
+
+    report = run_po_money_gate(
+        project_root=project_root,
+        db_path=project_root / "db" / "app.db",
+        as_of=date(2026, 3, 19),
+        require_offer_linkage_strict=False,
+        command_runner=runner,
+    )
+
+    assert report["ok"] is True
+    cogs_cmd = next(cmd for cmd in seen_commands if Path(cmd[1]).name == "validate_cogs_integrity.py")
+    assert "--as-of" in cogs_cmd
+    assert cogs_cmd[cogs_cmd.index("--as-of") + 1] == "2026-03-19"
