@@ -84,7 +84,7 @@ def test_validate_returns_economics_pass_within_volatility(tmp_path: Path) -> No
     assert report["stale_leaked_orders"] == 0
 
 
-def test_validate_returns_economics_fails_stale_leak(tmp_path: Path) -> None:
+def test_validate_returns_economics_fails_stale_leak(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "app.db"
     _init_db(db_path)
 
@@ -97,9 +97,28 @@ def test_validate_returns_economics_fails_stale_leak(tmp_path: Path) -> None:
         ) VALUES ('R1', '2026-02-10', 'UNIVERSAL', 1, 3000, 1000, 2000, 'DELIVERED', 0, 'SKU', 'SKU_1', 'L')
         """
     )
+    conn.execute(
+        """
+        CREATE VIEW view_sales_line_truth AS
+        SELECT
+            order_id,
+            order_date AS sale_date,
+            store_code,
+            sku_key,
+            sku_id,
+            my_size,
+            quantity AS units,
+            net_rev AS net_rev_kzt,
+            cogs AS cogs_kzt,
+            profit AS profit_kzt,
+            'sales_fact_v2' AS source_table
+        FROM sales_fact_v2
+        """
+    )
     conn.commit()
     conn.close()
 
+    monkeypatch.setattr("scripts.validate_returns_economics_audit.ensure_sales_truth_views", lambda _conn: None)
     with pytest.raises(ReturnsEconomicsError):
         validate_returns_economics_audit(
             db_path=db_path,
@@ -144,3 +163,37 @@ def test_validate_returns_economics_ignores_returns_before_window(tmp_path: Path
 
     assert report["status"] == "PASS"
     assert report["stale_leaked_orders"] == 0
+
+
+def test_validate_returns_economics_accepts_legacy_negative_cash_in_as_refund(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM fact_cashflow_events")
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (order_id, store_code, internal_status, status_updated_at, updated_at, created_at)
+        VALUES ('R2', 'UNIVERSAL', 'RETURNED', '2026-02-20', '2026-02-20', '2026-02-10')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_cashflow_events (event_date, event_type, amount_kzt, store_code)
+        VALUES ('2026-02-21', 'CASH_IN', -2000, 'UNIVERSAL')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    report = validate_returns_economics_audit(
+        db_path=db_path,
+        as_of=date(2026, 3, 25),
+        since=date(2026, 2, 1),
+        output_root=tmp_path / "out",
+        volatility_days=14,
+        strict=True,
+    )
+
+    assert report["status"] == "PASS"
+    assert report["months_missing_refunds"] == []

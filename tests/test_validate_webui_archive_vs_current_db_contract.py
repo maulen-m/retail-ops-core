@@ -44,6 +44,18 @@ def _init_db(path: Path) -> None:
         )
         conn.execute(
             """
+            CREATE TABLE fact_orders_kaspi (
+                order_id TEXT,
+                store_code TEXT,
+                internal_status TEXT,
+                status_updated_at TEXT,
+                updated_at TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE VIEW view_sales_line_truth AS
             SELECT
                 CAST(order_id AS TEXT) AS order_id,
@@ -171,6 +183,54 @@ def test_validate_webui_vs_current_db_keeps_true_missing_as_hard_failure(tmp_pat
 
     assert report["status"] == "FAIL"
     assert report["missing_in_db_orders"] == 1
+
+
+def test_validate_webui_vs_current_db_uses_fact_orders_returned_state_for_surface_exemption(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "app.db"
+    _init_db(db)
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi(order_id, store_code, internal_status, status_updated_at, updated_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("830856631", "UNIVERSAL", "RETURNED", "2026-03-09", "2026-03-09", "2026-02-23"),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_sales_workbook_anchor(order_id, store_code, sale_date, quantity, net_rev_kzt)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("830856631", "UNIVERSAL", "2026-02-23", 1.0, 1000.0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    ledger_root = tmp_path / "ledger"
+    _write_ledger(ledger_root, order_id="830856631", store_code="UNIVERSAL", delivered_at="2026-02-23")
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "shipped_day_authority_decision.json").write_text(
+        json.dumps({"decision": "CRM_REMAINS_CHRONOLOGY_AUTHORITY"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    report = validate_webui_archive_vs_current_db(
+        start="2026-01-01",
+        end="2026-02-28",
+        db_path=db,
+        ledger_root=ledger_root,
+        output_dir=output_dir,
+        strict=False,
+    )
+
+    assert report["status"] == "PASS"
+    assert report["missing_in_db_orders"] == 0
+    assert report["original_missing_in_db_orders"] == 1
 
 
 def test_validate_webui_vs_current_db_treats_explicit_db_only_quarantine_as_not_blocking(tmp_path: Path) -> None:

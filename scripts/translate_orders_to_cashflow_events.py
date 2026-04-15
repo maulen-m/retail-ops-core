@@ -289,6 +289,7 @@ def _load_existing_cash_in(conn: sqlite3.Connection) -> set[tuple[str, str]]:
         FROM fact_cashflow_events
         WHERE ref_type = 'ORDER'
           AND event_type = 'CASH_IN'
+          AND amount_kzt > 0
         """
     ).fetchall()
     return {
@@ -306,8 +307,10 @@ def _load_existing_refunds(conn: sqlite3.Connection) -> set[tuple[str, str]]:
         SELECT DISTINCT ref_id, sku_id
         FROM fact_cashflow_events
         WHERE ref_type = 'ORDER'
-          AND event_type = 'CASH_IN'
-          AND amount_kzt < 0
+          AND (
+                event_type = 'REFUND'
+                OR (event_type = 'CASH_IN' AND amount_kzt < 0)
+              )
         """
     ).fetchall()
     return {
@@ -967,7 +970,7 @@ def translate_orders(
                         events.append(
                             {
                                 "event_date": event_date,
-                                "event_type": "CASH_IN",
+                                "event_type": "REFUND",
                                 "account": _cash_account(store_code),
                                 "amount_kzt": refund_cash,
                                 **base_fields,

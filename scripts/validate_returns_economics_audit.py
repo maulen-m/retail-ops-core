@@ -148,11 +148,29 @@ def validate_returns_economics_audit(
             """
             SELECT
                 substr(date(event_date), 1, 7) AS sale_month,
-                COUNT(*) AS refund_events,
-                ROUND(SUM(COALESCE(amount_kzt, 0)), 2) AS refund_amount_kzt
+                SUM(
+                    CASE
+                        WHEN event_type = 'REFUND' THEN 1
+                        WHEN event_type = 'CASH_IN' AND COALESCE(amount_kzt, 0) < 0 THEN 1
+                        ELSE 0
+                    END
+                ) AS refund_events,
+                ROUND(
+                    SUM(
+                        CASE
+                            WHEN event_type = 'REFUND' THEN COALESCE(amount_kzt, 0)
+                            WHEN event_type = 'CASH_IN' AND COALESCE(amount_kzt, 0) < 0 THEN COALESCE(amount_kzt, 0)
+                            ELSE 0
+                        END
+                    ),
+                    2
+                ) AS refund_amount_kzt
             FROM fact_cashflow_events
-            WHERE event_type = 'REFUND'
-              AND date(event_date) BETWEEN ? AND ?
+            WHERE date(event_date) BETWEEN ? AND ?
+              AND (
+                    event_type = 'REFUND'
+                    OR (event_type = 'CASH_IN' AND COALESCE(amount_kzt, 0) < 0)
+                  )
             GROUP BY substr(date(event_date), 1, 7)
             ORDER BY sale_month
             """,
@@ -184,11 +202,15 @@ def validate_returns_economics_audit(
     else:
         returned_monthly = pd.DataFrame(columns=["sale_month", "returned_orders"])
 
-    monthly = returned_monthly.merge(refunds, on="sale_month", how="left").fillna(0)
+    monthly = returned_monthly.merge(refunds, on="sale_month", how="left")
     if "refund_events" not in monthly.columns:
         monthly["refund_events"] = 0
+    monthly["refund_events"] = pd.to_numeric(monthly["refund_events"], errors="coerce").fillna(0).astype(int)
     if "refund_amount_kzt" not in monthly.columns:
         monthly["refund_amount_kzt"] = 0.0
+    monthly["refund_amount_kzt"] = (
+        pd.to_numeric(monthly["refund_amount_kzt"], errors="coerce").fillna(0.0).round(2)
+    )
 
     months_missing_refunds: list[str] = []
     for _, row in monthly.iterrows():
@@ -248,7 +270,7 @@ def validate_returns_economics_audit(
     if not refunds_ok:
         error_codes.append("RETURNS_REFUND_GAP")
         errors.append(
-            "no REFUND cashflow events for closed month(s): " + ", ".join(months_missing_refunds)
+            "no refund-equivalent cashflow events for closed month(s): " + ", ".join(months_missing_refunds)
         )
 
     out_dir = output_root.resolve() / as_of.isoformat()

@@ -1659,7 +1659,7 @@ def test_translate_orders_refund_requires_sale(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(db_path))
     try:
         refund_count = conn.execute(
-            "SELECT COUNT(*) FROM fact_cashflow_events WHERE event_type = 'CASH_IN' AND amount_kzt < 0"
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE event_type = 'REFUND' AND amount_kzt < 0"
         ).fetchone()[0]
         assert refund_count == 1
     finally:

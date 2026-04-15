@@ -407,8 +407,35 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         )
     ctes.append(
         """
+        lifecycle_excluded_order_keys AS (
+            SELECT NULL AS order_id, NULL AS store_code WHERE 0
+        )
+        """
+    )
+    if _table_exists(conn, "fact_orders_kaspi") and _column_exists(conn, "fact_orders_kaspi", "internal_status"):
+        lifecycle_store = (
+            "store_code"
+            if _column_exists(conn, "fact_orders_kaspi", "store_code")
+            else "'UNIVERSAL'"
+        )
+        ctes[-1] = f"""
+        lifecycle_excluded_order_keys AS (
+            SELECT DISTINCT
+                CAST(order_id AS TEXT) AS order_id,
+                UPPER(TRIM(COALESCE({lifecycle_store}, 'UNIVERSAL'))) AS store_code
+            FROM fact_orders_kaspi
+            WHERE UPPER(TRIM(COALESCE(internal_status, ''))) IN ('CANCELLED', 'RETURNED')
+        )
+        """
+    ctes.append(
+        """
         base_lines AS (
-            SELECT * FROM sales_v2
+            SELECT sv.*
+            FROM sales_v2 sv
+            LEFT JOIN lifecycle_excluded_order_keys lex
+              ON lex.order_id = sv.order_id
+             AND lex.store_code = UPPER(TRIM(COALESCE(sv.store_code, 'UNIVERSAL')))
+            WHERE lex.order_id IS NULL
             UNION ALL
             SELECT sf.*
             FROM sales_fact sf
@@ -418,11 +445,15 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             LEFT JOIN workbook_anchor_keys wak
               ON wak.order_id = sf.order_id
              AND wak.store_code = UPPER(TRIM(COALESCE(sf.store_code, 'UNIVERSAL')))
+            LEFT JOIN lifecycle_excluded_order_keys lex
+              ON lex.order_id = sf.order_id
+             AND lex.store_code = UPPER(TRIM(COALESCE(sf.store_code, 'UNIVERSAL')))
             WHERE (
                 (SELECT v2_min_sale_date FROM v2_bounds) IS NULL
                 OR date(sf.sale_date) < date((SELECT v2_min_sale_date FROM v2_bounds))
                 OR (wak.order_id IS NOT NULL AND v2a.order_id IS NULL)
             )
+              AND lex.order_id IS NULL
         )
         """
     )

@@ -36,6 +36,22 @@ class WebuiArchiveVsCurrentDBError(RuntimeError):
     """Raised when the WebUI-vs-current-DB comparison cannot be validated."""
 
 
+def _table_exists(conn, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _column_exists(conn, table: str, column: str) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:
+        return False
+    return any(str(row[1]) == column for row in rows)
+
+
 def _resolve_ledger_root(ledger_root: Path | None) -> Path:
     if ledger_root is None:
         return resolve_latest_dir(DEFAULT_LEDGER_ROOT)
@@ -101,6 +117,17 @@ def _fetch_returned_sales_v2_any_date(*, db_path: Path, order_ids: list[str]) ->
     conn = sqlite3.connect(str(db_path))
     try:
         frames: list[pd.DataFrame] = []
+        lifecycle_store_expr = (
+            "store_code" if _column_exists(conn, "fact_orders_kaspi", "store_code") else "'UNIVERSAL'"
+        )
+        lifecycle_date_parts = [
+            col
+            for col in ("status_updated_at", "updated_at", "created_at")
+            if _column_exists(conn, "fact_orders_kaspi", col)
+        ]
+        lifecycle_date_expr = (
+            f"COALESCE({', '.join(lifecycle_date_parts)})" if lifecycle_date_parts else "NULL"
+        )
         for offset in range(0, len(order_ids), 900):
             chunk = order_ids[offset : offset + 900]
             placeholders = ",".join(["?"] * len(chunk))
@@ -117,9 +144,32 @@ def _fetch_returned_sales_v2_any_date(*, db_path: Path, order_ids: list[str]) ->
                   )
             """
             frames.append(pd.read_sql_query(query, conn, params=chunk))
+            if _table_exists(conn, "fact_orders_kaspi") and _column_exists(conn, "fact_orders_kaspi", "internal_status"):
+                lifecycle_query = f"""
+                    SELECT
+                        CAST(order_id AS TEXT) AS order_id,
+                        UPPER(TRIM(COALESCE({lifecycle_store_expr}, 'UNIVERSAL'))) AS store_code,
+                        date({lifecycle_date_expr}) AS return_date
+                    FROM fact_orders_kaspi
+                    WHERE CAST(order_id AS TEXT) IN ({placeholders})
+                      AND UPPER(TRIM(COALESCE(internal_status, ''))) = 'RETURNED'
+                """
+                frames.append(pd.read_sql_query(lifecycle_query, conn, params=chunk))
     finally:
         conn.close()
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["order_id", "store_code", "return_date"])
+    if not frames:
+        return pd.DataFrame(columns=["order_id", "store_code", "return_date"])
+    combined = pd.concat(frames, ignore_index=True)
+    if combined.empty:
+        return pd.DataFrame(columns=["order_id", "store_code", "return_date"])
+    combined["order_id"] = combined["order_id"].astype(str).str.strip()
+    combined["store_code"] = combined["store_code"].astype(str).str.strip().str.upper()
+    combined["return_date"] = combined["return_date"].astype(str).str.strip()
+    combined = combined.sort_values(["order_id", "store_code", "return_date"]).drop_duplicates(
+        subset=["order_id", "store_code"],
+        keep="last",
+    )
+    return combined.reset_index(drop=True)
 
 
 def _fetch_workbook_anchor_any_date(*, db_path: Path, order_ids: list[str]) -> pd.DataFrame:
