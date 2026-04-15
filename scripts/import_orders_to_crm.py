@@ -67,7 +67,11 @@ from core.integrations.kaspi_order_stage import (
     stage_to_crm_indicators,
 )
 from core.parsers.kaspi_parser import extract_sku_from_article
-from core.utils.sku_map import extract_kaspi_name_core
+from core.utils.kaspi_name_core_resolver import (
+    KaspiNameCoreMaps,
+    iter_sku_family_candidates,
+    resolve_kaspi_name_core,
+)
 from core.utils.kaspi_dates import parse_kaspi_date, planned_date_from_order
 from core.db import get_db
 from scripts.validate_crm_workbook_integrity import (
@@ -862,7 +866,7 @@ def _prefer_openpyxl_safe_write_path() -> bool:
     return False
 
 
-def _xlwings_open_timeout_sec(default_sec: int = 45) -> int:
+def _xlwings_open_timeout_sec(default_sec: int = 25) -> int:
     """
     Wall-clock timeout passed to xlwings workbook open calls.
     """
@@ -876,7 +880,7 @@ def _xlwings_open_timeout_sec(default_sec: int = 45) -> int:
     return max(parsed, 5)
 
 
-def _xlwings_append_timeout_sec(default_sec: int = 420) -> int:
+def _xlwings_append_timeout_sec(default_sec: int = 240) -> int:
     """
     Wall-clock timeout for xlwings append execution before falling back.
     """
@@ -984,6 +988,22 @@ def _safe_quit_xlwings_app(app: Any, *, context: str) -> None:
             print(f"  WARNING: Excel app force-killed ({context})")
         except Exception as kill_exc:
             print(f"  WARNING: failed to force-kill Excel app ({context}): {kill_exc}")
+
+
+def _is_xlwings_table_access_failure(exc: Exception) -> bool:
+    """
+    Detect the macOS Excel/appscript failure class where table/list-object access
+    becomes unavailable even though the workbook itself opened successfully.
+    """
+    if isinstance(exc, KeyError):
+        return False
+    message = str(exc)
+    lowered = message.lower()
+    return (
+        "-1728" in message
+        or "count(each=k.list_object)" in message
+        or "object you are trying to access does not exist" in lowered
+    )
 
 
 def _create_temporary_workbook_snapshot(workbook_path: Path) -> Path:
@@ -1277,13 +1297,19 @@ def _open_workbook_xlwings(
     """
     Open workbook via xlwings with explicit wall-clock timeout to avoid indefinite hangs.
     """
-    if sys.platform == "darwin":
-        # macOS Excel automation is materially more reliable with the old minimal open
-        # contract. Extra kwargs like timeout/read_only/update_links have caused hangs
-        # and parameter errors on live operator machines.
-        return app.books.open(str(workbook_path))
-
     timeout_sec = _xlwings_open_timeout_sec()
+
+    if sys.platform == "darwin":
+        # macOS Excel automation is materially more reliable with the minimal open
+        # contract, but still needs a hard wall-clock guard so operator runs fail
+        # fast instead of hanging inside Excel open for many minutes.
+        return _open_workbook_xlwings_without_timeout_kwarg(
+            app,
+            workbook_path,
+            {},
+            timeout_sec,
+        )
+
     open_kwargs: Dict[str, Any] = {
         "update_links": update_links,
         "read_only": read_only,
@@ -1614,6 +1640,34 @@ def guard_reconcile_delete_volume(
         )
 
 
+def augment_desired_keys_with_existing_rollovers(
+    desired_keys: List[str],
+    existing_rows: List[CRMDateBlockRow],
+    existing_rollover_keys: set[str],
+) -> List[str]:
+    """
+    Preserve already-imported carry-forward rows on same-day reruns.
+
+    Once an overdue pending row has been intentionally carried into today's CRM
+    append-date block, later smaller pending snapshots should not try to delete
+    it just because the current API view narrowed. We only top up the desired
+    multiplicity to match existing rollover rows already present today.
+    """
+    if not existing_rows or not existing_rollover_keys:
+        return list(desired_keys)
+
+    augmented = list(desired_keys)
+    desired_counts = Counter(augmented)
+    rollover_counts = Counter(
+        row.line_key for row in existing_rows if row.line_key in existing_rollover_keys
+    )
+    for key, count in rollover_counts.items():
+        missing = max(int(count) - int(desired_counts.get(key, 0)), 0)
+        if missing > 0:
+            augmented.extend([key] * missing)
+    return augmented
+
+
 def plan_append_date_reconcile(
     existing_rows: List[CRMDateBlockRow],
     desired_keys: List[str],
@@ -1927,6 +1981,13 @@ def _load_sku_meta_for_keys(sku_keys: List[str]) -> Tuple[Dict[str, Dict[str, An
     sku_meta: Dict[str, Dict[str, Any]] = {}
     kaspi_core: Dict[str, str] = {}
     valid_sku_keys: set[str] = set()
+    candidate_keys = sorted(
+        {
+            candidate
+            for sku_key in clean_keys
+            for candidate in iter_sku_family_candidates(sku_key)
+        }
+    )
 
     with get_db() as conn:
         has_dim_sku = conn.execute(
@@ -1954,8 +2015,8 @@ def _load_sku_meta_for_keys(sku_keys: List[str]) -> Tuple[Dict[str, Dict[str, An
 
         if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dim_kaspi_article_map'"
-        ).fetchone() and clean_keys:
-            placeholders = ",".join("?" for _ in clean_keys)
+        ).fetchone() and candidate_keys:
+            placeholders = ",".join("?" for _ in candidate_keys)
             core_rows = conn.execute(
                 f"""
                 SELECT sku_key, kaspi_name_core
@@ -1966,7 +2027,7 @@ def _load_sku_meta_for_keys(sku_keys: List[str]) -> Tuple[Dict[str, Dict[str, An
                   AND sku_key IN ({placeholders})
                 ORDER BY updated_at DESC
                 """,
-                clean_keys,
+                candidate_keys,
             ).fetchall()
             for row in core_rows:
                 if row["sku_key"] not in kaspi_core:
@@ -2027,7 +2088,16 @@ def compute_fixed_value_columns(
     ).strip()
     article_identity = (article_identity_by_article or {}).get(article) or {}
     mapped_core = str(article_identity.get("kaspi_name_core") or "").strip()
-    kaspi_name_core = mapped_core or kaspi_core_by_key.get(sku_key) or extract_kaspi_name_core(offer_name)
+    store_code = WAREHOUSE_STORE_MAP.get(warehouse, "")
+    kaspi_name_core = resolve_kaspi_name_core(
+        store_code=store_code,
+        kaspi_offer_name=offer_name,
+        sku_key=sku_key,
+        sku_id=article,
+        maps=KaspiNameCoreMaps(by_store_offer={}, by_sku_key=kaspi_core_by_key or {}),
+        preferred_core=mapped_core,
+        preferred_source="article_identity",
+    ).core
     if sku_key == LINE61_CANONICAL_SKU_KEY or article.upper().startswith("OF_SUIT-61_BLK_"):
         kaspi_name_core = LINE61_CANONICAL_CORE
 
@@ -5423,6 +5493,8 @@ def delete_crm_rows_xlwings(
     app.display_alerts = False
     app.screen_updating = False
     wb = None
+    fallback_to_openpyxl = False
+    fallback_exc: Exception | None = None
 
     try:
         wb = _open_workbook_xlwings(app, out_wb, update_links=False, read_only=False)
@@ -5431,34 +5503,64 @@ def delete_crm_rows_xlwings(
             try:
                 tbl = sh.tables[table_name]
             except KeyError:
-                tables = list(sh.tables)
+                try:
+                    tables = list(sh.tables)
+                except Exception as exc:
+                    if _is_xlwings_table_access_failure(exc):
+                        fallback_to_openpyxl = True
+                        fallback_exc = exc
+                        tables = []
+                    else:
+                        raise
                 if not tables:
-                    raise RuntimeError(f"No table found on sheet {sheet_name}")
-                tbl = tables[0]
+                    if fallback_to_openpyxl:
+                        tbl = None
+                    else:
+                        raise RuntimeError(f"No table found on sheet {sheet_name}")
+                else:
+                    tbl = tables[0]
+            except Exception as exc:
+                if _is_xlwings_table_access_failure(exc):
+                    fallback_to_openpyxl = True
+                    fallback_exc = exc
+                    tbl = None
+                else:
+                    raise
+            if not fallback_to_openpyxl:
+                header_row = tbl.range.row
+                tbl_start_col = tbl.range.column
+                tbl_end_col = tbl.range.columns.count + tbl_start_col - 1
 
-            header_row = tbl.range.row
-            tbl_start_col = tbl.range.column
-            tbl_end_col = tbl.range.columns.count + tbl_start_col - 1
+                for row_num in row_numbers:
+                    sh.range(f"{row_num}:{row_num}").delete()
 
-            for row_num in row_numbers:
-                sh.range(f"{row_num}:{row_num}").delete()
-
-            last_data_row = sh.range((sh.cells.last_cell.row, tbl_start_col)).end("up").row
-            new_bottom_row = max(header_row, int(last_data_row))
-            new_table_range = sh.range(
-                (header_row, tbl_start_col),
-                (new_bottom_row, tbl_end_col),
-            )
-            tbl.resize(new_table_range)
-            wb.save()
-        wb.close()
-        wb = None
-        print(f"  Reconciled {len(row_numbers)} stale CRM row(s) in {out_wb.name}")
-        return len(row_numbers)
+                last_data_row = sh.range((sh.cells.last_cell.row, tbl_start_col)).end("up").row
+                new_bottom_row = max(header_row, int(last_data_row))
+                new_table_range = sh.range(
+                    (header_row, tbl_start_col),
+                    (new_bottom_row, tbl_end_col),
+                )
+                tbl.resize(new_table_range)
+                wb.save()
+        if not fallback_to_openpyxl:
+            wb.close()
+            wb = None
+            print(f"  Reconciled {len(row_numbers)} stale CRM row(s) in {out_wb.name}")
     finally:
         if wb is not None:
             _safe_close_xlwings_book(wb, context="reconcile-delete")
         _safe_quit_xlwings_app(app, context="reconcile-delete")
+    if fallback_to_openpyxl:
+        print(
+            "  WARNING: Excel table access failed during reconcile delete; "
+            "switching to openpyxl fallback."
+        )
+        if fallback_exc is not None:
+            print(f"  WARNING: reconcile-delete xlwings table access detail: {fallback_exc}")
+        deleted = delete_crm_rows_openpyxl(out_wb, sheet_name, table_name, row_numbers)
+        print(f"  Reconciled {deleted} stale CRM row(s) in {out_wb.name} (openpyxl fallback)")
+        return deleted
+    return len(row_numbers)
 
 
 def delete_crm_rows_openpyxl(
@@ -6757,6 +6859,15 @@ def main(
         )
 
         desired_keys = df_filt["_okey"].tolist() if "_okey" in df_filt.columns else []
+        protected_rollover_count = 0
+        if bool(args.include_overdue) and bool(args.no_update):
+            augmented_desired_keys = augment_desired_keys_with_existing_rollovers(
+                desired_keys,
+                snapshot.append_date_rows,
+                snapshot.existing_rollover_keys,
+            )
+            protected_rollover_count = max(len(augmented_desired_keys) - len(desired_keys), 0)
+            desired_keys = augmented_desired_keys
         reconcile_plan = plan_append_date_reconcile(
             snapshot.append_date_rows,
             desired_keys=desired_keys,
@@ -6791,6 +6902,11 @@ def main(
                         reconcile_plan.delete_row_numbers,
                     )
             result["crm_rows_reconciled_deleted"] = reconcile_delete_count
+        elif protected_rollover_count > 0:
+            print(
+                f"CRM reconcile: preserving {protected_rollover_count} carry-forward row(s) "
+                f"already imported for Date {append_date.isoformat()}"
+            )
 
         # Filter stage and phone values to match
         indices_to_keep = df_filt[new_mask].index.tolist()

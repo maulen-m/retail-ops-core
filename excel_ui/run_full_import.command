@@ -78,6 +78,48 @@ print(retryable_topup)
 PY
 }
 
+run_activeorders_identity_enrichment() {
+    local label="${1:-Step 1c: Enriching DB order identities from ActiveOrders export...}"
+    local export_path="excel_ui/ActiveOrders/ActiveOrders.xlsx"
+    local target_date
+    target_date=$(date +%Y-%m-%d)
+    echo ""
+    echo "${label}"
+    echo "----------------------------------------"
+    if [ ! -f "${export_path}" ]; then
+        echo "ERROR: ActiveOrders export missing: ${export_path}"
+        return 78
+    fi
+    ENABLE_KASPI_ACTIVEORDERS_DB_WRITE=1 \
+    PYTHONUNBUFFERED=1 \
+    python3 -u scripts/enrich_kaspi_orders_from_activeorders.py \
+        --apply \
+        --file "${export_path}" \
+        --target-date "${target_date}"
+}
+
+run_google_ops_board_publish_now() {
+    local label="${1:-Step 3: Publishing Google Ops Board...}"
+    local target_date
+    local service_account_json
+    target_date=$(date +%Y-%m-%d)
+    service_account_json="${AB_GOOGLE_SERVICE_ACCOUNT_JSON:-~/Docs/Business/S/ab-ops-board-sync-key.json}"
+    echo ""
+    echo "${label}"
+    echo "----------------------------------------"
+    if [ ! -f "${service_account_json}" ]; then
+        echo "ERROR: Google Ops Board service-account JSON missing: ${service_account_json}"
+        return 78
+    fi
+    ENABLE_GOOGLE_OPS_BOARD_WRITE=1 \
+    AB_GOOGLE_SERVICE_ACCOUNT_JSON="${service_account_json}" \
+    PYTHONUNBUFFERED=1 \
+    python3 -u scripts/sync_google_ops_board.py \
+        --apply \
+        --target-date "${target_date}" \
+        --service-account-json "${service_account_json}"
+}
+
 echo "Preflight: validating local app DB..."
 echo "----------------------------------------"
 python3 scripts/check_local_app_db.py --db-path "${PROJECT_ROOT}/db/app.db"
@@ -122,6 +164,7 @@ HARD_FAIL=0
 HARD_FAIL_REASONS=()
 ACTIVEORDERS_SNAPSHOT=""
 LATE_ARRIVAL_RETRY_MAX="${KASPI_LATE_ARRIVAL_RETRY_MAX:-2}"
+GOOGLE_BOARD_SYNC_READY=1
 
 echo "========================================"
 echo "  FAST Kaspi Order Import"
@@ -308,6 +351,15 @@ if [ -f "excel_ui/ActiveOrders/ActiveOrders.xlsx" ]; then
 else
     echo "WARNING: ActiveOrders.xlsx not found; CRM import may be incomplete."
     WARNINGS+=("ActiveOrders.xlsx missing. Fix: re-run export_api_orders step.")
+    GOOGLE_BOARD_SYNC_READY=0
+fi
+
+if [ "${GOOGLE_BOARD_SYNC_READY}" = "1" ]; then
+    if ! run_activeorders_identity_enrichment; then
+        echo "WARNING: ActiveOrders identity enrichment failed."
+        WARNINGS+=("ActiveOrders identity enrichment failed. Fix: run scripts/enrich_kaspi_orders_from_activeorders.py manually before Google board publish.")
+        GOOGLE_BOARD_SYNC_READY=0
+    fi
 fi
 
 # Preflight: CRM workbook integrity check (hard gate)
@@ -384,9 +436,9 @@ else
     WARNINGS+=("ActiveOrders missing before Step 2. Fix: re-run export step.")
 fi
 
-STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-900}"
-XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-45}"
-XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-420}"
+STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-600}"
+XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-25}"
+XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-240}"
 SUMMARY_PATH="logs/import_orders_to_crm_latest.json"
 rm -f "${SUMMARY_PATH}" 2>/dev/null || true
 # This command intentionally skips existing-row status updates for unattended runs.
@@ -394,10 +446,11 @@ STEP2_NO_UPDATE=1
 echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
 echo "xlwings open timeout: ${XLWINGS_OPEN_TIMEOUT_SEC}s"
 echo "xlwings append timeout: ${XLWINGS_APPEND_TIMEOUT_SEC}s"
+PYTHONUNBUFFERED=1 \
 CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \
 CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
 python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
-    python scripts/import_orders_to_crm.py \
+    python3 -u scripts/import_orders_to_crm.py \
         --verbose \
         --no-update \
         --strict-excel \
@@ -597,6 +650,15 @@ PY
             break
         fi
 
+        if ! run_activeorders_identity_enrichment "Late-arrival top-up: enriching DB order identities from ActiveOrders export..."; then
+            echo "WARNING: late-arrival top-up identity enrichment failed."
+            WARNINGS+=("Late-arrival top-up identity enrichment failed. Fix: run scripts/enrich_kaspi_orders_from_activeorders.py manually before Google board publish.")
+            GOOGLE_BOARD_SYNC_READY=0
+            HARD_FAIL=1
+            HARD_FAIL_REASONS+=("Late-arrival top-up identity enrichment failed.")
+            break
+        fi
+
         if [ -n "${ACTIVEORDERS_SNAPSHOT}" ] && [ -f "${ACTIVEORDERS_SNAPSHOT}" ]; then
             rm -f "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
         fi
@@ -611,10 +673,11 @@ PY
         fi
 
         rm -f "${SUMMARY_PATH}" 2>/dev/null || true
+        PYTHONUNBUFFERED=1 \
         CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \
         CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
         python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
-            python scripts/import_orders_to_crm.py \
+            python3 -u scripts/import_orders_to_crm.py \
                 --verbose \
                 --no-update \
                 --strict-excel \
@@ -694,9 +757,25 @@ else
 fi
 rm -f "${HEALTH_JSON}" "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
 
-# Step 3: Google Drive sync
+# Step 3: Publish Google Ops Board
 echo ""
-echo "Step 3: Google Drive sync skipped in unattended mode (--no-gdrive-sync)"
+if [ "${HARD_FAIL}" -ne 0 ]; then
+    echo "NO-OP: skipping Google Ops Board publish (workflow already red)."
+elif [ "${GOOGLE_BOARD_SYNC_READY}" != "1" ]; then
+    echo "ERROR: Google Ops Board publish blocked by missing or failed DB enrichment step."
+    HARD_FAIL=1
+    HARD_FAIL_REASONS+=("Google Ops Board publish blocked because ActiveOrders -> DB enrichment was not green.")
+else
+    if ! run_google_ops_board_publish_now; then
+        echo "ERROR: Google Ops Board publish failed."
+        HARD_FAIL=1
+        HARD_FAIL_REASONS+=("Google Ops Board publish failed.")
+    fi
+fi
+
+# Step 4: Google Drive sync
+echo ""
+echo "Step 4: Google Drive sync skipped in unattended mode (--no-gdrive-sync)"
 echo "----------------------------------------"
 echo "Note: CRM append is prioritized for reliability; run scripts/sync_to_gdrive.py manually if needed."
 

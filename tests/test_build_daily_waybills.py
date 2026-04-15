@@ -6,6 +6,7 @@ Phase 11 TASK-194: 20 tests for the waybill builder script.
 
 import csv
 import json
+import sqlite3
 import tempfile
 import zipfile
 from datetime import date, timedelta
@@ -1233,6 +1234,263 @@ def test_main_preserves_existing_send_batches_when_rebuilding_today_output(
         path.name for path in (output_dir / "MERGED" / "SEND").iterdir() if path.is_dir()
     )
     assert rebuilt_batches == ["10.03.26_MERGED_qnt1", "10.03.26_MERGED_qnt1_r2"]
+
+
+def test_main_uses_db_sized_orders_when_crm_current_batch_has_no_sizes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "Today"
+    waybill_dir = tmp_path / "waybills"
+    waybill_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = waybill_dir / "KASPI_SHOP-1001.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%db-first-waybill\n")
+
+    db_order = OrderItem(
+        order_id="1001",
+        store_name="Universal",
+        kaspi_name_core="Nike_Футболка_черная",
+        my_size="M",
+        sku_key="NIKE_TEE_BLACK",
+        sku_id="NIKE_TEE_BLACK_M",
+        quantity=1,
+        kaspi_offer_name="Nike футболка черная M",
+        planned_date=date(2026, 3, 10),
+    )
+
+    monkeypatch.setattr(build_daily_waybills_module, "ensure_pdf_merger", lambda: None)
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_crm_dataframe",
+        lambda *args, **kwargs: pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "resolve_db_path",
+        lambda *args, **kwargs: tmp_path / "app.db",
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_selection_cache",
+        lambda *args, **kwargs: {"Universal": {"1001"}},
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "read_db_orders",
+        lambda *args, **kwargs: [db_order],
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "read_crm_orders",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_all_waybills",
+        lambda *args, **kwargs: {"1001": pdf_path},
+    )
+
+    stats = build_daily_waybills_main(
+        crm_path=tmp_path / "CRM.xlsx",
+        db_path=tmp_path / "app.db",
+        waybill_dir=waybill_dir,
+        output_dir=output_dir,
+        target_date=date(2026, 3, 10),
+        lookback_days=0,
+        output_layout="per-store-and-merged",
+        dry_run=False,
+    )
+
+    assert stats["orders_read"] == 1
+    assert stats["stores_processed"] == 1
+    assert stats["merged_groups"] == 1
+    rebuilt_batches = sorted(
+        path.name for path in (output_dir / "MERGED" / "SEND").iterdir() if path.is_dir()
+    )
+    assert rebuilt_batches == ["10.03.26_MERGED_qnt1"]
+
+
+def test_read_db_orders_prefers_article_map_core_over_offer_text(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE fact_orders_kaspi (
+                order_id TEXT,
+                store_code TEXT,
+                kaspi_offer_name TEXT,
+                sku_key TEXT,
+                sku_id TEXT,
+                quantity INTEGER,
+                assigned_size TEXT,
+                my_size TEXT,
+                planned_shipment_date TEXT,
+                kaspi_status TEXT,
+                kaspi_status_detail TEXT,
+                internal_status TEXT,
+                signature_required INTEGER,
+                courier_transmission_date TEXT
+            );
+            CREATE TABLE dim_kaspi_article_map (
+                store_code TEXT,
+                kaspi_offer_name TEXT,
+                sku_key TEXT,
+                kaspi_name_core TEXT,
+                active_flag INTEGER,
+                updated_at TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_offer_name, sku_key, sku_id, quantity,
+                assigned_size, my_size, planned_shipment_date, kaspi_status,
+                kaspi_status_detail, internal_status, signature_required,
+                courier_transmission_date
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "889000111",
+                "STOREB",
+                "Спортивный костюм PRO COMBAT 528742263 черный 2XL",
+                "PRO_COMBAT_BLACK_2XL",
+                "PRO_COMBAT_BLACK_2XL",
+                1,
+                "2XL",
+                "",
+                "2026-04-15",
+                "KASPI_DELIVERY",
+                "Принят",
+                "READY",
+                0,
+                "",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO dim_kaspi_article_map (
+                store_code, kaspi_offer_name, sku_key, kaspi_name_core,
+                active_flag, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "STOREB",
+                "Спортивный костюм PRO COMBAT 528742263 черный 2XL",
+                "PRO_COMBAT_BLACK_2XL",
+                "Принт_5в1_черный",
+                1,
+                "2026-04-15T12:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    orders = build_daily_waybills_module.read_db_orders(
+        db_path=db_path,
+        target_date=date(2026, 4, 15),
+        lookback_days=0,
+    )
+
+    assert len(orders) == 1
+    assert orders[0].store_name == "STORE-B"
+    assert orders[0].kaspi_name_core == "Принт_5в1_черный"
+    assert orders[0].kaspi_name_core != "Спортивный_костюм_PRO_COMBAT_528742263_черный"
+
+
+def test_read_db_orders_prefers_sku_family_core_over_raw_offer_fallback(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE fact_orders_kaspi (
+                order_id TEXT,
+                store_code TEXT,
+                kaspi_offer_name TEXT,
+                sku_key TEXT,
+                sku_id TEXT,
+                quantity INTEGER,
+                assigned_size TEXT,
+                my_size TEXT,
+                planned_shipment_date TEXT,
+                kaspi_status TEXT,
+                kaspi_status_detail TEXT,
+                internal_status TEXT,
+                signature_required INTEGER,
+                courier_transmission_date TEXT
+            );
+            CREATE TABLE dim_kaspi_article_map (
+                store_code TEXT,
+                kaspi_offer_name TEXT,
+                sku_key TEXT,
+                kaspi_name_core TEXT,
+                active_flag INTEGER,
+                updated_at TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_offer_name, sku_key, sku_id, quantity,
+                assigned_size, my_size, planned_shipment_date, kaspi_status,
+                kaspi_status_detail, internal_status, signature_required,
+                courier_transmission_date
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "889383661",
+                "UNIVERSAL",
+                "Комплект Antec RASH-921 Рашгард 5 в 1 черный 46, 48",
+                "CL_OC_MEN_LINE52_BLACK_103217238_44/46, 48",
+                "CL_OC_MEN_LINE52_BLACK_103217238_44/46, 48_XL",
+                1,
+                "L",
+                "",
+                "2026-04-15",
+                "KASPI_DELIVERY",
+                "Принят",
+                "READY",
+                0,
+                "",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO dim_kaspi_article_map (
+                store_code, kaspi_offer_name, sku_key, kaspi_name_core,
+                active_flag, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "UNIVERSAL",
+                "Комплект Antec RASH-921 Рашгард 5 в 1 черный XL",
+                "CL_OC_MEN_LINE52_BLACK",
+                "Принт_5в1_черный",
+                1,
+                "2026-04-15T12:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    orders = build_daily_waybills_module.read_db_orders(
+        db_path=db_path,
+        target_date=date(2026, 4, 15),
+        lookback_days=0,
+    )
+
+    assert len(orders) == 1
+    assert orders[0].kaspi_name_core == "Принт_5в1_черный"
+    assert orders[0].kaspi_name_core != "Комплект_Antec_RASH-_BLACK"
 
 
 def test_sanitizes_cyrillic():

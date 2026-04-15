@@ -10,11 +10,24 @@ Anchor path and symlink contract authority: `config/anchors/README.md` is author
 Write-side apply contract authority: `docs/WRITE_SIDE_GATING_CONTRACT.md` and `docs/WRITE_APPLY_RUNBOOK.md`.
 Promotion evidence policy authority: `docs/OPS_ROLLOUT_EVIDENCE_V2_9_PROMOTION_POLICY_2026-02-20.md`.
 Daily import + waybill workflow contract authority: `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`.
+Google Ops Board phase-1 contract authority: `docs/ops/GOOGLE_OPS_BOARD_PHASE1_CONTRACT.md`.
+
+Google Ops Board operational contract (employee sizing surface):
+- `SalesRaw_Today` is the primary editable daily table.
+- `MY_SIZE` is employee-entered observed size only.
+- `PROBABLE_SIZE` is DB-computed only; Google Sheets does not own business formulas.
+- `Status` is operational and limited to `TODAY` / `OVERDUE` using waybill carry-forward truth, not simple row age.
+- Same-day publishes refresh system-owned fields in place while preserving employee-entered `MY_SIZE`.
+- `SalesRaw_Today` is protected except for `MY_SIZE`; `Run_Control` is protected except for operator input cells.
 Promotion minimum merge standard authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.
 
 Current daily scheduler contract (GMT+5):
 - import jobs: `11:00`, `15:02`, and `16:01`
-- waybill deadline job: `18:30`
+- Google Ops Board publish jobs: immediate after successful import, plus `14:01` to `17:11` every 10 minutes as a backstop
+- Google Ops Board size writeback jobs: `17:15`, `17:30`, `17:45`, `18:00`, `18:15`
+- Google Ops Board early-closeout watch: every 60 seconds between `11:00` and `18:29` (script-gated, no-op unless green)
+- early-ready safety gate: first `READY` detection arms a 90-second debounce; closeout starts only if the board is still green after that wait
+- Google Ops Board closeout backstop job: `18:30`
 - daily ops report job: `19:10`
 
 Daily ops orchestrator profile contract:
@@ -981,8 +994,9 @@ ENABLE_KASPI_WRITE=1
 
 **Before running:**
 1. Run import script first (`run_import_orders.command`)
-2. Fill MY_SIZE column in `SALES_KSP_CRM_V3.xlsx`
-3. Save the CRM file
+2. Fill `SalesRaw_Today.MY_SIZE` in the Google Ops Board
+3. Set `Run_Control.ready_for_closeout=READY` when the sizing batch is complete
+4. If the board is fully green earlier, the minute-level watch arms a 90-second safety debounce and then starts closeout automatically if the board is still green; `18:30` remains only a backstop
 
 ### Step 1: Ship Orders via API
 
@@ -991,6 +1005,9 @@ Sets "Количество мест" (package count) and moves orders from "Уп
 ```bash
 # Full run with output
 python scripts/ship_orders_api.py --verbose
+
+# Automated closeout path (DB-first, no workbook dependency)
+python scripts/ship_orders_api.py --selection-source db --verbose
 
 # Dry run (preview only)
 python scripts/ship_orders_api.py --dry-run

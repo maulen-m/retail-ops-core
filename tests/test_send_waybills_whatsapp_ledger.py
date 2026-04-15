@@ -348,6 +348,25 @@ def test_verify_send_batch_preflight_fails_when_send_sequence_missing(tmp_path: 
     assert any(issue["code"] == "entry_send_sequence_missing" for issue in preflight["issues"])
 
 
+def test_verify_send_batch_preflight_fails_when_entry_uses_unsafe_kaspi_name_core_resolution(
+    tmp_path: Path,
+) -> None:
+    today_root = tmp_path / "Today"
+    batch_root, _, payload = _write_batch_manifest(today_root)
+    payload["entries"][0]["core_resolution_sources"] = ["raw_offer_extract"]
+    payload["entries"][0]["unsafe_core_resolution_sources"] = ["raw_offer_extract"]
+    payload["entries"][0]["requires_core_review"] = True
+    (batch_root / "send_batch_manifest.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    preflight = verify_send_batch_preflight(today_root, source_mode=SOURCE_MERGED)
+
+    assert preflight["ok"] is False
+    assert any(issue["code"] == "unsafe_kaspi_name_core_resolution" for issue in preflight["issues"])
+
+
 def test_verify_send_batch_preflight_fails_when_batch_target_date_is_stale(tmp_path: Path) -> None:
     today_root = tmp_path / "Today"
     _write_batch_manifest(today_root)
@@ -462,7 +481,77 @@ def test_run_sender_marks_unsure_and_halts_without_second_send_attempt(tmp_path:
     assert ledger["entries"]["pdfkey-1"]["state"] == "unsure"
 
 
-def test_run_sender_tracks_pre_and_post_status_message_failures(tmp_path: Path, monkeypatch) -> None:
+def test_run_sender_treats_pre_status_delivery_probe_failure_as_runtime_stopline(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    today_root = tmp_path / "Today"
+    batch_root, _, _ = _write_batch_manifest(today_root)
+
+    class _FakeSender:
+        status_attempts = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            return None
+
+        def send_text_message(self, text: str) -> None:
+            _FakeSender.status_attempts += 1
+            return None
+
+        def confirm_text_message_sent(self, text: str, timeout_ms: int = 120_000) -> dict:
+            raise RuntimeError("pre-send delivery probe did not reach sent state")
+
+        def prepare_document(self, pdf_path: Path) -> None:
+            return None
+
+        def _outgoing_message_count(self) -> int:
+            return 0
+
+        def click_document_send(self) -> None:
+            return None
+
+        def confirm_document_sent(self, expected_filename: str, previous_outgoing: int | None = None) -> None:
+            return None
+
+        def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
+            return None
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.check_playwright", lambda: True)
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _FakeSender)
+
+    results = run_sender(
+        today_folder=today_root,
+        chat_title="Заказы",
+        dry_run=False,
+        resume=True,
+        bundle_source=SOURCE_MERGED,
+        status_messages=True,
+        fail_fast=False,
+        verbose=False,
+    )
+
+    ledger = json.loads((batch_root / "send_ledger.json").read_text(encoding="utf-8"))
+    assert results["sent"] == 0
+    assert results["failed"] == 1
+    assert results["halted"] is True
+    assert results["halt_reason"] == "RUNTIME_ERROR"
+    assert _FakeSender.status_attempts == 1
+    assert ledger["entries"]["pdfkey-1"]["state"] == "pending"
+
+
+def test_run_sender_tracks_post_status_message_failure_after_successful_send(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     today_root = tmp_path / "Today"
     _write_batch_manifest(today_root)
 
@@ -483,7 +572,11 @@ def test_run_sender_tracks_pre_and_post_status_message_failures(tmp_path: Path, 
 
         def send_text_message(self, text: str) -> None:
             _FakeSender.status_attempts += 1
-            raise RuntimeError("text confirmation timeout")
+            if _FakeSender.status_attempts >= 2:
+                raise RuntimeError("post-send status confirmation timeout")
+
+        def confirm_text_message_sent(self, text: str, timeout_ms: int = 120_000) -> dict:
+            return {"sent": True, "delivered": False, "delivery_state": "sent"}
 
         def prepare_document(self, pdf_path: Path) -> None:
             return None
@@ -517,8 +610,209 @@ def test_run_sender_tracks_pre_and_post_status_message_failures(tmp_path: Path, 
     assert results["sent"] == 1
     assert results["failed"] == 0
     assert results["status_message_failed"] == 1
-    assert results["status_message_failures"] == 2
-    assert results["status_message_failures_by_phase"] == {"pre": 1, "post": 1}
+    assert results["status_message_failures"] == 1
+    assert results["status_message_failures_by_phase"] == {"pre": 0, "post": 1}
+
+
+def test_run_sender_binds_chat_identity_after_successful_pre_send_probe(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    today_root = tmp_path / "Today"
+    _write_batch_manifest(today_root)
+
+    class _FakeSender:
+        bind_calls = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            return None
+
+        def send_text_message(self, text: str) -> None:
+            return None
+
+        def confirm_text_message_sent(self, text: str, timeout_ms: int = 120_000) -> dict:
+            return {"sent": True, "delivered": False, "delivery_state": "sent"}
+
+        def bind_active_chat_identity_if_missing(self) -> None:
+            _FakeSender.bind_calls += 1
+
+        def prepare_document(self, pdf_path: Path) -> None:
+            return None
+
+        def _outgoing_message_count(self) -> int:
+            return 0
+
+        def click_document_send(self) -> None:
+            return None
+
+        def confirm_document_sent(self, expected_filename: str, previous_outgoing: int | None = None) -> None:
+            return None
+
+        def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
+            return None
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.check_playwright", lambda: True)
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _FakeSender)
+
+    results = run_sender(
+        today_folder=today_root,
+        chat_title="Заказы",
+        dry_run=False,
+        resume=True,
+        bundle_source=SOURCE_MERGED,
+        status_messages=True,
+        fail_fast=True,
+        verbose=False,
+    )
+
+    assert results["sent"] == 1
+    assert _FakeSender.bind_calls == 1
+
+
+def test_run_sender_revalidates_document_controls_after_successful_pre_send_probe(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    today_root = tmp_path / "Today"
+    _write_batch_manifest(today_root)
+
+    class _FakeSender:
+        ready_checks = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            return None
+
+        def assert_document_send_ready(self) -> None:
+            _FakeSender.ready_checks += 1
+
+        def send_text_message(self, text: str) -> None:
+            return None
+
+        def confirm_text_message_sent(self, text: str, timeout_ms: int = 120_000) -> dict:
+            return {"sent": True, "delivered": False, "delivery_state": "sent"}
+
+        def bind_active_chat_identity_if_missing(self) -> None:
+            return None
+
+        def prepare_document(self, pdf_path: Path) -> None:
+            return None
+
+        def _outgoing_message_count(self) -> int:
+            return 0
+
+        def click_document_send(self) -> None:
+            return None
+
+        def confirm_document_sent(self, expected_filename: str, previous_outgoing: int | None = None) -> None:
+            return None
+
+        def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
+            return None
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.check_playwright", lambda: True)
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _FakeSender)
+
+    results = run_sender(
+        today_folder=today_root,
+        chat_title="Заказы",
+        dry_run=False,
+        resume=True,
+        bundle_source=SOURCE_MERGED,
+        status_messages=True,
+        fail_fast=True,
+        verbose=False,
+    )
+
+    assert results["sent"] == 1
+    assert _FakeSender.ready_checks == 2
+
+
+def test_run_sender_retries_once_when_chat_drift_happens_before_first_send_click(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    today_root = tmp_path / "Today"
+    batch_root, _, _ = _write_batch_manifest(today_root)
+
+    class _FakeSender:
+        prepare_attempts = 0
+        click_attempts = 0
+        recoveries = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            return None
+
+        def prepare_document(self, pdf_path: Path) -> None:
+            _FakeSender.prepare_attempts += 1
+
+        def _outgoing_message_count(self) -> int:
+            return 0
+
+        def mark_document_send_clicked(self, expected_filename: str) -> None:
+            return None
+
+        def click_document_send(self) -> None:
+            _FakeSender.click_attempts += 1
+            if _FakeSender.click_attempts == 1:
+                raise RuntimeError("Failed to click send button once: None")
+
+        def _recover_target_chat_after_ui_drift(self) -> None:
+            _FakeSender.recoveries += 1
+
+        def confirm_document_sent(self, expected_filename: str, previous_outgoing: int | None = None) -> None:
+            return None
+
+        def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
+            return None
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.check_playwright", lambda: True)
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _FakeSender)
+
+    results = run_sender(
+        today_folder=today_root,
+        chat_title="Заказы",
+        dry_run=False,
+        resume=True,
+        bundle_source=SOURCE_MERGED,
+        status_messages=False,
+        fail_fast=True,
+        verbose=False,
+    )
+
+    ledger = json.loads((batch_root / "send_ledger.json").read_text(encoding="utf-8"))
+    assert results["sent"] == 1
+    assert results["failed"] == 0
+    assert _FakeSender.prepare_attempts == 2
+    assert _FakeSender.click_attempts == 2
+    assert _FakeSender.recoveries == 1
+    assert ledger["entries"]["pdfkey-1"]["state"] == "confirmed"
 
 
 def test_run_sender_fails_closed_before_pre_status_when_document_controls_are_not_ready(
@@ -1014,3 +1308,237 @@ def test_run_sender_can_limit_live_run_to_one_pdf(
     assert results["skipped"] == 2
     assert _FakeSender.prepared == ["confirmed.pdf"]
     assert _FakeSender.confirmed == ["confirmed.pdf"]
+
+
+def test_run_sender_no_resume_resends_even_ledger_confirmed_entries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    today_root = tmp_path / "Today"
+    batch_root, manifest_payload = _write_three_entry_batch_manifest(today_root)
+    ledger_path = batch_root / "send_ledger.json"
+    ledger = load_send_ledger(ledger_path, manifest_payload)
+
+    transition_send_ledger_entry(ledger, "pdfkey-1", "opened")
+    transition_send_ledger_entry(ledger, "pdfkey-1", "clicked")
+    transition_send_ledger_entry(ledger, "pdfkey-1", "confirmed")
+    save_send_ledger(ledger_path, ledger)
+
+    class _FakeSender:
+        confirmed = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            return None
+
+        def _outgoing_message_count(self) -> int:
+            return 0
+
+        def prepare_document(self, pdf_path: Path) -> None:
+            return None
+
+        def click_document_send(self) -> None:
+            return None
+
+        def confirm_document_sent(self, expected_filename: str, previous_outgoing: int | None = None) -> None:
+            _FakeSender.confirmed.append(expected_filename)
+
+        def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
+            return None
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _FakeSender)
+
+    results = run_sender(
+        today_folder=today_root,
+        chat_title="Заказы",
+        dry_run=False,
+        resume=False,
+        bundle_source=SOURCE_MERGED,
+        status_messages=False,
+        fail_fast=True,
+        verbose=False,
+    )
+
+    assert results["sent"] == 3
+    assert results["skipped"] == 0
+    assert "confirmed.pdf" in _FakeSender.confirmed
+
+
+def test_run_sender_lingers_before_shutdown_when_requested(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    today_root = tmp_path / "Today"
+    _write_batch_manifest(today_root)
+    slept = []
+
+    class _FakeSender:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            return None
+
+        def _outgoing_message_count(self) -> int:
+            return 0
+
+        def prepare_document(self, pdf_path: Path) -> None:
+            return None
+
+        def click_document_send(self) -> None:
+            return None
+
+        def confirm_document_sent(self, expected_filename: str, previous_outgoing: int | None = None) -> None:
+            return None
+
+        def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
+            return None
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _FakeSender)
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.time.sleep", lambda seconds: slept.append(seconds))
+
+    results = run_sender(
+        today_folder=today_root,
+        chat_title="Заказы",
+        dry_run=False,
+        resume=True,
+        bundle_source=SOURCE_MERGED,
+        status_messages=False,
+        fail_fast=True,
+        verbose=False,
+        post_send_linger_seconds=120.0,
+    )
+
+    assert results["sent"] == 1
+    assert 120.0 in slept
+
+
+def test_run_sender_verifies_recent_documents_persist_after_send(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    today_root = tmp_path / "Today"
+    _write_batch_manifest(today_root, filename="persisted.pdf")
+    verified = []
+
+    class _FakeSender:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            return None
+
+        def _outgoing_message_count(self) -> int:
+            return 0
+
+        def prepare_document(self, pdf_path: Path) -> None:
+            return None
+
+        def click_document_send(self) -> None:
+            return None
+
+        def confirm_document_sent(self, expected_filename: str, previous_outgoing: int | None = None) -> None:
+            return None
+
+        def verify_recent_documents_persist(self, filenames, timeout_ms: int = 90_000) -> None:
+            verified.append((list(filenames), timeout_ms))
+
+        def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
+            return None
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _FakeSender)
+
+    results = run_sender(
+        today_folder=today_root,
+        chat_title="Заказы",
+        dry_run=False,
+        resume=True,
+        bundle_source=SOURCE_MERGED,
+        status_messages=False,
+        fail_fast=True,
+        verbose=False,
+    )
+
+    assert results["sent"] == 1
+    assert verified == [(["persisted.pdf"], 120_000)]
+
+
+def test_run_sender_downgrades_post_send_persistence_timeout_after_full_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    today_root = tmp_path / "Today"
+    _write_batch_manifest(today_root, filename="persisted.pdf")
+
+    class _FakeSender:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            return None
+
+        def _outgoing_message_count(self) -> int:
+            return 0
+
+        def prepare_document(self, pdf_path: Path) -> None:
+            return None
+
+        def click_document_send(self) -> None:
+            return None
+
+        def confirm_document_sent(self, expected_filename: str, previous_outgoing: int | None = None) -> None:
+            return None
+
+        def verify_recent_documents_persist(self, filenames, timeout_ms: int = 90_000) -> None:
+            raise RuntimeError("Page.wait_for_function: Timeout 120000ms exceeded.")
+
+        def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
+            return None
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _FakeSender)
+
+    results = run_sender(
+        today_folder=today_root,
+        chat_title="Заказы",
+        dry_run=False,
+        resume=True,
+        bundle_source=SOURCE_MERGED,
+        status_messages=False,
+        fail_fast=True,
+        verbose=False,
+    )
+
+    assert results["sent"] == 1
+    assert results["failed"] == 0
+    assert results["halted"] is False
+    assert results["halt_reason"] == ""
+    assert results["post_send_verification_failed"] == 1
+    assert results["post_send_verification_details"] == [
+        "Page.wait_for_function: Timeout 120000ms exceeded."
+    ]

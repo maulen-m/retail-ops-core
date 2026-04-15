@@ -163,8 +163,8 @@ def main() -> int:
         )
         for r in rows:
             print(
-                f\"{r['allocation_id']} po={r['po_id']} entry={r['entry_id']} "
-                f\"amt={r['amount']} {r['currency']} (kzt={r['amount_kzt']})\"
+                f"{r['allocation_id']} po={r['po_id']} entry={r['entry_id']} "
+                f"amt={r['amount']} {r['currency']} (kzt={r['amount_kzt']})"
             )
         return 0
 

@@ -10,6 +10,7 @@ import pandas as pd
 from scripts.import_orders_to_crm import (
     _build_line_dedupe_key,
     _order_to_update_fields,
+    augment_desired_keys_with_existing_rollovers,
     build_pending_append_mask,
     guard_reconcile_delete_volume,
     plan_append_date_reconcile,
@@ -134,6 +135,27 @@ def test_plan_append_date_reconcile_keeps_row_with_manual_size_when_duplicate_ex
 
     assert plan.delete_row_numbers == [20]
     assert plan.keep_rows_by_key[key_dup].row_num == 21
+
+
+def test_augment_desired_keys_with_existing_rollovers_preserves_same_day_carryforward_rows():
+    key_today = _build_line_dedupe_key("1001", date(2026, 4, 9), "Item A", "SKU-A", 1)
+    key_rollover = _build_line_dedupe_key("1002", date(2026, 4, 8), "Item B", "SKU-B", 1)
+
+    existing_rows = [
+        _Row(row_num=20, line_key=key_today, my_size=""),
+        _Row(row_num=21, line_key=key_rollover, my_size="L"),
+    ]
+
+    desired_keys = augment_desired_keys_with_existing_rollovers(
+        [key_today],
+        existing_rows,
+        {key_rollover},
+    )
+    plan = plan_append_date_reconcile(existing_rows, desired_keys)
+
+    assert desired_keys == [key_today, key_rollover]
+    assert plan.delete_row_numbers == []
+    assert plan.keep_keys == {key_today, key_rollover}
 
 
 def test_guard_reconcile_delete_volume_blocks_large_stale_day_block_shrink():

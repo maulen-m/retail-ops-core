@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from core.db import get_db
-from core.utils.sku_normalize import normalize_size
+from core.parsers.kaspi_parser import _extract_size as _extract_size_token
+from core.utils.sku_normalize import infer_size_from_sku_id, normalize_size
 
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,43 @@ class SizeResult:
     source: str  # CUSTOMER, OFFER_MODE, STYLE_MODE, DEFAULT
     confidence: str  # HIGH, MEDIUM, LOW
     probability: Optional[SizeProbability] = None
+
+
+def infer_declared_order_size(order: dict) -> tuple[Optional[str], Optional[str]]:
+    """
+    Infer explicit size already declared by the order itself.
+
+    This is different from historical "probable size" logic: if the merchant
+    article / sku_id / live Kaspi offer text already encodes a concrete size
+    variant like `4XL_58`, we should surface that exact declared size instead
+    of falling all the way to generic product defaults like `L`.
+
+    Resolution order:
+    1. `sku_id` suffix
+    2. `kaspi_article`
+    3. `kaspi_offer_name`
+    """
+    product_type = order.get('product_type', 'CL')
+
+    sku_id_size = infer_size_from_sku_id(order.get('sku_id'))
+    if sku_id_size:
+        normalized = normalize_size(sku_id_size, product_type) or sku_id_size
+        if normalized:
+            return normalized, 'SKU_ID'
+
+    kaspi_article = order.get('kaspi_article')
+    if kaspi_article:
+        article_size = normalize_size(_extract_size_token(str(kaspi_article)), product_type)
+        if article_size:
+            return article_size, 'KASPI_ARTICLE'
+
+    kaspi_offer_name = order.get('kaspi_offer_name')
+    if kaspi_offer_name:
+        offer_size = normalize_size(_extract_size_token(str(kaspi_offer_name)), product_type)
+        if offer_size:
+            return offer_size, 'KASPI_OFFER'
+
+    return None, None
 
 
 # =============================================================================
@@ -364,9 +402,10 @@ def determine_size(
 
     Cascade Order:
     1. Customer-Provided: If height/weight given, use size chart
-    2. Offer-Level Mode: Most common size for this kaspi_offer_name
-    3. Style-Level Mode: Most common size for this sku_key
-    4. Product Type Default: Generic default for product type
+    2. Declared Order Size: Explicit size encoded in sku_id / article / offer
+    3. Offer-Level Mode: Most common size for this kaspi_offer_name
+    4. Style-Level Mode: Most common size for this sku_key
+    5. Product Type Default: Generic default for product type
 
     Args:
         order: Dict with kaspi_offer_name, sku_key, product_type
@@ -395,7 +434,18 @@ def determine_size(
                 confidence='HIGH',
             )
 
-    # Tier 2: Offer-level mode
+    # Tier 2: Explicit declared size from the order variant itself.
+    declared_size, declared_source = infer_declared_order_size(order)
+    if declared_size:
+        logger.debug(f"Size from declared order variant ({declared_source}): {declared_size}")
+        size = normalize_size(declared_size, product_type) or declared_size
+        return SizeResult(
+            size=size,
+            source='DECLARED_ORDER',
+            confidence='HIGH',
+        )
+
+    # Tier 3: Offer-level mode
     if kaspi_offer_name:
         prob = calc_offer_size_mode(kaspi_offer_name, db_path)
         if prob and prob.sample_count >= OFFER_MIN_SAMPLES:
@@ -411,7 +461,7 @@ def determine_size(
                 probability=prob,
             )
 
-    # Tier 3: Style-level mode
+    # Tier 4: Style-level mode
     if sku_key:
         prob = calc_style_size_mode(sku_key, db_path)
         if prob and prob.sample_count >= STYLE_MIN_SAMPLES:
@@ -427,7 +477,7 @@ def determine_size(
                 probability=prob,
             )
 
-    # Tier 4: Product type default
+    # Tier 5: Product type default
     size, prob = get_product_type_default(product_type, db_path)
     logger.debug(f"Size from product type default: {size}")
     size = normalize_size(size, product_type) or size

@@ -75,34 +75,7 @@ def _read_snapshot(
         raise RuntimeError(f"Workbook missing sheet: {sheet_name}")
     ws = wb[sheet_name]
 
-    ts_cols: list[tuple[int, datetime, str]] = []
-    for c in range(4, ws.max_column + 1):
-        raw = ws.cell(4, c).value
-        if raw is None or str(raw).strip() == "":
-            continue
-        try:
-            dt = _parse_sheet_ts(raw)
-        except ValueError:
-            continue
-        ts_cols.append((c, dt, str(raw).replace("\n", " ").strip()))
-    if not ts_cols:
-        raise RuntimeError(f"{sheet_name}: no snapshot timestamp columns found in row 4")
-
-    selected_col = None
-    selected_dt = None
-    selected_label = None
-    if snapshot_ts:
-        target = snapshot_ts.strip()
-        for c, dt, label in ts_cols:
-            if label == target:
-                selected_col, selected_dt, selected_label = c, dt, label
-                break
-        if selected_col is None:
-            raise RuntimeError(f"Requested snapshot timestamp not found: {snapshot_ts}")
-    else:
-        selected_col, selected_dt, selected_label = max(ts_cols, key=lambda x: x[1])
-
-    balances: list[dict[str, Any]] = []
+    valid_rows: list[tuple[int, str, str, str]] = []
     for r in range(5, min(ws.max_row, 240) + 1):
         store = str(ws.cell(r, 1).value or "").strip()
         account = str(ws.cell(r, 2).value or "").strip()
@@ -111,6 +84,57 @@ def _read_snapshot(
             continue
         if not store or not account or not currency:
             continue
+        valid_rows.append((r, store, account, currency))
+
+    ts_cols: list[tuple[int, datetime, str, int]] = []
+    for c in range(4, ws.max_column + 1):
+        raw = ws.cell(4, c).value
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            dt = _parse_sheet_ts(raw)
+        except ValueError:
+            continue
+        populated_cells = 0
+        for r, _store, _account, _currency in valid_rows:
+            cell_value = ws.cell(r, c).value
+            if cell_value is None:
+                continue
+            if isinstance(cell_value, str) and not cell_value.strip():
+                continue
+            populated_cells += 1
+        ts_cols.append((c, dt, str(raw).replace("\n", " ").strip(), populated_cells))
+    if not ts_cols:
+        raise RuntimeError(f"{sheet_name}: no snapshot timestamp columns found in row 4")
+
+    selected_col = None
+    selected_dt = None
+    selected_label = None
+    selected_populated = 0
+    if snapshot_ts:
+        target = snapshot_ts.strip()
+        for c, dt, label, populated_cells in ts_cols:
+            if label == target:
+                if populated_cells == 0:
+                    raise RuntimeError(
+                        f"Requested snapshot timestamp has no populated balances: {snapshot_ts}"
+                    )
+                selected_col, selected_dt, selected_label = c, dt, label
+                selected_populated = populated_cells
+                break
+        if selected_col is None:
+            raise RuntimeError(f"Requested snapshot timestamp not found: {snapshot_ts}")
+    else:
+        populated_ts_cols = [item for item in ts_cols if item[3] > 0]
+        if not populated_ts_cols:
+            raise RuntimeError(f"{sheet_name}: all snapshot timestamp columns are empty")
+        selected_col, selected_dt, selected_label, selected_populated = max(
+            populated_ts_cols,
+            key=lambda x: x[1],
+        )
+
+    balances: list[dict[str, Any]] = []
+    for r, store, account, currency in valid_rows:
         amount = _to_float(ws.cell(r, selected_col).value)
         balances.append(
             {
@@ -128,6 +152,7 @@ def _read_snapshot(
         "selected_column": selected_col,
         "selected_label": selected_label,
         "selected_dt": selected_dt.isoformat() if selected_dt else "",
+        "selected_populated_cells": selected_populated,
         "account_rows": len(balances),
     }
     as_of = _to_as_of(selected_dt)

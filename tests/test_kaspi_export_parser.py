@@ -97,6 +97,14 @@ class TestStoreCodeNormalization:
         assert _normalize_store_code("universal", config) == "UNIVERSAL"
         assert _normalize_store_code("UNIVERSAL", config) == "UNIVERSAL"
 
+    def test_kaspi_warehouse_codes_map_to_canonical_store_codes(self, config):
+        """ActiveOrders warehouse ids should resolve to canonical store codes."""
+        assert _normalize_store_code("30000001_PP1", config) == "UNIVERSAL"
+        assert _normalize_store_code("30137883_PP1", config) == "ACMEWEAR"
+        assert _normalize_store_code("30000002_PP1", config) == "STOREB"
+        assert _normalize_store_code("30000002_PP2", config) == "STOREB"
+        assert _normalize_store_code("30362323_PP1", config) == "MELVIS"
+
     def test_unknown_store(self, config):
         """Test unknown store name."""
         result = _normalize_store_code("SomeUnknownStore", config)
@@ -367,6 +375,7 @@ class TestParseActiveOrders:
         o1 = orders[0]
         assert o1["order_id"] == "123456789"
         assert o1["store_code"] == "PP1"
+        assert o1["kaspi_article"] == "CL_OC_MEN_LINE52_BLACK_XL"
         assert o1["internal_status"] == "READY"
         assert o1["planned_shipment_date"] == "2025-12-06"
         assert o1["unit_price_kzt"] == 8000.0
@@ -386,6 +395,30 @@ class TestParseActiveOrders:
 
         assert orders[0]["store_code"] == "PP1"
         assert orders[1]["store_code"] == "UNIVERSAL"
+
+    def test_parse_preserves_raw_kaspi_article_for_article_map_reconciliation(self, tmp_path):
+        df = pd.DataFrame({
+            "№ заказа": ["889181585"],
+            "Статус": ["Ожидает передачи курьеру"],
+            "Дата создания": ["15.04.2026"],
+            "Плановая дата передачи курьеру": ["15.04.2026"],
+            "Название товара": ["Спортивный костюм ACMEWEAR OF_SUIT-61_BLK_K-O_4XL_58 черный, белый 4XL"],
+            "Артикул": ["CL_OC_MEN_LINE51_WHITE_K-O_ST_4XL_2_159720193"],
+            "Цена": [13990],
+            "Склад": ["30137883_PP1"],
+            "Требуется подписание": ["Не требуется"],
+        })
+        file_path = tmp_path / "ActiveOrders_acmewear_alias.xlsx"
+        df.to_excel(file_path, index=False)
+
+        result = parse_active_orders(file_path)
+
+        assert result.parsed_rows == 1
+        order = result.orders[0]
+        assert order["kaspi_article"] == "CL_OC_MEN_LINE51_WHITE_K-O_ST_4XL_2_159720193"
+        assert order["sku_key"] == "CL_OC_MEN_LINE51_WHITE_K-O_ST_4XL_2"
+        assert order["sku_id"] == "CL_OC_MEN_LINE51_WHITE_K-O_ST_4XL_2_4XL"
+        assert order["my_size"] == "4XL"
 
     def test_file_not_found(self):
         """Test error on missing file."""

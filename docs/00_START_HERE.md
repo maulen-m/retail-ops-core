@@ -1,100 +1,49 @@
-# 00_START_HERE — Docs Index (Kaspi-only)
+# 00_START_HERE — Autonomous_business docs router
 
-**Goal:** maximize signal-to-noise for agents (Codex/Opus) and humans.  
-**Scope:** This repo currently operates **Kaspi only**.
+Scope
+- Kaspi-only repo.
+- Read only the minimum owning docs for the task.
 
----
+Truth Ladder
+1. `docs/inventory/Master_Inventory_Rules_v8.md`
+2. `docs/protocol/active/PO_making_logic_v2.md`
+3. `docs/inventory/Sales_Data_Model_V16.md`
+4. `docs/inventory/Excel_UI_Contract_for_CRM_V1.md`
+5. `ARCHITECTURE.md`
 
-## 1) Source-of-truth ladder (avoid “truth contamination”)
+Rule
+- If formulas or business rules change, update the owning doc first.
+- Do not infer business truth from old plans, rollouts, or mutable `.claude` logs.
 
-When documents disagree, resolve conflicts in this order:
+Task Routes
+- Inventory math / demand / PO:
+  - `docs/inventory/Master_Inventory_Rules_v8.md`
+  - `docs/protocol/active/PO_making_logic_v2.md`
+  - `docs/size_engine_specification.md`
+- Data ingestion / DB / schemas:
+  - `docs/inventory/Sales_Data_Model_V16.md`
+  - `docs/inventory/Automation_Handoff_V16.md`
+  - `docs/inventory/Excel_UI_Contract_for_CRM_V1.md`
+- Excel / CRM import / workbook safety:
+  - `docs/inventory/Excel_UI_Contract_for_CRM_V1.md`
+  - `docs/DAILY_SOP.md`
+- Cashflow:
+  - `docs/KASPI_ORDER_CASHFLOW_TRACKING.md`
+  - `docs/KASPI_API_DAILY_PIPELINE_EXEC_SUMMARY_2026-01-22.md`
+  - `config/payout_model.yaml`
+  - `config/bank_accounts.yaml`
+- Daily ops / waybills / WhatsApp:
+  - `docs/DAILY_SOP.md`
+  - `KASPI_API_INTEGRATION.md`
+- Architecture / module boundaries:
+  - `ARCHITECTURE.md`
+  - `docs/inventory/Automation_Handoff_V16.md`
 
-1. **`inventory/Master_Inventory_Rules_v8.md`**  
-   *Formulas + parameters (SS/ROP/ROIC, unit economics, delivery fee rules, prep days, partial OOS detection).*
+Do Not Load By Default
+- `protocol/archive/`
+- historical plan docs unless the task explicitly needs them
+- mutable `.claude/*.md` files as business-rule authority
 
-2. **`protocol/active/PO_making_logic_v2.md`**  
-   *Algorithmic PO construction and size allocation logic. Must conform to v8 formulas.*
-
-3. **`inventory/Sales_Data_Model_V16.md`**  
-   *Schemas and column meanings (V16).*
-
-4. **`ARCHITECTURE.md`**  
-   *Code/module structure and responsibilities.*
-
-5. **`inventory/Excel_UI_Contract_for_CRM_*` + `inventory/Automation_Handoff_V16.md`**  
-   *Excel/Python equivalence contract and validation rules (must be updated to v8/V16).*
-
-**Rule:** Do not duplicate formulas across docs. If a doc needs a formula, it should link to v8.
-
----
-
-## 2) Minimum reading set (fast onboarding)
-
-### If you’re doing **inventory math / demand / PO logic**
-Read in this order:
-1. `inventory/Master_Inventory_Rules_v8.md`
-2. `protocol/active/PO_making_logic_v2.md`
-3. `size_engine_specification.md` (size probability + assignment cascade)
-
-### If you’re doing **data ingestion / DB schemas**
-1. `inventory/Sales_Data_Model_V16.md`
-2. `inventory/Automation_Handoff_V16.md`
-3. `inventory/Excel_UI_Contract_for_CRM_*`
-
-### If you’re doing **Kaspi orders automation**
-1. `docs/DAILY_SOP.md`
-2. `KASPI_API_INTEGRATION.md`
-3. `Kaspi_API_Official_document_8.12.2025_GP.md` (reference)
-
-### If you’re changing **system architecture / modules**
-1. `ARCHITECTURE.md`
-2. `inventory/Automation_Handoff_V16.md` (interfaces + outputs)
-
----
-
-## 3) Docs categories (so agents don’t waste context)
-
-### A) Contracts (authoritative, must stay consistent)
-- `inventory/Master_Inventory_Rules_v8.md`  ✅
-- `inventory/Excel_UI_Contract_for_CRM_*` ✅
-- `inventory/Automation_Handoff_V16.md` ✅
-- `inventory/Sales_Data_Model_V16.md` ✅
-- `protocol/active/PO_making_logic_v2.md` ✅
-- `validation/SALES_TRUTH_EXTERNAL_REFERENCE_CONTRACT.md` ✅
-
-### B) Operating procedures (how to run the machine)
-- `docs/DAILY_SOP.md`
-- `PACKAGING_RULES.md`
-- `DAILY_WORKFLOW.md`
-
-### C) Architecture (how the code is shaped)
-- `ARCHITECTURE.md`
-- `KASPI_API_INTEGRATION.md`
-
-### D) Protocols & plans (use only when assigned)
-Everything under `protocol/` is split into:
-- **`protocol/active/`** → current workstreams
-- **`protocol/archive/`** → historical artifacts
-
-Agents should **not** read all protocols by default.
-
----
-
-## 4) Current doc debt (what’s known to be wrong/outdated)
-
-- Some docs may still reference outdated VAT or delivery fee tiers.  
-  These must be updated to match v8 and the Kaspi 2026 fee matrix.
-
-- Some docs/plans include non-Kaspi assumptions.  
-  Repo scope is Kaspi-only → remove or archive those sections.
-
-- The legacy oracle pack summary is deprecated; use `SYSTEM_OVERVIEW.md` instead.
-
----
-
-## 5) If you’re an agent: operating rules
-
-1. Always read this file first.
-2. Then read only the **minimum reading set** for your task.
-3. Treat anything labeled **DEPRECATED** as read-only history.
-4. If you find a formula mismatch: update **v8 first**, then propagate to Excel/Python.
+Mutable State
+- Current goals, tasks, progress, issues, decisions, and session history live in `.claude/*.md`.
+- Those files track work status; they do not own formulas, schemas, or business rules.

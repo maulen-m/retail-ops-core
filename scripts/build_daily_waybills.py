@@ -87,6 +87,12 @@ from core.integrations.kaspi_order_stage import (
     classify_kaspi_stage_from_db_row,
 )
 from core.utils.kaspi_dates import planned_date_from_order
+from core.utils.kaspi_name_core_resolver import (
+    SAFE_KASPI_NAME_CORE_SOURCES,
+    KaspiNameCoreMaps,
+    load_active_kaspi_name_core_maps,
+    resolve_kaspi_name_core,
+)
 
 # Default paths
 DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
@@ -214,6 +220,7 @@ class OrderItem:
     kaspi_offer_name: str
     planned_date: Optional[date]
     source_row_id: str = ""
+    kaspi_name_core_source: str = ""
 
 
 @dataclass
@@ -554,6 +561,14 @@ def read_db_orders(
                 params.append(min_date)
 
         rows = conn.execute(query, params).fetchall()
+        kaspi_core_maps = load_active_kaspi_name_core_maps(
+            conn,
+            sku_keys={_coerce_str(row["sku_key"]) for row in rows},
+            store_offer_pairs={
+                (_coerce_str(row["store_code"]), _coerce_str(row["kaspi_offer_name"]))
+                for row in rows
+            },
+        )
 
     orders: list[OrderItem] = []
     db_orders: list[OrderItem] = []
@@ -589,11 +604,15 @@ def read_db_orders(
         sku_key = _coerce_str(row["sku_key"])
         sku_id = _coerce_str(row["sku_id"])
 
-        kaspi_name_core = ""
-        if kaspi_offer_name:
-            kaspi_name_core = extract_name_core(kaspi_offer_name)
-        if not kaspi_name_core or kaspi_name_core.lower() == "unknown":
-            kaspi_name_core = sku_key or sku_id or "UNKNOWN"
+        resolution = resolve_kaspi_name_core(
+            store_code=row["store_code"],
+            kaspi_offer_name=kaspi_offer_name,
+            sku_key=sku_key,
+            sku_id=sku_id,
+            maps=kaspi_core_maps,
+            extract_fallback=extract_name_core,
+        )
+        kaspi_name_core = resolution.core or "UNKNOWN"
 
         quantity = row["quantity"] if row["quantity"] is not None else 1
 
@@ -607,6 +626,7 @@ def read_db_orders(
             quantity=int(quantity),
             kaspi_offer_name=kaspi_offer_name,
             planned_date=planned_date,
+            kaspi_name_core_source=resolution.source,
         )
         orders.append(item)
 
@@ -1934,6 +1954,16 @@ def write_send_batch_manifest(
             overdue_order_ids.update(order_ids)
 
         items_detail = [format_item_detail(item) for item in group.items]
+        core_resolution_sources = sorted(
+            {
+                str(getattr(item, "kaspi_name_core_source", "") or "").strip()
+                for item in group.items
+                if str(getattr(item, "kaspi_name_core_source", "") or "").strip()
+            }
+        )
+        unsafe_core_resolution_sources = sorted(
+            source for source in core_resolution_sources if source not in SAFE_KASPI_NAME_CORE_SOURCES
+        )
         source_row_ids = [
             str(getattr(item, "source_row_id", "") or "").strip()
             for item in group.items
@@ -1967,6 +1997,9 @@ def write_send_batch_manifest(
             "order_counts_by_store": _store_order_counts(group),
             "source_row_ids": source_row_ids,
             "items_detail": items_detail,
+            "core_resolution_sources": core_resolution_sources,
+            "unsafe_core_resolution_sources": unsafe_core_resolution_sources,
+            "requires_core_review": bool(unsafe_core_resolution_sources),
         }
         entry.update({key: value for key, value in metadata.items() if key != "base_order"})
         entries.append(entry)
@@ -1991,12 +2024,41 @@ def write_send_batch_manifest(
         "missing_overdue_order_ids": sorted(overdue_order_ids - send_order_ids),
         "terminal_orders_excluded": True,
         "entries": entries,
+        "unsafe_core_resolution_entries": [
+            {
+                "pdf_key": entry["pdf_key"],
+                "filename": entry["filename"],
+                "order_ids": entry["order_ids"],
+                "unsafe_core_resolution_sources": entry["unsafe_core_resolution_sources"],
+            }
+            for entry in entries
+            if entry.get("requires_core_review")
+        ],
     }
+    payload["counts"]["unsafe_core_resolution_entries"] = len(payload["unsafe_core_resolution_entries"])
     payload["batch_hash"] = _compute_batch_hash(entries)
 
     output_path = batch_root / "send_batch_manifest.json"
     output_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (batch_root / "kaspi_name_core_resolution_report.json").write_text(
+        json.dumps(
+            {
+                "created_at": payload["created_at"],
+                "batch_label": payload["batch_label"],
+                "target_date": payload["target_date"],
+                "counts": {
+                    "pdfs": payload["counts"]["pdfs"],
+                    "unsafe_core_resolution_entries": payload["counts"]["unsafe_core_resolution_entries"],
+                },
+                "unsafe_core_resolution_entries": payload["unsafe_core_resolution_entries"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return output_path
@@ -2346,18 +2408,38 @@ def main(
     if carryforward_order_ids:
         api_order_ids |= carryforward_order_ids
 
-    orders = read_crm_orders(
-        crm_path,
-        sheet_name,
-        target_date,
-        order_id_filter=api_order_ids if api_order_ids else None,
-        historical_fallback_order_ids=carryforward_order_ids,
-        lookback_days=lookback_days,
-        apply_date_filter=not bool(api_order_ids),
-        crm_df=crm_df,
-    )
-    if orders:
-        logger.info("Using current-batch CRM manual sizes for order selection")
+    if resolved_db_path:
+        db_orders = read_db_orders(
+            resolved_db_path,
+            target_date,
+            lookback_days=lookback_days,
+            order_id_filter=api_order_ids if api_order_ids else None,
+        )
+        if db_orders:
+            orders = enrich_orders_with_crm(
+                db_orders,
+                crm_path,
+                sheet_name,
+                target_date,
+                lookback_days=lookback_days,
+                apply_date_filter=not bool(api_order_ids),
+                crm_df=crm_df,
+            )
+            logger.info("Using DB-first size decisions for order selection")
+
+    if not orders:
+        orders = read_crm_orders(
+            crm_path,
+            sheet_name,
+            target_date,
+            order_id_filter=api_order_ids if api_order_ids else None,
+            historical_fallback_order_ids=carryforward_order_ids,
+            lookback_days=lookback_days,
+            apply_date_filter=not bool(api_order_ids),
+            crm_df=crm_df,
+        )
+        if orders:
+            logger.info("Using current-batch CRM manual sizes for order selection")
     stats['orders_read'] = len(orders)
 
     if not orders:

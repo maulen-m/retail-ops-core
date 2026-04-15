@@ -197,6 +197,47 @@ def get_crm_orders(
     return dict(crm_all), dict(crm_size)
 
 
+def get_crm_carryforward_orders(
+    crm_path: Path,
+    sheet_name: str,
+    target_date: date,
+) -> dict[str, set[str]]:
+    if not crm_path.exists():
+        return {}
+    df = pd.read_excel(crm_path, sheet_name=sheet_name)
+    carryforward: dict[str, set[str]] = defaultdict(set)
+
+    for _, row in df.iterrows():
+        order_id = row.get("OrderID")
+        if pd.isna(order_id):
+            order_id = row.get("№ заказа")
+        if pd.isna(order_id):
+            continue
+        order_id = str(order_id).strip()
+        if order_id.endswith(".0"):
+            order_id = order_id[:-2]
+        if not order_id:
+            continue
+
+        row_date = parse_date(row.get("Date"))
+        if row_date != target_date:
+            continue
+
+        planned_date = parse_date(row.get("Плановая дата передачи курьеру")) or parse_date(
+            row.get("PLANNED_SHIPPING_DATE")
+        )
+        if not planned_date or planned_date >= target_date:
+            continue
+
+        store_name = row.get("STORE_NAME")
+        if pd.isna(store_name):
+            store_name = row.get("Склад передачи КД")
+        store_name = normalize_store_name(store_name)
+        carryforward[store_name].add(order_id)
+
+    return dict(carryforward)
+
+
 def get_db_orders(
     db_path: Path,
     target_date: date,
@@ -435,6 +476,7 @@ def main() -> int:
         target_date, since_days=args.since_days, store_filter=args.store, verbose=args.verbose
     )
     crm_all, crm_size = get_crm_orders(args.crm_file, args.sheet, target_date)
+    crm_carryforward = get_crm_carryforward_orders(args.crm_file, args.sheet, target_date)
     db_all, db_size = get_db_orders(db_path, target_date, since_days=args.since_days)
 
     all_stores = set()
@@ -466,6 +508,7 @@ def main() -> int:
         api_failed = api_store_code in api_errors if api_store_code else False
 
         crm_ids = crm_all.get(store, set())
+        carryforward_ids = crm_carryforward.get(store, set())
         db_ids = db_all.get(store, set())
         crm_size_ids = crm_size.get(store, set())
         db_size_ids = db_size.get(store, set())
@@ -479,7 +522,7 @@ def main() -> int:
         )
 
         miss_crm = len(api_ids - crm_ids)
-        stale_crm = len(crm_ids - api_ids)
+        stale_crm = len((crm_ids - api_ids) - carryforward_ids)
         size_ok = crm_size_ids | db_size_ids
         miss_size = len(api_ids - size_ok)
 
@@ -604,6 +647,7 @@ def main() -> int:
 
     api_all = set().union(*api_by_store.values()) if api_by_store else set()
     crm_all_ids = set().union(*crm_all.values()) if crm_all else set()
+    crm_carryforward_ids = set().union(*crm_carryforward.values()) if crm_carryforward else set()
     size_ok_ids = set().union(*crm_size.values()) if crm_size else set()
     size_ok_ids |= set().union(*db_size.values()) if db_size else set()
 
@@ -614,7 +658,7 @@ def main() -> int:
         print(f"{title} (first 5): {', '.join(sample)}")
 
     show_missing("Missing in CRM", api_all - crm_all_ids)
-    show_missing("Stale in CRM today", crm_all_ids - api_all)
+    show_missing("Stale in CRM today", (crm_all_ids - api_all) - crm_carryforward_ids)
     show_missing("Missing size (DB+CRM)", api_all - size_ok_ids)
 
     return 0

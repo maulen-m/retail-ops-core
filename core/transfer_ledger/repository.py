@@ -938,6 +938,39 @@ def upsert_po_funding_plan(plan: dict, db_path: Optional[Path] = None) -> bool:
     return existing is None
 
 
+def upsert_po_header_min(
+    *,
+    po_id: str,
+    message_date: Optional[str] = None,
+    total_cost_cny: Optional[float] = None,
+    db_path: Optional[Path] = None,
+) -> bool:
+    path = db_path or DEFAULT_DB_PATH
+    ensure_schema(path)
+    with get_db(path) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM po_header WHERE po_id = ? LIMIT 1",
+            (po_id,),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO po_header (po_id, message_date, total_cost_cny)
+            VALUES (?, ?, COALESCE(?, 0))
+            ON CONFLICT(po_id) DO UPDATE SET
+                message_date = CASE
+                    WHEN excluded.message_date IS NULL THEN po_header.message_date
+                    WHEN po_header.message_date IS NULL THEN excluded.message_date
+                    WHEN excluded.message_date < po_header.message_date THEN excluded.message_date
+                    ELSE po_header.message_date
+                END,
+                total_cost_cny = COALESCE(excluded.total_cost_cny, po_header.total_cost_cny),
+                updated_at = datetime('now')
+            """,
+            (po_id, message_date, total_cost_cny),
+        )
+    return existing is None
+
+
 def list_po_funding_plan(db_path: Optional[Path] = None) -> list[dict]:
     path = db_path or DEFAULT_DB_PATH
     ensure_schema(path)

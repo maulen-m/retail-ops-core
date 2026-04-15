@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate dim_sku weight alignment against Dim sku light workbook."""
+"""Validate dim_sku weight alignment against the live DIM_SKU_light_v6 workbook surface."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from core.excel.dim_sku_light_parser import parse_dim_sku_light
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_WORKBOOK = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/"
-    "Purchase_orders/vibe_code_PO/Inventory/Dim sku light v5.xlsx"
+    "Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx"
 )
-DEFAULT_SHEET = "DIM_SKU_light_v5"
+DEFAULT_SHEET = "DIM_SKU_light_v6"
 
 
 def validate_dim_sku_light_alignment(

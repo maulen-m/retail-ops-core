@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -60,13 +61,20 @@ BLOCKED_CHAT_TITLES_DEFAULT = ("order 2",)
 
 # Browser profile used for WhatsApp Web session
 DEFAULT_CHROME_USER_DATA_DIR = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+DEFAULT_WHATSAPP_AUTOMATION_USER_DATA_DIR = (
+    Path.home() / "Library" / "Application Support" / "Google" / "Chrome-WhatsAppDebug"
+)
 DEFAULT_CHROME_PROFILE_NAME = "Universal"
 DEFAULT_CHROME_PROFILE_DIR = "Profile 2"
 DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222"
+DEFAULT_CDP_ENDPOINT_IPV6 = "http://[::1]:9222"
 BROWSER_MODE_ATTACH = "attach"
 BROWSER_MODE_LAUNCH = "launch-temp"
 BROWSER_MODE_CHOICES = [BROWSER_MODE_ATTACH, BROWSER_MODE_LAUNCH]
 DEFAULT_BROWSER_MODE = BROWSER_MODE_ATTACH
+DEFAULT_WHATSAPP_CHAT_IDENTITY_FILE = (
+    PROJECT_ROOT / "config" / "identity" / "whatsapp_chat_fingerprints.json"
+)
 
 # Copy profile to temp to avoid Chrome singleton lock when user's Chrome is open
 COPY_PROFILE_TO_TEMP = True
@@ -141,6 +149,10 @@ NOISE_TOKENS = {
 
 # Delay between sends (seconds)
 SEND_DELAY = 0.4
+DEFAULT_DELIVERY_PROBE_MESSAGE_PREFIX = "[WA delivery probe]"
+DEFAULT_DELIVERY_PROBE_REPEAT_COUNT = 2
+DEFAULT_DELIVERY_PROBE_INTERVAL_SECONDS = 300.0
+DEFAULT_DELIVERY_PROBE_TIMEOUT_SECONDS = 120.0
 DOCUMENT_APPEAR_TIMEOUT_MS = 20_000
 DOCUMENT_SETTLE_TIMEOUT_MS = 30_000
 DOCUMENT_POLL_INTERVAL_MS = 250
@@ -489,6 +501,13 @@ def capture_sender_failure_diagnostics(
                 summary.update(dom_summary)
         except Exception as exc:
             summary["dom_summary_error"] = str(exc)
+
+        try:
+            active_fingerprint = getattr(sender, "_active_chat_fingerprint", lambda: {})()
+            if isinstance(active_fingerprint, dict) and active_fingerprint:
+                summary["active_chat_fingerprint"] = active_fingerprint
+        except Exception as exc:
+            summary["active_chat_fingerprint_error"] = str(exc)
 
     recovery_ladder = _default_recovery_ladder(getattr(sender, "chat_title", ""), batch_root)
     summary["recovery_ladder"] = recovery_ladder
@@ -1342,6 +1361,38 @@ def _normalize_chat_key(name: str) -> str:
     return " ".join((name or "").split()).strip().casefold()
 
 
+def _normalize_identity_value(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip().casefold()
+
+
+def load_whatsapp_chat_identity_map(identity_path: Path) -> Dict[str, Any]:
+    if identity_path.exists():
+        try:
+            payload = json.loads(identity_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and isinstance(payload.get("chats"), dict):
+                return payload
+        except Exception:
+            pass
+    return {"version": 1, "chats": {}}
+
+
+def load_whatsapp_chat_identity(identity_path: Path, chat_title: str) -> Optional[Dict[str, Any]]:
+    payload = load_whatsapp_chat_identity_map(identity_path)
+    raw = payload.get("chats", {}).get(_normalize_chat_key(chat_title))
+    return dict(raw) if isinstance(raw, dict) else None
+
+
+def save_whatsapp_chat_identity(identity_path: Path, chat_title: str, fingerprint: Dict[str, Any]) -> None:
+    payload = load_whatsapp_chat_identity_map(identity_path)
+    chats = payload.setdefault("chats", {})
+    chats[_normalize_chat_key(chat_title)] = dict(fingerprint)
+    payload["version"] = 1
+    identity_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = identity_path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(identity_path)
+
+
 def _copy_profile_to_temp(user_data_dir: Path, profile_directory: str, verbose: bool = False) -> Path:
     """Copy the browser profile into a temp dir to avoid singleton lock conflicts."""
     profile_src = user_data_dir / profile_directory
@@ -1381,6 +1432,13 @@ def _copy_profile_to_temp(user_data_dir: Path, profile_directory: str, verbose: 
         print(f"Using temp browser profile: {tmp_root}")
 
     return tmp_root
+
+
+def _should_copy_browser_profile_to_temp(user_data_dir: Path) -> bool:
+    try:
+        return COPY_PROFILE_TO_TEMP and Path(user_data_dir).expanduser().resolve() == DEFAULT_CHROME_USER_DATA_DIR.resolve()
+    except Exception:
+        return COPY_PROFILE_TO_TEMP and str(user_data_dir) == str(DEFAULT_CHROME_USER_DATA_DIR)
 
 
 def _load_chrome_local_state(user_data_dir: Path) -> Dict[str, Any]:
@@ -1458,21 +1516,63 @@ def resolve_chrome_profile_name(user_data_dir: Path, profile_directory: str) -> 
 
 
 def _fetch_cdp_json(endpoint: str, path: str) -> Any:
-    target_url = f"{str(endpoint).rstrip('/')}/{path.lstrip('/')}"
+    resolved_endpoint = _resolve_live_cdp_endpoint(endpoint)
+    target_url = f"{str(resolved_endpoint).rstrip('/')}/{path.lstrip('/')}"
     try:
         with urllib.request.urlopen(target_url, timeout=3) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.URLError as exc:
-        helper_hint = ""
-        if WHATSAPP_DEBUG_CHROME_HELPER.exists():
-            helper_hint = f" Use {WHATSAPP_DEBUG_CHROME_HELPER} to launch the Universal debug session."
-        raise RuntimeError(
-            f"Chrome DevTools endpoint is unavailable at {endpoint}. "
-            "Start Chrome with remote debugging enabled and keep the Universal profile open."
-            f"{helper_hint}"
-        ) from exc
+        raise RuntimeError(f"Chrome DevTools endpoint is unavailable at {resolved_endpoint}.") from exc
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Chrome DevTools endpoint returned invalid JSON: {target_url}") from exc
+
+
+def _candidate_cdp_endpoints(endpoint: str) -> List[str]:
+    normalized = str(endpoint or "").strip() or DEFAULT_CDP_ENDPOINT
+    candidates: List[str] = []
+    for candidate in (normalized, DEFAULT_CDP_ENDPOINT, DEFAULT_CDP_ENDPOINT_IPV6):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    try:
+        parsed = urllib.parse.urlparse(normalized)
+    except Exception:
+        return candidates
+
+    if parsed.scheme in {"http", "https"} and parsed.port == 9222:
+        hostname = parsed.hostname or ""
+        if hostname == "127.0.0.1" and DEFAULT_CDP_ENDPOINT_IPV6 not in candidates:
+            candidates.append(DEFAULT_CDP_ENDPOINT_IPV6)
+        if hostname in {"::1", "[::1]"} and DEFAULT_CDP_ENDPOINT not in candidates:
+            candidates.append(DEFAULT_CDP_ENDPOINT)
+    return candidates
+
+
+def _fetch_cdp_json_once(endpoint: str, path: str) -> Any:
+    target_url = f"{str(endpoint).rstrip('/')}/{path.lstrip('/')}"
+    with urllib.request.urlopen(target_url, timeout=3) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _resolve_live_cdp_endpoint(endpoint: str) -> str:
+    helper_hint = ""
+    if WHATSAPP_DEBUG_CHROME_HELPER.exists():
+        helper_hint = f" Use {WHATSAPP_DEBUG_CHROME_HELPER} to launch the Universal debug session."
+
+    last_error: Optional[Exception] = None
+    for candidate in _candidate_cdp_endpoints(endpoint):
+        try:
+            _fetch_cdp_json_once(candidate, "/json/version")
+            return candidate
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    raise RuntimeError(
+        f"Chrome DevTools endpoint is unavailable at {endpoint}. "
+        "Start Chrome with remote debugging enabled and keep the Universal profile open."
+        f"{helper_hint}"
+    ) from last_error
 
 
 @dataclass
@@ -1497,6 +1597,7 @@ class WhatsAppSender:
         profile_name: Optional[str] = DEFAULT_CHROME_PROFILE_NAME,
         cdp_endpoint: str = DEFAULT_CDP_ENDPOINT,
         browser_mode: str = DEFAULT_BROWSER_MODE,
+        chat_identity_file: Path = DEFAULT_WHATSAPP_CHAT_IDENTITY_FILE,
         action_timeout_ms: int = ACTION_TIMEOUT_MS,
         verbose: bool = False,
     ) -> None:
@@ -1510,6 +1611,8 @@ class WhatsAppSender:
         if browser_mode not in BROWSER_MODE_CHOICES:
             raise ValueError(f"Unsupported browser_mode {browser_mode!r}")
         self.browser_mode = browser_mode
+        self.chat_identity_file = Path(chat_identity_file)
+        self.expected_chat_identity = load_whatsapp_chat_identity(self.chat_identity_file, chat_title)
         self.blocked_chat_keys = {_normalize_chat_key(x) for x in blocked_chat_titles if x}
         self.action_timeout_ms = action_timeout_ms
         self.verbose = verbose
@@ -1638,6 +1741,10 @@ class WhatsAppSender:
         )
 
     def _start_with_attached_chrome(self, playwright: Any) -> _SendContext:
+        resolved_cdp_endpoint = _resolve_live_cdp_endpoint(self.cdp_endpoint)
+        if resolved_cdp_endpoint != self.cdp_endpoint:
+            self._log(f"Resolved Chrome DevTools endpoint: {self.cdp_endpoint} -> {resolved_cdp_endpoint}")
+            self.cdp_endpoint = resolved_cdp_endpoint
         _fetch_cdp_json(self.cdp_endpoint, "/json/version")
         self._log(f"Attaching to existing Chrome via CDP: {self.cdp_endpoint}")
         browser = playwright.chromium.connect_over_cdp(self.cdp_endpoint)
@@ -1659,7 +1766,7 @@ class WhatsAppSender:
 
     def _start_with_temp_profile(self, playwright: Any) -> _SendContext:
         temp_root: Optional[Path] = None
-        if COPY_PROFILE_TO_TEMP:
+        if _should_copy_browser_profile_to_temp(self.user_data_dir):
             temp_root = _copy_profile_to_temp(self.user_data_dir, self.profile_directory, verbose=self.verbose)
             launch_user_data_dir = temp_root
         else:
@@ -1914,6 +2021,138 @@ class WhatsAppSender:
             raise last_error
         return ""
 
+    def _active_chat_fingerprint(self) -> Dict[str, str]:
+        try:
+            payload = self.page.evaluate(
+                """
+                () => {
+                  const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                  const skip = new Set([
+                    '',
+                    'click here for group info',
+                    'profile details',
+                    'wa-wordmark-refreshed',
+                    'whatsapp',
+                    'call',
+                  ]);
+                  const selectedRow = document.querySelector("div[aria-label='Chat list'] [aria-selected='true']");
+                  const rowTitleNode = selectedRow?.querySelector("span[title], span[dir='auto']");
+                  const rowTitle = clean(rowTitleNode?.getAttribute?.('title') || rowTitleNode?.textContent || '');
+                  const rowLabel = clean(selectedRow?.getAttribute?.('aria-label') || '');
+                  const rowText = clean(selectedRow?.textContent || '');
+                  const rowDataId = clean(selectedRow?.getAttribute?.('data-id') || selectedRow?.dataset?.id || '');
+                  const rowTestId = clean(selectedRow?.getAttribute?.('data-testid') || '');
+                  const rowDomId = clean(selectedRow?.id || '');
+
+                  let headerTitle = '';
+                  let headerSubtitle = '';
+                  const headers = Array.from(document.querySelectorAll('header')).reverse();
+                  for (const header of headers) {
+                    const nodes = [
+                      ...header.querySelectorAll("span[dir='auto']"),
+                      ...header.querySelectorAll('span[title]'),
+                      ...header.querySelectorAll('div[dir=\"auto\"]'),
+                      ...header.querySelectorAll('h1, h2'),
+                    ];
+                    const texts = [];
+                    for (const node of nodes) {
+                      const text = clean((node.getAttribute && node.getAttribute('title')) || node.textContent || '');
+                      if (!text) continue;
+                      if (skip.has(text.toLowerCase())) continue;
+                      if (!texts.includes(text)) texts.push(text);
+                    }
+                    if (!texts.length) continue;
+                    headerTitle = texts[0] || '';
+                    headerSubtitle = texts.find((text) => text !== headerTitle) || '';
+                    if (headerTitle) break;
+                  }
+
+                  return {
+                    chat_title: clean(rowTitle || headerTitle),
+                    selected_row_title: rowTitle,
+                    selected_row_label: rowLabel,
+                    selected_row_text: rowText,
+                    selected_row_data_id: rowDataId,
+                    selected_row_testid: rowTestId,
+                    selected_row_dom_id: rowDomId,
+                    header_title: headerTitle,
+                    header_subtitle: headerSubtitle,
+                  };
+                }
+                """
+            )
+        except Exception as exc:
+            if self._is_navigation_context_error(exc):
+                return {}
+            raise
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def _assert_chat_identity_matches(self, actual: Dict[str, Any]) -> None:
+        expected = dict(self.expected_chat_identity or {})
+        if not expected:
+            return
+
+        expected_title = _normalize_chat_key(expected.get("chat_title") or self.chat_title)
+        actual_title = _normalize_chat_key(actual.get("chat_title") or actual.get("header_title") or "")
+        if expected_title and actual_title != expected_title:
+            raise RuntimeError(
+                f"Safety gate blocked send: chat identity fingerprint mismatch "
+                f"(title {actual.get('chat_title')!r} != {expected.get('chat_title')!r})"
+            )
+
+        checked = 0
+        for field, label in (
+            ("selected_row_data_id", "selected-row data-id"),
+            ("selected_row_testid", "selected-row test id"),
+            ("selected_row_dom_id", "selected-row dom id"),
+            ("header_subtitle", "header subtitle"),
+        ):
+            expected_value = _normalize_identity_value(expected.get(field))
+            if not expected_value:
+                continue
+            actual_value = _normalize_identity_value(actual.get(field))
+            checked += 1
+            if actual_value != expected_value:
+                raise RuntimeError(
+                    f"Safety gate blocked send: chat identity fingerprint mismatch "
+                    f"for {label} ({actual.get(field)!r} != {expected.get(field)!r})"
+                )
+
+        if checked <= 0:
+            raise RuntimeError(
+                "Safety gate blocked send: expected chat identity fingerprint is incomplete"
+            )
+
+    def bind_active_chat_identity_if_missing(self) -> Dict[str, Any]:
+        if self.expected_chat_identity:
+            return dict(self.expected_chat_identity)
+
+        actual = self._active_chat_fingerprint()
+        if not actual:
+            raise RuntimeError("Could not capture active WhatsApp chat fingerprint")
+
+        fingerprint: Dict[str, Any] = {
+            "chat_title": actual.get("chat_title") or self.chat_title,
+        }
+        for field in ("selected_row_data_id", "selected_row_testid", "selected_row_dom_id", "header_subtitle"):
+            value = str(actual.get(field) or "").strip()
+            if value:
+                fingerprint[field] = value
+                break
+
+        if len(fingerprint) <= 1:
+            raise RuntimeError(
+                "Could not derive a stable WhatsApp chat identity fingerprint from the active chat"
+            )
+
+        save_whatsapp_chat_identity(self.chat_identity_file, self.chat_title, fingerprint)
+        self.expected_chat_identity = dict(fingerprint)
+        self._log(
+            f"Bound WhatsApp chat identity for {self.chat_title}: "
+            f"{', '.join(sorted(k for k in fingerprint.keys() if k != 'chat_title'))}"
+        )
+        return dict(fingerprint)
+
     def _chat_home_screen_visible(self) -> bool:
         try:
             return bool(
@@ -1943,12 +2182,15 @@ class WhatsAppSender:
     def _assert_active_target_chat(self) -> None:
         deadline = time.time() + 12.0
         last_title = ""
+        last_identity: Dict[str, Any] = {}
         while time.time() < deadline:
             if self._chat_home_screen_visible():
                 raise RuntimeError("WhatsApp home screen is visible; no chat is currently open")
-            active_title = self._active_chat_title()
+            active_identity = self._active_chat_fingerprint()
+            active_title = str(active_identity.get("chat_title") or self._active_chat_title() or "").strip()
             active_key = _normalize_chat_key(active_title)
             last_title = active_title
+            last_identity = active_identity
 
             if not active_key:
                 self.page.wait_for_timeout(250)
@@ -1964,21 +2206,64 @@ class WhatsAppSender:
                     raise RuntimeError(
                         "WhatsApp home screen is visible; target chat did not open"
                     )
+                self._assert_chat_identity_matches(active_identity)
                 return
 
             self.page.wait_for_timeout(250)
 
         if not _normalize_chat_key(last_title):
             raise RuntimeError("Could not determine active WhatsApp chat title")
+        try:
+            self._assert_chat_identity_matches(last_identity)
+        except RuntimeError as exc:
+            raise RuntimeError(str(exc)) from exc
         raise RuntimeError(
             f"Safety gate blocked send: active chat mismatch ({last_title!r} != {self.chat_title!r})"
         )
+
+    def _dismiss_blocking_dialog_if_present(self) -> bool:
+        page = self.page
+        if not hasattr(page, "locator"):
+            return False
+        dialog_locator = page.locator("div[role='dialog'][aria-modal='true']")
+        try:
+            if dialog_locator.count() <= 0:
+                return False
+        except Exception:
+            return False
+
+        close_selectors = [
+            "div[role='dialog'][aria-modal='true'] button[aria-label='Close']",
+            "div[role='dialog'][aria-modal='true'] button[aria-label='Закрыть']",
+            "div[role='dialog'][aria-modal='true'] button[aria-label='Cancel']",
+            "div[role='dialog'][aria-modal='true'] button[aria-label='Отмена']",
+        ]
+        for selector in close_selectors:
+            try:
+                locator = page.locator(selector)
+                if locator.count() <= 0:
+                    continue
+                locator.first.click(timeout=1500, force=True)
+                page.wait_for_timeout(300)
+                return True
+            except Exception:
+                continue
+        try:
+            keyboard = getattr(page, "keyboard", None)
+            if keyboard is None or not hasattr(keyboard, "press"):
+                return False
+            keyboard.press("Escape")
+            page.wait_for_timeout(300)
+            return True
+        except Exception:
+            return False
 
     def _recover_target_chat_after_ui_drift(self) -> None:
         last_error: Optional[Exception] = None
         for _ in range(3):
             try:
                 self._log("Recovering target chat after WhatsApp UI drift...")
+                self._dismiss_blocking_dialog_if_present()
                 self._assert_session_ready(timeout_ms=min(self.action_timeout_ms, CHAT_OPEN_TIMEOUT_MS))
                 self._wait_for_chat_list_ready()
                 self.open_chat(self.chat_title)
@@ -2027,8 +2312,14 @@ class WhatsAppSender:
                     continue
                 candidate.first.click()
                 self.page.wait_for_timeout(900)
-                if _normalize_chat_key(self._active_chat_title()) == self.chat_key:
-                    return True
+                if _normalize_chat_key(self._active_chat_title()) != self.chat_key:
+                    continue
+                try:
+                    self._assert_chat_identity_matches(self._active_chat_fingerprint())
+                except RuntimeError:
+                    if self.expected_chat_identity:
+                        continue
+                return True
             self.page.wait_for_timeout(250)
         return False
 
@@ -2037,8 +2328,14 @@ class WhatsAppSender:
             raise RuntimeError(f"Requested chat is blocked: {chat_title!r}")
 
         if _normalize_chat_key(self._active_chat_title()) == self.chat_key:
-            self._resolve_composer(timeout_ms=min(self.action_timeout_ms, 20_000), required=False)
-            return
+            try:
+                self._assert_chat_identity_matches(self._active_chat_fingerprint())
+                self._resolve_composer(timeout_ms=min(self.action_timeout_ms, 20_000), required=False)
+                return
+            except RuntimeError:
+                if not self.expected_chat_identity:
+                    self._resolve_composer(timeout_ms=min(self.action_timeout_ms, 20_000), required=False)
+                    return
 
         # First attempt: direct click from visible chat list (fastest + safest).
         chat_list = self.page.locator("div[aria-label='Chat list']")
@@ -2211,6 +2508,31 @@ class WhatsAppSender:
                 return True
             self.page.wait_for_timeout(200)
         return False
+
+    def _global_share_modal_visible(self) -> bool:
+        try:
+            return bool(
+                self.page.evaluate(
+                    """
+                    () => {
+                      const bodyText = String(document.body?.innerText || '');
+                      const hasSelectChats =
+                        bodyText.includes('Select chats') || bodyText.includes('Выберите чаты');
+                      const hasSearchNameOrNumber =
+                        bodyText.includes('Search name or number') || bodyText.includes('Поиск имени или номера');
+                      const dialogTitle = document.querySelector("[role='dialog'] h2");
+                      const titleText = String(dialogTitle?.textContent || '').trim();
+                      return (
+                        titleText === 'Select chats' ||
+                        titleText === 'Выберите чаты' ||
+                        (hasSelectChats && hasSearchNameOrNumber)
+                      );
+                    }
+                    """
+                )
+            )
+        except Exception:
+            return False
 
     def assert_document_send_ready(self) -> None:
         last_error: Optional[Exception] = None
@@ -2406,6 +2728,152 @@ class WhatsAppSender:
     def wait_for_outgoing_sync(self, timeout_ms: int = 90_000) -> None:
         self._wait_for_last_outgoing_settled(timeout_ms=timeout_ms)
 
+    def confirm_text_message_sent(self, text: str, timeout_ms: int = 120_000) -> Dict[str, Any]:
+        collapsed = self._normalize_outgoing_text(text)
+        lines = [
+            normalized
+            for normalized in (
+                self._normalize_outgoing_text(line)
+                for line in str(text or "").splitlines()
+            )
+            if normalized
+        ]
+        payload = {"collapsed": collapsed, "lines": lines}
+        self.page.wait_for_function(
+            """
+            (payload) => {
+              const normalize = (value) =>
+                String(value || "")
+                  .replace(/\\s+/g, " ")
+                  .trim()
+                  .toLowerCase();
+              const outgoing = Array.from(document.querySelectorAll("div.message-out")).slice(-12).reverse();
+              const matched = outgoing.find((node) => {
+                const normalized = normalize(node.innerText || node.textContent || "");
+                if (!normalized) return false;
+                if (payload.collapsed && normalized.includes(payload.collapsed)) return true;
+                if (payload.lines && payload.lines.length) {
+                  return payload.lines.every((line) => normalized.includes(line));
+                }
+                return false;
+              });
+              if (!matched) return false;
+              const pending = matched.querySelector(
+                [
+                  "span[data-icon='msg-time']",
+                  "span[data-icon='status-clock']",
+                  "[role='progressbar']",
+                  "[aria-label*='sending']",
+                  "[aria-label*='Sending']",
+                  "[aria-label*='отправля']",
+                  "[aria-label*='Отправля']"
+                ].join(",")
+              );
+              return !pending;
+            }
+            """,
+            arg=payload,
+            timeout=timeout_ms,
+        )
+        status = self.page.evaluate(
+            """
+            (payload) => {
+              const normalize = (value) =>
+                String(value || "")
+                  .replace(/\\s+/g, " ")
+                  .trim()
+                  .toLowerCase();
+              const outgoing = Array.from(document.querySelectorAll("div.message-out")).slice(-12).reverse();
+              const matched = outgoing.find((node) => {
+                const normalized = normalize(node.innerText || node.textContent || "");
+                if (!normalized) return false;
+                if (payload.collapsed && normalized.includes(payload.collapsed)) return true;
+                if (payload.lines && payload.lines.length) {
+                  return payload.lines.every((line) => normalized.includes(line));
+                }
+                return false;
+              });
+              if (!matched) {
+                return {
+                  present: false,
+                  sent: false,
+                  delivered: false,
+                  delivery_state: "missing",
+                  icons: [],
+                  aria_labels: [],
+                };
+              }
+              const iconNodes = Array.from(matched.querySelectorAll("span[data-icon]"));
+              const icons = iconNodes
+                .map((node) => String(node.getAttribute("data-icon") || "").trim())
+                .filter(Boolean);
+              const ariaLabels = Array.from(matched.querySelectorAll("[aria-label]"))
+                .map((node) => String(node.getAttribute("aria-label") || "").replace(/\\s+/g, " ").trim())
+                .filter(Boolean);
+              const pending = matched.querySelector(
+                [
+                  "span[data-icon='msg-time']",
+                  "span[data-icon='status-clock']",
+                  "[role='progressbar']",
+                  "[aria-label*='sending']",
+                  "[aria-label*='Sending']",
+                  "[aria-label*='отправля']",
+                  "[aria-label*='Отправля']"
+                ].join(",")
+              );
+              const delivered = matched.querySelector(
+                [
+                  "span[data-icon='msg-dblcheck']",
+                  "span[data-icon='status-dblcheck']",
+                  "span[data-icon*='dblcheck']",
+                  "span[data-icon*='delivered']",
+                  "span[data-icon*='read']",
+                  "[aria-label*='Delivered']",
+                  "[aria-label*='Read']",
+                  "[aria-label*='Доставлено']",
+                  "[aria-label*='Прочитано']"
+                ].join(",")
+              );
+              const singleCheck = matched.querySelector(
+                [
+                  "span[data-icon='msg-check']",
+                  "span[data-icon='status-check']"
+                ].join(",")
+              );
+              const hasSentLabel = ariaLabels.some((label) => {
+                const normalized = normalize(label);
+                return normalized === "sent"
+                  || normalized.includes(" sent ")
+                  || normalized.includes("отправлено");
+              });
+              const sent = !pending && !!(delivered || singleCheck || hasSentLabel || matched);
+              return {
+                present: true,
+                sent,
+                delivered: !!delivered,
+                delivery_state: delivered ? "delivered" : sent ? "sent" : "pending",
+                icons,
+                aria_labels: ariaLabels,
+              };
+            }
+            """,
+            payload,
+        )
+        self._assert_active_target_chat()
+        if not isinstance(status, dict) or not status.get("sent"):
+            raise RuntimeError(
+                f"WhatsApp text message did not reach a stable sent state for {text!r}"
+            )
+        return dict(status)
+
+    def confirm_text_message_delivered(self, text: str, timeout_ms: int = 120_000) -> None:
+        status = self.confirm_text_message_sent(text, timeout_ms=timeout_ms)
+        if status.get("delivered"):
+            return
+        raise RuntimeError(
+            f"WhatsApp text message did not reach delivered state for {text!r}"
+        )
+
     def _wait_for_document_bubble(self, expected_filename: str, timeout_ms: int) -> None:
         expected_name = expected_filename.strip()
         expected_stem = Path(expected_name).stem
@@ -2504,6 +2972,7 @@ class WhatsAppSender:
                 raise RuntimeError("Composer not available after chat recovery")
             composer.click()
 
+        previous_outgoing = self._outgoing_message_count()
         try:
             composer.press("Control+A")
             composer.press("Backspace")
@@ -2517,14 +2986,35 @@ class WhatsAppSender:
                 self.page.keyboard.press("Shift+Enter")
 
         self.page.keyboard.press("Enter")
-        self._wait_for_text_message_bubble(
-            text,
-            timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
-        )
-        self._wait_for_last_outgoing_settled(
-            timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
-        )
-        self._ensure_target_chat_ready(require_composer=False)
+        try:
+            self._wait_for_text_message_bubble(
+                text,
+                timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
+            )
+            self._wait_for_last_outgoing_settled(
+                timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
+            )
+            self._ensure_target_chat_ready(require_composer=False)
+            return
+        except Exception as exc:
+            if not self._ui_invalidated and not self._is_navigation_context_error(exc):
+                raise
+            self._recover_target_chat_after_ui_drift()
+            try:
+                self._wait_for_new_outgoing_message(
+                    previous_outgoing,
+                    timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
+                )
+            except Exception:
+                pass
+            self._wait_for_text_message_bubble(
+                text,
+                timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
+            )
+            self._wait_for_last_outgoing_settled(
+                timeout_ms=max(self.action_timeout_ms, TEXT_SETTLE_TIMEOUT_MS),
+            )
+            self._ensure_target_chat_ready(require_composer=False)
 
     def prepare_document(self, pdf_path: Path) -> None:
         if not pdf_path.exists():
@@ -2544,6 +3034,10 @@ class WhatsAppSender:
                 )
                 self._choose_file_via_document_menu(pdf_path)
                 self.page.wait_for_timeout(300)
+                if self._global_share_modal_visible():
+                    raise RuntimeError(
+                        "WhatsApp global share modal opened instead of target chat document preview"
+                    )
                 return
             except Exception as exc:
                 last_error = exc
@@ -2617,6 +3111,103 @@ class WhatsAppSender:
             raise RuntimeError(
                 f"{UNSURE_REASON_PREFIX} document confirmation failed for {expected_filename}: {exc}"
             ) from exc
+
+    def verify_recent_documents_persist(
+        self,
+        filenames: Iterable[str],
+        timeout_ms: int = 120_000,
+    ) -> None:
+        expected = [str(name or "").strip() for name in filenames if str(name or "").strip()]
+        if not expected:
+            return
+        try:
+            self.page.reload(wait_until="domcontentloaded", timeout=min(timeout_ms, self.action_timeout_ms))
+        except Exception:
+            pass
+        self._recover_target_chat_after_ui_drift()
+        self._ensure_target_chat_ready(require_composer=False)
+        stems = [Path(name).stem for name in expected]
+        self.page.wait_for_function(
+            """
+            (payload) => {
+              const normalize = (raw) =>
+                String(raw || "")
+                  .replace(/\\s+/g, " ")
+                  .trim()
+                  .toLowerCase();
+              const outgoing = Array.from(document.querySelectorAll("div.message-out")).slice(-80);
+              const texts = outgoing
+                .map((node) => normalize(node.innerText || node.textContent || ""))
+                .filter(Boolean);
+              const candidates = [...(payload.filenames || []), ...(payload.stems || [])]
+                .map((value) => normalize(value))
+                .filter(Boolean);
+              return candidates.every((candidate) =>
+                texts.some((text) => text.includes(candidate))
+              );
+            }
+            """,
+            arg={"filenames": expected, "stems": stems},
+            timeout=timeout_ms,
+        )
+
+    def verify_recent_texts_persist(
+        self,
+        texts: Iterable[str],
+        timeout_ms: int = 120_000,
+    ) -> None:
+        expected = [str(text or "").strip() for text in texts if str(text or "").strip()]
+        if not expected:
+            return
+        try:
+            self.page.reload(wait_until="domcontentloaded", timeout=min(timeout_ms, self.action_timeout_ms))
+        except Exception:
+            pass
+        self._recover_target_chat_after_ui_drift()
+        self._ensure_target_chat_ready(require_composer=False)
+        payload = []
+        for text in expected:
+            payload.append(
+                {
+                    "collapsed": self._normalize_outgoing_text(text),
+                    "lines": [
+                        normalized
+                        for normalized in (
+                            self._normalize_outgoing_text(line)
+                            for line in str(text or "").splitlines()
+                        )
+                        if normalized
+                    ],
+                }
+            )
+        self.page.wait_for_function(
+            """
+            (payload) => {
+              const normalize = (value) =>
+                String(value || "")
+                  .replace(/\\s+/g, " ")
+                  .trim()
+                  .toLowerCase();
+              const outgoing = Array.from(document.querySelectorAll("div.message-out")).slice(-80);
+              const texts = outgoing
+                .map((node) => normalize(node.innerText || node.textContent || ""))
+                .filter(Boolean);
+              return (payload.expected || []).every((entry) => {
+                const collapsed = normalize(entry.collapsed || "");
+                const lines = Array.isArray(entry.lines)
+                  ? entry.lines.map((value) => normalize(value)).filter(Boolean)
+                  : [];
+                return texts.some((text) => {
+                  if (collapsed && text.includes(collapsed)) return true;
+                  if (lines.length) return lines.every((line) => text.includes(line));
+                  return false;
+                });
+              });
+            }
+            """,
+            arg={"expected": payload},
+            timeout=timeout_ms,
+        )
 
 
 # =============================================================================
@@ -2786,6 +3377,19 @@ def _validate_manifest_order_consistency(manifest: Dict[str, Any]) -> List[Dict[
             )
         total_store_orders += entry_store_total
 
+        unsafe_core_sources = [
+            str(source or "").strip()
+            for source in entry.get("unsafe_core_resolution_sources") or []
+            if str(source or "").strip()
+        ]
+        if unsafe_core_sources or bool(entry.get("requires_core_review")):
+            issues.append(
+                {
+                    "code": "unsafe_kaspi_name_core_resolution",
+                    "detail": f"{label}: {','.join(sorted(set(unsafe_core_sources or ['requires_core_review'])))}",
+                }
+            )
+
     unique_order_ids = set(order_occurrences)
     repeated_order_ids = sorted(
         order_id for order_id, occurrences in order_occurrences.items() if occurrences > 1
@@ -2900,6 +3504,48 @@ def _record_status_message_failure(results: Dict[str, Any], *, phase: str, error
     details.append({"phase": phase_key, "detail": str(error)})
 
 
+def _is_retryable_document_send_setup_error(exc: Exception) -> bool:
+    message = str(exc or "").strip().lower()
+    if not message:
+        return False
+    return any(
+        needle in message
+        for needle in (
+            "failed to click send button once",
+            "whatsapp home screen is visible",
+            "no chat is currently open",
+            "active chat mismatch",
+            "target chat did not open",
+            "attach button is not visible in target chat",
+            "global share modal opened",
+        )
+    )
+
+
+def _rearm_entries_for_forced_resend(
+    ledger: Dict[str, Any],
+    pdf_keys: Iterable[str],
+) -> None:
+    now = datetime.now().isoformat()
+    ledger_entries = ledger.setdefault("entries", {})
+    for pdf_key in pdf_keys:
+        entry = ledger_entries.get(str(pdf_key))
+        if not isinstance(entry, dict):
+            continue
+        entry["state"] = "pending"
+        entry["last_updated"] = now
+        history = entry.setdefault("history", [])
+        if isinstance(history, list):
+            history.append(
+                {
+                    "state": "pending",
+                    "at": now,
+                    "note": "forced resend requested (--no-resume)",
+                }
+            )
+    ledger["updated_at"] = now
+
+
 def _confirmed_progress_snapshot(
     entries: List[Dict[str, Any]],
     ledger: Dict[str, Any],
@@ -2915,6 +3561,113 @@ def _confirmed_progress_snapshot(
         for store_name, qty in dict(entry.get("order_counts_by_store") or {}).items():
             sent_orders_by_store[_normalize_store_label(store_name)] += int(qty)
     return confirmed_bundles, sent_orders_by_store
+
+
+def _all_manifest_entries_in_state(
+    entries: List[Dict[str, Any]],
+    ledger: Dict[str, Any],
+    state: str,
+) -> bool:
+    ledger_entries = dict(ledger.get("entries") or {})
+    for entry in entries:
+        pdf_key = str(entry.get("pdf_key") or "")
+        if not pdf_key:
+            return False
+        if str(ledger_entries.get(pdf_key, {}).get("state") or "") != state:
+            return False
+    return True
+
+
+def run_delivery_probe(
+    *,
+    chat_title: str,
+    chrome_user_data_dir: Path = DEFAULT_CHROME_USER_DATA_DIR,
+    chrome_profile_directory: str = DEFAULT_CHROME_PROFILE_DIR,
+    chrome_profile_name: Optional[str] = DEFAULT_CHROME_PROFILE_NAME,
+    cdp_endpoint: str = DEFAULT_CDP_ENDPOINT,
+    browser_mode: str = DEFAULT_BROWSER_MODE,
+    blocked_chat_titles: Iterable[str] = BLOCKED_CHAT_TITLES_DEFAULT,
+    probe_message_prefix: str = DEFAULT_DELIVERY_PROBE_MESSAGE_PREFIX,
+    probe_repeat_count: int = DEFAULT_DELIVERY_PROBE_REPEAT_COUNT,
+    probe_interval_seconds: float = DEFAULT_DELIVERY_PROBE_INTERVAL_SECONDS,
+    probe_timeout_seconds: float = DEFAULT_DELIVERY_PROBE_TIMEOUT_SECONDS,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    results: Dict[str, Any] = {
+        "ok": False,
+        "target_chat": chat_title or "",
+        "probe_message_prefix": str(probe_message_prefix or DEFAULT_DELIVERY_PROBE_MESSAGE_PREFIX),
+        "probe_repeat_count": int(probe_repeat_count or 0),
+        "probe_interval_seconds": float(probe_interval_seconds or 0.0),
+        "probe_timeout_seconds": float(probe_timeout_seconds or 0.0),
+        "attempts": [],
+        "failure": "",
+    }
+    if not chat_title:
+        results["failure"] = "chat_title is required"
+        return results
+    if not check_playwright():
+        results["failure"] = "playwright not installed"
+        return results
+
+    timeout_ms = max(1_000, int(float(probe_timeout_seconds) * 1000))
+    repeat_count = max(1, int(probe_repeat_count))
+    interval_seconds = max(0.0, float(probe_interval_seconds))
+    message_prefix = str(probe_message_prefix or DEFAULT_DELIVERY_PROBE_MESSAGE_PREFIX).strip()
+
+    sender = WhatsAppSender(
+        chat_title=chat_title,
+        user_data_dir=Path(chrome_user_data_dir),
+        profile_directory=chrome_profile_directory,
+        profile_name=chrome_profile_name,
+        cdp_endpoint=cdp_endpoint,
+        browser_mode=browser_mode,
+        blocked_chat_titles=blocked_chat_titles,
+        action_timeout_ms=ACTION_TIMEOUT_MS,
+        verbose=verbose,
+    )
+
+    sent_texts: List[str] = []
+    try:
+        with sender:
+            if hasattr(sender, "assert_document_send_ready"):
+                sender.assert_document_send_ready()
+            for attempt_num in range(1, repeat_count + 1):
+                stamp = datetime.now(ALMATY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+                probe_text = f"{message_prefix} #{attempt_num} {stamp}"
+                attempt_result: Dict[str, Any] = {
+                    "attempt": attempt_num,
+                    "text": probe_text,
+                    "sent": False,
+                    "delivered": False,
+                    "persisted": False,
+                    "sent_at": datetime.now(ALMATY_TZ).isoformat(),
+                }
+                sender.send_text_message(probe_text)
+                status = sender.confirm_text_message_sent(probe_text, timeout_ms=timeout_ms)
+                attempt_result["sent"] = bool(status.get("sent"))
+                attempt_result["delivered"] = bool(status.get("delivered"))
+                attempt_result["delivery_state"] = str(
+                    status.get("delivery_state") or ("delivered" if attempt_result["delivered"] else "sent")
+                )
+                sent_texts.append(probe_text)
+                if hasattr(sender, "bind_active_chat_identity_if_missing"):
+                    sender.bind_active_chat_identity_if_missing()
+                sender.wait_for_outgoing_sync(timeout_ms=timeout_ms)
+                if hasattr(sender, "verify_recent_texts_persist"):
+                    sender.verify_recent_texts_persist(sent_texts, timeout_ms=timeout_ms)
+                attempt_result["persisted"] = True
+                attempt_result["verified_at"] = datetime.now(ALMATY_TZ).isoformat()
+                results["attempts"].append(attempt_result)
+                if hasattr(sender, "assert_document_send_ready"):
+                    sender.assert_document_send_ready()
+                if attempt_num < repeat_count and interval_seconds > 0:
+                    time.sleep(interval_seconds)
+        results["ok"] = True
+        return results
+    except Exception as exc:
+        results["failure"] = str(exc)
+        return results
 
 
 def run_sender(
@@ -2937,6 +3690,7 @@ def run_sender(
     fail_fast: bool = False,
     allow_unsure_resume: bool = False,
     max_pdfs: Optional[int] = None,
+    post_send_linger_seconds: float = 0.0,
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """Run WhatsApp PDF sender workflow."""
@@ -2951,6 +3705,8 @@ def run_sender(
         "status_message_failures": 0,
         "status_message_failures_by_phase": {"pre": 0, "post": 0},
         "status_message_failure_details": [],
+        "post_send_verification_failed": 0,
+        "post_send_verification_details": [],
         "halted": False,
         "halt_reason": "",
         "diagnostics_dir": "",
@@ -3024,11 +3780,19 @@ def run_sender(
             verbose=verbose,
         )
 
-    pdfs_to_send = select_manifest_entries_for_send(
-        manifest,
-        ledger,
-        allow_unsure_resume=allow_unsure_resume,
-    )
+    if resume:
+        pdfs_to_send = select_manifest_entries_for_send(
+            manifest,
+            ledger,
+            allow_unsure_resume=allow_unsure_resume,
+        )
+    else:
+        pdfs_to_send = list(entries)
+        _rearm_entries_for_forced_resend(
+            ledger,
+            [str(entry.get("pdf_key") or "") for entry in pdfs_to_send],
+        )
+        save_send_ledger(ledger_path, ledger)
     pdfs_to_send = order_pdfs_for_sending(pdfs_to_send)
     if max_pdfs is not None:
         pdfs_to_send = pdfs_to_send[: max(0, int(max_pdfs))]
@@ -3080,6 +3844,7 @@ def run_sender(
     bundles_target = len(pdfs_to_send)
     bundles_sent = confirmed_bundles_before_run
     sent_orders_by_store: Counter[str] = Counter(confirmed_orders_by_store_before_run)
+    sent_filenames_this_run: List[str] = []
 
     print(f"\n{'[DRY RUN] ' if dry_run else ''}PDFs to send: {len(pdfs_to_send)}")
     print("-" * 50)
@@ -3147,9 +3912,18 @@ def run_sender(
             if send_pre_status_message:
                 try:
                     sender.send_text_message(pre_status_text)
+                    if hasattr(sender, "confirm_text_message_sent"):
+                        sender.confirm_text_message_sent(
+                            pre_status_text,
+                            timeout_ms=120_000,
+                        )
+                    if hasattr(sender, "bind_active_chat_identity_if_missing"):
+                        sender.bind_active_chat_identity_if_missing()
+                    if pdfs_to_send and hasattr(sender, "assert_document_send_ready"):
+                        sender.assert_document_send_ready()
                 except Exception as exc:
                     _record_status_message_failure(results, phase="pre", error=exc)
-                    print(f"\nWARNING: Failed to send pre-send status message: {exc}")
+                    raise RuntimeError(f"Pre-send delivery probe failed: {exc}") from exc
 
             for i, pdf in enumerate(pdfs_to_send, start=1):
                 batch_label = str(manifest.get("batch_label") or batch_root.name)
@@ -3173,17 +3947,48 @@ def run_sender(
                         allow_unsure_resume=allow_unsure_resume,
                     )
                     save_send_ledger(ledger_path, ledger)
-                    sender.prepare_document(pdf_path)
-                    previous_outgoing = sender._outgoing_message_count()
-                    if hasattr(sender, "mark_document_send_clicked"):
-                        sender.mark_document_send_clicked(pdf["filename"])
-                    sender.click_document_send()
-                    transition_send_ledger_entry(ledger, pdf_key, "clicked")
-                    save_send_ledger(ledger_path, ledger)
-                    sender.confirm_document_sent(
-                        pdf["filename"],
-                        previous_outgoing=previous_outgoing,
-                    )
+                    document_confirmed = False
+                    last_send_exc: Exception | None = None
+                    for send_attempt in range(1, 3):
+                        try:
+                            sender.prepare_document(pdf_path)
+                            previous_outgoing = sender._outgoing_message_count()
+                            if hasattr(sender, "mark_document_send_clicked"):
+                                sender.mark_document_send_clicked(pdf["filename"])
+                            sender.click_document_send()
+                            transition_send_ledger_entry(ledger, pdf_key, "clicked")
+                            save_send_ledger(ledger_path, ledger)
+                            sender.confirm_document_sent(
+                                pdf["filename"],
+                                previous_outgoing=previous_outgoing,
+                            )
+                            document_confirmed = True
+                            break
+                        except Exception as send_exc:
+                            last_send_exc = send_exc
+                            reset_tracking = getattr(sender, "_reset_document_send_tracking", None)
+                            if callable(reset_tracking):
+                                try:
+                                    reset_tracking()
+                                except Exception:
+                                    pass
+                            if (
+                                send_attempt < 2
+                                and ledger.get("entries", {}).get(pdf_key, {}).get("state") == "opened"
+                                and _is_retryable_document_send_setup_error(send_exc)
+                            ):
+                                print(
+                                    f"WARNING: document send UI drift before click for {pdf['filename']}; retrying once..."
+                                )
+                                recover_target_chat = getattr(sender, "_recover_target_chat_after_ui_drift", None)
+                                if callable(recover_target_chat):
+                                    recover_target_chat()
+                                continue
+                            raise
+                    if not document_confirmed:
+                        raise last_send_exc or RuntimeError(
+                            f"Failed to send {pdf['filename']} before confirmation"
+                        )
                     transition_send_ledger_entry(ledger, pdf_key, "confirmed")
                     save_send_ledger(ledger_path, ledger)
                 except Exception as exc:
@@ -3261,6 +4066,7 @@ def run_sender(
 
                 results["sent"] += 1
                 bundles_sent += 1
+                sent_filenames_this_run.append(str(pdf["filename"]))
                 for store_name, qty in dict(pdf.get("order_counts_by_store") or {}).items():
                     sent_orders_by_store[_normalize_store_label(store_name)] += int(qty)
 
@@ -3288,6 +4094,32 @@ def run_sender(
             except Exception as exc:
                 if verbose:
                     print(f"WARNING: final outgoing sync check failed: {exc}")
+            if sent_filenames_this_run and hasattr(sender, "verify_recent_documents_persist"):
+                try:
+                    sender.verify_recent_documents_persist(
+                        sent_filenames_this_run,
+                        timeout_ms=120_000,
+                    )
+                except Exception as exc:
+                    if _all_manifest_entries_in_state(entries, ledger, "confirmed"):
+                        detail = str(exc)
+                        results["post_send_verification_failed"] = int(
+                            results.get("post_send_verification_failed", 0) or 0
+                        ) + 1
+                        verification_details = list(results.get("post_send_verification_details") or [])
+                        verification_details.append(detail)
+                        results["post_send_verification_details"] = verification_details
+                        print(
+                            "\nWARNING: post-send persistence check timed out after all bundles were already "
+                            f"confirmed in the ledger: {detail}"
+                        )
+                    else:
+                        raise
+            linger_seconds = max(0.0, float(post_send_linger_seconds or 0.0))
+            if linger_seconds > 0:
+                if verbose:
+                    print(f"Lingering with WhatsApp open for {int(linger_seconds)}s before shutdown...")
+                time.sleep(linger_seconds)
     except Exception as exc:
         results["failed"] += 1
         results["halted"] = True
@@ -3432,6 +4264,41 @@ def main() -> None:
         help="Send only the final post-send ASCII status table to WhatsApp chat",
     )
     parser.add_argument(
+        "--delivery-probe-only",
+        action="store_true",
+        help="Send delivered-state probe text messages only and verify persistence without sending PDFs",
+    )
+    parser.add_argument(
+        "--probe-message-prefix",
+        type=str,
+        default=DEFAULT_DELIVERY_PROBE_MESSAGE_PREFIX,
+        help="Prefix used for delivery probe messages",
+    )
+    parser.add_argument(
+        "--probe-repeat-count",
+        type=int,
+        default=DEFAULT_DELIVERY_PROBE_REPEAT_COUNT,
+        help="How many delivery probe messages to send",
+    )
+    parser.add_argument(
+        "--probe-interval-seconds",
+        type=float,
+        default=DEFAULT_DELIVERY_PROBE_INTERVAL_SECONDS,
+        help="Seconds to wait between delivery probe messages",
+    )
+    parser.add_argument(
+        "--probe-timeout-seconds",
+        type=float,
+        default=DEFAULT_DELIVERY_PROBE_TIMEOUT_SECONDS,
+        help="Per-probe delivery/persistence timeout in seconds",
+    )
+    parser.add_argument(
+        "--linger-seconds",
+        type=float,
+        default=0.0,
+        help="Keep the browser session open for N seconds after final send sync before shutdown",
+    )
+    parser.add_argument(
         "--expected-target-date",
         type=_parse_iso_date,
         default=None,
@@ -3531,6 +4398,7 @@ def main() -> None:
     print(f"  Fail fast: {'Yes' if args.fail_fast else 'No'}")
     print(f"  Resume: {'No' if args.no_resume else 'Yes'}")
     print(f"  Allow UNSURE resume: {'Yes' if args.allow_unsure_resume else 'No'}")
+    print(f"  Delivery probe only: {'Yes' if args.delivery_probe_only else 'No'}")
     print(f"  Preflight only: {'Yes' if args.preflight_only else 'No'}")
     print(f"  Smoke check only: {'Yes' if args.smoke_check_only else 'No'}")
     print(f"  Resolve UNSURE filename: {args.resolve_unsure_filename or 'No'}")
@@ -3544,6 +4412,52 @@ def main() -> None:
 
     if args.preflight_only and args.smoke_check_only:
         raise SystemExit("--preflight-only and --smoke-check-only are mutually exclusive")
+    if args.delivery_probe_only and args.preflight_only:
+        raise SystemExit("--delivery-probe-only and --preflight-only are mutually exclusive")
+    if args.delivery_probe_only and args.smoke_check_only:
+        raise SystemExit("--delivery-probe-only and --smoke-check-only are mutually exclusive")
+    if args.delivery_probe_only and args.post_status_message_only:
+        raise SystemExit("--delivery-probe-only and --post-status-message-only are mutually exclusive")
+
+    if args.delivery_probe_only:
+        probe = run_delivery_probe(
+            chat_title=args.chat_title,
+            chrome_user_data_dir=args.chrome_user_data_dir,
+            chrome_profile_directory=args.chrome_profile_directory,
+            chrome_profile_name=args.chrome_profile_name,
+            cdp_endpoint=args.cdp_endpoint,
+            browser_mode=args.browser_mode,
+            blocked_chat_titles=dedup_blocked,
+            probe_message_prefix=str(args.probe_message_prefix),
+            probe_repeat_count=int(args.probe_repeat_count),
+            probe_interval_seconds=float(args.probe_interval_seconds),
+            probe_timeout_seconds=float(args.probe_timeout_seconds),
+            verbose=args.verbose,
+        )
+        if args.json_out:
+            args.json_out.parent.mkdir(parents=True, exist_ok=True)
+            args.json_out.write_text(json.dumps(probe, ensure_ascii=False, indent=2), encoding="utf-8")
+        if probe.get("ok"):
+            print("Delivery probe OK")
+            for attempt in probe.get("attempts", []):
+                print(
+                    f"  - attempt {attempt.get('attempt')}: sent={attempt.get('sent')} "
+                    f"delivery_state={attempt.get('delivery_state')} "
+                    f"delivered={attempt.get('delivered')} "
+                    f"persisted={attempt.get('persisted')}"
+                )
+            raise SystemExit(0)
+        print("Delivery probe FAIL")
+        if probe.get("failure"):
+            print(f"  - {probe['failure']}")
+        for attempt in probe.get("attempts", []):
+            print(
+                f"  - attempt {attempt.get('attempt')}: sent={attempt.get('sent')} "
+                f"delivery_state={attempt.get('delivery_state')} "
+                f"delivered={attempt.get('delivered')} "
+                f"persisted={attempt.get('persisted')}"
+            )
+        raise SystemExit(1)
 
     if args.preflight_only:
         preflight = verify_send_batch_preflight(
@@ -3642,6 +4556,7 @@ def main() -> None:
         fail_fast=bool(args.fail_fast),
         allow_unsure_resume=bool(args.allow_unsure_resume),
         max_pdfs=args.max_pdfs,
+        post_send_linger_seconds=float(args.linger_seconds or 0.0),
         verbose=args.verbose,
     )
     elapsed = max(0, int(time.monotonic() - started_at))

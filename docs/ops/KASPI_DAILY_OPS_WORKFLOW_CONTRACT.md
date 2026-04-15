@@ -8,6 +8,7 @@ This contract is fail-closed: workflow regressions must surface as test failures
 ## Canonical Entrypoints
 - `excel_ui/run_full_import.command`
 - `excel_ui/run_merged_build_waybills.command`
+- `excel_ui/run_google_ops_board_closeout.command`
 - `scripts/run_kaspi_daily_ops.py`
 - `scripts/run_daily_autopilot.py`
 - `scripts/benchmark_kaspi_daily_ops.py`
@@ -18,7 +19,7 @@ This contract is fail-closed: workflow regressions must surface as test failures
   - `15:02` daily import run
   - `16:01` daily import run
 - `config/com.example.kaspi-waybill-deadline.plist`
-  - `18:30` daily waybill deadline run
+  - `18:30` daily Google Ops Board closeout run
 - `config/com.example.kaspi-daily-ops-report.plist`
   - `19:10` daily daily-ops report run
 - installer: `scripts/install_scheduler.sh`
@@ -46,6 +47,10 @@ updating this contract and corresponding tests before merge.
 
 ## Non-Negotiable Runtime Rules
 - keep fail-closed behavior in `run_merged_build_waybills.command` (`HARD_FAIL` -> non-zero exit)
+- keep the automated 18:30 closeout DB-first:
+  - final size writeback from `SalesRaw_Today.MY_SIZE`
+  - DB-first shipping via `scripts/ship_orders_api.py --selection-source db`
+  - DB-first waybill download / build / WhatsApp send
 - keep strict stop-line report (`--strict-stopline`)
 - keep ship-until-shipped carry-forward contract:
   - pending orders that miss one day must continue to surface on later daily runs until shipped or terminally cancelled/returned

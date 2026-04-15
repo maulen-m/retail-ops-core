@@ -5,12 +5,16 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.send_waybills_whatsapp import (
+    DEFAULT_CDP_ENDPOINT,
+    DEFAULT_CDP_ENDPOINT_IPV6,
     MERGED_SEND_ROOT_NAME,
     SOURCE_MERGED,
     WhatsAppSender,
+    _candidate_cdp_endpoints,
     _copy_profile_to_temp,
     capture_sender_failure_diagnostics,
     _normalize_chat_key,
+    _resolve_live_cdp_endpoint,
     load_send_batch_manifest,
     _recover_missing_pdf_path,
     collect_store_order_bundle_stats,
@@ -30,6 +34,36 @@ def _write_store_fixture(store_dir: Path, pdf_name: str = "sample.pdf") -> Path:
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(b"%PDF-1.0\n")
     return pdf_path
+
+
+def test_candidate_cdp_endpoints_include_ipv6_fallback_for_default_ipv4() -> None:
+    candidates = _candidate_cdp_endpoints(DEFAULT_CDP_ENDPOINT)
+    assert candidates[0] == DEFAULT_CDP_ENDPOINT
+    assert DEFAULT_CDP_ENDPOINT_IPV6 in candidates
+
+
+def test_resolve_live_cdp_endpoint_falls_back_to_ipv6_when_ipv4_probe_is_dead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def _fake_fetch_once(endpoint: str, path: str):
+        calls.append((endpoint, path))
+        if endpoint == DEFAULT_CDP_ENDPOINT:
+            raise RuntimeError("ipv4 endpoint unavailable")
+        assert endpoint == DEFAULT_CDP_ENDPOINT_IPV6
+        assert path == "/json/version"
+        return {"webSocketDebuggerUrl": "ws://[::1]:9222/devtools/browser/demo"}
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp._fetch_cdp_json_once", _fake_fetch_once)
+
+    resolved = _resolve_live_cdp_endpoint(DEFAULT_CDP_ENDPOINT)
+
+    assert resolved == DEFAULT_CDP_ENDPOINT_IPV6
+    assert calls == [
+        (DEFAULT_CDP_ENDPOINT, "/json/version"),
+        (DEFAULT_CDP_ENDPOINT_IPV6, "/json/version"),
+    ]
 
 
 def test_copy_profile_to_temp_preserves_service_worker_state(tmp_path: Path) -> None:
@@ -1039,6 +1073,81 @@ def test_prepare_document_retries_full_attachment_flow_after_ui_drift(
     assert recovery_calls == ["recover"]
 
 
+def test_prepare_document_retries_when_global_share_modal_opens(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.0\n")
+
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            wait_for_timeout=lambda _ms: None,
+        )
+    )
+
+    attempts = {"choose": 0}
+    recovery_calls = []
+
+    monkeypatch.setattr(sender, "_ensure_target_chat_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sender, "_safe_click_selectors", lambda *args, **kwargs: None)
+
+    def _fake_choose_file_via_document_menu(_pdf_path: Path) -> None:
+        attempts["choose"] += 1
+
+    monkeypatch.setattr(sender, "_choose_file_via_document_menu", _fake_choose_file_via_document_menu)
+    monkeypatch.setattr(
+        sender,
+        "_global_share_modal_visible",
+        lambda: attempts["choose"] == 1,
+    )
+    monkeypatch.setattr(
+        sender,
+        "_recover_target_chat_after_ui_drift",
+        lambda: recovery_calls.append("recover"),
+    )
+
+    sender.prepare_document(pdf_path)
+
+    assert attempts["choose"] == 2
+    assert recovery_calls == ["recover"]
+
+
+def test_recover_target_chat_after_ui_drift_dismisses_blocking_dialog_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            wait_for_timeout=lambda _ms: None,
+        )
+    )
+
+    calls: list[object] = []
+    monkeypatch.setattr(sender, "_dismiss_blocking_dialog_if_present", lambda: calls.append("dismiss") or True)
+    monkeypatch.setattr(sender, "_assert_session_ready", lambda timeout_ms=None: calls.append(("session", timeout_ms)))
+    monkeypatch.setattr(sender, "_wait_for_chat_list_ready", lambda: calls.append("wait"))
+    monkeypatch.setattr(sender, "open_chat", lambda title: calls.append(("open", title)))
+    monkeypatch.setattr(sender, "_clear_ui_invalidated", lambda: calls.append("clear"))
+
+    sender._recover_target_chat_after_ui_drift()
+
+    assert calls[0] == "dismiss"
+    assert calls[-2] == ("open", "Заказы")
+    assert calls[-1] == "clear"
+
+
 def test_send_text_message_retries_when_composer_click_detaches_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1086,6 +1195,59 @@ def test_send_text_message_retries_when_composer_click_detaches_once(
     assert composer.clicks == 2
     assert recovery_calls == ["wait", ("open", "Заказы")]
     assert ("insert_text", "hello") in keyboard_actions
+
+
+def test_send_text_message_recovers_when_reload_happens_after_enter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+
+    class _FakeComposer:
+        def click(self) -> None:
+            return None
+
+        def press(self, _key: str) -> None:
+            return None
+
+    keyboard_actions = []
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            keyboard=SimpleNamespace(
+                insert_text=lambda text: keyboard_actions.append(("insert_text", text)),
+                press=lambda key: keyboard_actions.append(("press", key)),
+            ),
+            wait_for_timeout=lambda _ms: None,
+        )
+    )
+    state = {"bubble_attempts": 0}
+    recovery_calls = []
+
+    monkeypatch.setattr(sender, "_assert_active_target_chat", lambda: None)
+    monkeypatch.setattr(sender, "_resolve_composer", lambda *args, **kwargs: _FakeComposer())
+    monkeypatch.setattr(sender, "_outgoing_message_count", lambda: 10)
+    monkeypatch.setattr(sender, "_wait_for_new_outgoing_message", lambda *_args, **_kwargs: None)
+
+    def _fake_wait_for_text_message_bubble(*_args, **_kwargs) -> None:
+        state["bubble_attempts"] += 1
+        if state["bubble_attempts"] == 1:
+            sender._mark_ui_invalidated("main frame navigated to https://web.whatsapp.com/")
+            raise RuntimeError("Page.wait_for_function: Timeout 45000ms exceeded.")
+
+    monkeypatch.setattr(sender, "_wait_for_text_message_bubble", _fake_wait_for_text_message_bubble)
+    monkeypatch.setattr(sender, "_wait_for_last_outgoing_settled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sender, "_wait_for_chat_list_ready", lambda: recovery_calls.append("wait"))
+    monkeypatch.setattr(sender, "open_chat", lambda title: recovery_calls.append(("open", title)))
+
+    sender.send_text_message("probe hello")
+
+    assert state["bubble_attempts"] == 2
+    assert recovery_calls == ["wait", ("open", "Заказы")]
+    assert keyboard_actions.count(("insert_text", "probe hello")) == 1
 
 
 def test_send_text_message_waits_for_exact_text_before_settled(
@@ -1154,7 +1316,15 @@ def test_wait_for_text_message_bubble_uses_normalized_text_payload() -> None:
         page=SimpleNamespace(
             wait_for_function=lambda script, arg=None, timeout=None: calls.append(
                 {"script": script, "arg": arg, "timeout": timeout}
-            )
+            ),
+            evaluate=lambda script, arg=None: {
+                "present": True,
+                "sent": True,
+                "delivered": True,
+                "delivery_state": "delivered",
+                "icons": ["msg-dblcheck"],
+                "aria_labels": ["Delivered"],
+            },
         )
     )
 
@@ -1213,7 +1383,15 @@ def test_wait_for_document_bubble_uses_previous_outgoing_snapshot_payload() -> N
         page=SimpleNamespace(
             wait_for_function=lambda script, arg=None, timeout=None: calls.append(
                 {"script": script, "arg": arg, "timeout": timeout}
-            )
+            ),
+            evaluate=lambda script, arg=None: {
+                "present": True,
+                "sent": True,
+                "delivered": True,
+                "delivery_state": "delivered",
+                "icons": ["msg-dblcheck"],
+                "aria_labels": ["Delivered"],
+            },
         )
     )
 
@@ -1241,7 +1419,15 @@ def test_wait_for_document_bubble_settled_uses_previous_outgoing_snapshot_payloa
         page=SimpleNamespace(
             wait_for_function=lambda script, arg=None, timeout=None: calls.append(
                 {"script": script, "arg": arg, "timeout": timeout}
-            )
+            ),
+            evaluate=lambda script, arg=None: {
+                "present": True,
+                "sent": True,
+                "delivered": True,
+                "delivery_state": "delivered",
+                "icons": ["msg-dblcheck"],
+                "aria_labels": ["Delivered"],
+            },
         )
     )
 
@@ -1294,6 +1480,124 @@ def test_assert_active_target_chat_rejects_whatsapp_home_screen(
 
     with pytest.raises(RuntimeError, match="home screen"):
         sender._assert_active_target_chat()
+
+
+def test_assert_active_target_chat_rejects_identity_fingerprint_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender.expected_chat_identity = {
+        "chat_title": "Заказы",
+        "selected_row_data_id": "chat-123",
+    }
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            wait_for_timeout=lambda _ms: None,
+        )
+    )
+
+    monkeypatch.setattr(sender, "_chat_home_screen_visible", lambda: False)
+    monkeypatch.setattr(
+        sender,
+        "_active_chat_fingerprint",
+        lambda: {
+            "chat_title": "Заказы",
+            "selected_row_data_id": "chat-999",
+            "header_subtitle": "Adil, Employee",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="identity fingerprint mismatch"):
+        sender._assert_active_target_chat()
+
+
+def test_confirm_text_message_delivered_waits_for_delivery_marker() -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+
+    wait_calls = []
+    evaluate_calls = []
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            wait_for_function=lambda script, arg=None, timeout=None: wait_calls.append(
+                {"script": script, "arg": arg, "timeout": timeout}
+            ),
+            evaluate=lambda script, arg=None: evaluate_calls.append(
+                {"script": script, "arg": arg}
+            )
+            or {
+                "present": True,
+                "sent": True,
+                "delivered": True,
+                "delivery_state": "delivered",
+                "icons": ["msg-dblcheck"],
+                "aria_labels": ["Delivered"],
+            },
+        )
+    )
+    sender._assert_active_target_chat = lambda: None
+
+    sender.confirm_text_message_delivered("Probe: 53 bundles ready", timeout_ms=4321)
+
+    assert len(wait_calls) == 1
+    assert "status-clock" in wait_calls[0]["script"]
+    assert wait_calls[0]["arg"]["collapsed"] == "probe: 53 bundles ready"
+    assert wait_calls[0]["timeout"] == 4321
+    assert len(evaluate_calls) == 1
+    assert "dblcheck" in evaluate_calls[0]["script"]
+    assert "status-check" in evaluate_calls[0]["script"]
+
+
+def test_confirm_text_message_sent_accepts_single_check_as_stable_group_send() -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+
+    wait_calls = []
+    evaluate_calls = []
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            wait_for_function=lambda script, arg=None, timeout=None: wait_calls.append(
+                {"script": script, "arg": arg, "timeout": timeout}
+            ),
+            evaluate=lambda script, arg=None: evaluate_calls.append(
+                {"script": script, "arg": arg}
+            )
+            or {
+                "present": True,
+                "sent": True,
+                "delivered": False,
+                "delivery_state": "sent",
+                "icons": ["msg-check"],
+                "aria_labels": ["Sent"],
+            },
+        )
+    )
+    sender._assert_active_target_chat = lambda: None
+
+    status = sender.confirm_text_message_sent("Probe: 53 bundles ready", timeout_ms=4321)
+
+    assert status["sent"] is True
+    assert status["delivered"] is False
+    assert status["delivery_state"] == "sent"
+    assert len(wait_calls) == 1
+    assert "status-clock" in wait_calls[0]["script"]
+    assert wait_calls[0]["arg"]["collapsed"] == "probe: 53 bundles ready"
+    assert wait_calls[0]["timeout"] == 4321
+    assert len(evaluate_calls) == 1
+    assert "msg-check" in evaluate_calls[0]["script"]
 
 
 def test_confirm_document_sent_waits_for_new_outgoing_message_before_matching(

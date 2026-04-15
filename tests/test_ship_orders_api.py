@@ -2,6 +2,7 @@ import sqlite3
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 import sys
+import json
 
 import pandas as pd
 import pytest
@@ -226,8 +227,59 @@ def test_read_crm_orders_backfills_blank_current_day_size_for_overdue_rows(tmp_p
     assert orders["850084962"][0].my_size == "M"
 
 
+def test_read_db_orders_prefers_assigned_size_and_filters_store(tmp_path):
+    db_path = tmp_path / "app.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE fact_orders_kaspi (
+            id INTEGER PRIMARY KEY,
+            order_id TEXT,
+            store_code TEXT,
+            kaspi_offer_name TEXT,
+            sku_key TEXT,
+            sku_id TEXT,
+            quantity INTEGER,
+            assigned_size TEXT,
+            my_size TEXT,
+            planned_shipment_date TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO fact_orders_kaspi
+        (id, order_id, store_code, kaspi_offer_name, sku_key, sku_id, quantity, assigned_size, my_size, planned_shipment_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (1, "1001", "UNIVERSAL", "Nike Tee Black", "SKU-1", "SKU-1-L", 1, "XL", "L", "2026-04-15"),
+            (2, "1002", "STOREB", "Berserk Rashguard", "SKU-2", "SKU-2-L", 1, "", "M", "2026-04-15"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    orders = ship_mod.read_db_orders(
+        db_path,
+        date(2026, 4, 15),
+        store_filter="Universal",
+        target_order_ids={"1001", "1002"},
+        allow_missing_size=False,
+    )
+
+    assert set(orders) == {"1001"}
+    assert orders["1001"][0].my_size == "XL"
+
+
 def test_parse_date_handles_iso_datetime_without_dayfirst_flip():
     assert parse_date("2026-03-06 20:00:00") == date(2026, 3, 6)
+
+
+def test_normalize_store_name_accepts_api_store_codes():
+    assert ship_mod.normalize_store_name("STOREB") == "STORE-B"
+    assert ship_mod.normalize_store_name("ACMEWEAR") == "AcmeWear"
+    assert ship_mod.normalize_store_name("UNIVERSAL") == "Universal"
 
 
 def test_get_pending_assembly_orders_status_first_without_creation_lookback(monkeypatch):
@@ -786,6 +838,96 @@ def test_main_returns_nonzero_when_overdue_backlog_remains(monkeypatch, tmp_path
 
     assert rc == 1
     assert calls["count"] == 2
+
+
+def test_main_json_out_serializes_date_rich_backlog(monkeypatch, tmp_path):
+    calls = {"count": 0}
+    json_out = tmp_path / "shipping.json"
+
+    def fake_get_pending_assembly_orders(
+        *,
+        target_date,
+        since_days,
+        store_codes=None,
+        fallback_since_days=30,
+        include_overdue=False,
+        overdue_lookback_days=None,
+    ):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {"UNIVERSAL": {"1001"}}, {"UNIVERSAL": {"1001": "base64"}}, {}, {}
+        return {"UNIVERSAL": set()}, {"UNIVERSAL": {}}, {}, {}
+
+    def fake_build_pending_backlog_report(*args, target_date, **kwargs):
+        return {
+            "summary": {
+                "total_pending": 0,
+                "overdue_pending": 0,
+                "stale_pending": 0,
+                "stale_orders": [
+                    {
+                        "order_id": "1001",
+                        "planned_date": date(2026, 4, 15),
+                        "created_at": datetime(2026, 4, 15, 12, 0, 0),
+                    }
+                ],
+            }
+        }
+
+    monkeypatch.setattr(ship_mod, "get_pending_assembly_orders", fake_get_pending_assembly_orders)
+    monkeypatch.setattr(ship_mod, "build_pending_backlog_report", fake_build_pending_backlog_report)
+    monkeypatch.setattr(ship_mod, "load_dotenv", lambda: None)
+    monkeypatch.setattr(ship_mod, "resolve_db_path", lambda _path: tmp_path / "app.db")
+    monkeypatch.setattr(ship_mod, "load_db_order_info", lambda _db, _ids: {})
+    monkeypatch.setattr(
+        ship_mod,
+        "read_crm_orders",
+        lambda *args, **kwargs: {
+            "1001": [
+                ship_mod.OrderItem(
+                    order_id="1001",
+                    store_name="Universal",
+                    kaspi_name_core="Line51",
+                    my_size="XL",
+                    sku_key="SKU-1",
+                    sku_id="SKU-1-XL",
+                    quantity=1,
+                    planned_date=date(2026, 4, 15),
+                )
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        ship_mod,
+        "ship_orders",
+        lambda *args, **kwargs: {"shipped": 1, "skipped": 0, "errors": []},
+    )
+    monkeypatch.setattr(
+        ship_mod,
+        "write_pending_backlog_report",
+        lambda **kwargs: (tmp_path / "backlog.json", tmp_path / "backlog.md"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ship_orders_api.py",
+            "--crm-file",
+            str(tmp_path / "unused.xlsx"),
+            "--date",
+            "2026-04-15",
+            "--json-out",
+            str(json_out),
+        ],
+    )
+
+    rc = ship_mod.main()
+
+    assert rc == 0
+    payload = json.loads(json_out.read_text(encoding="utf-8"))
+    stale_row = payload["remaining_backlog"]["summary"]["stale_orders"][0]
+    assert stale_row["planned_date"] == "2026-04-15"
+    assert stale_row["created_at"].startswith("2026-04-15T12:00:00")
 
 
 def test_ship_orders_counts_when_assemble_is_confirmed(monkeypatch):

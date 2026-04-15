@@ -58,9 +58,26 @@ def build_core_majority_map(rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str],
     return out
 
 
+def _choose_best_text(rows: List[Dict[str, Any]], field_name: str) -> str:
+    counts: Dict[str, float] = defaultdict(float)
+    for row in rows:
+        value = _clean(row.get(field_name))
+        if not value:
+            continue
+        counts[value] += float(row.get("weight") or 1.0)
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+
 def choose_best_identity(article: str, rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    chosen_offer = _choose_best_text(rows, "kaspi_offer_name")
     if article.upper().startswith(LINE61_PREFIX):
-        return {"sku_key": LINE61_SKU_KEY, "kaspi_name_core": LINE61_CORE}
+        return {
+            "sku_key": LINE61_SKU_KEY,
+            "kaspi_name_core": LINE61_CORE,
+            "kaspi_offer_name": chosen_offer,
+        }
 
     by_sku: Dict[str, float] = defaultdict(float)
     by_core: Dict[Tuple[str, str], float] = defaultdict(float)
@@ -80,8 +97,8 @@ def choose_best_identity(article: str, rows: List[Dict[str, Any]]) -> Dict[str, 
         for row in rows:
             core = _clean(row.get("kaspi_name_core"))
             if core:
-                return {"sku_key": "", "kaspi_name_core": core}
-        return {"sku_key": "", "kaspi_name_core": ""}
+                return {"sku_key": "", "kaspi_name_core": core, "kaspi_offer_name": chosen_offer}
+        return {"sku_key": "", "kaspi_name_core": "", "kaspi_offer_name": chosen_offer}
 
     chosen_sku = sorted(by_sku.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
     core_candidates = [(k, w) for k, w in by_core.items() if k[0] == chosen_sku]
@@ -90,7 +107,7 @@ def choose_best_identity(article: str, rows: List[Dict[str, Any]]) -> Dict[str, 
     else:
         chosen_core = ""
 
-    return {"sku_key": chosen_sku, "kaspi_name_core": chosen_core}
+    return {"sku_key": chosen_sku, "kaspi_name_core": chosen_core, "kaspi_offer_name": chosen_offer}
 
 
 def _load_rows_from_crm(workbook: Path, sheet: str) -> pd.DataFrame:
@@ -130,6 +147,7 @@ def rebuild_identity_map(
                 "kaspi_article": article,
                 "sku_key": sku_key,
                 "kaspi_name_core": core,
+                "kaspi_offer_name": _clean(row.get(offer_col)) if offer_col else "",
                 "weight": 1.0,
             }
         )
@@ -143,6 +161,7 @@ def rebuild_identity_map(
                 "kaspi_article": row["kaspi_article"],
                 "sku_key": sku_key,
                 "kaspi_name_core": row["kaspi_name_core"],
+                "kaspi_offer_name": row["kaspi_offer_name"],
                 "weight": row["weight"],
             }
         )
@@ -173,6 +192,7 @@ def rebuild_identity_map(
             chosen = choose_best_identity(article, rows)
             sku_key = _clean(chosen.get("sku_key"))
             core = _clean(chosen.get("kaspi_name_core"))
+            offer_name = _clean(chosen.get("kaspi_offer_name"))
             if not sku_key and not core:
                 skipped += 1
                 continue
@@ -185,7 +205,7 @@ def rebuild_identity_map(
 
             existing = conn.execute(
                 """
-                SELECT id, sku_key, kaspi_name_core
+                SELECT id, sku_key, kaspi_name_core, kaspi_offer_name
                 FROM dim_kaspi_article_map
                 WHERE store_code = ? AND kaspi_article = ?
                 ORDER BY updated_at DESC
@@ -197,17 +217,18 @@ def rebuild_identity_map(
             if existing:
                 old_sku = _clean(existing["sku_key"])
                 old_core = _clean(existing["kaspi_name_core"])
-                if old_sku == sku_key and old_core == core:
+                old_offer_name = _clean(existing["kaspi_offer_name"])
+                if old_sku == sku_key and old_core == core and old_offer_name == offer_name:
                     skipped += 1
                     continue
                 if not dry_run:
                     conn.execute(
                         """
                         UPDATE dim_kaspi_article_map
-                        SET sku_key = ?, kaspi_name_core = ?, source = 'crm_historical_patch'
+                        SET sku_key = ?, kaspi_name_core = ?, kaspi_offer_name = ?, source = 'crm_historical_patch'
                         WHERE id = ?
                         """,
-                        (sku_key or old_sku, core or old_core, existing["id"]),
+                        (sku_key or old_sku, core or old_core, offer_name or old_offer_name, existing["id"]),
                     )
                 updated += 1
                 continue
@@ -216,10 +237,10 @@ def rebuild_identity_map(
                 conn.execute(
                     """
                     INSERT INTO dim_kaspi_article_map (
-                        store_code, kaspi_article, kaspi_name_core, sku_key, source
-                    ) VALUES (?, ?, ?, ?, 'crm_historical_patch')
+                        store_code, kaspi_article, kaspi_offer_name, kaspi_name_core, sku_key, source
+                    ) VALUES (?, ?, ?, ?, ?, 'crm_historical_patch')
                     """,
-                    (store_code, article, core, sku_key),
+                    (store_code, article, offer_name, core, sku_key),
                 )
             inserted += 1
 

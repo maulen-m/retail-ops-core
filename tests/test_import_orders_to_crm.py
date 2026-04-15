@@ -29,6 +29,7 @@ import pytest
 from scripts.import_orders_to_crm import (
     CRMAppendExpectation,
     CRMAppendDateReconcilePlan,
+    CRMDateBlockRow,
     CRMSnapshot,
     AppendVerificationError,
     ExcelWorkbookSession,
@@ -760,6 +761,28 @@ def test_compute_fixed_values_forces_line61_core():
     assert values["Kaspi_name_core"] == "6в1_Черный_+Сумка"
 
 
+def test_compute_fixed_value_columns_uses_sku_family_core_mapping():
+    raw_row = {
+        "Склад передачи КД": "30000001_PP1",
+        "Артикул": "CL_OC_MEN_LINE52_BLACK_103217238_44/46, 48_XL",
+        "Название товара в Kaspi Магазине": "Комплект Antec RASH-921 Рашгард 5 в 1 черный 46, 48",
+        "Название в системе продавца": "Antec line52",
+        "Количество": 1,
+        "Сумма": 12990,
+        "Стоимость доставки для продавца": 500,
+        "SKU_key": "CL_OC_MEN_LINE52_BLACK_103217238_44/46, 48",
+        "MY_SIZE": "L",
+    }
+
+    values = compute_fixed_value_columns(
+        raw_row,
+        {},
+        {"CL_OC_MEN_LINE52_BLACK": "Принт_5в1_черный"},
+    )
+
+    assert values["Kaspi_name_core"] == "Принт_5в1_черный"
+
+
 def test_load_sku_meta_for_keys_handles_missing_dim_sku_table(monkeypatch, tmp_path):
     db_path = tmp_path / "empty.db"
     sqlite3.connect(db_path).close()
@@ -1155,6 +1178,104 @@ def test_delete_crm_rows_openpyxl_deletes_rows_and_resizes_table(tmp_path):
     assert ws2.cell(row=2, column=2).value == "1001"
     assert ws2.cell(row=3, column=2).value == "1003"
     wb2.close()
+
+
+def test_delete_crm_rows_xlwings_falls_back_to_openpyxl_on_mac_table_access_error(
+    monkeypatch, tmp_path
+):
+    crm_path = tmp_path / "crm.xlsx"
+    crm_path.write_bytes(b"placeholder")
+
+    seen: dict[str, Any] = {}
+
+    class _BrokenTables:
+        def __getitem__(self, key):
+            raise KeyError(key)
+
+        def __iter__(self):
+            raise RuntimeError(
+                "Command failed:\n"
+                "\tOSERROR: -1728\n"
+                "\tMESSAGE: The object you are trying to access does not exist\n"
+                "\tCOMMAND: app('/Applications/Microsoft Excel.app').workbooks"
+                "['SALES_KSP_CRM_V3.xlsx'].worksheets['SALES_KSP_CRM_1'].count(each=k.list_object)"
+            )
+
+    class _FakeSheet:
+        def __init__(self):
+            self.tables = _BrokenTables()
+
+    class _FakeBook:
+        def __init__(self):
+            self.sheets = {"SALES_KSP_CRM_1": _FakeSheet()}
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class _FakeApp:
+        def __init__(self, *args, **kwargs):
+            self.display_alerts = True
+            self.screen_updating = True
+            self.calculation = "automatic"
+            self.quit_called = False
+            self.kill_called = False
+
+        def calculate(self):
+            seen["calculate_called"] = True
+
+        def quit(self):
+            self.quit_called = True
+
+        def kill(self):
+            self.kill_called = True
+
+    fake_book = _FakeBook()
+    fake_app_box: dict[str, Any] = {}
+
+    def _fake_app_ctor(*args, **kwargs):
+        app = _FakeApp(*args, **kwargs)
+        fake_app_box["app"] = app
+        return app
+
+    monkeypatch.setattr("scripts.import_orders_to_crm._require_xlwings", lambda: None)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.xw",
+        SimpleNamespace(App=_fake_app_ctor),
+    )
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._open_workbook_xlwings",
+        lambda *_args, **_kwargs: fake_book,
+    )
+
+    def _openpyxl_delete_spy(out_wb, sheet_name, table_name, row_numbers):
+        seen["fallback_args"] = (Path(out_wb), sheet_name, table_name, list(row_numbers))
+        return 1
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.delete_crm_rows_openpyxl",
+        _openpyxl_delete_spy,
+    )
+
+    from scripts.import_orders_to_crm import delete_crm_rows_xlwings
+
+    deleted = delete_crm_rows_xlwings(
+        out_wb=crm_path,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        row_numbers=[5],
+    )
+
+    assert deleted == 1
+    assert seen["fallback_args"] == (
+        crm_path,
+        "SALES_KSP_CRM_1",
+        "tb_SalesRaw",
+        [5],
+    )
+    assert fake_book.closed is True
+    assert fake_app_box["app"].quit_called is True
+    assert fake_app_box["app"].kill_called is False
 
 
 def test_excel_append_openpyxl_writes_numeric_order_id_and_phone(tmp_path):
@@ -1764,13 +1885,13 @@ def test_openpyxl_append_fallback_can_be_enabled(monkeypatch):
 
 def test_xlwings_open_timeout_env_parsing(monkeypatch):
     monkeypatch.delenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", raising=False)
-    assert _xlwings_open_timeout_sec() == 45
+    assert _xlwings_open_timeout_sec() == 25
     monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "2")
     assert _xlwings_open_timeout_sec() == 5
     monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "90")
     assert _xlwings_open_timeout_sec() == 90
     monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "not-a-number")
-    assert _xlwings_open_timeout_sec() == 45
+    assert _xlwings_open_timeout_sec() == 25
 
 
 def test_open_workbook_xlwings_retries_without_timeout_kwarg(monkeypatch, tmp_path):
@@ -1791,6 +1912,7 @@ def test_open_workbook_xlwings_retries_without_timeout_kwarg(monkeypatch, tmp_pa
         def __init__(self):
             self.books = DummyBooks()
 
+    monkeypatch.setattr("scripts.import_orders_to_crm.sys.platform", "linux")
     monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "45")
     app = DummyApp()
     result = _open_workbook_xlwings(app, workbook, update_links=False, read_only=False)
@@ -1827,6 +1949,7 @@ def test_open_workbook_xlwings_uses_wall_clock_helper_when_timeout_kwarg_missing
         called["timeout_sec"] = timeout_sec
         return "HELPER_OK"
 
+    monkeypatch.setattr("scripts.import_orders_to_crm.sys.platform", "linux")
     monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "33")
     monkeypatch.setattr(
         "scripts.import_orders_to_crm._open_workbook_xlwings_without_timeout_kwarg",
@@ -1841,30 +1964,37 @@ def test_open_workbook_xlwings_uses_wall_clock_helper_when_timeout_kwarg_missing
     assert called["timeout_sec"] == 33
 
 
-def test_open_workbook_xlwings_uses_minimal_open_on_macos(monkeypatch, tmp_path):
+def test_open_workbook_xlwings_uses_wall_clock_helper_on_macos(monkeypatch, tmp_path):
     workbook = tmp_path / "crm.xlsx"
     workbook.write_text("placeholder", encoding="utf-8")
 
-    class DummyBooks:
-        def __init__(self):
-            self.calls = []
-
-        def open(self, _path, **kwargs):
-            self.calls.append(dict(kwargs))
-            return "MAC_OK"
-
     class DummyApp:
-        def __init__(self):
-            self.books = DummyBooks()
+        books = object()
 
     monkeypatch.setattr("scripts.import_orders_to_crm.sys.platform", "darwin")
-    monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "45")
+    monkeypatch.setenv("CRM_XLWINGS_OPEN_TIMEOUT_SEC", "25")
+    called = {}
+
+    def _fake_helper(app, workbook_path, open_kwargs, timeout_sec):
+        called["app"] = app
+        called["workbook_path"] = workbook_path
+        called["open_kwargs"] = dict(open_kwargs)
+        called["timeout_sec"] = timeout_sec
+        return "MAC_OK"
+
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._open_workbook_xlwings_without_timeout_kwarg",
+        _fake_helper,
+    )
     app = DummyApp()
 
     result = _open_workbook_xlwings(app, workbook, update_links=False, read_only=True)
 
     assert result == "MAC_OK"
-    assert app.books.calls == [{}]
+    assert called["app"] is app
+    assert called["workbook_path"] == workbook
+    assert called["open_kwargs"] == {}
+    assert called["timeout_sec"] == 25
 
 
 def test_formula_template_columns_include_orderid_and_exclude_human_owned_my_size():
@@ -2400,7 +2530,7 @@ def test_xlwings_append_timeout_sec_respects_env(monkeypatch):
 
 def test_xlwings_append_timeout_sec_uses_safer_default(monkeypatch):
     monkeypatch.delenv("CRM_XLWINGS_APPEND_TIMEOUT_SEC", raising=False)
-    assert _xlwings_append_timeout_sec() == 420
+    assert _xlwings_append_timeout_sec() == 240
 
 
 def test_temporary_manual_calculation_switches_and_restores():
@@ -4500,6 +4630,96 @@ def _minimal_snapshot() -> CRMSnapshot:
 
 def _minimal_active_orders_df() -> pd.DataFrame:
     return pd.DataFrame({"dummy": ["value"]})
+
+
+def test_main_preserves_existing_rollover_rows_in_same_day_reconcile(monkeypatch, tmp_path):
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+    source_file = orders_dir / "ActiveOrders.xlsx"
+    source_file.write_text("placeholder", encoding="utf-8")
+    crm_path = tmp_path / "crm.xlsx"
+    crm_path.write_text("crm", encoding="utf-8")
+
+    current_key = "1001|2026-04-09|sku-a|item-a|1"
+    rollover_key = "1002|2026-04-08|sku-b|item-b|1"
+    snapshot = CRMSnapshot(
+        **{
+            **_minimal_snapshot().__dict__,
+            "existing_rollover_keys": {rollover_key},
+            "append_date_key_counts": {current_key: 1, rollover_key: 1},
+            "append_date_rows": [
+                CRMDateBlockRow(row_num=20, line_key=current_key, my_size=""),
+                CRMDateBlockRow(row_num=21, line_key=rollover_key, my_size="L"),
+            ],
+        }
+    )
+
+    df = pd.DataFrame(
+        {
+            "№ заказа": ["1001"],
+            "Название товара в Kaspi Магазине": ["Item A"],
+            "Артикул": ["SKU-A"],
+            "Количество": [1],
+            "Плановая дата передачи курьеру": ["09.04.2026"],
+        }
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.read_active_orders", lambda _p: (df, [source_file]))
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.filter_for_shipping",
+        lambda df_all, *_args, **_kwargs: (df_all, {"rows_in_files": 1, "rows_after_filters": 1}),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.sort_for_crm", lambda in_df: in_df)
+    monkeypatch.setattr("scripts.import_orders_to_crm.load_crm_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_staging", lambda *_args, **_kwargs: ([["x"]], [""]))
+    monkeypatch.setattr("scripts.import_orders_to_crm._excel_automation_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm.build_pending_append_mask",
+        lambda df_in, **_kwargs: (
+            df_in.assign(_okey=[current_key]),
+            pd.Series([False], index=df_in.index),
+            {"duplicates_skipped": 1, "planned_duplicate_rows": 0, "append_date_duplicate_rows": 1, "carryforward_rows_to_append": 0},
+        ),
+    )
+    monkeypatch.setattr("scripts.import_orders_to_crm.build_append_expectations", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("scripts.import_orders_to_crm.guard_reconcile_delete_volume", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.import_orders_to_crm.verify_expected_append_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("scripts.import_orders_to_crm.append_orders_with_fallback", lambda *_args, **_kwargs: (2, 1))
+    monkeypatch.setattr("scripts.import_orders_to_crm.archive_run", lambda *_args, **_kwargs: tmp_path / "archive")
+    monkeypatch.setattr("scripts.import_orders_to_crm.sync_pending_orders_to_gdrive_safe", lambda *_args, **_kwargs: {"rows_synced": 0})
+    monkeypatch.setattr("scripts.import_orders_to_crm.backfill_seller_delivery_fee", lambda *_args, **_kwargs: 0)
+
+    seen: dict[str, Any] = {}
+
+    def _plan_spy(existing_rows, desired_keys):
+        seen["desired_keys"] = list(desired_keys)
+        return CRMAppendDateReconcilePlan(
+            delete_row_numbers=[],
+            keep_keys=set(desired_keys),
+            keep_rows_by_key={},
+            missing_keys=[],
+        )
+
+    monkeypatch.setattr("scripts.import_orders_to_crm.plan_append_date_reconcile", _plan_spy)
+
+    stats = main(
+        orders_dir=orders_dir,
+        crm_path=crm_path,
+        sheet_name="SALES_KSP_CRM_1",
+        table_name="tb_SalesRaw",
+        dry_run=False,
+        update_existing=False,
+        no_update=True,
+        include_overdue=True,
+        date_end="2026-04-09",
+        append_date="2026-04-09",
+        append_integrity_check=False,
+        refresh_delivery_fees=False,
+        gdrive_sync=False,
+        verbose=False,
+    )
+
+    assert stats["orders_imported"] == 0
+    assert seen["desired_keys"] == [current_key, rollover_key]
 
 
 def test_main_default_does_not_compute_fixed_values_payload(monkeypatch, tmp_path):

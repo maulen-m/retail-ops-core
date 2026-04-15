@@ -28,7 +28,10 @@ def test_step2_uses_transactional_strict_xlwings_mode():
 
     # Keep hard timeout wrapper in place.
     assert 'python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \\' in step2_block
+    assert 'PYTHONUNBUFFERED=1 \\' in step2_block
     assert 'CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \\' in step2_block
+    assert 'CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \\' in step2_block
+    assert 'python3 -u scripts/import_orders_to_crm.py \\' in step2_block
 
     # Step 2 must now write through the transactional + strict Excel path.
     assert "--no-transactional" not in flags
@@ -53,13 +56,14 @@ def test_step2_uses_transactional_strict_xlwings_mode():
     assert "${FIXED_BACKFILL_FLAGS}" in step2_block
 
 
-def test_step2_append_timeout_default_is_not_overly_aggressive():
+def test_step2_timeout_defaults_fail_faster_without_being_aggressive():
     script_path = Path("excel_ui/run_full_import.command")
     text = script_path.read_text(encoding="utf-8")
     step2_block = _extract_step2_block(text)
 
-    # 180s is too low for larger day volumes; keep a safer unattended default.
-    assert 'XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-420}"' in step2_block
+    assert 'STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-600}"' in step2_block
+    assert 'XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-25}"' in step2_block
+    assert 'XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-240}"' in step2_block
 
 
 def test_late_arrival_topup_uses_transactional_strict_xlwings_mode():
@@ -72,6 +76,7 @@ def test_late_arrival_topup_uses_transactional_strict_xlwings_mode():
     assert "--no-transactional" not in flags
     assert "--no-strict-excel" not in flags
     assert "--strict-excel" in flags
+    assert 'python3 -u scripts/import_orders_to_crm.py \\' in topup_block
     assert "--skip-fixed-backfill" not in flags
     assert "${FIXED_BACKFILL_FLAGS}" in topup_block
 
@@ -219,3 +224,27 @@ def test_command_exits_nonzero_on_hard_gate_failure():
     assert "HARD_FAIL=0" in text
     assert "if [ \"${HARD_FAIL}\" -ne 0 ]; then" in text
     assert "exit 1" in text
+
+
+def test_command_enriches_db_from_activeorders_before_google_publish():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    assert "run_activeorders_identity_enrichment()" in text
+    assert "scripts/enrich_kaspi_orders_from_activeorders.py" in text
+    assert "ENABLE_KASPI_ACTIVEORDERS_DB_WRITE=1" in text
+    assert "Step 1c: Enriching DB order identities from ActiveOrders export..." in text
+    assert "Late-arrival top-up: enriching DB order identities from ActiveOrders export..." in text
+    assert 'GOOGLE_BOARD_SYNC_READY=1' in text
+    assert 'GOOGLE_BOARD_SYNC_READY=0' in text
+
+
+def test_command_publishes_google_ops_board_immediately_after_success_gate():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    assert "run_google_ops_board_publish_now()" in text
+    assert "scripts/sync_google_ops_board.py" in text
+    assert "ENABLE_GOOGLE_OPS_BOARD_WRITE=1" in text
+    assert "Step 3: Publish Google Ops Board" in text
+    assert "Step 4: Google Drive sync skipped in unattended mode (--no-gdrive-sync)" in text
+    assert "NO-OP: skipping Google Ops Board publish (workflow already red)." in text
+    assert "ERROR: Google Ops Board publish blocked by missing or failed DB enrichment step." in text

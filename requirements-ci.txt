@@ -6,3 +6,4 @@ PyYAML
 requests
 pypdf
 python-dotenv
+google-auth

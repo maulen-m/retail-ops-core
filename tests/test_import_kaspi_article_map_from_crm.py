@@ -212,3 +212,57 @@ def test_import_map_uses_sheet_sku_key_and_builds_missing_size_rows(tmp_path: Pa
         "CL_OC_MEN_LINE51_WHITE_4XL",
     )
     assert size_row == ("CL_OC_MEN_LINE51_WHITE_4XL", "CL_OC_MEN_LINE51_WHITE", "4XL")
+
+
+def test_import_map_ignores_placeholder_offer_values(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "app.db"
+    workbook = tmp_path / "crm.xlsx"
+    conn = sqlite3.connect(db_path)
+    _seed_schema(conn)
+    conn.commit()
+    conn.close()
+
+    _create_workbook(
+        workbook,
+        [
+            {
+                "Store_name": "ACMEWEAR",
+                "SKU_ID": "CL_OC_MEN_LINE51_WHITE_XL",
+                "SKU_ID_KSP": "CL_OC_MEN_LINE51_WHITE_134547486_48_(XL)",
+                "Kaspi_name_core": "Line51",
+                "MY_SIZE": "XL",
+                "Size_kaspi": "48",
+                "SKU_key": "CL_OC_MEN_LINE51_WHITE",
+                "Kaspi_offer_name": "YES",
+                "Model": "Line51",
+                "Brand": "AcmeWear",
+            }
+        ],
+    )
+
+    monkeypatch.setattr(
+        "scripts.import_kaspi_article_map_from_crm._load_store_catalog",
+        lambda: {"ACMEWEAR": {"merchant_id": "m-acmewear"}},
+    )
+    monkeypatch.setenv("ENABLE_KASPI_WORKBOOK_MAP_SYNC", "1")
+
+    report = import_map(
+        db_path=db_path,
+        workbook=workbook,
+        sheet="M02_SKU_CATALOG_NC",
+        store_filter=None,
+        apply_changes=True,
+    )
+
+    assert report["inserted"] == 1
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        """
+        SELECT kaspi_offer_name, kaspi_name_core
+        FROM dim_kaspi_article_map
+        WHERE store_code='ACMEWEAR'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row == (None, "Line51")

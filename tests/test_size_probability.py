@@ -355,6 +355,37 @@ class TestDetermineSize:
         assert result.confidence == 'LOW'
         assert result.size == 'L'  # CL default
 
+    def test_cascade_declared_size_from_sku_id_beats_default(self, test_db):
+        """Declared size in sku_id should win before generic CL default."""
+        result = determine_size(
+            order={
+                'kaspi_offer_name': 'NONEXISTENT',
+                'sku_key': 'NONEXISTENT',
+                'sku_id': 'CL_OC_MEN_LINE51_WHITE_K-O_ST_4XL_2_4XL',
+                'product_type': 'CL',
+            },
+            db_path=test_db,
+        )
+
+        assert result.source == 'DECLARED_ORDER'
+        assert result.confidence == 'HIGH'
+        assert result.size == '4XL'
+
+    def test_cascade_declared_size_from_offer_name_beats_default(self, test_db):
+        """Declared size in a live offer name should win even if sku family is wrong."""
+        result = determine_size(
+            order={
+                'kaspi_offer_name': 'Спортивный костюм ACMEWEAR OF_SUIT-61_BLK_K-O_4XL_58 черный, белый 4XL',
+                'sku_key': 'CL_OC_MEN_LINE51_WHITE_K-O_ST_4XL_2',
+                'product_type': 'CL',
+            },
+            db_path=test_db,
+        )
+
+        assert result.source == 'DECLARED_ORDER'
+        assert result.confidence == 'HIGH'
+        assert result.size == '4XL'
+
     def test_cascade_returns_size_result(self, test_db):
         """Test that determine_size returns SizeResult dataclass."""
         result = determine_size(

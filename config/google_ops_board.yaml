@@ -1,0 +1,224 @@
+version: 2
+sync_mode: db_first_google_sheets_phase2_salesraw
+spreadsheet_id: 1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg
+write_env_gate: ENABLE_GOOGLE_OPS_BOARD_WRITE
+db_write_env_gate: ENABLE_GOOGLE_OPS_BOARD_DB_WRITE
+closeout_write_env_gate: ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT
+service_account_env_vars:
+  - AB_GOOGLE_SERVICE_ACCOUNT_JSON
+  - AB_GOOGLE_SERVICE_ACCOUNT_KEY_JSON
+  - GOOGLE_APPLICATION_CREDENTIALS
+tabs:
+  SalesRaw_Today:
+    key_column: _db_row_id
+    editable_columns:
+      - MY_SIZE
+    headers:
+      - Status
+      - Date
+      - STORE_NAME
+      - HEIGHT
+      - WEIGHT
+      - Quantity
+      - Kaspi_name_core
+      - OrderID
+      - MY_SIZE
+      - PROBABLE_SIZE
+      - KASPI_OFFER_NAME
+      - SKU_key
+      - _db_row_id
+      - _line_key
+      - _probable_size_source
+      - _probable_size_confidence
+    ui:
+      frozen_row_count: 1
+      min_row_count: 2000
+      protected_sheet:
+        warning_only: false
+        unprotected_columns:
+          - MY_SIZE
+      hidden_columns:
+        - _db_row_id
+        - _line_key
+        - _probable_size_source
+        - _probable_size_confidence
+      clear_data_validation_columns:
+        - MY_SIZE
+      conditional_formats:
+        - column: Status
+          type: TEXT_EQ
+          value: OVERDUE
+          background_rgb: [0.9569, 0.8, 0.8]
+          text_rgb: [0.6118, 0.0431, 0.0431]
+          bold: true
+        - column: MY_SIZE
+          type: BLANK
+          background_rgb: [0.9882, 0.898, 0.7882]
+          text_rgb: [0.4863, 0.2627, 0.0824]
+        - column: MY_SIZE
+          type: NOT_BLANK
+          background_rgb: [0.851, 0.9176, 0.8275]
+          text_rgb: [0.1529, 0.3843, 0.1059]
+        - column: STORE_NAME
+          type: TEXT_EQ
+          value: AcmeWear
+          background_rgb: [1.0, 0.851, 0.4]
+        - column: STORE_NAME
+          type: TEXT_EQ
+          value: Universal
+          background_rgb: [0.6627, 0.8157, 0.5569]
+        - column: Kaspi_name_core
+          type: TEXT_EQ
+          value: 6в1_Черный_+Сумка
+          background_rgb: [1.0, 0.4941, 0.4745]
+        - column: Kaspi_name_core
+          type: TEXT_EQ
+          value: Принт_5в1_черный
+          background_rgb: [0.4588, 0.8431, 1.0]
+        - column: Kaspi_name_core
+          type: TEXT_EQ
+          value: Line51
+          background_rgb: [0.8353, 0.9882, 0.4745]
+  Run_Control:
+    key_column: target_date
+    editable_columns:
+      - ready_for_closeout
+      - ready_set_by
+      - ready_set_at
+      - notes
+      - last_verified_ready_at
+      - last_orchestrator_run_id
+      - last_orchestrator_status
+    headers:
+      - target_date
+      - ready_for_closeout
+      - ready_set_by
+      - ready_set_at
+      - notes
+      - last_verified_ready_at
+      - last_orchestrator_run_id
+      - last_orchestrator_status
+    ui:
+      frozen_row_count: 1
+      protected_sheet:
+        warning_only: false
+        unprotected_columns:
+          - ready_for_closeout
+          - ready_set_by
+          - ready_set_at
+          - notes
+      min_row_count: 20
+      data_validation:
+        column: ready_for_closeout
+        allowed_values:
+          - HOLD
+          - READY
+  README:
+    key_column: field
+    editable_columns: []
+    headers:
+      - field
+      - value
+      - notes
+  Orders_Today:
+    key_column: order_id
+    editable_columns:
+      - exception_flag
+    headers:
+      - order_id
+      - store
+      - planned_date
+      - status
+      - customer_name
+      - phone
+      - offer_name
+      - sku
+      - quantity
+      - my_size
+      - package_qty
+      - waybill_status
+      - whatsapp_status
+      - exception_flag
+      - last_sync_at
+  Needs_Size:
+    key_column: order_id
+    editable_columns:
+      - my_size
+      - size_status
+      - assigned_to
+      - note
+    headers:
+      - order_id
+      - store
+      - planned_date
+      - offer_name
+      - quantity
+      - my_size
+      - size_status
+      - assigned_to
+      - note
+      - last_sync_at
+  Shipping_Queue:
+    key_column: order_id
+    editable_columns:
+      - package_qty
+      - shipping_status
+    headers:
+      - order_id
+      - store
+      - planned_date
+      - my_size
+      - package_qty
+      - waybill_ready
+      - pdf_ready
+      - whatsapp_batch
+      - shipping_status
+      - last_sync_at
+  Exceptions:
+    key_column: exception_key
+    editable_columns:
+      - exception_note
+      - owner
+      - resolved
+    headers:
+      - exception_key
+      - order_id
+      - store
+      - planned_date
+      - exception_type
+      - exception_note
+      - owner
+      - resolved
+      - last_sync_at
+  Shipped_Today:
+    key_column: order_id
+    editable_columns:
+      - whatsapp_batch
+      - whatsapp_sent_at
+    headers:
+      - order_id
+      - store
+      - planned_date
+      - my_size
+      - package_qty
+      - shipped_at
+      - whatsapp_batch
+      - whatsapp_sent_at
+      - last_sync_at
+  Config_Do_Not_Edit:
+    key_column: key
+    editable_columns: []
+    headers:
+      - key
+      - value
+      - notes
+writeback:
+  size_assignments:
+    tab: SalesRaw_Today
+    key_column: _db_row_id
+    source_column: MY_SIZE
+    target_table: fact_orders_kaspi
+    target_key_column: id
+    target_column: assigned_size
+    target_source_column: size_source
+    target_source_value: GOOGLE_OPS_BOARD

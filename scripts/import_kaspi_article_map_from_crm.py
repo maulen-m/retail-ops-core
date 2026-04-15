@@ -90,6 +90,15 @@ def _clean_str(value: Any) -> str | None:
     return text if text else None
 
 
+def _clean_offer_name(value: Any) -> str | None:
+    text = _clean_str(value)
+    if not text:
+        return None
+    if text.upper() in {"YES", "NO", "TRUE", "FALSE", "Y", "N"}:
+        return None
+    return text
+
+
 def _load_store_catalog() -> dict[str, dict[str, str | None]]:
     cfg = _load_yaml(PROJECT_ROOT / "config" / "kaspi_stores.yaml")
     stores = cfg.get("stores", {}) if isinstance(cfg, dict) else {}
@@ -224,7 +233,7 @@ def import_map(
             norm_size = normalize_size(raw_size) if raw_size else None
             sku_id = raw_sku_id if raw_sku_id and _value_exists(conn, "dim_sku_size", "sku_id", raw_sku_id) else None
 
-            kaspi_offer_name = _clean_str(row.get(offer_col)) if offer_col else None
+            kaspi_offer_name = _clean_offer_name(row.get(offer_col)) if offer_col else None
             kaspi_name_core = _clean_str(row.get(name_core_col)) if name_core_col else None
             model = _clean_str(row.get(model_col)) if model_col else None
             brand = _clean_str(row.get(brand_col)) if brand_col else None

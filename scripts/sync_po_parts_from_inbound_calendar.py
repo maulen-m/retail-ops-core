@@ -27,7 +27,7 @@ from core.excel.dim_sku_light_parser import parse_dim_sku_light
 
 DEFAULT_XLSX = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/"
-    "Purchase_orders/vibe_code_PO/backup/7.2.26/Inbound_calendar_V10.002.xlsx"
+    "Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx"
 )
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 
@@ -320,7 +320,7 @@ def sync_po_parts_from_workbook(
     db_path: Path,
     sheet_inbounds: str = "Inbounds_sheet",
     sheet_parts: str = "PO_part_id_Totals",
-    sheet_sku: str = "DIM_SKU_light_v5",
+    sheet_sku: str = "DIM_SKU_light_v6",
     apply: bool = False,
     allow_dim_sku_weight_overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -646,13 +646,13 @@ def main() -> int:
     parser.add_argument("--xlsx", type=Path, default=DEFAULT_XLSX, help="Workbook path")
     parser.add_argument("--sheet-inbounds", default="Inbounds_sheet")
     parser.add_argument("--sheet-parts", default="PO_part_id_Totals")
-    parser.add_argument("--sheet-sku", default="DIM_SKU_light_v5")
+    parser.add_argument("--sheet-sku", default="DIM_SKU_light_v6")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="Database path")
     parser.add_argument("--apply", action="store_true", help="Apply writes")
     parser.add_argument(
         "--allow-dim-sku-weight-overwrite",
         action="store_true",
-        help="Allow workbook DIM_SKU_light_v5 rows to overwrite existing dim_sku.weight_kg",
+        help="Allow workbook DIM_SKU_light_v6 rows to overwrite existing dim_sku.weight_kg",
     )
     args = parser.parse_args()
 

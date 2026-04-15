@@ -57,7 +57,7 @@ def _load_sheet(path: Path, sheet_name: str, header_key: str):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Import PO funding plan totals from Excel")
-    parser.add_argument("--xlsx", type=Path, required=True, help="Path to PO_storing_Vibecode_1.xlsx")
+    parser.add_argument("--xlsx", type=Path, required=True, help="Path to PO funding workbook (.xlsx)")
     parser.add_argument("--dry-run", action="store_true", help="Parse only; do not write to DB")
     parser.add_argument("--source", default=None, help="Source label for po_funding_plan")
     args = parser.parse_args()

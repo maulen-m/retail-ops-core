@@ -112,12 +112,24 @@ store_code_map:
   
   "Universal": "UNIVERSAL"
   "Универсал": "UNIVERSAL"
+  "30000001_PP1": "UNIVERSAL"
   
+  "AcmeWear": "ACMEWEAR"
+  "ACMEWEAR": "ACMEWEAR"
+  "30137883_PP1": "ACMEWEAR"
+  "30137883_PP3": "ACMEWEAR"
+
+  "STORE-B": "STOREB"
+  "STOREB": "STOREB"
+  "30000002_PP1": "STOREB"
+  "30000002_PP2": "STOREB"
+
   "11KZ": "11KZ"
   "11КЗ": "11KZ"
   
   "Store-C": "MELVIS"
   "Мелвис": "MELVIS"
+  "30362323_PP1": "MELVIS"
   
   # Default for unknown
   "_default": "UNKNOWN"

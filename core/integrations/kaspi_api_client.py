@@ -31,6 +31,7 @@ Usage:
 import os
 import time
 import logging
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -86,6 +87,8 @@ STORE_MERCHANT_UID_MAP = {
     'MELVIS': 'KASPI_MERCHANT_UID_MELVIS',
     'STOREB': 'KASPI_MERCHANT_UID_STOREB',
 }
+
+DEFAULT_STORES_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "kaspi_stores.yaml"
 
 
 class OrderState(str, Enum):
@@ -159,6 +162,11 @@ class KaspiRateLimitError(KaspiAPIError):
 
 class KaspiWriteDisabledError(KaspiAPIError):
     """Write operation attempted with ENABLE_KASPI_WRITE=0."""
+    pass
+
+
+class KaspiWriteContextError(KaspiAPIError):
+    """Write operation attempted without required store write context."""
     pass
 
 
@@ -255,9 +263,24 @@ class KaspiAPIClient:
         if not env_var:
             return None
         raw = os.environ.get(env_var)
-        if raw is None:
+        if raw is not None:
+            value = str(raw).strip()
+            if value:
+                return value
+
+        config_path = DEFAULT_STORES_CONFIG_PATH
+        if not config_path.exists():
             return None
-        value = str(raw).strip()
+        try:
+            import yaml
+
+            payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning(f"Unable to load merchant UID fallback from {config_path}: {exc}")
+            return None
+
+        store_meta = ((payload.get("stores") or {}).get(store_code) or {})
+        value = str(store_meta.get("merchant_uid") or "").strip()
         return value or None
 
     def _get_headers(self) -> dict:
@@ -379,6 +402,15 @@ class KaspiAPIClient:
             raise KaspiWriteDisabledError(
                 "Write operations disabled. Set ENABLE_KASPI_WRITE=1 to enable."
             )
+
+    def _require_write_context(self):
+        """Check if the store has the required merchant context for writes."""
+        self._require_write_enabled()
+        if self._merchant_uid:
+            return
+        raise KaspiWriteContextError(
+            f"Write operation blocked for {self.store_code}: merchant UID is not configured."
+        )
 
     # =========================================================================
     # READ OPERATIONS
@@ -684,7 +716,7 @@ class KaspiAPIClient:
         Returns:
             APIResponse with updated order
         """
-        self._require_write_enabled()
+        self._require_write_context()
         logger.info(f"Accepting order {order_code}")
 
         base64_id = self._get_order_base64_id(order_code)
@@ -720,7 +752,7 @@ class KaspiAPIClient:
         Returns:
             APIResponse with updated order
         """
-        self._require_write_enabled()
+        self._require_write_context()
         logger.info(f"Assembling order {order_code} with {parcel_count} parcels")
 
         base64_id = self._get_order_base64_id(order_code)
@@ -750,7 +782,7 @@ class KaspiAPIClient:
         Returns:
             APIResponse with updated order
         """
-        self._require_write_enabled()
+        self._require_write_context()
         logger.info(f"Assembling order {order_code} (ID: {base64_id}) with {parcel_count} parcels")
 
         # Primary endpoint: explicit order update.
@@ -795,7 +827,7 @@ class KaspiAPIClient:
         Returns:
             APIResponse with updated order
         """
-        self._require_write_enabled()
+        self._require_write_context()
         logger.info(f"Shipping order {order_code}")
 
         base64_id = self._get_order_base64_id(order_code)
@@ -829,7 +861,7 @@ class KaspiAPIClient:
         Returns:
             APIResponse with updated order
         """
-        self._require_write_enabled()
+        self._require_write_context()
         logger.warning(f"Cancelling order {order_code} with reason: {reason}")
 
         base64_id = self._get_order_base64_id(order_code)
@@ -864,7 +896,7 @@ class KaspiAPIClient:
         Returns:
             APIResponse with updated order
         """
-        self._require_write_enabled()
+        self._require_write_context()
         logger.info(f"Completing order {order_code}")
 
         base64_id = self._get_order_base64_id(order_code)

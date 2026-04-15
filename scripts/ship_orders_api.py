@@ -231,6 +231,10 @@ def normalize_store_name(value: Any) -> str:
     if store_str in STORE_MAP:
         return STORE_MAP[store_str]
 
+    # API store code
+    if store_str in API_CODE_TO_STORE_NAME:
+        return API_CODE_TO_STORE_NAME[store_str]
+
     # Already a display name
     if store_str in STORE_NAME_TO_API_CODE:
         return store_str
@@ -240,7 +244,21 @@ def normalize_store_name(value: Any) -> str:
         if code.lower() == store_str.lower() or name.lower() == store_str.lower():
             return name
 
+    for api_code, display_name in API_CODE_TO_STORE_NAME.items():
+        if api_code.lower() == store_str.lower():
+            return display_name
+
     return store_str
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, set):
+        return sorted(value)
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
 
 def is_heavy_item(item: OrderItem) -> bool:
@@ -458,6 +476,118 @@ def read_crm_orders(
         logger.info(f"Skipped {skipped_store} rows from other stores")
     if target_order_ids is not None:
         logger.info(f"Skipped {skipped_not_pending} rows not in pending assembly list")
+
+    return dict(orders_by_id)
+
+
+def read_db_orders(
+    db_path: Path,
+    target_date: date,
+    *,
+    store_filter: Optional[str] = None,
+    target_order_ids: Optional[set[str]] = None,
+    apply_date_filter: bool = True,
+    allow_missing_size: bool = False,
+) -> dict[str, list[OrderItem]]:
+    """
+    Read orders from fact_orders_kaspi (DB-first), grouped by order_id.
+
+    This is the automated closeout path. It uses DB size truth
+    (assigned_size first, then my_size) and does not depend on the CRM workbook.
+    """
+    if not db_path.exists():
+        raise FileNotFoundError(f"DB file not found: {db_path}")
+
+    with get_db(db_path) as conn:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_orders_kaspi'"
+        ).fetchone()
+        if not table:
+            raise RuntimeError("DB missing fact_orders_kaspi table")
+
+        params: list[Any] = []
+        where_parts = ["planned_shipment_date <= ?"]
+        params.append(target_date.isoformat())
+        if target_order_ids:
+            placeholders = ",".join("?" for _ in target_order_ids)
+            where_parts.append(f"order_id IN ({placeholders})")
+            params.extend(sorted(target_order_ids))
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                order_id,
+                store_code,
+                kaspi_offer_name,
+                sku_key,
+                sku_id,
+                quantity,
+                assigned_size,
+                my_size,
+                planned_shipment_date
+            FROM fact_orders_kaspi
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY planned_shipment_date, order_id, id
+            """,
+            params,
+        ).fetchall()
+
+    orders_by_id: dict[str, list[OrderItem]] = defaultdict(list)
+    skipped_no_size = 0
+    skipped_date = 0
+    skipped_store = 0
+
+    for row in rows:
+        order_id = _coerce_str(row["order_id"])
+        if order_id.endswith(".0"):
+            order_id = order_id[:-2]
+        if not order_id:
+            continue
+
+        planned_date = parse_date(row["planned_shipment_date"])
+        if apply_date_filter and planned_date and planned_date > target_date:
+            skipped_date += 1
+            continue
+
+        store_name = normalize_store_name(row["store_code"])
+        if store_filter and store_name != store_filter:
+            skipped_store += 1
+            continue
+
+        final_size = _coerce_str(row["assigned_size"]) or _coerce_str(row["my_size"])
+        if not final_size and not allow_missing_size:
+            skipped_no_size += 1
+            continue
+
+        kaspi_offer_name = _coerce_str(row["kaspi_offer_name"])
+        kaspi_name_core = extract_name_core(kaspi_offer_name) if kaspi_offer_name else ""
+        if not kaspi_name_core or kaspi_name_core.lower() == "unknown":
+            kaspi_name_core = _coerce_str(row["sku_key"]) or _coerce_str(row["sku_id"]) or "UNKNOWN"
+
+        quantity = int(row["quantity"] or 1)
+        item = OrderItem(
+            order_id=order_id,
+            store_name=store_name,
+            kaspi_name_core=kaspi_name_core,
+            my_size=final_size,
+            sku_key=_coerce_str(row["sku_key"]),
+            sku_id=_coerce_str(row["sku_id"]),
+            quantity=quantity,
+            planned_date=planned_date,
+        )
+        orders_by_id[order_id].append(item)
+
+    logger.info(
+        "Read %s unique orders from DB%s",
+        len(orders_by_id),
+        " (missing size allowed)" if allow_missing_size else " with assigned/manual size",
+    )
+    if skipped_no_size:
+        logger.info(f"Skipped {skipped_no_size} DB rows without assigned/manual size")
+    if apply_date_filter:
+        logger.info(f"Skipped {skipped_date} DB rows with future planned date")
+    if store_filter:
+        logger.info(f"Skipped {skipped_store} DB rows from other stores")
 
     return dict(orders_by_id)
 
@@ -1227,6 +1357,12 @@ def main() -> int:
         help='CRM Excel file path'
     )
     parser.add_argument(
+        '--db-path',
+        type=Path,
+        default=None,
+        help='Optional DB path (defaults to DATA_DIR/db/app.db if present)'
+    )
+    parser.add_argument(
         '--sheet',
         default=DEFAULT_SHEET_NAME,
         help='CRM sheet name'
@@ -1282,6 +1418,18 @@ def main() -> int:
         action='store_true',
         help='Allow assembling pending orders even if size is missing'
     )
+    parser.add_argument(
+        '--selection-source',
+        choices=['crm', 'db'],
+        default='crm',
+        help='Selection source for package-count shipping: crm (manual fallback) or db (automated closeout path)'
+    )
+    parser.add_argument(
+        '--json-out',
+        type=Path,
+        default=None,
+        help='Optional JSON output path for shipping summary'
+    )
 
     args = parser.parse_args()
 
@@ -1304,6 +1452,7 @@ def main() -> int:
     print(f"  Data root: {get_data_root()}")
     print(f"  CRM file: {args.crm_file}")
     print(f"  Target date: {target_date}")
+    print(f"  Selection source: {args.selection_source}")
     if include_overdue:
         lookback_label = overdue_lookback_days if overdue_lookback_days is not None else "all"
         print(f"  Date mode: planned <= target (lookback {lookback_label}d)")
@@ -1350,32 +1499,45 @@ def main() -> int:
             pending_store_for_order[order_id] = store_code
 
     # Step 2: Read orders from CRM
-    print("\nStep 2: Reading CRM for manually assigned MY_SIZE data...")
-    resolved_db_path = resolve_db_path(None)
+    resolved_db_path = resolve_db_path(args.db_path)
     if resolved_db_path:
         print(f"  DB: {resolved_db_path}")
     db_order_info = load_db_order_info(resolved_db_path or DEFAULT_DB_PATH, all_pending)
-    orders_by_id = read_crm_orders(
-        args.crm_file,
-        args.sheet,
-        target_date,
-        store_filter=args.store,
-        target_order_ids=all_pending,
-        db_order_info=db_order_info,
-        apply_date_filter=False,
-        allow_missing_size=args.allow_missing_size,
-    )
+    if args.selection_source == "db":
+        print("\nStep 2: Reading DB-assigned sizes for automated closeout...")
+        if not resolved_db_path:
+            raise RuntimeError("DB-first shipping requires a resolved db/app.db path")
+        orders_by_id = read_db_orders(
+            resolved_db_path,
+            target_date,
+            store_filter=args.store,
+            target_order_ids=all_pending,
+            apply_date_filter=False,
+            allow_missing_size=args.allow_missing_size,
+        )
+    else:
+        print("\nStep 2: Reading CRM for manually assigned MY_SIZE data...")
+        orders_by_id = read_crm_orders(
+            args.crm_file,
+            args.sheet,
+            target_date,
+            store_filter=args.store,
+            target_order_ids=all_pending,
+            db_order_info=db_order_info,
+            apply_date_filter=False,
+            allow_missing_size=args.allow_missing_size,
+        )
 
     # Add placeholder orders missing in the current CRM batch only when
     # allow_missing_size is explicitly enabled. Never reintroduce DB sizes as
     # actionable size truth for operator shipping.
-    missing_in_crm = all_pending - set(orders_by_id.keys())
+    missing_in_selection = all_pending - set(orders_by_id.keys())
     added_missing_crm_placeholders = 0
     skipped_missing_current_crm = 0
     skipped_placeholder_store = 0
     added_api_only = 0
-    if missing_in_crm:
-        for order_id in missing_in_crm:
+    if missing_in_selection:
+        for order_id in missing_in_selection:
             info = db_order_info.get(order_id)
             if not args.allow_missing_size:
                 skipped_missing_current_crm += 1
@@ -1426,23 +1588,25 @@ def main() -> int:
     if added_missing_crm_placeholders:
         print(
             f"  Added {added_missing_crm_placeholders} pending orders without size "
-            f"(current CRM row missing; allow-missing-size)"
+            f"({args.selection_source} selection missing row or size; allow-missing-size)"
         )
     if added_api_only:
         print(f"  Added {added_api_only} API-only pending orders (no CRM/DB)")
     if skipped_missing_current_crm:
         print(
             f"  Skipped {skipped_missing_current_crm} pending orders "
-            f"(missing current CRM row or unresolved manual size)"
+            f"(missing {args.selection_source} selection row or unresolved size)"
         )
     if skipped_placeholder_store:
         print(f"  Skipped {skipped_placeholder_store} pending orders (store filter)")
 
-    if not orders_by_id and not missing_in_crm:
-        print("No eligible orders in CRM/DB.")
+    if not orders_by_id and not missing_in_selection:
+        print("No eligible orders in DB/API selection.")
         return 0
     if args.allow_missing_size:
         print(f"  Found {len(orders_by_id)} orders (size optional)")
+    elif args.selection_source == "db":
+        print(f"  Found {len(orders_by_id)} orders with assigned/manual size in DB")
     else:
         print(f"  Found {len(orders_by_id)} orders with MY_SIZE in CRM")
 
@@ -1520,6 +1684,18 @@ def main() -> int:
 
     health = classify_ship_health(result)
     print(f"  Health: {health.code} ({health.message})")
+    result["selection_source"] = args.selection_source
+    result["target_date"] = target_date.isoformat()
+    result["store_scope"] = args.store or "ALL_STORES"
+    result["health_code"] = health.code
+    result["health_message"] = health.message
+    result["health_exit_code"] = health.exit_code
+    if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, default=_json_default),
+            encoding="utf-8",
+        )
     return health.exit_code
 
 

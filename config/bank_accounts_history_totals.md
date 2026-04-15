@@ -1,12 +1,13 @@
 # Bank Accounts History Totals
 
-Source: `config/bank_accounts_history.yaml`
+Source: `~/Docs/Autonomous_business/config/bank_accounts_history.yaml`
 Mode: compact
 Order: newest to oldest
 KZT conversion rates: USDT_KZT=490.0 (binance_p2p 2026-02-10); USD_KZT=514.0 (dim_fx_rates 2026-02-06); RUB_KZT=6.6 (default hardcoded); CNY_KZT=72.55808286791265 (dim_fx_rates 2026-02-06)
 
 | as_of | source | TOTAL_KZT | TOTAL_USD | TOTAL_RUB | TOTAL_USDT | TOTAL_KZT_EQ | UNIVERSAL_KZT | UNIVERSAL_USDT | UNIVERSAL_USD | UNIVERSAL_RUB | 11KZ_KZT | 11KZ_USDT | STOREB_KZT | ACMEWEAR_KZT | MELVIS_KZT |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2026-04-15 19:44:00 GMT+5 | manual snapshot (Cash_Balances) | 6,834,000 | 0 | 10,000 | 1,616 | 7,691,840 | 6,760,000 | 1,616 | 0 | 10,000 | 0 | 0 | 44,000 | 30,000 | 0 |
 | 2026-03-02 14:41:00 GMT+5 | manual snapshot (Cash_Balances) | 315,780 | 7 | 10,000 | 160.362615 | 463,955.68135 | 301,780 | 160.362615 | 7 | 10,000 | 0 | 0 | 14,000 | 0 | 0 |
 | 2026-03-02 11:45:41 GMT+5 | manual snapshot | 1,141,000 | 1,500 | 10,000 | 160.362615 | 2,056,577.68135 | 887,000 | 160.362615 | 1,500 | 10,000 | 0 | 0 | 254,000 | 0 | 0 |
 | 2026-02-17 13:05:44 GMT+5 | manual snapshot | 4,263,000 | 100 | 10,000 | 160.362615 | 4,458,977.68135 | 3,497,000 | 160.362615 | 100 | 10,000 | 3,000 | 0 | 408,000 | 355,000 | 0 |

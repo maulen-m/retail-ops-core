@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import core.integrations.kaspi_api_client as kaspi_api_client_mod
 from core.integrations.kaspi_api_client import (
     KaspiAPIClient,
     APIResponse,
@@ -32,6 +33,7 @@ from core.integrations.kaspi_api_client import (
     KaspiAuthError,
     KaspiRateLimitError,
     KaspiWriteDisabledError,
+    KaspiWriteContextError,
     KaspiNotFoundError,
     get_client,
     get_all_clients,
@@ -193,6 +195,24 @@ class TestWriteOperations:
         with pytest.raises(KaspiWriteDisabledError, match="Write operations disabled"):
             client.assemble_order('123')
 
+    @pytest.mark.parametrize(
+        ("method_name", "args"),
+        [
+            ("accept_order", ("123",)),
+            ("assemble_order", ("123",)),
+            ("ship_order", ("123",)),
+            ("cancel_order", ("123",)),
+            ("complete_order", ("123", "9999")),
+        ],
+    )
+    def test_write_operations_require_merchant_uid(self, mock_env_with_write, method_name, args):
+        """Write operations must fail closed if merchant UID is unresolved."""
+        client = KaspiAPIClient(store_code='UNIVERSAL')
+        client._merchant_uid = None
+
+        with pytest.raises(KaspiWriteContextError, match="merchant UID is not configured"):
+            getattr(client, method_name)(*args)
+
 
 # =============================================================================
 # ORDER STATE TESTS
@@ -241,6 +261,30 @@ class TestRequestBuilding:
         client = KaspiAPIClient(store_code='UNIVERSAL')
         headers = client._get_headers()
         assert headers.get('X-Merchant-Uid') == '30000001'
+
+    def test_headers_include_merchant_uid_from_store_config_when_env_missing(self, tmp_path, monkeypatch):
+        """Client should fall back to config/kaspi_stores.yaml when env uid is absent."""
+        cfg = tmp_path / "kaspi_stores.yaml"
+        cfg.write_text(
+            """
+stores:
+  UNIVERSAL:
+    merchant_uid: "30000001"
+""".strip(),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(kaspi_api_client_mod, "DEFAULT_STORES_CONFIG_PATH", cfg)
+        with patch.dict(
+            os.environ,
+            {
+                'KASPI_TOKEN_UNIVERSAL': 'test-token-universal',
+                'ENABLE_KASPI_WRITE': '0',
+            },
+            clear=True,
+        ):
+            client = KaspiAPIClient(store_code='UNIVERSAL')
+            headers = client._get_headers()
+            assert headers.get('X-Merchant-Uid') == '30000001'
 
 
 # =============================================================================
