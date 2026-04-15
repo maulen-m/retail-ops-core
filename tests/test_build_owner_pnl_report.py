@@ -184,7 +184,78 @@ def test_build_owner_pnl_report_pass(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert Path(report["ascii_path"]).exists()
 
 
-def test_build_owner_pnl_report_strict_fails_when_ads_stale(
+def test_build_owner_pnl_caps_statusdate_coverage_at_100(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    mapped_csv = tmp_path / "mapped" / "2026-01-01_to_2026-03-02" / "ArchiveSales_ALL_STORES_statusdate_mapped.csv"
+    _write_mapped_csv(mapped_csv, tx_date="2026-01-15")
+    opex_schedule = tmp_path / "opex_schedule.yaml"
+    _write_opex_schedule(opex_schedule)
+
+    ads_source = tmp_path / "ads.db"
+    ads_source.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
+
+    monkeypatch.setattr(
+        "scripts.build_owner_pnl_report.build_webui_truth_projection",
+        lambda **_kwargs: (
+            pd.DataFrame(
+                [
+                    {
+                        "order_id": "O1",
+                        "sale_date": "2026-01-15",
+                        "store_code": "UNIVERSAL",
+                        "sku_key": "SKU_A",
+                        "units": 2.0,
+                        "net_rev_kzt": 10000.0,
+                        "cogs_kzt": 4000.0,
+                        "db_match_status": "MATCHED",
+                    },
+                    {
+                        "order_id": "O2",
+                        "sale_date": "2026-01-16",
+                        "store_code": "UNIVERSAL",
+                        "sku_key": "SKU_A",
+                        "units": 1.0,
+                        "net_rev_kzt": 5000.0,
+                        "cogs_kzt": 2000.0,
+                        "db_match_status": "MATCHED",
+                    },
+                ]
+            ),
+            {"projected_rows": 2, "missing_in_db_orders": 0},
+        ),
+    )
+
+    validation = tmp_path / "validation"
+    _write_webui_validation(validation)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+
+    report = build_owner_pnl_report(
+        db_path=db_path,
+        as_of=date(2026, 3, 2),
+        since=date(2026, 1, 1),
+        mapped_root=tmp_path / "mapped",
+        mapped_csv=mapped_csv,
+        output_root=tmp_path / "owner",
+        parity_output_root=tmp_path / "parity",
+        include_store_breakdown=True,
+        strict=False,
+        truth_source="webui_archive",
+        validation_dir=validation,
+        ledger_root=ledger,
+        statusdate_cutover=date(2026, 1, 1),
+        opex_schedule_yaml=opex_schedule,
+    )
+
+    monthly = next(row for row in report["monthly_totals"] if row["sale_month"] == "2026-01")
+    store_row = next(row for row in report["monthly_by_store"] if row["store_code"] == "UNIVERSAL")
+    assert monthly["statusdate_coverage_pct"] == pytest.approx(100.0)
+    assert store_row["statusdate_coverage_pct"] == pytest.approx(100.0)
+
+
+def test_build_owner_pnl_report_strict_uses_live_sidecar_when_ads_source_stale(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -201,19 +272,21 @@ def test_build_owner_pnl_report_strict_fails_when_ads_stale(
     os.utime(ads_source, (stale_epoch, stale_epoch))
     monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
 
-    with pytest.raises(OwnerPnlError):
-        build_owner_pnl_report(
-            db_path=db_path,
-            as_of=date(2026, 3, 2),
-            since=date(2026, 1, 1),
-            mapped_root=tmp_path / "mapped",
-            mapped_csv=mapped_csv,
-            output_root=tmp_path / "owner",
-            parity_output_root=tmp_path / "parity",
-            include_store_breakdown=False,
-            strict=True,
-            opex_schedule_yaml=opex_schedule,
-        )
+    report = build_owner_pnl_report(
+        db_path=db_path,
+        as_of=date(2026, 3, 2),
+        since=date(2026, 1, 1),
+        mapped_root=tmp_path / "mapped",
+        mapped_csv=mapped_csv,
+        output_root=tmp_path / "owner",
+        parity_output_root=tmp_path / "parity",
+        include_store_breakdown=False,
+        strict=True,
+        opex_schedule_yaml=opex_schedule,
+    )
+
+    assert report["status"] == "PASS"
+    assert report["ads_readiness"]["ok"] is True
 
 
 def test_build_owner_pnl_locks_pre_cutover_month(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

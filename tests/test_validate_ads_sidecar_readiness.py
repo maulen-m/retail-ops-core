@@ -100,7 +100,7 @@ def test_validate_ads_sidecar_readiness_pass(tmp_path: Path, monkeypatch: pytest
     assert report["ads_payload"]["mapping_coverage_pct"] >= 85.0
 
 
-def test_validate_ads_sidecar_readiness_fails_when_source_stale(
+def test_validate_ads_sidecar_readiness_live_mode_warns_when_source_stale(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -113,14 +113,16 @@ def test_validate_ads_sidecar_readiness_fails_when_source_stale(
     os.utime(ads_source, (stale_epoch, stale_epoch))
     monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
 
-    with pytest.raises(AdsReadinessError):
-        validate_ads_sidecar_readiness(
-            db_path=db_path,
-            as_of=date(2026, 3, 4),
-            output_root=tmp_path / "out",
-            max_age_hours=24.0,
-            strict=True,
-        )
+    report = validate_ads_sidecar_readiness(
+        db_path=db_path,
+        as_of=date(2026, 3, 4),
+        output_root=tmp_path / "out",
+        max_age_hours=24.0,
+        readiness_mode="live",
+        strict=True,
+    )
+    assert report["status"] == "PASS"
+    assert report["warnings"] == ["ADS_SOURCE_STALE"]
 
 
 def test_validate_ads_sidecar_readiness_fails_on_low_mapping_coverage(
