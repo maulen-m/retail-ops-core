@@ -19,6 +19,7 @@ import warnings
 
 import pandas as pd
 import yaml
+from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -432,6 +433,121 @@ def _load_waybill_archive_snapshot(
     }
 
 
+def _load_waybill_live_snapshot(
+    *,
+    db_path: Path,
+    as_of_date: date,
+    selection_cache_path: Path,
+) -> dict[str, Any]:
+    target_as_of = as_of_date.isoformat()
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    try:
+        from scripts.report_waybill_status import get_api_orders_by_store
+    except Exception as exc:  # pragma: no cover - defensive
+        return {
+            "status": "live_api_unavailable",
+            "reason": f"live_import_error:{exc}",
+            "as_of": target_as_of,
+            "target_date": target_as_of,
+            "cache_path": str(selection_cache_path),
+            "include_overdue": True,
+            "all_dates": False,
+            "stores": {},
+            "totals": {"orders": 0, "units": 0},
+        }
+
+    stores_orders, error_stores = get_api_orders_by_store(
+        as_of_date,
+        since_days=3,
+        include_overdue=True,
+    )
+    if error_stores:
+        return {
+            "status": "live_api_unavailable",
+            "reason": "live_api_errors:" + ",".join(sorted(error_stores)),
+            "as_of": target_as_of,
+            "target_date": target_as_of,
+            "cache_path": str(selection_cache_path),
+            "include_overdue": True,
+            "all_dates": False,
+            "stores": {},
+            "totals": {"orders": 0, "units": 0},
+            "live_snapshot": {
+                "error_stores": sorted(error_stores),
+                "since_days": 3,
+            },
+        }
+
+    normalized_orders: dict[str, set[str]] = {}
+    all_order_ids: set[str] = set()
+    for store_code, raw_ids in (stores_orders or {}).items():
+        cleaned_ids = {
+            str(order_id).strip()
+            for order_id in (raw_ids or set())
+            if str(order_id).strip()
+        }
+        if not cleaned_ids:
+            continue
+        normalized_store = str(store_code or "").strip().upper()
+        normalized_orders[normalized_store] = cleaned_ids
+        all_order_ids.update(cleaned_ids)
+
+    if not normalized_orders:
+        return {
+            "status": "live_api_unavailable",
+            "reason": "live_api_no_orders",
+            "as_of": target_as_of,
+            "target_date": target_as_of,
+            "cache_path": str(selection_cache_path),
+            "include_overdue": True,
+            "all_dates": False,
+            "stores": {},
+            "totals": {"orders": 0, "units": 0},
+            "live_snapshot": {
+                "error_stores": [],
+                "since_days": 3,
+            },
+        }
+
+    quantity_meta = _query_order_store_quantity(
+        db_path=db_path,
+        order_ids=all_order_ids,
+    )
+    stores_out: dict[str, dict[str, float | int]] = {}
+    total_orders = 0
+    total_units = 0.0
+    for store_code in sorted(normalized_orders.keys()):
+        ids = normalized_orders[store_code]
+        order_count = len(ids)
+        units = sum(float(quantity_meta.get(order_id, (store_code, 1.0))[1]) for order_id in ids)
+        stores_out[store_code] = {
+            "orders": int(order_count),
+            "units": round(float(units), 2),
+        }
+        total_orders += order_count
+        total_units += units
+
+    return {
+        "status": "available_live",
+        "reason": "live_api_selection",
+        "as_of": target_as_of,
+        "target_date": target_as_of,
+        "cache_path": str(selection_cache_path),
+        "include_overdue": True,
+        "all_dates": False,
+        "stores": stores_out,
+        "totals": {
+            "orders": int(total_orders),
+            "units": round(float(total_units), 2),
+        },
+        "live_snapshot": {
+            "error_stores": [],
+            "since_days": 3,
+            "store_count": len(stores_out),
+        },
+    }
+
+
 def load_waybill_selection_snapshot(
     *,
     db_path: Path,
@@ -505,9 +621,15 @@ def load_waybill_selection_snapshot(
             archive_snapshot["cache_status"] = "as_of_mismatch"
             archive_snapshot["cache_reason"] = f"target_date={target_date} expected={target_as_of}"
             return archive_snapshot
-        snapshot["status"] = "as_of_mismatch"
-        snapshot["reason"] = f"target_date={target_date} expected={target_as_of}"
-        return snapshot
+        live_snapshot = _load_waybill_live_snapshot(
+            db_path=db_path.resolve(),
+            as_of_date=as_of_date,
+            selection_cache_path=selection_cache_path.resolve(),
+        )
+        live_snapshot["cache_target_date"] = target_date
+        live_snapshot["cache_status"] = "as_of_mismatch"
+        live_snapshot["cache_reason"] = f"target_date={target_date} expected={target_as_of}"
+        return live_snapshot
 
     stores_raw = payload.get("stores") or {}
     if not isinstance(stores_raw, dict):

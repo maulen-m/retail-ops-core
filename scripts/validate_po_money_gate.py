@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 from dataclasses import asdict, dataclass
 import json
 import os
@@ -66,6 +67,7 @@ def run_po_money_gate(
     project_root: Path = PROJECT_ROOT,
     db_path: Path = DEFAULT_DB,
     inbound_workbook: Path | None = None,
+    as_of: date | None = None,
     require_offer_linkage_strict: bool = False,
     fail_fast: bool = False,
     command_runner: CommandRunner = _default_runner,
@@ -129,18 +131,21 @@ def run_po_money_gate(
         (
             "cogs_integrity",
             True,
-            [
-                sys.executable,
-                str(root / "scripts" / "validate_cogs_integrity.py"),
-                "--db",
-                str(db_path),
-                "--days",
-                "30",
-                "--max-unresolved-rows",
-                "0",
-                "--max-unresolved-skus",
-                "0",
-            ],
+            (
+                [
+                    sys.executable,
+                    str(root / "scripts" / "validate_cogs_integrity.py"),
+                    "--db",
+                    str(db_path),
+                    "--days",
+                    "30",
+                    "--max-unresolved-rows",
+                    "0",
+                    "--max-unresolved-skus",
+                    "0",
+                ]
+                + (["--as-of", as_of.isoformat()] if as_of is not None else [])
+            ),
         ),
         (
             "single_truth_alignment",
@@ -183,6 +188,7 @@ def run_po_money_gate(
     report["project_root"] = str(root)
     report["db_path"] = str(db_path)
     report["inbound_workbook"] = str(workbook_path)
+    report["as_of"] = as_of.isoformat() if as_of is not None else None
     report["require_offer_linkage_strict"] = bool(require_offer_linkage_strict)
     return report
 
@@ -209,6 +215,7 @@ def main() -> int:
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--inbound-workbook", type=Path, default=None)
+    parser.add_argument("--as-of", type=date.fromisoformat, default=None)
     parser.add_argument("--require-offer-linkage-strict", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -218,6 +225,7 @@ def main() -> int:
         project_root=args.project_root,
         db_path=args.db,
         inbound_workbook=args.inbound_workbook,
+        as_of=args.as_of,
         require_offer_linkage_strict=args.require_offer_linkage_strict,
         fail_fast=args.fail_fast,
     )

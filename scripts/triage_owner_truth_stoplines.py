@@ -67,6 +67,17 @@ def _entry_any(name: str, paths: list[Path]) -> dict[str, Any]:
     }
 
 
+def _skipped_entry(name: str, path: Path, message: str) -> dict[str, Any]:
+    return {
+        "check": name,
+        "path": str(path),
+        "status": "SKIPPED",
+        "ok": True,
+        "error_code": None,
+        "message": message,
+    }
+
+
 def _publication_validation_dir(root: Path, as_of: str) -> Path | None:
     publication_path = root / "exports" / "north_star_owner_review" / as_of / "publication_readiness.json"
     payload = _load_json(publication_path)
@@ -154,12 +165,14 @@ def triage_owner_truth_stoplines(
     as_of: date,
     project_root: Path,
     truth_source: str,
+    runtime_mode: str = "live",
     validation_dir: Path | None,
     pack_root: Path | None,
     ledger_root: Path | None,
     download_run_id: str | None,
     output_path: Path | None,
     strict: bool,
+    allow_missing_publication_readiness: bool,
 ) -> dict[str, Any]:
     root = project_root.resolve()
     as_of_str = as_of.isoformat()
@@ -172,23 +185,35 @@ def triage_owner_truth_stoplines(
     resolved_pack_root = _resolve_optional_root(pack_root, root / "exports" / "webui_archive_packs")
     resolved_ledger_root = _resolve_optional_root(ledger_root, DEFAULT_LEDGER_ROOT)
     resolved_download_root = _resolve_download_root(root, download_run_id)
+    publication_readiness_path = root / "exports" / "north_star_owner_review" / as_of_str / "publication_readiness.json"
 
     checks = [
         _entry(
             "reference_freshness",
             root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_reference_freshness.json",
         ),
-        _entry(
-            "external_snapshot_parity",
-            root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_external_snapshot_parity.json",
-        ),
-        _entry(
-            "recent_identity_coverage",
-            root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_recent_identity_coverage.json",
-        ),
-        _entry(
-            "order_entries_freshness",
-            root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_order_entries_freshness.json",
+        *(
+            [
+                _entry(
+                    "identity_replay_anchor",
+                    root / "exports" / "validation" / "identity_replay_anchor" / as_of_str / "validate_identity_replay_anchor.json",
+                ),
+            ]
+            if runtime_mode == "replay"
+            else [
+                _entry(
+                    "external_snapshot_parity",
+                    root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_external_snapshot_parity.json",
+                ),
+                _entry(
+                    "recent_identity_coverage",
+                    root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_recent_identity_coverage.json",
+                ),
+                _entry(
+                    "order_entries_freshness",
+                    root / "exports" / "validation" / "identity_stabilization" / as_of_str / "validate_order_entries_freshness.json",
+                ),
+            ]
         ),
         _entry(
             "ads_readiness",
@@ -210,9 +235,17 @@ def triage_owner_truth_stoplines(
             "owner_pnl",
             root / "exports" / "owner_pnl" / as_of_str / "OWNER_PNL.json",
         ),
-        _entry(
-            "north_star_publication_readiness",
-            root / "exports" / "north_star_owner_review" / as_of_str / "publication_readiness.json",
+        (
+            _skipped_entry(
+                "north_star_publication_readiness",
+                publication_readiness_path,
+                "allowed missing publication_readiness during pre-publication doctor replay",
+            )
+            if allow_missing_publication_readiness and not publication_readiness_path.exists()
+            else _entry(
+                "north_star_publication_readiness",
+                publication_readiness_path,
+            )
         ),
     ]
 
@@ -296,6 +329,7 @@ def triage_owner_truth_stoplines(
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "as_of": as_of_str,
         "truth_source": truth_source,
+        "runtime_mode": runtime_mode,
         "validation_dir": str(validation_root),
         "status": "PASS" if not stoplines else "FAIL",
         "ok": len(stoplines) == 0,
@@ -343,11 +377,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--truth-source", choices=["db", "webui_archive"], default="db")
+    parser.add_argument("--runtime-mode", choices=["live", "replay"], default="live")
     parser.add_argument("--validation-dir", type=Path, default=None)
     parser.add_argument("--pack-root", type=Path, default=None)
     parser.add_argument("--ledger-root", type=Path, default=None)
     parser.add_argument("--download-run-id", default=None)
     parser.add_argument("--output-path", type=Path, default=None)
+    parser.add_argument("--allow-missing-publication-readiness", action="store_true")
     parser.add_argument("--strict", action="store_true")
     return parser
 
@@ -359,12 +395,14 @@ def main() -> int:
             as_of=date.fromisoformat(str(args.as_of)),
             project_root=args.project_root,
             truth_source=str(args.truth_source),
+            runtime_mode=str(args.runtime_mode),
             validation_dir=args.validation_dir,
             pack_root=args.pack_root,
             ledger_root=args.ledger_root,
             download_run_id=args.download_run_id,
             output_path=args.output_path,
             strict=bool(args.strict),
+            allow_missing_publication_readiness=bool(args.allow_missing_publication_readiness),
         )
     except Exception as exc:
         print("status=FAIL")

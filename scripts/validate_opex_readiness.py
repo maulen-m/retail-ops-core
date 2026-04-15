@@ -59,6 +59,7 @@ def validate_opex_readiness(
     schedule_yaml: Path,
     max_schedule_age_days: int,
     min_horizon_days: int,
+    reference_utc: datetime | None = None,
     strict: bool = False,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
@@ -73,7 +74,11 @@ def validate_opex_readiness(
     if not db_path.exists():
         raise OpexReadinessError(f"db not found: {db_path}")
 
-    now_utc = datetime.now(timezone.utc)
+    now_utc = reference_utc or datetime.now(timezone.utc)
+    freshness_cutoff_utc = min(
+        now_utc,
+        datetime.combine(as_of + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc),
+    )
     schedule_path = schedule_yaml.expanduser().resolve()
     schedule_exists = schedule_path.exists()
     checks.append(
@@ -108,20 +113,39 @@ def validate_opex_readiness(
                 errors.append(f"schedule source_xlsx missing: {source_xlsx}")
 
         modified = datetime.fromtimestamp(schedule_path.stat().st_mtime, tz=timezone.utc)
-        schedule_age_days = int((now_utc - modified).total_seconds() // 86400)
-        age_ok = schedule_age_days <= int(max_schedule_age_days)
+        future_ok = modified <= freshness_cutoff_utc
         checks.append(
             {
-                "check": "schedule_age",
-                "ok": age_ok,
-                "details": f"age_days={schedule_age_days} max={int(max_schedule_age_days)}",
+                "check": "schedule_not_newer_than_as_of",
+                "ok": future_ok,
+                "details": (
+                    f"modified_utc={modified.replace(microsecond=0).isoformat()} "
+                    f"freshness_cutoff_utc={freshness_cutoff_utc.replace(microsecond=0).isoformat()}"
+                ),
             }
         )
-        if not age_ok:
-            error_codes.append("OPEX_SCHEDULE_STALE")
+        if not future_ok:
+            error_codes.append("OPEX_SCHEDULE_NEWER_THAN_AS_OF")
             errors.append(
-                f"schedule yaml stale: age_days={schedule_age_days} exceeds max={int(max_schedule_age_days)}"
+                "schedule yaml modified after as_of cutoff: "
+                f"modified_utc={modified.replace(microsecond=0).isoformat()} "
+                f"cutoff_utc={freshness_cutoff_utc.replace(microsecond=0).isoformat()}"
             )
+        else:
+            schedule_age_days = int((freshness_cutoff_utc - modified).total_seconds() // 86400)
+            age_ok = schedule_age_days <= int(max_schedule_age_days)
+            checks.append(
+                {
+                    "check": "schedule_age",
+                    "ok": age_ok,
+                    "details": f"age_days={schedule_age_days} max={int(max_schedule_age_days)}",
+                }
+            )
+            if not age_ok:
+                error_codes.append("OPEX_SCHEDULE_STALE")
+                errors.append(
+                    f"schedule yaml stale: age_days={schedule_age_days} exceeds max={int(max_schedule_age_days)}"
+                )
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -209,6 +233,7 @@ def validate_opex_readiness(
         "schedule_yaml": str(schedule_path),
         "schedule_source_xlsx": schedule_source_xlsx,
         "schedule_age_days": schedule_age_days,
+        "freshness_cutoff_utc": freshness_cutoff_utc.replace(microsecond=0).isoformat(),
         "max_schedule_age_days": int(max_schedule_age_days),
         "min_horizon_days": int(min_horizon_days),
         "total_rows": total_rows,
