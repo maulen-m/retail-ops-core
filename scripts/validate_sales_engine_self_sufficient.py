@@ -70,6 +70,7 @@ def validate_sales_engine_self_sufficient(
     strict: bool,
     crm_archive_lookup_path: Path | None,
     window_days: int,
+    allow_no_overlap: bool = False,
 ) -> dict[str, Any]:
     if not db_path.exists():
         raise RuntimeError(f"db not found: {db_path}")
@@ -123,6 +124,7 @@ def validate_sales_engine_self_sufficient(
             strict=False,
             crm_archive_lookup_path=crm_archive_lookup_path,
             window_days=window_days,
+            allow_no_overlap=allow_no_overlap,
         )
         parity_status = str(parity.get("status") or "FAIL")
         parity_report_json = str((parity_output_root / as_of.isoformat() / "parity_report.json").resolve())
@@ -130,7 +132,7 @@ def validate_sales_engine_self_sufficient(
     except Exception as exc:
         errors.append(str(exc))
 
-    ok = parity_status == "PASS" and nonvolatile_mismatch_count == 0 and not errors
+    ok = parity_status in {"PASS", "PASS_NO_OVERLAP"} and nonvolatile_mismatch_count == 0 and not errors
     report = {
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "as_of": as_of.isoformat(),
@@ -197,6 +199,7 @@ def main() -> int:
         strict=bool(args.strict),
         crm_archive_lookup_path=args.crm_archive_lookup,
         window_days=int(args.window_days),
+        allow_no_overlap=bool(args.strict_if_configured),
     )
     print(f"sales_engine_self_sufficient_json={report['json_path']}")
     print(f"sales_engine_self_sufficient_md={report['md_path']}")

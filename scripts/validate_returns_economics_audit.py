@@ -62,6 +62,52 @@ def _render_md(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _load_leaked_sales_for_returned_orders(
+    conn: sqlite3.Connection,
+    *,
+    returned: pd.DataFrame,
+    as_of: date,
+) -> pd.DataFrame:
+    """Load delivered sales only for returned orders within the requested window."""
+    if returned.empty:
+        return pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date"])
+
+    scoped = returned.copy()
+    scoped["order_id"] = scoped["order_id"].astype(str)
+    scoped = scoped[scoped["order_id"].str.len() > 0].copy()
+    scoped["return_date"] = pd.to_datetime(scoped["return_date"], errors="coerce").dt.date
+    scoped = scoped[scoped["return_date"].notna()].copy()
+    if scoped.empty:
+        return pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date"])
+
+    order_ids = sorted(scoped["order_id"].drop_duplicates().tolist())
+    sales_frames: list[pd.DataFrame] = []
+    chunk_size = 500
+    for start in range(0, len(order_ids), chunk_size):
+        chunk = order_ids[start : start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        query = f"""
+            SELECT
+                CAST(order_id AS TEXT) AS order_id,
+                UPPER(COALESCE(store_code, 'UNKNOWN')) AS store_code,
+                date(sale_date) AS sale_date
+            FROM view_sales_line_truth
+            WHERE CAST(order_id AS TEXT) IN ({placeholders})
+              AND date(sale_date) <= ?
+        """
+        params = [*chunk, as_of.isoformat()]
+        sales_frames.append(pd.read_sql_query(query, conn, params=params))
+
+    sales = (
+        pd.concat(sales_frames, ignore_index=True)
+        if sales_frames
+        else pd.DataFrame(columns=["order_id", "store_code", "sale_date"])
+    )
+    if sales.empty:
+        return pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date"])
+    return sales.merge(scoped[["order_id", "return_date"]], on="order_id", how="inner")
+
+
 def validate_returns_economics_audit(
     *,
     db_path: Path,
@@ -96,36 +142,35 @@ def validate_returns_economics_audit(
             params=(since.isoformat(), as_of.isoformat()),
         )
 
-        leaked = pd.read_sql_query(
-            """
-            SELECT
-                CAST(v.order_id AS TEXT) AS order_id,
-                UPPER(COALESCE(v.store_code, 'UNKNOWN')) AS store_code,
-                date(v.sale_date) AS sale_date,
-                r.return_date
-            FROM view_sales_line_truth v
-            INNER JOIN (
-                SELECT CAST(order_id AS TEXT) AS order_id,
-                       date(COALESCE(status_updated_at, updated_at, created_at)) AS return_date
-                FROM fact_orders_kaspi
-                WHERE UPPER(COALESCE(internal_status, '')) = 'RETURNED'
-            ) r
-              ON r.order_id = CAST(v.order_id AS TEXT)
-            WHERE date(v.sale_date) <= ?
-            """,
-            conn,
-            params=(as_of.isoformat(),),
-        )
+        leaked = _load_leaked_sales_for_returned_orders(conn, returned=returned, as_of=as_of)
 
         refunds = pd.read_sql_query(
             """
             SELECT
                 substr(date(event_date), 1, 7) AS sale_month,
-                COUNT(*) AS refund_events,
-                ROUND(SUM(COALESCE(amount_kzt, 0)), 2) AS refund_amount_kzt
+                SUM(
+                    CASE
+                        WHEN event_type = 'REFUND' THEN 1
+                        WHEN event_type = 'CASH_IN' AND COALESCE(amount_kzt, 0) < 0 THEN 1
+                        ELSE 0
+                    END
+                ) AS refund_events,
+                ROUND(
+                    SUM(
+                        CASE
+                            WHEN event_type = 'REFUND' THEN COALESCE(amount_kzt, 0)
+                            WHEN event_type = 'CASH_IN' AND COALESCE(amount_kzt, 0) < 0 THEN COALESCE(amount_kzt, 0)
+                            ELSE 0
+                        END
+                    ),
+                    2
+                ) AS refund_amount_kzt
             FROM fact_cashflow_events
-            WHERE event_type = 'REFUND'
-              AND date(event_date) BETWEEN ? AND ?
+            WHERE date(event_date) BETWEEN ? AND ?
+              AND (
+                    event_type = 'REFUND'
+                    OR (event_type = 'CASH_IN' AND COALESCE(amount_kzt, 0) < 0)
+                  )
             GROUP BY substr(date(event_date), 1, 7)
             ORDER BY sale_month
             """,
@@ -157,11 +202,15 @@ def validate_returns_economics_audit(
     else:
         returned_monthly = pd.DataFrame(columns=["sale_month", "returned_orders"])
 
-    monthly = returned_monthly.merge(refunds, on="sale_month", how="left").fillna(0)
+    monthly = returned_monthly.merge(refunds, on="sale_month", how="left")
     if "refund_events" not in monthly.columns:
         monthly["refund_events"] = 0
+    monthly["refund_events"] = pd.to_numeric(monthly["refund_events"], errors="coerce").fillna(0).astype(int)
     if "refund_amount_kzt" not in monthly.columns:
         monthly["refund_amount_kzt"] = 0.0
+    monthly["refund_amount_kzt"] = (
+        pd.to_numeric(monthly["refund_amount_kzt"], errors="coerce").fillna(0.0).round(2)
+    )
 
     months_missing_refunds: list[str] = []
     for _, row in monthly.iterrows():
@@ -221,7 +270,7 @@ def validate_returns_economics_audit(
     if not refunds_ok:
         error_codes.append("RETURNS_REFUND_GAP")
         errors.append(
-            "no REFUND cashflow events for closed month(s): " + ", ".join(months_missing_refunds)
+            "no refund-equivalent cashflow events for closed month(s): " + ", ".join(months_missing_refunds)
         )
 
     out_dir = output_root.resolve() / as_of.isoformat()

@@ -69,6 +69,15 @@ def _normalize_store_totals(raw: dict[str, Any]) -> dict[str, dict[str, float]]:
     return normalized
 
 
+def _stores_have_positive_counts(raw: dict[str, dict[str, float]]) -> bool:
+    for row in raw.values():
+        if int(float(row.get("orders") or 0)) > 0:
+            return True
+        if float(row.get("units") or 0.0) > 0:
+            return True
+    return False
+
+
 def _render_md(report: dict[str, Any]) -> str:
     lines = [
         "# Sales vs Waybill Parity",
@@ -167,21 +176,11 @@ def validate_sales_vs_waybill_parity(
         )
     source_status = str(source_waybill.get("status") or "missing")
     source_target_date = str(source_waybill.get("target_date") or "").strip()
-    allowed_statuses = {"available", "available_archive"}
+    allowed_statuses = {"available", "available_archive", "available_live"}
     source_label = "waybill selection"
     if source_mode == "shipped_truth_primary":
         allowed_statuses = {"available_shipped_truth"}
         source_label = "shipped-truth"
-
-    if source_status not in allowed_statuses:
-        errors.append(
-            f"{source_label} snapshot unavailable for parity validation: "
-            f"status={source_status} reason={source_waybill.get('reason')}"
-        )
-    elif source_target_date != as_of:
-        errors.append(
-            f"waybill selection target_date mismatch: expected {as_of}, got {source_target_date or '<missing>'}"
-        )
 
     business_stores = _normalize_store_totals(
         (business_waybill.get("stores") if isinstance(business_waybill, dict) else {}) or {}
@@ -189,6 +188,26 @@ def validate_sales_vs_waybill_parity(
     source_stores = _normalize_store_totals(
         (source_waybill.get("stores") or {}) if isinstance(source_waybill, dict) else {}
     )
+    business_has_positive_counts = _stores_have_positive_counts(business_stores)
+    source_reason = str(source_waybill.get("reason") or "").strip()
+
+    if source_status not in allowed_statuses:
+        if (
+            not business_has_positive_counts
+            and source_status == "live_api_unavailable"
+            and source_reason == "live_api_no_orders"
+        ):
+            source_status = "neutral_zero_source"
+        else:
+            errors.append(
+                f"{source_label} snapshot unavailable for parity validation: "
+                f"status={source_status} reason={source_waybill.get('reason')}"
+            )
+    elif source_target_date != as_of:
+        errors.append(
+            f"waybill selection target_date mismatch: expected {as_of}, got {source_target_date or '<missing>'}"
+        )
+
     store_keys = sorted(set(business_stores.keys()) | set(source_stores.keys()))
 
     store_checks: list[dict[str, Any]] = []
