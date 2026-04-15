@@ -9,7 +9,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from scripts.build_owner_pnl_report import _build_parser, OwnerPnlError, build_owner_pnl_report
+from scripts.build_owner_pnl_report import (
+    _build_parser,
+    _resolve_opex_schedule_yaml,
+    OwnerPnlError,
+    build_owner_pnl_report,
+)
 
 
 def _init_db(path: Path) -> None:
@@ -257,6 +262,18 @@ def test_build_owner_pnl_parser_default_cutover() -> None:
     parser = _build_parser()
     args = parser.parse_args(["--as-of", "2026-03-04"])
     assert args.statusdate_cutover == "2026-02-27"
+
+
+def test_build_owner_pnl_resolves_opex_schedule_from_env_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen_schedule = tmp_path / "frozen" / "opex_schedule.yaml"
+    frozen_schedule.parent.mkdir(parents=True, exist_ok=True)
+    frozen_schedule.write_text("schedule: frozen\n", encoding="utf-8")
+    monkeypatch.setenv("AB_OPEX_SCHEDULE_YAML", str(frozen_schedule))
+
+    assert _resolve_opex_schedule_yaml(tmp_path) == frozen_schedule.resolve()
 
 
 def test_build_owner_pnl_strict_fails_when_opex_required_and_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -258,6 +258,22 @@ def _resolve_validation_dir(validation_dir: Path | None, *, truth_source: str, a
     return PROJECT_ROOT / "exports" / "validation" / "crm_north_star_restate" / as_of.isoformat()
 
 
+def _resolve_opex_schedule_yaml(root: Path, explicit: Path | None = None) -> Path:
+    candidate = explicit
+    if candidate is None:
+        raw = os.environ.get("AB_OPEX_SCHEDULE_YAML", "").strip()
+        if raw:
+            candidate = Path(raw)
+    if candidate is None:
+        return (root / "config" / "opex" / "opex_schedule.yaml").resolve()
+    resolved = candidate.expanduser()
+    if not resolved.is_absolute():
+        resolved = (root / resolved).resolve()
+    if not resolved.exists():
+        raise OwnerPnlError(f"AB_OPEX_SCHEDULE_YAML does not exist: {resolved}")
+    return resolved.resolve()
+
+
 def _resolve_ledger_root(ledger_root: Path | None) -> Path:
     if ledger_root is None:
         return resolve_latest_dir(DEFAULT_LEDGER_ROOT)
@@ -799,7 +815,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--opex-schedule-yaml",
         type=Path,
-        default=PROJECT_ROOT / "config" / "opex" / "opex_schedule.yaml",
+        default=None,
     )
     parser.add_argument(
         "--opex-max-schedule-age-days",
@@ -822,6 +838,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _build_parser().parse_args()
     try:
+        resolved_opex_schedule_yaml = _resolve_opex_schedule_yaml(PROJECT_ROOT, args.opex_schedule_yaml)
         report = build_owner_pnl_report(
             db_path=args.db,
             as_of=date.fromisoformat(str(args.as_of)),
@@ -841,7 +858,7 @@ def main() -> int:
             ads_min_mapping_coverage_pct=float(args.ads_min_mapping_coverage_pct),
             ads_min_total_cost_kzt=float(args.ads_min_total_cost_kzt),
             opex_output_root=args.opex_output_root,
-            opex_schedule_yaml=args.opex_schedule_yaml,
+            opex_schedule_yaml=resolved_opex_schedule_yaml,
             opex_max_schedule_age_days=int(args.opex_max_schedule_age_days),
             opex_min_horizon_days=int(args.opex_min_horizon_days),
             require_opex_for_net_publication=bool(args.require_opex_for_net_publication),
