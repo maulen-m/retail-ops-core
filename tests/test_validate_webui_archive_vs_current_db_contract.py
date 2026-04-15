@@ -444,3 +444,70 @@ def test_validate_webui_vs_current_db_full_range_policy_keeps_true_post_cutover_
     assert report["status"] == "FAIL"
     assert report["missing_in_db_orders"] == 1
     assert report["post_cutover_hard_missing_orders"] == 1
+
+
+def test_validate_webui_vs_current_db_full_range_policy_uses_parent_authority_decision_for_current_state_surface_downgrade(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "app.db"
+    _init_db(db)
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi(order_id, store_code, internal_status, status_updated_at, updated_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("900001111", "UNIVERSAL", "RETURNED", "2026-03-10", "2026-03-14", "2026-02-28"),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_sales_workbook_anchor(order_id, store_code, sale_date, quantity, net_rev_kzt)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("900001111", "UNIVERSAL", "2026-03-01", 1.0, 1000.0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    ledger_root = tmp_path / "ledger"
+    ledger_root.mkdir(parents=True, exist_ok=True)
+    (ledger_root / "ledger_manifest.json").write_text(
+        json.dumps({"run_id": "test_ledger"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (ledger_root / "webui_status_ledger.csv").write_text(
+        "\n".join(
+            [
+                "store_code,order_id,status_internal,status_change_at,created_at,delivered_at,returned_at,first_seen_pack,last_seen_pack",
+                "UNIVERSAL,900001111,DELIVERED,2026-03-01,2026-02-28,2026-03-01,,pack,pack",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    validation_dir = tmp_path / "out"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    (validation_dir / "shipped_day_authority_decision.json").write_text(
+        json.dumps({"decision": "CRM_REMAINS_CHRONOLOGY_AUTHORITY"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    output_dir = validation_dir / "full_range_db_gate"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    report = validate_webui_archive_vs_current_db(
+        start="2025-06-06",
+        end="2026-03-09",
+        db_path=db,
+        ledger_root=ledger_root,
+        output_dir=output_dir,
+        strict=False,
+        range_policy="full_range_owner_truth",
+        statusdate_cutover="2026-02-27",
+    )
+
+    assert report["status"] == "PASS"
+    assert report["missing_in_db_orders"] == 0
+    assert report["original_missing_in_db_orders"] == 1
+    assert report["current_state_surface_mismatch_orders"] == 1

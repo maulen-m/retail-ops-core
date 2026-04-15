@@ -283,7 +283,10 @@ def _resolve_quarantine_csv(quarantine_csv: Path | None, output_dir: Path) -> Pa
 
 
 def _iter_chronology_authority_decision_paths(output_dir: Path) -> list[Path]:
-    candidates: list[Path] = [output_dir / "shipped_day_authority_decision.json"]
+    resolved_output_dir = output_dir.expanduser().resolve()
+    candidates: list[Path] = []
+    for candidate_dir in [resolved_output_dir, *list(resolved_output_dir.parents[:2])]:
+        candidates.append(candidate_dir / "shipped_day_authority_decision.json")
     validation_root = PROJECT_ROOT / "exports" / "validation"
     for folder_name in ["webui_archive_single_truth", "webui_shipped_authority_recon"]:
         folder = validation_root / folder_name
