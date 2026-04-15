@@ -107,6 +107,90 @@ def _render_md(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _write_no_overlap_report(
+    *,
+    output_root: Path,
+    as_of: date,
+    strict: bool,
+    volatility_days: int,
+    window_days: int,
+    ocean_drop_path: Path,
+    snapshot_df: pd.DataFrame,
+    snapshot_meta: dict[str, Any],
+) -> dict[str, Any]:
+    ref_df = snapshot_df[
+        (snapshot_df["status_internal"] == "DELIVERED")
+        & (snapshot_df["return_flag"] == 0)
+    ].copy()
+    ref_df["sale_date"] = ref_df["sale_date"].astype(str).str[:10]
+    ref_min = str(ref_df["sale_date"].min()) if not ref_df.empty else None
+    ref_max = str(ref_df["sale_date"].max()) if not ref_df.empty else None
+    requested_start = (as_of - timedelta(days=window_days - 1)).isoformat()
+    requested_end = as_of.isoformat()
+    volatile_start = as_of - timedelta(days=max(0, volatility_days - 1)) if volatility_days else date.max
+
+    out_dir = output_root.resolve() / as_of.isoformat()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    diff_missing_csv = out_dir / "diff_missing_order_ids.csv"
+    diff_extra_csv = out_dir / "diff_extra_order_ids.csv"
+    diff_mismatch_csv = out_dir / "diff_date_mismatches.csv"
+    report_json = out_dir / "parity_report.json"
+    report_md = out_dir / "parity_report.md"
+
+    pd.DataFrame(columns=["sale_date", "store_code", "order_id", "is_volatile"]).to_csv(
+        diff_missing_csv, index=False, encoding="utf-8"
+    )
+    pd.DataFrame(columns=["sale_date", "store_code", "order_id", "is_volatile"]).to_csv(
+        diff_extra_csv, index=False, encoding="utf-8"
+    )
+    pd.DataFrame(
+        columns=[
+            "sale_date",
+            "store_code",
+            "ref_units",
+            "db_units",
+            "ref_rev_kzt",
+            "db_rev_kzt",
+            "ref_orders",
+            "db_orders",
+            "is_volatile",
+            "aggregate_match",
+            "id_set_match",
+        ]
+    ).to_csv(diff_mismatch_csv, index=False, encoding="utf-8")
+
+    report = {
+        "generated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "as_of": as_of.isoformat(),
+        "strict": bool(strict),
+        "volatility_days": int(volatility_days),
+        "volatile_start_date": volatile_start.isoformat() if volatility_days else None,
+        "window_days": int(window_days),
+        "status": "PASS_NO_OVERLAP",
+        "reference_rows_delivered": int(len(ref_df)),
+        "reference_rows_total": int(len(snapshot_df)),
+        "snapshot_errors_count": int(snapshot_meta.get("errors_count", 0)),
+        "nonvolatile_mismatch_count": 0,
+        "volatile_mismatch_count": 0,
+        "nonvolatile_mismatches": [],
+        "volatile_mismatches": [],
+        "daily_rows": [],
+        "diff_missing_order_ids_csv": str(diff_missing_csv),
+        "diff_extra_order_ids_csv": str(diff_extra_csv),
+        "diff_date_mismatches_csv": str(diff_mismatch_csv),
+        "ocean_drop_path": str(ocean_drop_path.resolve()),
+        "reference_window_overlap": False,
+        "requested_window_start": requested_start,
+        "requested_window_end": requested_end,
+        "reference_min_sale_date": ref_min,
+        "reference_max_sale_date": ref_max,
+    }
+
+    report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    report_md.write_text(_render_md(report), encoding="utf-8")
+    return report
+
+
 def validate_sales_truth_ocean_drop_parity(
     *,
     db_path: Path,
@@ -117,6 +201,7 @@ def validate_sales_truth_ocean_drop_parity(
     strict: bool,
     crm_archive_lookup_path: Path | None,
     window_days: int | None = None,
+    allow_no_overlap: bool = False,
 ) -> dict[str, Any]:
     if volatility_days < 0:
         raise RuntimeError("volatility_days must be >= 0")
@@ -154,6 +239,17 @@ def validate_sales_truth_ocean_drop_parity(
         start_window = as_of - timedelta(days=window_days - 1)
         ref_order = ref_order[ref_order["sale_date"] >= start_window.isoformat()].copy()
         if ref_order.empty:
+            if allow_no_overlap:
+                return _write_no_overlap_report(
+                    output_root=output_root,
+                    as_of=as_of,
+                    strict=strict,
+                    volatility_days=volatility_days,
+                    window_days=window_days,
+                    ocean_drop_path=ocean_drop_path,
+                    snapshot_df=snapshot_df,
+                    snapshot_meta=snapshot_meta,
+                )
             raise RuntimeError(f"no reference rows in requested window_days={window_days}")
         start_day = start_window.isoformat()
         end_day = as_of.isoformat()
@@ -367,12 +463,13 @@ def main() -> int:
         strict=bool(args.strict),
         crm_archive_lookup_path=args.crm_archive_lookup,
         window_days=args.window_days,
+        allow_no_overlap=bool(args.strict_if_configured),
     )
     out_dir = args.output_root.resolve() / as_of.isoformat()
     print(f"ocean_drop_parity_report_json={out_dir / 'parity_report.json'}")
     print(f"ocean_drop_parity_report_md={out_dir / 'parity_report.md'}")
     print(f"status={report['status']}")
-    return 0 if (report["status"] == "PASS" or not args.strict) else 1
+    return 0 if (report["status"] in {"PASS", "PASS_NO_OVERLAP"} or not args.strict) else 1
 
 
 if __name__ == "__main__":

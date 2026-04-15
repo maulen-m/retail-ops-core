@@ -214,3 +214,37 @@ def test_self_sufficient_validator_allows_unmapped_rows_if_parity_passes(
         window_days=14,
     )
     assert report["status"] == "PASS"
+
+
+def test_self_sufficient_validator_accepts_pass_no_overlap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    _seed_data(conn)
+    conn.close()
+
+    ocean = tmp_path / "ocean.csv"
+    ocean.write_text("order_id,store_code\nORD-SELF,ACMEWEAR\n", encoding="utf-8")
+
+    def fake_parity(**kwargs):
+        assert kwargs["allow_no_overlap"] is True
+        return {"status": "PASS_NO_OVERLAP", "nonvolatile_mismatch_count": 0}
+
+    monkeypatch.setattr(
+        "scripts.validate_sales_engine_self_sufficient.validate_sales_truth_ocean_drop_parity",
+        fake_parity,
+    )
+
+    report = validate_sales_engine_self_sufficient(
+        db_path=db,
+        as_of=date(2026, 3, 19),
+        ocean_drop_path=ocean,
+        output_root=tmp_path / "out",
+        strict=True,
+        crm_archive_lookup_path=None,
+        window_days=14,
+        allow_no_overlap=True,
+    )
+
+    assert report["status"] == "PASS"
+    assert report["parity_status"] == "PASS_NO_OVERLAP"

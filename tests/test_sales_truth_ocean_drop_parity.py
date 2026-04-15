@@ -200,3 +200,28 @@ def test_window_days_mode_detects_db_extra_days_without_reference_rows(tmp_path:
             crm_archive_lookup_path=None,
             window_days=2,
         )
+
+
+def test_window_days_mode_can_pass_no_overlap_when_enabled(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    ocean_drop = tmp_path / "ocean_drop.csv"
+    output_root = tmp_path / "out"
+
+    _seed_db(db, rev_ord_1=1200.0)
+    _write_ocean_drop(ocean_drop)
+
+    report = validate_sales_truth_ocean_drop_parity(
+        db_path=db,
+        as_of=date(2026, 3, 19),
+        ocean_drop_path=ocean_drop,
+        output_root=output_root,
+        volatility_days=14,
+        strict=True,
+        crm_archive_lookup_path=None,
+        window_days=14,
+        allow_no_overlap=True,
+    )
+
+    assert report["status"] == "PASS_NO_OVERLAP"
+    assert report["reference_window_overlap"] is False
+    assert report["daily_rows"] == []
