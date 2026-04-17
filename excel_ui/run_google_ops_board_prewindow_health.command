@@ -35,4 +35,4 @@ fi
 
 export ENABLE_KASPI_WORKBOOK_MAP_SYNC=1
 export PYTHONUNBUFFERED=1
-exec python3 -u scripts/run_google_ops_board_closeout.py "$@"
+exec python3 -u scripts/run_google_ops_board_prewindow_health.py --apply "$@"

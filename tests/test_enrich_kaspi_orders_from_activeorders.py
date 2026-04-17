@@ -252,6 +252,65 @@ def test_canonicalize_parsed_orders_uses_article_map_for_acmewear_line51_alias(t
     assert canonicalized[0]["my_size"] == "4XL"
 
 
+def test_canonicalize_parsed_orders_prefers_exact_article_before_ambiguous_normalized_family(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    conn = _make_db(db_path)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO dim_kaspi_article_map (
+                store_code, kaspi_article, kaspi_offer_name, kaspi_name_core, sku_key, sku_id, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "UNIVERSAL",
+                    "132822924_328581041",
+                    "Леггинсы PRO COMBAT 2010 белый XL",
+                    "Леггинсы_PRO_COMBAT_2010_белый",
+                    "CL_NEW-CLO_MEN_LEG_WHITE",
+                    "CL_NEW-CLO_MEN_LEG_WHITE_2XL",
+                    "crm_historical_patch",
+                ),
+                (
+                    "UNIVERSAL",
+                    "132822924_884186730",
+                    "Леггинсы PRO COMBAT 2010 белый M",
+                    "Леггинсы_PRO_COMBAT_2010_белый",
+                    "CL_NEW-CLO_MEN_LEG_WHITE",
+                    "CL_NEW-CLO_MEN_LEG_WHITE_M",
+                    "crm_historical_patch",
+                ),
+            ],
+        )
+        orders = [
+            {
+                "order_id": "891902371",
+                "store_code": "UNIVERSAL",
+                "kaspi_article": "132822924_328581041",
+                "kaspi_offer_name": "Леггинсы PRO COMBAT 2010 белый XL",
+                "sku_key": "",
+                "sku_id": "",
+                "my_size": "",
+                "quantity": 1,
+                "unit_price_kzt": 1500,
+                "planned_shipment_date": "2026-04-17",
+                "internal_status": "READY",
+            }
+        ]
+
+        article_map = _load_article_identity_map(conn, orders)
+        canonicalized, overrides = _canonicalize_parsed_orders(orders, article_map)
+    finally:
+        conn.close()
+
+    assert article_map[("UNIVERSAL", "132822924_328581041")]["sku_id"] == "CL_NEW-CLO_MEN_LEG_WHITE_2XL"
+    assert overrides == 1
+    assert canonicalized[0]["sku_key"] == "CL_NEW-CLO_MEN_LEG_WHITE"
+    assert canonicalized[0]["sku_id"] == "CL_NEW-CLO_MEN_LEG_WHITE_2XL"
+    assert canonicalized[0]["my_size"] == "2XL"
+
+
 def test_apply_activeorders_enrichment_updates_identity_without_writing_customer_size(tmp_path: Path):
     db_path = tmp_path / "app.db"
     conn = _make_db(db_path)

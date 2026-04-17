@@ -248,3 +248,9 @@ def test_command_publishes_google_ops_board_immediately_after_success_gate():
     assert "Step 4: Google Drive sync skipped in unattended mode (--no-gdrive-sync)" in text
     assert "NO-OP: skipping Google Ops Board publish (workflow already red)." in text
     assert "ERROR: Google Ops Board publish blocked by missing or failed DB enrichment step." in text
+
+
+def test_command_google_ops_board_publish_uses_quiet_publish_health_profile():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    assert '--profile "publish"' in text

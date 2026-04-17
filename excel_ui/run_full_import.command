@@ -111,6 +111,19 @@ run_google_ops_board_publish_now() {
         echo "ERROR: Google Ops Board service-account JSON missing: ${service_account_json}"
         return 78
     fi
+    ENABLE_KASPI_WORKBOOK_MAP_SYNC=1 \
+    AB_GOOGLE_SERVICE_ACCOUNT_JSON="${service_account_json}" \
+    PYTHONUNBUFFERED=1 \
+    python3 -u scripts/run_google_ops_board_prewindow_health.py \
+        --apply \
+        --profile "publish" \
+        --reason "run_full_import" \
+        --target-date "${target_date}" \
+        --service-account-json "${service_account_json}"
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Google Ops Board prewindow health failed."
+        return 1
+    fi
     ENABLE_GOOGLE_OPS_BOARD_WRITE=1 \
     AB_GOOGLE_SERVICE_ACCOUNT_JSON="${service_account_json}" \
     PYTHONUNBUFFERED=1 \

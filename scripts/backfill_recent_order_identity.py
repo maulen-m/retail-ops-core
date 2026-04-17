@@ -102,40 +102,12 @@ def _load_crm_identity_map(workbook: Path) -> dict[str, dict[str, str]]:
     return out
 
 
-def _load_reference_offer_map(reference_csv: Path) -> dict[tuple[str, str], dict[str, str]]:
-    if not reference_csv.exists():
-        raise StatusError("EXTERNAL_MAPPING_STALE", f"reference csv missing: {reference_csv}")
-    df = pd.read_csv(reference_csv, dtype=str, keep_default_na=False)
-    if df.empty:
-        raise StatusError("EXTERNAL_MAPPING_STALE", f"reference csv empty: {reference_csv}")
-
-    required = {"store_code", "kaspi_offer_name", "effective_sku_key", "effective_size", "mapping_status", "identity_status"}
-    missing = sorted(required - set(df.columns))
-    if missing:
-        raise StatusError("EXTERNAL_MAPPING_STALE", f"reference csv missing columns: {', '.join(missing)}")
-
-    grouped: dict[tuple[str, str], list[dict[str, str]]] = {}
-    for _, row in df.iterrows():
-        store = str(row["store_code"] or "").strip().upper()
-        offer = normalize_offer_name(row["kaspi_offer_name"])
-        if not store or not offer:
-            continue
-        rec = {
-            "sku_key": str(row.get("effective_sku_key") or "").strip(),
-            "sku_id": str(row.get("effective_sku_key") or "").strip(),
-            "my_size": str(row.get("effective_size") or "").strip().upper(),
-            "kaspi_offer_name": str(row.get("kaspi_offer_name") or "").strip(),
-            "mapping_status": str(row.get("mapping_status") or "").strip().lower(),
-            "identity_status": str(row.get("identity_status") or "").strip().lower(),
-            "source": "EXTERNAL_OFFER_NAME_EXACT",
-        }
-        grouped.setdefault((store, offer), []).append(rec)
-
+def _resolve_reference_rows(rows: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, str]]:
     resolved: dict[tuple[str, str], dict[str, str]] = {}
-    for key, rows in grouped.items():
+    for key, group in rows:
         valid = [
             r
-            for r in rows
+            for r in group
             if r["sku_key"] and r["mapping_status"] != "deprecated" and r["identity_status"] in {"", "matched"}
         ]
         sku_keys = sorted({r["sku_key"] for r in valid})
@@ -152,6 +124,55 @@ def _load_reference_offer_map(reference_csv: Path) -> dict[tuple[str, str], dict
     return resolved
 
 
+def _load_reference_offer_maps(reference_csv: Path) -> tuple[dict[tuple[str, str], dict[str, str]], dict[tuple[str, str], dict[str, str]]]:
+    if not reference_csv.exists():
+        raise StatusError("EXTERNAL_MAPPING_STALE", f"reference csv missing: {reference_csv}")
+    df = pd.read_csv(reference_csv, dtype=str, keep_default_na=False)
+    if df.empty:
+        raise StatusError("EXTERNAL_MAPPING_STALE", f"reference csv empty: {reference_csv}")
+
+    required = {
+        "store_code",
+        "sku_id_ksp",
+        "kaspi_offer_name",
+        "effective_sku_key",
+        "effective_size",
+        "mapping_status",
+        "identity_status",
+    }
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise StatusError("EXTERNAL_MAPPING_STALE", f"reference csv missing columns: {', '.join(missing)}")
+
+    grouped_by_offer_name: dict[tuple[str, str], list[dict[str, str]]] = {}
+    grouped_by_offer_id: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for _, row in df.iterrows():
+        store = str(row["store_code"] or "").strip().upper()
+        offer_id = str(row.get("sku_id_ksp") or "").strip().upper()
+        offer = normalize_offer_name(row["kaspi_offer_name"])
+        if not store or not offer:
+            offer = ""
+        rec = {
+            "sku_key": str(row.get("effective_sku_key") or "").strip(),
+            "sku_id": str(row.get("effective_sku_key") or "").strip(),
+            "my_size": str(row.get("effective_size") or "").strip().upper(),
+            "kaspi_offer_name": str(row.get("kaspi_offer_name") or "").strip(),
+            "mapping_status": str(row.get("mapping_status") or "").strip().lower(),
+            "identity_status": str(row.get("identity_status") or "").strip().lower(),
+            "source": "EXTERNAL_OFFER_NAME_EXACT",
+        }
+        if offer:
+            grouped_by_offer_name.setdefault((store, offer), []).append(rec)
+        if offer_id:
+            rec_by_id = dict(rec)
+            rec_by_id["source"] = "EXTERNAL_OFFER_ID_EXACT"
+            grouped_by_offer_id.setdefault((store, offer_id), []).append(rec_by_id)
+
+    resolved_by_name = _resolve_reference_rows(list(grouped_by_offer_name.items()))
+    resolved_by_offer_id = _resolve_reference_rows(list(grouped_by_offer_id.items()))
+    return resolved_by_name, resolved_by_offer_id
+
+
 def _choose_fill(current: sqlite3.Row, candidate: dict[str, str]) -> tuple[dict[str, str], list[str]]:
     updates: dict[str, str] = {}
     changed: list[str] = []
@@ -164,6 +185,22 @@ def _choose_fill(current: sqlite3.Row, candidate: dict[str, str]) -> tuple[dict[
             continue
         updates[field] = new_value
         changed.append(field)
+    return updates, changed
+
+
+def _build_candidate_updates(current: sqlite3.Row, candidate: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    updates, changed = _choose_fill(current, candidate)
+    if "my_size" not in updates and not str(current["my_size"] or "").strip():
+        size_candidate = (
+            _extract_size_from_text(str(candidate.get("my_size") or ""))
+            or _extract_size_from_text(str(candidate.get("kaspi_offer_name") or ""))
+            or _extract_size_from_text(str(current["kaspi_offer_name"] or ""))
+            or _extract_size_from_sku_key(updates.get("sku_key", str(current["sku_key"] or "")))
+        )
+        if size_candidate:
+            updates["my_size"] = size_candidate
+            if "my_size" not in changed:
+                changed.append("my_size")
     return updates, changed
 
 
@@ -293,6 +330,41 @@ def _load_recent_order_product_ids(
     return {k: sorted(v) for k, v in out.items()}
 
 
+def _load_recent_order_offer_ids(
+    conn: sqlite3.Connection,
+    *,
+    stores: tuple[str, ...],
+    start_day: date,
+    as_of: date,
+) -> dict[tuple[str, str], list[str]]:
+    if not stores:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT
+            UPPER(COALESCE(o.store_code,'')) AS store_code,
+            COALESCE(o.order_id,'') AS order_id,
+            UPPER(COALESCE(e.offer_id,'')) AS offer_id
+        FROM fact_orders_kaspi o
+        LEFT JOIN fact_order_entries_kaspi e
+          ON e.order_id = o.order_id
+         AND UPPER(COALESCE(e.store_code,'')) = UPPER(COALESCE(o.store_code,''))
+        WHERE date(o.created_at) BETWEEN ? AND ?
+          AND UPPER(COALESCE(o.store_code,'')) IN ({})
+        """.format(",".join(["?"] * len(stores))),
+        (start_day.isoformat(), as_of.isoformat(), *stores),
+    ).fetchall()
+    out: dict[tuple[str, str], set[str]] = {}
+    for row in rows:
+        store = str(row["store_code"] or "").strip().upper()
+        order_id = str(row["order_id"] or "").strip()
+        offer_id = str(row["offer_id"] or "").strip().upper()
+        if not store or not order_id or not offer_id:
+            continue
+        out.setdefault((store, order_id), set()).add(offer_id)
+    return {k: sorted(v) for k, v in out.items()}
+
+
 def backfill_recent_order_identity(
     *,
     db_path: Path,
@@ -312,7 +384,7 @@ def backfill_recent_order_identity(
         raise StatusError("IDENTITY_COVERAGE_FAIL", f"db not found: {db_path}")
 
     start_day = as_of - timedelta(days=lookback_days - 1)
-    offer_map = _load_reference_offer_map(reference_csv)
+    offer_map, offer_id_map = _load_reference_offer_maps(reference_csv)
     crm_map = _load_crm_identity_map(crm_workbook)
 
     conn = sqlite3.connect(str(db_path))
@@ -320,6 +392,12 @@ def backfill_recent_order_identity(
     try:
         order_entry_product_map = _load_order_entry_product_map(conn, stores=stores)
         order_product_ids = _load_recent_order_product_ids(
+            conn,
+            stores=stores,
+            start_day=start_day,
+            as_of=as_of,
+        )
+        order_offer_ids = _load_recent_order_offer_ids(
             conn,
             stores=stores,
             start_day=start_day,
@@ -356,78 +434,80 @@ def backfill_recent_order_identity(
             order_id = str(row["order_id"] or "").strip()
             store_code = str(row["store_code"] or "").strip().upper()
             crm_key = f"{store_code}:{order_id}"
-            candidate = crm_map.get(crm_key)
+            candidate = None
             source = ""
             reason = ""
+            candidate_updates: dict[str, str] = {}
+            changed: list[str] = []
 
-            if candidate is not None:
-                source = "CRM_ORDER_ID_EXACT"
-            else:
-                offer_name_norm = normalize_offer_name(row["kaspi_offer_name"])
-                if offer_name_norm:
-                    candidate = offer_map.get((store_code, offer_name_norm))
-                    if candidate:
-                        source = "EXTERNAL_OFFER_NAME_EXACT"
-            if candidate is None:
-                product_ids = order_product_ids.get((store_code, order_id), [])
-                if len(product_ids) == 1:
-                    candidate = order_entry_product_map.get((store_code, product_ids[0]))
-                    if candidate:
-                        source = "ORDER_ENTRY_PRODUCT_ID_UNIQUE"
+            offer_name_norm = normalize_offer_name(row["kaspi_offer_name"])
+            offer_ids = order_offer_ids.get((store_code, order_id), [])
+            product_ids = order_product_ids.get((store_code, order_id), [])
+            candidate_options: list[tuple[str, dict[str, str]]] = []
+
+            crm_candidate = crm_map.get(crm_key)
+            if crm_candidate is not None:
+                candidate_options.append(("CRM_ORDER_ID_EXACT", crm_candidate))
+            if offer_name_norm:
+                offer_name_candidate = offer_map.get((store_code, offer_name_norm))
+                if offer_name_candidate is not None:
+                    candidate_options.append(("EXTERNAL_OFFER_NAME_EXACT", offer_name_candidate))
+            if len(offer_ids) == 1:
+                offer_id_candidate = offer_id_map.get((store_code, offer_ids[0]))
+                if offer_id_candidate is not None:
+                    candidate_options.append(("EXTERNAL_OFFER_ID_EXACT", offer_id_candidate))
+            if len(product_ids) == 1:
+                product_candidate = order_entry_product_map.get((store_code, product_ids[0]))
+                if product_candidate is not None:
+                    candidate_options.append(("ORDER_ENTRY_PRODUCT_ID_UNIQUE", product_candidate))
+
+            for candidate_source, candidate_option in candidate_options:
+                trial_updates, trial_changed = _build_candidate_updates(row, candidate_option)
+                if trial_changed:
+                    candidate = candidate_option
+                    source = candidate_source
+                    candidate_updates = trial_updates
+                    changed = trial_changed
+                    break
 
             if candidate is None:
                 reason = "no_deterministic_candidate"
             else:
-                updates, changed = _choose_fill(row, candidate)
-                if "my_size" not in updates:
-                    size_candidate = (
-                        _extract_size_from_text(str(candidate.get("my_size") or ""))
-                        or _extract_size_from_text(str(candidate.get("kaspi_offer_name") or ""))
-                        or _extract_size_from_text(str(row["kaspi_offer_name"] or ""))
-                        or _extract_size_from_sku_key(updates.get("sku_key", str(row["sku_key"] or "")))
-                    )
-                    if size_candidate:
-                        updates["my_size"] = size_candidate
-                        if "my_size" not in changed:
-                            changed.append("my_size")
-                if not changed:
-                    reason = "candidate_has_no_fill_for_missing_fields"
-                else:
-                    new_sku_key = updates.get("sku_key", str(row["sku_key"] or "").strip())
-                    new_sku_id = updates.get("sku_id", str(row["sku_id"] or "").strip())
-                    new_size = updates.get("my_size", str(row["my_size"] or "").strip())
-                    new_offer = updates.get("kaspi_offer_name", str(row["kaspi_offer_name"] or "").strip())
-                    new_size_source = str(row["size_source"] or "").strip() or source
-                    new_size_conf = str(row["size_confidence"] or "").strip() or "1.0"
+                new_sku_key = candidate_updates.get("sku_key", str(row["sku_key"] or "").strip())
+                new_sku_id = candidate_updates.get("sku_id", str(row["sku_id"] or "").strip())
+                new_size = candidate_updates.get("my_size", str(row["my_size"] or "").strip())
+                new_offer = candidate_updates.get("kaspi_offer_name", str(row["kaspi_offer_name"] or "").strip())
+                new_size_source = str(row["size_source"] or "").strip() or source
+                new_size_conf = str(row["size_confidence"] or "").strip() or "1.0"
 
-                    diffs.append(
-                        {
-                            "id": str(row["id"]),
-                            "order_id": order_id,
-                            "store_code": store_code,
-                            "source": source,
-                            "changed_fields": ",".join(changed),
-                            "before_sku_key": str(row["sku_key"] or "").strip(),
-                            "after_sku_key": new_sku_key,
-                            "before_sku_id": str(row["sku_id"] or "").strip(),
-                            "after_sku_id": new_sku_id,
-                            "before_my_size": str(row["my_size"] or "").strip(),
-                            "after_my_size": new_size,
-                            "before_kaspi_offer_name": str(row["kaspi_offer_name"] or "").strip(),
-                            "after_kaspi_offer_name": new_offer,
-                        }
+                diffs.append(
+                    {
+                        "id": str(row["id"]),
+                        "order_id": order_id,
+                        "store_code": store_code,
+                        "source": source,
+                        "changed_fields": ",".join(changed),
+                        "before_sku_key": str(row["sku_key"] or "").strip(),
+                        "after_sku_key": new_sku_key,
+                        "before_sku_id": str(row["sku_id"] or "").strip(),
+                        "after_sku_id": new_sku_id,
+                        "before_my_size": str(row["my_size"] or "").strip(),
+                        "after_my_size": new_size,
+                        "before_kaspi_offer_name": str(row["kaspi_offer_name"] or "").strip(),
+                        "after_kaspi_offer_name": new_offer,
+                    }
+                )
+                apply_rows.append(
+                    (
+                        new_sku_key,
+                        new_sku_id,
+                        new_size,
+                        new_offer,
+                        new_size_source,
+                        new_size_conf,
+                        int(row["id"]),
                     )
-                    apply_rows.append(
-                        (
-                            new_sku_key,
-                            new_sku_id,
-                            new_size,
-                            new_offer,
-                            new_size_source,
-                            new_size_conf,
-                            int(row["id"]),
-                        )
-                    )
+                )
 
             if reason:
                 unresolved.append(

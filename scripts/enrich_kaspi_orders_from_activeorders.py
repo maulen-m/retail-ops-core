@@ -156,22 +156,29 @@ def _load_article_identity_map(
 
     article_map: dict[tuple[str, str], dict[str, str]] = {}
     ambiguous: set[tuple[str, str]] = set()
-    for row in rows:
-        key = (_clean_upper(row["store_code"]), _normalize_article_key(row["kaspi_article"]))
+
+    def _store_mapping(key: tuple[str, str], value: dict[str, str]) -> None:
         if not key[0] or not key[1]:
-            continue
+            return
+        if key in ambiguous:
+            return
+        if key in article_map and article_map[key] != value:
+            article_map.pop(key, None)
+            ambiguous.add(key)
+            return
+        article_map[key] = value
+
+    for row in rows:
+        store_code = _clean_upper(row["store_code"])
+        exact_article = _clean_upper(row["kaspi_article"])
+        normalized_article = _normalize_article_key(row["kaspi_article"])
         value = {
             "sku_key": _clean(row["sku_key"]),
             "sku_id": _clean(row["sku_id"]),
             "kaspi_offer_name": _clean(row["kaspi_offer_name"]),
         }
-        if key in ambiguous:
-            continue
-        if key in article_map and article_map[key] != value:
-            article_map.pop(key, None)
-            ambiguous.add(key)
-            continue
-        article_map[key] = value
+        _store_mapping((store_code, exact_article), value)
+        _store_mapping((store_code, normalized_article), value)
     return article_map
 
 
@@ -182,9 +189,10 @@ def _canonicalize_parsed_orders(
     canonicalized: list[dict[str, Any]] = []
     overrides = 0
     for order in orders:
+        store_code = _clean_upper(order.get("store_code"))
+        exact_article = _clean_upper(order.get("kaspi_article"))
         normalized_article = _normalize_article_key(order.get("kaspi_article"))
-        key = (_clean_upper(order.get("store_code")), normalized_article)
-        mapping = article_map.get(key)
+        mapping = article_map.get((store_code, exact_article)) or article_map.get((store_code, normalized_article))
         if not mapping:
             canonicalized.append(order)
             continue

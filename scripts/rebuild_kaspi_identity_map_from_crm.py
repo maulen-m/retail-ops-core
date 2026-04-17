@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from datetime import date, datetime
+import json
+import os
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Tuple
@@ -26,6 +29,10 @@ from core.utils.sku_map import extract_kaspi_name_core
 
 DEFAULT_WORKBOOK = Path("excel_ui/SALES_KSP_CRM_V3.xlsx")
 DEFAULT_SHEET = "SALES_KSP_CRM_1"
+DEFAULT_DB = Path("db/app.db")
+DEFAULT_OUTPUT_ROOT = Path("exports/validation/workbook_catalog_offer_map_sync")
+DEFAULT_BACKUP_ROOT = Path("runtime/backups")
+WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
 LINE61_PREFIX = "OF_SUIT-61_BLK_"
 LINE61_SKU_KEY = "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
 LINE61_CORE = "6в1_Черный_+Сумка"
@@ -114,10 +121,37 @@ def _load_rows_from_crm(workbook: Path, sheet: str) -> pd.DataFrame:
     return pd.read_excel(workbook, sheet_name=sheet)
 
 
+def _backup_db(db_path: Path, backup_root: Path) -> Path:
+    import sqlite3
+
+    backup_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_root / f"app_db_before_crm_identity_rebuild_{stamp}.sqlite"
+    src = sqlite3.connect(str(db_path))
+    dst = sqlite3.connect(str(backup_path))
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    return backup_path
+
+
+def _build_report_paths(*, output_root: Path, as_of: date) -> tuple[Path, Path]:
+    out_dir = output_root.resolve() / as_of.isoformat()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / "crm_identity_rebuild.json", out_dir / "crm_identity_rebuild.md"
+
+
 def rebuild_identity_map(
     workbook: Path,
     sheet: str,
     dry_run: bool = True,
+    *,
+    db_path: Path = DEFAULT_DB,
+    as_of: date | None = None,
+    output_root: Path | None = None,
+    backup_root: Path = DEFAULT_BACKUP_ROOT,
 ) -> Dict[str, int]:
     df = _load_rows_from_crm(workbook, sheet)
     cols = {str(c).strip().lower(): c for c in df.columns}
@@ -170,13 +204,23 @@ def rebuild_identity_map(
     updated = 0
     skipped = 0
     skipped_fk = 0
+    backup_path: Path | None = None
+    report_json: Path | None = None
+    report_md: Path | None = None
 
-    with get_db() as conn:
+    if not dry_run and str(os.environ.get(WRITE_ENV_GATE) or "").strip() != "1":
+        raise RuntimeError(f"{WRITE_ENV_GATE}=1 is required with --apply")
+    if as_of and output_root:
+        report_json, report_md = _build_report_paths(output_root=output_root, as_of=as_of)
+
+    with get_db(db_path) as conn:
         has_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dim_kaspi_article_map'"
         ).fetchone()
         if not has_table:
             raise RuntimeError("dim_kaspi_article_map missing")
+        if not dry_run:
+            backup_path = _backup_db(db_path, backup_root)
         valid_store_codes = {
             str(r[0]).strip()
             for r in conn.execute("SELECT store_code FROM dim_store").fetchall()
@@ -244,26 +288,64 @@ def rebuild_identity_map(
                 )
             inserted += 1
 
-    return {
+    report = {
         "grouped_keys": len(grouped),
         "inserted": inserted,
         "updated": updated,
         "skipped": skipped,
         "skipped_fk": skipped_fk,
+        "status": "APPLIED" if not dry_run else "DRY_RUN",
+        "workbook": str(Path(workbook).resolve()),
+        "sheet": sheet,
+        "db_path": str(Path(db_path).resolve()),
+        "backup_path": str(backup_path) if backup_path else "",
+        "report_json": str(report_json) if report_json else "",
+        "report_md": str(report_md) if report_md else "",
     }
+    if report_json:
+        report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if report_md:
+        lines = [
+            "# CRM Identity Rebuild",
+            "",
+            f"- workbook: `{Path(workbook).resolve()}`",
+            f"- sheet: `{sheet}`",
+            f"- status: `{report['status']}`",
+            f"- grouped_keys: `{report['grouped_keys']}`",
+            f"- inserted: `{inserted}`",
+            f"- updated: `{updated}`",
+            f"- skipped: `{skipped}`",
+            f"- skipped_fk: `{skipped_fk}`",
+        ]
+        if backup_path:
+            lines.append(f"- backup_path: `{backup_path}`")
+        report_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report
 
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Rebuild Kaspi article identity map from CRM history")
+    p.add_argument("--db", type=Path, default=DEFAULT_DB)
     p.add_argument("--workbook", type=Path, default=DEFAULT_WORKBOOK)
     p.add_argument("--sheet", default=DEFAULT_SHEET)
+    p.add_argument("--as-of", default=None)
+    p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    p.add_argument("--backup-root", type=Path, default=DEFAULT_BACKUP_ROOT)
     p.add_argument("--apply", action="store_true")
     return p
 
 
 def main() -> None:
     args = _build_parser().parse_args()
-    stats = rebuild_identity_map(args.workbook, args.sheet, dry_run=not args.apply)
+    stats = rebuild_identity_map(
+        args.workbook,
+        args.sheet,
+        dry_run=not args.apply,
+        db_path=args.db,
+        as_of=date.fromisoformat(args.as_of) if args.as_of else None,
+        output_root=args.output_root,
+        backup_root=args.backup_root,
+    )
     mode = "APPLY" if args.apply else "DRY RUN"
     print(f"Kaspi identity rebuild {mode}")
     for k, v in stats.items():

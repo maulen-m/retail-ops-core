@@ -94,10 +94,23 @@ def test_rebuild_identity_map_persists_offer_name_from_crm_history(
     conn.close()
 
     monkeypatch.setattr(rebuild_mod, "get_db", lambda db_path_override=None: get_db(db_path))
+    monkeypatch.setenv("ENABLE_KASPI_WORKBOOK_MAP_SYNC", "1")
 
-    stats = rebuild_identity_map(workbook=workbook, sheet="SALES_KSP_CRM_1", dry_run=False)
+    stats = rebuild_identity_map(
+        workbook=workbook,
+        sheet="SALES_KSP_CRM_1",
+        dry_run=False,
+        db_path=db_path,
+        as_of=rebuild_mod.date(2026, 4, 16),
+        output_root=tmp_path / "reports",
+        backup_root=tmp_path / "backups",
+    )
 
     assert stats["inserted"] == 1
+    assert stats["status"] == "APPLIED"
+    assert Path(stats["backup_path"]).exists()
+    assert Path(stats["report_json"]).exists()
+    assert Path(stats["report_md"]).exists()
     conn = sqlite3.connect(db_path)
     row = conn.execute(
         """
@@ -115,3 +128,43 @@ def test_rebuild_identity_map_persists_offer_name_from_crm_history(
         "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
         "crm_historical_patch",
     )
+
+
+def test_rebuild_identity_map_apply_requires_env_gate(tmp_path: Path):
+    workbook = tmp_path / "crm.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+    ws.append(["Артикул", "SKU_key"])
+    ws.append(["ART-1", "SKU-1"])
+    wb.save(workbook)
+
+    with rebuild_mod.get_db(tmp_path / "app.db") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE dim_store (store_code TEXT PRIMARY KEY);
+            CREATE TABLE dim_sku (sku_key TEXT PRIMARY KEY);
+            CREATE TABLE dim_kaspi_article_map (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_code TEXT NOT NULL,
+                kaspi_article TEXT NOT NULL,
+                kaspi_offer_name TEXT,
+                kaspi_name_core TEXT,
+                sku_key TEXT,
+                source TEXT,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            INSERT INTO dim_sku(sku_key) VALUES ('SKU-1');
+            """
+        )
+
+    import os
+
+    os.environ.pop("ENABLE_KASPI_WORKBOOK_MAP_SYNC", None)
+
+    try:
+        rebuild_identity_map(workbook=workbook, sheet="SALES_KSP_CRM_1", dry_run=False, db_path=tmp_path / "app.db")
+    except RuntimeError as exc:
+        assert "ENABLE_KASPI_WORKBOOK_MAP_SYNC=1" in str(exc)
+    else:
+        raise AssertionError("expected env-gate RuntimeError")

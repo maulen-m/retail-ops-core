@@ -16,6 +16,7 @@ from core.integrations.google_ops_board import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
     load_ops_board_contract,
+    resolve_service_account_json,
     resolve_spreadsheet_id,
 )
 from scripts.google_ops_board_automation_common import (  # noqa: E402
@@ -23,9 +24,9 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     closeout_completion_state,
     today_almaty,
 )
-
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_closeout.py"
 DB_CHECK_PATH = PROJECT_ROOT / "scripts" / "check_local_app_db.py"
+IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
 
 
 def _closeout_already_completed(*, service_account_json: str, spreadsheet_id_override: str | None) -> bool:
@@ -54,12 +55,18 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, "1")
+    os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
 
-    service_account_json = str(env.get("AB_GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
+    contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
+    service_account_json = str(resolve_service_account_json(contract=contract)).strip()
     if not service_account_json or not Path(service_account_json).exists():
         print("ERROR: AB_GOOGLE_SERVICE_ACCOUNT_JSON is missing or does not exist.", file=sys.stderr)
         return 78
-    spreadsheet_id_override = str(env.get("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID") or "").strip() or None
+    spreadsheet_id_override = resolve_spreadsheet_id(
+        str(env.get("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID") or "").strip() or None,
+        contract=contract,
+    )
 
     try:
         if _closeout_already_completed(
@@ -83,7 +90,7 @@ def main() -> int:
                 print("ERROR: local DB preflight failed; skipping Google Ops Board closeout.", file=sys.stderr)
                 return int(check.returncode)
 
-            cmd = [sys.executable, str(SCRIPT_PATH), "--apply"]
+            cmd = [sys.executable, str(SCRIPT_PATH), "--apply", "--resume"]
             if spreadsheet_id_override:
                 cmd.extend(["--spreadsheet-id", spreadsheet_id_override])
             cmd.extend(["--service-account-json", service_account_json])

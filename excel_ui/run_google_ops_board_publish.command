@@ -50,6 +50,23 @@ if [ ! -f "${SERVICE_JSON}" ]; then
     exit 1
 fi
 
+echo "Running Google Ops Board publish preflight + identity sync..."
+ENABLE_KASPI_WORKBOOK_MAP_SYNC=1 \
+AB_GOOGLE_SERVICE_ACCOUNT_JSON="${SERVICE_JSON}" \
+PYTHONUNBUFFERED=1 \
+python3 -u scripts/run_google_ops_board_prewindow_health.py \
+    --apply \
+    --profile "publish" \
+    --reason "manual_publish" \
+    --service-account-json "${SERVICE_JSON}"
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "ERROR: Google Ops Board prewindow health failed."
+    echo "Press Enter to close..."
+    [[ -t 0 ]] && read
+    exit 1
+fi
+
 ENABLE_GOOGLE_OPS_BOARD_WRITE=1 \
 AB_GOOGLE_SERVICE_ACCOUNT_JSON="${SERVICE_JSON}" \
 PYTHONUNBUFFERED=1 \

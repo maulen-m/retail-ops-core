@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -32,6 +33,13 @@ from core.integrations.kaspi_api_client import (  # noqa: E402
     STORE_TOKEN_MAP,
 )
 from core.paths import data_path  # noqa: E402
+from core.alerts.google_ops_board_alerts import send_owner_ops_alert  # noqa: E402
+from scripts.google_ops_board_automation_common import (  # noqa: E402
+    load_json_file,
+    resolve_closeout_checkpoint_path,
+    salesraw_writeback_fingerprint,
+)
+from scripts.run_google_ops_board_prewindow_health import ensure_prewindow_health  # noqa: E402
 from scripts.sync_google_ops_board_sizes_to_db import (  # noqa: E402
     _load_db_rows as load_db_rows_for_writeback,
     plan_size_writeback,
@@ -41,6 +49,13 @@ from scripts.sync_google_ops_board_sizes_to_db import (  # noqa: E402
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_RUN_ROOT = data_path("exports", "google_ops_board", "workflow_runs")
 DEFAULT_TODAY_FOLDER = data_path("excel_ui", "Kaspi_orders", "Today")
+STAGE_ORDER = [
+    "size_writeback",
+    "shipping",
+    "download_waybills",
+    "build_waybills",
+    "whatsapp_send",
+]
 STORE_NAME_TO_API_CODE = {
     "AcmeWear": "ACMEWEAR",
     "Universal": "UNIVERSAL",
@@ -92,6 +107,7 @@ def _update_run_control_status(
     target_date: date,
     run_id: str,
     status: str,
+    hold_on_failure: bool = True,
 ) -> None:
     headers = contract.tabs["Run_Control"].headers
     matrix = client.get_tab_values("Run_Control")
@@ -107,7 +123,7 @@ def _update_run_control_status(
     if selected is None:
         return
     updated = dict(selected["row"])
-    if str(status or "").strip().upper().startswith("FAILED_"):
+    if hold_on_failure and str(status or "").strip().upper().startswith("FAILED_"):
         updated["ready_for_closeout"] = "HOLD"
     updated["last_verified_ready_at"] = datetime.now(ALMATY_TZ).isoformat()
     updated["last_orchestrator_run_id"] = run_id
@@ -267,6 +283,151 @@ def _run_command(
     return report
 
 
+def _hash_run_control_row(row: dict[str, Any]) -> str:
+    payload = json.dumps(row, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _load_checkpoint(path: Path) -> dict[str, Any]:
+    payload = load_json_file(path)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_checkpoint(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    dump_json(path, payload)
+
+
+def _build_checkpoint_base(
+    *,
+    target_date: date,
+    db_path: Path,
+    spreadsheet_id: str,
+    service_account_json: Path,
+    run_control_row: dict[str, Any],
+    salesraw_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "target_date": target_date.isoformat(),
+        "db_path": str(db_path.resolve()),
+        "spreadsheet_id": spreadsheet_id,
+        "service_account_json": str(service_account_json.resolve()),
+        "salesraw_writeback_fingerprint": salesraw_writeback_fingerprint(salesraw_rows),
+        "run_control_row_hash": _hash_run_control_row(run_control_row),
+        "stages": {},
+    }
+
+
+def _validate_checkpoint(
+    *,
+    checkpoint: dict[str, Any],
+    target_date: date,
+    db_path: Path,
+    spreadsheet_id: str,
+    service_account_json: Path,
+) -> tuple[bool, str]:
+    expected = {
+        "target_date": target_date.isoformat(),
+        "db_path": str(db_path.resolve()),
+        "spreadsheet_id": spreadsheet_id,
+        "service_account_json": str(service_account_json.resolve()),
+    }
+    for key, value in expected.items():
+        if str(checkpoint.get(key) or "") != value:
+            return False, f"checkpoint_{key}_mismatch"
+    return True, ""
+
+
+def _checkpoint_stage_report(
+    *,
+    checkpoint: dict[str, Any],
+    stage: str,
+    step_report: dict[str, Any],
+    run_id: str,
+    run_dir: Path,
+    artifact_paths: list[str] | None = None,
+) -> None:
+    checkpoint.setdefault("stages", {})
+    checkpoint["stages"][stage] = {
+        "status": "ok" if step_report.get("returncode") == 0 else "failed",
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "step_report_path": str(run_dir / f"step_{stage}.json"),
+        "artifact_paths": list(artifact_paths or []),
+        "summary": (
+            str(step_report.get("stdout") or step_report.get("stderr") or "").strip().splitlines()[-1]
+            if str(step_report.get("stdout") or step_report.get("stderr") or "").strip().splitlines()
+            else ""
+        ),
+        "updated_at": datetime.now(ALMATY_TZ).isoformat(),
+    }
+
+
+def _contiguous_successful_stages(
+    checkpoint: dict[str, Any],
+    *,
+    salesraw_rows: list[dict[str, Any]],
+    run_control_row: dict[str, Any],
+) -> list[str]:
+    stages = checkpoint.get("stages") or {}
+    if str(checkpoint.get("salesraw_writeback_fingerprint") or "") != salesraw_writeback_fingerprint(salesraw_rows):
+        return []
+    if str(checkpoint.get("run_control_row_hash") or "") != _hash_run_control_row(run_control_row):
+        return []
+    successful: list[str] = []
+    for stage in STAGE_ORDER:
+        state = stages.get(stage) or {}
+        if state.get("status") != "ok":
+            break
+        step_report_path = Path(str(state.get("step_report_path") or "")).expanduser()
+        if not step_report_path.exists():
+            break
+        successful.append(stage)
+    return successful
+
+
+def _append_checkpoint_stage(
+    *,
+    report: dict[str, Any],
+    checkpoint: dict[str, Any],
+    stage: str,
+) -> None:
+    stage_state = (checkpoint.get("stages") or {}).get(stage) or {}
+    step_report_path = Path(str(stage_state.get("step_report_path") or "")).expanduser()
+    step_report = load_json_file(step_report_path)
+    if not step_report:
+        return
+    step_report["from_checkpoint"] = True
+    report.setdefault("steps", []).append(step_report)
+    artifact_paths = list(stage_state.get("artifact_paths") or [])
+    if stage == "size_writeback" and artifact_paths:
+        report["size_writeback_report_path"] = artifact_paths[0]
+
+
+def _send_closeout_alert(
+    *,
+    title: str,
+    run_id: str,
+    target_date: date,
+    report_path: Path,
+    stage: str | None = None,
+    resumed: bool = False,
+    detail: str | None = None,
+) -> None:
+    lines = [
+        f"Target date: {target_date.isoformat()}",
+        f"Run ID: {run_id}",
+    ]
+    if resumed:
+        lines.append("Mode: resumed from checkpoint")
+    if stage:
+        lines.append(f"Stage: {stage}")
+    if detail:
+        lines.append(detail)
+    lines.append(f"Report: {report_path}")
+    send_owner_ops_alert(title=title, lines=lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run fail-closed Google Ops Board daily closeout.")
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT_PATH, help="Contract YAML path")
@@ -277,6 +438,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lookback-days", type=int, default=5, help="Operational lookback window (default: 5)")
     parser.add_argument("--today-folder", type=Path, default=DEFAULT_TODAY_FOLDER, help="Today folder for send step")
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT, help="Workflow run output root")
+    parser.add_argument("--checkpoint-path", type=Path, default=None, help="Optional day-level checkpoint path")
+    parser.add_argument("--resume", action="store_true", help="Reuse prior successful safe stages when possible")
     parser.add_argument("--apply", action="store_true", help="Run live closeout (default: dry-run)")
     parser.add_argument("--json-out", type=Path, default=None, help="Optional top-level JSON report path")
     args = parser.parse_args(argv)
@@ -289,6 +452,10 @@ def main(argv: list[str] | None = None) -> int:
     service_account_json = resolve_service_account_json(args.service_account_json, contract=contract)
     spreadsheet_id = resolve_spreadsheet_id(args.spreadsheet_id, contract=contract)
     client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, service_account_json)
+    checkpoint_path = Path(args.checkpoint_path).expanduser() if args.checkpoint_path else resolve_closeout_checkpoint_path(
+        target_date,
+        root=Path(args.run_root).expanduser(),
+    )
 
     run_id = _build_run_id(target_date)
     run_dir = Path(args.run_root).expanduser() / target_date.isoformat() / run_id
@@ -306,8 +473,11 @@ def main(argv: list[str] | None = None) -> int:
         "spreadsheet_id": spreadsheet_id,
         "service_account_json": str(service_account_json),
         "run_dir": str(run_dir),
+        "checkpoint_path": str(checkpoint_path),
         "steps": [],
         "ready": False,
+        "resume_requested": bool(args.resume),
+        "resumed_from_checkpoint": False,
         "ok": False,
     }
 
@@ -332,6 +502,18 @@ def main(argv: list[str] | None = None) -> int:
             "rows": salesraw_rows,
         },
     )
+    run_control_row = _select_run_control_row(
+        extract_rows_from_matrix(contract.tabs["Run_Control"].headers, run_control_matrix),
+        target_date,
+    ) or {}
+    checkpoint = _build_checkpoint_base(
+        target_date=target_date,
+        db_path=db_path,
+        spreadsheet_id=spreadsheet_id,
+        service_account_json=service_account_json,
+        run_control_row=run_control_row,
+        salesraw_rows=salesraw_rows,
+    )
 
     readiness = build_readiness_report(
         client=client,
@@ -350,6 +532,7 @@ def main(argv: list[str] | None = None) -> int:
             target_date=target_date,
             run_id=run_id,
             status="READY" if readiness["ready"] else "BLOCKED",
+            hold_on_failure=False,
         )
 
     if not readiness["ready"]:
@@ -361,227 +544,329 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Closeout blocked. Readiness report: {run_dir / 'readiness_report.json'}")
         return 1
 
-    selected_python = str(PROJECT_ROOT / ".venv" / "bin" / "python")
-    if not Path(selected_python).exists():
-        selected_python = sys.executable
-
-    size_writeback_json = run_dir / "size_writeback_report.json"
-    size_env = dict(env)
     if args.apply:
-        size_env[contract.db_write_env_gate] = "1"
-    size_cmd = [
-        selected_python,
-        str(PROJECT_ROOT / "scripts" / "sync_google_ops_board_sizes_to_db.py"),
-        "--target-date",
-        target_date.isoformat(),
-        "--lookback-days",
-        str(args.lookback_days),
-        "--db",
-        str(db_path),
-        "--service-account-json",
-        str(service_account_json),
-        "--spreadsheet-id",
-        spreadsheet_id,
-        "--output-json",
-        str(size_writeback_json),
-    ]
-    if args.apply:
-        size_cmd.append("--apply")
-    step_report = _run_command(
-        name="size_writeback",
-        command=size_cmd,
-        env=size_env,
-        report_path=run_dir / "step_size_writeback.json",
-    )
-    report["steps"].append(step_report)
-    if step_report["returncode"] != 0:
-        if args.apply:
-            _update_run_control_status(
-                client=client,
-                contract=contract,
-                target_date=target_date,
-                run_id=run_id,
-                status="FAILED_SIZE_WRITEBACK",
-            )
-        report["failure_stage"] = "size_writeback"
-        report["failure_reason"] = "Final size writeback failed"
-        output_path = args.json_out or (run_dir / "closeout_report.json")
-        dump_json(output_path, report)
-        return 1
-
-    if size_writeback_json.exists():
-        report["size_writeback_report_path"] = str(size_writeback_json)
-        try:
-            size_payload = json.loads(size_writeback_json.read_text(encoding="utf-8"))
-        except Exception:
-            size_payload = {}
-        report["size_writeback_db_backup_path"] = size_payload.get("db_backup_path")
-        report["size_writeback_updates_applied"] = size_payload.get("updates_applied")
-
-    store_context = build_store_context_report(salesraw_rows=salesraw_rows)
-    dump_json(run_dir / "store_context_report.json", store_context)
-    report["store_context_report_path"] = str(run_dir / "store_context_report.json")
-    if not store_context["ok"]:
-        if args.apply:
-            _update_run_control_status(
-                client=client,
-                contract=contract,
-                target_date=target_date,
-                run_id=run_id,
-                status="FAILED_STORE_CONTEXT",
-            )
-        report["failure_stage"] = "store_context"
-        report["failure_reason"] = "Store token / merchant UID context failed preflight"
-        output_path = args.json_out or (run_dir / "closeout_report.json")
-        dump_json(output_path, report)
-        return 1
-
-    ship_cmd = [
-        selected_python,
-        str(PROJECT_ROOT / "scripts" / "ship_orders_api.py"),
-        "--selection-source",
-        "db",
-        "--db-path",
-        str(db_path),
-        "--date",
-        target_date.isoformat(),
-        "--since-days",
-        str(args.lookback_days),
-        "--json-out",
-        str(run_dir / "shipping_report.json"),
-        "--verbose",
-    ]
-    if not args.apply:
-        ship_cmd.append("--dry-run")
-    ship_step = _run_command(
-        name="shipping",
-        command=ship_cmd,
-        env=env,
-        report_path=run_dir / "step_shipping.json",
-    )
-    report["steps"].append(ship_step)
-    if ship_step["returncode"] != 0:
-        if args.apply:
-            _update_run_control_status(
-                client=client,
-                contract=contract,
-                target_date=target_date,
-                run_id=run_id,
-                status="FAILED_SHIPPING",
-            )
-        report["failure_stage"] = "shipping"
-        report["failure_reason"] = "DB-first shipping failed"
-        output_path = args.json_out or (run_dir / "closeout_report.json")
-        dump_json(output_path, report)
-        return 1
-
-    download_cmd = [
-        selected_python,
-        str(PROJECT_ROOT / "scripts" / "download_waybills_api.py"),
-        "--db-path",
-        str(db_path),
-        "--date",
-        target_date.isoformat(),
-        "--include-overdue",
-        "--verbose",
-    ]
-    if not args.apply:
-        download_cmd.append("--dry-run")
-    download_step = _run_command(
-        name="download_waybills",
-        command=download_cmd,
-        env=env,
-        report_path=run_dir / "step_download_waybills.json",
-    )
-    report["steps"].append(download_step)
-    if download_step["returncode"] != 0:
-        if args.apply:
-            _update_run_control_status(
-                client=client,
-                contract=contract,
-                target_date=target_date,
-                run_id=run_id,
-                status="FAILED_DOWNLOAD",
-            )
-        report["failure_stage"] = "download_waybills"
-        report["failure_reason"] = "Waybill download failed"
-        output_path = args.json_out or (run_dir / "closeout_report.json")
-        dump_json(output_path, report)
-        return 1
-
-    build_cmd = [
-        selected_python,
-        str(PROJECT_ROOT / "scripts" / "build_daily_waybills.py"),
-        "--db-path",
-        str(db_path),
-        "--date",
-        target_date.isoformat(),
-        "--include-overdue",
-        "--output-layout",
-        "per-store-and-merged",
-        "--verbose",
-    ]
-    if not args.apply:
-        build_cmd.append("--dry-run")
-    build_step = _run_command(
-        name="build_waybills",
-        command=build_cmd,
-        env=env,
-        report_path=run_dir / "step_build_waybills.json",
-    )
-    report["steps"].append(build_step)
-    if build_step["returncode"] != 0:
-        if args.apply:
-            _update_run_control_status(
-                client=client,
-                contract=contract,
-                target_date=target_date,
-                run_id=run_id,
-                status="FAILED_BUILD",
-            )
-        report["failure_stage"] = "build_waybills"
-        report["failure_reason"] = "Waybill bundle build failed"
-        output_path = args.json_out or (run_dir / "closeout_report.json")
-        dump_json(output_path, report)
-        return 1
-
-    if args.apply:
-        whatsapp_cmd = [
-            selected_python,
-            str(PROJECT_ROOT / "scripts" / "send_waybills_whatsapp.py"),
-            "--today-folder",
-            str(Path(args.today_folder).expanduser()),
-            "--bundle-source",
-            "merged",
-            "--expected-target-date",
-            target_date.isoformat(),
-            "--browser-mode",
-            "launch-temp",
-            "--fail-fast",
-            "--json-out",
-            str(run_dir / "whatsapp_send_report.json"),
-        ]
-        whatsapp_step = _run_command(
-            name="whatsapp_send",
-            command=whatsapp_cmd,
-            env=env,
-            report_path=run_dir / "step_whatsapp_send.json",
+        health = ensure_prewindow_health(
+            target_date=target_date,
+            db_path=db_path,
+            contract_path=args.contract,
+            service_account_json=service_account_json,
+            spreadsheet_id=spreadsheet_id,
+            apply=True,
+            reason="closeout_apply",
+            profile="closeout",
         )
-        report["steps"].append(whatsapp_step)
-        if whatsapp_step["returncode"] != 0:
+        report["prewindow_health_report_path"] = str(health.get("report_path") or "")
+        if not health.get("ok"):
+            _update_run_control_status(
+                client=client,
+                contract=contract,
+                target_date=target_date,
+                run_id=run_id,
+                status="FAILED_HEALTH_GATE",
+                hold_on_failure=False,
+            )
+            report["failure_stage"] = "prewindow_health"
+            report["failure_reason"] = "Prewindow health gate failed"
+            output_path = args.json_out or (run_dir / "closeout_report.json")
+            dump_json(output_path, report)
+            _send_closeout_alert(
+                title="Google Ops Board Closeout Failed",
+                run_id=run_id,
+                target_date=target_date,
+                report_path=output_path,
+                stage="prewindow_health",
+                detail="Prewindow health gate is red.",
+            )
+            return 1
+
+    completed_stages: list[str] = []
+    if args.resume and checkpoint_path.exists():
+        saved_checkpoint = _load_checkpoint(checkpoint_path)
+        valid_checkpoint, checkpoint_reason = _validate_checkpoint(
+            checkpoint=saved_checkpoint,
+            target_date=target_date,
+            db_path=db_path,
+            spreadsheet_id=spreadsheet_id,
+            service_account_json=service_account_json,
+        )
+        if not valid_checkpoint:
+            report["failure_stage"] = "checkpoint"
+            report["failure_reason"] = checkpoint_reason
+            output_path = args.json_out or (run_dir / "closeout_report.json")
+            dump_json(output_path, report)
             if args.apply:
                 _update_run_control_status(
                     client=client,
                     contract=contract,
                     target_date=target_date,
                     run_id=run_id,
-                    status="FAILED_WHATSAPP",
+                    status="FAILED_CHECKPOINT",
+                    hold_on_failure=False,
                 )
-            report["failure_stage"] = "whatsapp_send"
-            report["failure_reason"] = "WhatsApp step failed"
-            output_path = args.json_out or (run_dir / "closeout_report.json")
-            dump_json(output_path, report)
+                _send_closeout_alert(
+                    title="Google Ops Board Closeout Failed",
+                    run_id=run_id,
+                    target_date=target_date,
+                    report_path=output_path,
+                    stage="checkpoint",
+                    detail=checkpoint_reason,
+                )
             return 1
+        checkpoint = saved_checkpoint
+        completed_stages = _contiguous_successful_stages(
+            checkpoint,
+            salesraw_rows=salesraw_rows,
+            run_control_row=run_control_row,
+        )
+        report["resumed_stages"] = completed_stages
+        report["resumed_from_checkpoint"] = bool(completed_stages)
+        for stage in completed_stages:
+            _append_checkpoint_stage(report=report, checkpoint=checkpoint, stage=stage)
+
+    output_path = args.json_out or (run_dir / "closeout_report.json")
+    if args.apply:
+        _send_closeout_alert(
+            title="Google Ops Board Closeout Resumed" if completed_stages else "Google Ops Board Closeout Started",
+            run_id=run_id,
+            target_date=target_date,
+            report_path=output_path,
+            resumed=bool(completed_stages),
+            detail=f"Completed stages: {', '.join(completed_stages)}" if completed_stages else None,
+        )
+
+    selected_python = str(PROJECT_ROOT / ".venv" / "bin" / "python")
+    if not Path(selected_python).exists():
+        selected_python = sys.executable
+
+    def _record_failure(stage: str, reason: str, step_report: dict[str, Any] | None = None) -> int:
+        if step_report is not None:
+            _checkpoint_stage_report(
+                checkpoint=checkpoint,
+                stage=stage,
+                step_report=step_report,
+                run_id=run_id,
+                run_dir=run_dir,
+            )
+            _write_checkpoint(checkpoint_path, checkpoint)
+        if args.apply:
+            _update_run_control_status(
+                client=client,
+                contract=contract,
+                target_date=target_date,
+                run_id=run_id,
+                status=f"FAILED_{stage.upper()}",
+                hold_on_failure=False,
+            )
+        report["failure_stage"] = stage
+        report["failure_reason"] = reason
+        dump_json(output_path, report)
+        if args.apply:
+            _send_closeout_alert(
+                title="Google Ops Board Closeout Failed",
+                run_id=run_id,
+                target_date=target_date,
+                report_path=output_path,
+                stage=stage,
+                resumed=bool(completed_stages),
+                detail=reason,
+            )
+        return 1
+
+    if "size_writeback" not in completed_stages:
+        size_writeback_json = run_dir / "size_writeback_report.json"
+        size_env = dict(env)
+        if args.apply:
+            size_env[contract.db_write_env_gate] = "1"
+        size_cmd = [
+            selected_python,
+            str(PROJECT_ROOT / "scripts" / "sync_google_ops_board_sizes_to_db.py"),
+            "--target-date",
+            target_date.isoformat(),
+            "--lookback-days",
+            str(args.lookback_days),
+            "--db",
+            str(db_path),
+            "--service-account-json",
+            str(service_account_json),
+            "--spreadsheet-id",
+            spreadsheet_id,
+            "--output-json",
+            str(size_writeback_json),
+        ]
+        if args.apply:
+            size_cmd.append("--apply")
+        step_report = _run_command(
+            name="size_writeback",
+            command=size_cmd,
+            env=size_env,
+            report_path=run_dir / "step_size_writeback.json",
+        )
+        report["steps"].append(step_report)
+        if step_report["returncode"] != 0:
+            return _record_failure("size_writeback", "Final size writeback failed", step_report)
+        artifact_paths = [str(size_writeback_json)] if size_writeback_json.exists() else []
+        _checkpoint_stage_report(
+            checkpoint=checkpoint,
+            stage="size_writeback",
+            step_report=step_report,
+            run_id=run_id,
+            run_dir=run_dir,
+            artifact_paths=artifact_paths,
+        )
+        checkpoint["salesraw_writeback_fingerprint"] = salesraw_writeback_fingerprint(salesraw_rows)
+        checkpoint["run_control_row_hash"] = _hash_run_control_row(run_control_row)
+        _write_checkpoint(checkpoint_path, checkpoint)
+        if size_writeback_json.exists():
+            report["size_writeback_report_path"] = str(size_writeback_json)
+            try:
+                size_payload = json.loads(size_writeback_json.read_text(encoding="utf-8"))
+            except Exception:
+                size_payload = {}
+            report["size_writeback_db_backup_path"] = size_payload.get("db_backup_path")
+            report["size_writeback_updates_applied"] = size_payload.get("updates_applied")
+
+    store_context = build_store_context_report(salesraw_rows=salesraw_rows)
+    dump_json(run_dir / "store_context_report.json", store_context)
+    report["store_context_report_path"] = str(run_dir / "store_context_report.json")
+    if not store_context["ok"]:
+        return _record_failure("store_context", "Store token / merchant UID context failed preflight")
+
+    if "shipping" not in completed_stages:
+        ship_cmd = [
+            selected_python,
+            str(PROJECT_ROOT / "scripts" / "ship_orders_api.py"),
+            "--selection-source",
+            "db",
+            "--db-path",
+            str(db_path),
+            "--date",
+            target_date.isoformat(),
+            "--since-days",
+            str(args.lookback_days),
+            "--json-out",
+            str(run_dir / "shipping_report.json"),
+            "--verbose",
+        ]
+        if not args.apply:
+            ship_cmd.append("--dry-run")
+        ship_step = _run_command(
+            name="shipping",
+            command=ship_cmd,
+            env=env,
+            report_path=run_dir / "step_shipping.json",
+        )
+        report["steps"].append(ship_step)
+        if ship_step["returncode"] != 0:
+            return _record_failure("shipping", "DB-first shipping failed", ship_step)
+        _checkpoint_stage_report(
+            checkpoint=checkpoint,
+            stage="shipping",
+            step_report=ship_step,
+            run_id=run_id,
+            run_dir=run_dir,
+            artifact_paths=[str(run_dir / "shipping_report.json")],
+        )
+        _write_checkpoint(checkpoint_path, checkpoint)
+
+    if "download_waybills" not in completed_stages:
+        download_cmd = [
+            selected_python,
+            str(PROJECT_ROOT / "scripts" / "download_waybills_api.py"),
+            "--db-path",
+            str(db_path),
+            "--date",
+            target_date.isoformat(),
+            "--include-overdue",
+            "--verbose",
+        ]
+        if not args.apply:
+            download_cmd.append("--dry-run")
+        download_step = _run_command(
+            name="download_waybills",
+            command=download_cmd,
+            env=env,
+            report_path=run_dir / "step_download_waybills.json",
+        )
+        report["steps"].append(download_step)
+        if download_step["returncode"] != 0:
+            return _record_failure("download_waybills", "Waybill download failed", download_step)
+        _checkpoint_stage_report(
+            checkpoint=checkpoint,
+            stage="download_waybills",
+            step_report=download_step,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+        _write_checkpoint(checkpoint_path, checkpoint)
+
+    if "build_waybills" not in completed_stages:
+        build_cmd = [
+            selected_python,
+            str(PROJECT_ROOT / "scripts" / "build_daily_waybills.py"),
+            "--db-path",
+            str(db_path),
+            "--date",
+            target_date.isoformat(),
+            "--include-overdue",
+            "--output-layout",
+            "per-store-and-merged",
+            "--verbose",
+        ]
+        if not args.apply:
+            build_cmd.append("--dry-run")
+        build_step = _run_command(
+            name="build_waybills",
+            command=build_cmd,
+            env=env,
+            report_path=run_dir / "step_build_waybills.json",
+        )
+        report["steps"].append(build_step)
+        if build_step["returncode"] != 0:
+            return _record_failure("build_waybills", "Waybill bundle build failed", build_step)
+        _checkpoint_stage_report(
+            checkpoint=checkpoint,
+            stage="build_waybills",
+            step_report=build_step,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+        _write_checkpoint(checkpoint_path, checkpoint)
+
+    if args.apply:
+        if "whatsapp_send" not in completed_stages:
+            whatsapp_cmd = [
+                selected_python,
+                str(PROJECT_ROOT / "scripts" / "send_waybills_whatsapp.py"),
+                "--today-folder",
+                str(Path(args.today_folder).expanduser()),
+                "--bundle-source",
+                "merged",
+                "--expected-target-date",
+                target_date.isoformat(),
+                "--browser-mode",
+                "launch-temp",
+                "--fail-fast",
+                "--json-out",
+                str(run_dir / "whatsapp_send_report.json"),
+            ]
+            whatsapp_step = _run_command(
+                name="whatsapp_send",
+                command=whatsapp_cmd,
+                env=env,
+                report_path=run_dir / "step_whatsapp_send.json",
+            )
+            report["steps"].append(whatsapp_step)
+            if whatsapp_step["returncode"] != 0:
+                return _record_failure("whatsapp_send", "WhatsApp step failed", whatsapp_step)
+            _checkpoint_stage_report(
+                checkpoint=checkpoint,
+                stage="whatsapp_send",
+                step_report=whatsapp_step,
+                run_id=run_id,
+                run_dir=run_dir,
+                artifact_paths=[str(run_dir / "whatsapp_send_report.json")],
+            )
+            _write_checkpoint(checkpoint_path, checkpoint)
     else:
         whatsapp_step = {
             "name": "whatsapp_preflight",
@@ -605,9 +890,18 @@ def main(argv: list[str] | None = None) -> int:
             target_date=target_date,
             run_id=run_id,
             status="OK",
+            hold_on_failure=False,
         )
-    output_path = args.json_out or (run_dir / "closeout_report.json")
+    _write_checkpoint(checkpoint_path, checkpoint)
     dump_json(output_path, report)
+    if args.apply:
+        _send_closeout_alert(
+            title="Google Ops Board Closeout Complete",
+            run_id=run_id,
+            target_date=target_date,
+            report_path=output_path,
+            resumed=bool(completed_stages),
+        )
     print(f"Closeout report: {output_path}")
     return 0
 

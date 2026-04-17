@@ -135,7 +135,7 @@ def test_early_closeout_watch_triggers_scheduler_only_after_debounce_elapsed(mon
     rc = watch_mod.main()
 
     assert rc == 0
-    assert calls == [[str(watch_mod.sys.executable), str(watch_mod.SCRIPT_PATH)]]
+    assert calls == [[str(watch_mod.sys.executable), str(watch_mod.SCRIPT_PATH), "--resume"]]
     assert not state_path.exists()
 
 

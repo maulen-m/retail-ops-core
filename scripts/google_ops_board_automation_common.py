@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import sys
@@ -22,6 +23,8 @@ from core.integrations.google_ops_board import extract_rows_from_matrix
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_CLOSEOUT_LOCK_PATH = PROJECT_ROOT / "runtime" / "locks" / "google_ops_board_closeout.lock"
 DEFAULT_READY_DEBOUNCE_STATE_PATH = PROJECT_ROOT / "runtime" / "state" / "google_ops_board_ready_watch.json"
+DEFAULT_PREWINDOW_HEALTH_ROOT = PROJECT_ROOT / "exports" / "google_ops_board" / "health"
+DEFAULT_CLOSEOUT_CHECKPOINT_ROOT = PROJECT_ROOT / "exports" / "google_ops_board" / "workflow_runs"
 EARLY_CLOSEOUT_WATCH_START_HOUR = 11
 EARLY_CLOSEOUT_WATCH_END_HOUR = 18
 EARLY_CLOSEOUT_WATCH_END_MINUTE = 30
@@ -73,6 +76,77 @@ def clear_ready_debounce_state(path: Path = DEFAULT_READY_DEBOUNCE_STATE_PATH) -
         target.unlink()
     except FileNotFoundError:
         pass
+
+
+def load_json_file(path: Path) -> dict[str, Any]:
+    target = Path(path)
+    if not target.exists():
+        return {}
+    try:
+        return json.loads(target.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_json_file(path: Path, payload: dict[str, Any]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def resolve_prewindow_health_report_path(
+    target_date: date,
+    root: Path = DEFAULT_PREWINDOW_HEALTH_ROOT,
+    profile: str = "full",
+) -> Path:
+    profile_name = str(profile or "full").strip().lower()
+    filename_map = {
+        "full": "prewindow_health.json",
+        "publish": "publish_health.json",
+        "closeout": "closeout_health.json",
+    }
+    filename = filename_map.get(profile_name, f"{profile_name}_health.json")
+    return Path(root) / target_date.isoformat() / filename
+
+
+def resolve_closeout_checkpoint_path(
+    target_date: date,
+    root: Path = DEFAULT_CLOSEOUT_CHECKPOINT_ROOT,
+) -> Path:
+    return Path(root) / target_date.isoformat() / "closeout_checkpoint.json"
+
+
+def build_workbook_fingerprint(workbook_path: Path) -> dict[str, Any]:
+    path = Path(workbook_path).expanduser().resolve()
+    stat = path.stat()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "path": str(path),
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "sha256": digest.hexdigest(),
+    }
+
+
+def salesraw_writeback_fingerprint(rows: list[dict[str, Any]]) -> str:
+    stable_rows: list[dict[str, str]] = []
+    for row in rows:
+        stable_rows.append(
+            {
+                "_db_row_id": clean_text(row.get("_db_row_id")),
+                "_line_key": clean_text(row.get("_line_key")),
+                "OrderID": clean_text(row.get("OrderID")),
+                "MY_SIZE": clean_text(row.get("MY_SIZE")),
+                "Status": clean_text(row.get("Status")),
+                "Date": clean_text(row.get("Date")),
+            }
+        )
+    stable_rows.sort(key=lambda item: (item["_db_row_id"], item["_line_key"], item["OrderID"]))
+    payload = json.dumps(stable_rows, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def evaluate_ready_debounce(

@@ -19,15 +19,35 @@ Google Ops Board operational contract (employee sizing surface):
 - `Status` is operational and limited to `TODAY` / `OVERDUE` using waybill carry-forward truth, not simple row age.
 - Same-day publishes refresh system-owned fields in place while preserving employee-entered `MY_SIZE`.
 - `SalesRaw_Today` is protected except for `MY_SIZE`; `Run_Control` is protected except for operator input cells.
+- workbook identity sync runs before the first live board publish of the day and re-runs only when the workbook fingerprint changes.
+- Google Sheets remains UI only; mapping, probable size, naming, and closeout logic stay in Python/DB.
 Promotion minimum merge standard authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.
 
 Current daily scheduler contract (GMT+5):
 - import jobs: `11:00`, `15:02`, and `16:01`
-- Google Ops Board publish jobs: immediate after successful import, plus `14:01` to `17:11` every 10 minutes as a backstop
+- Google Ops Board pre-window health gate: `13:45`
+  - runs DB preflight, workbook identity sync, Google board contract check, Kaspi store-context validation, and WhatsApp smoke
+  - blocks later automated publish / closeout if red
+- Google Ops Board publish jobs: `07:00` daily source-refresh + publish, `11:00` daily quiet publish, immediate after successful import, plus `14:01` to `17:11` every 10 minutes as a backstop
+  - `07:00` source refresh order is strict:
+    - `export_api_orders`
+    - `validate_activeorders_columns`
+    - `sync_kaspi_orders`
+    - `enrich_kaspi_orders_from_activeorders`
+    - Google Ops Board publish
+  - publish runs use the quiet `publish` health profile: DB preflight + identity sync + Google board contract only
+  - publish backstop must stay browser-silent; it does not open WhatsApp
+  - publish fails closed when `excel_ui/ActiveOrders/ActiveOrders.xlsx` is stale for the target date
 - Google Ops Board size writeback jobs: `17:15`, `17:30`, `17:45`, `18:00`, `18:15`
 - Google Ops Board early-closeout watch: every 60 seconds between `11:00` and `18:29` (script-gated, no-op unless green)
 - early-ready safety gate: first `READY` detection arms a 90-second debounce; closeout starts only if the board is still green after that wait
+- once READY survives debounce, the closeout script itself runs the full closeout health profile, including Kaspi store-context and WhatsApp smoke
 - Google Ops Board closeout backstop job: `18:30`
+- closeout is checkpointed and resume-capable; later retries resume from the last safe green stage
+- owner Telegram alerts are low-noise:
+  - prewindow green / red
+  - closeout started / resumed
+  - closeout failed / complete
 - daily ops report job: `19:10`
 
 Daily ops orchestrator profile contract:

@@ -16,6 +16,7 @@ from core.integrations.google_ops_board import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
     load_ops_board_contract,
+    resolve_service_account_json,
     resolve_spreadsheet_id,
 )
 from scripts.google_ops_board_automation_common import (  # noqa: E402
@@ -31,11 +32,10 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     within_early_closeout_watch_window,
 )
 from scripts.run_google_ops_board_closeout import build_readiness_report  # noqa: E402
-
-
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_closeout_scheduler.py"
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 READY_DEBOUNCE_STATE_PATH = DEFAULT_READY_DEBOUNCE_STATE_PATH
+IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
 
 
 def _in_watch_window() -> bool:
@@ -54,13 +54,15 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, "1")
+    os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
 
-    service_account_json = str(env.get("AB_GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
+    contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
+    service_account_json = str(resolve_service_account_json(contract=contract)).strip()
     if not service_account_json or not Path(service_account_json).exists():
         print("ERROR: AB_GOOGLE_SERVICE_ACCOUNT_JSON is missing or does not exist.", file=sys.stderr)
         return 78
 
-    contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
     spreadsheet_id = resolve_spreadsheet_id(
         str(env.get("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID") or "").strip() or None,
         contract=contract,
@@ -119,7 +121,7 @@ def main() -> int:
         return 0
 
     print("Google Ops Board early-closeout watch: board is READY; triggering closeout immediately.")
-    result = subprocess.run([sys.executable, str(SCRIPT_PATH)], cwd=str(PROJECT_ROOT), env=env)
+    result = subprocess.run([sys.executable, str(SCRIPT_PATH), "--resume"], cwd=str(PROJECT_ROOT), env=env)
     clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
     return int(result.returncode)
 

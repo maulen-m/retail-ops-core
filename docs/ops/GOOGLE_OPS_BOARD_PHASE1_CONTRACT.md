@@ -14,12 +14,15 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - `scripts/enrich_kaspi_orders_from_activeorders.py`
 - `scripts/sync_google_ops_board.py`
 - `scripts/sync_google_ops_board_sizes_to_db.py`
+- `scripts/run_google_ops_board_prewindow_health.py`
+- `scripts/run_google_ops_board_prewindow_health_scheduler.py`
 - `scripts/run_google_ops_board_closeout.py`
 - `scripts/run_google_ops_board_publish_scheduler.py`
 - `scripts/run_google_ops_board_size_writeback_scheduler.py`
 - `scripts/run_google_ops_board_closeout_watch_scheduler.py`
 - `scripts/run_google_ops_board_closeout_scheduler.py`
 - `excel_ui/run_full_import.command`
+- `excel_ui/run_google_ops_board_prewindow_health.command`
 - `excel_ui/run_google_ops_board_publish.command`
 - `excel_ui/run_google_ops_board_size_writeback.command`
 - `excel_ui/run_google_ops_board_closeout.command`
@@ -40,8 +43,14 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 ## Canonical Scheduler Contracts
 - Import success path:
   - immediate after successful import - Google Ops Board publish
+- `config/com.example.google-ops-board-prewindow-health.plist`
+  - `13:45` pre-window health gate + identity sync
 - `config/com.example.google-ops-board-publish.plist`
+  - `07:00` daily Google Ops Board source refresh + publish
+    - refresh order: `export_api_orders -> validate_activeorders_columns -> sync_kaspi_orders -> enrich_kaspi_orders_from_activeorders -> publish`
+  - `11:00` daily quiet publish
   - `14:01` to `17:11` every 10 minutes publish backstop
+  - publish backstop uses a quiet publish profile; it does not run WhatsApp UI smoke
 - `config/com.example.google-ops-board-size-writeback.plist`
   - `17:15`, `17:30`, `17:45`, `18:00`, `18:15` size writeback
 - `config/com.example.google-ops-board-closeout-watch.plist`
@@ -55,6 +64,37 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 ## Non-Negotiable Runtime Rules
 - Same-day `SalesRaw_Today` publishes use `upsert-preserve` semantics.
 - Same-day `Run_Control` publishes also use `upsert-preserve` semantics.
+- Health profiles are explicit and write separate daily artifacts:
+  - `full`:
+    - DB preflight
+    - identity sync
+    - Google board layout
+    - active store token / merchant UID context
+    - WhatsApp document-send smoke
+    - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/prewindow_health.json`
+  - `publish`:
+    - DB preflight
+    - identity sync
+    - Google board layout
+    - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/publish_health.json`
+    - must stay browser-silent; do not open WhatsApp during routine publish backstop
+    - routine publishes must fail closed when `excel_ui/ActiveOrders/ActiveOrders.xlsx` is stale for the target date
+    - stale means either:
+      - workbook modified date is not the target date, or
+      - workbook has zero rows with `Плановая дата передачи курьеру == target date`
+  - `closeout`:
+    - DB preflight
+    - identity sync
+    - Google board layout
+    - active store token / merchant UID context
+    - WhatsApp document-send smoke
+    - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/closeout_health.json`
+- Publish-safe health is mandatory before live Google board writes.
+- Full closeout health is mandatory before closeout external actions.
+- Automatic identity sync is keyed by workbook fingerprint:
+  - workbook catalog import + CRM history rebuild must run before the first live publish of a day
+  - same-day later checks may reuse the last green identity sync only when the workbook fingerprint is unchanged
+  - runtime checks still rerun on each health evaluation even when identity sync is reused
 - Same-day derived support tabs rewrite from fresh DB truth on each publish:
   - `Orders_Today`
   - `Needs_Size`
@@ -99,6 +139,8 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - extractor fallback last
 - ActiveOrders export may enrich DB identity/details before publish:
   - source: `excel_ui/ActiveOrders/ActiveOrders.xlsx`
+- the `07:00` publish slot is the canonical automatic source refresh for the board
+- later quiet publish slots (`11:00` and the `14:01` to `17:11` backstop window) may publish only if the local ActiveOrders source is already fresh for the target date
   - apply gate: `ENABLE_KASPI_ACTIVEORDERS_DB_WRITE=1`
 - Size writeback stays narrow and explicit:
   - source: `SalesRaw_Today.MY_SIZE`
@@ -117,6 +159,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - The watcher must ignore a transient `READY` misclick:
   - first READY detection only arms the debounce
   - the board must remain green for `90` seconds before closeout starts
+- The minute-level watcher must not run WhatsApp smoke directly; it delegates full closeout health to the closeout script after READY survives debounce.
 - After a successful closeout for the target date:
   - later scheduled size writebacks must skip
   - the `18:30` backstop must skip
@@ -131,10 +174,30 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - WhatsApp send
 - Every closeout run writes a dedicated evidence folder under:
   - `exports/google_ops_board/workflow_runs/<YYYY-MM-DD>/<run_id>/`
+- Closeout maintains a day-level checkpoint under:
+  - `exports/google_ops_board/workflow_runs/<YYYY-MM-DD>/closeout_checkpoint.json`
+- Resume is fail-closed:
+  - `--resume` may reuse only contiguous green stages with matching target date, DB path, spreadsheet ID, service-account path, sheet-writeback fingerprint, and `Run_Control` fingerprint
+  - mismatched checkpoint metadata must stop the run before external actions
+- Stage resume boundaries are:
+  - `size_writeback`
+  - `shipping`
+  - `download_waybills`
+  - `build_waybills`
+  - `whatsapp_send`
 - Publish apply gate remains explicit:
   - `ENABLE_GOOGLE_OPS_BOARD_WRITE=1`
 - Closeout apply gate remains explicit:
   - `ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT=1`
+- Workbook identity-sync apply gate remains explicit:
+  - `ENABLE_KASPI_WORKBOOK_MAP_SYNC=1`
+- Owner notifications are low-noise Telegram direct alerts only:
+  - `PREWINDOW_GREEN`
+  - `PREWINDOW_RED`
+  - `CLOSEOUT_STARTED`
+  - `CLOSEOUT_RESUMED`
+  - `CLOSEOUT_FAILED`
+  - `CLOSEOUT_OK`
 
 ## Archive Contract
 - Previous-day rollover archive is written under:

@@ -75,6 +75,8 @@ def test_build_readiness_report_blocks_when_hold_and_blank_size(tmp_path: Path):
         }
     )
 
+    seen_health: dict[str, object] = {}
+
     report = closeout_mod.build_readiness_report(
         client=client,
         contract=contract,
@@ -232,6 +234,7 @@ def test_closeout_apply_failure_disarms_ready_toggle(monkeypatch, tmp_path: Path
             ],
         }
     )
+    seen_health: dict[str, object] = {}
 
     def _fake_run_command(*, name, command, env, report_path):
         report = {
@@ -252,6 +255,12 @@ def test_closeout_apply_failure_disarms_ready_toggle(monkeypatch, tmp_path: Path
     monkeypatch.setenv("ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT", "1")
     monkeypatch.setattr(closeout_mod.GoogleOpsBoardClient, "from_service_account_file", lambda *_args, **_kwargs: client)
     monkeypatch.setattr(closeout_mod, "_run_command", _fake_run_command)
+    monkeypatch.setattr(
+        closeout_mod,
+        "ensure_prewindow_health",
+        lambda **kwargs: seen_health.update(kwargs) or {"ok": True, "report_path": str(tmp_path / "closeout.json")},
+    )
+    monkeypatch.setattr(closeout_mod, "send_owner_ops_alert", lambda **_kwargs: True)
     monkeypatch.setattr(
         closeout_mod,
         "build_store_context_report",
@@ -283,8 +292,9 @@ def test_closeout_apply_failure_disarms_ready_toggle(monkeypatch, tmp_path: Path
 
     report = json.loads((tmp_path / "closeout_report.json").read_text(encoding="utf-8"))
     assert rc == 1
+    assert seen_health["profile"] == "closeout"
     assert report["failure_stage"] == "shipping"
-    assert client.get_tab_values("Run_Control")[1][1] == "HOLD"
+    assert client.get_tab_values("Run_Control")[1][1] == "READY"
     assert client.get_tab_values("Run_Control")[1][-1] == "FAILED_SHIPPING"
 
 
@@ -328,6 +338,12 @@ def test_closeout_apply_fails_before_external_steps_when_store_context_is_invali
     monkeypatch.setattr(closeout_mod, "_run_command", _fake_run_command)
     monkeypatch.setattr(
         closeout_mod,
+        "ensure_prewindow_health",
+        lambda **_kwargs: {"ok": True, "report_path": str(tmp_path / "prewindow.json")},
+    )
+    monkeypatch.setattr(closeout_mod, "send_owner_ops_alert", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        closeout_mod,
         "build_store_context_report",
         lambda **_kwargs: {
             "ok": False,
@@ -359,5 +375,178 @@ def test_closeout_apply_fails_before_external_steps_when_store_context_is_invali
     assert rc == 1
     assert report["failure_stage"] == "store_context"
     assert calls == ["size_writeback"]
-    assert client.get_tab_values("Run_Control")[1][1] == "HOLD"
+    assert client.get_tab_values("Run_Control")[1][1] == "READY"
     assert client.get_tab_values("Run_Control")[1][-1] == "FAILED_STORE_CONTEXT"
+
+
+def test_closeout_resume_reuses_successful_checkpoint_stages(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    _make_db(db_path)
+    contract = load_ops_board_contract()
+    creds = tmp_path / "svc.json"
+    creds.write_text("{}", encoding="utf-8")
+
+    salesraw_row = ["TODAY", "2026-04-15", "Universal", "", "", "1", "Nike", "1001", "L", "L", "Offer", "SKU-1", "1", "line", "DEFAULT", "LOW"]
+    run_control_row = ["2026-04-15", "READY", "adil", "2026-04-15T18:10:00+05:00", "", "", "", ""]
+    client = _FakeClient(
+        {
+            "Run_Control": [contract.tabs["Run_Control"].headers, run_control_row],
+            "SalesRaw_Today": [contract.tabs["SalesRaw_Today"].headers, salesraw_row],
+        }
+    )
+
+    prior_run_dir = tmp_path / "workflow_runs" / "2026-04-15" / "20260415_170000_2026-04-15_closeout"
+    prior_run_dir.mkdir(parents=True, exist_ok=True)
+    for stage in ("size_writeback", "shipping"):
+        step_report = {
+            "name": stage,
+            "command": [stage],
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "ok": True,
+        }
+        (prior_run_dir / f"step_{stage}.json").write_text(json.dumps(step_report), encoding="utf-8")
+
+    checkpoint_path = tmp_path / "workflow_runs" / "2026-04-15" / "closeout_checkpoint.json"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_date": "2026-04-15",
+                "db_path": str(db_path.resolve()),
+                "spreadsheet_id": "sheet-id",
+                "service_account_json": str(creds.resolve()),
+                "salesraw_writeback_fingerprint": closeout_mod.salesraw_writeback_fingerprint(
+                    [dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))]
+                ),
+                "run_control_row_hash": closeout_mod._hash_run_control_row(
+                    dict(zip(contract.tabs["Run_Control"].headers, run_control_row))
+                ),
+                "stages": {
+                    "size_writeback": {
+                        "status": "ok",
+                        "step_report_path": str(prior_run_dir / "step_size_writeback.json"),
+                    },
+                    "shipping": {
+                        "status": "ok",
+                        "step_report_path": str(prior_run_dir / "step_shipping.json"),
+                    },
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    calls: list[str] = []
+
+    def _fake_run_command(*, name, command, env, report_path):
+        calls.append(name)
+        report = {"name": name, "command": command, "returncode": 0, "stdout": "", "stderr": "", "ok": True}
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return report
+
+    monkeypatch.setattr(closeout_mod.GoogleOpsBoardClient, "from_service_account_file", lambda *_args, **_kwargs: client)
+    monkeypatch.setattr(closeout_mod, "_run_command", _fake_run_command)
+    monkeypatch.setattr(closeout_mod, "send_owner_ops_alert", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        closeout_mod,
+        "build_store_context_report",
+        lambda **_kwargs: {"ok": True, "active_store_codes": ["UNIVERSAL"], "stores": [], "failure_count": 0},
+    )
+
+    rc = closeout_mod.main(
+        [
+            "--db-path",
+            str(db_path),
+            "--service-account-json",
+            str(creds),
+            "--spreadsheet-id",
+            "sheet-id",
+            "--target-date",
+            "2026-04-15",
+            "--run-root",
+            str(tmp_path / "workflow_runs"),
+            "--checkpoint-path",
+            str(checkpoint_path),
+            "--resume",
+            "--json-out",
+            str(tmp_path / "closeout_report.json"),
+        ]
+    )
+
+    report = json.loads((tmp_path / "closeout_report.json").read_text(encoding="utf-8"))
+    assert rc == 0
+    assert report["resumed_from_checkpoint"] is True
+    assert report["resumed_stages"] == ["size_writeback", "shipping"]
+    assert [step["name"] for step in report["steps"][:2]] == ["size_writeback", "shipping"]
+    assert report["steps"][0]["from_checkpoint"] is True
+    assert calls == ["download_waybills", "build_waybills"]
+
+
+def test_closeout_resume_fails_closed_on_checkpoint_mismatch(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    _make_db(db_path)
+    contract = load_ops_board_contract()
+    creds = tmp_path / "svc.json"
+    creds.write_text("{}", encoding="utf-8")
+    client = _FakeClient(
+        {
+            "Run_Control": [contract.tabs["Run_Control"].headers, ["2026-04-15", "READY", "adil", "", "", "", "", ""]],
+            "SalesRaw_Today": [contract.tabs["SalesRaw_Today"].headers, ["TODAY", "2026-04-15", "Universal", "", "", "1", "Nike", "1001", "L", "L", "Offer", "SKU-1", "1", "line", "DEFAULT", "LOW"]],
+        }
+    )
+
+    checkpoint_path = tmp_path / "workflow_runs" / "2026-04-15" / "closeout_checkpoint.json"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_date": "2026-04-15",
+                "db_path": str(db_path.resolve()),
+                "spreadsheet_id": "wrong-sheet-id",
+                "service_account_json": str(creds.resolve()),
+                "salesraw_writeback_fingerprint": "abc",
+                "run_control_row_hash": "xyz",
+                "stages": {},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT", "1")
+    monkeypatch.setattr(closeout_mod.GoogleOpsBoardClient, "from_service_account_file", lambda *_args, **_kwargs: client)
+    monkeypatch.setattr(closeout_mod, "ensure_prewindow_health", lambda **_kwargs: {"ok": True, "report_path": str(tmp_path / "prewindow.json")})
+    monkeypatch.setattr(closeout_mod, "send_owner_ops_alert", lambda **_kwargs: True)
+
+    rc = closeout_mod.main(
+        [
+            "--apply",
+            "--db-path",
+            str(db_path),
+            "--service-account-json",
+            str(creds),
+            "--spreadsheet-id",
+            "sheet-id",
+            "--target-date",
+            "2026-04-15",
+            "--run-root",
+            str(tmp_path / "workflow_runs"),
+            "--checkpoint-path",
+            str(checkpoint_path),
+            "--resume",
+            "--json-out",
+            str(tmp_path / "closeout_report.json"),
+        ]
+    )
+
+    report = json.loads((tmp_path / "closeout_report.json").read_text(encoding="utf-8"))
+    assert rc == 1
+    assert report["failure_stage"] == "checkpoint"
+    assert report["failure_reason"] == "checkpoint_spreadsheet_id_mismatch"
+    assert client.get_tab_values("Run_Control")[1][1] == "READY"
+    assert client.get_tab_values("Run_Control")[1][-1] == "FAILED_CHECKPOINT"
