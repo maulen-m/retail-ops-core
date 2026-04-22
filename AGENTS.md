@@ -53,9 +53,9 @@ Parallel Rollout Default
 - DB writes remain serialized or isolated per `AB_DATA_DIR`; no concurrent DB mutation across agents.
 
 Owning Docs
-- Inventory math: `docs/inventory/Master_Inventory_Rules_v8.md`
+- Inventory math: `docs/inventory/Master_Inventory_Rules_v9.md`
 - Data model: `docs/inventory/Sales_Data_Model_V16.md`
-- PO / size allocation: `docs/protocol/active/PO_making_logic_v2.md`, `docs/size_engine_specification.md`
+- PO / size allocation: `docs/protocol/active/PO_making_logic_v3.md`, `docs/size_engine_specification.md`
 - FX: `docs/protocol/active/FX_RATES_MECHANISM_V1.md`
 - Excel UI contract: `docs/inventory/Excel_UI_Contract_for_CRM_V1.md`
 - Daily ops: `docs/DAILY_SOP.md`

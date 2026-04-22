@@ -8,7 +8,7 @@ This contract is the authority for:
 - decision-grade vs provisional labeling.
 
 ## Canonical Hierarchy
-1. `docs/inventory/Master_Inventory_Rules_v8.md` (canonical formulas/parameters)
+1. `docs/inventory/Master_Inventory_Rules_v9.md` (canonical formulas/parameters)
 2. This contract (`docs/validation/SALES_ECONOMICS_TRUTH_CONTRACT.md`)
 3. DB truth views (`view_sales_line_truth`, `view_sales_daily_truth`)
 4. Derived reports (`BUSINESS_INSIDES`, scorecards)

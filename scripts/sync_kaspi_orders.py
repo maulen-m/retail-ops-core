@@ -218,6 +218,11 @@ def main():
         help='Sync orders until this date (YYYY-MM-DD)',
     )
     parser.add_argument(
+        '--db-path',
+        type=Path,
+        help='SQLite DB path. Defaults to db/app.db.',
+    )
+    parser.add_argument(
         '--states',
         type=str,
         help='Comma-separated list of states (NEW,ACCEPTED_BY_MERCHANT,...)',
@@ -243,7 +248,7 @@ def main():
     args = parser.parse_args()
 
     setup_logging(args.verbose)
-    engine = OrderSyncEngine()
+    engine = OrderSyncEngine(db_path=args.db_path)
 
     max_lookback_days = 13
 

@@ -1,0 +1,396 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from scripts import waybill_telegram_control_bot as bot_mod
+
+
+def _green_readiness() -> dict[str, object]:
+    return {
+        "ready": False,
+        "run_control_ready_ok": False,
+        "run_control_target_match": True,
+        "blank_size_count": 0,
+        "blank_size_rows": [],
+        "invalid_size_count": 0,
+        "invalid_size_rows": [],
+    }
+
+
+def test_waybill_telegram_ready_reports_missing_sizes_without_starting_closeout(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+    saved_offsets: list[int] = []
+    calls: list[list[str]] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: saved_offsets.append(offset))
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 10,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/ready@of_waybill_bot",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "build_waybill_control_readiness",
+        lambda **_kwargs: {
+            "ready": False,
+            "run_control_ready_ok": True,
+            "run_control_target_match": True,
+            "blank_size_count": 2,
+            "blank_size_rows": [{"OrderID": "1001"}, {"OrderID": "1002"}],
+            "invalid_size_count": 0,
+            "invalid_size_rows": [],
+        },
+    )
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+    monkeypatch.setattr(bot_mod.subprocess, "run", lambda command, cwd, env: calls.append(command))
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert calls == []
+    assert saved_offsets == [11]
+    assert any("BLOCKED_MISSING_SIZES" in msg for msg in sent_messages)
+    assert any("1001" in msg and "1002" in msg for msg in sent_messages)
+    assert not bot_mod.STATE_FILE.exists()
+
+
+def test_waybill_telegram_ready_denies_commands_without_allowed_user_gate(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+    readiness_calls: list[object] = []
+
+    monkeypatch.delenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", raising=False)
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 10,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/ready",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(bot_mod, "build_waybill_control_readiness", lambda **kwargs: readiness_calls.append(kwargs))
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert readiness_calls == []
+    assert sent_messages == ["Waybill bot command denied."]
+    assert not bot_mod.STATE_FILE.exists()
+
+
+def test_waybill_telegram_ready_allows_users_from_runtime_allowlist_file(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+
+    monkeypatch.delenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", raising=False)
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    allowlist_path = tmp_path / "allowed_users.txt"
+    allowlist_path.write_text("42\n# backup owner\n99\n", encoding="utf-8")
+    monkeypatch.setattr(bot_mod, "ALLOWED_USERS_FILE", allowlist_path)
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 10,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/ready",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(bot_mod, "build_waybill_control_readiness", lambda **_kwargs: _green_readiness())
+    monkeypatch.setattr(bot_mod, "set_run_control_ready", lambda **_kwargs: None)
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert any("accepted" in msg.lower() for msg in sent_messages)
+    assert json.loads(bot_mod.STATE_FILE.read_text(encoding="utf-8"))["pending_ready"]["user_id"] == "42"
+
+
+def test_waybill_telegram_ready_arms_debounce_without_google_ready_button(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 10,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/ready",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(bot_mod, "build_waybill_control_readiness", lambda **_kwargs: _green_readiness())
+    monkeypatch.setattr(bot_mod, "set_run_control_ready", lambda **_kwargs: None)
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    state = json.loads(bot_mod.STATE_FILE.read_text(encoding="utf-8"))
+    assert rc == 0
+    assert state["pending_ready"]["chat_id"] == "-5102810505"
+    assert state["pending_ready"]["user_id"] == "42"
+    assert any("60" in msg and "accepted" in msg.lower() for msg in sent_messages)
+
+
+def test_waybill_telegram_pending_ready_starts_closeout_after_stable_delay(monkeypatch, tmp_path: Path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "offset": 20,
+                "pending_ready": {
+                    "target_date": "2026-04-15",
+                    "chat_id": "-5102810505",
+                    "user_id": "42",
+                    "requested_at": "2026-04-15T17:00:00+05:00",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_messages: list[str] = []
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", state_path)
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_get_updates", lambda token, offset: [])
+    monkeypatch.setattr(bot_mod, "build_waybill_control_readiness", lambda **_kwargs: _green_readiness())
+    monkeypatch.setattr(bot_mod, "set_run_control_ready", lambda **_kwargs: None)
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+    monkeypatch.setattr(bot_mod.subprocess, "run", lambda command, cwd, env: calls.append(command) or _Result())
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 15, 17, 1, 1, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert rc == 0
+    assert calls == [[str(bot_mod.sys.executable), str(bot_mod.CLOSEOUT_SCHEDULER_PATH), "--resume"]]
+    assert "pending_ready" not in state
+    assert any("starting closeout" in msg.lower() for msg in sent_messages)
+
+
+def test_waybill_telegram_delivery_status_reports_ledger_counts(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 30,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/delivery_status",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "delivery_completion_state",
+        lambda **_kwargs: {
+            "completed": False,
+            "status": "TELEGRAM_LEDGER_INCOMPLETE",
+            "channel": "telegram",
+            "manifest_count": 39,
+            "confirmed_count": 38,
+            "batch_label": "21.04.26_MERGED_qnt94_r2",
+        },
+    )
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 21, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert any("TELEGRAM_LEDGER_INCOMPLETE" in msg for msg in sent_messages)
+    assert any("38/39" in msg for msg in sent_messages)
+
+
+def test_waybill_telegram_resume_delivery_runs_scheduler_when_incomplete(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 31,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/resume_delivery",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "delivery_completion_state",
+        lambda **_kwargs: {
+            "completed": False,
+            "status": "TELEGRAM_LEDGER_INCOMPLETE",
+            "channel": "telegram",
+            "manifest_count": 39,
+            "confirmed_count": 38,
+        },
+    )
+    monkeypatch.setattr(bot_mod, "build_waybill_control_readiness", lambda **_kwargs: _green_readiness())
+    monkeypatch.setattr(bot_mod.subprocess, "run", lambda command, cwd, env: calls.append(command) or _Result())
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 21, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert calls == [[str(bot_mod.sys.executable), str(bot_mod.CLOSEOUT_SCHEDULER_PATH), "--resume"]]
+    assert any("resuming delivery" in msg.lower() for msg in sent_messages)
+
+
+def test_waybill_telegram_final_table_resends_summary(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 32,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/final_table",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "send_final_status_table",
+        lambda **_kwargs: {
+            "ok": True,
+            "final_status_sent": True,
+            "final_status_message_id": "55",
+            "confirmed_total": 39,
+            "total": 39,
+        },
+    )
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 21, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert any("final table sent" in msg.lower() for msg in sent_messages)
+    assert any("55" in msg for msg in sent_messages)
+
+
+def test_waybill_telegram_halt_clears_pending_and_sets_run_control_hold(monkeypatch, tmp_path: Path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "pending_ready": {
+                    "target_date": "2026-04-15",
+                    "chat_id": "-5102810505",
+                    "user_id": "42",
+                    "requested_at": "2026-04-15T17:00:00+05:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_messages: list[str] = []
+    hold_calls: list[dict[str, object]] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", state_path)
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 22,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/halt",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(bot_mod, "set_run_control_hold", lambda **kwargs: hold_calls.append(kwargs))
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert not state_path.exists() or "pending_ready" not in json.loads(state_path.read_text(encoding="utf-8"))
+    assert hold_calls
+    assert any("halted" in msg.lower() for msg in sent_messages)

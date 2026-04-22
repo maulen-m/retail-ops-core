@@ -28,9 +28,11 @@ from core.integrations.google_ops_board import (  # noqa: E402
     validate_contract_layout,
 )
 from core.integrations.kaspi_api_client import KaspiAPIClient, KaspiAuthError, STORE_TOKEN_MAP  # noqa: E402
+from core.integrations.telegram_bot import get_waybill_telegram_config  # noqa: E402
 from scripts.check_local_app_db import validate_local_db  # noqa: E402
 from scripts.google_ops_board_automation_common import (  # noqa: E402
     build_workbook_fingerprint,
+    ensure_kaspi_api_call_ledger_env,
     load_json_file,
     now_almaty,
     resolve_prewindow_health_report_path,
@@ -72,14 +74,17 @@ HEALTH_PROFILE_CHOICES = [
 HEALTH_PROFILE_CHECKS: dict[str, dict[str, bool]] = {
     HEALTH_PROFILE_FULL: {
         "store_context": True,
+        "telegram_delivery_config": True,
         "whatsapp_smoke": True,
     },
     HEALTH_PROFILE_PUBLISH: {
         "store_context": False,
+        "telegram_delivery_config": False,
         "whatsapp_smoke": False,
     },
     HEALTH_PROFILE_CLOSEOUT: {
         "store_context": True,
+        "telegram_delivery_config": True,
         "whatsapp_smoke": True,
     },
 }
@@ -189,6 +194,54 @@ def _build_store_context_report(store_codes: list[str]) -> dict[str, Any]:
     }
 
 
+def _build_telegram_delivery_config_report() -> dict[str, Any]:
+    allowed_users_file = PROJECT_ROOT / "runtime" / "state" / "waybill_telegram_allowed_users.txt"
+    allowed_user_ids = [
+        line.strip()
+        for line in allowed_users_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ] if allowed_users_file.exists() else []
+    env_allowed = [
+        value.strip()
+        for value in str(os.environ.get("TELEGRAM_WAYBILL_ALLOWED_USER_IDS") or "").split(",")
+        if value.strip()
+    ]
+    try:
+        config = get_waybill_telegram_config()
+        allowlist_configured = bool(allowed_user_ids or env_allowed)
+        warnings = []
+        if not allowlist_configured:
+            warnings.append(
+                {
+                    "code": "telegram_control_allowlist_missing",
+                    "detail": (
+                        "Telegram delivery is configured, but control/recovery commands are fail-closed "
+                        "until TELEGRAM_WAYBILL_ALLOWED_USER_IDS or runtime/state/waybill_telegram_allowed_users.txt is set."
+                    ),
+                    "blocking": False,
+                }
+            )
+        return {
+            "ok": True,
+            "token_configured": bool(config.get("token")),
+            "chat_id_configured": bool(config.get("chat_id")),
+            "chat_id": str(config.get("chat_id") or ""),
+            "allowed_user_gate_configured": allowlist_configured,
+            "allowed_user_count": len(set(allowed_user_ids + env_allowed)),
+            "warnings": warnings,
+            "issues": [],
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "token_configured": bool(os.environ.get("TELEGRAM_BOT_TOKEN_WAYBILL") or os.environ.get("TELEGRAM_BOT_TOKEN")),
+            "chat_id_configured": bool(os.environ.get("TELEGRAM_WAYBILL_CHAT_ID")),
+            "allowed_user_gate_configured": bool(allowed_user_ids or env_allowed),
+            "allowed_user_count": len(set(allowed_user_ids + env_allowed)),
+            "issues": [{"code": "telegram_delivery_config_missing", "detail": str(exc)}],
+        }
+
+
 def _run_whatsapp_smoke_check(*, verbose: bool) -> dict[str, Any]:
     if not check_playwright():
         return {
@@ -279,7 +332,7 @@ def _send_health_alert(report: dict[str, Any], previous: dict[str, Any] | None) 
     failures: list[str] = []
     checks = report.get("checks") or {}
     for key, payload in checks.items():
-        if not payload or payload.get("ok", True):
+        if not payload or payload.get("ok", True) or payload.get("blocking") is False:
             continue
         if key == "db_preflight":
             failures.append(f"db_preflight: {', '.join(payload.get('errors') or [])}")
@@ -288,6 +341,9 @@ def _send_health_alert(report: dict[str, Any], previous: dict[str, Any] | None) 
             failures.append(f"whatsapp_smoke: {detail}")
         elif key == "store_context":
             failures.append(f"store_context failures={payload.get('failure_count', 0)}")
+        elif key == "telegram_delivery_config":
+            detail = (payload.get("issues") or [{}])[0].get("detail", "")
+            failures.append(f"telegram_delivery_config: {detail}")
         elif key == "google_layout":
             failures.append("google_layout failed")
         elif key == "identity_sync":
@@ -320,6 +376,8 @@ def ensure_prewindow_health(
     profile: str = HEALTH_PROFILE_FULL,
 ) -> dict[str, Any]:
     _load_repo_dotenv()
+    ledger_env = os.environ
+    ensure_kaspi_api_call_ledger_env(ledger_env, target_date=target_date, project_root=PROJECT_ROOT)
     _require_apply_gate(apply)
     resolved_profile = _resolve_health_profile(profile)
     profile_checks = HEALTH_PROFILE_CHECKS[resolved_profile]
@@ -397,14 +455,33 @@ def ensure_prewindow_health(
             check_name="store_context",
         )
 
+    if profile_checks["telegram_delivery_config"]:
+        report["checks"]["telegram_delivery_config"] = _build_telegram_delivery_config_report()
+    else:
+        report["checks"]["telegram_delivery_config"] = _profile_skipped_report(
+            profile=resolved_profile,
+            check_name="telegram_delivery_config",
+        )
+
     if profile_checks["whatsapp_smoke"]:
-        report["checks"]["whatsapp_smoke"] = _run_whatsapp_smoke_check(verbose=verbose)
+        whatsapp_report = _run_whatsapp_smoke_check(verbose=verbose)
+        if resolved_profile == HEALTH_PROFILE_CLOSEOUT:
+            whatsapp_report["blocking"] = False
+            whatsapp_report["warning_only"] = True
+        else:
+            whatsapp_report["blocking"] = True
+            whatsapp_report["warning_only"] = False
+        report["checks"]["whatsapp_smoke"] = whatsapp_report
     else:
         report["checks"]["whatsapp_smoke"] = _profile_skipped_report(
             profile=resolved_profile,
             check_name="whatsapp_smoke",
         )
-    report["ok"] = all(bool((payload or {}).get("ok")) for payload in report["checks"].values())
+    report["ok"] = all(
+        bool((payload or {}).get("ok"))
+        for payload in report["checks"].values()
+        if (payload or {}).get("blocking", True) is not False
+    )
     dump_json(report_path, report)
     _send_health_alert(report, previous_report)
     return report

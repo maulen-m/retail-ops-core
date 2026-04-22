@@ -31,6 +31,8 @@ Usage:
 import os
 import time
 import logging
+import json
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -89,6 +91,7 @@ STORE_MERCHANT_UID_MAP = {
 }
 
 DEFAULT_STORES_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "kaspi_stores.yaml"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class OrderState(str, Enum):
@@ -305,6 +308,57 @@ class KaspiAPIClient:
             time.sleep(sleep_time)
         self._last_request_time = time.time()
 
+    def _api_call_ledger_path(self) -> Path | None:
+        explicit = str(os.environ.get("KASPI_API_CALL_LEDGER_PATH") or "").strip()
+        if explicit:
+            return Path(explicit).expanduser()
+        if str(os.environ.get("KASPI_API_CALL_LEDGER") or "").strip() == "1":
+            stamp = datetime.now().date().isoformat()
+            return PROJECT_ROOT / "runtime" / "api_ledger" / f"kaspi_api_{stamp}.jsonl"
+        return None
+
+    @staticmethod
+    def _endpoint_family(endpoint: str) -> str:
+        parts: list[str] = []
+        for part in endpoint.strip("/").split("/"):
+            if not part:
+                continue
+            if re.fullmatch(r"[0-9]+", part) or (len(part) >= 6 and re.search(r"\d", part)):
+                parts.append("{id}")
+            else:
+                parts.append(part)
+        return "/".join(parts)
+
+    def _write_api_call_ledger(
+        self,
+        *,
+        method: str,
+        endpoint: str,
+        status_code: int,
+        success: bool,
+        duration_sec: float,
+        error_type: str = "",
+    ) -> None:
+        path = self._api_call_ledger_path()
+        if path is None:
+            return
+        payload = {
+            "ts": datetime.now().isoformat(),
+            "store_code": self.store_code,
+            "method": str(method).upper(),
+            "endpoint_family": self._endpoint_family(endpoint),
+            "status_code": int(status_code or 0),
+            "success": bool(success),
+            "duration_sec": round(max(0.0, float(duration_sec)), 6),
+            "error_type": error_type,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        except Exception as exc:
+            logger.warning(f"Unable to write Kaspi API call ledger: {exc}")
+
     def _request(
         self,
         method: str,
@@ -330,6 +384,7 @@ class KaspiAPIClient:
 
         url = f"{BASE_URL}/{endpoint.lstrip('/')}"
         timeout = timeout or self.timeout
+        started_at = time.time()
 
         try:
             response = self._session.request(
@@ -343,12 +398,44 @@ class KaspiAPIClient:
 
             # Handle specific status codes
             if response.status_code == 401:
+                self._write_api_call_ledger(
+                    method=method,
+                    endpoint=endpoint,
+                    status_code=response.status_code,
+                    success=False,
+                    duration_sec=time.time() - started_at,
+                    error_type="auth",
+                )
                 raise KaspiAuthError("Invalid or expired token")
             if response.status_code == 403:
+                self._write_api_call_ledger(
+                    method=method,
+                    endpoint=endpoint,
+                    status_code=response.status_code,
+                    success=False,
+                    duration_sec=time.time() - started_at,
+                    error_type="auth",
+                )
                 raise KaspiAuthError("Access denied to this resource")
             if response.status_code == 404:
+                self._write_api_call_ledger(
+                    method=method,
+                    endpoint=endpoint,
+                    status_code=response.status_code,
+                    success=False,
+                    duration_sec=time.time() - started_at,
+                    error_type="not_found",
+                )
                 raise KaspiNotFoundError(f"Resource not found: {endpoint}")
             if response.status_code == 429:
+                self._write_api_call_ledger(
+                    method=method,
+                    endpoint=endpoint,
+                    status_code=response.status_code,
+                    success=False,
+                    duration_sec=time.time() - started_at,
+                    error_type="rate_limit",
+                )
                 raise KaspiRateLimitError("Rate limit exceeded")
 
             # Parse JSON response
@@ -358,6 +445,13 @@ class KaspiAPIClient:
                 data = response.text
 
             if response.ok:
+                self._write_api_call_ledger(
+                    method=method,
+                    endpoint=endpoint,
+                    status_code=response.status_code,
+                    success=True,
+                    duration_sec=time.time() - started_at,
+                )
                 return APIResponse(
                     success=True,
                     data=data,
@@ -367,6 +461,14 @@ class KaspiAPIClient:
             else:
                 error_msg = data.get('errors', [{}])[0].get('detail', str(data)) \
                     if isinstance(data, dict) else str(data)
+                self._write_api_call_ledger(
+                    method=method,
+                    endpoint=endpoint,
+                    status_code=response.status_code,
+                    success=False,
+                    duration_sec=time.time() - started_at,
+                    error_type="http_error",
+                )
                 return APIResponse(
                     success=False,
                     error=error_msg,
@@ -375,12 +477,28 @@ class KaspiAPIClient:
                 )
 
         except requests.exceptions.Timeout:
+            self._write_api_call_ledger(
+                method=method,
+                endpoint=endpoint,
+                status_code=0,
+                success=False,
+                duration_sec=time.time() - started_at,
+                error_type="timeout",
+            )
             return APIResponse(
                 success=False,
                 error=f"Request timeout after {timeout}s",
                 status_code=0,
             )
         except requests.exceptions.ConnectionError as e:
+            self._write_api_call_ledger(
+                method=method,
+                endpoint=endpoint,
+                status_code=0,
+                success=False,
+                duration_sec=time.time() - started_at,
+                error_type="connection_error",
+            )
             return APIResponse(
                 success=False,
                 error=f"Connection error: {str(e)}",
@@ -390,6 +508,14 @@ class KaspiAPIClient:
             raise
         except Exception as e:
             logger.exception(f"Unexpected error in API request: {e}")
+            self._write_api_call_ledger(
+                method=method,
+                endpoint=endpoint,
+                status_code=0,
+                success=False,
+                duration_sec=time.time() - started_at,
+                error_type=type(e).__name__,
+            )
             return APIResponse(
                 success=False,
                 error=f"Unexpected error: {str(e)}",

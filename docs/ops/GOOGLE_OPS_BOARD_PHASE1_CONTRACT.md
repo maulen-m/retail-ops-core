@@ -21,6 +21,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - `scripts/run_google_ops_board_size_writeback_scheduler.py`
 - `scripts/run_google_ops_board_closeout_watch_scheduler.py`
 - `scripts/run_google_ops_board_closeout_scheduler.py`
+- `scripts/waybill_telegram_control_bot.py`
 - `excel_ui/run_full_import.command`
 - `excel_ui/run_google_ops_board_prewindow_health.command`
 - `excel_ui/run_google_ops_board_publish.command`
@@ -43,6 +44,8 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 ## Canonical Scheduler Contracts
 - Import success path:
   - immediate after successful import - Google Ops Board publish
+  - import-time board publish is anchored to `export_api_orders -> sync_kaspi_orders -> enrich_kaspi_orders_from_activeorders`
+  - CRM Step 2 may still fail the overall import workflow, but it must not block board publish once DB truth is green
 - `config/com.example.google-ops-board-prewindow-health.plist`
   - `13:45` pre-window health gate + identity sync
 - `config/com.example.google-ops-board-publish.plist`
@@ -53,12 +56,32 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - publish backstop uses a quiet publish profile; it does not run WhatsApp UI smoke
 - `config/com.example.google-ops-board-size-writeback.plist`
   - `17:15`, `17:30`, `17:45`, `18:00`, `18:15` size writeback
+- `config/com.example.google-ops-board-closeout-caffeinate.plist`
+  - `18:20` closeout-window keep-awake guard
+  - command: `/usr/bin/caffeinate -dimsu -t 4200`
 - `config/com.example.google-ops-board-closeout-watch.plist`
-  - every `60` seconds, with script-gated watch window `11:00` to `18:29`
-  - if `Run_Control` is green early, arm a `90` second READY debounce
+  - every `15` seconds, with script-gated watch window `11:00` to `19:04`
+  - if `Run_Control` is green early, arm a `60` second READY debounce
   - start closeout only if the board is still green after that debounce
+  - at `18:57`, if any `SalesRaw_Today.MY_SIZE` rows are still blank:
+    - fill only those blank rows from visible, valid `PROBABLE_SIZE`
+    - never derive a new hidden size at closeout time; blank or invalid `PROBABLE_SIZE` remains unresolved and blocks closeout
+    - preserve all manual `MY_SIZE` entries already entered by the employee or owner
+    - auto-set `Run_Control.ready_for_closeout = READY`
+    - trigger closeout immediately without waiting for manual READY input
+- `config/com.example.waybill-telegram-control.plist`
+  - every `15` seconds
+  - Telegram fallback control for `/status`, `/delivery_status`, `/ready`, `/resume_delivery`, `/final_table`, and `/halt`
+  - `/ready` runs the same sizing gate as Google `Run_Control`, then arms the same `60` second debounce
+  - `/resume_delivery` resumes closeout only when the sizing gate is green and delivery is not already ledger-complete
+  - `/final_table` is status-only: it resends the Telegram final totals table from the existing manifest/ledger, does not resend PDFs, does not start closeout, and intentionally does not enforce the sizing gate
+  - `/halt` clears any pending Telegram debounce and writes `Run_Control.ready_for_closeout = HOLD`
 - `config/com.example.kaspi-waybill-deadline.plist`
   - `18:30` Google Ops Board closeout backstop
+- `config/com.example.kaspi-shipped-truth-sync.plist`
+  - `09:30` and `19:15` DB-only shipped-truth sync fallback
+  - closeout also runs the same sync immediately after successful delivery send
+  - this path refreshes `fact_orders_kaspi` shipped timestamps from Kaspi API states `KASPI_DELIVERY` + `ARCHIVE`; it does not publish Google Sheets or send bundles
 - installer: `scripts/install_scheduler.sh`
 
 ## Non-Negotiable Runtime Rules
@@ -70,7 +93,8 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
     - identity sync
     - Google board layout
     - active store token / merchant UID context
-    - WhatsApp document-send smoke
+    - Telegram delivery config
+    - WhatsApp document-send smoke as legacy fallback readiness
     - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/prewindow_health.json`
   - `publish`:
     - DB preflight
@@ -87,10 +111,13 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
     - identity sync
     - Google board layout
     - active store token / merchant UID context
-    - WhatsApp document-send smoke
+    - Telegram delivery config
+    - WhatsApp document-send smoke as warning-only fallback readiness
     - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/closeout_health.json`
 - Publish-safe health is mandatory before live Google board writes.
-- Full closeout health is mandatory before closeout external actions.
+- Full closeout health is mandatory before closeout external actions; Telegram config and store context block closeout, while WhatsApp smoke is report-visible but does not block Telegram-primary closeout.
+- The early closeout watcher must not run closeout health directly. It only detects stable READY / `18:57` auto-readiness and launches `scripts/run_google_ops_board_closeout_scheduler.py --resume`.
+- `scripts/run_google_ops_board_closeout.py` owns the single closeout health profile immediately before external closeout actions. This avoids duplicate watcher-side health/API/browser churn while keeping the irreversible action gated.
 - Automatic identity sync is keyed by workbook fingerprint:
   - workbook catalog import + CRM history rebuild must run before the first live publish of a day
   - same-day later checks may reuse the last green identity sync only when the workbook fingerprint is unchanged
@@ -105,22 +132,32 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - A same-day publish may append only truly new rows.
 - A same-day publish must append truly new rows only at the bottom of the current live block.
 - A same-day publish may refresh system-owned fields in place while preserving employee-entered `MY_SIZE`.
+- Publish cycles write source snapshots to `exports/google_ops_board/source_snapshots/<YYYY-MM-DD>/source_snapshot.json`.
+- Non-refresh publish slots must use the current source snapshot/fingerprint and fail closed when the ActiveOrders source is stale instead of silently refreshing live API data outside the morning refresh slot.
+- If a generated publish payload is identical to live tab rows, the publisher must report the no-op and skip unnecessary tab rewrites.
 - Metadata tabs may be rewritten on each publish:
   - `README`
   - `Config_Do_Not_Edit`
 - next-day rollover must archive the previous board snapshot before resetting operational tabs.
 - next-day rollover must then rebuild the live board from fresh DB truth for the new target day.
 - Overdue status is fail-closed and narrow:
-  - source of truth: waybill carry-forward selector
+  - source of truth: operational carry-forward selector
+  - includes waybill-ready carry-forward rows
+  - includes prior-day pending assembly rows that were created inside that store's same-day cutoff window
   - employee-facing values: `OVERDUE` or `TODAY`
   - do not mark rows overdue just because `planned_shipment_date < target_date`
+- Same-day operational selection is store-aware:
+  - `AcmeWear` rows stay eligible through `16:01`
+  - all remaining stores stay eligible through `16:00`
+  - the store-aware cutoff applies to same-day pending rows and prior-day pending carry-forward rows
 - `SalesRaw_Today.Status` drives sheet formatting:
   - red fill when `Status = OVERDUE`
   - amber fill when `MY_SIZE` is blank
   - green fill when `MY_SIZE` is filled
 - `SalesRaw_Today` and `Run_Control` are managed protected sheets:
   - `SalesRaw_Today`: only `MY_SIZE` stays editable for operators
-  - `Run_Control`: only `ready_for_closeout`, `ready_set_by`, `ready_set_at`, and `notes` stay editable for operators
+  - `Run_Control`: only `ready_for_closeout` stays editable for operators
+  - `Run_Control` system fields such as `ready_set_by`, `ready_set_at`, `notes`, `last_verified_ready_at`, `last_orchestrator_run_id`, and `last_orchestrator_status` are protected in the UI but preserved by publisher upsert logic so automation can write them
 - `SalesRaw_Today` row order is operator-first:
   - sort by `OrderID`
   - then by display `STORE_NAME`
@@ -134,6 +171,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - `Принт_5в1_черный`
   - `Line51`
 - `Kaspi_name_core` must resolve from DB identity before any text-extraction fallback:
+  - order-specific overrides in `config/kaspi_order_name_core_overrides.yaml` first
   - exact `(store_code, kaspi_offer_name)` mapping first
   - `sku_key` mapping second
   - extractor fallback last
@@ -155,36 +193,84 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - `Run_Control.ready_for_closeout` must be `READY`
   - `SalesRaw_Today` must have no blank `MY_SIZE`
   - invalid size values block the run
-- If the board becomes green before `18:30`, the minute-level watcher may trigger closeout immediately.
+- If the board becomes green before `18:57`, the minute-level watcher may trigger closeout immediately after the `60` second READY debounce.
 - The watcher must ignore a transient `READY` misclick:
   - first READY detection only arms the debounce
-  - the board must remain green for `90` seconds before closeout starts
-- The minute-level watcher must not run WhatsApp smoke directly; it delegates full closeout health to the closeout script after READY survives debounce.
+  - the board must remain green for `60` seconds before closeout starts
+- If an operator sets `READY` while sizes are missing or invalid:
+  - keep `Run_Control.ready_for_closeout = READY`
+  - clear any stale debounce state
+  - write `last_orchestrator_status = BLOCKED_MISSING_SIZES` or `BLOCKED_INVALID_SIZES`
+  - append exact blocking `OrderID` values into `Run_Control.notes`
+  - treat the marker as idempotent by status + notes + blocking `OrderID` set; repeated identical blockers must not rewrite `Run_Control`
+  - keep watching so the same still-READY row can recover automatically after the employee fixes the sizes
+- At `18:57`, the watcher may bypass manual READY:
+  - fill only blank `MY_SIZE` cells from visible, valid `PROBABLE_SIZE`
+  - do not call the size engine or infer a new size during closeout; a blank or invalid `PROBABLE_SIZE` leaves the row unresolved and blocks closeout
+  - unresolved rows must carry explicit reason codes: `MISSING_PROBABLE_SIZE` for blank `PROBABLE_SIZE`, `INVALID_PROBABLE_SIZE` for a visible value that fails size normalization
+  - preserve all existing manual `MY_SIZE` values
+  - mark `Run_Control.ready_for_closeout = READY`
+  - trigger closeout immediately if the board is then green
+- The `18:57` probable-size auto-fill must write an audit artifact under `exports/google_ops_board/auto_probable_fill/<YYYY-MM-DD>/`.
+- The minute-level watcher must not run WhatsApp smoke or store-context health directly; the closeout script delegates that to `scripts/run_google_ops_board_prewindow_health.py` and treats WhatsApp smoke as warning-only in the closeout profile.
 - After a successful closeout for the target date:
   - later scheduled size writebacks must skip
   - the `18:30` backstop must skip
 - Closeout and scheduled writeback automation share one lock:
   - do not let closeout and scheduled writeback mutate state concurrently
+- Manual live recovery must use that same lock:
+  - direct closeout apply must acquire the closeout lock unless it is already held by the scheduler
+  - manual WhatsApp resend/recovery wrappers must re-enter through the shared lock helper
 - Closeout must fail before shipping if active stores are missing token or merchant UID context.
 - The automated closeout path is DB-first:
   - final size writeback
   - DB-first shipping
   - DB-first waybill download
   - bundle build
-  - WhatsApp send
+  - Telegram-primary delivery with WhatsApp fallback only when Telegram sends zero PDFs
 - Every closeout run writes a dedicated evidence folder under:
   - `exports/google_ops_board/workflow_runs/<YYYY-MM-DD>/<run_id>/`
+- Every closeout step report must include `started_at`, `completed_at`, and `duration_sec`.
+- Closeout updates a compact daily index at `exports/google_ops_board/daily_index/<YYYY-MM-DD>.json` with attempts, failure counts, latest health/source artifacts, delivery state, and stage durations.
 - Closeout maintains a day-level checkpoint under:
   - `exports/google_ops_board/workflow_runs/<YYYY-MM-DD>/closeout_checkpoint.json`
 - Resume is fail-closed:
-  - `--resume` may reuse only contiguous green stages with matching target date, DB path, spreadsheet ID, service-account path, sheet-writeback fingerprint, and `Run_Control` fingerprint
+  - `--resume` may reuse only contiguous green stages with matching target date, DB path, spreadsheet ID, service-account path, sheet-writeback fingerprint, and `run_control_resume_fingerprint`
+  - `run_control_resume_fingerprint` is intentionally stable across automation status-field updates and hashes only target date plus `ready_for_closeout`
+  - legacy checkpoints without `run_control_resume_fingerprint` still fall back to the older full `Run_Control` row hash
+  - if `SalesRaw_Today` writeback fingerprint changes after any external stage is already green, closeout must fail closed instead of re-running shipping/download/build/send against a changed board
   - mismatched checkpoint metadata must stop the run before external actions
 - Stage resume boundaries are:
   - `size_writeback`
   - `shipping`
   - `download_waybills`
   - `build_waybills`
-  - `whatsapp_send`
+  - `delivery_send`
+- Delivery channel authority:
+  - `send_batch_manifest.json` remains the only PDF/order scope for delivery
+  - Telegram writes `telegram_send_ledger.json`
+  - WhatsApp fallback keeps using its existing `send_ledger.json`
+  - `Run_Control.last_orchestrator_status = OK` is not sufficient completion truth by itself
+  - closeout is complete only when the current manifest has every `pdf_key` confirmed in `telegram_send_ledger.json`, or when an explicit `delivery_send_report.json` says `delivery_channel = whatsapp` and `send_ledger.json` confirms every manifest `pdf_key`
+  - old `whatsapp_send` artifacts do not satisfy the new `delivery_send` stage
+  - if Telegram has confirmed or ambiguously attempted any PDF, WhatsApp fallback must not auto-run, because that would risk duplicate bundles
+- Telegram waybill delivery requires:
+  - `TELEGRAM_BOT_TOKEN_WAYBILL` preferred for the dedicated waybill bot
+  - fallback: `TELEGRAM_BOT_TOKEN`
+  - `TELEGRAM_WAYBILL_CHAT_ID`
+  - Telegram document sends must be rate-limit aware:
+    - default inter-document delay is conservative enough for Telegram group limits
+    - Telegram `retry_after` responses must sleep and retry before marking a PDF failed
+    - pre-send and final totals messages also retry `retry_after`; final table failure is reported separately from PDF delivery truth
+- Telegram fallback control requires:
+  - `TELEGRAM_WAYBILL_ALLOWED_USER_IDS` or local runtime file `runtime/state/waybill_telegram_allowed_users.txt`
+  - commands from other users or chats are denied
+  - the control bot never bypasses the Google sizing gate; it is a fallback trigger path, not a weaker closeout path
+  - missing allowlist is a visible closeout-health warning for delivery config, not a Telegram delivery blocker; the control bot itself remains fail-closed until the allowlist exists
+- Scheduled Kaspi API calls should default to a per-day redacted ledger:
+  - `runtime/api_ledger/kaspi_api_<YYYY-MM-DD>.jsonl`
+  - scheduled publish, import, closeout scheduler, closeout watcher, prewindow health scheduler, and direct closeout paths must all wire this default before child commands that may touch Kaspi APIs
+  - explicit `KASPI_API_CALL_LEDGER_PATH` or `KASPI_API_CALL_LEDGER=1` overrides the default
 - Publish apply gate remains explicit:
   - `ENABLE_GOOGLE_OPS_BOARD_WRITE=1`
 - Closeout apply gate remains explicit:
@@ -198,6 +284,11 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - `CLOSEOUT_RESUMED`
   - `CLOSEOUT_FAILED`
   - `CLOSEOUT_OK`
+- WhatsApp chat identity safety is title-first plus strong row identifiers:
+  - prefer `selected_row_data_id`
+  - then `selected_row_testid`
+  - then `selected_row_dom_id`
+  - `header_subtitle` is diagnostic only and must not block a live send by itself
 
 ## Archive Contract
 - Previous-day rollover archive is written under:

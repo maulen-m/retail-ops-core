@@ -1,7 +1,7 @@
 """
 Tests for core/calc/economics.py
 
-Aligned to Master_Inventory_Rules_v8 (2026 delivery fee matrix + VAT schedule).
+Aligned to Master_Inventory_Rules_v9 (2026 delivery fee matrix + VAT schedule).
 """
 
 import pytest

@@ -1,5 +1,7 @@
 # docs_plan.md — Documentation Refactor Plan (Kaspi-only, v8 rollout)
 
+Historical note: this was the original v8/v2 documentation rollout plan. Current active authority is `docs/inventory/Master_Inventory_Rules_v9.md` and `docs/protocol/active/PO_making_logic_v3.md`; keep the body below as historical context.
+
 **Objective:** eliminate formula/version drift, remove out-of-scope channel content, and shrink default context load for agents — without losing auditability.
 
 **Prime directive:** protect capital. Wrong VAT / delivery fee / lead time rules cause bad ROIC → bad POs → cash burn.

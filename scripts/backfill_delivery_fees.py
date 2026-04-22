@@ -6,7 +6,7 @@ Targets:
 - fact_sales (unit + line economics)
 - sales_fact_v2 (line economics)
 
-Uses Master_Inventory_Rules_v8 formulas via core.calc.economics.
+Uses Master_Inventory_Rules_v9 formulas via core.calc.economics.
 """
 
 import argparse

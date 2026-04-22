@@ -17,9 +17,12 @@ Authoritative schedule/source-of-truth for automation timing:
 | 15:02 | Second order import | Automated (launchd) |
 | 15:02-16:00 | Next-day order prep | Manual |
 | 16:01 | Third order import | Automated (launchd) |
-| 16:01-17:00 | Late catch-up order prep | Manual |
+| 16:01-17:00 | Post-cutoff / next-day order prep | Manual |
+| 17:02 | Fourth order import (`post-cutoff DB freshness`) | Automated (launchd) |
 | 17:00-18:00 | Package preparation | Manual |
 | 18:00-18:30 | Courier handover + deadline check | Manual |
+| 19:15 | Shipped-truth DB sync fallback | Automated (launchd) |
+| 09:30 next day | Morning shipped-truth DB sync fallback | Automated (launchd) |
 
 ## Detailed Steps
 
@@ -56,9 +59,9 @@ This generates:
 - PDF waybills in NORMAL/SPECIAL folders
 - Manifest CSV files
 
-### 4. WhatsApp Distribution (14:30-15:00)
+### 4. Delivery Distribution
 
-Send waybills to packing team:
+Current production path is Google Ops Board closeout with Telegram-primary bundle delivery and WhatsApp fallback only when Telegram confirms zero PDFs. Legacy manual WhatsApp send remains a recovery path, not the primary daily path:
 ```bash
 # Double-click or run:
 ./excel_ui/run_send_whatsapp.command
@@ -88,6 +91,19 @@ Second automated import captures:
 Third automated import captures:
 - additional late-arriving orders after the `15:02` pass
 - the same next-day prep window, with no manual fetch required
+
+### 6.2 Post-Cutoff DB Freshness Import (17:02)
+
+Fourth automated import captures:
+- post-cutoff orders for DB freshness and next-day visibility
+- while keeping `AcmeWear` on the current `16:01` same-day cutoff contract
+- and keeping the remaining stores on the current `16:00` same-day cutoff contract
+
+### 6.3 Shipped-Truth DB Refresh (post-closeout, 19:15, 09:30)
+
+Shipped truth is not populated by Google Sheet publishing. After closeout delivery completes, the closeout script runs a DB-only Kaspi status sync for `KASPI_DELIVERY` + `ARCHIVE` states. Launchd also runs fallback shipped-truth syncs at `19:15` and next-day `09:30`.
+
+This path updates `fact_orders_kaspi.actual_shipment_date` / `courier_transmission_date` without touching Excel CRM, Google Sheets, waybill PDFs, Telegram, or WhatsApp.
 
 ### 7. Package Preparation (17:00-18:00)
 
@@ -125,10 +141,11 @@ See [PACKAGING_RULES.md](PACKAGING_RULES.md) for:
 2. These orders couldn't match to waybill PDFs
 3. Process manually via Kaspi seller portal
 
-### WhatsApp Send Failed
-1. Script stops on first failure
-2. Run with `--resume` to continue from last successful send
-3. Check WhatsApp Web is logged in
+### Delivery Send Failed
+1. Check `exports/google_ops_board/daily_index/<date>.json`
+2. Check the latest closeout `delivery_send_report.json`
+3. If Telegram partially sent, resume Telegram only
+4. Use WhatsApp only as explicit fallback/recovery
 
 ## File Locations
 
@@ -142,7 +159,7 @@ excel_ui/
 │   │   │   ├── NORMAL_singles/
 │   │   │   ├── SPECIAL_multi_line/
 │   │   │   └── SPECIAL_multi_qty/
-│   │   └── sent_pdfs.json      # WhatsApp tracking
+│   │   └── sent_pdfs.json      # legacy WhatsApp tracking
 │   └── Archive/                # Previous days
 └── backups/                    # CRM backups (7 days)
 
@@ -157,9 +174,9 @@ logs/
 
 | Script | Purpose | Schedule |
 |--------|---------|----------|
-| `run_full_import.command` | Import orders from API | 11:00, 15:02, 16:01 (launchd) |
+| `run_full_import.command` | Import orders from API | 11:00, 15:02, 16:01, 17:02 (launchd) |
 | `run_build_waybills_v2.command` | Generate waybill PDFs (V2 - optimized) | Manual |
-| `run_send_whatsapp.command` | Send PDFs to WhatsApp | Manual |
+| `run_send_whatsapp.command` | Legacy WhatsApp recovery send | Manual |
 
 ## Contacts
 

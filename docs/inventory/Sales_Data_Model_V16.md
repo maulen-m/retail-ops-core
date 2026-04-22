@@ -1,7 +1,7 @@
 # Sales Data Model V16 (Kaspi-only)
 ## Inventory_Core_V18.1_V2.xlsx
 **Created:** 2026-01-05  
-**Scope:** Kaspi-only sales data model aligned to `Master_Inventory_Rules_v8.md`
+**Scope:** Kaspi-only sales data model aligned to `Master_Inventory_Rules_v9.md`
 
 ---
 
@@ -10,7 +10,7 @@
 This document defines the authoritative **Fact_Sales** and **Fact_Sales_Daily** layouts
 used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in v8.
 
-**Source of truth:** `inventory/Master_Inventory_Rules_v8.md`
+**Source of truth:** `inventory/Master_Inventory_Rules_v9.md`
 
 ---
 
@@ -65,7 +65,7 @@ used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in
 
 - Delivery fees must use the **matrix lookup** (v8). No legacy tiers.
 - VAT = **0.04** is enforced in Net_rev_unit.
-- All formulas follow `Master_Inventory_Rules_v8.md`.
+- All formulas follow `Master_Inventory_Rules_v9.md`.
 - Kaspi `Артикул` embeds `sku_key` at the beginning. Parsers must strip trailing size/id tokens and use the prefix as `SKU_key` (and `SKU_ID = SKU_key + size` when size is present).
 
 ---

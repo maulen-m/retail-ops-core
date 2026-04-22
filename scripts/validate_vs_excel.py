@@ -50,7 +50,7 @@ class ExcelTestCase:
     total_stock: int = 0
 
 
-# Test cases from Master_Inventory_Rules_v8
+# Test cases from Master_Inventory_Rules_v9
 # LINE52 @ 12,000 KZT (city, 0.95kg): NetRev ≈ 9,024.83
 
 EXCEL_TEST_CASES = [

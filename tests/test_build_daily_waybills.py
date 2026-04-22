@@ -1402,6 +1402,110 @@ def test_read_db_orders_prefers_article_map_core_over_offer_text(tmp_path: Path)
     assert orders[0].kaspi_name_core != "Спортивный_костюм_PRO_COMBAT_528742263_черный"
 
 
+def test_read_db_orders_prefers_order_specific_name_core_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    override_path = tmp_path / "order_core_overrides.yaml"
+    override_path.write_text(
+        """
+version: 1
+overrides:
+  "895525090":
+    active: true
+    kaspi_name_core: "Питер_положи_2-накладной-стикера-и_2-курьерпакета"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AB_KASPI_ORDER_NAME_CORE_OVERRIDES", str(override_path))
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE fact_orders_kaspi (
+                order_id TEXT,
+                store_code TEXT,
+                kaspi_offer_name TEXT,
+                sku_key TEXT,
+                sku_id TEXT,
+                quantity INTEGER,
+                assigned_size TEXT,
+                my_size TEXT,
+                planned_shipment_date TEXT,
+                kaspi_status TEXT,
+                kaspi_status_detail TEXT,
+                internal_status TEXT,
+                signature_required INTEGER,
+                courier_transmission_date TEXT
+            );
+            CREATE TABLE dim_kaspi_article_map (
+                store_code TEXT,
+                kaspi_offer_name TEXT,
+                sku_key TEXT,
+                kaspi_name_core TEXT,
+                active_flag INTEGER,
+                updated_at TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_offer_name, sku_key, sku_id, quantity,
+                assigned_size, my_size, planned_shipment_date, kaspi_status,
+                kaspi_status_detail, internal_status, signature_required,
+                courier_transmission_date
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "895525090",
+                "STOREB",
+                "Спортивный костюм ALPIKA Universal 5в1 alpika1 черный 42",
+                "CL_OC_MEN_LINE52_BLACK",
+                "CL_OC_MEN_LINE52_BLACK_S",
+                1,
+                "L",
+                "",
+                "2026-04-20",
+                "KASPI_DELIVERY",
+                "Принят",
+                "READY",
+                0,
+                "",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO dim_kaspi_article_map (
+                store_code, kaspi_offer_name, sku_key, kaspi_name_core,
+                active_flag, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "STOREB",
+                "Спортивный костюм ALPIKA Universal 5в1 alpika1 черный 42",
+                "CL_OC_MEN_LINE52_BLACK",
+                "Принт_5в1_черный",
+                1,
+                "2026-04-20T12:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    orders = build_daily_waybills_module.read_db_orders(
+        db_path=db_path,
+        target_date=date(2026, 4, 20),
+        lookback_days=0,
+    )
+
+    assert len(orders) == 1
+    assert orders[0].kaspi_name_core == "Питер_положи_2-накладной-стикера-и_2-курьерпакета"
+    assert orders[0].kaspi_name_core_source == "forced_core"
+
+
 def test_read_db_orders_prefers_sku_family_core_over_raw_offer_fallback(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     conn = sqlite3.connect(db_path)

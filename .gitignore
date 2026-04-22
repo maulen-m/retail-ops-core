@@ -59,6 +59,11 @@ logs/
 logs
 logs.pre_migration_*/
 
+# Local Telegram control runtime state
+runtime/state/waybill_telegram_allowed_users.txt
+runtime/state/waybill_telegram_control_bot.json
+runtime/api_ledger/kaspi_api_*.jsonl
+
 # Exports (regeneratable)
 exports/
 reports/

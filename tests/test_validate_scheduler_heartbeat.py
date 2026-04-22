@@ -16,6 +16,7 @@ def _write_import_plist(path: Path) -> None:
             {"Hour": 11, "Minute": 0},
             {"Hour": 15, "Minute": 2},
             {"Hour": 16, "Minute": 1},
+            {"Hour": 17, "Minute": 2},
         ],
     }
     path.write_bytes(plistlib.dumps(payload))
@@ -30,7 +31,7 @@ def _write_single_plist(path: Path, label: str, hour: int, minute: int) -> None:
 
 
 def _write_docs(path: Path) -> None:
-    path.write_text("11:00\n15:02\n16:01\n18:30\n19:10\n", encoding="utf-8")
+    path.write_text("11:00\n15:02\n16:01\n17:02\n18:30\n19:10\n", encoding="utf-8")
 
 
 def test_scheduler_heartbeat_pass(tmp_path: Path) -> None:
@@ -46,7 +47,8 @@ def test_scheduler_heartbeat_pass(tmp_path: Path) -> None:
     import_log.write_text(
         f"Time: {as_of} 11:01:10\n"
         f"Time: {as_of} 15:03:00\n"
-        f"Time: {as_of} 16:02:00\n",
+        f"Time: {as_of} 16:02:00\n"
+        f"Time: {as_of} 17:03:00\n",
         encoding="utf-8",
     )
     waybill_log = tmp_path / "waybill.log"
@@ -88,6 +90,7 @@ def test_scheduler_heartbeat_fails_on_import_schedule_drift(tmp_path: Path) -> N
             {"Hour": 11, "Minute": 0},
             {"Hour": 15, "Minute": 5},
             {"Hour": 16, "Minute": 1},
+            {"Hour": 17, "Minute": 2},
         ],
     }
     import_plist.write_bytes(plistlib.dumps(payload))
@@ -98,7 +101,7 @@ def test_scheduler_heartbeat_fails_on_import_schedule_drift(tmp_path: Path) -> N
 
     import_log = tmp_path / "import.log"
     import_log.write_text(
-        f"Time: {as_of} 11:00:00\nTime: {as_of} 15:02:00\nTime: {as_of} 16:01:00\n",
+        f"Time: {as_of} 11:00:00\nTime: {as_of} 15:02:00\nTime: {as_of} 16:01:00\nTime: {as_of} 17:02:00\n",
         encoding="utf-8",
     )
     waybill_log = tmp_path / "waybill.log"
@@ -141,7 +144,8 @@ def test_scheduler_heartbeat_allows_not_due_slots_for_current_day(tmp_path: Path
     import_log.write_text(
         f"Time: {as_of} 11:01:10\n"
         f"Time: {as_of} 15:03:00\n"
-        f"Time: {as_of} 16:02:00\n",
+        f"Time: {as_of} 16:02:00\n"
+        f"Time: {as_of} 17:03:00\n",
         encoding="utf-8",
     )
     # No waybill/report heartbeat yet for this day.
@@ -187,7 +191,8 @@ def test_scheduler_heartbeat_accepts_archive_fallback_when_due(tmp_path: Path) -
     import_log.write_text(
         f"Time: {as_of} 11:01:10\n"
         f"Time: {as_of} 15:03:00\n"
-        f"Time: {as_of} 16:02:00\n",
+        f"Time: {as_of} 16:02:00\n"
+        f"Time: {as_of} 17:03:00\n",
         encoding="utf-8",
     )
     waybill_log = tmp_path / "waybill.log"
@@ -234,6 +239,7 @@ def test_scheduler_heartbeat_fails_when_import_plist_uses_seconds(tmp_path: Path
             {"Hour": 11, "Minute": 0},
             {"Hour": 15, "Minute": 2, "Second": 45},
             {"Hour": 16, "Minute": 1},
+            {"Hour": 17, "Minute": 2},
         ],
     }
     import_plist.write_bytes(plistlib.dumps(payload))
@@ -243,7 +249,7 @@ def test_scheduler_heartbeat_fails_when_import_plist_uses_seconds(tmp_path: Path
     _write_single_plist(report_plist, "com.example.kaspi-daily-ops-report", 19, 10)
     import_log = tmp_path / "import.log"
     import_log.write_text(
-        f"Time: {as_of} 11:00:00\nTime: {as_of} 15:02:00\nTime: {as_of} 16:01:00\n",
+        f"Time: {as_of} 11:00:00\nTime: {as_of} 15:02:00\nTime: {as_of} 16:01:00\nTime: {as_of} 17:02:00\n",
         encoding="utf-8",
     )
     waybill_log = tmp_path / "waybill.log"
@@ -293,6 +299,7 @@ def test_scheduler_heartbeat_fails_when_installed_import_plist_drifts(tmp_path: 
                     {"Hour": 11, "Minute": 0},
                     {"Hour": 15, "Minute": 2},
                     {"Hour": 16, "Minute": 3},
+                    {"Hour": 17, "Minute": 2},
                 ],
             }
         )
@@ -302,7 +309,7 @@ def test_scheduler_heartbeat_fails_when_installed_import_plist_drifts(tmp_path: 
 
     import_log = tmp_path / "import.log"
     import_log.write_text(
-        f"Time: {as_of} 11:00:00\nTime: {as_of} 15:02:00\nTime: {as_of} 16:01:00\n",
+        f"Time: {as_of} 11:00:00\nTime: {as_of} 15:02:00\nTime: {as_of} 16:01:00\nTime: {as_of} 17:02:00\n",
         encoding="utf-8",
     )
     waybill_log = tmp_path / "waybill.log"

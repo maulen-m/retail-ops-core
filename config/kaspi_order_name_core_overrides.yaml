@@ -1,0 +1,6 @@
+version: 1
+overrides:
+  "895525090":
+    active: true
+    kaspi_name_core: "Питер_положи_2-накладной-стикера-и_2-курьерпакета"
+    reason: "Manual packing instruction that must remain visible in PDF bundle naming."

@@ -1096,7 +1096,7 @@ def download_all_waybills(
             store_code,
             target_date,
             since_days=since_days,
-            exact_date=exact_date or not all_dates,
+            exact_date=exact_date,
             include_overdue=not exact_date and not all_dates,
             all_dates=all_dates,
             verbose=verbose,

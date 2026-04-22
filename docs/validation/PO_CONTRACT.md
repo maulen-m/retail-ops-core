@@ -4,7 +4,7 @@ Purpose: single owner of PO output comparison rules + tolerances.
 Scope: size-aware PO engine outputs and PO dashboard invariants.
 
 Source of truth:
-- Formulas: `docs/inventory/Master_Inventory_Rules_v8.md`
+- Formulas: `docs/inventory/Master_Inventory_Rules_v9.md`
 - Schema: `docs/inventory/Sales_Data_Model_V16.md`
 - Initial tolerances: `docs/inventory/Automation_Handoff_V16.md` (Section 6)
 
@@ -33,6 +33,6 @@ ORDER_QTY: exact
 - Hash algorithm: SHA-256
 
 ## Update protocol
-1) Update `docs/inventory/Master_Inventory_Rules_v8.md` first.
+1) Update `docs/inventory/Master_Inventory_Rules_v9.md` first.
 2) Regenerate fixtures + expected hashes if outputs legitimately change.
 3) Update this doc only if tolerances or contract scope changes.

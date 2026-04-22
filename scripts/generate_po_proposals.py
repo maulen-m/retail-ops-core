@@ -15,7 +15,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "po"
-DEFAULT_RULES_DOC = PROJECT_ROOT / "docs" / "inventory" / "Master_Inventory_Rules_v8.md"
+DEFAULT_RULES_DOC = PROJECT_ROOT / "docs" / "inventory" / "Master_Inventory_Rules_v9.md"
 
 ROIC_FULL_PCT = 20.0
 ROIC_FLAG_PCT = 10.0

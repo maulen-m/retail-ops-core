@@ -1148,6 +1148,35 @@ def test_recover_target_chat_after_ui_drift_dismisses_blocking_dialog_first(
     assert calls[-1] == "clear"
 
 
+def test_dismiss_blocking_dialog_handles_use_here_modal() -> None:
+    class _ClickTarget:
+        def __init__(self) -> None:
+            self.clicks = []
+
+        def click(self, timeout=None, force=False):
+            self.clicks.append((timeout, force))
+
+    target = _ClickTarget()
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender._ctx = SimpleNamespace(
+        page=_FakePage(
+            selectors={
+                "div[role='dialog'][aria-modal='true']": _ReadyLocator(target),
+                "div[role='dialog'][aria-modal='true'] button:has-text('Use here')": _ReadyLocator(target),
+            }
+        )
+    )
+
+    assert sender._dismiss_blocking_dialog_if_present() is True
+    assert target.clicks == [(1500, True)]
+    assert sender.page.wait_calls == [300]
+
+
 def test_send_text_message_retries_when_composer_click_detaches_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1514,6 +1543,66 @@ def test_assert_active_target_chat_rejects_identity_fingerprint_mismatch(
 
     with pytest.raises(RuntimeError, match="identity fingerprint mismatch"):
         sender._assert_active_target_chat()
+
+
+def test_assert_active_target_chat_ignores_header_subtitle_drift_without_strong_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+    )
+    sender.expected_chat_identity = {
+        "chat_title": "Заказы",
+        "header_subtitle": "Maulen, Рустик, You",
+    }
+    sender._ctx = SimpleNamespace(
+        page=SimpleNamespace(
+            wait_for_timeout=lambda _ms: None,
+        )
+    )
+
+    monkeypatch.setattr(sender, "_chat_home_screen_visible", lambda: False)
+    monkeypatch.setattr(
+        sender,
+        "_active_chat_fingerprint",
+        lambda: {
+            "chat_title": "Заказы",
+            "header_subtitle": "Changed subtitle",
+        },
+    )
+
+    sender._assert_active_target_chat()
+
+
+def test_bind_active_chat_identity_if_missing_prefers_strong_fields_over_header_subtitle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sender = WhatsAppSender(
+        chat_title="Заказы",
+        user_data_dir=Path("/tmp"),
+        profile_directory="Profile 2",
+        blocked_chat_titles=["order 2"],
+        chat_identity_file=tmp_path / "identity.json",
+    )
+    monkeypatch.setattr(
+        sender,
+        "_active_chat_fingerprint",
+        lambda: {
+            "chat_title": "Заказы",
+            "selected_row_data_id": "chat-row-123",
+            "header_subtitle": "Maulen, Рустик, You",
+        },
+    )
+
+    bound = sender.bind_active_chat_identity_if_missing()
+
+    assert bound["chat_title"] == "Заказы"
+    assert bound["selected_row_data_id"] == "chat-row-123"
+    assert "header_subtitle" not in bound
 
 
 def test_confirm_text_message_delivered_waits_for_delivery_marker() -> None:

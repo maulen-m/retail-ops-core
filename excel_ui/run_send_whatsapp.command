@@ -4,8 +4,14 @@
 
 set -euo pipefail
 
+SCRIPT_SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
 cd ~/Docs/Autonomous_business
 source .venv/bin/activate 2>/dev/null || true
+
+if [ "${AB_GOOGLE_OPS_BOARD_LOCK_HELD:-}" != "1" ]; then
+  exec python3 scripts/google_ops_board_lock_exec.py -- "${SCRIPT_SELF}" "$@"
+fi
 
 BROWSER_MODE="attach"
 CHROME_USER_DATA_DIR="${HOME}/Library/Application Support/Google/Chrome-WhatsAppDebug"

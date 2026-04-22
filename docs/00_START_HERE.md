@@ -5,8 +5,8 @@ Scope
 - Read only the minimum owning docs for the task.
 
 Truth Ladder
-1. `docs/inventory/Master_Inventory_Rules_v8.md`
-2. `docs/protocol/active/PO_making_logic_v2.md`
+1. `docs/inventory/Master_Inventory_Rules_v9.md`
+2. `docs/protocol/active/PO_making_logic_v3.md`
 3. `docs/inventory/Sales_Data_Model_V16.md`
 4. `docs/inventory/Excel_UI_Contract_for_CRM_V1.md`
 5. `ARCHITECTURE.md`
@@ -17,8 +17,8 @@ Rule
 
 Task Routes
 - Inventory math / demand / PO:
-  - `docs/inventory/Master_Inventory_Rules_v8.md`
-  - `docs/protocol/active/PO_making_logic_v2.md`
+  - `docs/inventory/Master_Inventory_Rules_v9.md`
+  - `docs/protocol/active/PO_making_logic_v3.md`
   - `docs/size_engine_specification.md`
 - Data ingestion / DB / schemas:
   - `docs/inventory/Sales_Data_Model_V16.md`

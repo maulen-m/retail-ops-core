@@ -109,6 +109,8 @@ CRM_TEMPLATE_SHEET_EXCLUDE = {
     "Подсчет",
     "Claude Log",
     "📊 Workbook Summary",
+    "Master_Inventory_Rules_v9.md",
+    # Older workbooks may still carry the superseded compatibility sheet.
     "Master_Inventory_Rules_v8.md",
 }
 

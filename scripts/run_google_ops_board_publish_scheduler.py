@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import subprocess
 import sys
 from collections import Counter
@@ -22,6 +24,7 @@ SYNC_KASPI_ORDERS_PATH = PROJECT_ROOT / "scripts" / "sync_kaspi_orders.py"
 ENRICH_ACTIVEORDERS_PATH = PROJECT_ROOT / "scripts" / "enrich_kaspi_orders_from_activeorders.py"
 VALIDATE_ACTIVEORDERS_COLUMNS_PATH = PROJECT_ROOT / "scripts" / "validate_activeorders_columns.py"
 ACTIVEORDERS_PATH = PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "ActiveOrders.xlsx"
+DEFAULT_SOURCE_SNAPSHOT_ROOT = PROJECT_ROOT / "exports" / "google_ops_board" / "source_snapshots"
 ACTIVEORDERS_PLANNED_DATE_HEADER = "Плановая дата передачи курьеру"
 DEFAULT_LOOKBACK_DAYS = 5
 MORNING_SOURCE_REFRESH_HOUR = 7
@@ -33,7 +36,13 @@ from core.integrations.google_ops_board import (  # noqa: E402
     resolve_service_account_json,
     resolve_spreadsheet_id,
 )
-from scripts.google_ops_board_automation_common import now_almaty, today_almaty  # noqa: E402
+from scripts.google_ops_board_automation_common import (  # noqa: E402
+    AUTOMATION_LOCK_HELD_ENV,
+    GoogleOpsBoardAutomationLock,
+    ensure_kaspi_api_call_ledger_env,
+    now_almaty,
+    today_almaty,
+)
 from scripts.run_google_ops_board_prewindow_health import ensure_prewindow_health  # noqa: E402
 
 IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
@@ -94,6 +103,60 @@ def inspect_activeorders_source(workbook_path: Path, *, target_date: date) -> di
     except Exception as exc:
         report["error"] = str(exc)
         return report
+
+
+def source_snapshot_path(target_date: date, *, snapshot_root: Path = DEFAULT_SOURCE_SNAPSHOT_ROOT) -> Path:
+    return Path(snapshot_root) / target_date.isoformat() / "source_snapshot.json"
+
+
+def build_file_fingerprint(path: Path) -> dict[str, Any]:
+    target = Path(path).expanduser()
+    if not target.exists():
+        return {
+            "path": str(target),
+            "exists": False,
+            "size": 0,
+            "mtime_ns": 0,
+            "sha256": "",
+        }
+    stat = target.stat()
+    digest = hashlib.sha256()
+    with target.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "path": str(target),
+        "exists": True,
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "sha256": digest.hexdigest(),
+    }
+
+
+def write_source_snapshot(
+    *,
+    target_date: date,
+    workbook_path: Path = ACTIVEORDERS_PATH,
+    snapshot_root: Path = DEFAULT_SOURCE_SNAPSHOT_ROOT,
+    refresh_slot: bool = False,
+) -> dict[str, Any]:
+    source_state = inspect_activeorders_source(workbook_path, target_date=target_date)
+    if refresh_slot and source_state.get("contains_target_date"):
+        source_state = dict(source_state)
+        source_state["fresh"] = True
+        source_state["freshness_basis"] = "refresh_slot_contains_target_date"
+    path = source_snapshot_path(target_date, snapshot_root=snapshot_root)
+    payload = {
+        "target_date": target_date.isoformat(),
+        "generated_at": now_almaty().isoformat(),
+        "refresh_slot": bool(refresh_slot),
+        "source_state": source_state,
+        "source_fingerprint": build_file_fingerprint(workbook_path),
+        "path": str(path),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
 
 
 def build_source_refresh_commands(
@@ -182,36 +245,16 @@ def run_source_refresh(*, target_date: date, env: dict[str, str]) -> int:
         if result.returncode != 0:
             print(f"ERROR: source refresh step failed: {label}", file=sys.stderr)
             return int(result.returncode)
+    snapshot = write_source_snapshot(target_date=target_date, workbook_path=ACTIVEORDERS_PATH, refresh_slot=True)
+    print(f"Source snapshot: {snapshot['path']}")
     return 0
 
 
-def main() -> int:
-    if not SCRIPT_PATH.exists():
-        print(f"ERROR: missing Google Ops Board publisher: {SCRIPT_PATH}", file=sys.stderr)
-        return 78
-    if not DB_CHECK_PATH.exists():
-        print(f"ERROR: missing DB preflight script: {DB_CHECK_PATH}", file=sys.stderr)
-        return 78
-
-    env = os.environ.copy()
-    env.setdefault("TERM", "dumb")
-    env.setdefault("PYTHONUNBUFFERED", "1")
-    env.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, "1")
-    os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
-
-    contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
-    try:
-        service_account_path = resolve_service_account_json(contract=contract)
-    except Exception:
-        service_account_path = None
-    service_account_json = str(service_account_path or "").strip()
-    if not service_account_json or not Path(service_account_json).exists():
-        print("ERROR: AB_GOOGLE_SERVICE_ACCOUNT_JSON is missing or does not exist.", file=sys.stderr)
-        return 78
-    spreadsheet_id = resolve_spreadsheet_id(
-        str(env.get("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID") or "").strip() or None,
-        contract=contract,
-    )
+def run_publish_cycle(*, env: dict[str, str], service_account_json: str, spreadsheet_id: str) -> int:
+    target_date = today_almaty()
+    ensure_kaspi_api_call_ledger_env(env, target_date=target_date, project_root=PROJECT_ROOT)
+    if env.get("KASPI_API_CALL_LEDGER_PATH"):
+        os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
 
     check_cmd = [
         sys.executable,
@@ -224,7 +267,6 @@ def main() -> int:
         print("ERROR: local DB preflight failed; skipping Google Ops Board publish.", file=sys.stderr)
         return int(check.returncode)
 
-    target_date = today_almaty()
     if is_source_refresh_slot():
         print("07:00 publish slot detected; running full ActiveOrders -> DB source refresh before publish.")
         refresh_rc = run_source_refresh(target_date=target_date, env=env)
@@ -232,6 +274,12 @@ def main() -> int:
             return int(refresh_rc)
 
     source_state = inspect_activeorders_source(ACTIVEORDERS_PATH, target_date=target_date)
+    snapshot = write_source_snapshot(
+        target_date=target_date,
+        workbook_path=ACTIVEORDERS_PATH,
+        refresh_slot=is_source_refresh_slot(),
+    )
+    print(f"Source snapshot: {snapshot['path']}")
     if not source_state.get("fresh"):
         print(
             "ERROR: ActiveOrders source is stale for target date; skipping Google Ops Board publish. "
@@ -265,6 +313,62 @@ def main() -> int:
     cmd.extend(["--service-account-json", service_account_json])
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env)
     return int(result.returncode)
+
+
+def main() -> int:
+    if not SCRIPT_PATH.exists():
+        print(f"ERROR: missing Google Ops Board publisher: {SCRIPT_PATH}", file=sys.stderr)
+        return 78
+    if not DB_CHECK_PATH.exists():
+        print(f"ERROR: missing DB preflight script: {DB_CHECK_PATH}", file=sys.stderr)
+        return 78
+
+    env = os.environ.copy()
+    env.setdefault("TERM", "dumb")
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, "1")
+    os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
+
+    contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
+    try:
+        service_account_path = resolve_service_account_json(contract=contract)
+    except Exception:
+        service_account_path = None
+    service_account_json = str(service_account_path or "").strip()
+    if not service_account_json or not Path(service_account_json).exists():
+        print("ERROR: AB_GOOGLE_SERVICE_ACCOUNT_JSON is missing or does not exist.", file=sys.stderr)
+        return 78
+    spreadsheet_id = resolve_spreadsheet_id(
+        str(env.get("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID") or "").strip() or None,
+        contract=contract,
+    )
+
+    if str(os.environ.get(AUTOMATION_LOCK_HELD_ENV) or "").strip() == "1":
+        env[AUTOMATION_LOCK_HELD_ENV] = "1"
+        return run_publish_cycle(
+            env=env,
+            service_account_json=service_account_json,
+            spreadsheet_id=spreadsheet_id,
+        )
+
+    previous_lock_env = os.environ.get(AUTOMATION_LOCK_HELD_ENV)
+    try:
+        with GoogleOpsBoardAutomationLock():
+            os.environ[AUTOMATION_LOCK_HELD_ENV] = "1"
+            env[AUTOMATION_LOCK_HELD_ENV] = "1"
+            return run_publish_cycle(
+                env=env,
+                service_account_json=service_account_json,
+                spreadsheet_id=spreadsheet_id,
+            )
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 0
+    finally:
+        if previous_lock_env is None:
+            os.environ.pop(AUTOMATION_LOCK_HELD_ENV, None)
+        else:
+            os.environ[AUTOMATION_LOCK_HELD_ENV] = previous_lock_env
 
 
 if __name__ == "__main__":

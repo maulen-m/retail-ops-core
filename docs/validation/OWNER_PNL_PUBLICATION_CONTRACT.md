@@ -67,6 +67,6 @@ Ads readiness is PASS only when:
   - OPEX table is missing.
 
 ## Change Protocol
-1. Formula changes: update `docs/inventory/Master_Inventory_Rules_v8.md` first.
+1. Formula changes: update `docs/inventory/Master_Inventory_Rules_v9.md` first.
 2. Then update `docs/validation/SALES_ECONOMICS_TRUTH_CONTRACT.md`.
 3. Then update this contract and code/tests.

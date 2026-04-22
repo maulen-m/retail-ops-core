@@ -7,7 +7,7 @@
 
 ## Start here
 - `00_START_HERE.md` (truth ladder + reading sets)
-- `inventory/Master_Inventory_Rules_v8.md` (formulas + parameters)
+- `inventory/Master_Inventory_Rules_v9.md` (formulas + parameters)
 - `ARCHITECTURE.md` (module boundaries)
 - `DAILY_SOP.md` (operator flow)
 

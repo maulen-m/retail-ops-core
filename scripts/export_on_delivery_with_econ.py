@@ -7,7 +7,7 @@ Creates two Excel files in excel_ui/ActiveOrders/on_delivery:
   - *_raw.xlsx  (Kaspi-format export)
   - *_econ.xlsx (with net revenue, COGS, profit per unit + per line)
 
-Economics follow Master_Inventory_Rules_v8 via core.calc.economics.
+Economics follow Master_Inventory_Rules_v9 via core.calc.economics.
 """
 from __future__ import annotations
 

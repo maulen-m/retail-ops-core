@@ -93,6 +93,7 @@ from core.utils.kaspi_name_core_resolver import (
     load_active_kaspi_name_core_maps,
     resolve_kaspi_name_core,
 )
+from core.utils.kaspi_order_core_overrides import load_order_name_core_overrides
 
 # Default paths
 DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
@@ -569,6 +570,7 @@ def read_db_orders(
                 for row in rows
             },
         )
+        order_core_overrides = load_order_name_core_overrides()
 
     orders: list[OrderItem] = []
     db_orders: list[OrderItem] = []
@@ -603,6 +605,7 @@ def read_db_orders(
         kaspi_offer_name = _coerce_str(row["kaspi_offer_name"])
         sku_key = _coerce_str(row["sku_key"])
         sku_id = _coerce_str(row["sku_id"])
+        preferred_core = order_core_overrides.get(order_id, "")
 
         resolution = resolve_kaspi_name_core(
             store_code=row["store_code"],
@@ -610,6 +613,8 @@ def read_db_orders(
             sku_key=sku_key,
             sku_id=sku_id,
             maps=kaspi_core_maps,
+            preferred_core=preferred_core,
+            preferred_source="forced_core" if preferred_core else "preferred_core",
             extract_fallback=extract_name_core,
         )
         kaspi_name_core = resolution.core or "UNKNOWN"
@@ -2337,6 +2342,11 @@ def main(
         'merged_normal': 0,
         'merged_multi_qty': 0,
         'merged_multi_line': 0,
+        'delivery_groups': 0,
+        'delivery_packages': 0,
+        'delivery_normal': 0,
+        'delivery_multi_qty': 0,
+        'delivery_multi_line': 0,
         'whatsapp_groups': 0,
         'whatsapp_packages': 0,
         'whatsapp_normal': 0,
@@ -2579,7 +2589,7 @@ def main(
             )
             if send_groups:
                 logger.info(
-                    f"Processing WhatsApp merged groups ({WHATSAPP_SEND_ROOT_NAME}) "
+                    f"Processing delivery merged groups ({WHATSAPP_SEND_ROOT_NAME}) "
                     f"({len(send_groups)} groups)"
                 )
                 send_stats = build_store_output(
@@ -2602,11 +2612,16 @@ def main(
                         send_stats["batch_dir"] / SEND_LEDGER_FILE,
                         json.loads(manifest_path.read_text(encoding="utf-8")),
                     )
-                stats['whatsapp_groups'] = len(send_groups)
-                stats['whatsapp_packages'] = int(send_stats.get('packages', 0))
-                stats['whatsapp_normal'] = int(send_stats.get('normal', 0))
-                stats['whatsapp_multi_qty'] = int(send_stats.get('multi_qty', 0))
-                stats['whatsapp_multi_line'] = int(send_stats.get('multi_line', 0))
+                stats['delivery_groups'] = len(send_groups)
+                stats['delivery_packages'] = int(send_stats.get('packages', 0))
+                stats['delivery_normal'] = int(send_stats.get('normal', 0))
+                stats['delivery_multi_qty'] = int(send_stats.get('multi_qty', 0))
+                stats['delivery_multi_line'] = int(send_stats.get('multi_line', 0))
+                stats['whatsapp_groups'] = stats['delivery_groups']
+                stats['whatsapp_packages'] = stats['delivery_packages']
+                stats['whatsapp_normal'] = stats['delivery_normal']
+                stats['whatsapp_multi_qty'] = stats['delivery_multi_qty']
+                stats['whatsapp_multi_line'] = stats['delivery_multi_line']
 
         # Write top-level files
         if not dry_run:
@@ -2636,11 +2651,11 @@ def main(
         logger.info(f"  Merged NORMAL: {stats['merged_normal']}")
         logger.info(f"  Merged MULTI_QTY: {stats['merged_multi_qty']}")
         logger.info(f"  Merged MULTI_LINE: {stats['merged_multi_line']}")
-        logger.info(f"  WhatsApp merged bundles: {stats['whatsapp_groups']}")
-        logger.info(f"  WhatsApp merged packages: {stats['whatsapp_packages']}")
-        logger.info(f"  WhatsApp merged NORMAL: {stats['whatsapp_normal']}")
-        logger.info(f"  WhatsApp merged MULTI_QTY: {stats['whatsapp_multi_qty']}")
-        logger.info(f"  WhatsApp merged MULTI_LINE: {stats['whatsapp_multi_line']}")
+        logger.info(f"  Delivery merged bundles: {stats['delivery_groups']}")
+        logger.info(f"  Delivery merged packages: {stats['delivery_packages']}")
+        logger.info(f"  Delivery merged NORMAL: {stats['delivery_normal']}")
+        logger.info(f"  Delivery merged MULTI_QTY: {stats['delivery_multi_qty']}")
+        logger.info(f"  Delivery merged MULTI_LINE: {stats['delivery_multi_line']}")
     if missing_rows:
         logger.warning("Missing orders (first 5):")
         for row in missing_rows[:5]:

@@ -772,13 +772,15 @@ rm -f "${HEALTH_JSON}" "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
 
 # Step 3: Publish Google Ops Board
 echo ""
-if [ "${HARD_FAIL}" -ne 0 ]; then
-    echo "NO-OP: skipping Google Ops Board publish (workflow already red)."
-elif [ "${GOOGLE_BOARD_SYNC_READY}" != "1" ]; then
+if [ "${GOOGLE_BOARD_SYNC_READY}" != "1" ]; then
     echo "ERROR: Google Ops Board publish blocked by missing or failed DB enrichment step."
     HARD_FAIL=1
     HARD_FAIL_REASONS+=("Google Ops Board publish blocked because ActiveOrders -> DB enrichment was not green.")
 else
+    if [ "${HARD_FAIL}" -ne 0 ]; then
+        echo "WARNING: workflow is red, but Google Ops Board publish will still proceed from DB truth."
+        echo "Reason: Google board publish is now anchored to export + DB sync + ActiveOrders enrichment, not CRM Step 2 success."
+    fi
     if ! run_google_ops_board_publish_now; then
         echo "ERROR: Google Ops Board publish failed."
         HARD_FAIL=1

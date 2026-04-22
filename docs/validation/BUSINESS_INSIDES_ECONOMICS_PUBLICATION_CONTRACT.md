@@ -44,6 +44,6 @@ python3 scripts/validate_business_insides_economics_ready.py --as-of <YYYY-MM-DD
 
 ## Change Protocol
 If formulas/policy thresholds change:
-1. Update `docs/inventory/Master_Inventory_Rules_v8.md` first.
+1. Update `docs/inventory/Master_Inventory_Rules_v9.md` first.
 2. Update this contract.
 3. Update validator/tests.

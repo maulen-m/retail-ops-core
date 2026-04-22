@@ -27,7 +27,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
 
-# Default FX rates (from Master_Inventory_Rules_v8.md)
+# Default FX rates (from Master_Inventory_Rules_v9.md)
 DEFAULT_FX_RATES = {
     "cny_kzt": 75.0,
     "usd_kzt": 520.0,
@@ -98,7 +98,7 @@ def seed_params(conn: sqlite3.Connection, force: bool = False) -> int:
         """, (
             param_key,
             param_value,
-            f"Frozen parameter (Master_Inventory_Rules_v8.md)"
+            f"Frozen parameter (Master_Inventory_Rules_v9.md)"
         ))
         seeded += 1
 

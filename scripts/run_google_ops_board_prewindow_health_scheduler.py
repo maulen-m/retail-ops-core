@@ -12,6 +12,10 @@ from pathlib import Path
 PROJECT_ROOT = Path("~/Docs/Autonomous_business")
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_prewindow_health.py"
 IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.google_ops_board_automation_common import ensure_kaspi_api_call_ledger_env, today_almaty  # noqa: E402
 
 
 def main() -> int:
@@ -23,7 +27,10 @@ def main() -> int:
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, "1")
+    ensure_kaspi_api_call_ledger_env(env, target_date=today_almaty(), project_root=PROJECT_ROOT)
     os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
+    if env.get("KASPI_API_CALL_LEDGER_PATH"):
+        os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
 
     service_account_json = str(env.get("AB_GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
     if not service_account_json or not Path(service_account_json).exists():

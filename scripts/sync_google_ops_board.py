@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,7 @@ from core.utils.kaspi_name_core_resolver import (
     load_active_kaspi_name_core_maps,
     resolve_kaspi_name_core,
 )
+from core.utils.kaspi_order_core_overrides import load_order_name_core_overrides
 
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
@@ -178,6 +179,14 @@ def _is_row_shipped(row: sqlite3.Row) -> bool:
     return _is_shipped([row])
 
 
+def _order_key(row: sqlite3.Row) -> tuple[str, str]:
+    return (_normalize_store_key(row["store_code"]), _clean_str(row["order_id"]))
+
+
+def _handed_over_order_keys(rows: list[sqlite3.Row]) -> set[tuple[str, str]]:
+    return {_order_key(row) for row in rows if _is_row_shipped(row)}
+
+
 def _ship_date(rows: list[sqlite3.Row], target_date: date) -> str:
     target_iso = target_date.isoformat()
     for row in rows:
@@ -243,7 +252,8 @@ def _build_salesraw_line_key(row: sqlite3.Row) -> str:
 def _load_db_rows(conn: sqlite3.Connection, *, start: date, target: date) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT fk.id, fk.order_id, fk.store_code, fk.planned_shipment_date, fk.kaspi_status, fk.internal_status,
+        SELECT fk.id, fk.order_id, fk.store_code, fk.planned_shipment_date, fk.created_at,
+               fk.kaspi_status, fk.internal_status,
                fk.kaspi_offer_name, fk.sku_key, fk.sku_id, fk.my_size, fk.assigned_size, fk.quantity,
                fk.waybill_url, fk.waybill_downloaded, fk.actual_shipment_date, fk.courier_transmission_date,
                fk.customer_first_name, fk.customer_last_name, fk.customer_phone,
@@ -260,23 +270,130 @@ def _load_db_rows(conn: sqlite3.Connection, *, start: date, target: date) -> lis
     ).fetchall()
 
 
+def _parse_local_dt(value: Any) -> datetime | None:
+    text = _clean_str(value)
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    if "T" not in normalized and " " in normalized:
+        normalized = normalized.replace(" ", "T", 1)
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=ALMATY_TZ)
+    return parsed.astimezone(ALMATY_TZ)
+
+
+def _parse_cutoff(value: str) -> tuple[int, int]:
+    text = str(value or "").strip()
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except Exception as exc:
+        raise ValueError(f"Invalid same-day cutoff value: {value!r}") from exc
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError(f"Invalid same-day cutoff value: {value!r}")
+    return hour, minute
+
+
+def _row_is_before_same_day_cutoff(row: sqlite3.Row, *, contract, target_date: date) -> bool:
+    store_code = _normalize_store_key(row["store_code"])
+    cutoff_text = contract.same_day_cutoff_by_store.get(store_code) or contract.same_day_cutoff_default
+    cutoff_hour, cutoff_minute = _parse_cutoff(cutoff_text)
+    created_at = _parse_local_dt(row["created_at"])
+    if created_at is None:
+        return True
+    cutoff_dt = datetime.combine(target_date, time(cutoff_hour, cutoff_minute), tzinfo=ALMATY_TZ)
+    return created_at <= cutoff_dt
+
+
+def _parse_iso_date(value: Any) -> date | None:
+    text = _clean_str(value)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except Exception:
+        return None
+
+
+def _is_pending_carryforward_row(
+    row: sqlite3.Row,
+    *,
+    target_date: date,
+    lookback_days: int,
+    contract,
+) -> bool:
+    planned_date = _parse_iso_date(row["planned_shipment_date"])
+    if planned_date is None or planned_date >= target_date:
+        return False
+    min_date = target_date - timedelta(days=max(lookback_days - 1, 0))
+    if planned_date < min_date:
+        return False
+    stage = classify_kaspi_stage_from_db_row(row)
+    if stage not in PENDING_BOARD_STAGES:
+        return False
+    return _row_is_before_same_day_cutoff(row, contract=contract, target_date=planned_date)
+
+
+def _build_board_overdue_ids_by_store(
+    rows: list[sqlite3.Row],
+    *,
+    waybill_overdue_ids_by_store: dict[str, set[str]],
+    target_date: date,
+    lookback_days: int,
+    contract,
+) -> dict[str, set[str]]:
+    handed_over_keys = _handed_over_order_keys(rows)
+    overdue_ids_by_store = {
+        store_code: set(order_ids)
+        for store_code, order_ids in waybill_overdue_ids_by_store.items()
+    }
+    for store_code, order_id in handed_over_keys:
+        overdue_ids_by_store.get(store_code, set()).discard(order_id)
+    for row in rows:
+        if _order_key(row) in handed_over_keys:
+            continue
+        if not _is_pending_carryforward_row(
+            row,
+            target_date=target_date,
+            lookback_days=lookback_days,
+            contract=contract,
+        ):
+            continue
+        store_code = _normalize_store_key(row["store_code"])
+        order_id = _clean_str(row["order_id"])
+        if store_code and order_id:
+            overdue_ids_by_store.setdefault(store_code, set()).add(order_id)
+    return overdue_ids_by_store
+
+
 def _select_operational_rows(
     rows: list[sqlite3.Row],
     *,
     overdue_ids_by_store: dict[str, set[str]],
     target_date: date,
+    contract,
 ) -> list[sqlite3.Row]:
     selected: list[sqlite3.Row] = []
     target_iso = target_date.isoformat()
+    handed_over_keys = _handed_over_order_keys(rows)
     for row in rows:
-        if _is_row_shipped(row):
+        if _order_key(row) in handed_over_keys:
             continue
         store_code = _normalize_store_key(row["store_code"])
         order_id = _clean_str(row["order_id"])
         planned_date = _clean_str(row["planned_shipment_date"])
         stage = classify_kaspi_stage_from_db_row(row)
         is_overdue = order_id in overdue_ids_by_store.get(store_code, set())
-        is_today_pending = planned_date == target_iso and stage in PENDING_BOARD_STAGES
+        is_today_pending = (
+            planned_date == target_iso
+            and stage in PENDING_BOARD_STAGES
+            and _row_is_before_same_day_cutoff(row, contract=contract, target_date=target_date)
+        )
         if is_overdue or is_today_pending:
             selected.append(row)
     return selected
@@ -294,13 +411,18 @@ def _resolve_kaspi_name_core(
     row: sqlite3.Row,
     *,
     kaspi_core_maps: KaspiNameCoreMaps,
+    order_core_overrides: dict[str, str] | None = None,
 ) -> str:
+    order_id = _clean_str(row["order_id"])
+    preferred_core = (order_core_overrides or {}).get(order_id, "")
     resolution = resolve_kaspi_name_core(
         store_code=row["store_code"],
         kaspi_offer_name=_clean_offer_value(row["kaspi_offer_name"]),
         sku_key=_clean_str(row["sku_key"]),
         sku_id=_clean_str(row["sku_id"]),
         maps=kaspi_core_maps,
+        preferred_core=preferred_core,
+        preferred_source="forced_core" if preferred_core else "preferred_core",
     )
     return resolution.core or "UNKNOWN"
 
@@ -320,6 +442,7 @@ def _build_salesraw_row(
     overdue_ids_by_store: dict[str, set[str]],
     db_path: Path,
     kaspi_core_maps: KaspiNameCoreMaps,
+    order_core_overrides: dict[str, str],
 ) -> dict[str, Any]:
     size_value = _clean_str(row["assigned_size"]) or _clean_str(row["my_size"])
     product_type = _product_type_from_row(row)
@@ -337,6 +460,7 @@ def _build_salesraw_row(
     kaspi_core = _resolve_kaspi_name_core(
         row,
         kaspi_core_maps=kaspi_core_maps,
+        order_core_overrides=order_core_overrides,
     )
     return {
         "Status": _operational_status(row, overdue_ids_by_store),
@@ -416,15 +540,23 @@ def build_phase1_payload(
     conn.row_factory = sqlite3.Row
     try:
         rows = _load_db_rows(conn, start=start, target=target)
-        overdue_ids_by_store = get_overdue_waybill_ready_order_ids_from_db(
+        waybill_overdue_ids_by_store = get_overdue_waybill_ready_order_ids_from_db(
             db_path,
             target_date=target,
             lookback_days=lookback_days,
+        )
+        overdue_ids_by_store = _build_board_overdue_ids_by_store(
+            rows,
+            waybill_overdue_ids_by_store=waybill_overdue_ids_by_store,
+            target_date=target,
+            lookback_days=lookback_days,
+            contract=contract,
         )
         selected_rows = _select_operational_rows(
             rows,
             overdue_ids_by_store=overdue_ids_by_store,
             target_date=target,
+            contract=contract,
         )
         kaspi_core_maps = load_active_kaspi_name_core_maps(
             conn,
@@ -436,6 +568,7 @@ def build_phase1_payload(
         )
     finally:
         conn.close()
+    order_core_overrides = load_order_name_core_overrides()
 
     all_grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
     for row in rows:
@@ -544,6 +677,7 @@ def build_phase1_payload(
                     overdue_ids_by_store=overdue_ids_by_store,
                     db_path=db_path,
                     kaspi_core_maps=kaspi_core_maps,
+                    order_core_overrides=order_core_overrides,
                 )
         salesraw_rows.append({key: built.get(key, "") for key in contract.tabs["SalesRaw_Today"].headers})
     salesraw_rows.sort(key=_salesraw_sort_key)
@@ -555,7 +689,7 @@ def build_phase1_payload(
         {
             "field": "lookback_days",
             "value": str(lookback_days),
-            "notes": "Carry-forward overdue rows are limited to the waybill-ready lookback window",
+            "notes": "Carry-forward overdue rows are limited to the operational lookback window",
         },
         {"field": "source_of_truth", "value": "db/app.db", "notes": "Google Sheet is an ops surface, not the canonical truth"},
         {
@@ -565,8 +699,8 @@ def build_phase1_payload(
         },
         {
             "field": "overdue_policy",
-            "value": "waybill_carryforward_only",
-            "notes": "OVERDUE is reserved for waybill-ready carry-forward rows, not generic older backlog",
+            "value": "operational_carryforward",
+            "notes": "OVERDUE covers waybill-ready carry-forward plus prior pending rows that were inside store cutoff",
         },
         {
             "field": "closeout_gate",
@@ -844,13 +978,20 @@ def main(argv: list[str] | None = None) -> int:
         publish_plan["layout_repair_rewrite"] = True
 
     tab_counts: dict[str, dict[str, int]] = {}
+    planned_write_operations = 0
     for tab_name, action in publish_plan["tab_actions"].items():
+        write_rows = len(action["final_rows"])
+        if action["mode"] == "rewrite" and action["existing_rows"] == action["final_rows"] and tab_name not in invalid_tabs:
+            write_rows = 0
+        operation_count = len(action.get("update_rows") or []) + len(action.get("append_rows") or []) + write_rows
+        planned_write_operations += operation_count
         tab_counts[tab_name] = {
             "fresh_rows": len(action["fresh_rows"]),
             "existing_rows": len(action["existing_rows"]),
             "update_rows": len(action.get("update_rows") or []),
             "append_rows": len(action["append_rows"]),
             "write_rows": len(action["final_rows"]),
+            "write_operations": operation_count,
         }
 
     report = {
@@ -870,6 +1011,8 @@ def main(argv: list[str] | None = None) -> int:
         "layout_repair_tabs": sorted(invalid_tabs),
         "created_tabs": created_tabs,
         "tab_counts": tab_counts,
+        "planned_write_operations": planned_write_operations,
+        "write_noop": planned_write_operations == 0,
     }
 
     if args.apply:
@@ -881,6 +1024,7 @@ def main(argv: list[str] | None = None) -> int:
                 before_snapshot=before_snapshot,
             )
             report["rollover_archive_path"] = str(archive_path)
+        skipped_noop_tabs: list[str] = []
         for tab_name, action in publish_plan["tab_actions"].items():
             if action["mode"] == "upsert_preserve":
                 client.update_tab_rows(tab_name, contract.tabs[tab_name].headers, action["update_rows"])
@@ -889,8 +1033,12 @@ def main(argv: list[str] | None = None) -> int:
             if action["mode"] == "append_only":
                 client.append_tab_rows(tab_name, contract.tabs[tab_name].headers, action["append_rows"])
                 continue
+            if action["existing_rows"] == action["final_rows"] and tab_name not in invalid_tabs:
+                skipped_noop_tabs.append(tab_name)
+                continue
             client.clear_tab(tab_name)
             client.write_tab_rows(tab_name, contract.tabs[tab_name].headers, action["final_rows"])
+        report["skipped_noop_tabs"] = skipped_noop_tabs
         report["ui_applied_tabs"] = client.apply_contract_ui(contract)
         report["write_applied"] = True
         report["after_layout_report"] = validate_contract_layout(

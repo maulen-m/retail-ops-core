@@ -130,6 +130,16 @@ def _normalize_article_key(value: Any) -> str:
     return re.sub(r"_[0-9]{6,}$", "", article)
 
 
+def _article_suffix_key(value: Any) -> str:
+    article = _clean_upper(value)
+    if not article or "_" not in article:
+        return ""
+    suffix = article.rsplit("_", 1)[-1]
+    if suffix.isdigit() and len(suffix) >= 6:
+        return f"_{suffix}"
+    return ""
+
+
 def _load_article_identity_map(
     conn: sqlite3.Connection,
     orders: list[dict[str, Any]],
@@ -172,6 +182,7 @@ def _load_article_identity_map(
         store_code = _clean_upper(row["store_code"])
         exact_article = _clean_upper(row["kaspi_article"])
         normalized_article = _normalize_article_key(row["kaspi_article"])
+        suffix_article = _article_suffix_key(row["kaspi_article"])
         value = {
             "sku_key": _clean(row["sku_key"]),
             "sku_id": _clean(row["sku_id"]),
@@ -179,6 +190,7 @@ def _load_article_identity_map(
         }
         _store_mapping((store_code, exact_article), value)
         _store_mapping((store_code, normalized_article), value)
+        _store_mapping((store_code, suffix_article), value)
     return article_map
 
 
@@ -192,7 +204,12 @@ def _canonicalize_parsed_orders(
         store_code = _clean_upper(order.get("store_code"))
         exact_article = _clean_upper(order.get("kaspi_article"))
         normalized_article = _normalize_article_key(order.get("kaspi_article"))
-        mapping = article_map.get((store_code, exact_article)) or article_map.get((store_code, normalized_article))
+        suffix_article = _article_suffix_key(order.get("kaspi_article"))
+        mapping = (
+            article_map.get((store_code, exact_article))
+            or article_map.get((store_code, normalized_article))
+            or article_map.get((store_code, suffix_article))
+        )
         if not mapping:
             canonicalized.append(order)
             continue
@@ -550,6 +567,15 @@ def _insert_from_template(conn: sqlite3.Connection, inserts: list[dict[str, Any]
                 customer_last_name,
                 customer_phone
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(order_id, sku_id, store_code) DO UPDATE SET
+                channel_code = COALESCE(NULLIF(excluded.channel_code, ''), fact_orders_kaspi.channel_code),
+                kaspi_offer_name = COALESCE(NULLIF(excluded.kaspi_offer_name, ''), fact_orders_kaspi.kaspi_offer_name),
+                sku_key = COALESCE(NULLIF(excluded.sku_key, ''), fact_orders_kaspi.sku_key),
+                quantity = COALESCE(excluded.quantity, fact_orders_kaspi.quantity),
+                unit_price_kzt = COALESCE(excluded.unit_price_kzt, fact_orders_kaspi.unit_price_kzt),
+                planned_shipment_date = COALESCE(NULLIF(excluded.planned_shipment_date, ''), fact_orders_kaspi.planned_shipment_date),
+                source_file = COALESCE(NULLIF(excluded.source_file, ''), fact_orders_kaspi.source_file),
+                updated_at = CURRENT_TIMESTAMP
             """,
             (
                 _clean(order.get("order_id")),

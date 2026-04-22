@@ -10,11 +10,21 @@ def test_daily_ops_workflow_contract_doc_exists_and_maps_critical_paths() -> Non
     assert "excel_ui/run_merged_build_waybills.command" in text
     assert "config/com.example.kaspi-import.plist" in text
     assert "config/com.example.kaspi-waybill-deadline.plist" in text
+    assert "config/com.example.waybill-telegram-control.plist" in text
+    assert "scripts/waybill_telegram_control_bot.py" in text
     assert "11:00" in text
     assert "15:02" in text
     assert "16:01" in text
+    assert "17:02" in text
     assert "18:30" in text
+    assert "Telegram /ready" in text
+    assert "Telegram /halt" in text
     assert "fail-closed" in text.lower()
+    assert "MISSING_PROBABLE_SIZE" in text
+    assert "INVALID_PROBABLE_SIZE" in text
+    assert "copy-only from visible valid `PROBABLE_SIZE`" in text
+    assert "runtime/api_ledger/kaspi_api_<YYYY-MM-DD>.jsonl" in text
+    assert "pass the default daily ledger to child processes" in text
 
 
 def test_daily_ops_workflow_contract_includes_prod_dry_run_checks() -> None:

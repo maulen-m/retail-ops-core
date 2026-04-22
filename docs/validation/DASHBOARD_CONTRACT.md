@@ -3,7 +3,7 @@
 Purpose: single owner of dashboard output schema + invariants, and the gate for dashboard/PO alignment.
 
 Source of truth:
-- Inventory formulas: `docs/inventory/Master_Inventory_Rules_v8.md`
+- Inventory formulas: `docs/inventory/Master_Inventory_Rules_v9.md`
 - PO contract/tolerances: `docs/validation/PO_CONTRACT.md`
 
 ## Deterministic fixture
@@ -107,7 +107,7 @@ The dashboard is only considered functional when coverage is complete:
 - Inbound sync (`scripts/sync_po_parts_from_inbound_calendar.py`) must not overwrite existing `dim_sku.weight_kg` unless explicitly enabled by CLI flag.
 
 ## Update protocol
-1) Update `docs/inventory/Master_Inventory_Rules_v8.md` first if formulas change.
+1) Update `docs/inventory/Master_Inventory_Rules_v9.md` first if formulas change.
 2) Update `docs/validation/PO_CONTRACT.md` tolerances as needed.
 3) Re-run dashboard contract gate on the deterministic fixture.
 4) If schema changes, update this doc + the smoke test validator.

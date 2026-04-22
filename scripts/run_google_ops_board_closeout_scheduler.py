@@ -20,8 +20,10 @@ from core.integrations.google_ops_board import (  # noqa: E402
     resolve_spreadsheet_id,
 )
 from scripts.google_ops_board_automation_common import (  # noqa: E402
+    AUTOMATION_LOCK_HELD_ENV,
     GoogleOpsBoardAutomationLock,
     closeout_completion_state,
+    ensure_kaspi_api_call_ledger_env,
     today_almaty,
 )
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_closeout.py"
@@ -41,6 +43,13 @@ def _closeout_already_completed(*, service_account_json: str, spreadsheet_id_ove
             f"(run_id={run_id}); skipping.",
             file=sys.stderr,
         )
+    elif state["status"] == "OK":
+        print(
+            "Google Ops Board closeout has OK Run_Control status but delivery is incomplete "
+            f"(delivery_status={state.get('delivery_status')}, "
+            f"confirmed={state.get('delivery_confirmed_count')}/{state.get('delivery_manifest_count')}); resuming.",
+            file=sys.stderr,
+        )
     return bool(state["completed"])
 
 
@@ -56,7 +65,11 @@ def main() -> int:
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, "1")
+    env.setdefault(AUTOMATION_LOCK_HELD_ENV, "1")
+    ensure_kaspi_api_call_ledger_env(env, target_date=today_almaty(), project_root=PROJECT_ROOT)
     os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
+    if env.get("KASPI_API_CALL_LEDGER_PATH"):
+        os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
 
     contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
     service_account_json = str(resolve_service_account_json(contract=contract)).strip()

@@ -163,7 +163,7 @@ def validate_scheduler_heartbeat(
     checks: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    import_schedule_expected = [(11, 0), (15, 2), (16, 1)]
+    import_schedule_expected = [(11, 0), (15, 2), (16, 1), (17, 2)]
     waybill_schedule_expected = (18, 30)
     report_schedule_expected = (19, 10)
 
@@ -277,7 +277,7 @@ def validate_scheduler_heartbeat(
             f"daily ops report plist schedule drift: {report_schedule_actual} vs {report_schedule_expected}"
         )
 
-    schedule_tokens = ["11:00", "15:02", "16:01", "18:30", "19:10"]
+    schedule_tokens = ["11:00", "15:02", "16:01", "17:02", "18:30", "19:10"]
     for path, check_name in (
         (contract_doc, "contract_doc_schedule_tokens"),
         (daily_sop_doc, "daily_sop_schedule_tokens"),

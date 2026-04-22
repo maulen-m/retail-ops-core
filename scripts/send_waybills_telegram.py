@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from collections import Counter
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.integrations.telegram_bot import (  # noqa: E402
+    get_waybill_telegram_config,
+    send_document,
+    send_message,
+)
+from scripts.send_waybills_whatsapp import (  # noqa: E402
+    ALMATY_TZ,
+    SOURCE_AUTO,
+    SOURCE_CHOICES,
+    SOURCE_MERGED,
+    TODAY_FOLDER,
+    _normalize_store_label,
+    _store_stats_from_manifest,
+    format_post_send_status_table,
+    format_pre_send_status_table,
+    load_send_batch_manifest,
+    order_pdfs_for_sending,
+    verify_send_batch_preflight,
+)
+
+
+TELEGRAM_SEND_LEDGER_FILE = "telegram_send_ledger.json"
+TELEGRAM_SEND_STOPLINE_FILE = "telegram_send_stopline.json"
+TELEGRAM_LEDGER_STATES = {"pending", "api_started", "confirmed", "failed", "unsure"}
+DEFAULT_SEND_DELAY_SECONDS = 3.5
+DEFAULT_RATE_LIMIT_RETRIES = 3
+
+
+def _now_iso() -> str:
+    return datetime.now(ALMATY_TZ).isoformat()
+
+
+def _default_ledger_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "state": "pending",
+        "last_updated": None,
+        "history": [],
+        "filename": entry.get("filename"),
+        "relative_output_path": entry.get("relative_output_path"),
+        "order_ids": list(entry.get("order_ids") or []),
+    }
+
+
+def load_telegram_ledger(ledger_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    if ledger_path.exists():
+        payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+        if str(payload.get("batch_hash") or "") != str(manifest.get("batch_hash") or ""):
+            raise RuntimeError("Existing Telegram send ledger batch hash does not match current manifest")
+    else:
+        payload = {
+            "schema_version": 1,
+            "channel": "telegram",
+            "batch_hash": manifest.get("batch_hash"),
+            "batch_label": manifest.get("batch_label"),
+            "manifest_path": str(manifest.get("manifest_path") or ""),
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+            "entries": {},
+        }
+    payload.setdefault("schema_version", 1)
+    payload.setdefault("channel", "telegram")
+    payload.setdefault("batch_hash", manifest.get("batch_hash"))
+    payload.setdefault("batch_label", manifest.get("batch_label"))
+    payload.setdefault("manifest_path", str(manifest.get("manifest_path") or ""))
+    payload.setdefault("created_at", _now_iso())
+    payload.setdefault("updated_at", _now_iso())
+    payload.setdefault("entries", {})
+    for entry in manifest.get("entries") or []:
+        payload["entries"].setdefault(str(entry["pdf_key"]), _default_ledger_entry(entry))
+    return payload
+
+
+def save_telegram_ledger(ledger_path: Path, ledger: dict[str, Any]) -> None:
+    ledger["updated_at"] = _now_iso()
+    temp_path = ledger_path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp_path.replace(ledger_path)
+
+
+def _set_entry_state(
+    ledger: dict[str, Any],
+    pdf_key: str,
+    state: str,
+    *,
+    note: str = "",
+    extra: dict[str, Any] | None = None,
+) -> None:
+    if state not in TELEGRAM_LEDGER_STATES:
+        raise ValueError(f"Unsupported Telegram ledger state: {state}")
+    entry = ledger.setdefault("entries", {}).setdefault(pdf_key, {"history": []})
+    entry["state"] = state
+    entry["last_updated"] = _now_iso()
+    if extra:
+        entry.update(extra)
+    entry.setdefault("history", []).append(
+        {
+            "state": state,
+            "at": _now_iso(),
+            "note": note,
+        }
+    )
+
+
+def _confirmed_progress_snapshot(
+    manifest_entries: list[dict[str, Any]],
+    ledger: dict[str, Any],
+) -> tuple[int, Counter[str]]:
+    confirmed = 0
+    orders_by_store: Counter[str] = Counter()
+    ledger_entries = ledger.get("entries") or {}
+    for entry in manifest_entries:
+        pdf_key = str(entry.get("pdf_key") or "")
+        if str(ledger_entries.get(pdf_key, {}).get("state") or "") != "confirmed":
+            continue
+        confirmed += 1
+        for store_name, qty in dict(entry.get("order_counts_by_store") or {}).items():
+            orders_by_store[_normalize_store_label(store_name)] += int(qty)
+    return confirmed, orders_by_store
+
+
+def _select_entries_for_telegram_send(
+    manifest_entries: list[dict[str, Any]],
+    ledger: dict[str, Any],
+    *,
+    resume: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not resume:
+        return list(manifest_entries), []
+    selected: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    ledger_entries = ledger.get("entries") or {}
+    for entry in manifest_entries:
+        pdf_key = str(entry.get("pdf_key") or "")
+        state = str(ledger_entries.get(pdf_key, {}).get("state") or "pending")
+        if state == "confirmed":
+            continue
+        if state in {"unsure", "api_started"}:
+            blocked.append(entry)
+            continue
+        if state in {"pending", "failed"}:
+            selected.append(entry)
+            continue
+        blocked.append(entry)
+    return selected, blocked
+
+
+def _write_stopline(today_folder: Path, payload: dict[str, Any]) -> Path:
+    output_path = Path(today_folder) / TELEGRAM_SEND_STOPLINE_FILE
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return output_path
+
+
+def _format_caption(entry: dict[str, Any], *, index: int, total: int, batch_label: str) -> str:
+    order_ids = ", ".join(str(value) for value in entry.get("order_ids") or [])
+    filename = str(entry.get("filename") or Path(str(entry.get("path") or "")).name)
+    return (
+        f"<b>{index}/{total}</b> {filename}\n"
+        f"<code>{batch_label}</code>\n"
+        f"Orders: <code>{order_ids}</code>"
+    )
+
+
+def _send_document_with_rate_limit_retry(
+    *,
+    token: str,
+    chat_id: str,
+    document_path: Path,
+    caption: str,
+    timeout_seconds: int,
+    max_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
+) -> dict[str, Any]:
+    attempt = 0
+    while True:
+        result = send_document(
+            token=token,
+            chat_id=chat_id,
+            document_path=document_path,
+            caption=caption,
+            timeout_seconds=timeout_seconds,
+        )
+        retry_after = result.get("retry_after")
+        if result.get("success") or result.get("ambiguous") or retry_after is None or attempt >= max_retries:
+            return result
+        attempt += 1
+        time.sleep(max(0, int(retry_after)))
+
+
+def _send_message_with_rate_limit_retry(
+    *,
+    token: str,
+    chat_id: str,
+    text: str,
+    timeout_seconds: int = 15,
+    max_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
+) -> dict[str, Any]:
+    attempt = 0
+    while True:
+        result = send_message(
+            token=token,
+            chat_id=chat_id,
+            text=text,
+            timeout_seconds=timeout_seconds,
+        )
+        retry_after = result.get("retry_after")
+        if result.get("success") or result.get("ambiguous") or retry_after is None or attempt >= max_retries:
+            return result
+        attempt += 1
+        time.sleep(max(0, int(retry_after)))
+
+
+def _base_report(*, today_folder: Path, bundle_source: str, expected_target_date: date | None) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "channel": "telegram",
+        "today_folder": str(today_folder),
+        "bundle_source": bundle_source,
+        "expected_target_date": expected_target_date.isoformat() if expected_target_date else None,
+        "source_root": "",
+        "manifest_path": "",
+        "ledger_path": "",
+        "batch_hash": "",
+        "total": 0,
+        "sent": 0,
+        "skipped": 0,
+        "failed": 0,
+        "confirmed_total": 0,
+        "halted": False,
+        "halt_reason": "",
+        "fallback_allowed": False,
+        "status_message_failures": 0,
+        "pre_status_sent": False,
+        "pre_status_message_id": "",
+        "final_status_sent": False,
+        "final_status_message_id": "",
+        "started_at": _now_iso(),
+        "completed_at": "",
+    }
+
+
+def _send_final_status_table_from_manifest(
+    *,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    token: str,
+    chat_id: str,
+    timeout_seconds: int = 15,
+) -> dict[str, Any]:
+    entries = list(manifest.get("entries") or [])
+    store_stats = _store_stats_from_manifest(manifest)
+    confirmed_total, confirmed_orders_by_store = _confirmed_progress_snapshot(entries, ledger)
+    post_status_text = format_post_send_status_table(
+        store_stats,
+        dict(confirmed_orders_by_store),
+        bundles_target=len(entries),
+        bundles_sent=confirmed_total,
+    )
+    status_result = _send_message_with_rate_limit_retry(
+        token=token,
+        chat_id=chat_id,
+        text=post_status_text,
+        timeout_seconds=timeout_seconds,
+    )
+    success = bool(status_result.get("success"))
+    return {
+        "ok": success,
+        "final_status_sent": success,
+        "final_status_message_id": str(status_result.get("message_id") or ""),
+        "status_message_failures": 0 if success else 1,
+        "error": str(status_result.get("error") or ""),
+        "confirmed_total": confirmed_total,
+        "total": len(entries),
+    }
+
+
+def send_final_status_table(
+    *,
+    today_folder: Path = TODAY_FOLDER,
+    bundle_source: str = SOURCE_MERGED,
+    expected_target_date: date | None = None,
+    token: str | None = None,
+    chat_id: str | None = None,
+    timeout_seconds: int = 15,
+) -> dict[str, Any]:
+    config = get_waybill_telegram_config(token=token, chat_id=chat_id)
+    manifest = load_send_batch_manifest(
+        Path(today_folder),
+        source_mode=bundle_source,
+    )
+    if expected_target_date is not None and str(manifest.get("target_date") or "") != expected_target_date.isoformat():
+        return {
+            "ok": False,
+            "final_status_sent": False,
+            "final_status_message_id": "",
+            "status_message_failures": 1,
+            "error": f"manifest target_date mismatch: {manifest.get('target_date')} != {expected_target_date.isoformat()}",
+            "confirmed_total": 0,
+            "total": len(manifest.get("entries") or []),
+        }
+    ledger = load_telegram_ledger(Path(str(manifest["batch_root"])) / TELEGRAM_SEND_LEDGER_FILE, manifest)
+    return _send_final_status_table_from_manifest(
+        manifest=manifest,
+        ledger=ledger,
+        token=config["token"],
+        chat_id=config["chat_id"],
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def run_sender(
+    *,
+    today_folder: Path = TODAY_FOLDER,
+    bundle_source: str = SOURCE_MERGED,
+    expected_target_date: date | None = None,
+    token: str | None = None,
+    chat_id: str | None = None,
+    dry_run: bool = False,
+    resume: bool = True,
+    status_messages: bool = True,
+    send_delay: float = DEFAULT_SEND_DELAY_SECONDS,
+    fail_fast: bool = True,
+    max_pdfs: int | None = None,
+    timeout_seconds: int = 60,
+    verbose: bool = False,
+) -> dict[str, Any]:
+    today_folder = Path(today_folder)
+    report = _base_report(
+        today_folder=today_folder,
+        bundle_source=bundle_source,
+        expected_target_date=expected_target_date,
+    )
+
+    preflight = verify_send_batch_preflight(
+        today_folder,
+        source_mode=bundle_source,
+        expected_target_date=expected_target_date,
+    )
+    if not preflight.get("ok"):
+        report.update(
+            {
+                "failed": 1,
+                "halted": True,
+                "halt_reason": "MANIFEST_PREFLIGHT_RED",
+                "preflight": preflight,
+                "fallback_allowed": False,
+                "completed_at": _now_iso(),
+            }
+        )
+        _write_stopline(today_folder, report)
+        return report
+
+    try:
+        config = get_waybill_telegram_config(token=token, chat_id=chat_id)
+    except ValueError as exc:
+        report.update(
+            {
+                "failed": 1,
+                "halted": True,
+                "halt_reason": "TELEGRAM_CONFIG",
+                "error": str(exc),
+                "fallback_allowed": True,
+                "completed_at": _now_iso(),
+            }
+        )
+        return report
+
+    manifest = load_send_batch_manifest(today_folder, source_mode=bundle_source)
+    batch_root = Path(str(manifest["batch_root"]))
+    ledger_path = batch_root / TELEGRAM_SEND_LEDGER_FILE
+    ledger = load_telegram_ledger(ledger_path, manifest)
+    save_telegram_ledger(ledger_path, ledger)
+
+    entries = list(manifest.get("entries") or [])
+    ordered_entries = order_pdfs_for_sending(entries)
+    selected_entries, blocked_entries = _select_entries_for_telegram_send(
+        ordered_entries,
+        ledger,
+        resume=resume,
+    )
+    if max_pdfs is not None:
+        selected_entries = selected_entries[: max(0, int(max_pdfs))]
+
+    confirmed_before, confirmed_orders_by_store = _confirmed_progress_snapshot(entries, ledger)
+    store_stats = _store_stats_from_manifest(manifest)
+    report.update(
+        {
+            "source_root": str(batch_root),
+            "manifest_path": str(manifest.get("manifest_path") or ""),
+            "ledger_path": str(ledger_path),
+            "batch_hash": str(manifest.get("batch_hash") or ""),
+            "total": len(entries),
+            "skipped": max(0, len(entries) - len(selected_entries) - len(blocked_entries)),
+            "confirmed_total": confirmed_before,
+        }
+    )
+
+    if blocked_entries:
+        report.update(
+            {
+                "failed": len(blocked_entries),
+                "halted": True,
+                "halt_reason": "TELEGRAM_UNRESOLVED_LEDGER",
+                "blocked_filenames": [entry.get("filename") for entry in blocked_entries],
+                "fallback_allowed": False,
+                "completed_at": _now_iso(),
+            }
+        )
+        _write_stopline(today_folder, report)
+        return report
+
+    if not selected_entries:
+        report.update({"ok": True, "fallback_allowed": False, "completed_at": _now_iso()})
+        return report
+
+    sent_orders_by_store = Counter(confirmed_orders_by_store)
+    batch_label = str(manifest.get("batch_label") or batch_root.name)
+    pre_status_text = format_pre_send_status_table(store_stats, bundles_target=len(selected_entries))
+
+    if status_messages and not dry_run:
+        status_result = _send_message_with_rate_limit_retry(
+            token=config["token"],
+            chat_id=config["chat_id"],
+            text=pre_status_text,
+        )
+        if status_result.get("success"):
+            report["pre_status_sent"] = True
+            report["pre_status_message_id"] = str(status_result.get("message_id") or "")
+        else:
+            report["status_message_failures"] = int(report.get("status_message_failures") or 0) + 1
+            if verbose:
+                print(f"WARNING: Telegram pre-status message failed: {status_result.get('error')}")
+
+    for index, entry in enumerate(selected_entries, start=1):
+        pdf_key = str(entry["pdf_key"])
+        pdf_path = Path(entry["path"])
+        if dry_run:
+            report["sent"] = int(report["sent"]) + 1
+            continue
+
+        _set_entry_state(ledger, pdf_key, "api_started", note="telegram_send_document_started")
+        save_telegram_ledger(ledger_path, ledger)
+        result = _send_document_with_rate_limit_retry(
+            token=config["token"],
+            chat_id=config["chat_id"],
+            document_path=pdf_path,
+            caption=_format_caption(entry, index=index, total=len(selected_entries), batch_label=batch_label),
+            timeout_seconds=timeout_seconds,
+        )
+        if result.get("success"):
+            _set_entry_state(
+                ledger,
+                pdf_key,
+                "confirmed",
+                note="telegram_send_document_confirmed",
+                extra={
+                    "telegram_message_id": str(result.get("message_id") or ""),
+                    "telegram_chat_id": str(result.get("chat_id") or config["chat_id"]),
+                    "telegram_date": result.get("date"),
+                    "telegram_file_id": str(result.get("file_id") or ""),
+                    "telegram_file_unique_id": str(result.get("file_unique_id") or ""),
+                },
+            )
+            save_telegram_ledger(ledger_path, ledger)
+            report["sent"] = int(report["sent"]) + 1
+            report["confirmed_total"] = int(report["confirmed_total"]) + 1
+            for store_name, qty in dict(entry.get("order_counts_by_store") or {}).items():
+                sent_orders_by_store[_normalize_store_label(store_name)] += int(qty)
+            if send_delay > 0 and index < len(selected_entries):
+                time.sleep(send_delay)
+            continue
+
+        report["failed"] = int(report["failed"]) + 1
+        if result.get("ambiguous"):
+            _set_entry_state(
+                ledger,
+                pdf_key,
+                "unsure",
+                note=str(result.get("error") or "ambiguous Telegram send failure"),
+            )
+            report["halt_reason"] = "TELEGRAM_UNSURE"
+        else:
+            _set_entry_state(
+                ledger,
+                pdf_key,
+                "failed",
+                note=str(result.get("error") or "Telegram send failed"),
+            )
+            report["halt_reason"] = "TELEGRAM_SEND_FAILED"
+        save_telegram_ledger(ledger_path, ledger)
+        report["halted"] = True
+        if fail_fast:
+            break
+
+    if dry_run:
+        report.update({"ok": True, "confirmed_total": confirmed_before, "completed_at": _now_iso()})
+        return report
+
+    if status_messages:
+        final_status = _send_final_status_table_from_manifest(
+            manifest=manifest,
+            ledger=ledger,
+            token=config["token"],
+            chat_id=config["chat_id"],
+        )
+        report["final_status_sent"] = bool(final_status.get("final_status_sent"))
+        report["final_status_message_id"] = str(final_status.get("final_status_message_id") or "")
+        report["status_message_failures"] = int(report.get("status_message_failures") or 0) + int(
+            final_status.get("status_message_failures") or 0
+        )
+        if not final_status.get("ok"):
+            if verbose:
+                print(f"WARNING: Telegram post-status message failed: {final_status.get('error')}")
+
+    report["ok"] = int(report["failed"]) == 0 and not report["halted"]
+    report["fallback_allowed"] = (
+        not report["ok"]
+        and int(report["sent"]) == 0
+        and int(report["confirmed_total"]) == 0
+        and str(report.get("halt_reason") or "") not in {"MANIFEST_PREFLIGHT_RED", "TELEGRAM_UNSURE"}
+    )
+    report["completed_at"] = _now_iso()
+    if not report["ok"]:
+        _write_stopline(today_folder, report)
+    return report
+
+
+def _parse_iso_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid ISO date {value!r}; expected YYYY-MM-DD") from exc
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Send waybill PDFs to Telegram via Bot API")
+    parser.add_argument("--today-folder", type=Path, default=TODAY_FOLDER)
+    parser.add_argument("--bundle-source", choices=SOURCE_CHOICES, default=SOURCE_AUTO)
+    parser.add_argument("--expected-target-date", type=_parse_iso_date, default=None)
+    parser.add_argument("--telegram-token", type=str, default=None)
+    parser.add_argument("--telegram-chat-id", type=str, default=None)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--no-resume", action="store_true")
+    parser.add_argument("--send-delay", type=float, default=DEFAULT_SEND_DELAY_SECONDS)
+    parser.add_argument("--status-messages", dest="status_messages", action="store_true", default=True)
+    parser.add_argument("--no-status-messages", dest="status_messages", action="store_false")
+    parser.add_argument("--fail-fast", action="store_true", default=True)
+    parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--max-pdfs", type=int, default=None)
+    parser.add_argument("--timeout-seconds", type=int, default=60)
+    parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument("--verbose", "-v", action="store_true")
+    args = parser.parse_args(argv)
+
+    expected_target_date = args.expected_target_date or datetime.now(ALMATY_TZ).date()
+    if args.preflight_only:
+        preflight = verify_send_batch_preflight(
+            args.today_folder,
+            source_mode=args.bundle_source,
+            expected_target_date=expected_target_date,
+        )
+        try:
+            config = get_waybill_telegram_config(
+                token=args.telegram_token,
+                chat_id=args.telegram_chat_id,
+            )
+            preflight["telegram_config_ok"] = True
+            preflight["telegram_chat_id"] = config["chat_id"]
+        except ValueError as exc:
+            preflight["telegram_config_ok"] = False
+            preflight.setdefault("issues", []).append(
+                {"code": "telegram_config_missing", "detail": str(exc)}
+            )
+            preflight["ok"] = False
+        if args.json_out:
+            args.json_out.parent.mkdir(parents=True, exist_ok=True)
+            args.json_out.write_text(json.dumps(preflight, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(preflight, ensure_ascii=False, indent=2))
+        return 0 if preflight.get("ok") else 1
+
+    report = run_sender(
+        today_folder=args.today_folder,
+        bundle_source=args.bundle_source,
+        expected_target_date=expected_target_date,
+        token=args.telegram_token,
+        chat_id=args.telegram_chat_id,
+        dry_run=bool(args.dry_run),
+        resume=not args.no_resume,
+        status_messages=bool(args.status_messages),
+        send_delay=float(args.send_delay),
+        fail_fast=bool(args.fail_fast),
+        max_pdfs=args.max_pdfs,
+        timeout_seconds=int(args.timeout_seconds),
+        verbose=bool(args.verbose),
+    )
+    if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

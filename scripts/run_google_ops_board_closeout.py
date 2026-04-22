@@ -35,6 +35,9 @@ from core.integrations.kaspi_api_client import (  # noqa: E402
 from core.paths import data_path  # noqa: E402
 from core.alerts.google_ops_board_alerts import send_owner_ops_alert  # noqa: E402
 from scripts.google_ops_board_automation_common import (  # noqa: E402
+    AUTOMATION_LOCK_HELD_ENV,
+    GoogleOpsBoardAutomationLock,
+    ensure_kaspi_api_call_ledger_env,
     load_json_file,
     resolve_closeout_checkpoint_path,
     salesraw_writeback_fingerprint,
@@ -44,6 +47,14 @@ from scripts.sync_google_ops_board_sizes_to_db import (  # noqa: E402
     _load_db_rows as load_db_rows_for_writeback,
     plan_size_writeback,
 )
+from scripts.validate_google_closeout_expected_orders import (  # noqa: E402
+    build_expected_orders_from_db,
+    fetch_api_active_order_ids_by_store,
+    find_latest_send_manifest,
+    validate_manifest_against_expected,
+    write_expected_orders_report,
+)
+from scripts.waybill_delivery_completion import delivery_completion_state  # noqa: E402
 
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
@@ -54,7 +65,8 @@ STAGE_ORDER = [
     "shipping",
     "download_waybills",
     "build_waybills",
-    "whatsapp_send",
+    "delivery_send",
+    "shipped_truth_sync",
 ]
 STORE_NAME_TO_API_CODE = {
     "AcmeWear": "ACMEWEAR",
@@ -260,7 +272,8 @@ def _run_command(
     env: dict[str, str],
     report_path: Path,
 ) -> dict[str, Any]:
-    started_at = datetime.now(ALMATY_TZ).isoformat()
+    started_dt = datetime.now(ALMATY_TZ)
+    started_at = started_dt.isoformat()
     proc = subprocess.run(
         command,
         cwd=str(PROJECT_ROOT),
@@ -268,7 +281,8 @@ def _run_command(
         text=True,
         capture_output=True,
     )
-    finished_at = datetime.now(ALMATY_TZ).isoformat()
+    finished_dt = datetime.now(ALMATY_TZ)
+    finished_at = finished_dt.isoformat()
     report = {
         "name": name,
         "command": command,
@@ -276,7 +290,9 @@ def _run_command(
         "stdout": proc.stdout,
         "stderr": proc.stderr,
         "started_at": started_at,
+        "completed_at": finished_at,
         "finished_at": finished_at,
+        "duration_sec": round(max(0.0, (finished_dt - started_dt).total_seconds()), 3),
         "ok": proc.returncode == 0,
     }
     dump_json(report_path, report)
@@ -285,6 +301,18 @@ def _run_command(
 
 def _hash_run_control_row(row: dict[str, Any]) -> str:
     payload = json.dumps(row, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def run_control_resume_fingerprint(row: dict[str, Any]) -> str:
+    payload = json.dumps(
+        {
+            "target_date": _clean(row.get("target_date")),
+            "ready_for_closeout": _clean(row.get("ready_for_closeout")).upper(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -314,6 +342,7 @@ def _build_checkpoint_base(
         "service_account_json": str(service_account_json.resolve()),
         "salesraw_writeback_fingerprint": salesraw_writeback_fingerprint(salesraw_rows),
         "run_control_row_hash": _hash_run_control_row(run_control_row),
+        "run_control_resume_fingerprint": run_control_resume_fingerprint(run_control_row),
         "stages": {},
     }
 
@@ -368,11 +397,18 @@ def _contiguous_successful_stages(
     *,
     salesraw_rows: list[dict[str, Any]],
     run_control_row: dict[str, Any],
+    today_folder: Path | None = None,
+    target_date: date | None = None,
+    run_root: Path = DEFAULT_RUN_ROOT,
 ) -> list[str]:
     stages = checkpoint.get("stages") or {}
     if str(checkpoint.get("salesraw_writeback_fingerprint") or "") != salesraw_writeback_fingerprint(salesraw_rows):
         return []
-    if str(checkpoint.get("run_control_row_hash") or "") != _hash_run_control_row(run_control_row):
+    checkpoint_resume_fingerprint = str(checkpoint.get("run_control_resume_fingerprint") or "")
+    if checkpoint_resume_fingerprint:
+        if checkpoint_resume_fingerprint != run_control_resume_fingerprint(run_control_row):
+            return []
+    elif str(checkpoint.get("run_control_row_hash") or "") != _hash_run_control_row(run_control_row):
         return []
     successful: list[str] = []
     for stage in STAGE_ORDER:
@@ -382,8 +418,25 @@ def _contiguous_successful_stages(
         step_report_path = Path(str(state.get("step_report_path") or "")).expanduser()
         if not step_report_path.exists():
             break
+        if stage == "delivery_send" and today_folder is not None and target_date is not None:
+            delivery_state = delivery_completion_state(
+                today_folder=Path(today_folder),
+                target_date=target_date,
+                run_root=Path(run_root),
+                run_id=str(state.get("run_id") or ""),
+            )
+            if not delivery_state.get("completed"):
+                break
         successful.append(stage)
     return successful
+
+
+def _checkpoint_has_successful_external_stage(checkpoint: dict[str, Any]) -> bool:
+    stages = checkpoint.get("stages") or {}
+    for stage in ("shipping", "download_waybills", "build_waybills", "delivery_send"):
+        if (stages.get(stage) or {}).get("status") == "ok":
+            return True
+    return False
 
 
 def _append_checkpoint_stage(
@@ -428,22 +481,16 @@ def _send_closeout_alert(
     send_owner_ops_alert(title=title, lines=lines)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run fail-closed Google Ops Board daily closeout.")
-    parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT_PATH, help="Contract YAML path")
-    parser.add_argument("--db-path", type=Path, default=None, help="Optional DB path (default: db/app.db)")
-    parser.add_argument("--service-account-json", type=Path, default=None, help="Path to service-account JSON")
-    parser.add_argument("--spreadsheet-id", type=str, default=None, help="Override spreadsheet ID")
-    parser.add_argument("--target-date", type=str, default="today", help="Target date (default: today)")
-    parser.add_argument("--lookback-days", type=int, default=5, help="Operational lookback window (default: 5)")
-    parser.add_argument("--today-folder", type=Path, default=DEFAULT_TODAY_FOLDER, help="Today folder for send step")
-    parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT, help="Workflow run output root")
-    parser.add_argument("--checkpoint-path", type=Path, default=None, help="Optional day-level checkpoint path")
-    parser.add_argument("--resume", action="store_true", help="Reuse prior successful safe stages when possible")
-    parser.add_argument("--apply", action="store_true", help="Run live closeout (default: dry-run)")
-    parser.add_argument("--json-out", type=Path, default=None, help="Optional top-level JSON report path")
-    args = parser.parse_args(argv)
+def _write_daily_index_best_effort(*, target_date: date, run_root: Path) -> None:
+    try:
+        from scripts.google_ops_board_daily_index import write_daily_index
 
+        write_daily_index(target_date=target_date, workflow_root=Path(run_root))
+    except Exception as exc:
+        print(f"WARNING: unable to update Google Ops Board daily index: {exc}", file=sys.stderr)
+
+
+def _run_closeout(args: argparse.Namespace) -> int:
     contract = load_ops_board_contract(args.contract)
     _require_apply_gate(args.apply, contract.closeout_write_env_gate)
 
@@ -464,6 +511,9 @@ def main(argv: list[str] | None = None) -> int:
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("TERM", "dumb")
+    ensure_kaspi_api_call_ledger_env(env, target_date=target_date, project_root=PROJECT_ROOT)
+    if env.get("KASPI_API_CALL_LEDGER_PATH"):
+        os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
 
     report: dict[str, Any] = {
         "run_id": run_id,
@@ -475,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
         "run_dir": str(run_dir),
         "checkpoint_path": str(checkpoint_path),
         "steps": [],
+        "started_at": datetime.now(ALMATY_TZ).isoformat(),
         "ready": False,
         "resume_requested": bool(args.resume),
         "resumed_from_checkpoint": False,
@@ -541,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
         report["readiness_report_path"] = str(run_dir / "readiness_report.json")
         output_path = args.json_out or (run_dir / "closeout_report.json")
         dump_json(output_path, report)
+        _write_daily_index_best_effort(target_date=target_date, run_root=Path(args.run_root).expanduser())
         print(f"Closeout blocked. Readiness report: {run_dir / 'readiness_report.json'}")
         return 1
 
@@ -569,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
             report["failure_reason"] = "Prewindow health gate failed"
             output_path = args.json_out or (run_dir / "closeout_report.json")
             dump_json(output_path, report)
+            _write_daily_index_best_effort(target_date=target_date, run_root=Path(args.run_root).expanduser())
             _send_closeout_alert(
                 title="Google Ops Board Closeout Failed",
                 run_id=run_id,
@@ -594,6 +647,7 @@ def main(argv: list[str] | None = None) -> int:
             report["failure_reason"] = checkpoint_reason
             output_path = args.json_out or (run_dir / "closeout_report.json")
             dump_json(output_path, report)
+            _write_daily_index_best_effort(target_date=target_date, run_root=Path(args.run_root).expanduser())
             if args.apply:
                 _update_run_control_status(
                     client=client,
@@ -613,10 +667,41 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 1
         checkpoint = saved_checkpoint
+        if (
+            str(checkpoint.get("salesraw_writeback_fingerprint") or "")
+            != salesraw_writeback_fingerprint(salesraw_rows)
+            and _checkpoint_has_successful_external_stage(checkpoint)
+        ):
+            report["failure_stage"] = "checkpoint"
+            report["failure_reason"] = "checkpoint_salesraw_mismatch_after_external_stage"
+            output_path = args.json_out or (run_dir / "closeout_report.json")
+            dump_json(output_path, report)
+            _write_daily_index_best_effort(target_date=target_date, run_root=Path(args.run_root).expanduser())
+            if args.apply:
+                _update_run_control_status(
+                    client=client,
+                    contract=contract,
+                    target_date=target_date,
+                    run_id=run_id,
+                    status="FAILED_CHECKPOINT",
+                    hold_on_failure=False,
+                )
+                _send_closeout_alert(
+                    title="Google Ops Board Closeout Failed",
+                    run_id=run_id,
+                    target_date=target_date,
+                    report_path=output_path,
+                    stage="checkpoint",
+                    detail=report["failure_reason"],
+                )
+            return 1
         completed_stages = _contiguous_successful_stages(
             checkpoint,
             salesraw_rows=salesraw_rows,
             run_control_row=run_control_row,
+            today_folder=Path(args.today_folder).expanduser(),
+            target_date=target_date,
+            run_root=Path(args.run_root).expanduser(),
         )
         report["resumed_stages"] = completed_stages
         report["resumed_from_checkpoint"] = bool(completed_stages)
@@ -660,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
         report["failure_stage"] = stage
         report["failure_reason"] = reason
         dump_json(output_path, report)
+        _write_daily_index_best_effort(target_date=target_date, run_root=Path(args.run_root).expanduser())
         if args.apply:
             _send_closeout_alert(
                 title="Google Ops Board Closeout Failed",
@@ -715,6 +801,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         checkpoint["salesraw_writeback_fingerprint"] = salesraw_writeback_fingerprint(salesraw_rows)
         checkpoint["run_control_row_hash"] = _hash_run_control_row(run_control_row)
+        checkpoint["run_control_resume_fingerprint"] = run_control_resume_fingerprint(run_control_row)
         _write_checkpoint(checkpoint_path, checkpoint)
         if size_writeback_json.exists():
             report["size_writeback_report_path"] = str(size_writeback_json)
@@ -730,6 +817,43 @@ def main(argv: list[str] | None = None) -> int:
     report["store_context_report_path"] = str(run_dir / "store_context_report.json")
     if not store_context["ok"]:
         return _record_failure("store_context", "Store token / merchant UID context failed preflight")
+
+    expected_orders_path = run_dir / "expected_closeout_orders.json"
+    if args.apply:
+        active_order_ids_by_store = fetch_api_active_order_ids_by_store(
+            target_date=target_date,
+            lookback_days=args.lookback_days,
+            store_codes=store_context.get("active_store_codes") or None,
+            api_since_days=14,
+            verbose=False,
+        )
+        dump_json(
+            run_dir / "api_active_order_ids_by_store.json",
+            {
+                "target_date": target_date.isoformat(),
+                "lookback_days": args.lookback_days,
+                "api_since_days": 14,
+                "counts_by_store": {
+                    store: len(order_ids)
+                    for store, order_ids in sorted(active_order_ids_by_store.items())
+                },
+                "stores": {
+                    store: sorted(order_ids)
+                    for store, order_ids in sorted(active_order_ids_by_store.items())
+                },
+            },
+        )
+        report["api_active_order_ids_by_store_path"] = str(run_dir / "api_active_order_ids_by_store.json")
+        expected_orders = build_expected_orders_from_db(
+            db_path=db_path,
+            target_date=target_date,
+            lookback_days=args.lookback_days,
+            active_order_ids_by_store=active_order_ids_by_store,
+        )
+        write_expected_orders_report(expected_orders, expected_orders_path)
+        report["expected_closeout_orders_path"] = str(expected_orders_path)
+        report["expected_closeout_order_count"] = expected_orders["counts"]["orders"]
+        report["expected_closeout_overdue_order_count"] = expected_orders["counts"]["overdue_orders"]
 
     if "shipping" not in completed_stages:
         ship_cmd = [
@@ -833,53 +957,128 @@ def main(argv: list[str] | None = None) -> int:
         _write_checkpoint(checkpoint_path, checkpoint)
 
     if args.apply:
-        if "whatsapp_send" not in completed_stages:
-            whatsapp_cmd = [
+        if "delivery_send" not in completed_stages:
+            manifest_path = find_latest_send_manifest(Path(args.today_folder).expanduser())
+            if manifest_path is None:
+                gate_report = {
+                    "ok": False,
+                    "issue_codes": ["send_manifest_missing"],
+                    "expected_path": str(expected_orders_path),
+                    "today_folder": str(Path(args.today_folder).expanduser()),
+                }
+                gate_path = run_dir / "expected_order_manifest_gate.json"
+                dump_json(gate_path, gate_report)
+                report["expected_order_manifest_gate_path"] = str(gate_path)
+                return _record_failure("expected_order_gate", "No MERGED/SEND send_batch_manifest.json found")
+
+            gate_report = validate_manifest_against_expected(
+                expected_path=expected_orders_path,
+                manifest_path=manifest_path,
+            )
+            gate_path = run_dir / "expected_order_manifest_gate.json"
+            dump_json(gate_path, gate_report)
+            report["expected_order_manifest_gate_path"] = str(gate_path)
+            report["expected_order_manifest_gate_ok"] = bool(gate_report.get("ok"))
+            if not gate_report.get("ok"):
+                reason_bits = [
+                    f"issues={','.join(gate_report.get('issue_codes') or [])}",
+                    f"expected={gate_report.get('expected_count')}",
+                    f"manifest={gate_report.get('manifest_count')}",
+                ]
+                missing = gate_report.get("missing_order_ids") or []
+                extra = gate_report.get("extra_order_ids") or []
+                if missing:
+                    reason_bits.append(f"missing={','.join(missing)}")
+                if extra:
+                    reason_bits.append(f"extra={','.join(extra)}")
+                return _record_failure("expected_order_gate", "Expected order manifest gate failed: " + "; ".join(reason_bits))
+
+        if "delivery_send" not in completed_stages:
+            delivery_cmd = [
                 selected_python,
-                str(PROJECT_ROOT / "scripts" / "send_waybills_whatsapp.py"),
+                str(PROJECT_ROOT / "scripts" / "send_waybills_delivery.py"),
                 "--today-folder",
                 str(Path(args.today_folder).expanduser()),
                 "--bundle-source",
                 "merged",
                 "--expected-target-date",
                 target_date.isoformat(),
-                "--browser-mode",
-                "launch-temp",
-                "--fail-fast",
+                "--whatsapp-fallback-policy",
+                "auto-zero-fail",
                 "--json-out",
-                str(run_dir / "whatsapp_send_report.json"),
+                str(run_dir / "delivery_send_report.json"),
             ]
-            whatsapp_step = _run_command(
-                name="whatsapp_send",
-                command=whatsapp_cmd,
+            delivery_step = _run_command(
+                name="delivery_send",
+                command=delivery_cmd,
                 env=env,
-                report_path=run_dir / "step_whatsapp_send.json",
+                report_path=run_dir / "step_delivery_send.json",
             )
-            report["steps"].append(whatsapp_step)
-            if whatsapp_step["returncode"] != 0:
-                return _record_failure("whatsapp_send", "WhatsApp step failed", whatsapp_step)
+            report["steps"].append(delivery_step)
+            if delivery_step["returncode"] != 0:
+                return _record_failure("delivery_send", "Delivery step failed", delivery_step)
             _checkpoint_stage_report(
                 checkpoint=checkpoint,
-                stage="whatsapp_send",
-                step_report=whatsapp_step,
+                stage="delivery_send",
+                step_report=delivery_step,
                 run_id=run_id,
                 run_dir=run_dir,
-                artifact_paths=[str(run_dir / "whatsapp_send_report.json")],
+                artifact_paths=[str(run_dir / "delivery_send_report.json")],
+            )
+            _write_checkpoint(checkpoint_path, checkpoint)
+
+        if "shipped_truth_sync" not in completed_stages:
+            shipped_sync_env = dict(env)
+            shipped_sync_env["ENABLE_KASPI_SHIPPED_TRUTH_SYNC"] = "1"
+            shipped_sync_cmd = [
+                selected_python,
+                str(PROJECT_ROOT / "scripts" / "run_kaspi_shipped_truth_sync_scheduler.py"),
+                "--target-date",
+                target_date.isoformat(),
+                "--lookback-days",
+                str(args.lookback_days),
+                "--db-path",
+                str(db_path),
+                "--json-out",
+                str(run_dir / "shipped_truth_sync_report.json"),
+                "--reason",
+                "post_closeout_delivery",
+            ]
+            shipped_sync_step = _run_command(
+                name="shipped_truth_sync",
+                command=shipped_sync_cmd,
+                env=shipped_sync_env,
+                report_path=run_dir / "step_shipped_truth_sync.json",
+            )
+            report["steps"].append(shipped_sync_step)
+            if shipped_sync_step["returncode"] != 0:
+                return _record_failure(
+                    "shipped_truth_sync",
+                    "Post-delivery Kaspi shipped-truth sync failed; delivery checkpoint is preserved, rerun closeout with --resume.",
+                    shipped_sync_step,
+                )
+            _checkpoint_stage_report(
+                checkpoint=checkpoint,
+                stage="shipped_truth_sync",
+                step_report=shipped_sync_step,
+                run_id=run_id,
+                run_dir=run_dir,
+                artifact_paths=[str(run_dir / "shipped_truth_sync_report.json")],
             )
             _write_checkpoint(checkpoint_path, checkpoint)
     else:
-        whatsapp_step = {
-            "name": "whatsapp_preflight",
+        delivery_step = {
+            "name": "delivery_preflight",
             "command": [],
             "returncode": 0,
             "stdout": "",
             "stderr": "",
             "ok": True,
             "skipped": True,
-            "note": "Dry-run closeout skips WhatsApp preflight because no live manifest is created by a dry-run build.",
+            "note": "Dry-run closeout skips delivery preflight because no live manifest is created by a dry-run build.",
         }
-        dump_json(run_dir / "step_whatsapp_preflight.json", whatsapp_step)
-        report["steps"].append(whatsapp_step)
+        dump_json(run_dir / "step_delivery_preflight.json", delivery_step)
+        report["steps"].append(delivery_step)
 
     report["ok"] = True
     report["completed_at"] = datetime.now(ALMATY_TZ).isoformat()
@@ -894,6 +1093,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     _write_checkpoint(checkpoint_path, checkpoint)
     dump_json(output_path, report)
+    _write_daily_index_best_effort(target_date=target_date, run_root=Path(args.run_root).expanduser())
     if args.apply:
         _send_closeout_alert(
             title="Google Ops Board Closeout Complete",
@@ -904,6 +1104,37 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"Closeout report: {output_path}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run fail-closed Google Ops Board daily closeout.")
+    parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT_PATH, help="Contract YAML path")
+    parser.add_argument("--db-path", type=Path, default=None, help="Optional DB path (default: db/app.db)")
+    parser.add_argument("--service-account-json", type=Path, default=None, help="Path to service-account JSON")
+    parser.add_argument("--spreadsheet-id", type=str, default=None, help="Override spreadsheet ID")
+    parser.add_argument("--target-date", type=str, default="today", help="Target date (default: today)")
+    parser.add_argument("--lookback-days", type=int, default=5, help="Operational lookback window (default: 5)")
+    parser.add_argument("--today-folder", type=Path, default=DEFAULT_TODAY_FOLDER, help="Today folder for send step")
+    parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT, help="Workflow run output root")
+    parser.add_argument("--checkpoint-path", type=Path, default=None, help="Optional day-level checkpoint path")
+    parser.add_argument("--resume", action="store_true", help="Reuse prior successful safe stages when possible")
+    parser.add_argument("--apply", action="store_true", help="Run live closeout (default: dry-run)")
+    parser.add_argument("--json-out", type=Path, default=None, help="Optional top-level JSON report path")
+    args = parser.parse_args(argv)
+
+    if args.apply and str(os.environ.get(AUTOMATION_LOCK_HELD_ENV) or "").strip() != "1":
+        previous = os.environ.get(AUTOMATION_LOCK_HELD_ENV)
+        try:
+            with GoogleOpsBoardAutomationLock():
+                os.environ[AUTOMATION_LOCK_HELD_ENV] = "1"
+                return _run_closeout(args)
+        finally:
+            if previous is None:
+                os.environ.pop(AUTOMATION_LOCK_HELD_ENV, None)
+            else:
+                os.environ[AUTOMATION_LOCK_HELD_ENV] = previous
+
+    return _run_closeout(args)
 
 
 if __name__ == "__main__":

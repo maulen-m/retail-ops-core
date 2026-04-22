@@ -1,7 +1,7 @@
 """
 Unit economics calculations for Project 3.
 
-All formulas match Master_Inventory_Rules_v8 (Kaspi-only).
+All formulas match Master_Inventory_Rules_v9 (Kaspi-only).
 
 Key rules (v8):
 - Delivery fee uses the 2026 matrix (price-based ≤10,000 KZT; weight-based >10,000 KZT)
@@ -23,7 +23,7 @@ FREIGHT_RATE = DEFAULT_FX_RATES["usd_kzt"]
 VOLUMETRIC_FACTOR = DEFAULT_FX_RATES["dlv_rate_usd_kg"]
 
 
-# Delivery fee matrix (Master_Inventory_Rules_v8)
+# Delivery fee matrix (Master_Inventory_Rules_v9)
 _PRICE_TIERS = [
     (0, 1000, (49.14, 49.14, 49.14)),
     (1000, 3000, (149.14, 149.14, 149.14)),
@@ -47,7 +47,7 @@ def calc_delivery_fee(
     delivery_type: str = "city",
 ) -> float:
     """
-    Calculate Kaspi delivery fee using the 2026 matrix (Master_Inventory_Rules_v8).
+    Calculate Kaspi delivery fee using the 2026 matrix (Master_Inventory_Rules_v9).
 
     Rules:
       - If sell_price_kzt <= 10,000: price-based (weight ignored)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -43,6 +43,8 @@ class OpsBoardContract:
     service_account_env_vars: list[str]
     tabs: dict[str, TabContract]
     writeback: dict[str, dict[str, str]]
+    same_day_cutoff_default: str = "16:00"
+    same_day_cutoff_by_store: dict[str, str] = field(default_factory=dict)
 
 
 def load_ops_board_contract(path: Path | None = None) -> OpsBoardContract:
@@ -68,6 +70,10 @@ def load_ops_board_contract(path: Path | None = None) -> OpsBoardContract:
         service_account_env_vars=[str(x) for x in data.get("service_account_env_vars") or []],
         tabs=tabs,
         writeback={str(k): dict(v or {}) for k, v in (data.get("writeback") or {}).items()},
+        same_day_cutoff_default=str(data.get("same_day_cutoff_default") or "16:00"),
+        same_day_cutoff_by_store={
+            str(k): str(v) for k, v in (data.get("same_day_cutoff_by_store") or {}).items()
+        },
     )
 
 

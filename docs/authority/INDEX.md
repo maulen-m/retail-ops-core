@@ -16,12 +16,12 @@ This file is the active-doc authority map. Use these links first; treat archived
 - `docs/ops/H5_DAILY_EXECUTION_RUNBOOK.md`
 
 ## Inventory
-- `docs/inventory/Master_Inventory_Rules_v8.md`
+- `docs/inventory/Master_Inventory_Rules_v9.md`
 - `docs/inventory/Sales_Data_Model_V16.md`
 - `docs/ops/STOCK_SNAPSHOT_RUNBOOK.md`
 
 ## PO Engine
-- `protocol/active/PO_making_logic_v2.md`
+- `docs/protocol/active/PO_making_logic_v3.md`
 - `docs/po/PO_MONEY_GATE_CONTRACT.md`
 
 ## Cashflow

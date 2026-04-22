@@ -12,7 +12,7 @@ This document defines the **interface contract** between:
 - **Project 3 (CRM/DB):** Python/DB system — system of record
 
 Both systems must implement identical business logic as defined in
-`inventory/Master_Inventory_Rules_v8.md` (Kaspi-only).
+`inventory/Master_Inventory_Rules_v9.md` (Kaspi-only).
 
 ---
 
@@ -88,7 +88,7 @@ Excel is **passive** — it doesn't pull data automatically. Scenarios where Adi
 ### 4.1 ABC_View Columns
 
 These are the **decision columns** Python must replicate.  
-**Formula source of truth:** `inventory/Master_Inventory_Rules_v8.md`  
+**Formula source of truth:** `inventory/Master_Inventory_Rules_v9.md`
 **Note:** safety stock and ROP must use **Effective_L** (not raw L).
 
 | Column | Excel | Meaning | Python Must Match |
@@ -130,7 +130,7 @@ These are the **decision columns** Python must replicate.
 
 ## 5. Logic Invariants (no formulas in this doc)
 
-All formulas live in `docs/inventory/Master_Inventory_Rules_v8.md`; do not duplicate formulas in this contract doc.
+All formulas live in `docs/inventory/Master_Inventory_Rules_v9.md`; do not duplicate formulas in this contract doc.
 
 ---
 
@@ -198,7 +198,7 @@ Use the safe pattern from `Mac_Excel_Agent_Protocol_V2.md`:
 
 1. Identify the SKU and metric
 2. Compare formula implementations
-3. Check `inventory/Master_Inventory_Rules_v8.md`
+3. Check `inventory/Master_Inventory_Rules_v9.md`
 4. **Rules doc is authoritative**
 5. Fix whichever system is wrong
 
@@ -241,7 +241,7 @@ Use these for validation:
 
 | Document | Excel Version | Python Must Match |
 |----------|---------------|-------------------|
-| `inventory/Master_Inventory_Rules_v8.md` | V18.1_V2 | Same formulas |
+| `inventory/Master_Inventory_Rules_v9.md` | V18.1_V2 | Same formulas |
 | `inventory/Sales_Data_Model_V16.md` | V18.1_V2 | Same column layout |
 
 ---
@@ -259,7 +259,7 @@ Use these for validation:
 - Same formulas as Excel
 
 **Contract:**
-- `Master_Inventory_Rules_v8.md` is the shared truth
+- `Master_Inventory_Rules_v9.md` is the shared truth
 - Both systems must produce identical outputs for same inputs
 
 ---

@@ -12,6 +12,10 @@ from pathlib import Path
 PROJECT_ROOT = Path("~/Docs/Autonomous_business")
 COMMAND_PATH = Path("~/Docs/Autonomous_business/excel_ui/run_full_import.command")
 DB_CHECK_PATH = Path("~/Docs/Autonomous_business/scripts/check_local_app_db.py")
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.google_ops_board_automation_common import ensure_kaspi_api_call_ledger_env, today_almaty  # noqa: E402
 
 
 def main() -> int:
@@ -27,6 +31,9 @@ def main() -> int:
 
     env = os.environ.copy()
     env.setdefault("TERM", "dumb")
+    ensure_kaspi_api_call_ledger_env(env, target_date=today_almaty(), project_root=PROJECT_ROOT)
+    if env.get("KASPI_API_CALL_LEDGER_PATH"):
+        os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
 
     check_cmd = [
         sys.executable,

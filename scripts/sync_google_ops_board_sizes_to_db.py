@@ -253,7 +253,12 @@ def main(argv: list[str] | None = None) -> int:
         dump_json(output_path, report)
         raise RuntimeError(report["blocked_reason"])
 
-    if args.apply:
+    if args.apply and not updates:
+        report["db_backup_path"] = None
+        report["updates_applied"] = 0
+        report["skipped_db_backup"] = True
+        report["noop"] = True
+    elif args.apply:
         backup_path = _backup_db(db_path, Path(args.backup_root).expanduser())
         report["db_backup_path"] = str(backup_path)
         report["updates_applied"] = _apply_updates(
@@ -261,9 +266,13 @@ def main(argv: list[str] | None = None) -> int:
             updates=updates,
             source_value=writeback_spec["target_source_value"],
         )
+        report["skipped_db_backup"] = False
+        report["noop"] = False
     else:
         report["db_backup_path"] = None
         report["updates_applied"] = 0
+        report["skipped_db_backup"] = False
+        report["noop"] = False
 
     if args.output_json is not None:
         output_path = args.output_json

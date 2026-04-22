@@ -55,6 +55,7 @@ def _make_orders_db(db_path: Path) -> None:
                 customer_phone TEXT,
                 customer_height_cm INTEGER,
                 customer_weight_kg INTEGER,
+                created_at TEXT,
                 updated_at TEXT
             );
             CREATE TABLE dim_sku (
@@ -135,6 +136,7 @@ def _make_orders_db(db_path: Path) -> None:
                 176,
                 78,
                 "2026-04-15T10:00:00",
+                "2026-04-15T10:00:00",
             ),
             (
                 2,
@@ -164,6 +166,7 @@ def _make_orders_db(db_path: Path) -> None:
                 "+77000000001",
                 176,
                 78,
+                "2026-04-15T10:00:00",
                 "2026-04-15T10:00:00",
             ),
             (
@@ -195,6 +198,7 @@ def _make_orders_db(db_path: Path) -> None:
                 170,
                 68,
                 "2026-04-15T10:05:00",
+                "2026-04-15T10:05:00",
             ),
             (
                 4,
@@ -224,6 +228,7 @@ def _make_orders_db(db_path: Path) -> None:
                 "+77000000003",
                 165,
                 58,
+                "2026-04-15T12:00:00",
                 "2026-04-15T12:10:00",
             ),
             (
@@ -255,6 +260,7 @@ def _make_orders_db(db_path: Path) -> None:
                 168,
                 60,
                 "2026-04-07T08:00:00",
+                "2026-04-07T08:00:00",
             ),
             (
                 6,
@@ -285,6 +291,7 @@ def _make_orders_db(db_path: Path) -> None:
                 180,
                 82,
                 "2026-04-14T18:00:00",
+                "2026-04-14T18:00:00",
             ),
         ]
         conn.executemany(
@@ -295,8 +302,8 @@ def _make_orders_db(db_path: Path) -> None:
                 waybill_url, waybill_downloaded, actual_shipment_date, courier_transmission_date,
                 kaspi_status_detail, signature_required, delivery_mode, planned_delivery_date, payment_mode, returned_to_warehouse,
                 customer_first_name, customer_last_name, customer_phone,
-                customer_height_cm, customer_weight_kg, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                customer_height_cm, customer_weight_kg, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -309,6 +316,8 @@ def test_default_google_ops_board_contract_loads_expected_tabs():
     contract = load_ops_board_contract()
 
     assert contract.spreadsheet_id == "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg"
+    assert contract.same_day_cutoff_default == "16:00"
+    assert contract.same_day_cutoff_by_store == {"ACMEWEAR": "16:01"}
     assert list(contract.tabs) == [
         "SalesRaw_Today",
         "Run_Control",
@@ -447,7 +456,7 @@ def test_build_tab_ui_requests_for_run_control_protects_status_columns():
             "startRowIndex": 1,
             "endRowIndex": 20,
             "startColumnIndex": 1,
-            "endColumnIndex": 5,
+            "endColumnIndex": 2,
         }
     ]
 
@@ -629,6 +638,374 @@ def test_build_phase1_payload_groups_orders_into_board_tabs(tmp_path: Path):
     ]
 
 
+def test_build_phase1_payload_respects_store_specific_same_day_cutoffs(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executemany(
+            """
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, planned_shipment_date, created_at, kaspi_status, internal_status,
+                kaspi_offer_name, sku_key, sku_id, my_size, assigned_size, quantity,
+                waybill_url, waybill_downloaded, actual_shipment_date, courier_transmission_date,
+                kaspi_status_detail, signature_required, delivery_mode, planned_delivery_date, payment_mode, returned_to_warehouse,
+                customer_first_name, customer_last_name, customer_phone,
+                customer_height_cm, customer_weight_kg, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    9,
+                    "1006",
+                    "ACMEWEAR",
+                    "2026-04-15",
+                    "2026-04-15T16:01:00",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED",
+                    "AcmeWear Cutoff Edge",
+                    "SKU-4",
+                    "SKU-4-LINE-C",
+                    None,
+                    None,
+                    1,
+                    None,
+                    0,
+                    None,
+                    None,
+                    "ACCEPTED_BY_MERCHANT",
+                    0,
+                    "DELIVERY",
+                    None,
+                    "PREPAID",
+                    0,
+                    "Ira",
+                    "Seven",
+                    "",
+                    None,
+                    None,
+                    "2026-04-15T16:01:00",
+                ),
+                (
+                    10,
+                    "1007",
+                    "UNIVERSAL",
+                    "2026-04-15",
+                    "2026-04-15T16:45:00",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED",
+                    "Universal Too Late",
+                    "SKU-1",
+                    "SKU-1-LINE-D",
+                    None,
+                    None,
+                    1,
+                    None,
+                    0,
+                    None,
+                    None,
+                    "ACCEPTED_BY_MERCHANT",
+                    0,
+                    "DELIVERY",
+                    None,
+                    "PREPAID",
+                    0,
+                    "Uma",
+                    "Eight",
+                    "",
+                    None,
+                    None,
+                    "2026-04-15T16:45:00",
+                ),
+                (
+                    11,
+                    "1008",
+                    "ACMEWEAR",
+                    "2026-04-15",
+                    "2026-04-15T16:02:00",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED",
+                    "AcmeWear After Cutoff",
+                    "SKU-4",
+                    "SKU-4-LINE-D",
+                    None,
+                    None,
+                    1,
+                    None,
+                    0,
+                    None,
+                    None,
+                    "ACCEPTED_BY_MERCHANT",
+                    0,
+                    "DELIVERY",
+                    None,
+                    "PREPAID",
+                    0,
+                    "Olga",
+                    "Nine",
+                    "",
+                    None,
+                    None,
+                    "2026-04-15T16:02:00",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    contract = load_ops_board_contract()
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=contract,
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T16:50:00+05:00",
+    )
+
+    order_ids = [row["OrderID"] for row in payload["SalesRaw_Today"]]
+
+    assert "1006" in order_ids
+    assert "1007" not in order_ids
+    assert "1008" not in order_ids
+
+
+def test_build_phase1_payload_carries_forward_pending_previous_day_rows_within_store_cutoff(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executemany(
+            """
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, planned_shipment_date, created_at, kaspi_status, internal_status,
+                kaspi_offer_name, sku_key, sku_id, my_size, assigned_size, quantity,
+                waybill_url, waybill_downloaded, actual_shipment_date, courier_transmission_date,
+                kaspi_status_detail, signature_required, delivery_mode, planned_delivery_date, payment_mode, returned_to_warehouse,
+                customer_first_name, customer_last_name, customer_phone,
+                customer_height_cm, customer_weight_kg, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    30,
+                    "0910",
+                    "ACMEWEAR",
+                    "2026-04-14",
+                    "2026-04-14T16:01:00",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED",
+                    "AcmeWear Cutoff Carry",
+                    "SKU-4",
+                    "SKU-4-LINE-CARRY",
+                    None,
+                    None,
+                    1,
+                    None,
+                    0,
+                    None,
+                    None,
+                    "ACCEPTED_BY_MERCHANT",
+                    0,
+                    "DELIVERY",
+                    None,
+                    "PREPAID",
+                    0,
+                    "Carry",
+                    "Forward",
+                    "+77000000030",
+                    170,
+                    70,
+                    "2026-04-14T16:01:00",
+                ),
+                (
+                    31,
+                    "0911",
+                    "ACMEWEAR",
+                    "2026-04-14",
+                    "2026-04-14T16:02:00",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED",
+                    "AcmeWear After Cutoff",
+                    "SKU-4",
+                    "SKU-4-LINE-LATE",
+                    None,
+                    None,
+                    1,
+                    None,
+                    0,
+                    None,
+                    None,
+                    "ACCEPTED_BY_MERCHANT",
+                    0,
+                    "DELIVERY",
+                    None,
+                    "PREPAID",
+                    0,
+                    "After",
+                    "Cutoff",
+                    "+77000000031",
+                    170,
+                    70,
+                    "2026-04-14T16:02:00",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    contract = load_ops_board_contract()
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=contract,
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:00:00+05:00",
+    )
+
+    salesraw_by_order = {row["OrderID"]: row for row in payload["SalesRaw_Today"]}
+
+    assert salesraw_by_order["0910"]["Status"] == "OVERDUE"
+    assert salesraw_by_order["0910"]["MY_SIZE"] == ""
+    assert "0911" not in salesraw_by_order
+    assert "0910" in {row["order_id"] for row in payload["Needs_Size"]}
+
+
+def test_build_phase1_payload_excludes_stale_pending_sibling_when_order_was_handed_over(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executemany(
+            """
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, planned_shipment_date, created_at, kaspi_status, internal_status,
+                kaspi_offer_name, sku_key, sku_id, my_size, assigned_size, quantity,
+                waybill_url, waybill_downloaded, actual_shipment_date, courier_transmission_date,
+                kaspi_status_detail, signature_required, delivery_mode, planned_delivery_date, payment_mode, returned_to_warehouse,
+                customer_first_name, customer_last_name, customer_phone,
+                customer_height_cm, customer_weight_kg, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    40,
+                    "0912",
+                    "UNIVERSAL",
+                    "2026-04-14",
+                    "2026-04-14T10:00:00",
+                    "ARCHIVE",
+                    "SHIPPED",
+                    "Already Shipped Black",
+                    "SKU-1",
+                    "SKU-1-LINE-SHIPPED",
+                    None,
+                    "XL",
+                    1,
+                    "https://wb/0912",
+                    1,
+                    "2026-04-14",
+                    "2026-04-14T18:30:00",
+                    "COMPLETED",
+                    0,
+                    "DELIVERY",
+                    None,
+                    "PREPAID",
+                    0,
+                    "Sibling",
+                    "Done",
+                    "+77000000912",
+                    180,
+                    80,
+                    "2026-04-14T18:30:00",
+                ),
+                (
+                    41,
+                    "0912",
+                    "UNIVERSAL",
+                    "2026-04-14",
+                    "2026-04-14T10:00:00",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED",
+                    "Stale Pending White",
+                    "SKU-2",
+                    "SKU-2-LINE-STALE",
+                    None,
+                    None,
+                    1,
+                    None,
+                    0,
+                    None,
+                    None,
+                    "ACCEPTED_BY_MERCHANT",
+                    0,
+                    "DELIVERY",
+                    None,
+                    "PREPAID",
+                    0,
+                    "Sibling",
+                    "Stale",
+                    "+77000000912",
+                    180,
+                    80,
+                    "2026-04-14T18:30:00",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    contract = load_ops_board_contract()
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=contract,
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:00:00+05:00",
+    )
+
+    assert "0912" not in {row["OrderID"] for row in payload["SalesRaw_Today"]}
+    assert "0912" not in {row["order_id"] for row in payload["Needs_Size"]}
+
+
+def test_build_phase1_payload_applies_order_specific_name_core_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+    override_path = tmp_path / "order_core_overrides.yaml"
+    override_path.write_text(
+        """
+version: 1
+overrides:
+  "1001":
+    active: true
+    kaspi_name_core: "Питер_положи_2-накладной-стикера-и_2-курьерпакета"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AB_KASPI_ORDER_NAME_CORE_OVERRIDES", str(override_path))
+
+    contract = load_ops_board_contract()
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=contract,
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:00:00+05:00",
+    )
+
+    rows_1001 = [row for row in payload["SalesRaw_Today"] if row["OrderID"] == "1001"]
+
+    assert rows_1001
+    assert {row["Kaspi_name_core"] for row in rows_1001} == {
+        "Питер_положи_2-накладной-стикера-и_2-курьерпакета"
+    }
+
+
 def test_build_phase1_payload_prefers_store_offer_mapping_before_name_extraction(tmp_path: Path):
     db_path = tmp_path / "app.db"
     _make_orders_db(db_path)
@@ -643,8 +1020,8 @@ def test_build_phase1_payload_prefers_store_offer_mapping_before_name_extraction
                 waybill_url, waybill_downloaded, actual_shipment_date, courier_transmission_date,
                 kaspi_status_detail, signature_required, delivery_mode, planned_delivery_date, payment_mode, returned_to_warehouse,
                 customer_first_name, customer_last_name, customer_phone,
-                customer_height_cm, customer_weight_kg, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                customer_height_cm, customer_weight_kg, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 7,
@@ -674,6 +1051,7 @@ def test_build_phase1_payload_prefers_store_offer_mapping_before_name_extraction
                 "",
                 None,
                 None,
+                "2026-04-15T13:30:00",
                 "2026-04-15T13:30:00",
             ),
         )
@@ -728,8 +1106,8 @@ def test_build_phase1_payload_prefers_declared_offer_size_for_acmewear_variants(
                 waybill_url, waybill_downloaded, actual_shipment_date, courier_transmission_date,
                 kaspi_status_detail, signature_required, delivery_mode, planned_delivery_date, payment_mode, returned_to_warehouse,
                 customer_first_name, customer_last_name, customer_phone,
-                customer_height_cm, customer_weight_kg, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                customer_height_cm, customer_weight_kg, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 8,
@@ -759,6 +1137,7 @@ def test_build_phase1_payload_prefers_declared_offer_size_for_acmewear_variants(
                 "",
                 None,
                 None,
+                "2026-04-15T13:36:00",
                 "2026-04-15T13:36:00",
             ),
         )

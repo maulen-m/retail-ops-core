@@ -246,8 +246,9 @@ def test_command_publishes_google_ops_board_immediately_after_success_gate():
     assert "ENABLE_GOOGLE_OPS_BOARD_WRITE=1" in text
     assert "Step 3: Publish Google Ops Board" in text
     assert "Step 4: Google Drive sync skipped in unattended mode (--no-gdrive-sync)" in text
-    assert "NO-OP: skipping Google Ops Board publish (workflow already red)." in text
     assert "ERROR: Google Ops Board publish blocked by missing or failed DB enrichment step." in text
+    assert "workflow is red, but Google Ops Board publish will still proceed from DB truth." in text
+    assert "not CRM Step 2 success." in text
 
 
 def test_command_google_ops_board_publish_uses_quiet_publish_health_profile():

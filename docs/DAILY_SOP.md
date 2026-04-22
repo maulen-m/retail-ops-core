@@ -24,7 +24,13 @@ Google Ops Board operational contract (employee sizing surface):
 Promotion minimum merge standard authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.
 
 Current daily scheduler contract (GMT+5):
-- import jobs: `11:00`, `15:02`, and `16:01`
+- import jobs: `11:00`, `15:02`, `16:01`, and `17:02`
+- shipped-truth DB sync jobs: `09:30` and `19:15`
+  - DB-only path; no Excel CRM import, no Google Sheet publish, no Telegram/WhatsApp send
+  - refreshes recent `KASPI_DELIVERY` + `ARCHIVE` order states so `fact_orders_kaspi.actual_shipment_date` / `courier_transmission_date` do not stay stale after evening closeout
+- same-day Google Ops Board cutoff is currently store-aware:
+  - `AcmeWear` stays same-day through `16:01`
+  - all remaining stores stay same-day through `16:00`
 - Google Ops Board pre-window health gate: `13:45`
   - runs DB preflight, workbook identity sync, Google board contract check, Kaspi store-context validation, and WhatsApp smoke
   - blocks later automated publish / closeout if red
@@ -39,16 +45,28 @@ Current daily scheduler contract (GMT+5):
   - publish backstop must stay browser-silent; it does not open WhatsApp
   - publish fails closed when `excel_ui/ActiveOrders/ActiveOrders.xlsx` is stale for the target date
 - Google Ops Board size writeback jobs: `17:15`, `17:30`, `17:45`, `18:00`, `18:15`
-- Google Ops Board early-closeout watch: every 60 seconds between `11:00` and `18:29` (script-gated, no-op unless green)
-- early-ready safety gate: first `READY` detection arms a 90-second debounce; closeout starts only if the board is still green after that wait
-- once READY survives debounce, the closeout script itself runs the full closeout health profile, including Kaspi store-context and WhatsApp smoke
+- Google Ops Board closeout keep-awake guard: `18:20`
+  - runs `/usr/bin/caffeinate -dimsu -t 4200` so the Mac stays awake through the closeout/send window
+- Google Ops Board early-closeout watch: every 15 seconds between `11:00` and `19:04` (script-gated, no-op unless green)
+- early-ready safety gate: first `READY` detection arms a 60-second debounce; closeout starts only if the board is still green after that wait
+- `18:57` edge-case fallback:
+  - if any `SalesRaw_Today.MY_SIZE` cells are still blank, fill only those blanks from visible, valid `PROBABLE_SIZE`
+  - if `PROBABLE_SIZE` is blank or invalid, do not infer a hidden size; leave the row unresolved and block closeout
+  - preserve all manual sizes already entered
+  - auto-set `Run_Control.ready_for_closeout = READY`
+  - trigger closeout immediately if the board is then green
+- once READY survives debounce, the watcher launches the closeout scheduler; the closeout script itself runs the full closeout health profile, including Kaspi store-context, Telegram delivery config, and WhatsApp smoke as warning-only fallback readiness
+- manual closeout/send recovery reuses the same automation lock as scheduled closeout so we do not fork duplicate live runs
+- WhatsApp chat safety now relies on the group title plus strong selected-row identifiers; subtitle drift is treated as diagnostic only
 - Google Ops Board closeout backstop job: `18:30`
 - closeout is checkpointed and resume-capable; later retries resume from the last safe green stage
+- after successful delivery send, closeout runs the DB-only shipped-truth sync immediately; the `19:15` and next-day `09:30` jobs are fallback repairs if the Mac/API is unavailable
 - owner Telegram alerts are low-noise:
   - prewindow green / red
   - closeout started / resumed
   - closeout failed / complete
 - daily ops report job: `19:10`
+  - read-only reporting; it must not be treated as the shipped-truth population job
 
 Daily ops orchestrator profile contract:
 - `today-fast` for strict current-day checks
@@ -371,7 +389,7 @@ python scripts/validate_size_allocation.py --sku CL_OC_MEN_LINE52_BLACK --verbos
 ```
 
 **Checks performed:**
-1. Parameters match Master_Inventory_Rules_v8.md
+1. Parameters match Master_Inventory_Rules_v9.md
 2. Size mix bounds (3%-40%)
 3. Safety stock formula
 4. ROP calculation
@@ -1016,7 +1034,7 @@ ENABLE_KASPI_WRITE=1
 1. Run import script first (`run_import_orders.command`)
 2. Fill `SalesRaw_Today.MY_SIZE` in the Google Ops Board
 3. Set `Run_Control.ready_for_closeout=READY` when the sizing batch is complete
-4. If the board is fully green earlier, the minute-level watch arms a 90-second safety debounce and then starts closeout automatically if the board is still green; `18:30` remains only a backstop
+4. If the board is fully green earlier, the minute-level watch arms a 60-second safety debounce and then starts closeout automatically if the board is still green; `18:30` remains only a backstop, and the watch still stays active through `19:04` for late READY or `18:57` visible `PROBABLE_SIZE` copy-only recovery
 
 ### Step 1: Ship Orders via API
 

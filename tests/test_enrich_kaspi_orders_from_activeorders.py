@@ -68,7 +68,8 @@ def _make_db(db_path: Path) -> sqlite3.Connection:
             customer_first_name TEXT,
             customer_last_name TEXT,
             customer_phone TEXT,
-            updated_at TEXT
+            updated_at TEXT,
+            UNIQUE(order_id, sku_id, store_code)
         );
         CREATE TABLE dim_sku (
             sku_key TEXT PRIMARY KEY,
@@ -311,6 +312,54 @@ def test_canonicalize_parsed_orders_prefers_exact_article_before_ambiguous_norma
     assert canonicalized[0]["my_size"] == "2XL"
 
 
+def test_canonicalize_parsed_orders_uses_suffix_article_patch_for_white_leggings_2xl(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    conn = _make_db(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO dim_kaspi_article_map (
+                store_code, kaspi_article, kaspi_offer_name, kaspi_name_core, sku_key, sku_id, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "UNIVERSAL",
+                "_687453750",
+                "Леггинсы PRO COMBAT 2010 белый 2XL",
+                "Леггинсы_белый",
+                "CL_NEW-CLO_MEN_LEG_WHITE",
+                "",
+                "crm_historical_patch",
+            ),
+        )
+        orders = [
+            {
+                "order_id": "892448064",
+                "store_code": "UNIVERSAL",
+                "kaspi_article": "132822924_687453750",
+                "kaspi_offer_name": "Леггинсы PRO COMBAT 2010 белый 2XL",
+                "sku_key": "",
+                "sku_id": "",
+                "my_size": "2XL",
+                "quantity": 1,
+                "unit_price_kzt": 1500,
+                "planned_shipment_date": "2026-04-17",
+                "internal_status": "READY",
+            }
+        ]
+
+        article_map = _load_article_identity_map(conn, orders)
+        canonicalized, overrides = _canonicalize_parsed_orders(orders, article_map)
+    finally:
+        conn.close()
+
+    assert article_map[("UNIVERSAL", "_687453750")]["sku_key"] == "CL_NEW-CLO_MEN_LEG_WHITE"
+    assert overrides == 1
+    assert canonicalized[0]["sku_key"] == "CL_NEW-CLO_MEN_LEG_WHITE"
+    assert canonicalized[0]["sku_id"] == "CL_NEW-CLO_MEN_LEG_WHITE_2XL"
+    assert canonicalized[0]["my_size"] == "2XL"
+
+
 def test_apply_activeorders_enrichment_updates_identity_without_writing_customer_size(tmp_path: Path):
     db_path = tmp_path / "app.db"
     conn = _make_db(db_path)
@@ -435,4 +484,83 @@ def test_insert_from_template_copies_order_level_fields_but_leaves_manual_size_b
         None,
         "DELIVERY_PICKUP",
         "PREPAID",
+    )
+
+
+def test_insert_from_template_upserts_existing_order_sku_row_instead_of_failing(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    conn = _make_db(db_path)
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX ux_fact_orders_kaspi_order_sku_store ON fact_orders_kaspi(order_id, sku_id, store_code)"
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, channel_code, kaspi_offer_name, sku_key, sku_id,
+                quantity, unit_price_kzt, planned_shipment_date, internal_status, source, source_file
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2002",
+                "UNIVERSAL",
+                "KSP",
+                "",
+                "",
+                "SKU-C_XL",
+                1,
+                1000,
+                "2026-04-19",
+                "ACCEPTED",
+                "API",
+                "thin_api_row.json",
+            ),
+        )
+        inserted = _insert_from_template(
+            conn,
+            [
+                {
+                    "order": {
+                        "order_id": "2002",
+                        "store_code": "UNIVERSAL",
+                        "planned_shipment_date": "2026-04-19",
+                        "kaspi_offer_name": "Offer C",
+                        "sku_key": "SKU-C",
+                        "sku_id": "SKU-C_XL",
+                        "quantity": 2,
+                        "unit_price_kzt": 1800,
+                    },
+                    "template": {
+                        "store_code": "UNIVERSAL",
+                        "channel_code": "KSP",
+                        "kaspi_status": "KASPI_DELIVERY",
+                        "internal_status": "ACCEPTED",
+                    },
+                }
+            ],
+            source_file="excel_ui/ActiveOrders/ActiveOrders.xlsx",
+        )
+        conn.commit()
+        rows = conn.execute(
+            """
+            SELECT order_id, store_code, kaspi_offer_name, sku_key, sku_id, quantity, unit_price_kzt, source_file
+            FROM fact_orders_kaspi
+            WHERE order_id = '2002'
+            ORDER BY id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert inserted == 1
+    assert len(rows) == 1
+    assert tuple(rows[0]) == (
+        "2002",
+        "UNIVERSAL",
+        "Offer C",
+        "SKU-C",
+        "SKU-C_XL",
+        2,
+        1800,
+        "excel_ui/ActiveOrders/ActiveOrders.xlsx",
     )

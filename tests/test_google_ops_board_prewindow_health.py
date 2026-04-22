@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -45,6 +46,8 @@ def test_ensure_prewindow_health_runs_full_green_gate(monkeypatch, tmp_path: Pat
     calls = {"import": 0, "rebuild": 0}
 
     monkeypatch.setenv("ENABLE_KASPI_WORKBOOK_MAP_SYNC", "1")
+    monkeypatch.delenv("KASPI_API_CALL_LEDGER_PATH", raising=False)
+    monkeypatch.delenv("KASPI_API_CALL_LEDGER", raising=False)
     monkeypatch.setattr(
         health_mod,
         "validate_local_db",
@@ -94,6 +97,9 @@ def test_ensure_prewindow_health_runs_full_green_gate(monkeypatch, tmp_path: Pat
     assert calls == {"import": 1, "rebuild": 1}
     assert Path(report["report_path"]).exists()
     assert report["checks"]["google_layout"]["ok"] is True
+    assert os.environ["KASPI_API_CALL_LEDGER_PATH"].endswith(
+        "runtime/api_ledger/kaspi_api_2026-04-16.jsonl"
+    )
 
 
 def test_ensure_prewindow_health_reuses_current_green_state(monkeypatch, tmp_path: Path) -> None:
@@ -182,6 +188,46 @@ def test_run_whatsapp_smoke_check_uses_temp_launch_mode(monkeypatch) -> None:
 
     assert report["ok"] is True
     assert seen["browser_mode"] == health_mod.BROWSER_MODE_LAUNCH
+
+
+def test_telegram_delivery_config_warns_when_control_allowlist_is_missing(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(health_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", raising=False)
+    monkeypatch.setattr(
+        health_mod,
+        "get_waybill_telegram_config",
+        lambda: {"token": "token", "chat_id": "-100123"},
+    )
+
+    report = health_mod._build_telegram_delivery_config_report()
+
+    assert report["ok"] is True
+    assert report["token_configured"] is True
+    assert report["chat_id_configured"] is True
+    assert report["allowed_user_gate_configured"] is False
+    assert report["warnings"][0]["code"] == "telegram_control_allowlist_missing"
+    assert report["warnings"][0]["blocking"] is False
+
+
+def test_telegram_delivery_config_missing_token_or_chat_is_blocking(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(health_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", raising=False)
+    monkeypatch.delenv("TELEGRAM_WAYBILL_CHAT_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN_WAYBILL", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setattr(
+        health_mod,
+        "get_waybill_telegram_config",
+        lambda: (_ for _ in ()).throw(ValueError("missing telegram token/chat")),
+    )
+
+    report = health_mod._build_telegram_delivery_config_report()
+
+    assert report["ok"] is False
+    assert report["token_configured"] is False
+    assert report["chat_id_configured"] is False
+    assert report["allowed_user_gate_configured"] is False
+    assert report["issues"][0]["code"] == "telegram_delivery_config_missing"
 
 
 def test_ensure_prewindow_health_loads_repo_dotenv(monkeypatch, tmp_path: Path) -> None:
@@ -283,3 +329,61 @@ def test_ensure_prewindow_health_publish_profile_skips_whatsapp_and_store_contex
     assert report["report_path"].endswith("publish_health.json")
     assert report["checks"]["store_context"]["skipped"] is True
     assert report["checks"]["whatsapp_smoke"]["skipped"] is True
+
+
+def test_ensure_prewindow_health_closeout_profile_warns_on_whatsapp_when_telegram_is_green(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract = load_ops_board_contract()
+    workbook = tmp_path / "crm.xlsx"
+    _write_workbook(workbook)
+    db_path = tmp_path / "app.db"
+    db_path.write_bytes(b"sqlite")
+
+    monkeypatch.setenv("ENABLE_KASPI_WORKBOOK_MAP_SYNC", "1")
+    monkeypatch.setattr(health_mod, "validate_local_db", lambda _path: [])
+    monkeypatch.setattr(
+        health_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: _FakeClient(contract),
+    )
+    monkeypatch.setattr(health_mod, "import_map", lambda **_kwargs: {"status": "APPLIED"})
+    monkeypatch.setattr(health_mod, "rebuild_identity_map", lambda **_kwargs: {"status": "APPLIED"})
+    monkeypatch.setattr(
+        health_mod,
+        "_build_store_context_report",
+        lambda _stores: {"ok": True, "stores": [], "failure_count": 0, "failures": []},
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "_build_telegram_delivery_config_report",
+        lambda: {"ok": True, "token_configured": True, "chat_id_configured": True},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "_run_whatsapp_smoke_check",
+        lambda *, verbose: {"ok": False, "issues": [{"code": "browser_closed"}]},
+    )
+    monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
+
+    report = health_mod.ensure_prewindow_health(
+        target_date=health_mod.date(2026, 4, 22),
+        db_path=db_path,
+        contract_path=health_mod.DEFAULT_CONTRACT_PATH,
+        service_account_json=tmp_path / "svc.json",
+        spreadsheet_id="sheet-id",
+        output_root=tmp_path / "health",
+        workbook_path=workbook,
+        stores_config_path=health_mod.DEFAULT_KASPI_STORES_CONFIG,
+        apply=True,
+        reason="test-closeout",
+        profile=health_mod.HEALTH_PROFILE_CLOSEOUT,
+    )
+
+    assert report["ok"] is True
+    assert report["checks"]["telegram_delivery_config"]["ok"] is True
+    assert report["checks"]["whatsapp_smoke"]["ok"] is False
+    assert report["checks"]["whatsapp_smoke"]["blocking"] is False
+    assert report["checks"]["whatsapp_smoke"]["warning_only"] is True

@@ -929,6 +929,61 @@ def test_download_all_waybills_writes_selection_cache(tmp_path, monkeypatch):
     assert payload["stores"]["UNIVERSAL"] == ["8801"]
 
 
+def test_download_all_waybills_include_overdue_passes_range_mode_to_api(tmp_path, monkeypatch):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    target_date = date(2026, 4, 20)
+    overdue_order = _make_order(
+        code="894674749",
+        status="ACCEPTED_BY_MERCHANT",
+        signature=False,
+        planned=date(2026, 4, 19),
+        assembled=True,
+    )
+    captured_kwargs = {}
+
+    def _fake_get_target_orders_from_api(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return [overdue_order], False
+
+    def _fake_download_waybills_for_store(**kwargs):
+        assert kwargs["target_order_ids"] == {"894674749"}
+        return {
+            "downloaded": 1,
+            "skipped_not_target": 0,
+            "missing_waybill": 0,
+            "already_exists": 0,
+            "invalid_pdf": 0,
+            "skipped_terminal": 0,
+            "skipped_nonready": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(download_waybills_api, "get_target_orders_from_api", _fake_get_target_orders_from_api)
+    monkeypatch.setattr(download_waybills_api, "download_waybills_for_store", _fake_download_waybills_for_store)
+
+    result = download_waybills_api.download_all_waybills(
+        output_dir=output_dir,
+        crm_path=tmp_path / "missing.xlsx",
+        sheet_name="Sheet1",
+        target_date=target_date,
+        db_path=None,
+        store_filter="UNIVERSAL",
+        since_days=5,
+        download_timeout=20,
+        dry_run=False,
+        verbose=False,
+        all_dates=False,
+        exact_date=False,
+        fallback_crm=False,
+    )
+
+    assert result["downloaded"] == 1
+    assert captured_kwargs["exact_date"] is False
+    assert captured_kwargs["include_overdue"] is True
+
+
 def test_download_all_waybills_excludes_terminal_orders_from_selection_cache(
     tmp_path, monkeypatch
 ):

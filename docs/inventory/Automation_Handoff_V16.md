@@ -11,7 +11,7 @@
 Excel is **UI only**. Project 3 (DB/Python) is the system of record. This doc defines the
 minimum contract to keep Excel and Python aligned.
 
-**Source of truth:** `inventory/Master_Inventory_Rules_v8.md` (formulas + parameters).  
+**Source of truth:** `inventory/Master_Inventory_Rules_v9.md` (formulas + parameters).
 **Schema contract:** `inventory/Sales_Data_Model_V16.md`.
 
 ---
@@ -33,7 +33,7 @@ minimum contract to keep Excel and Python aligned.
 
 ## 3. Core Calculations
 
-All formulas are defined in `inventory/Master_Inventory_Rules_v8.md`.  
+All formulas are defined in `inventory/Master_Inventory_Rules_v9.md`.
 Do **not** duplicate formulas here. If anything changes, update v8 first.
 
 Key requirements:
@@ -87,7 +87,7 @@ Before Project 3 changes go live:
 
 ## 7. Change Control
 
-1. Update `inventory/Master_Inventory_Rules_v8.md` **first**.
+1. Update `inventory/Master_Inventory_Rules_v9.md` **first**.
 2. Update Excel workbook formulas (V18.1_V2).
 3. Update Python implementation + tests.
 4. Update this handoff doc only if interfaces change.

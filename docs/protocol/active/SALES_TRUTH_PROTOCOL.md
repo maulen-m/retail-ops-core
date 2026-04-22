@@ -50,7 +50,7 @@ Why:
 - If drift exceeds threshold, log an ISSUE and re-run the CRM → DB sync step.
 
 ## 8) Guardrails
-- Do **not** change formulas outside `Master_Inventory_Rules_v8.md`.
+- Do **not** change formulas outside `Master_Inventory_Rules_v9.md`.
 - Do **not** relax dedupe logic.
 - If API sync fails, treat it as a blocker (no silent pass).
 
