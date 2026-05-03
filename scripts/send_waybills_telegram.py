@@ -19,6 +19,7 @@ from core.integrations.telegram_bot import (  # noqa: E402
     send_document,
     send_message,
 )
+from scripts import returns_pickup_report as returns_pickup_report_mod  # noqa: E402
 from scripts.send_waybills_whatsapp import (  # noqa: E402
     ALMATY_TZ,
     SOURCE_AUTO,
@@ -208,6 +209,7 @@ def _send_message_with_rate_limit_retry(
     text: str,
     timeout_seconds: int = 15,
     max_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
+    reply_markup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     attempt = 0
     while True:
@@ -216,6 +218,7 @@ def _send_message_with_rate_limit_retry(
             chat_id=chat_id,
             text=text,
             timeout_seconds=timeout_seconds,
+            reply_markup=reply_markup,
         )
         retry_after = result.get("retry_after")
         if result.get("success") or result.get("ambiguous") or retry_after is None or attempt >= max_retries:
@@ -248,6 +251,8 @@ def _base_report(*, today_folder: Path, bundle_source: str, expected_target_date
         "pre_status_message_id": "",
         "final_status_sent": False,
         "final_status_message_id": "",
+        "returns_pickup_sent": False,
+        "returns_pickup_message_id": "",
         "started_at": _now_iso(),
         "completed_at": "",
     }
@@ -288,6 +293,32 @@ def _send_final_status_table_from_manifest(
     }
 
 
+def _send_returns_pickup_message(
+    *,
+    token: str,
+    chat_id: str,
+    timeout_seconds: int = 15,
+) -> dict[str, Any]:
+    snapshot = returns_pickup_report_mod.build_pickup_ready_snapshot()
+    message = returns_pickup_report_mod.format_returns_pickup_message(snapshot)
+    reply_markup = returns_pickup_report_mod.build_returns_pickup_reply_markup(snapshot)
+    status_result = _send_message_with_rate_limit_retry(
+        token=token,
+        chat_id=chat_id,
+        text=message,
+        timeout_seconds=timeout_seconds,
+        reply_markup=reply_markup,
+    )
+    success = bool(status_result.get("success"))
+    return {
+        "ok": success,
+        "returns_pickup_sent": success,
+        "returns_pickup_message_id": str(status_result.get("message_id") or ""),
+        "status_message_failures": 0 if success else 1,
+        "error": str(status_result.get("error") or ""),
+    }
+
+
 def send_final_status_table(
     *,
     today_folder: Path = TODAY_FOLDER,
@@ -307,19 +338,35 @@ def send_final_status_table(
             "ok": False,
             "final_status_sent": False,
             "final_status_message_id": "",
+            "returns_pickup_sent": False,
+            "returns_pickup_message_id": "",
             "status_message_failures": 1,
             "error": f"manifest target_date mismatch: {manifest.get('target_date')} != {expected_target_date.isoformat()}",
             "confirmed_total": 0,
             "total": len(manifest.get("entries") or []),
         }
     ledger = load_telegram_ledger(Path(str(manifest["batch_root"])) / TELEGRAM_SEND_LEDGER_FILE, manifest)
-    return _send_final_status_table_from_manifest(
+    result = _send_final_status_table_from_manifest(
         manifest=manifest,
         ledger=ledger,
         token=config["token"],
         chat_id=config["chat_id"],
         timeout_seconds=timeout_seconds,
     )
+    returns_pickup = _send_returns_pickup_message(
+        token=config["token"],
+        chat_id=config["chat_id"],
+        timeout_seconds=timeout_seconds,
+    )
+    result["ok"] = bool(result.get("ok")) and bool(returns_pickup.get("ok"))
+    result["returns_pickup_sent"] = bool(returns_pickup.get("returns_pickup_sent"))
+    result["returns_pickup_message_id"] = str(returns_pickup.get("returns_pickup_message_id") or "")
+    result["status_message_failures"] = int(result.get("status_message_failures") or 0) + int(
+        returns_pickup.get("status_message_failures") or 0
+    )
+    if returns_pickup.get("error"):
+        result["returns_pickup_error"] = str(returns_pickup.get("error") or "")
+    return result
 
 
 def run_sender(
@@ -521,6 +568,15 @@ def run_sender(
         report["final_status_message_id"] = str(final_status.get("final_status_message_id") or "")
         report["status_message_failures"] = int(report.get("status_message_failures") or 0) + int(
             final_status.get("status_message_failures") or 0
+        )
+        returns_pickup = _send_returns_pickup_message(
+            token=config["token"],
+            chat_id=config["chat_id"],
+        )
+        report["returns_pickup_sent"] = bool(returns_pickup.get("returns_pickup_sent"))
+        report["returns_pickup_message_id"] = str(returns_pickup.get("returns_pickup_message_id") or "")
+        report["status_message_failures"] = int(report.get("status_message_failures") or 0) + int(
+            returns_pickup.get("status_message_failures") or 0
         )
         if not final_status.get("ok"):
             if verbose:

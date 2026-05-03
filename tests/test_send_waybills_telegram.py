@@ -315,10 +315,26 @@ def test_telegram_sender_retries_rate_limited_final_status_message(monkeypatch, 
         {"success": True, "message_id": "pre-status", "chat_id": "-1001"},
         {"success": False, "error": "Too Many Requests: retry after 7", "retry_after": 7, "ambiguous": False},
         {"success": True, "message_id": "final-status", "chat_id": "-1001"},
+        {"success": True, "message_id": "returns-status", "chat_id": "-1001"},
     ]
 
     monkeypatch.setattr(telegram_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
     monkeypatch.setattr(telegram_mod, "send_document", lambda **_kwargs: {"success": True, "message_id": "doc-1", "chat_id": "-1001"})
+    monkeypatch.setattr(
+        telegram_mod.returns_pickup_report_mod,
+        "build_pickup_ready_snapshot",
+        lambda **_kwargs: {"total_orders": 0, "stores": []},
+    )
+    monkeypatch.setattr(
+        telegram_mod.returns_pickup_report_mod,
+        "format_returns_pickup_message",
+        lambda snapshot: "<b>Returns Pickup Ready</b>\nNone",
+    )
+    monkeypatch.setattr(
+        telegram_mod.returns_pickup_report_mod,
+        "build_returns_pickup_reply_markup",
+        lambda snapshot: {"keyboard": [["Возвраты"]], "resize_keyboard": True},
+    )
     monkeypatch.setattr(telegram_mod, "send_message", lambda **_kwargs: status_results.pop(0))
 
     report = telegram_mod.run_sender(
@@ -336,6 +352,59 @@ def test_telegram_sender_retries_rate_limited_final_status_message(monkeypatch, 
     assert report["final_status_message_id"] == "final-status"
     assert report["status_message_failures"] == 0
     assert sleeps == [7]
+
+
+def test_telegram_sender_posts_returns_pickup_after_final_status(monkeypatch, tmp_path: Path):
+    _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1},
+        ],
+    )
+    status_texts: list[str] = []
+
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **_kwargs: {"success": True, "message_id": "doc-1", "chat_id": "-1001"},
+    )
+    monkeypatch.setattr(
+        telegram_mod.returns_pickup_report_mod,
+        "build_pickup_ready_snapshot",
+        lambda **_kwargs: {"total_orders": 2, "stores": [{"store_code": "ACMEWEAR", "display_name": "AcmeWear"}]},
+    )
+    monkeypatch.setattr(
+        telegram_mod.returns_pickup_report_mod,
+        "format_returns_pickup_message",
+        lambda snapshot: "<b>Returns Pickup Ready</b>\nAcmeWear: <code>1001</code>",
+    )
+    monkeypatch.setattr(
+        telegram_mod.returns_pickup_report_mod,
+        "build_returns_pickup_reply_markup",
+        lambda snapshot: {"keyboard": [["Возвраты"], ["Забрал OF"]], "resize_keyboard": True},
+    )
+
+    def _fake_send_message(**kwargs):
+        status_texts.append(kwargs["text"])
+        return {"success": True, "message_id": f"msg-{len(status_texts)}", "chat_id": "-1001"}
+
+    monkeypatch.setattr(telegram_mod, "send_message", _fake_send_message)
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=True,
+        send_delay=0,
+    )
+
+    assert report["ok"] is True
+    assert report["final_status_sent"] is True
+    assert report["returns_pickup_sent"] is True
+    assert any("Returns Pickup Ready" in text for text in status_texts)
+    assert "Returns Pickup Ready" in status_texts[-1]
 
 
 def test_telegram_partial_ambiguous_failure_blocks_fallback(monkeypatch, tmp_path: Path):

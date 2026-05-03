@@ -258,6 +258,166 @@ def test_waybill_telegram_delivery_status_reports_ledger_counts(monkeypatch, tmp
     assert any("38/39" in msg for msg in sent_messages)
 
 
+def test_waybill_telegram_returns_pickup_reports_table(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 41,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/returns_pickup",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod.returns_pickup_report_mod,
+        "build_pickup_ready_snapshot",
+        lambda **_kwargs: {"total_orders": 2},
+    )
+    monkeypatch.setattr(
+        bot_mod.returns_pickup_report_mod,
+        "format_returns_pickup_message",
+        lambda snapshot: "<b>Returns Pickup Ready</b>\n<pre>| STORE | FIRST_ORDER_ID |\n| AcmeWear | 1001 |\n</pre>\nAcmeWear: <code>1001</code>",
+    )
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 28, 15, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert any("Returns Pickup Ready" in msg for msg in sent_messages)
+    assert any("1001" in msg for msg in sent_messages)
+
+
+def test_waybill_telegram_returns_ack_store_marks_queue(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 42,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/returns_ack_store ACMEWEAR UNIVERSAL",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod.returns_pickup_report_mod,
+        "ack_current_pickup_orders_for_stores",
+        lambda **_kwargs: {
+            "acked_orders": 3,
+            "stores": [
+                {"store_code": "ACMEWEAR", "display_name": "AcmeWear", "acked_orders": 2},
+                {"store_code": "UNIVERSAL", "display_name": "Universal", "acked_orders": 1},
+            ],
+        },
+    )
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 28, 15, 5, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert any("3" in msg and "AcmeWear" in msg and "Universal" in msg for msg in sent_messages)
+
+
+def test_waybill_telegram_short_returns_alias_reports_table(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 43,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/r",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod.returns_pickup_report_mod,
+        "build_pickup_ready_snapshot",
+        lambda **_kwargs: {"total_orders": 1},
+    )
+    monkeypatch.setattr(
+        bot_mod.returns_pickup_report_mod,
+        "format_returns_pickup_message",
+        lambda snapshot: "<b>Returns Pickup Ready</b>\nAcmeWear: <code>1001</code>",
+    )
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 28, 16, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert any("Returns Pickup Ready" in msg for msg in sent_messages)
+
+
+def test_waybill_telegram_button_text_acknowledges_store(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 44,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "Забрал OF",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod.returns_pickup_report_mod,
+        "ack_current_pickup_orders_for_stores",
+        lambda **_kwargs: {
+            "acked_orders": 2,
+            "stores": [{"store_code": "ACMEWEAR", "display_name": "AcmeWear", "acked_orders": 2}],
+        },
+    )
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 4, 28, 16, 5, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert any("acknowledged" in msg.lower() and "AcmeWear" in msg for msg in sent_messages)
+
+
 def test_waybill_telegram_resume_delivery_runs_scheduler_when_incomplete(monkeypatch, tmp_path: Path):
     sent_messages: list[str] = []
     calls: list[list[str]] = []

@@ -76,6 +76,7 @@ def send_message(
     text: str,
     parse_mode: str = "HTML",
     timeout_seconds: int = 15,
+    reply_markup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
@@ -84,6 +85,8 @@ def send_message(
         "parse_mode": parse_mode,
         "disable_web_page_preview": True,
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     try:
         response = requests.post(url, json=payload, timeout=timeout_seconds)
         try:

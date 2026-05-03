@@ -31,6 +31,7 @@ from core.integrations.google_ops_board import (  # noqa: E402
 from core.integrations.telegram_bot import get_waybill_telegram_config, send_message  # noqa: E402
 from core.paths import data_path  # noqa: E402
 from scripts.run_google_ops_board_closeout import build_readiness_report  # noqa: E402
+from scripts import returns_pickup_report as returns_pickup_report_mod  # noqa: E402
 from scripts.send_waybills_telegram import send_final_status_table  # noqa: E402
 from scripts.waybill_delivery_completion import (  # noqa: E402
     delivery_completion_state,
@@ -45,6 +46,13 @@ CLOSEOUT_SCHEDULER_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_close
 DB_PATH = data_path("db", "app.db")
 READY_DEBOUNCE_SECONDS = 60
 MAX_MSG_LEN = 3500
+BOT_ALIAS_TO_COMMAND = {
+    "/r": "/returns_pickup",
+    "/ret": "/returns_pickup",
+    "/p": "/returns_pickup",
+    "возвраты": "/returns_pickup",
+    "помощь": "/help",
+}
 
 
 def _now() -> datetime:
@@ -152,9 +160,16 @@ def _chunk_message(text: str) -> list[str]:
     return chunks
 
 
-def _send_text(*, token: str, chat_id: str, text: str) -> None:
-    for chunk in _chunk_message(text):
-        send_message(token=token, chat_id=chat_id, text=chunk, timeout_seconds=20)
+def _send_text(*, token: str, chat_id: str, text: str, reply_markup: dict[str, Any] | None = None) -> None:
+    chunks = _chunk_message(text)
+    for index, chunk in enumerate(chunks):
+        send_message(
+            token=token,
+            chat_id=chat_id,
+            text=chunk,
+            timeout_seconds=20,
+            reply_markup=reply_markup if index == len(chunks) - 1 else None,
+        )
 
 
 def _command_name(text: str) -> str:
@@ -162,6 +177,28 @@ def _command_name(text: str) -> str:
     if "@" in first:
         first = first.split("@", 1)[0]
     return first.lower()
+
+
+def _text_to_command(text: str) -> str:
+    clean = _clean(text)
+    if not clean:
+        return ""
+    if clean.startswith("/"):
+        first = clean.split()[0]
+        command = _command_name(first)
+        normalized = BOT_ALIAS_TO_COMMAND.get(command, command)
+        remainder = clean.split(maxsplit=1)[1] if len(clean.split(maxsplit=1)) == 2 else ""
+        return normalized if not remainder else f"{normalized} {remainder}"
+    lower = clean.lower()
+    alias = BOT_ALIAS_TO_COMMAND.get(lower)
+    if alias:
+        return alias
+    if lower.startswith("забрал "):
+        suffix = clean.split(" ", 1)[1]
+        store_code = returns_pickup_report_mod.normalize_store_code(suffix)
+        if store_code:
+            return f"/returns_ack_store {store_code}"
+    return ""
 
 
 def build_waybill_control_readiness(
@@ -342,9 +379,13 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
 
 
 def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: datetime) -> None:
-    command = _command_name(text)
+    normalized_text = _text_to_command(text) or text
+    command = _command_name(normalized_text)
+    parts = _clean(normalized_text).split()
+    args = parts[1:]
     target_date = now.astimezone(ALMATY_TZ).date()
     if command in {"/start", "/help"}:
+        keyboard = returns_pickup_report_mod.build_returns_pickup_reply_markup({"stores": []})
         _send_text(
             token=token,
             chat_id=chat_id,
@@ -354,9 +395,14 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
                 "/delivery_status — manifest/ledger delivery counts\n"
                 "/ready — start 60s closeout debounce\n"
                 "/resume_delivery — resume incomplete delivery\n"
+                "/r — returned/cancelled orders back at pickup point\n"
+                "Buttons: <code>Возвраты</code>, <code>Забрал OF</code>, <code>Забрал U</code>, <code>Забрал MG</code>\n"
+                "/returns_ack_store STORE — hide picked-up store queue\n"
+                "/returns_unack ORDER_ID ... — restore orders back to queue\n"
                 "/final_table — resend final totals table\n"
                 "/halt — cancel pending closeout and set HOLD"
             ),
+            reply_markup=keyboard,
         )
         return
     if command == "/status":
@@ -366,6 +412,15 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
     if command == "/delivery_status":
         state = delivery_completion_state(target_date=target_date)
         _send_text(token=token, chat_id=chat_id, text=format_delivery_completion_status(state))
+        return
+    if command == "/returns_pickup":
+        snapshot = returns_pickup_report_mod.build_pickup_ready_snapshot(db_path=DB_PATH, as_of=now)
+        _send_text(
+            token=token,
+            chat_id=chat_id,
+            text=returns_pickup_report_mod.format_returns_pickup_message(snapshot),
+            reply_markup=returns_pickup_report_mod.build_returns_pickup_reply_markup(snapshot),
+        )
         return
     if command == "/ready":
         readiness = build_waybill_control_readiness(target_date=target_date)
@@ -412,6 +467,62 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
         if result.returncode != 0:
             _send_text(token=token, chat_id=chat_id, text=f"Delivery resume failed with rc=<code>{result.returncode}</code>.")
         return
+    if command == "/returns_ack_store":
+        if not args:
+            _send_text(
+                token=token,
+                chat_id=chat_id,
+                text="Usage: <code>/returns_ack_store ACMEWEAR</code> or multiple store codes.",
+            )
+            return
+        invalid = [item for item in args if returns_pickup_report_mod.normalize_store_code(item) is None]
+        if invalid:
+            _send_text(
+                token=token,
+                chat_id=chat_id,
+                text="Unknown store code(s): <code>" + ", ".join(_clean(item) for item in invalid) + "</code>",
+            )
+            return
+        result = returns_pickup_report_mod.ack_current_pickup_orders_for_stores(
+            store_codes=args,
+            db_path=DB_PATH,
+            acked_by=user_id,
+            as_of=now,
+        )
+        if int(result.get("acked_orders") or 0) <= 0:
+            _send_text(token=token, chat_id=chat_id, text="No pickup-ready orders matched those stores.")
+            return
+        store_lines = [
+            f"{item['display_name']}: <code>{item['acked_orders']}</code>"
+            for item in list(result.get("stores") or [])
+        ]
+        _send_text(
+            token=token,
+            chat_id=chat_id,
+            text="Pickup queue acknowledged.\n"
+            f"Orders hidden: <code>{int(result.get('acked_orders') or 0)}</code>\n"
+            + "\n".join(store_lines),
+        )
+        return
+    if command == "/returns_unack":
+        if not args:
+            _send_text(
+                token=token,
+                chat_id=chat_id,
+                text="Usage: <code>/returns_unack 123456789 987654321</code>",
+            )
+            return
+        result = returns_pickup_report_mod.unack_pickup_orders(order_ids=args)
+        restored = int(result.get("restored_orders") or 0)
+        if restored <= 0:
+            _send_text(token=token, chat_id=chat_id, text="No acknowledged pickup orders matched those IDs.")
+            return
+        _send_text(
+            token=token,
+            chat_id=chat_id,
+            text=f"Pickup queue restored for <code>{restored}</code> order(s).",
+        )
+        return
     if command == "/final_table":
         result = send_final_status_table(expected_target_date=target_date)
         if result.get("final_status_sent"):
@@ -421,7 +532,8 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
                 text=(
                     "Telegram final table sent. "
                     f"message_id=<code>{result.get('final_status_message_id')}</code> "
-                    f"bundles=<code>{result.get('confirmed_total')}/{result.get('total')}</code>"
+                    f"bundles=<code>{result.get('confirmed_total')}/{result.get('total')}</code> "
+                    f"returns=<code>{bool(result.get('returns_pickup_sent'))}</code>"
                 ),
             )
         else:
@@ -462,7 +574,7 @@ def poll_once(*, now: datetime | None = None) -> int:
             max_update_id = max(int(update_id), int(max_update_id or update_id))
         message = update.get("message") or update.get("edited_message") or {}
         text = str(message.get("text") or "")
-        if not text.startswith("/"):
+        if not _text_to_command(text):
             continue
         message_chat_id = str((message.get("chat") or {}).get("id") or "")
         user_id = str((message.get("from") or {}).get("id") or "")
