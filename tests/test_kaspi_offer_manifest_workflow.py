@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from unittest import mock
 import zipfile
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 import yaml
 
+import core.ops.kaspi_offer_manifest as manifest_mod
 from core.ops.kaspi_offer_manifest import (
     build_offer_packages,
     build_workbook_ingest_payload,
@@ -410,6 +413,23 @@ def test_build_offer_packages_from_manifest_creates_expected_artifacts(tmp_path:
         assert validation["errors"] == []
 
 
+def test_build_offer_packages_respects_explicit_shared_image_code_pattern(tmp_path: Path) -> None:
+    manifest_path = _write_manifest(tmp_path)
+    manifest = load_offer_manifest(manifest_path)
+    manifest["categories"][0]["shared_image_code_pattern"] = "LINE31-ST-GROUP"
+    manifest["categories"][1]["shared_image_code_pattern"] = "LINE31-TRSTORE-B"
+
+    report = build_offer_packages(manifest, timestamp="20260319_111500")
+
+    sport_package = next(package for package in report["packages"] if package["short_code"] == "ST")
+    thermal_package = next(package for package in report["packages"] if package["short_code"] == "TRM")
+
+    assert sport_package["rows"][0]["shared_image_code"] == "LINE31-ST-GROUP"
+    assert thermal_package["rows"][0]["shared_image_code"] == "LINE31-TRSTORE-B"
+    assert (Path(sport_package["package_dir"]) / "images" / "LINE31-ST-GROUP" / "1.png").is_file()
+    assert (Path(thermal_package["package_dir"]) / "images" / "LINE31-TRSTORE-B" / "1.png").is_file()
+
+
 def test_build_workbook_ingest_payload_matches_manifest_contract(tmp_path: Path) -> None:
     manifest_path = _write_manifest(tmp_path)
     manifest = load_offer_manifest(manifest_path)
@@ -471,6 +491,31 @@ def test_build_offer_packages_batch_variants_create_multi_color_category_package
     assert report_path.is_file()
 
 
+def test_build_workbook_ingest_payload_uses_variant_price_and_cost_overrides(tmp_path: Path) -> None:
+    manifest_path = _write_batch_manifest(tmp_path)
+    manifest = load_offer_manifest(manifest_path)
+    manifest["variants"][0]["sell_price_kzt"] = 12990
+    manifest["variants"][0]["base_cost_cny"] = 53.0
+    manifest["variants"][0]["base_cost_kzt"] = 3845.58
+    manifest["variants"][0]["weight_kg"] = 1.0
+    manifest["variants"][1]["sell_price_kzt"] = 14990
+    manifest["variants"][1]["base_cost_cny"] = 60.0
+    manifest["variants"][1]["base_cost_kzt"] = 4353.48
+    manifest["variants"][1]["weight_kg"] = 0.95
+
+    report = build_offer_packages(manifest, timestamp="20260324_101500")
+    payload = build_workbook_ingest_payload(manifest, report)
+
+    assert payload["m02_rows"][0][11] == 12990
+    assert payload["m02_rows"][2][11] == 14990
+    assert payload["sku_map_rows"][0][31] == 53.0
+    assert payload["sku_map_rows"][0][32] == 3845.58
+    assert payload["sku_map_rows"][0][33] == 1.0
+    assert payload["sku_map_rows"][2][31] == 60.0
+    assert payload["sku_map_rows"][2][32] == 4353.48
+    assert payload["sku_map_rows"][2][33] == 0.95
+
+
 def test_validate_offer_package_layout_rejects_flat_images_directory(tmp_path: Path) -> None:
     package_dir = tmp_path / "flat_package"
     package_dir.mkdir(parents=True, exist_ok=True)
@@ -491,3 +536,56 @@ def test_validate_offer_package_layout_rejects_flat_images_directory(tmp_path: P
     validation = validate_offer_package_layout(package_dir=package_dir, zip_path=zip_path)
     assert validation["ok"] is False
     assert any("images/<image_code>/" in error for error in validation["errors"])
+
+
+def test_validate_offer_package_layout_rejects_zip_over_100mb(tmp_path: Path) -> None:
+    package_dir = tmp_path / "oversize_package"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    template_path = package_dir / "Women-sport-suits-import-template_FIXED.xlsm"
+    _write_template(template_path, category="women-sport-suits")
+
+    image_code = "PAIR-21-LS-ST"
+    wb = load_workbook(template_path, keep_vba=True)
+    ws = wb["attributes"]
+    ws.cell(4, 1).value = "SKU-1"
+    ws.cell(4, 4).value = image_code
+    wb.save(template_path)
+    wb.close()
+
+    image_dir = package_dir / "images" / image_code
+    image_dir.mkdir(parents=True, exist_ok=True)
+    _write_source_images(tmp_path / "src", count=1)
+    src_image = next((tmp_path / "src" / "01").glob("*.png"))
+    (image_dir / "1.png").write_bytes(src_image.read_bytes())
+
+    zip_path = package_dir / "oversize_package.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(template_path, arcname=template_path.name)
+        zf.write(image_dir / "1.png", arcname=f"images/{image_code}/1.png")
+
+    real_stat = Path.stat
+
+    def fake_stat(self: Path):
+        result = real_stat(self)
+        if self == zip_path:
+            return os.stat_result(
+                (
+                    result.st_mode,
+                    result.st_ino,
+                    result.st_dev,
+                    result.st_nlink,
+                    result.st_uid,
+                    result.st_gid,
+                    manifest_mod.KASPI_MAX_ZIP_BYTES + 1,
+                    int(result.st_atime),
+                    int(result.st_mtime),
+                    int(result.st_ctime),
+                )
+            )
+        return result
+
+    with mock.patch.object(Path, "stat", fake_stat):
+        validation = validate_offer_package_layout(package_dir=package_dir, zip_path=zip_path)
+
+    assert validation["ok"] is False
+    assert any("exceeds Kaspi limit" in error for error in validation["errors"])

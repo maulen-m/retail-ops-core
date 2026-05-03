@@ -18,6 +18,8 @@ class ManifestError(RuntimeError):
 
 
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+KASPI_MAX_IMAGE_FILES_PER_CODE = 5
+KASPI_MAX_ZIP_BYTES = 100_000_000
 BASE_PRODUCT_KEYS = [
     "store",
     "brand",
@@ -52,6 +54,13 @@ VARIANT_REQUIRED_KEYS = [
     "external_token",
     "images",
     "sizes",
+]
+VARIANT_PRODUCT_OVERRIDE_KEYS = [
+    "base_cost_cny",
+    "base_cost_kzt",
+    "weight_kg",
+    "sell_price_kzt",
+    "stock_entered_kzt",
 ]
 
 
@@ -183,8 +192,10 @@ def validate_offer_package_layout(
             if not files:
                 errors.append(f"Image folder '{code}' is empty.")
                 continue
-            if len(files) > 5:
-                errors.append(f"Image folder '{code}' has {len(files)} files; Kaspi allows at most 5.")
+            if len(files) > KASPI_MAX_IMAGE_FILES_PER_CODE:
+                errors.append(
+                    f"Image folder '{code}' has {len(files)} files; Kaspi allows at most {KASPI_MAX_IMAGE_FILES_PER_CODE}."
+                )
             for file_path in files:
                 if file_path.suffix.lower() not in ALLOWED_IMAGE_SUFFIXES:
                     errors.append(f"Unsupported image suffix in '{file_path.name}'.")
@@ -194,6 +205,11 @@ def validate_offer_package_layout(
         if not zip_path.is_file():
             errors.append(f"ZIP file missing: {zip_path}")
         else:
+            zip_size_bytes = zip_path.stat().st_size
+            if zip_size_bytes > KASPI_MAX_ZIP_BYTES:
+                errors.append(
+                    f"ZIP size {zip_size_bytes} bytes exceeds Kaspi limit {KASPI_MAX_ZIP_BYTES} bytes (100 MB)."
+                )
             with zipfile.ZipFile(zip_path) as zf:
                 names = [name for name in zf.namelist() if not name.endswith("/")]
             if any(name.startswith("__MACOSX/") for name in names):
@@ -219,8 +235,10 @@ def validate_offer_package_layout(
                 code_files = [name for name in names if name.startswith(prefix)]
                 if not code_files:
                     errors.append(f"ZIP missing image folder contents for '{code}' under {prefix}.")
-                elif len(code_files) > 5:
-                    errors.append(f"ZIP folder {prefix} has {len(code_files)} files; Kaspi allows at most 5.")
+                elif len(code_files) > KASPI_MAX_IMAGE_FILES_PER_CODE:
+                    errors.append(
+                        f"ZIP folder {prefix} has {len(code_files)} files; Kaspi allows at most {KASPI_MAX_IMAGE_FILES_PER_CODE}."
+                    )
 
     return {
         "ok": not errors,
@@ -536,7 +554,8 @@ def _base_context(
     shared_code_ctx = dict(context)
     shared_code_ctx["size_label"] = first_size["size_label"]
     shared_code_ctx["numeric_size"] = first_size["numeric_size"]
-    context["shared_image_code"] = category["internal_article_pattern"].format_map(shared_code_ctx)
+    shared_code_pattern = str(category.get("shared_image_code_pattern") or category["internal_article_pattern"])
+    context["shared_image_code"] = shared_code_pattern.format_map(shared_code_ctx)
     return context
 
 
@@ -830,6 +849,7 @@ def build_workbook_ingest_payload(manifest: dict[str, Any], build_report: dict[s
     product = manifest["product"]
     workbook_cfg = manifest.get("workbook", {})
     entered_at = _midnight_now()
+    variant_cfg_by_slug = {str(variant["color_slug"]): variant for variant in _manifest_variants(manifest)}
 
     display_title = product["display_title"]
     candidate_color = str(workbook_cfg.get("candidate_color", "black"))
@@ -906,6 +926,12 @@ def build_workbook_ingest_payload(manifest: dict[str, Any], build_report: dict[s
                 kaspi_name_core = row["kaspi_name_core"]
                 color_label = row["color_label"]
                 color_kaspi = row["color_kaspi"]
+                variant_cfg = variant_cfg_by_slug.get(variant_slug, {})
+                sell_price_kzt = variant_cfg.get("sell_price_kzt", product["sell_price_kzt"])
+                stock_entered_kzt = variant_cfg.get("stock_entered_kzt", product["stock_entered_kzt"])
+                base_cost_cny = variant_cfg.get("base_cost_cny", product["base_cost_cny"])
+                base_cost_kzt = variant_cfg.get("base_cost_kzt", product["base_cost_kzt"])
+                weight_kg = variant_cfg.get("weight_kg", product["weight_kg"])
                 sku_id = f"{base_sku_key}_{size_label}"
                 offer_name = row["offer_name"]
 
@@ -922,8 +948,8 @@ def build_workbook_ingest_payload(manifest: dict[str, Any], build_report: dict[s
                         None,
                         row["external_sku"],
                         f"{kaspi_name_core}_{product['gender_rus']}_{numeric_size}_({short_code})_({product['base_model']})_({size_label})",
-                        product["sell_price_kzt"],
-                        product["stock_entered_kzt"],
+                        sell_price_kzt,
+                        stock_entered_kzt,
                         None,
                         entered_at,
                         None,
@@ -940,7 +966,7 @@ def build_workbook_ingest_payload(manifest: dict[str, Any], build_report: dict[s
                         product["gender"],
                         product["gender_rus"],
                         product["season"],
-                        product["base_cost_cny"],
+                        base_cost_cny,
                         None,
                     ]
                 )
@@ -1029,9 +1055,9 @@ def build_workbook_ingest_payload(manifest: dict[str, Any], build_report: dict[s
                             color_label,
                             product["gender"],
                             product["season"],
-                            product["base_cost_cny"],
-                            product["base_cost_kzt"],
-                            product["weight_kg"],
+                            base_cost_cny,
+                            base_cost_kzt,
+                            weight_kg,
                             product["vendor_id"],
                             None,
                             None,
