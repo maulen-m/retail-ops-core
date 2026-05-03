@@ -8,7 +8,8 @@
 ## 1. Overview
 
 This document defines the authoritative **Fact_Sales** and **Fact_Sales_Daily** layouts
-used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in v8.
+used by the Excel UI and Python/DB pipeline. Any formula deviation must be reflected
+in `Master_Inventory_Rules_v9.md` first, then here and in code/tests.
 
 **Source of truth:** `inventory/Master_Inventory_Rules_v9.md`
 
@@ -33,7 +34,7 @@ used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in
 | J | Delivery_fee | Calc | From `Dim_Delivery_Fees` matrix |
 | K | Net_rev_unit | Calc | `(G*(1-0.125)-J)*(1-0.04)` |
 | L | Line_NetRev | Calc | `K*F` |
-| M | COGS_unit | Calc | See v8 (FX + cargo + base cost) |
+| M | COGS_unit | Calc | See `Master_Inventory_Rules_v9.md` (FX + cargo + base cost) |
 | N | COGS_line | Calc | `M*F` |
 | O | Profit_unit | Calc | `K-M` |
 | P | Profit_line | Calc | `O*F` |
@@ -63,10 +64,26 @@ used by the Excel UI and Python/DB pipeline. Any deviations must be reflected in
 
 ## 4. Notes
 
-- Delivery fees must use the **matrix lookup** (v8). No legacy tiers.
+- Delivery fees must use the **matrix lookup** from `Master_Inventory_Rules_v9.md`. No legacy tiers.
 - VAT = **0.04** is enforced in Net_rev_unit.
 - All formulas follow `Master_Inventory_Rules_v9.md`.
 - Kaspi `Артикул` embeds `sku_key` at the beginning. Parsers must strip trailing size/id tokens and use the prefix as `SKU_key` (and `SKU_ID = SKU_key + size` when size is present).
+- ACMEWEAR child-bundle compact articles (`SUIT-*` / `LINE-*`, for example `SUIT-31-TS-ST-3XL-54`) are canonical article-map inputs, not raw text fallbacks. Their `Kaspi_name_core` is the owner-facing bundle core from `dim_kaspi_article_map` (for example `3в1_Черный_Футболка_+Сумка`), while compact `SKU_key` values such as `SUIT-31-TS` remain the parser/output key unless a future migration explicitly changes the SKU namespace.
+
+### 4.1 ACMEWEAR child-bundle article-map contract
+
+The May 2026 ACMEWEAR child-bundle launch introduced eight ST child groups for
+LINE61 and LINE51. All platform articles for these groups must be present in
+`dim_kaspi_article_map` before daily order processing, Google Ops Board publish,
+waybill grouping, or sales replay treats them as resolved.
+
+Required behavior:
+- `dim_kaspi_article_map.kaspi_article` stores the platform merchant article, such as `SUIT-31-TS-ST-3XL-54`.
+- `dim_kaspi_article_map.sku_key` stores the compact child offer key, such as `SUIT-31-TS`, matching the current parser contract.
+- `dim_kaspi_article_map.sku_id` stores `sku_key + "_" + MY_SIZE`, such as `SUIT-31-TS_3XL`; duplicated platform tokens like `XL-48` and `XL-50` both resolve to internal `XL`.
+- `dim_kaspi_article_map.kaspi_name_core` stores the operator-facing bundle core, such as `3в1_Черный_Футболка_+Сумка`, never the generic `Спортивный_костюм_ACMEWEAR`.
+- Articles currently archived or no-stock on Kaspi must remain mapped for historical and overdue order parsing; article-map `active_flag=1` means "identity mapping is active", not "offer has sellable stock".
+- Campaign attribution for child-bundle orders before campaign creation time remains blocked unless direct click/campaign evidence exists.
 
 ---
 

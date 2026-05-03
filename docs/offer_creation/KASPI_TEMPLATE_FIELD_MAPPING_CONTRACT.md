@@ -26,6 +26,7 @@ This contract is category-aware and uses LINE51 as the worked example.
   - `images/` lowercase at ZIP root
   - `images/<image_code>/1.png ... 5.png`
   - no `__MACOSX`, no nested parent directory
+  - total ZIP size under `100 MB`
 8. Store live workflow files under:
 `~/Docs/Business2/Content/Content_db_1/Kaspi/Product_offers/<PRODUCT>/<COLOR>/`
 9. Prefer manifest-driven build:
@@ -106,6 +107,8 @@ For each row:
 `images/<image_code>/1.png`
 3. Keep extra image sets outside upload ZIP (separate operator archive).
 4. The `<image_code>` folder name must match the value written in `Код изображений`.
+5. For paired color-variant onboarding, both variants must be uploaded in the same XLSM/ZIP container for that family-category.
+6. In paired packages, each color variant keeps its own `images/<image_code>/` folder, but the combined ZIP must still stay under `100 MB`.
 
 ## Backups and Audit
 1. Keep timestamped XLSM backup before edits.

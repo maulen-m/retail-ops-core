@@ -128,6 +128,33 @@ def test_validate_offer_template_passes_for_line51_mapping(tmp_path: Path) -> No
     assert report["value_dict_scope"] == "skipped"
 
 
+def test_validate_offer_template_passes_for_compact_bundle_token(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsm_path = tmp_path / "offer.xlsm"
+    _setup_db(db_path)
+
+    _insert_dim_sku(db_path, ["SUIT-21-LS"])
+    _insert_article_map(db_path, "ACMEWEAR", "SUIT-21-LS-ST-XL-48", "SUIT-21-LS")
+    _build_offer_xlsm(
+        xlsm_path,
+        merchant_sku="SUIT-21-LS-ST-XL-48",
+        manufacturer_code="SUIT-21-LS-ST-XL-48",
+        color="черный",
+        collection="Весна-Лето 2026",
+    )
+
+    report = validate_kaspi_offer_template(
+        xlsm_path=xlsm_path,
+        db_path=db_path,
+        category="men-sport-suits",
+        store_code="ACMEWEAR",
+        mode="fast",
+    )
+
+    assert report["ok"] is True
+    assert report["error_count"] == 0
+
+
 def test_validate_offer_template_fails_on_model_mismatch(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     xlsm_path = tmp_path / "offer.xlsm"

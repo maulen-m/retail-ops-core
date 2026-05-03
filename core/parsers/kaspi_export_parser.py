@@ -31,6 +31,11 @@ from core.utils.sku_map import lookup_sku_from_offer
 
 # Path to column mapping config
 CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "kaspi_column_map.yaml"
+COMPACT_BUNDLE_ARTICLE_RE = re.compile(
+    r"^((?:SUIT-\d{2}-(?:LS|TS|TK))|(?:LINE-\d{2}-(?:LS|TS)))"
+    r"-(ST|TRM)-(S|M|L|XL|2XL|3XL|4XL)-(\d{2})$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -289,6 +294,15 @@ def _extract_sku_parts(article: str, kaspi_name: str = None) -> dict:
 
     article_raw = _strip_article_prefix(article)
     article = article_raw.upper()
+
+    compact_bundle_match = COMPACT_BUNDLE_ARTICLE_RE.match(article)
+    if compact_bundle_match:
+        sku_key = compact_bundle_match.group(1).upper()
+        my_size = compact_bundle_match.group(3).upper()
+        result['sku_key'] = sku_key
+        result['my_size'] = my_size
+        result['sku_id'] = f"{sku_key}_{my_size}"
+        return result
 
     # Extract size first
     my_size = _extract_size_from_article(article)

@@ -35,6 +35,11 @@ MODEL_TOKEN_STOPWORDS = {
 }
 
 VALIDATION_MODES = {"fast", "balanced", "strict"}
+COMPACT_BUNDLE_TOKEN_RE = re.compile(
+    r"^((?:SUIT-\d{2}-(?:LS|TS|TK))|(?:LINE-\d{2}-(?:LS|TS)))"
+    r"(?:-(?:ST|TRM)(?:-(?:S|M|L|XL|2XL|3XL|4XL)-\d{2})?)?$",
+    re.IGNORECASE,
+)
 
 OWNED_REQUIRED_DISPLAYS_BASE = {
     "Артикул",
@@ -154,6 +159,9 @@ def _extract_model_token(raw: str) -> str | None:
     text = _norm_token(raw)
     if not text:
         return None
+    compact_bundle = COMPACT_BUNDLE_TOKEN_RE.match(text)
+    if compact_bundle:
+        return compact_bundle.group(1).upper()
     matches = re.findall(r"[A-Z]+-?\d+[A-Z0-9-]*", text)
     for token in reversed(matches):
         cleaned = token.strip("-")

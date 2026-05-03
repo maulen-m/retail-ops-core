@@ -3,7 +3,7 @@ Kaspi ActiveOrders Excel parser for Project 3.
 
 Parses Kaspi's Russian-column Excel exports and maps to our DB schema.
 
-Column Mapping (from Sales_Data_Model_V15.md):
+Column mapping (from Sales_Data_Model_V16.md):
     Russian (ActiveOrders)         →  DB Column (fact_sales_raw)
     --------------------------         -------------------------
     № заказа                       →  order_id
@@ -90,6 +90,11 @@ ARTICLE_ALIAS_TOKENS = {"K-O", "KO", "TRM"}
 
 ACMEWEAR_LINE61_ARTICLE_RE = re.compile(r"^OF_SUIT-?61_BLK(?:_(.+))?$", re.IGNORECASE)
 LOSINA_ALIAS_RE = re.compile(r"^LOSINA\s+(BLACK|WHITE)\b", re.IGNORECASE)
+COMPACT_BUNDLE_ARTICLE_RE = re.compile(
+    r"^((?:SUIT-\d{2}-(?:LS|TS|TK))|(?:LINE-\d{2}-(?:LS|TS)))"
+    r"-(ST|TRM)-(S|M|L|XL|2XL|3XL|4XL)-(\d{2})$",
+    re.IGNORECASE,
+)
 
 
 def _map_acmewear_line61_size(size_tokens: list[str]) -> Optional[str]:
@@ -201,6 +206,16 @@ def extract_sku_from_article(
     article_raw = _strip_article_prefix(kaspi_article)
     article = article_raw.upper()
     offer_text = str(kaspi_offer or "").upper()
+
+    compact_bundle_match = COMPACT_BUNDLE_ARTICLE_RE.match(article)
+    if compact_bundle_match:
+        sku_key = compact_bundle_match.group(1).upper()
+        my_size = compact_bundle_match.group(3).upper()
+        result["product_type"] = "CL"
+        result["sku_key"] = sku_key
+        result["my_size"] = my_size
+        result["sku_id"] = f"{sku_key}_{my_size}"
+        return result
 
     # Special-case: ACMEWEAR line61 merchant article aliases.
     # Keep canonical sku_key stable while allowing new Kaspi offer ids.
