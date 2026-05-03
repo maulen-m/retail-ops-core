@@ -434,15 +434,35 @@ def rows_to_matrix(headers: list[str], rows: list[dict[str, Any]]) -> list[list[
     return matrix
 
 
+def _resolve_header_mapping(
+    expected_headers: list[str],
+    observed_row: list[Any],
+) -> tuple[bool, list[int], list[int]]:
+    observed = [str(cell or "").strip() for cell in observed_row]
+    if observed[: len(expected_headers)] == expected_headers:
+        return True, list(range(len(expected_headers))), []
+
+    nonblank_headers = [(idx, value) for idx, value in enumerate(observed) if value]
+    if [value for _, value in nonblank_headers] == expected_headers:
+        blank_columns = [idx + 1 for idx, value in enumerate(observed) if not value]
+        return True, [idx for idx, _ in nonblank_headers], blank_columns
+
+    return False, list(range(len(expected_headers))), []
+
+
 def extract_rows_from_matrix(headers: list[str], matrix: list[list[Any]] | None) -> list[dict[str, Any]]:
     if not matrix:
         return []
-    data_rows = matrix[1:] if matrix and list(matrix[0][: len(headers)]) == headers else matrix
+    has_header, header_indices, _blank_columns = _resolve_header_mapping(headers, matrix[0])
+    data_rows = matrix[1:] if has_header else matrix
     rows: list[dict[str, Any]] = []
     for values in data_rows:
         if not any(str(cell or "").strip() for cell in values):
             continue
-        row = {header: values[idx] if idx < len(values) else "" for idx, header in enumerate(headers)}
+        row = {
+            header: values[source_idx] if source_idx < len(values) else ""
+            for header, source_idx in zip(headers, header_indices)
+        }
         rows.append(row)
     return rows
 
@@ -453,13 +473,16 @@ def extract_rows_with_positions_from_matrix(
 ) -> list[dict[str, Any]]:
     if not matrix:
         return []
-    has_header = bool(matrix) and list(matrix[0][: len(headers)]) == headers
+    has_header, header_indices, _blank_columns = _resolve_header_mapping(headers, matrix[0])
     start_index = 1 if has_header else 0
     rows: list[dict[str, Any]] = []
     for sheet_row, values in enumerate(matrix[start_index:], start=start_index + 1):
         if not any(str(cell or "").strip() for cell in values):
             continue
-        row = {header: values[idx] if idx < len(values) else "" for idx, header in enumerate(headers)}
+        row = {
+            header: values[source_idx] if source_idx < len(values) else ""
+            for header, source_idx in zip(headers, header_indices)
+        }
         rows.append({"sheet_row": sheet_row, "row": row})
     return rows
 
@@ -501,11 +524,12 @@ def validate_contract_layout(
     for tab_name, tab_contract in contract.tabs.items():
         observed = [str(cell or "").strip() for cell in header_rows.get(tab_name, [])]
         expected = tab_contract.headers
-        header_ok = observed[: len(expected)] == expected
+        header_ok, _header_indices, blank_columns = _resolve_header_mapping(expected, observed)
         tab_reports[tab_name] = {
             "header_ok": header_ok,
             "expected_headers": expected,
             "observed_headers": observed,
+            "ignored_blank_header_columns": blank_columns,
         }
         ok = ok and header_ok
     return {

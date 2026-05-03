@@ -8,6 +8,8 @@ import pytest
 from core.integrations.google_ops_board import (
     build_tab_reorder_requests,
     build_tab_ui_requests,
+    extract_rows_from_matrix,
+    extract_rows_with_positions_from_matrix,
     load_ops_board_contract,
     merge_rows_preserving_editables,
     rows_to_matrix,
@@ -516,6 +518,69 @@ def test_validate_contract_layout_detects_collapsed_header_row():
     assert report["ok"] is False
     assert report["tabs"]["README"]["header_ok"] is False
     assert report["tabs"]["README"]["expected_headers"] == ["field", "value", "notes"]
+
+
+def test_validate_contract_layout_tolerates_blank_spacer_column():
+    contract = load_ops_board_contract()
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+    live_headers = {
+        tab_name: tab_contract.headers
+        for tab_name, tab_contract in contract.tabs.items()
+    }
+    live_headers["SalesRaw_Today"] = sales_headers[:7] + [""] + sales_headers[7:]
+
+    report = validate_contract_layout(
+        contract=contract,
+        sheet_names=list(live_headers),
+        header_rows=live_headers,
+    )
+
+    assert report["ok"] is True
+    assert report["tabs"]["SalesRaw_Today"]["header_ok"] is True
+    assert report["tabs"]["SalesRaw_Today"]["ignored_blank_header_columns"] == [8]
+
+
+def test_extract_rows_from_matrix_maps_rows_with_blank_spacer_header_column():
+    headers = ["Status", "Kaspi_name_core", "OrderID", "MY_SIZE", "PROBABLE_SIZE"]
+    matrix = [
+        ["Status", "Kaspi_name_core", "", "OrderID", "MY_SIZE", "PROBABLE_SIZE"],
+        ["TODAY", "Принт_5в1_черный", "", "905583266", "L", "L"],
+    ]
+
+    rows = extract_rows_from_matrix(headers, matrix)
+
+    assert rows == [
+        {
+            "Status": "TODAY",
+            "Kaspi_name_core": "Принт_5в1_черный",
+            "OrderID": "905583266",
+            "MY_SIZE": "L",
+            "PROBABLE_SIZE": "L",
+        }
+    ]
+
+
+def test_extract_rows_with_positions_maps_rows_with_blank_spacer_header_column():
+    headers = ["Status", "Kaspi_name_core", "OrderID", "MY_SIZE", "PROBABLE_SIZE"]
+    matrix = [
+        ["Status", "Kaspi_name_core", "", "OrderID", "MY_SIZE", "PROBABLE_SIZE"],
+        ["TODAY", "Принт_5в1_черный", "", "905583266", "L", "L"],
+    ]
+
+    rows = extract_rows_with_positions_from_matrix(headers, matrix)
+
+    assert rows == [
+        {
+            "sheet_row": 2,
+            "row": {
+                "Status": "TODAY",
+                "Kaspi_name_core": "Принт_5в1_черный",
+                "OrderID": "905583266",
+                "MY_SIZE": "L",
+                "PROBABLE_SIZE": "L",
+            },
+        }
+    ]
 
 
 def test_invalid_layout_tabs_returns_only_broken_tabs():

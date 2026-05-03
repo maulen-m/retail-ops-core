@@ -5,6 +5,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,8 @@ FALLBACK_AUTO_ZERO_FAIL = "auto-zero-fail"
 FALLBACK_MANUAL = "manual"
 FALLBACK_DISABLED = "disabled"
 FALLBACK_CHOICES = [FALLBACK_AUTO_ZERO_FAIL, FALLBACK_MANUAL, FALLBACK_DISABLED]
+LEDGER_COMPLETION_RECHECK_ATTEMPTS = 5
+LEDGER_COMPLETION_RECHECK_SECONDS = 1.0
 
 
 def _now_iso() -> str:
@@ -89,6 +92,38 @@ def run_whatsapp_fallback(
     }
 
 
+def _telegram_completion_state_after_sender(
+    *,
+    today_folder: Path,
+    expected_date: date,
+    telegram_report: dict[str, Any],
+) -> dict[str, Any]:
+    completion = delivery_completion_state(
+        today_folder=today_folder,
+        target_date=expected_date,
+    )
+    if completion.get("completed"):
+        return completion
+
+    confirmed_total = int(telegram_report.get("confirmed_total") or 0)
+    total = int(telegram_report.get("total") or 0)
+    if not total or confirmed_total < total:
+        return completion
+
+    # The sender writes the last ledger state and then returns its summary. On
+    # slow file systems, the wrapper can observe the previous ledger state for a
+    # moment even though the sender already confirmed every bundle.
+    for _attempt in range(LEDGER_COMPLETION_RECHECK_ATTEMPTS):
+        time.sleep(LEDGER_COMPLETION_RECHECK_SECONDS)
+        completion = delivery_completion_state(
+            today_folder=today_folder,
+            target_date=expected_date,
+        )
+        if completion.get("completed"):
+            return completion
+    return completion
+
+
 def run_delivery(
     *,
     today_folder: Path = TODAY_FOLDER,
@@ -138,9 +173,10 @@ def run_delivery(
     )
     report["telegram_report"] = telegram_report
     if telegram_report.get("ok"):
-        completion = delivery_completion_state(
+        completion = _telegram_completion_state_after_sender(
             today_folder=today_folder,
-            target_date=expected_date,
+            expected_date=expected_date,
+            telegram_report=telegram_report,
         )
         report["delivery_completion"] = completion
         if not completion.get("completed") or completion.get("channel") != "telegram":

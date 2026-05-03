@@ -78,11 +78,17 @@ def iter_sku_family_candidates(sku_key: Any) -> list[str]:
     min_parts = 5
     candidates: list[str] = []
     seen: set[str] = set()
-    for end in range(len(parts), min_parts - 1, -1):
-        candidate = "_".join(parts[:end]).strip()
+
+    def add_candidate(value: str) -> None:
+        candidate = value.strip()
         if candidate and candidate not in seen:
             candidates.append(candidate)
             seen.add(candidate)
+
+    add_candidate(normalized)
+    for end in range(len(parts) - 1, min_parts - 1, -1):
+        candidate = "_".join(parts[:end]).strip()
+        add_candidate(candidate)
     return candidates
 
 

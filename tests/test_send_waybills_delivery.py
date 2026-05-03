@@ -69,6 +69,45 @@ def test_delivery_blocks_telegram_ok_when_ledger_is_incomplete(monkeypatch, tmp_
     assert whatsapp_calls == []
 
 
+def test_delivery_rechecks_when_telegram_report_is_complete_but_ledger_lags(monkeypatch, tmp_path: Path):
+    states = [
+        {"completed": False, "channel": "telegram", "status": "TELEGRAM_LEDGER_INCOMPLETE"},
+        {"completed": True, "channel": "telegram", "status": "TELEGRAM_CONFIRMED"},
+    ]
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(
+        delivery_mod,
+        "run_telegram_sender",
+        lambda **_kwargs: {
+            "ok": True,
+            "total": 24,
+            "sent": 24,
+            "failed": 0,
+            "confirmed_total": 24,
+            "fallback_allowed": False,
+        },
+    )
+    monkeypatch.setattr(
+        delivery_mod,
+        "delivery_completion_state",
+        lambda **_kwargs: states.pop(0),
+    )
+    monkeypatch.setattr(delivery_mod.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    report = delivery_mod.run_delivery(
+        today_folder=tmp_path,
+        expected_target_date=date(2026, 5, 3),
+        telegram_token="token-1",
+        telegram_chat_id="-1001",
+    )
+
+    assert report["ok"] is True
+    assert report["delivery_channel"] == "telegram"
+    assert report["delivery_completion"]["status"] == "TELEGRAM_CONFIRMED"
+    assert sleep_calls == [1.0]
+
+
 def test_delivery_auto_falls_back_to_whatsapp_only_when_telegram_sent_zero(monkeypatch, tmp_path: Path):
     whatsapp_calls: list[dict] = []
 
