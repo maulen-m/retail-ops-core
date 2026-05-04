@@ -128,6 +128,8 @@ def load_active_kaspi_name_core_maps(
 
     by_store_offer: dict[tuple[str, str], str] = {}
     by_sku_key: dict[str, str] = {}
+    store_offer_cores: dict[tuple[str, str], set[str]] = {}
+    store_offer_latest_core: dict[tuple[str, str], str] = {}
     for row in rows:
         store_code = normalize_store_key(row["store_code"])
         offer_key = normalize_offer_key(row["kaspi_offer_name"])
@@ -145,7 +147,14 @@ def load_active_kaspi_name_core_maps(
             and offer_key
             and (not filtered_store_offer_pairs or store_offer_key in filtered_store_offer_pairs)
         ):
-            by_store_offer.setdefault(store_offer_key, kaspi_core)
+            store_offer_latest_core.setdefault(store_offer_key, kaspi_core)
+            store_offer_cores.setdefault(store_offer_key, set()).add(kaspi_core)
+
+    by_store_offer = {
+        store_offer_key: store_offer_latest_core[store_offer_key]
+        for store_offer_key, cores in store_offer_cores.items()
+        if len(cores) == 1
+    }
 
     return KaspiNameCoreMaps(by_store_offer=by_store_offer, by_sku_key=by_sku_key)
 
@@ -167,12 +176,6 @@ def resolve_kaspi_name_core(
         return KaspiNameCoreResolution(core=core, source=preferred_source)
 
     maps = maps or KaspiNameCoreMaps(by_store_offer={}, by_sku_key={})
-    store_offer_key = (normalize_store_key(store_code), normalize_offer_key(kaspi_offer_name))
-    if store_offer_key[0] and store_offer_key[1]:
-        exact_store_offer = maps.by_store_offer.get(store_offer_key)
-        if exact_store_offer:
-            return KaspiNameCoreResolution(core=exact_store_offer, source="store_offer")
-
     sku_candidates = iter_sku_family_candidates(sku_key)
     if sku_candidates:
         exact_sku = maps.by_sku_key.get(sku_candidates[0])
@@ -182,6 +185,12 @@ def resolve_kaspi_name_core(
             family_core = maps.by_sku_key.get(candidate)
             if family_core:
                 return KaspiNameCoreResolution(core=family_core, source="sku_family", matched_sku_key=candidate)
+
+    store_offer_key = (normalize_store_key(store_code), normalize_offer_key(kaspi_offer_name))
+    if store_offer_key[0] and store_offer_key[1]:
+        exact_store_offer = maps.by_store_offer.get(store_offer_key)
+        if exact_store_offer:
+            return KaspiNameCoreResolution(core=exact_store_offer, source="store_offer")
 
     if not allow_unsafe_fallback:
         return KaspiNameCoreResolution(core="", source="unresolved")
