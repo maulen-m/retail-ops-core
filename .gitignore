@@ -63,6 +63,7 @@ logs.pre_migration_*/
 runtime/state/waybill_telegram_allowed_users.txt
 runtime/state/waybill_telegram_control_bot.json
 runtime/api_ledger/kaspi_api_*.jsonl
+runtime/playwright/*session*.json
 
 # Exports (regeneratable)
 exports/
