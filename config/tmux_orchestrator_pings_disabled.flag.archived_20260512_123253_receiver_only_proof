@@ -1,0 +1,6 @@
+All tmux completion pings are disabled for Autonomous_business after repeated
+wrong-pane reports, including receiver-only pings to inert panes.
+
+Use monitor-only orchestration until a separate non-production dummy-run proof
+demonstrates reliable completion routing. Agent closeout files and completion
+marker JSON are the authority.

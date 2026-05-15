@@ -1,0 +1,166 @@
+{
+  "schema": "autonomous_business.business_decision_system_goal_sequence.v1",
+  "generated_at_local": "2026-05-11T14:17:31+0500",
+  "status": "MVOS_FASTTRACK_DAILY_SURVIVAL_BRIEF_V1_GREEN_REVIEW_ONLY",
+  "owner_fasttrack_decision": {
+    "token": "OWNER_FASTTRACK_APPROVED_NO_ARTIFICIAL_WAIT",
+    "meaning": "The 10-day MVOS schedule is a maximum checkpoint ladder, not a waiting rule. If gates clear earlier, proceed earlier without artificial calendar delay.",
+    "does_not_authorize": [
+      "production_db_write",
+      "protected_workbook_write",
+      "web_automation_write",
+      "browser_login_automation",
+      "credential_or_session_export",
+      "scheduler_or_launchagent_mutation",
+      "owner_publication",
+      "owner_approval_request",
+      "external_write",
+      "ad_spend",
+      "cash_movement",
+      "supplier_payment",
+      "po_commitment",
+      "price_change",
+      "stock_change"
+    ]
+  },
+  "codecaptain_answers": {
+    "proscope_strategy_answer": {
+      "path": "~/Docs/Oracle/Autonomous_business/2026-05-11/115100_TASK-000_codecaptain-proscope-full-repo-state-analysis/Answer/Code Captain_11.05.2026_12_36_52.md",
+      "decision_token": "YELLOW_REFOCUS_AND_AMEND_SEQUENCE_BEFORE_NEXT_LANE",
+      "interpretation": "Refocus Option C into a 10-day Minimum Viable Operating System path centered on one daily survival operating packet."
+    },
+    "agent758_ads_proof_answer": {
+      "path": "~/Docs/Oracle/Autonomous_business/2026-05-11/123737_TASK-000_codecaptain-agent758-copied-temp-ads-proof-review/answer/Code Captain_11.05.2026_14_12_21_pt-2.md",
+      "decision_token": "GREEN_ACCEPT_AGENT758_COPIED_TEMP_ADS_PROOF_FOR_NEXT_REVIEW_ONLY_SEQUENCE",
+      "interpretation": "Agent758 is accepted for copied/temp review-only sequence use; it does not authorize production or business-action authority."
+    }
+  },
+  "current_left_off_point": {
+    "option_c_lineage": "continued_as_mvos_fasttrack",
+    "current_phase": "phase_b_daily_survival_brief_v1_green_review_only",
+    "next_phase": "phase_c_operating_rehearsal_after_daily_brief_v1",
+    "business_decision_grade_0_to_10": 6.8,
+    "authority": "review_only"
+  },
+  "ads_status_labels": [
+    "ACMEWEAR_ADS_SOURCE_FRESH_IN_COPIED_TEMP_REPLAY",
+    "STOREB_ADS_SOURCE_GAP_VISIBLE_NOT_ZERO_SPEND",
+    "ADS_SOURCE_STALE_CLEARED_FOR_ACMEWEAR_COPIED_TEMP_REPLAY_ONLY"
+  ],
+  "warning_cohorts": {
+    "product_identity_quarantine": 23,
+    "header_only_source_gap": 252,
+    "visibility_required": true,
+    "productize_or_hide_allowed": false
+  },
+  "phases": [
+    {
+      "phase": "A",
+      "name": "MVOS charter and integration record",
+      "status": "complete",
+      "fasttrack_rule": "complete_now_no_calendar_wait",
+      "outputs": [
+        "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_INTEGRATION_RECORD_20260511_141731.md",
+        "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/10_DAY_MVOS_FASTTRACK_CHARTER_20260511_141731.md"
+      ]
+    },
+    {
+      "phase": "B",
+      "name": "Daily Survival Brief v1",
+      "status": "complete_green_review_only",
+      "fasttrack_rule": "start_as_soon_as_parallel_readonly_reports_are_available",
+      "parallelizable": true,
+      "launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_AGENT760_764_LAUNCH_20260511_142845.md",
+      "tmux_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_142833/orchestration_manifest.json",
+      "required_inputs": [
+        "cash_risk_readonly_report",
+        "stock_order_risk_readonly_report",
+        "ads_warning_status_readonly_report",
+        "source_freshness_owner_publication_boundary_report"
+      ]
+    },
+    {
+      "phase": "C",
+      "name": "Operating rehearsal",
+      "status": "pending_daily_brief_v1",
+      "fasttrack_rule": "do_not_wait_for_day_labels_if_validate_only_rehearsal_can_run_safely",
+      "parallelizable": true
+    },
+    {
+      "phase": "D",
+      "name": "Owner-publication readiness delta",
+      "status": "pending_stable_daily_brief",
+      "fasttrack_rule": "prepare_as_soon_as_brief_wording_and_blocked_decisions_are stable",
+      "parallelizable": true
+    },
+    {
+      "phase": "E",
+      "name": "Scheduler design-only",
+      "status": "can_run_readonly_in_parallel",
+      "fasttrack_rule": "design_early_but_do_not_install_or_enable",
+      "parallelizable": true
+    },
+    {
+      "phase": "F",
+      "name": "Survival review",
+      "status": "pending_evidence",
+      "fasttrack_rule": "run_immediately_after_sufficient_rehearsal_evidence",
+      "parallelizable": false
+    }
+  ],
+  "parallel_execution": {
+    "agent_count_cap": null,
+    "read_only_agents_unlimited": true,
+    "write_capable_agents_per_wave": 1,
+    "initial_starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/MVOS_FASTTRACK_STARTERS_20260511_141731",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_ORCHESTRATOR_HANDOFF_20260511_141731.md",
+    "agent760_764_launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_AGENT760_764_LAUNCH_20260511_142845.md",
+    "agent760_764_tmux_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_142833/orchestration_manifest.json",
+    "agent759_launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_AGENT759_LAUNCH_20260511_145109.md",
+    "agent759_tmux_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_145109/orchestration_manifest.json",
+    "agent759_closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/mvos_fasttrack_20260511_141731_agent759_daily_survival_brief_writer_closeout.md",
+    "daily_survival_brief_v1": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/DAILY_SURVIVAL_BRIEF_V1_20260511_141731.md",
+    "fresh_window_launch_attempt": {
+      "status": "failed_before_prompt",
+      "error": "create window failed: fork failed: Too many open files",
+      "recovery": "reused_idle_codex_panes_monitor_only"
+    },
+    "initial_parallel_agents": [
+      "760_cash_risk_readonly",
+      "761_stock_order_risk_readonly",
+      "762_ads_warning_status_readonly",
+      "763_source_freshness_owner_publication_boundary_readonly",
+      "764_scheduler_design_readonly"
+    ],
+    "initial_parallel_agent_states": {
+      "760": "GREEN_closeout_present",
+      "761": "GREEN_closeout_present",
+      "762": "GREEN_closeout_present",
+      "763": "GREEN_closeout_present",
+      "764": "GREEN_closeout_present"
+    },
+    "serialized_writer_agent": "759_daily_survival_brief_writer_after_760_761_762_763",
+    "serialized_writer_agent_state": "GREEN_closeout_present"
+  },
+  "still_blocked": [
+    "production_db_write",
+    "protected_workbook_write",
+    "web_automation_write",
+    "browser_login_automation",
+    "credential_or_session_export",
+    "scheduler_or_launchagent_mutation",
+    "owner_publication",
+    "owner_approval_request",
+    "external_write",
+    "ad_spend",
+    "cash_movement",
+    "supplier_payment",
+    "po_commitment",
+    "price_change",
+    "stock_change",
+    "treating_acmewear_ads_freshness_as_storeb_freshness",
+    "treating_storeb_absence_as_zero_spend",
+    "treating_copied_temp_replay_as_production_truth",
+    "hiding_or_productizing_23_252_warning_cohorts"
+  ]
+}

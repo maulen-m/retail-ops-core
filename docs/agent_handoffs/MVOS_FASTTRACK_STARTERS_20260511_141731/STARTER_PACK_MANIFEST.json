@@ -1,0 +1,46 @@
+{
+  "schema": "autonomous_business.mvos_fasttrack_starter_pack.v1",
+  "generated_at_local": "2026-05-11T14:17:31+0500",
+  "status": "MVOS_FASTTRACK_DAILY_SURVIVAL_BRIEF_V1_GREEN_REVIEW_ONLY",
+  "repo": "~/Docs/Autonomous_business",
+  "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_ORCHESTRATOR_HANDOFF_20260511_141731.md",
+  "integration_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_INTEGRATION_RECORD_20260511_141731.md",
+  "charter": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/10_DAY_MVOS_FASTTRACK_CHARTER_20260511_141731.md",
+  "phase_map": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/business_decision_system_goal_sequence_mvos_fasttrack_20260511_141731.json",
+  "parallel_root_agents": [
+    "760",
+    "761",
+    "762",
+    "763",
+    "764"
+  ],
+  "launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_AGENT760_764_LAUNCH_20260511_142845.md",
+  "tmux_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_142833/orchestration_manifest.json",
+  "fresh_window_launch_attempt": {
+    "status": "failed_before_prompt",
+    "error": "create window failed: fork failed: Too many open files",
+    "recovery": "reused_idle_codex_panes_monitor_only"
+  },
+  "parallel_root_agent_states": {
+    "760": "GREEN_closeout_present",
+    "761": "GREEN_closeout_present",
+    "762": "GREEN_closeout_present",
+    "763": "GREEN_closeout_present",
+    "764": "GREEN_closeout_present"
+  },
+  "serialized_writer_agent": "759",
+  "serialized_writer_agent_state": "GREEN_closeout_present",
+  "serialized_writer_launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_AGENT759_LAUNCH_20260511_145109.md",
+  "serialized_writer_tmux_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_145109/orchestration_manifest.json",
+  "serialized_writer_closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/mvos_fasttrack_20260511_141731_agent759_daily_survival_brief_writer_closeout.md",
+  "daily_survival_brief_v1": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/DAILY_SURVIVAL_BRIEF_V1_20260511_141731.md",
+  "writer_dependencies": [
+    "760",
+    "761",
+    "762",
+    "763"
+  ],
+  "agent_count_cap": null,
+  "read_only_agents_unlimited": true,
+  "orchestrator_ping_mode": "monitor-only"
+}

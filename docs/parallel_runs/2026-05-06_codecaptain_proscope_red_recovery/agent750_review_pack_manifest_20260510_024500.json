@@ -1,0 +1,146 @@
+{
+  "answer_dir": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/Answer",
+  "answer_dir_info": {
+    "allowed_entries": [
+      "Code_Captain_10.05.2026_12_35_59.md",
+      "README_SAVE_CODECAPTAIN_ANSWER_HERE.md"
+    ],
+    "answer_count": 1,
+    "entries": [
+      "Code_Captain_10.05.2026_12_35_59.md",
+      "README_SAVE_CODECAPTAIN_ANSWER_HERE.md"
+    ],
+    "exists": true,
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/Answer",
+    "unexpected_entries": []
+  },
+  "answer_files": [
+    "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/Answer/Code_Captain_10.05.2026_12_35_59.md"
+  ],
+  "answer_readme": {
+    "exists": true,
+    "line_count": 173,
+    "missing_required_terms": [],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/Answer/README_SAVE_CODECAPTAIN_ANSWER_HERE.md",
+    "sha256": "8b4749c4be7eaf56f3cdff5c22c5b132d1dea858ca7d86c2e1e54beb2c5bb6ac",
+    "size_bytes": 7501
+  },
+  "answer_readme_pointer_error": null,
+  "answer_readme_pointer_terms": [
+    "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ACTIVE_OBJECTIVE_COMPLETION_AUDIT_20260510_090511.md",
+    "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOPLINE_TRIAGE_NEXT_BEST_STEP_AGENT750_20260510_124512.md"
+  ],
+  "answer_state": "codecaptain_answer_present",
+  "archive_csv": {
+    "exists": true,
+    "header": [
+      "pack_id",
+      "store_code",
+      "source_file",
+      "source_file_sha256",
+      "source_file_format",
+      "source_row_number",
+      "order_id",
+      "created_at",
+      "status_change_at",
+      "status_raw",
+      "status_internal",
+      "quantity",
+      "net_rev_kzt",
+      "warehouse_code",
+      "article",
+      "kaspi_offer_name",
+      "seller_system_name",
+      "category",
+      "pickup_or_delivery_address",
+      "cancel_reason",
+      "payment_mode",
+      "delivery_mode",
+      "courier_service",
+      "planned_courier_at",
+      "delivery_fee_buyer_kzt",
+      "delivery_fee_seller_kzt",
+      "transaction_signature_required",
+      "status_change_required",
+      "status_change_missing",
+      "row_fingerprint",
+      "window_since",
+      "window_until"
+    ],
+    "line_count": 20755,
+    "missing_required_columns": [],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "required_columns_present": true,
+    "row_count": 20754,
+    "sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "size_bytes": 17197283
+  },
+  "errors": [],
+  "expected_answer_state_for_launch": "codecaptain_answer_present_with_green_token",
+  "ok": true,
+  "optional_upload_zip": {
+    "entries": [
+      "00_SEND_TO_CODECAPTAIN_FIRST.md",
+      "224907_TASK-000_codecaptain-agent750-validate-only-plan-review.md",
+      "ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv"
+    ],
+    "entry_order_matches": true,
+    "exists": true,
+    "expected_entries": [
+      "00_SEND_TO_CODECAPTAIN_FIRST.md",
+      "224907_TASK-000_codecaptain-agent750-validate-only-plan-review.md",
+      "ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv"
+    ],
+    "manifest_exists": true,
+    "manifest_missing_required_terms": [],
+    "manifest_path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review_UPLOAD_ONLY_MANIFEST.md",
+    "missing_entries": [],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review_UPLOAD_ONLY.zip",
+    "sha256": "2973d8747072a2fd4a8b5cba43971363ba3977eec0bd9f5c059a4699c3cacc9a",
+    "size_bytes": 2040532,
+    "source_bytes_match": true,
+    "source_mismatched_entries": [],
+    "status": "present",
+    "unexpected_entries": []
+  },
+  "pack_root": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review",
+  "prompt": {
+    "exists": true,
+    "forbidden_prompt_phrases": [],
+    "line_count": 2524,
+    "missing_required_terms": [],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/224907_TASK-000_codecaptain-agent750-validate-only-plan-review.md",
+    "sha256": "c013a318893110ec60666029db3bd39b032dcf65129fa20c265e76ce3e0b007b",
+    "size_bytes": 149176
+  },
+  "read_only": true,
+  "send_readme": {
+    "exists": true,
+    "line_count": 61,
+    "missing_required_terms": [],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/00_SEND_TO_CODECAPTAIN_FIRST.md",
+    "sha256": "adfc6d06adb96c65f4fa5fc7689fe93e0e6415b508471582272b3f0a1e6e503d",
+    "size_bytes": 2091
+  },
+  "status_pointer_error": null,
+  "status_pointer_source": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/current_gate_status_agent750_waiting_codecaptain.json",
+  "status_pointer_terms": [
+    "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ACTIVE_OBJECTIVE_COMPLETION_AUDIT_20260510_090511.md"
+  ],
+  "top_level": {
+    "allowed_entries": [
+      "00_SEND_TO_CODECAPTAIN_FIRST.md",
+      "224907_TASK-000_codecaptain-agent750-validate-only-plan-review.md",
+      "Answer",
+      "ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv"
+    ],
+    "entries": [
+      "00_SEND_TO_CODECAPTAIN_FIRST.md",
+      "224907_TASK-000_codecaptain-agent750-validate-only-plan-review.md",
+      "Answer",
+      "ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv"
+    ],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review",
+    "unexpected_entries": []
+  }
+}

@@ -5,6 +5,7 @@ This file is the active-doc authority map. Use these links first; treat archived
 ## Operations
 - `docs/DAILY_SOP.md`
 - `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`
+- `docs/ops/OPERATIONAL_DECISION_POLICY_V1.md`
 - `docs/ops/KASPI_DAILY_OPS_ORCHESTRATOR_RUNBOOK.md`
 - `docs/ops/PROMOTION_MINIMUM_STANDARD.md`
 - `docs/ops/AS_OF_DATE_AUTHORITY_CONTRACT.md`

@@ -1,0 +1,1723 @@
+{
+  "schema": "autonomous_business.current_gate_status.v1",
+  "generated_at_local": "2026-05-12",
+  "last_checked_local": "2026-05-13T14:16:33+0500",
+  "status": "SOURCE_TRUTH_UNBLOCK_REANCHORED_WAVE_793_797_LAUNCHED",
+  "local_action_state": "OWNER_DIRECTED_PROCEED_NO_EXTRA_APPROVAL_FOR_MOST_EFFICIENT_SAFE_NEXT_STEPS",
+  "blocked_until": "agents793_797_closeouts_and_gates_reviewed",
+  "current_boundary": {
+    "production_db": "~/Docs/Autonomous_business/db/app.db",
+    "production_db_sha256": "04c76434399eb7e146037271fa121d69f71ae64195ac5a3436ccfed080b18f99",
+    "production_db_mtime_local": "2026-05-13T12:21:48+0500",
+    "production_db_integrity_check": "ok",
+    "protected_workbook": "~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx",
+    "protected_workbook_sha256": "4e7d18e16d2c16779de5f1f91eadea231c92143c1da29cdee9d0441c7592444c",
+    "protected_workbook_mtime_local": "2026-05-12T17:06:10+0500",
+    "proof_window_lock_expected_state": "absent"
+  },
+  "latest_review_only_boundary_reanchor_approval": {
+    "status": "OWNER_APPROVED_REVIEW_ONLY_REANCHOR_ACCEPTED",
+    "accepted_at_local": "2026-05-12T19:43:57+0500",
+    "decision_token": "OWNER_APPROVED_REANCHOR_7CFE3E_DB_4E7D18_WORKBOOK_FOR_REVIEW_ONLY_COPIED_TEMP_SOURCE_PROOF_20260512",
+    "approval_artifact": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/BOUNDARY_REANCHOR_APPROVAL_REVIEW_ONLY_20260512_194357.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/ACCEPTED_BOUNDARY_PROOF_WAVE_20260512_194357_STARTERS",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/agent_handoffs/ACCEPTED_BOUNDARY_PROOF_WAVE_20260512_194357_STARTERS/00_ORCHESTRATOR_HANDOFF.md",
+    "scope": "Review-only copied-temp/source-proof work anchored to the accepted 7cfe... DB and 4e7... workbook boundary. This does not authorize production DB mutation, workbook mutation, scheduler restore/mutation, external writes, owner publication, owner approval request, cash movement, PO commitment, ad spend, price changes, or stock changes.",
+    "scheduler_state": "business_automation_remains_paused_not_restored"
+  },
+  "latest_header_only_boundary_reclass_and_readonly_hardening": {
+    "status": "YELLOW_REANCHORED_FOR_REVIEW_ONLY_SOURCE_PROOF",
+    "recorded_at_local": "2026-05-13T14:05:35+0500",
+    "human_owner_directive": "okay then proceed, it should not require approval, Apply the most efficient next steps Given the situation, even if something goes unexpectedly.",
+    "memo": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/BOUNDARY_DRIFT_FORENSICS_AND_READONLY_HARDENING_20260513_140535.md",
+    "evidence_root": "~/Docs/Autonomous_business/exports/validation/source_truth_unblock_wave/20260513_121500/orchestrator_boundary_drift_forensics_20260513_134220",
+    "previous_review_only_db_sha256": "7cfe3ebc5df4867e28c57b4ed392f665dfa8143c44db4d54dde11fdb41f889d6",
+    "current_review_only_db_sha256": "04c76434399eb7e146037271fa121d69f71ae64195ac5a3436ccfed080b18f99",
+    "current_review_only_db_mtime_local": "2026-05-13T12:21:48+0500",
+    "current_review_only_db_integrity_check": "ok",
+    "current_review_only_workbook_sha256": "4e7d18e16d2c16779de5f1f91eadea231c92143c1da29cdee9d0441c7592444c",
+    "current_review_only_workbook_mtime_local": "2026-05-12T17:06:10+0500",
+    "logical_table_drift": "none_observed",
+    "changed_table_count": 0,
+    "dump_sha256_freeze_and_live": "702b53e67d397d3dfcaaafcc55e92abf04519e1b4d932a4f76abb6579df5a641",
+    "sqlite_sequence_compare": "matched",
+    "schema_version_before_after": "43398_to_43406",
+    "byte_diff_offsets": [
+      28,
+      44,
+      96
+    ],
+    "reclassified_drift_type": "sqlite_header_schema_cookie_only_not_business_data_drift",
+    "exact_writer_root_cause": "not_fully_proven",
+    "hardening_files": [
+      "~/Docs/Autonomous_business/core/ops/policy_registry_c3.py",
+      "~/Docs/Autonomous_business/core/ops/policy_materialization_c3.py",
+      "~/Docs/Autonomous_business/tests/test_policy_materialization_c3.py"
+    ],
+    "hardening_summary": "policy validators and dry-run materializers now use SQLite mode=ro plus PRAGMA query_only when apply=false",
+    "validation": [
+      "pytest -q tests/test_policy_materialization_c3.py::test_policy_gate_materializer_dry_run_accepts_readonly_db_without_byte_drift -> passed",
+      "pytest -q tests/test_policy_materialization_c3.py -> 22 passed",
+      "hardened production dry-run source_freshness and policy_gate probes preserved DB hash 04c764 and schema_version 43406"
+    ],
+    "scope": "Review-only copied-temp/source-proof continuation only. No production DB mutation, workbook mutation, scheduler restore/mutation, external writes, owner publication, owner approval request, cash movement, PO commitment, ad spend, price changes, or stock changes."
+  },
+  "latest_accepted_boundary_proof_wave": {
+    "status": "AGENTS781_787_COMPLETE_6YELLOW_1GREEN",
+    "launched_at_local": "2026-05-12T19:51:17+0500",
+    "completed_at_utc": "2026-05-12T15:17:11Z",
+    "rechecked_at_local": "2026-05-13T10:37:06+0500",
+    "run_id": "accepted_boundary_proof_wave_20260512_194357",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/orchestration_manifest.json",
+    "events": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/events.jsonl",
+    "launch_audit": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ACCEPTED_BOUNDARY_PROOF_WAVE_LAUNCH_20260512_195117.md",
+    "recheck_audit": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ACCEPTED_BOUNDARY_PROOF_WAVE_RECHECK_20260513_103706.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/ACCEPTED_BOUNDARY_PROOF_WAVE_20260512_194357_STARTERS",
+    "approval_artifact": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/BOUNDARY_REANCHOR_APPROVAL_REVIEW_ONLY_20260512_194357.md",
+    "receiver_ping_sent_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/completions/accepted_boundary_proof_wave/_orchestrator_ping_sent.json",
+    "watcher_recheck_result": "781 YELLOW, 782 YELLOW, 783 YELLOW, 784 YELLOW, 785 YELLOW, 786 YELLOW, 787 GREEN",
+    "orchestrator_ping_mode": "receiver",
+    "orchestrator_pane": "%328",
+    "visibility_panes": [],
+    "receiver_process": "cat",
+    "parallel_group": "accepted_boundary_proof_wave",
+    "ping_policy": "receiver_only_with_pane_identity_and_token_attestation; live chat visibility remains disabled by config/tmux_orchestrator_visibility_disabled.flag",
+    "agents": [
+      {
+        "agent_id": "781",
+        "pane": "%103",
+        "state": "complete",
+        "gate": "YELLOW",
+        "role": "c3_copied_temp_rematerialization",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent781_c3_copied_temp_rematerialization_20260512_194357_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/completions/accepted_boundary_proof_wave/agent_781.json",
+        "summary": "Copied-temp C3 rematerialization completed on a copy, but five policy gates remain blocked."
+      },
+      {
+        "agent_id": "782",
+        "pane": "%104",
+        "state": "complete",
+        "gate": "YELLOW",
+        "role": "ads_source_freshness_packet",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent782_ads_source_freshness_packet_20260512_194357_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/completions/accepted_boundary_proof_wave/agent_782.json",
+        "summary": "Local ads evidence is incomplete for 2026-05-12; bounded live-readonly Web_automation/Kaspi Marketing and Meta/Facebook packets are needed."
+      },
+      {
+        "agent_id": "783",
+        "pane": "%105",
+        "state": "complete",
+        "gate": "YELLOW",
+        "role": "stock_order_source_truth",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent783_stock_order_source_truth_20260512_194357_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/completions/accepted_boundary_proof_wave/agent_783.json",
+        "summary": "Order headers are current, but identity-bearing order entries and stock/order derived surfaces are stale after 2026-05-04."
+      },
+      {
+        "agent_id": "784",
+        "pane": "%106",
+        "state": "complete",
+        "gate": "YELLOW",
+        "role": "cashflow_publication_proof",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent784_cashflow_publication_proof_20260512_194357_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/completions/accepted_boundary_proof_wave/agent_784.json",
+        "summary": "ACTUAL vs MODELLED separation checks pass, but cashflow events and daily rows stop at 2026-05-04."
+      },
+      {
+        "agent_id": "785",
+        "pane": "%107",
+        "state": "complete",
+        "gate": "YELLOW",
+        "role": "po_inbound_supplier_truth",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent785_po_inbound_supplier_truth_20260512_194357_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/completions/accepted_boundary_proof_wave/agent_785.json",
+        "summary": "PO/supplier source map is complete, but src_inbound_workbook is stale and PO dashboard invariants fail."
+      },
+      {
+        "agent_id": "786",
+        "pane": "%108",
+        "state": "complete",
+        "gate": "YELLOW",
+        "role": "exception_queue_resolution_options",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent786_exception_queue_resolution_options_20260512_194357_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/completions/accepted_boundary_proof_wave/agent_786.json",
+        "summary": "Exception decision matrix is complete, but all 9 open STOCK/HIGH controls require owner/source input before closure or reopen."
+      },
+      {
+        "agent_id": "787",
+        "pane": "%326",
+        "state": "complete",
+        "gate": "GREEN",
+        "role": "warning_cohort_leakage_proof",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent787_warning_cohort_leakage_proof_20260512_194357_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/accepted_boundary_proof_wave_20260512_194357/completions/accepted_boundary_proof_wave/agent_787.json",
+        "summary": "Warning cohorts do not leak into product/publication truth; 23/252 table visibility and 23/249 validator visibility remain preserved."
+      }
+    ],
+    "restore_status": "NOT_RESTORED_KEEP_BUSINESS_AUTOMATION_PAUSED_UNTIL_SEPARATE_OWNER_DECISION"
+  },
+  "latest_source_truth_unblock_wave": {
+    "status": "AGENTS788_792_COMPLETE_ALL_RED",
+    "launched_at_local": "2026-05-13T12:16:24+0500",
+    "completed_at_utc": "2026-05-13T07:45:01Z",
+    "rechecked_at_local": "2026-05-13T12:45:26+0500",
+    "run_id": "source_truth_unblock_wave_20260513_121500",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_wave_20260513_121500/orchestration_manifest.json",
+    "events": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_wave_20260513_121500/events.jsonl",
+    "launch_audit": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/SOURCE_TRUTH_UNBLOCK_WAVE_LAUNCH_20260513_121624.md",
+    "recheck_audit": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/SOURCE_TRUTH_UNBLOCK_WAVE_RECHECK_20260513_124526.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/SOURCE_TRUTH_UNBLOCK_WAVE_20260513_121500_STARTERS",
+    "receiver_ping_sent_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_wave_20260513_121500/completions/source_truth_unblock_wave/_orchestrator_ping_sent.json",
+    "watcher_recheck_result": "788 RED, 789 RED, 790 RED, 791 RED, 792 RED",
+    "orchestrator_ping_mode": "receiver",
+    "receiver_pane": "%328",
+    "receiver_process": "cat",
+    "visibility_pane": "%71",
+    "visibility_pane_location": "autonomous_business:1.4",
+    "visibility_pane_command": "codex",
+    "parallel_group": "source_truth_unblock_wave",
+    "auto_receiver_attempt": "failed_before_prompt_send_due_to_too_many_open_files; reused existing attested receiver %328",
+    "boundary_recheck": {
+      "accepted_production_db_sha256": "7cfe3ebc5df4867e28c57b4ed392f665dfa8143c44db4d54dde11fdb41f889d6",
+      "observed_production_db_sha256": "04c76434399eb7e146037271fa121d69f71ae64195ac5a3436ccfed080b18f99",
+      "observed_production_db_mtime_local": "2026-05-13T12:21:48+0500",
+      "observed_production_db_integrity_check": "ok",
+      "accepted_workbook_sha256": "4e7d18e16d2c16779de5f1f91eadea231c92143c1da29cdee9d0441c7592444c",
+      "observed_workbook_sha256": "4e7d18e16d2c16779de5f1f91eadea231c92143c1da29cdee9d0441c7592444c",
+      "observed_lsof_holders": "none_at_orchestrator_recheck",
+      "observed_sqlite_sidecars": "none_at_orchestrator_recheck",
+      "stopline": "reclassified_2026-05-13_as_header_only_sqlite_schema_cookie_drift_not_business_data_drift",
+      "reclass_memo": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/BOUNDARY_DRIFT_FORENSICS_AND_READONLY_HARDENING_20260513_140535.md",
+      "next_boundary": "04c76434399eb7e146037271fa121d69f71ae64195ac5a3436ccfed080b18f99_for_review_only_copied_temp_source_proof"
+    },
+    "agents": [
+      {
+        "agent_id": "788",
+        "pane": "%103",
+        "state": "complete",
+        "gate": "RED",
+        "role": "cashflow_copy_temp_replay",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent788_cashflow_copy_temp_replay_20260513_121500_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_wave_20260513_121500/completions/source_truth_unblock_wave/agent_788.json",
+        "summary": "Copied-temp cashflow replay progressed on copy, but production DB drift, missing unit-cost decisions, stale bank manual ingest, and sibling domain blockers keep the gate RED."
+      },
+      {
+        "agent_id": "789",
+        "pane": "%104",
+        "state": "complete",
+        "gate": "RED",
+        "role": "stock_order_source_evidence",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent789_stock_order_source_evidence_20260513_121500_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_wave_20260513_121500/completions/source_truth_unblock_wave/agent_789.json",
+        "summary": "Accepted local identity-bearing order-entry evidence for 2026-05-05..2026-05-11 was not found; bounded read-only source capture is required after boundary recovery or re-anchor."
+      },
+      {
+        "agent_id": "790",
+        "pane": "%105",
+        "state": "complete",
+        "gate": "RED",
+        "role": "ads_source_readiness_packet",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent790_ads_source_readiness_packet_20260513_121500_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_wave_20260513_121500/completions/source_truth_unblock_wave/agent_790.json",
+        "summary": "Local ads evidence does not clear the 2026-05-12 ads blocker; bounded live-read-only ads source capture is required after boundary recovery or re-anchor."
+      },
+      {
+        "agent_id": "791",
+        "pane": "%106",
+        "state": "complete",
+        "gate": "RED",
+        "role": "po_inbound_source_decision",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent791_po_inbound_source_decision_20260513_121500_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_wave_20260513_121500/completions/source_truth_unblock_wave/agent_791.json",
+        "summary": "src_inbound_workbook remains canonical but stale; validator failures and missing fresh accepted inbound source keep PO inbound RED."
+      },
+      {
+        "agent_id": "792",
+        "pane": "%107",
+        "state": "complete",
+        "gate": "RED",
+        "role": "exception_owner_decision_packet",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent792_exception_owner_decision_packet_20260513_121500_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_wave_20260513_121500/completions/source_truth_unblock_wave/agent_792.json",
+        "summary": "Exception owner/source decision packet is useful as structure only; current accepted-boundary proof is blocked by DB drift and unresolved owner/source facts."
+      }
+    ]
+  },
+  "latest_source_truth_unblock_reanchored_wave": {
+    "status": "AGENTS793_797_LAUNCHED_PARALLEL_PENDING",
+    "launched_at_local": "2026-05-13T14:16:13+0500",
+    "run_id": "source_truth_unblock_reanchored_wave_20260513_140535",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_reanchored_wave_20260513_140535/orchestration_manifest.json",
+    "events": "~/Docs/Autonomous_business/runs/tmux_orchestration/source_truth_unblock_reanchored_wave_20260513_140535/events.jsonl",
+    "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/SOURCE_TRUTH_UNBLOCK_REANCHORED_WAVE_PLAN_20260513_140535.md",
+    "launch_audit": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/SOURCE_TRUTH_UNBLOCK_REANCHORED_WAVE_LAUNCH_20260513_141613.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/SOURCE_TRUTH_UNBLOCK_REANCHORED_WAVE_20260513_140535_STARTERS",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/agent_handoffs/SOURCE_TRUTH_UNBLOCK_REANCHORED_WAVE_20260513_140535_STARTERS/00_ORCHESTRATOR_HANDOFF.md",
+    "boundary_hardening_memo": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/BOUNDARY_DRIFT_FORENSICS_AND_READONLY_HARDENING_20260513_140535.md",
+    "active_review_only_db_sha256": "04c76434399eb7e146037271fa121d69f71ae64195ac5a3436ccfed080b18f99",
+    "active_review_only_workbook_sha256": "4e7d18e16d2c16779de5f1f91eadea231c92143c1da29cdee9d0441c7592444c",
+    "orchestrator_ping_mode": "receiver",
+    "receiver_pane": "%328",
+    "receiver_process": "cat",
+    "visibility_pane": "LIVE",
+    "registered_live_pane": "%71",
+    "registered_live_pane_location": "autonomous_business:1.4",
+    "registered_at_utc": "2026-05-13T09:15:57Z",
+    "parallel_group": "source_truth_reanchored_wave",
+    "watcher_recheck_result": "793 PENDING, 794 PENDING, 795 PENDING, 796 PENDING, 797 PENDING",
+    "agents": [
+      {
+        "agent_id": "793",
+        "pane": "%103",
+        "state": "prompt_sent",
+        "role": "cashflow_source_truth",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent793_cashflow_source_truth_20260513_140535_closeout.md"
+      },
+      {
+        "agent_id": "794",
+        "pane": "%104",
+        "state": "prompt_sent",
+        "role": "stock_order_source_capture",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent794_stock_order_source_capture_20260513_140535_closeout.md"
+      },
+      {
+        "agent_id": "795",
+        "pane": "%105",
+        "state": "prompt_sent",
+        "role": "ads_source_capture_adoption",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent795_ads_source_capture_adoption_20260513_140535_closeout.md"
+      },
+      {
+        "agent_id": "796",
+        "pane": "%106",
+        "state": "prompt_sent",
+        "role": "po_inbound_source_decision",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent796_po_inbound_source_decision_20260513_140535_closeout.md"
+      },
+      {
+        "agent_id": "797",
+        "pane": "%107",
+        "state": "prompt_sent",
+        "role": "exception_source_facts",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent797_exception_source_facts_20260513_140535_closeout.md"
+      }
+    ],
+    "scope": "Review-only source capture, evidence packets, readonly validators, and copied-temp proof only. No production DB/workbook mutation, scheduler restore/mutation, external writes, owner publication, owner approval request, cash movement, PO commitment, ad spend, price changes, or stock changes."
+  },
+  "reviewed_boundary_before_db_drift": {
+    "production_db": "~/Docs/Autonomous_business/db/app.db",
+    "production_db_sha256": "dec77f37cc63147e54e9085a6a0f9564d9ead9e57aea0d8483dc0473886bee64",
+    "protected_workbook": "~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx",
+    "protected_workbook_sha256": "3ad4b81c39b125c48b34c02afb8a30eafd348658e07afd27c11f628b8987025c",
+    "review_pack_built_for_this_boundary": true
+  },
+  "current_blockers": [
+    "source_truth_unblock_wave_all_red_even_after_header_only_boundary_reanchor",
+    "current_boundary_reanchored_to_04c764_for_review_only_not_owner_publication_authority",
+    "exact_header_only_writer_root_cause_not_fully_proven_but_readonly_hardening_applied",
+    "business_launchd_automation_paused_during_review_only_proof_wave",
+    "owner_publication_policy_gates_still_blocked_after_storeb_ads_fix",
+    "source_freshness_not_materialized_for_2026-05-11_publication_cutoff",
+    "stock_cashflow_po_exception_queue_warning_cohorts_still_blocked",
+    "owner_publication_scheduler_production_external_writes_require_separate_authorization",
+    "workbook_external_scheduler_owner_publication_actions_still_blocked"
+  ],
+  "latest_fixed_execution_recheck": {
+    "status": "ROOT_GROUP_COMPLETE_YELLOW_AGENT778_COMPLETE_AGENT779_780_COMPLETE_AFTER_QUIET_PAUSE",
+    "checked_at_local": "2026-05-12T15:42:36+0500",
+    "recheck_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/FIXED_EXECUTION_BOUNDARY_C3_WAVE_RECHECK_20260512_154236.md",
+    "root_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_boundary_c3_wave_20260512_131702/orchestration_manifest.json",
+    "root_receiver_ping_sent_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_boundary_c3_wave_20260512_131702/completions/fixed_boundary_root/_orchestrator_ping_sent.json",
+    "root_agents": [
+      {
+        "agent_id": "775",
+        "gate": "YELLOW",
+        "summary": "Earlier drift explained as known automation without owner-publication authority; recommends review-only re-anchor after operator acceptance.",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent775_current_boundary_drift_forensics_20260512_131702_closeout.md"
+      },
+      {
+        "agent_id": "776",
+        "gate": "YELLOW",
+        "summary": "Copied-temp C3 replay works mechanically but leaves five C3 gates blocked and observed production DB drift during lane.",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent776_c3_source_policy_replay_feasibility_20260512_131702_closeout.md"
+      },
+      {
+        "agent_id": "777",
+        "gate": "YELLOW",
+        "summary": "Non-ads blocker map complete; cashflow, stock, PO, source freshness, exception queue, and warning cohorts still block owner publication.",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent777_non_ads_publication_blocker_map_20260512_131702_closeout.md"
+      }
+    ],
+    "fresh_boundary_sample": {
+      "production_db_sha256": "79f14cb71da0aeb9c90daf9bb37d9918ca7d1801c2233a06e0c5beed8840300d",
+      "production_db_mtime_local": "2026-05-12T15:11:09+0500",
+      "protected_workbook_sha256": "758fa6133f21ad76c96481cfbf6b2fb20c16367ad9be94705896e82d5df2ac13",
+      "protected_workbook_mtime_local": "2026-05-12T15:07:25+0500",
+      "production_db_integrity_check": "ok",
+      "lsof_db_app_db": "no_holders_observed_exit_1"
+    },
+    "agent778": {
+      "status": "COMPLETE_YELLOW",
+      "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_synthesis_agent778_20260512_154236/orchestration_manifest.json",
+      "pane": "%107",
+      "receiver_pane": "%328",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent778_fixed_execution_synthesis_20260512_131702_closeout.md"
+    }
+  },
+  "latest_quiet_stabilization_wave": {
+    "status": "BUSINESS_AUTOMATION_PAUSED_AGENT779_YELLOW_AGENT780_GREEN_COMPLETE",
+    "pause_started_local": "2026-05-12T19:11:39+0500",
+    "pause_finished_local": "2026-05-12T19:11:41+0500",
+    "owner_authorization_basis": "Owner explicitly approved adding automation and scheduling pause after today's order shipping process completed successfully.",
+    "pause_scope": "Loaded LaunchAgents matching com.example.*, com.webautomation.*, and com.autonomous-business.* were booted out; no user app kill was intentionally performed.",
+    "pause_evidence_root": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/scheduler_quiet_window_20260512_191139_all_business_pause",
+    "post_pause_remaining_launchctl_matches": [
+      "application.com.google.Chrome.451280.178606353",
+      "com.apple.notes.exchangenotesd",
+      "com.apple.exchange.exchangesyncd"
+    ],
+    "quiet_boundary_two_sample_status": "MATCHED",
+    "post_agent779_780_quiet_audit": {
+      "checked_at_local": "2026-05-12T19:35:02+0500",
+      "evidence": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/scheduler_quiet_window_20260512_191139_all_business_pause/post_agent779_780_quiet_audit.txt",
+      "business_launchctl_matches": [
+        "application.com.google.Chrome.451280.178606353",
+        "com.apple.notes.exchangenotesd",
+        "com.apple.exchange.exchangesyncd"
+      ],
+      "lsof_db_and_workbook": "no_holders_observed",
+      "sqlite_sidecars": "none_observed",
+      "production_db_sha256": "7cfe3ebc5df4867e28c57b4ed392f665dfa8143c44db4d54dde11fdb41f889d6",
+      "protected_workbook_sha256": "4e7d18e16d2c16779de5f1f91eadea231c92143c1da29cdee9d0441c7592444c",
+      "production_db_integrity_check": "ok"
+    },
+    "current_boundary_after_pause": {
+      "production_db_sha256": "7cfe3ebc5df4867e28c57b4ed392f665dfa8143c44db4d54dde11fdb41f889d6",
+      "production_db_mtime_local": "2026-05-12T19:11:05+0500",
+      "protected_workbook_sha256": "4e7d18e16d2c16779de5f1f91eadea231c92143c1da29cdee9d0441c7592444c",
+      "protected_workbook_mtime_local": "2026-05-12T17:06:10+0500",
+      "production_db_integrity_check": "ok",
+      "lsof_db_and_workbook": "no_holders_observed",
+      "sqlite_sidecars": "none_observed_in_second_sample"
+    },
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/FIXED_EXECUTION_QUIET_STABILIZATION_20260512_191139_STARTERS",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/agent_handoffs/FIXED_EXECUTION_QUIET_STABILIZATION_20260512_191139_STARTERS/00_ORCHESTRATOR_HANDOFF.md",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_quiet_stabilization_20260512_191139/orchestration_manifest.json",
+    "events": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_quiet_stabilization_20260512_191139/events.jsonl",
+    "orchestrator_ping_mode": "receiver",
+    "orchestrator_pane": "%328",
+    "parallel_group": "quiet_stabilization",
+    "agents": [
+      {
+        "agent_id": "779",
+        "pane": "%326",
+        "state": "complete",
+        "gate": "YELLOW",
+        "role": "current_boundary_freeze_and_post_root_drift_forensics",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent779_current_boundary_freeze_and_post_root_drift_forensics_20260512_191139_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_quiet_stabilization_20260512_191139/completions/quiet_stabilization/agent_779.json",
+        "summary": "Current 7cfe... DB / 4e7... workbook boundary is stable after pause and suitable to ask for review-only re-anchor; owner publication remains blocked and row-level drift from Agent778 was not fully proven."
+      },
+      {
+        "agent_id": "780",
+        "pane": "%327",
+        "state": "complete",
+        "gate": "GREEN",
+        "role": "automation_quiet_window_audit",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent780_automation_quiet_window_audit_20260512_191139_closeout.md",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_quiet_stabilization_20260512_191139/completions/quiet_stabilization/agent_780.json",
+        "summary": "All 25 paused AB/Web_automation business LaunchAgents remain unloaded; no cron, holders, sidecars, or writer process candidates remain; restore plan is documented but not executed."
+      }
+    ],
+    "receiver_ping_sent_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_quiet_stabilization_20260512_191139/completions/quiet_stabilization/_orchestrator_ping_sent.json",
+    "restore_status": "NOT_RESTORED_KEEP_PAUSED_UNTIL_OPERATOR_REVIEW_ONLY_BOUNDARY_ACCEPTANCE_OR_RESTORE_DECISION"
+  },
+  "latest_agent774_owner_publication_delta": {
+    "status": "RED_CURRENT_BOUNDARY_DRIFT_NO_PUBLICATION_AUTHORITY",
+    "generated_at_local": "2026-05-12T12:25:54+0500",
+    "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/owner_publication_readiness_delta_after_storeb_prod_apply_20260512_122050_agent774_closeout.md",
+    "evidence_root": "~/Docs/Autonomous_business/exports/validation/owner_publication_readiness_delta_after_storeb_prod_apply/20260512_122050",
+    "sampled_current_db_sha256": "50873f7464960de219987e0afce0709c969d65710a40bccc2c8bfbfb56947b38",
+    "sampled_current_db_mtime_local": "2026-05-12T11:10:59+0500",
+    "sampled_current_workbook_sha256": "889891070a9a5e35f6b52c53e2641f8ef5f9ddaa4338599b117898b6943d9a5c",
+    "sampled_current_workbook_mtime_local": "2026-05-12T11:05:25+0500",
+    "storeb_post_apply_db_sha256_reference": "80d32c82932a801c6165e6014f3b66ef094352309d64ec037b78be81c8a0448d",
+    "storeb_post_apply_workbook_sha256_reference": "abef2d310e768bc76f54c9cfe5a6f72c6d22eab2504894114bafb493916f67a8",
+    "narrow_storeb_ads_window_status": "GREEN_FOR_2026-05-05_TO_2026-05-11_ON_CURRENT_DB",
+    "owner_publication_status": "RED_BLOCKED",
+    "minimum_safe_next_action": "Freeze and explain current DB/workbook boundary drift before further owner-publication readiness claims."
+  },
+  "latest_fixed_execution_boundary_c3_wave": {
+    "status": "AGENTS775_776_777_LAUNCHED_RECEIVER_ONLY_AGENT778_GATED",
+    "launched_at_local": "2026-05-12T13:25:00+0500",
+    "run_id": "fixed_execution_boundary_c3_wave_20260512_131702",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_boundary_c3_wave_20260512_131702/orchestration_manifest.json",
+    "events": "~/Docs/Autonomous_business/runs/tmux_orchestration/fixed_execution_boundary_c3_wave_20260512_131702/events.jsonl",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/FIXED_EXECUTION_BOUNDARY_C3_WAVE_STARTERS_20260512_131702",
+    "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/FIXED_EXECUTION_BOUNDARY_C3_WAVE_PLAN_20260512_131702.md",
+    "handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/FIXED_EXECUTION_BOUNDARY_C3_WAVE_ORCHESTRATOR_HANDOFF_20260512_131702.md",
+    "launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/FIXED_EXECUTION_BOUNDARY_C3_WAVE_LAUNCH_20260512_132500.md",
+    "orchestrator_ping_mode": "receiver",
+    "orchestrator_pane": "%328",
+    "receiver_command": "cat",
+    "visibility_panes": [],
+    "parallel_group": "fixed_boundary_root",
+    "agents": [
+      {
+        "agent_id": "775",
+        "pane": "%104",
+        "state": "prompt_sent",
+        "role": "current_boundary_freeze_and_drift_forensics",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent775_current_boundary_drift_forensics_20260512_131702_closeout.md"
+      },
+      {
+        "agent_id": "776",
+        "pane": "%105",
+        "state": "prompt_sent",
+        "role": "copied_temp_c3_source_policy_replay_feasibility",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent776_c3_source_policy_replay_feasibility_20260512_131702_closeout.md"
+      },
+      {
+        "agent_id": "777",
+        "pane": "%106",
+        "state": "prompt_sent",
+        "role": "non_ads_publication_blocker_map",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent777_non_ads_publication_blocker_map_20260512_131702_closeout.md"
+      },
+      {
+        "agent_id": "778",
+        "state": "not_launched_gated_after_775_776_777_review",
+        "role": "synthesis_after_dependency_closeouts",
+        "starter": "~/Docs/Autonomous_business/docs/agent_handoffs/FIXED_EXECUTION_BOUNDARY_C3_WAVE_STARTERS_20260512_131702/04_AGENT_778__SYNTHESIS_AFTER_775_776_777__AFTER_775_776_777.md",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent778_fixed_execution_synthesis_20260512_131702_closeout.md"
+      }
+    ]
+  },
+  "latest_storeb_owner_mapping_production_apply": {
+    "status": "GREEN_PRODUCTION_DB_APPLY_ONLY",
+    "generated_at_local": "2026-05-12T10:25:47+0500",
+    "owner_authorization_scope": "Apply only the already-proven STOREB owner mapping replay to production DB, backup-first, no workbook, no scheduler, no external writes, no owner publication yet.",
+    "evidence_root": "~/Docs/Autonomous_business/exports/validation/storeb_owner_mapping_production_apply/20260512_102321",
+    "closeout": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_OWNER_MAPPING_PRODUCTION_APPLY_CLOSEOUT_20260512_102321.md",
+    "final_classification": "~/Docs/Autonomous_business/exports/validation/storeb_owner_mapping_production_apply/20260512_102321/final_blocker_classification.json",
+    "adapter_apply_report": "~/Docs/Autonomous_business/exports/validation/storeb_owner_mapping_production_apply/20260512_102321/adapter_apply/report.json",
+    "pre_db_sha256": "ee7d2999852d5a438605e7057bd82f954c0df4466016704a55e0b09f91e99820",
+    "post_db_sha256": "80d32c82932a801c6165e6014f3b66ef094352309d64ec037b78be81c8a0448d",
+    "workbook_sha256_before_after": "abef2d310e768bc76f54c9cfe5a6f72c6d22eab2504894114bafb493916f67a8",
+    "backup_path": "~/Docs/Autonomous_business/exports/validation/storeb_owner_mapping_production_apply/20260512_102321/backups/app_db_pre_storeb_owner_mapping_apply_20260512_102321.sqlite",
+    "script_backup_path": "~/Docs/Autonomous_business/exports/validation/storeb_owner_mapping_production_apply/20260512_102321/adapter_apply/backups/app_2026-05-12_102457.db",
+    "pre_rows": 0,
+    "post_rows": 7,
+    "post_cost_kzt": 38624.07,
+    "mapped_source_rows": 70,
+    "unmapped_rows": 0,
+    "storeb_product_code_mappings_mapped": "10/10",
+    "validators": {
+      "ads_sidecar_readiness": "PASS",
+      "ads_offer_universe_coverage": "PASS",
+      "ads_spend_reality": "PASS"
+    },
+    "scope": "Production DB apply only; no workbook/Web_automation/scheduler/external/owner-publication/Kaspi/cash/PO/ad-spend/price/stock write authority."
+  },
+  "latest_storeb_owner_mapping_replay": {
+    "status": "GREEN_COPIED_TEMP_PROOF_ONLY",
+    "generated_at_local": "2026-05-12T10:03:58+0500",
+    "owner_response_quote": "Yes, all of them are offered groups of Line52 product.",
+    "decision_token": "OWNER_CONFIRMED_ALL_7_STOREB_BLOCKED_PRODUCT_CODES_ARE_LINE52_PRODUCT_GROUPS_2026-05-12",
+    "owner_selected_sku_key": "CL_OC_MEN_LINE52_BLACK",
+    "evidence_root": "~/Docs/Autonomous_business/exports/validation/storeb_owner_mapping_replay/20260512_100358",
+    "closeout": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_OWNER_MAPPING_REPLAY_CLOSEOUT_20260512_100358.md",
+    "final_classification": "~/Docs/Autonomous_business/exports/validation/storeb_owner_mapping_replay/20260512_100358/final_blocker_classification.json",
+    "adapter_apply_report": "~/Docs/Autonomous_business/exports/validation/storeb_owner_mapping_replay/20260512_100358/adapter_apply/report.json",
+    "source_rows": 70,
+    "mapped_source_rows": 70,
+    "unmapped_rows": 0,
+    "storeb_product_code_mappings_mapped": "10/10",
+    "owner_product_code_mappings_loaded": 7,
+    "copied_db_storeb_cost_kzt": 38624.07,
+    "validators": {
+      "ads_sidecar_readiness": "PASS",
+      "ads_offer_universe_coverage": "PASS",
+      "ads_spend_reality": "PASS"
+    },
+    "production_db_sha256_before_and_after": "ee7d2999852d5a438605e7057bd82f954c0df4466016704a55e0b09f91e99820",
+    "scope": "Copied/temp proof only; no production DB/workbook/Web_automation/scheduler/external/owner-publication/Kaspi/cash/PO/ad-spend/price/stock write authority."
+  },
+  "latest_answer_search": {
+    "observed_at_local": "2026-05-10T12:45:12+0500",
+    "status": "REAL_AGENT750_CODECAPTAIN_ANSWER_FOUND",
+    "canonical_answer_folder": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/Answer",
+    "canonical_answer_scan_observed_at_local": "2026-05-10T15:39:29+0500",
+    "canonical_answer_files": [
+      "Code_Captain_10.05.2026_12_35_59.md",
+      "README_SAVE_CODECAPTAIN_ANSWER_HERE.md"
+    ],
+    "canonical_answer_real_files": [
+      "Code_Captain_10.05.2026_12_35_59.md"
+    ],
+    "canonical_answer_files_source": "live_filesystem",
+    "canonical_answer_files_match_status": true,
+    "searched_paths": [
+      "~/Docs/Oracle/Autonomous_business/2026-05-09",
+      "~/Downloads",
+      "~/Desktop",
+      "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery"
+    ],
+    "content_scan_terms": [
+      "GREEN_TO_LAUNCH_AGENT751_752_753_VALIDATE_ONLY_WAVE",
+      "AGENT750_VALIDATE_ONLY_PLAN_REVIEW",
+      "Agent750",
+      "agent750"
+    ],
+    "non_authoritative_hits_summary": "Canonical Answer folder now contains exactly one real Agent750 answer. Older CodeCaptain answers for previous lanes and request/status/starter/audit surfaces remain non-authoritative.",
+    "launch_rule": "Exactly one real CodeCaptain answer Markdown file in the canonical Answer folder, with the exact non-fenced GREEN decision token, satisfies the answer gate; DB/workbook boundary readiness must still be ok before launch.",
+    "canonical_answer_sha256": "154e179a59a19f35605c154efcb1c7aea95717868e791b762291665b9eb4a0e4",
+    "decision_token": "GREEN_TO_LAUNCH_AGENT751_752_753_VALIDATE_ONLY_WAVE"
+  },
+  "db_boundary_review": {
+    "required": false,
+    "reason": "Owner approved Option 1 re-anchor in chat; launch readiness now matches the current protected DB/workbook hashes recorded in BOUNDARY_REANCHOR_APPROVAL_AGENT750_20260510_153410.md.",
+    "latest_read_only_triage_at_local": "2026-05-10T12:45:12+0500",
+    "latest_readiness_db_sha256": "44426216a026c3ab4f7c658e4950421446b99bae99e7cf704db8e2c96d35cc91",
+    "latest_lsof_app_db_holders": [],
+    "likely_drift_source": "current_1100_kaspi_import_activeorders_workbook_catalog_crm_identity_chain",
+    "latest_content_diff_artifact": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/DB_BOUNDARY_DRIFT_TRIAGE_20260510_124512.md",
+    "supplemental_review_request": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CODECAPTAIN_DB_BOUNDARY_SUPPLEMENT_AGENT750_20260510_124512.md",
+    "content_diff_summary": "Launch-time verification after owner approval found DB integrity ok, no active lsof holders, current DB SHA 44426216a026c3ab4f7c658e4950421446b99bae99e7cf704db8e2c96d35cc91, current workbook SHA bd7c5bb3e336f0cf35423ad00e7e6f25fa5ae41cdeb3ceb51075e09047f613b9, and current DB vs runtime/backups/app_db_before_crm_identity_rebuild_20260510_151107.sqlite drift limited to dim_kaspi_article_map with 20 current-only and 20 backup-only rows.",
+    "evidence": [
+      "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/DB_BOUNDARY_DRIFT_TRIAGE_20260510_124512.md",
+      "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CODECAPTAIN_DB_BOUNDARY_SUPPLEMENT_AGENT750_20260510_124512.md",
+      "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CURRENT_STOPLINE_CHECKPOINT_AGENT750_WAITING_20260510_124512.md",
+      "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/Answer/Code_Captain_10.05.2026_12_35_59.md",
+      "~/Docs/Autonomous_business/runtime_logs/kaspi_import_stdout.log",
+      "~/Docs/Autonomous_business/exports/google_ops_board/2026-05-10/enrich_kaspi_orders_from_activeorders_20260510_110213.json",
+      "~/Docs/Autonomous_business/exports/google_ops_board/health/identity_sync/2026-05-10/workbook_catalog_offer_map_sync.json",
+      "~/Docs/Autonomous_business/exports/google_ops_board/health/identity_sync/2026-05-10/crm_identity_rebuild.json",
+      "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/BOUNDARY_REANCHOR_APPROVAL_AGENT750_20260510_153410.md"
+    ],
+    "launch_rule": "Exact CodeCaptain GREEN plus readiness ok=true against the re-anchored current DB/workbook boundary clears the guarded monitor-only Agent751/752/753 launch gate."
+  },
+  "authority_chain": [
+    {
+      "agent": "746",
+      "gate": "YELLOW",
+      "purpose": "current live DB forensics",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_746_orchestrator_db_drift_forensics_closeout.md"
+    },
+    {
+      "agent": "747",
+      "gate": "YELLOW",
+      "purpose": "current dec77 release anchor",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_747_current_dec77_release_anchor_closeout.md"
+    },
+    {
+      "agent": "748",
+      "gate": "YELLOW",
+      "purpose": "current dec77 independent confirmation",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_748_current_dec77_independent_confirmation_closeout.md"
+    },
+    {
+      "agent": "749",
+      "gate": "GREEN",
+      "purpose": "strict daily preflight proof-window hardening",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_749_scheduler_proof_window_hardening_closeout.md"
+    },
+    {
+      "agent": "750",
+      "gate": "GREEN",
+      "purpose": "current-boundary Option C validate-only plan",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_750_option_c_validate_only_plan_after_747_748_749_closeout.md"
+    }
+  ],
+  "review_pack": {
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/",
+    "optional_upload_zip": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review_UPLOAD_ONLY.zip",
+    "optional_upload_zip_sha256": "2973d8747072a2fd4a8b5cba43971363ba3977eec0bd9f5c059a4699c3cacc9a",
+    "optional_upload_zip_manifest": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review_UPLOAD_ONLY_MANIFEST.md",
+    "latest_validator_manifest": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/agent750_review_pack_manifest_20260510_024500.json",
+    "prompt_sha256": "c013a318893110ec60666029db3bd39b032dcf65129fa20c265e76ce3e0b007b",
+    "required_decision": "GREEN CodeCaptain answer",
+    "allowed_green_token": "GREEN_TO_LAUNCH_AGENT751_752_753_VALIDATE_ONLY_WAVE",
+    "yellow_token": "YELLOW_FIX_BEFORE_VALIDATE_ONLY_WAVE",
+    "red_token": "RED_DO_NOT_LAUNCH_VALIDATE_ONLY_WAVE"
+  },
+  "latest_agent751_753_launch": {
+    "status": "LAUNCHED_MONITOR_ONLY",
+    "launched_at_local": "2026-05-10T15:42:30+0500",
+    "run_id": "codecaptain_agent751_752_753_validate_only_wave_20260510_154229",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/codecaptain_agent751_752_753_validate_only_wave_20260510_154229/orchestration_manifest.json",
+    "events": "~/Docs/Autonomous_business/runs/tmux_orchestration/codecaptain_agent751_752_753_validate_only_wave_20260510_154229/events.jsonl",
+    "launch_closeout": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/AGENT751_752_753_LAUNCH_CLOSEOUT_20260510_154230.md",
+    "orchestrator_ping_mode": "monitor-only",
+    "visibility_panes": [],
+    "orchestrator_pane": "%MONITOR",
+    "auto_receiver_created": false,
+    "agents": [
+      {
+        "agent_id": "751",
+        "pane": "%329",
+        "state": "prompt_sent",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_751_option_c_validate_only_runner_contract_closeout.md"
+      },
+      {
+        "agent_id": "752",
+        "pane": "%326",
+        "state": "prompt_sent",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_752_cash_risk_daily_surface_spec_readonly_closeout.md"
+      },
+      {
+        "agent_id": "753",
+        "pane": "%327",
+        "state": "prompt_sent",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_753_source_freshness_exception_queue_map_readonly_closeout.md"
+      }
+    ],
+    "post_launch_readiness_expected_error": "downstream_agent_artifacts_already_exist"
+  },
+  "tmux_routing": {
+    "status": "LIVE_ORCHESTRATOR_VISIBILITY_ENABLED_FOR_REGISTERED_PANE",
+    "updated_at_local": "2026-05-13T14:15:57+0500",
+    "registered_live_pane": "%71",
+    "registered_live_pane_location": "autonomous_business:1.4",
+    "registered_at_utc": "2026-05-13T09:15:57Z",
+    "registered_live_registry": "~/.codex/tmux-agent-orchestrator/live_orchestrator_pane.json",
+    "registered_live_identity": {
+      "session_name": "autonomous_business",
+      "window_index": "1",
+      "window_name": "Autonomous_business_build",
+      "pane_index": "4",
+      "pane_current_command": "codex"
+    },
+    "global_live_registry_freshness_guard": {
+      "status": "enabled",
+      "default_max_age_seconds": 1800,
+      "env_override": "TMUX_ORCHESTRATOR_LIVE_REGISTRY_MAX_AGE_SECONDS",
+      "reason": "stale-but-valid panes can still be the wrong human chat"
+    },
+    "repo_visibility_kill_switch": {
+      "status": "removed_after_explicit_human_approval",
+      "removed_path": "~/Docs/Autonomous_business/config/tmux_orchestrator_visibility_disabled.flag",
+      "replacement_policy": "~/Docs/Autonomous_business/config/tmux_orchestrator_live_visibility_enabled.md",
+      "decision_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/TMUX_LIVE_ORCHESTRATOR_PING_POLICY_20260513_121305.md",
+      "enforced_by": "~/.codex/skills/tmux-agent-orchestrator/scripts/launch_tmux_agents.py",
+      "reason": "human owner explicitly approved real live ping-back to this specific orchestrator chat; pane must still be registered fresh and attested"
+    },
+    "repo_completion_ping_kill_switch": {
+      "status": "archived_after_receiver_only_dummy_proof",
+      "original_path": "~/Docs/Autonomous_business/config/tmux_orchestrator_pings_disabled.flag",
+      "archived_path": "~/Docs/Autonomous_business/config/tmux_orchestrator_pings_disabled.flag.archived_20260512_123253_receiver_only_proof",
+      "receiver_only_policy_flag": "~/Docs/Autonomous_business/config/tmux_orchestrator_receiver_only_pings_enabled.flag",
+      "proof_closeout": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/TMUX_RECEIVER_PING_DUMMY_PROOF_CLOSEOUT_20260512_123253.md",
+      "proof_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_receiver_ping_dummy_proof_20260512_123253/orchestration_manifest.json",
+      "proof_sent_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_receiver_ping_dummy_proof_20260512_123253/completions/root/_orchestrator_ping_sent.json",
+      "enforced_by": "~/.codex/skills/tmux-agent-orchestrator/scripts/launch_tmux_agents.py and ~/.codex/skills/tmux-agent-orchestrator/scripts/agent_complete.py",
+      "reason": "2026-05-12 dummy proof showed receiver-only completion pings work with an attested inert cat receiver while chat mode remains blocked by the visibility kill switch"
+    },
+    "receiver_only_ping_policy": {
+      "status": "enabled_with_live_visibility_forwarding_for_future_launches",
+      "required_launch_shape": "--orchestrator-ping-mode receiver --auto-create-orchestrator-receiver --orchestrator-pane AUTO --visibility-pane LIVE",
+      "allowed_receiver_commands": [
+        "cat",
+        "tee"
+      ],
+      "visibility_panes": [
+        "LIVE"
+      ],
+      "authority": "agent closeout files and completion marker JSON remain authority; receiver pings are wake-up signals only"
+    },
+    "registry": "~/.codex/tmux-agent-orchestrator/live_orchestrator_pane.json",
+    "latest_owner_report": "2026-05-13: owner approved real live ping-back to Autonomous Business Build, session autonomous_business, window 1, pane 4. Use receiver mode plus LIVE visibility, not stale hard-coded panes.",
+    "live_visibility_probe": {
+      "status": "dry_run_passed",
+      "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/live_visibility_policy_probe_20260513_121305/orchestration_manifest.json",
+      "observed_visibility_panes": "LIVE registry accepted in dry-run manifest"
+    },
+    "next_launch_required_shape": "receiver_mode_with_auto_inert_receiver_and_visibility_live_registered_to_autonomous_business_1_4",
+    "do_not_use": [
+      "stale hard-coded visibility panes",
+      "unregistered visibility panes",
+      "orchestrator-ping-mode chat unless a separate launch explicitly requires direct chat mode",
+      "orchestrator-ping-mode receiver without an attested inert receiver",
+      "manual pings into unattested panes"
+    ]
+  },
+  "next_agents_after_green_review": [
+    {
+      "agent": "751",
+      "role": "sole_write_capable_validate_only_runner_contract",
+      "starter": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/starter_prompts/751_AGENT_751__OPTION_C_VALIDATE_ONLY_RUNNER_CONTRACT__AFTER_750_CODECAPTAIN_REVIEW.md"
+    },
+    {
+      "agent": "752",
+      "role": "read_only_cash_risk_daily_surface_spec",
+      "starter": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/starter_prompts/752_AGENT_752__CASH_RISK_DAILY_SURFACE_SPEC_READONLY__AFTER_750_CODECAPTAIN_REVIEW.md"
+    },
+    {
+      "agent": "753",
+      "role": "read_only_source_freshness_exception_queue_map",
+      "starter": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/starter_prompts/753_AGENT_753__SOURCE_FRESHNESS_EXCEPTION_QUEUE_MAP_READONLY__AFTER_750_CODECAPTAIN_REVIEW.md"
+    }
+  ],
+  "blocked_until_codecaptain_green": [
+    "agent751_launch",
+    "agent752_launch",
+    "agent753_launch",
+    "stale_agent745_launch",
+    "production_scheduler_automation",
+    "launchagent_mutation",
+    "production_db_write",
+    "workbook_write",
+    "external_system_write",
+    "owner_approval_request",
+    "owner_publication_green",
+    "old_agent54_phrase_reuse",
+    "agent64_activation"
+  ],
+  "guarded_launch_after_green": {
+    "status": "RECOVERY_WAVE_COMPLETE_MIXED_GATE_AGENT753_RED",
+    "readiness_checker": "~/Docs/Autonomous_business/scripts/check_agent750_launch_readiness.py",
+    "read_only_waiter": "~/Docs/Autonomous_business/scripts/wait_for_agent750_codecaptain_answer.py",
+    "pane_candidate_lister": "~/Docs/Autonomous_business/scripts/list_agent751_753_candidate_panes.py",
+    "latest_candidate_lister_observation": {
+      "observed_at_local": "2026-05-10T12:45:12+0500",
+      "status": "BLOCKED_BY_READINESS",
+      "errors": [
+        "production_db_sha_mismatch",
+        "protected_workbook_sha_mismatch"
+      ],
+      "candidate_count": 0,
+      "ready_for_launch_selection": false,
+      "candidate_panes": [],
+      "preferred_session": "autonomous_business",
+      "suggested_reuse_panes": "",
+      "review_pack_prompt_sha256": "c013a318893110ec60666029db3bd39b032dcf65129fa20c265e76ce3e0b007b",
+      "review_pack_optional_upload_zip": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review_UPLOAD_ONLY.zip",
+      "review_pack_optional_upload_zip_sha256": "2973d8747072a2fd4a8b5cba43971363ba3977eec0bd9f5c059a4699c3cacc9a",
+      "review_pack_optional_upload_zip_sha256_matches": true,
+      "note": "Pane lister checks Agent750 readiness before listing tmux panes; the exact GREEN answer is present, but current DB/workbook boundary blockers prevent pane suggestions."
+    },
+    "guarded_launcher": "~/Docs/Autonomous_business/scripts/launch_agent751_753_after_agent750.py",
+    "required_command_shape": "python3 scripts/launch_agent751_753_after_agent750.py --reuse-panes <PANE_751>,<PANE_752>,<PANE_753>",
+    "current_live_result": "recovery wave complete with Agent751 GREEN, Agent752 GREEN, Agent753 RED; do not proceed as fully green",
+    "latest_ready_observation": {
+      "observed_at_local": "2026-05-10T15:39:29+0500",
+      "status": "READY_FOR_GUARDED_AGENT751_752_753_LAUNCH",
+      "errors": [],
+      "db_sha256": "44426216a026c3ab4f7c658e4950421446b99bae99e7cf704db8e2c96d35cc91",
+      "workbook_sha256": "bd7c5bb3e336f0cf35423ad00e7e6f25fa5ae41cdeb3ceb51075e09047f613b9",
+      "tmux_visibility_kill_switch_exists": true,
+      "tmux_completion_ping_kill_switch_exists": true,
+      "next_command": "python3 scripts/resume_agent750_to_753.py --launch"
+    },
+    "latest_launch_observation": {
+      "observed_at_local": "2026-05-10T15:42:30+0500",
+      "status": "LAUNCHED_MONITOR_ONLY",
+      "run_id": "codecaptain_agent751_752_753_validate_only_wave_20260510_154229",
+      "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/codecaptain_agent751_752_753_validate_only_wave_20260510_154229/orchestration_manifest.json",
+      "agents": {
+        "751": "%329",
+        "752": "%326",
+        "753": "%327"
+      },
+      "orchestrator_ping_mode": "monitor-only",
+      "visibility_panes": []
+    },
+    "latest_db_boundary_observation": {
+      "observed_at_local": "2026-05-10T12:45:12+0500",
+      "status": "BLOCKED_BY_READINESS",
+      "errors": [
+        "production_db_sha_mismatch",
+        "protected_workbook_sha_mismatch"
+      ],
+      "reviewed_db_sha256_before_drift": "dec77f37cc63147e54e9085a6a0f9564d9ead9e57aea0d8483dc0473886bee64",
+      "current_db_sha256": "f8ab3968cb9ea2f718f789f3bf1ee08742d41a6b5ae8c0cca6da421f9f70b156",
+      "current_db_mtime_local": "2026-05-10T11:12:22+0500",
+      "current_workbook_sha256": "7cf6eb60607d2b1a6e1cd238156121c897f22fcb319426a376a66dfac3f4bd75",
+      "current_workbook_mtime_local": "2026-05-10T11:07:20+0500",
+      "triage_summary": "Fresh read-only triage found no active lsof holder, exact GREEN answer present, DB integrity ok, and 11:00 Kaspi import / ActiveOrders / workbook catalog / CRM identity artifacts explaining narrow DB drift. The current 11:12 DB SHA and 11:07 workbook SHA remain unreviewed; no launch, tmux ping, or production mutation was performed by this watcher."
+    },
+    "latest_resume_controller_observation": {
+      "observed_at_local": "2026-05-10T12:45:12+0500",
+      "dry_run_status": "BLOCKED_BY_READINESS",
+      "launch_attempt_with_candidate_panes_status": "BLOCKED_BY_READINESS",
+      "candidate_panes_used_for_blocked_probe": "%329,%326,%327",
+      "errors": [
+        "production_db_sha_mismatch",
+        "protected_workbook_sha_mismatch"
+      ],
+      "latest_db_boundary_drift_triage": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/DB_BOUNDARY_DRIFT_TRIAGE_20260510_124512.md",
+      "latest_db_boundary_supplemental_review_request": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CODECAPTAIN_DB_BOUNDARY_SUPPLEMENT_AGENT750_20260510_124512.md",
+      "tmux_visibility_kill_switch_exists": true,
+      "tmux_completion_ping_kill_switch_exists": true,
+      "decision_token_defense": "next-action reporter, resume controller, and guarded launcher now independently require GREEN_TO_LAUNCH_AGENT751_752_753_VALIDATE_ONLY_WAVE even if readiness ok is true",
+      "note": "Probe did not import, launch, ping tmux, or mutate production; it proves candidate panes cannot bypass readiness or the DB/workbook-boundary stopline."
+    },
+    "latest_waiter_observation": {
+      "observed_at_local": "2026-05-10T12:45:12+0500",
+      "timeout_seconds": 0,
+      "poll_count": 1,
+      "timed_out": false,
+      "status": "BLOCKED_BY_DB_BOUNDARY_REVIEW",
+      "errors": [
+        "production_db_sha_mismatch",
+        "protected_workbook_sha_mismatch"
+      ],
+      "watcher_mode": "read_only_no_import_no_launch_no_tmux_ping"
+    },
+    "latest_live_stopline_probe": {
+      "observed_at_local": "2026-05-10T12:45:12+0500",
+      "resume_controller_with_candidate_panes": {
+        "command": "python3 scripts/resume_agent750_to_753.py --reuse-panes %329,%326,%327",
+        "status": "BLOCKED_BY_READINESS",
+        "errors": [
+          "production_db_sha_mismatch",
+          "protected_workbook_sha_mismatch"
+        ]
+      },
+      "guarded_launcher_dry_run_with_candidate_panes": {
+        "command": "python3 scripts/launch_agent751_753_after_agent750.py --reuse-panes %329,%326,%327 --dry-run",
+        "status": "BLOCKED_BY_READINESS",
+        "errors": [
+          "production_db_sha_mismatch",
+          "protected_workbook_sha_mismatch"
+        ]
+      },
+      "receiver_mode_probe": {
+        "command": "python3 ~/.codex/skills/tmux-agent-orchestrator/scripts/launch_tmux_agents.py --repo ~/Docs/Autonomous_business --starter-folder ~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/starter_prompts --session autonomous_business --orchestrator-ping-mode receiver --auto-create-orchestrator-receiver --orchestrator-pane AUTO --agents 751 --reuse-panes %329 --no-start-sessions --prepare-only --dry-run",
+        "status": "BLOCKED_BY_COMPLETION_PING_KILL_SWITCH",
+        "errors": [
+          "tmux completion pings are disabled for this repo"
+        ]
+      },
+      "side_effects": "No answer import, Agent751/752/753 launch, production DB/workbook write, scheduler mutation, external write, owner approval request, tmux visibility ping, chat-mode ping, receiver ping, or manual pane ping was performed."
+    },
+    "latest_test_gate": "155 Autonomous Business focused Agent750/751 routing/readiness/review-pack/resume-controller tests plus 22 tmux-agent-orchestrator skill tests passed after monitor-only launcher, dry-run live-pane validation, explicit-json launch-success guard, structured launcher-failure evidence guard, structured monitor-only command-payload guard, no-chat-or-receiver-ping stopline, tmux visibility kill-switch readiness guard, tmux completion-ping kill-switch readiness guard, closeout-only readiness-stopline prompts, exact-GREEN redundant decision-token checks in next-action/resume/launcher controllers, readiness latest completion-audit pointer guard, readiness expected-boundary evidence guard, core readiness latest answer-search evidence guard, live canonical answer-folder refresh guard, answer-importer source-sha review-pack evidence guard, answer-importer replace-duplicate fail-closed guard, answer-importer destination path-type guard, answer-importer completion-audit pointer guard, answer-importer post-apply answer-search refresh guard, answer-importer canonical apply DB-workbook boundary guard, runtime latest completion-audit pointer guard, human answer-surface completion-audit pointer guard, review-pack validator completion-audit pointer guard, review-pack validator Answer README stopline-triage pointer guard, review-pack validator status-pointer source fail-closed guard, runtime review-pack validator-manifest health guard, shared review-pack status helper drift guard, shared review-pack status-json fail-closed guard, shared review-pack json-shape fail-closed guard, shared review-pack field-shape fail-closed guard, review-pack launch-health fail-closed guard, review-pack import-health fail-closed guard, status-pointer json-shape fail-closed guard, resume-controller guarded-launch dry-run preflight guard, resume-controller ready-is-not-launched output guard, resume-controller pane-selection fail-closed evidence guard, resume-controller apply-import-and-launch separation guard, resume-controller pre-import DB-boundary guard, reporter/resume/pane-lister DB-workbook boundary evidence guard, resume-controller source-required import-flag guard, resume-controller apply-import ready-without-launch guard, resume-controller replace-forwarding guard, resume-controller explicit reuse-pane validation guard, resume-controller current-pane reuse rejection guard, resume-controller blocked-while-missing-answer guard, resume-controller DB-boundary triage/supplement pointer guard, resume-controller expected-boundary evidence guard, resume-controller review-pack ZIP evidence guard, GREEN-plus-import DB-boundary mismatch guard, post-answer launch-surface DB-boundary review guard, guarded launcher blocked review-pack ZIP evidence guard, guarded launcher expected-boundary evidence guard, guarded launcher post-readiness blocked review-pack evidence guard, human send-surface DB-boundary supplement guard, read-only watcher DB-boundary supplement guard, read-only watcher review-pack ZIP evidence guard, starter-prompt DB-boundary review guard, pane-lister readiness gate guard, pane-lister expected-boundary evidence guard, pane-lister exact-GREEN decision-token guard, pane-lister insufficient-candidates fail-closed guard, pane-lister tmux-list failure evidence guard, pane-lister blocked review-pack ZIP evidence guard, pane-lister current-pane exclusion guard, launcher current-pane reuse rejection guard, next-action reporter stable stopline pointer guard, next-action reporter review-pack ZIP evidence guard, next-action reporter expected-boundary evidence guard, reporter/status stopline pointer consistency guard, reporter/status exact status-wording consistency guard, chat-ping kill-switch hardening, completion-ping kill-switch hardening, explicit skipped-ping marker guard, monitor-only prompt-footer no-manual-tmux-send-key guard, monitor-only prompt-footer no-manual-tmux-send-key-even-if-asked-later guard, gated-send monitor-only prompt-footer no-manual-ping guard, gated-send monitor-only prompt-footer no-manual-ping-even-if-asked-later guard, active operator-doc receiver-stale-wording guard, stale non-RED launch-authority pack guard, handoff manifest/SHA consistency guard, top-level send-readme validator guard, unexpected-pack-file rejection, Answer-folder whitelist/duplicate-answer guard, Answer README content guard, optional upload ZIP handoff guard, optional upload ZIP byte-for-byte source-file guard, active stale review-pack marker guard, review-pack validator upload ZIP byte-match guard, stable stopline review-pack evidence guard, waiting-pointer review-pack evidence guard, latest audit quality guard, latest completion audit two-blocker guard, current-stopline-before-historical-launch handoff guard, current-stopline-before-historical-launch plan guard, stable current Agent750 stopline pointer guard, stable pointer two-blocker guard, human answer-surface stopline pointer guard, ready-is-not-launched human-surface guard, apply-import-launch separation human-surface guard, latest timestamped audit/checkpoint pointer guard, stopline checkpoint generator guard, current-objective-audit status pointer guard, current-objective-audit pane-lister readiness guard, next-action current-objective-audit pointer guard, and read-only watcher current-objective-audit pointer guard",
+    "latest_recovery_observation": {
+      "observed_at_local": "2026-05-10T16:01:59+0500",
+      "status": "COMPLETE_MIXED_GATE_AGENT753_RED",
+      "run_id": "codecaptain_agent751_752_753_validate_only_wave_recovery_20260510_155101",
+      "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/codecaptain_agent751_752_753_validate_only_wave_recovery_20260510_155101/orchestration_manifest.json",
+      "gates": {
+        "751": "GREEN",
+        "752": "GREEN",
+        "753": "RED"
+      },
+      "red_reason": "Agent753 out-of-bound ads validator report writes under exports/validation",
+      "next_safe_move": "triage Agent753 RED before scheduler, owner publication, external writes, or fully-green packaging"
+    }
+  },
+  "latest_completion_audit": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ACTIVE_OBJECTIVE_COMPLETION_AUDIT_20260510_090511.md",
+  "latest_stopline_triage": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOPLINE_TRIAGE_NEXT_BEST_STEP_AGENT750_20260510_124512.md",
+  "latest_stopline_checkpoint": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CURRENT_STOPLINE_CHECKPOINT_AGENT750_WAITING_20260510_153929.md",
+  "current_stopline_pointer": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CURRENT_AGENT750_STOPLINE.md",
+  "waiting_pointer": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/WAITING_FOR_EXTERNAL_REVIEW_AGENT750.md",
+  "latest_guardrail_delivery_unit": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/AGENT750_GUARDRAIL_DELIVERY_UNIT_20260510_022334.md",
+  "latest_current_objective_audit": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CURRENT_OBJECTIVE_AUDIT_AGENT750_BLOCKED_20260510_124512.md",
+  "latest_agent753_red_triage": {
+    "status": "AGENT753_RED_CONTAINED_LOCAL_PATCH_GREEN_REVIEW_REQUIRED",
+    "checked_at_local": "2026-05-10T16:18:56+0500",
+    "triage_closeout": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/AGENT753_RED_TRIAGE_CONTAINMENT_20260510_161856.md",
+    "patched_files": [
+      "~/Docs/Autonomous_business/scripts/run_option_c_validate_only.py",
+      "~/Docs/Autonomous_business/tests/test_run_option_c_validate_only.py"
+    ],
+    "focused_test": "pytest -q tests/test_run_option_c_validate_only.py -> 5 passed in 0.07s",
+    "containment_behavior": "ads validators now require copied DB targeting and evidence-dir output containment; missing or out-of-evidence outputs fail with BLOCKED_UNCONTAINED_VALIDATOR_OUTPUT",
+    "historical_out_of_bound_paths": [
+      "~/Docs/Autonomous_business/exports/validation/ads_sidecar_readiness/2026-05-04/ads_sidecar_readiness_report.json",
+      "~/Docs/Autonomous_business/exports/validation/ads_sidecar_readiness/2026-05-04/ads_sidecar_readiness_report.md",
+      "~/Docs/Autonomous_business/exports/validation/crm_north_star_rebuild/2026-03-05/ads_offer_universe_report.json"
+    ],
+    "remaining_gate": "Review acceptance required before fully-green packaging, scheduler automation, owner-publication green, production DB/workbook mutation, or external writes."
+  },
+  "latest_agent753_containment_boundary_review_pack": {
+    "status": "READY_TO_SEND_TO_CODECAPTAIN",
+    "generated_at_local": "2026-05-10T16:53:45+0500",
+    "folder": "~/Docs/Oracle/Autonomous_business/2026-05-10/165345_TASK-000_codecaptain-agent753-containment-boundary-review",
+    "bundle": "~/Docs/Oracle/Autonomous_business/2026-05-10/165345_TASK-000_codecaptain-agent753-containment-boundary-review/165345_TASK-000_codecaptain-agent753-containment-boundary-review.md",
+    "bundle_sha256": "a5cbbd409f4ae1b53041f411d1b2eabc66c1d384c6f6f2ab1149ca4b95141244",
+    "request_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-10/165345_TASK-000_codecaptain-agent753-containment-boundary-review/CODECAPTAIN_AGENT753_CONTAINMENT_BOUNDARY_REVIEW_REQUEST_20260510_165230.md",
+    "request_sidecar_sha256": "2116e0af012d6dc2e258332f5be56590c528eff13eaccee63ad7ba21440fca01",
+    "mandatory_csv": "~/Docs/Oracle/Autonomous_business/2026-05-10/165345_TASK-000_codecaptain-agent753-containment-boundary-review/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "mandatory_csv_sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "file_count": 3,
+    "bundle_size_bytes": 166196,
+    "decision_tokens": [
+      "GREEN_ACCEPT_AGENT753_CONTAINMENT_AND_CURRENT_BOUNDARY_FOR_VALIDATE_ONLY_PROOF",
+      "YELLOW_NEEDS_MORE_CONTAINMENT_OR_BOUNDARY_PROOF",
+      "RED_DO_NOT_CONTINUE_VALIDATE_ONLY_CHAIN"
+    ],
+    "scope": "Non-authorizing review only; does not allow scheduler automation, production DB/workbook mutation, external writes, owner-publication green, or owner approval request."
+  },
+  "latest_agent753_containment_boundary_answer": {
+    "status": "GREEN_ACCEPTED_FOR_COPIED_DB_VALIDATE_ONLY_PROOF_ONLY",
+    "observed_at_local": "2026-05-10T18:05:25+0500",
+    "answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/165345_TASK-000_codecaptain-agent753-containment-boundary-review/answer/Code_Captain_10.05.2026_17_16_57.md",
+    "recorded_acceptance": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CODECAPTAIN_AGENT753_CONTAINMENT_ACCEPTANCE_20260510_180525.md",
+    "decision_token": "GREEN_ACCEPT_AGENT753_CONTAINMENT_AND_CURRENT_BOUNDARY_FOR_VALIDATE_ONLY_PROOF",
+    "scope": "Authorizes only the next copied-DB validate-only Cash Risk Daily proof; no scheduler, production mutation, external write, owner-publication green, owner approval request, production apply, old phrase reuse, or Agent64 activation."
+  },
+    "latest_cash_risk_daily_validate_only_proof": {
+    "status": "GREEN_ACCEPTED_REVIEW_ONLY",
+    "generated_at_local": "2026-05-10T18:08:44+0500",
+    "closeout": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/OPTION_C_CASH_RISK_DAILY_VALIDATE_ONLY_PROOF_CLOSEOUT_20260510_180844.md",
+    "evidence_dir": "~/Docs/Autonomous_business/exports/validation/option_c_validate_only/cash_risk_daily_20260510_180607",
+    "copied_db_sha256": "df46fc5c94d9383090d5ba2cb002b230f05011ac6c4eca35d10d184ba8e8515b",
+    "protected_workbook_sha256": "30881fa2df782cff9961b96b781033cddb7c25ced4415f8ec239989155efdd90",
+    "runner_message": "OPTION_C_VALIDATE_ONLY_GREEN",
+    "validator_matrix_status": "GREEN",
+    "banner_status": "GREEN",
+    "validator_pass_count": 7,
+    "warning_cohorts_visible": {
+      "product_identity_quarantine": 23,
+      "header_only_source_gap": 252
+    },
+    "blocked_decisions_preserved": [
+      "cash_movement",
+      "supplier_payment",
+      "po_commitment",
+      "ad_spend",
+      "external_send",
+      "workbook_write",
+      "scheduler_enablement",
+      "production_db_write",
+      "price_or_stock_change"
+    ],
+    "review_answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/181112_TASK-000_codecaptain-cash-risk-daily-validate-only-proof-review/answer/Code_Captain_10.05.2026_19_59_01.md",
+    "recorded_acceptance": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CODECAPTAIN_CASH_RISK_DAILY_VALIDATE_ONLY_PROOF_ACCEPTANCE_20260510_200159.md",
+    "decision_token": "GREEN_ACCEPT_CASH_RISK_DAILY_VALIDATE_ONLY_PROOF",
+    "scope": "Accepted for review-only use; not owner-publication or production authority."
+  },
+  "latest_cash_risk_daily_operator_review_surface": {
+    "status": "ACCEPTED_FOR_OWNER_PUBLICATION_READINESS_DELTA",
+    "generated_at_local": "2026-05-10T20:09:36+0500",
+    "path": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CASH_RISK_DAILY_OPERATOR_REVIEW_SURFACE_20260510_200936.md",
+    "operator_acceptance": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CASH_RISK_DAILY_OPERATOR_ACCEPTANCE_PHASE_5_5_20260510_222529.md",
+    "operator_acceptance_generated_at_local": "2026-05-10T22:25:29+0500",
+    "source_evidence_dir": "~/Docs/Autonomous_business/exports/validation/option_c_validate_only/cash_risk_daily_20260510_180607",
+    "decision_basis": "GREEN_ACCEPT_CASH_RISK_DAILY_VALIDATE_ONLY_PROOF",
+    "visible_warnings": [
+      "product_identity_quarantine=23",
+      "header_only_source_gap=252",
+      "ADS_SOURCE_STALE"
+    ],
+    "blocked_decisions": [
+      "cash_movement",
+      "supplier_payment",
+      "po_commitment",
+      "ad_spend",
+      "external_send",
+      "workbook_write",
+      "scheduler_enablement",
+      "production_db_write",
+      "price_or_stock_change"
+    ],
+    "next_recommended_lane": "owner_publication_readiness_delta_review_only_and_ads_source_contract_review",
+    "scope": "Operator review only; not owner-publication, scheduler, production, cash, PO, ad-spend, price/stock, or external-write authority."
+  },
+  "latest_cash_risk_daily_operator_acceptance": {
+    "status": "ACCEPTED_FOR_OWNER_PUBLICATION_READINESS_DELTA",
+    "generated_at_local": "2026-05-10T22:25:29+0500",
+    "path": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CASH_RISK_DAILY_OPERATOR_ACCEPTANCE_PHASE_5_5_20260510_222529.md",
+    "operator_statement": "fully agree, lets do it",
+    "decision_token": "ACCEPTED_FOR_OWNER_PUBLICATION_READINESS_DELTA",
+    "gate": "PHASE_5_5_OPERATOR_ACCEPTED_REVIEW_ONLY",
+    "business_decision_grade_0_to_10": 6.8,
+    "cleared_blockers": [
+      "operator_review_surface_not_yet_accepted",
+      "codecaptain_sequence_reevaluation_yellow_amendment_requires_phase_5_5_operator_gate"
+    ],
+    "remaining_blockers": [
+      "ADS_SOURCE_STALE",
+      "ads_source_packet_content_waiting_for_codecaptain_rereview",
+      "owner_publication_readiness_delta_not_yet_reviewed",
+      "owner_publication_scheduler_production_external_writes_require_separate_authorization"
+    ],
+    "scope": "Review-only acceptance; owner-publication readiness may be evaluated but owner publication, live fetch, scheduler, production, cash, PO, ad-spend, price/stock, and external writes remain blocked."
+  },
+  "latest_business_decision_system_sequence": {
+    "status": "MVOS_FASTTRACK_DAILY_SURVIVAL_BRIEF_V1_GREEN_REVIEW_ONLY",
+    "generated_at_local": "2026-05-11T14:17:31+0500",
+    "decision_memo": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/BUSINESS_DECISION_SYSTEM_GOAL_SEQUENCE_DECISION_MEMO_20260510_203140.md",
+    "phase_map_json": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/business_decision_system_goal_sequence_20260510_203140.json",
+    "accepted_phase_map_json": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/business_decision_system_goal_sequence_phase_5_5_accepted_20260510_222529.json",
+    "mvos_fasttrack_phase_map_json": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/business_decision_system_goal_sequence_mvos_fasttrack_20260511_141731.json",
+    "mvos_fasttrack_integration_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_INTEGRATION_RECORD_20260511_141731.md",
+    "mvos_fasttrack_charter": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/10_DAY_MVOS_FASTTRACK_CHARTER_20260511_141731.md",
+    "mvos_agent760_764_launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_AGENT760_764_LAUNCH_20260511_142845.md",
+    "mvos_agent760_764_tmux_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_142833/orchestration_manifest.json",
+    "mvos_agent759_launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_AGENT759_LAUNCH_20260511_145109.md",
+    "mvos_agent759_tmux_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_145109/orchestration_manifest.json",
+    "reevaluation_request": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CODECAPTAIN_BUSINESS_DECISION_SYSTEM_SEQUENCE_REEVALUATION_REQUEST_20260510_203140.md",
+    "current_grade_0_to_10": 6.8,
+    "current_phase": "MVOS_FASTTRACK_PHASE_B_DAILY_SURVIVAL_BRIEF_V1_GREEN_REVIEW_ONLY",
+    "next_recommended_lane": "phase_c_operating_rehearsal_review_only_or_owner_publication_readiness_delta_review_only",
+    "owner_fasttrack_decision_token": "OWNER_FASTTRACK_APPROVED_NO_ARTIFICIAL_WAIT",
+    "decision_tokens": [
+      "YELLOW_REFOCUS_AND_AMEND_SEQUENCE_BEFORE_NEXT_LANE",
+      "GREEN_ACCEPT_AGENT758_COPIED_TEMP_ADS_PROOF_FOR_NEXT_REVIEW_ONLY_SEQUENCE",
+      "OWNER_FASTTRACK_APPROVED_NO_ARTIFICIAL_WAIT"
+    ],
+    "scope": "Review-only MVOS fast-track roadmap; not owner-publication, scheduler, production, cash, PO, ad-spend, price/stock, or external-write authority."
+  },
+  "latest_business_decision_system_sequence_reevaluation_pack": {
+    "status": "ANSWERED_YELLOW_AMEND_SEQUENCE_BEFORE_NEXT_LANE",
+    "generated_at_local": "2026-05-10T20:34:25+0500",
+    "folder": "~/Docs/Oracle/Autonomous_business/2026-05-10/203425_TASK-000_codecaptain-business-decision-system-sequence-reevaluation",
+    "bundle": "~/Docs/Oracle/Autonomous_business/2026-05-10/203425_TASK-000_codecaptain-business-decision-system-sequence-reevaluation/203425_TASK-000_codecaptain-business-decision-system-sequence-reevaluation.md",
+    "bundle_sha256": "f761f86a5e6e950bdefa299a2dc32252ab05a6a09f82134862620ec7bace3de4",
+    "decision_memo_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-10/203425_TASK-000_codecaptain-business-decision-system-sequence-reevaluation/BUSINESS_DECISION_SYSTEM_GOAL_SEQUENCE_DECISION_MEMO_20260510_203140.md",
+    "decision_memo_sidecar_sha256": "11fa6d49b2a46c339138c0925bb69b872efbdd8449f02a67207ef3b4755e7fca",
+    "mandatory_csv": "~/Docs/Oracle/Autonomous_business/2026-05-10/203425_TASK-000_codecaptain-business-decision-system-sequence-reevaluation/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "mandatory_csv_sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "file_count": 13,
+    "decision_tokens": [
+      "GREEN_ACCEPT_BUSINESS_DECISION_SYSTEM_SEQUENCE",
+      "YELLOW_AMEND_SEQUENCE_BEFORE_NEXT_LANE",
+      "RED_DO_NOT_USE_SEQUENCE"
+    ],
+    "answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/203425_TASK-000_codecaptain-business-decision-system-sequence-reevaluation/answer/Code_Captain_10.05.2026_21_29_24.md",
+    "answer_decision_token": "YELLOW_AMEND_SEQUENCE_BEFORE_NEXT_LANE",
+    "required_amendment": "Add mandatory Phase 5.5 operator acceptance or amendment of the Cash Risk Daily review surface before owner-publication readiness.",
+    "scope": "Non-authorizing review only; does not allow owner-publication, scheduler automation, production DB/workbook mutation, external writes, cash/PO/ad-spend, price/stock changes, or owner approval request."
+  },
+  "latest_business_decision_system_sequence_amendment": {
+    "status": "PHASE_5_5_OPERATOR_ACCEPTED_REVIEW_ONLY",
+    "generated_at_local": "2026-05-10T22:03:20+0500",
+    "amendment_memo": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/BUSINESS_DECISION_SYSTEM_SEQUENCE_CODECAPTAIN_YELLOW_AMENDMENT_20260510_220320.md",
+    "amended_phase_map_json": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/business_decision_system_goal_sequence_amended_20260510_220320.json",
+    "codecaptain_answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/203425_TASK-000_codecaptain-business-decision-system-sequence-reevaluation/answer/Code_Captain_10.05.2026_21_29_24.md",
+    "decision_token": "YELLOW_AMEND_SEQUENCE_BEFORE_NEXT_LANE",
+    "operator_acceptance": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CASH_RISK_DAILY_OPERATOR_ACCEPTANCE_PHASE_5_5_20260510_222529.md",
+    "mandatory_next_gate": "owner_publication_readiness_delta_review_only",
+    "phase_5_5_allowed_outputs": [
+      "ACCEPTED_FOR_OWNER_PUBLICATION_READINESS_DELTA",
+      "NEEDS_OPERATOR_SURFACE_AMENDMENT",
+      "REJECTED_DO_NOT_USE_FOR_OWNER_PUBLICATION_PATH"
+    ],
+    "scope": "Review-only roadmap amendment accepted by operator; owner-publication readiness may be evaluated only as review-only."
+  },
+  "latest_web_automation_ads_adoption_discovery": {
+    "status": "ADS_SOURCE_PACKET_CONTENT_REREVIEW_PACK_READY",
+    "generated_at_local": "2026-05-10T22:03:20+0500",
+    "control": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/WEB_AUTOMATION_ADS_ADOPTION_DISCOVERY_CONTROL_20260510_215225.md",
+    "synthesis": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/WEB_AUTOMATION_ADS_ADOPTION_DISCOVERY_SYNTHESIS_20260510_220320.md",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/web_ads_adoption_readonly_20260510_215225/orchestration_manifest.json",
+    "orchestrator_ping_mode": "monitor-only",
+    "visibility_panes": [],
+    "completion_ping": "skipped_by_monitor_only_and_repo_ping_kill_switch",
+    "group_gate": "YELLOW",
+    "agents": [
+      {
+        "agent_id": "754",
+        "pane": "%326",
+        "gate": "GREEN",
+        "completed_at_utc": "2026-05-10T17:01:12Z",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_754_web_ads_fetch_storage_inventory_closeout.md"
+      },
+      {
+        "agent_id": "755",
+        "pane": "%327",
+        "gate": "GREEN",
+        "completed_at_utc": "2026-05-10T17:00:56Z",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_755_web_ads_freshness_watchers_inventory_closeout.md"
+      },
+      {
+        "agent_id": "756",
+        "pane": "%329",
+        "gate": "YELLOW",
+        "completed_at_utc": "2026-05-10T17:01:31Z",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_756_ab_ads_adoption_mapper_closeout.md",
+        "yellow_reason": "Web_automation adoption needs explicit AB source-contract review before live-readonly proof or adapter implementation."
+      }
+    ],
+    "review_pack": "~/Docs/Oracle/Autonomous_business/2026-05-10/222851_TASK-000_codecaptain-ads-source-contract-review",
+    "recommended_next_ads_lane": "send_codecaptain_ads_source_packet_content_rereview_pack",
+    "scope": "Discovery only; no live fetch, Web_automation write, production DB/workbook write, scheduler mutation, owner publication, or external write authorized."
+  },
+  "latest_ads_source_contract_review_pack": {
+    "status": "ANSWERED_YELLOW_AMENDMENT_IMPLEMENTED_REVIEW_ONLY",
+    "generated_at_local": "2026-05-10T22:28:51+0500",
+    "folder": "~/Docs/Oracle/Autonomous_business/2026-05-10/222851_TASK-000_codecaptain-ads-source-contract-review",
+    "bundle": "~/Docs/Oracle/Autonomous_business/2026-05-10/222851_TASK-000_codecaptain-ads-source-contract-review/222851_TASK-000_codecaptain-ads-source-contract-review.md",
+    "bundle_sha256": "dadd35603f62b0dc3f67194473eb46876c852c8c014a34ec8e84e663dddf4e6a",
+    "request_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-10/222851_TASK-000_codecaptain-ads-source-contract-review/CODECAPTAIN_ADS_SOURCE_CONTRACT_REVIEW_REQUEST_20260510_222529.md",
+    "request_sidecar_sha256": "55b1e25e9318a2b60acaf321515b75451336641cf66ba58a7cdc2485f711533b",
+    "synthesis_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-10/222851_TASK-000_codecaptain-ads-source-contract-review/WEB_AUTOMATION_ADS_ADOPTION_DISCOVERY_SYNTHESIS_20260510_220320.md",
+    "synthesis_sidecar_sha256": "926b8b1b1fc2f5a82c66bdee0e55f4f7b16bbfecedbf612ad465a9a9896e15e0",
+    "mandatory_csv": "~/Docs/Oracle/Autonomous_business/2026-05-10/222851_TASK-000_codecaptain-ads-source-contract-review/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "mandatory_csv_sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "file_count": 4,
+    "decision_tokens": [
+      "GREEN_ACCEPT_ADS_SOURCE_CONTRACT_REVIEW_ONLY",
+      "YELLOW_AMEND_ADS_SOURCE_CONTRACT_BEFORE_LIVE_READONLY",
+      "RED_DO_NOT_USE_WEB_ADS_ADOPTION_PATH"
+    ],
+    "answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/222851_TASK-000_codecaptain-ads-source-contract-review/Answer/Code_Captain_10.05.2026_22_41_58.md",
+    "answer_decision_token": "YELLOW_AMEND_ADS_SOURCE_CONTRACT_BEFORE_LIVE_READONLY",
+    "implementation_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CODECAPTAIN_ADS_SOURCE_CONTRACT_YELLOW_AMENDMENT_IMPLEMENTATION_20260510_225108.md",
+    "scope": "Answered yellow; required source-packet contract amendments are implemented for review-only use. No live fetch, production mutation, scheduler, owner publication, or external write authority."
+  },
+  "latest_ads_source_contract_yellow_amendment_implementation": {
+    "status": "ADS_SOURCE_CONTRACT_YELLOW_AMENDMENT_REREVIEW_PACK_READY",
+    "generated_at_local": "2026-05-10T22:51:08+0500",
+    "codecaptain_answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/222851_TASK-000_codecaptain-ads-source-contract-review/Answer/Code_Captain_10.05.2026_22_41_58.md",
+    "decision_token": "YELLOW_AMEND_ADS_SOURCE_CONTRACT_BEFORE_LIVE_READONLY",
+    "implementation_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CODECAPTAIN_ADS_SOURCE_CONTRACT_YELLOW_AMENDMENT_IMPLEMENTATION_20260510_225108.md",
+    "contract_doc": "~/Docs/Autonomous_business/docs/validation/ADS_WEB_AUTOMATION_SOURCE_PACKET_CONTRACT.md",
+    "validator": "~/Docs/Autonomous_business/scripts/validate_ads_source_packet_contract.py",
+    "core_contract": "~/Docs/Autonomous_business/core/ads/source_packet_contract.py",
+    "tests": "~/Docs/Autonomous_business/tests/test_ads_source_packet_contract.py",
+    "focused_test": "pytest -q tests/test_ads_source_packet_contract.py -> 8 passed in 0.49s",
+    "ads_test_bundle": "pytest -q tests/test_ads_source_packet_contract.py tests/test_ads_canonical_truth.py tests/test_validate_ads_sidecar_readiness.py tests/test_validate_ads_offer_universe_coverage.py -> 30 passed in 1.11s",
+    "rereview_pack": "~/Docs/Oracle/Autonomous_business/2026-05-10/225538_TASK-000_codecaptain-ads-source-contract-yellow-amendment-rereview",
+    "scope": "Review-only implementation packaged for CodeCaptain re-review; live-readonly Web_automation proof still requires CodeCaptain GREEN or explicit next-gate approval."
+  },
+  "latest_ads_source_contract_yellow_amendment_rereview_pack": {
+    "status": "ANSWERED_YELLOW_AMEND_SOURCE_PACKET_CONTRACT_BEFORE_PROOF",
+    "generated_at_local": "2026-05-10T22:55:38+0500",
+    "folder": "~/Docs/Oracle/Autonomous_business/2026-05-10/225538_TASK-000_codecaptain-ads-source-contract-yellow-amendment-rereview",
+    "bundle": "~/Docs/Oracle/Autonomous_business/2026-05-10/225538_TASK-000_codecaptain-ads-source-contract-yellow-amendment-rereview/225538_TASK-000_codecaptain-ads-source-contract-yellow-amendment-rereview.md",
+    "bundle_sha256": "10d414d9723819590acd87bf4739a1c1f8ec51526fb9685d912f0aaf7a5e59f0",
+    "request_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-10/225538_TASK-000_codecaptain-ads-source-contract-yellow-amendment-rereview/CODECAPTAIN_ADS_SOURCE_CONTRACT_YELLOW_AMENDMENT_REREVIEW_REQUEST_20260510_225108.md",
+    "implementation_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-10/225538_TASK-000_codecaptain-ads-source-contract-yellow-amendment-rereview/CODECAPTAIN_ADS_SOURCE_CONTRACT_YELLOW_AMENDMENT_IMPLEMENTATION_20260510_225108.md",
+    "mandatory_csv": "~/Docs/Oracle/Autonomous_business/2026-05-10/225538_TASK-000_codecaptain-ads-source-contract-yellow-amendment-rereview/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "mandatory_csv_sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "file_count": 4,
+    "bundle_size_bytes": 135123,
+    "decision_tokens": [
+      "GREEN_ACCEPT_AMENDED_ADS_SOURCE_PACKET_CONTRACT_FOR_LIVE_READONLY_PROOF",
+      "YELLOW_AMEND_SOURCE_PACKET_CONTRACT_BEFORE_PROOF",
+      "RED_DO_NOT_CONTINUE_WEB_ADS_ADOPTION_PATH"
+    ],
+    "answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/225538_TASK-000_codecaptain-ads-source-contract-yellow-amendment-rereview/answer/Code Captain_10.05.2026_23_09_40.md",
+    "answer_decision_token": "YELLOW_AMEND_SOURCE_PACKET_CONTRACT_BEFORE_PROOF",
+    "scope": "Answered yellow; source-packet content checks required before live-readonly proof. No live fetch, production mutation, scheduler, owner publication, owner approval request, or external write authority."
+  },
+  "latest_ads_source_packet_content_yellow_amendment_implementation": {
+    "status": "ADS_SOURCE_PACKET_CONTENT_REREVIEW_PACK_READY",
+    "generated_at_local": "2026-05-10T23:15:03+0500",
+    "codecaptain_answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/225538_TASK-000_codecaptain-ads-source-contract-yellow-amendment-rereview/answer/Code Captain_10.05.2026_23_09_40.md",
+    "decision_token": "YELLOW_AMEND_SOURCE_PACKET_CONTRACT_BEFORE_PROOF",
+    "implementation_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CODECAPTAIN_ADS_SOURCE_PACKET_CONTENT_YELLOW_AMENDMENT_IMPLEMENTATION_20260510_231503.md",
+    "contract_doc": "~/Docs/Autonomous_business/docs/validation/ADS_WEB_AUTOMATION_SOURCE_PACKET_CONTRACT.md",
+    "validator": "~/Docs/Autonomous_business/scripts/validate_ads_source_packet_contract.py",
+    "core_contract": "~/Docs/Autonomous_business/core/ads/source_packet_contract.py",
+    "tests": "~/Docs/Autonomous_business/tests/test_ads_source_packet_contract.py",
+    "focused_test": "pytest -q tests/test_ads_source_packet_contract.py -> 15 passed in 0.35s",
+    "ads_test_bundle": "pytest -q tests/test_ads_source_packet_contract.py tests/test_ads_canonical_truth.py tests/test_validate_ads_sidecar_readiness.py tests/test_validate_ads_offer_universe_coverage.py -> 37 passed in 1.12s",
+    "scope": "Review-only implementation packaged for CodeCaptain re-review; live-readonly Web_automation proof still requires CodeCaptain GREEN or explicit next-gate approval."
+  },
+  "latest_ads_source_packet_content_rereview_pack": {
+    "status": "ANSWERED_GREEN_ACCEPTED_FOR_LIVE_READONLY_PROOF",
+    "generated_at_local": "2026-05-10T23:16:09+0500",
+    "folder": "~/Docs/Oracle/Autonomous_business/2026-05-10/231609_TASK-000_codecaptain-ads-source-packet-content-rereview",
+    "bundle": "~/Docs/Oracle/Autonomous_business/2026-05-10/231609_TASK-000_codecaptain-ads-source-packet-content-rereview/231609_TASK-000_codecaptain-ads-source-packet-content-rereview.md",
+    "bundle_sha256": "43848e7279e238e05cb138347bbef1c84ef1fc038da6950267df5342b4b46688",
+    "request_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-10/231609_TASK-000_codecaptain-ads-source-packet-content-rereview/CODECAPTAIN_ADS_SOURCE_PACKET_CONTENT_REREVIEW_REQUEST_20260510_231503.md",
+    "implementation_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-10/231609_TASK-000_codecaptain-ads-source-packet-content-rereview/CODECAPTAIN_ADS_SOURCE_PACKET_CONTENT_YELLOW_AMENDMENT_IMPLEMENTATION_20260510_231503.md",
+    "mandatory_csv": "~/Docs/Oracle/Autonomous_business/2026-05-10/231609_TASK-000_codecaptain-ads-source-packet-content-rereview/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "mandatory_csv_sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "file_count": 4,
+    "bundle_size_bytes": 157769,
+    "decision_tokens": [
+      "GREEN_ACCEPT_ADS_SOURCE_PACKET_CONTENT_CONTRACT_FOR_LIVE_READONLY_PROOF",
+      "YELLOW_AMEND_ADS_SOURCE_PACKET_CONTENT_BEFORE_PROOF",
+      "RED_DO_NOT_CONTINUE_WEB_ADS_ADOPTION_PATH"
+    ],
+    "answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/231609_TASK-000_codecaptain-ads-source-packet-content-rereview/Answer/Code Captain_11.05.2026_11_27_43.md",
+    "answer_decision_token": "GREEN_ACCEPT_ADS_SOURCE_PACKET_CONTENT_CONTRACT_FOR_LIVE_READONLY_PROOF",
+    "scope": "Answered green for bounded live-readonly or copied-packet proof only; no production mutation, scheduler, owner publication, owner approval request, Web_automation write, browser-login automation, credential/session export, or external write authority."
+  },
+  "latest_ads_source_packet_live_readonly_proof": {
+    "status": "AGENT758_GREEN_COPIED_TEMP_ONLY",
+    "generated_at_local": "2026-05-11T12:39:31+0500",
+    "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ADS_SOURCE_PACKET_LIVE_READONLY_PROOF_PLAN_20260511_113319.md",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ADS_SOURCE_PACKET_LIVE_READONLY_PROOF_ORCHESTRATOR_HANDOFF_20260511_113319.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/ADS_SOURCE_PACKET_LIVE_READONLY_PROOF_STARTERS_20260511_113319",
+    "launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ADS_SOURCE_PACKET_LIVE_READONLY_PROOF_AGENT757_LAUNCH_20260511_113748.md",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/ads_source_packet_live_readonly_proof_20260511_113319/orchestration_manifest.json",
+    "evidence_root": "~/Docs/Autonomous_business/exports/validation/ads_source_packet_live_readonly_proof/20260511_113319",
+    "agent757": {
+      "status": "GREEN",
+      "pane": "%327",
+      "reused_pane": true,
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_757_web_ads_source_packet_builder_closeout.md",
+      "packet_manifest": "~/Docs/Autonomous_business/exports/validation/ads_source_packet_live_readonly_proof/20260511_113319/agent757_packet/packet_manifest.json",
+      "strict_validator_stdout": "~/Docs/Autonomous_business/exports/validation/ads_source_packet_live_readonly_proof/20260511_113319/agent757_packet/strict_validator_stdout.json",
+      "strict_validator_result": "ok_true_errors_empty_warnings_empty",
+      "business_store_code": "ACMEWEAR",
+      "access_store_code": "ACMEWEAR",
+      "storeb_gap_visible": true
+    },
+    "agent758": {
+      "status": "GREEN",
+      "pane": "%327",
+      "reused_pane": true,
+      "launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ADS_SOURCE_PACKET_LIVE_READONLY_PROOF_AGENT758_LAUNCH_20260511_115725.md",
+      "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/ads_source_packet_live_readonly_proof_agent758_20260511_115711/orchestration_manifest.json",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_758_ab_copied_temp_adapter_replay_closeout.md",
+      "evidence_root": "~/Docs/Autonomous_business/exports/validation/ads_source_packet_live_readonly_proof/20260511_113319/agent758_replay",
+      "copied_db": "~/Docs/Autonomous_business/exports/validation/ads_source_packet_live_readonly_proof/20260511_113319/agent758_replay/app_copy.sqlite",
+      "copied_db_sha256_initial": "83975bf508343c61ce69cb642b9c61bcc27a4016b149fb964bac5f07cf2d9e5b",
+      "copied_db_sha256_final": "99437b4a28aa038502735bc05f5a6102c6f7ef3cc78b5fd6c67f91b275b266d2",
+      "production_sha256_before_copy": "83975bf508343c61ce69cb642b9c61bcc27a4016b149fb964bac5f07cf2d9e5b",
+      "production_sha256_after_all_agent758_steps": "83975bf508343c61ce69cb642b9c61bcc27a4016b149fb964bac5f07cf2d9e5b",
+      "production_sha256_unchanged_by_agent758": true,
+      "final_outcome": "ADS_SOURCE_STALE_CLEARED_BY_SOURCE_FRESH_PACKET_IN_COPIED_TEMP_REPLAY",
+      "ads_sidecar_readiness_after_replay": "PASS",
+      "ads_offer_universe_after_replay": "PASS",
+      "campaign_max_date_after_replay": "2026-05-11",
+      "refresh_max_date_end_after_replay": "2026-05-11",
+      "warning_cohorts_visible": {
+        "product_identity_quarantine": 23,
+        "header_only_source_gap": 252
+      },
+      "storeb_gap_status": "GAP"
+    },
+    "fresh_window_launch_attempt": {
+      "status": "failed_before_prompt",
+      "error": "create window failed: fork failed: Too many open files"
+    },
+    "orchestrator_ping_mode": "monitor-only",
+    "visibility_panes": [],
+    "scope": "Agent757 built and strict-validated the immutable source packet under the evidence root only. Agent758 completed copied/temp adapter replay with no production DB/workbook, Web_automation, scheduler, browser-login, credentials, sessions, or external writes. CodeCaptain accepted the proof for copied/temp review-only sequence use only."
+  },
+  "latest_agent758_copied_temp_ads_proof_review_pack": {
+    "status": "ANSWERED_GREEN_ACCEPTED_FOR_NEXT_REVIEW_ONLY_SEQUENCE",
+    "generated_at_local": "2026-05-11T12:37:37+0500",
+    "folder": "~/Docs/Oracle/Autonomous_business/2026-05-11/123737_TASK-000_codecaptain-agent758-copied-temp-ads-proof-review",
+    "bundle": "~/Docs/Oracle/Autonomous_business/2026-05-11/123737_TASK-000_codecaptain-agent758-copied-temp-ads-proof-review/123737_TASK-000_codecaptain-agent758-copied-temp-ads-proof-review.md",
+    "bundle_sha256": "56fc7e77dfba8ab5168fe98c9e903cef608fbf6809edcc57cabf62e72efd848e",
+    "request_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-11/123737_TASK-000_codecaptain-agent758-copied-temp-ads-proof-review/CODECAPTAIN_AGENT758_COPIED_TEMP_ADS_PROOF_REVIEW_REQUEST_20260511_123612.md",
+    "request_sidecar_sha256": "eb2567bfa6e2ce4aeee1508de0402228aebe035c24bdfe85c37be29c7f173941",
+    "mandatory_csv": "~/Docs/Oracle/Autonomous_business/2026-05-11/123737_TASK-000_codecaptain-agent758-copied-temp-ads-proof-review/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "mandatory_csv_sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "file_count": 17,
+    "bundle_size_bytes": 467959,
+    "decision_tokens": [
+      "GREEN_ACCEPT_AGENT758_COPIED_TEMP_ADS_PROOF_FOR_NEXT_REVIEW_ONLY_SEQUENCE",
+      "YELLOW_AMEND_AGENT758_PROOF_BEFORE_NEXT_SEQUENCE",
+      "RED_DO_NOT_USE_AGENT758_PROOF"
+    ],
+    "answer": "~/Docs/Oracle/Autonomous_business/2026-05-11/123737_TASK-000_codecaptain-agent758-copied-temp-ads-proof-review/answer/Code Captain_11.05.2026_14_12_21_pt-2.md",
+    "answer_decision_token": "GREEN_ACCEPT_AGENT758_COPIED_TEMP_ADS_PROOF_FOR_NEXT_REVIEW_ONLY_SEQUENCE",
+    "accepted_ads_labels": [
+      "ACMEWEAR_ADS_SOURCE_FRESH_IN_COPIED_TEMP_REPLAY",
+      "STOREB_ADS_SOURCE_GAP_VISIBLE_NOT_ZERO_SPEND",
+      "ADS_SOURCE_STALE_CLEARED_FOR_ACMEWEAR_COPIED_TEMP_REPLAY_ONLY"
+    ],
+    "scope": "Answered green for copied/temp review-only sequence use. Does not authorize production DB/workbook mutation, Web_automation writes, browser-login automation, credential/session export, scheduler mutation, owner publication, owner approval request, external writes, ad spend, cash movement, price changes, stock changes, or PO commitment."
+  },
+  "latest_mvos_fasttrack_integration": {
+    "status": "MVOS_FASTTRACK_DAILY_SURVIVAL_BRIEF_V1_GREEN_REVIEW_ONLY",
+    "generated_at_local": "2026-05-11T14:17:31+0500",
+    "integration_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_INTEGRATION_RECORD_20260511_141731.md",
+    "charter": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/10_DAY_MVOS_FASTTRACK_CHARTER_20260511_141731.md",
+    "phase_map_json": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/business_decision_system_goal_sequence_mvos_fasttrack_20260511_141731.json",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_ORCHESTRATOR_HANDOFF_20260511_141731.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/MVOS_FASTTRACK_STARTERS_20260511_141731",
+    "agent760_764_launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_AGENT760_764_LAUNCH_20260511_142845.md",
+    "agent760_764_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_142833/orchestration_manifest.json",
+    "agent759_launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_FASTTRACK_AGENT759_LAUNCH_20260511_145109.md",
+    "agent759_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_145109/orchestration_manifest.json",
+    "agent759_closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/mvos_fasttrack_20260511_141731_agent759_daily_survival_brief_writer_closeout.md",
+    "daily_survival_brief_v1": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/DAILY_SURVIVAL_BRIEF_V1_20260511_141731.md",
+    "fresh_window_launch_attempt": {
+      "status": "failed_before_prompt",
+      "error": "create window failed: fork failed: Too many open files"
+    },
+    "watcher_checked_at_local": "2026-05-11T14:50:56+0500",
+    "current_boundary_refresh": {
+      "production_db_sha256": "d653f2cc423b3db545190a08ba6074676f561f44da15bb70ece71a7a9b9f39bc",
+      "production_db_mtime_local": "2026-05-11T13:45:09+0500",
+      "protected_workbook_sha256": "b6aed4dd78ef956bd0d7207a614bbaa2c6a0a0369d85b4d06ded2e1c3a57251a",
+      "protected_workbook_mtime_local": "2026-05-11T11:06:24+0500",
+      "db_integrity_check": "ok",
+      "scope": "awareness_only_read_only_observation_not_production_authority"
+    },
+    "owner_fasttrack_decision_token": "OWNER_FASTTRACK_APPROVED_NO_ARTIFICIAL_WAIT",
+    "fasttrack_rule": "10-day schedule is a maximum checkpoint ladder, not a waiting rule; execute safe green-gated work earlier whenever possible.",
+    "next_active_output": "PHASE_C_OPERATING_REHEARSAL_REVIEW_ONLY_OR_OWNER_PUBLICATION_READINESS_DELTA_REVIEW_ONLY",
+    "parallel_root_agents": [
+      "760_cash_risk_readonly",
+      "761_stock_order_risk_readonly",
+      "762_ads_warning_status_readonly",
+      "763_source_freshness_owner_publication_boundary_readonly",
+      "764_scheduler_design_readonly"
+    ],
+    "parallel_root_agent_states": {
+      "760": "GREEN_closeout_present",
+      "761": "GREEN_closeout_present",
+      "762": "GREEN_closeout_present",
+      "763": "GREEN_closeout_present",
+      "764": "GREEN_closeout_present"
+    },
+    "serialized_writer_agent": "759_daily_survival_brief_writer_after_760_761_762_763",
+    "serialized_writer_agent_state": "GREEN_closeout_present",
+    "scope": "Review-only fast-track control plane; no production, scheduler, owner-publication, external-write, cash, PO, ad-spend, price, or stock authority."
+  },
+  "latest_mvos_phase_c_plus_prep": {
+    "status": "MVOS_PHASE_C_PLUS_SYNTHESIS_GREEN_WITH_STOREB_YELLOW",
+    "generated_at_local": "2026-05-11T15:40:19+0500",
+    "advance_authorization": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_PREP_ADVANCE_AUTHORIZATION_20260511_154019.md",
+    "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_PREP_PLAN_20260511_154019.md",
+    "phase_map_json": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/business_decision_system_goal_sequence_mvos_phase_c_plus_prep_20260511_154019.json",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_PREP_ORCHESTRATOR_HANDOFF_20260511_154019.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/MVOS_PHASE_C_PLUS_PREP_STARTERS_20260511_154019",
+    "agent765_769_launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_AGENT765_769_LAUNCH_20260511_154446.md",
+    "agent765_769_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_154446/orchestration_manifest.json",
+    "agent770_launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_AGENT770_LAUNCH_20260511_155113.md",
+    "agent770_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_155113/orchestration_manifest.json",
+    "agent770_closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/mvos_phase_c_plus_20260511_154019_agent770_synthesis_closeout.md",
+    "agent770_synthesis": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_SYNTHESIS_20260511_154019.md",
+    "owner_approval_token": "OWNER_APPROVED_REVIEW_ONLY_AND_PREP_FASTTRACK",
+    "parallel_root_agents": [
+      "765_operating_rehearsal_review_only",
+      "766_owner_publication_readiness_delta_review_only",
+      "767_storeb_ads_source_gap_proof_plan",
+      "768_scheduler_dry_run_contract_static",
+      "769_production_prep_packet_design"
+    ],
+    "parallel_root_agent_states": {
+      "765": "GREEN_closeout_present",
+      "766": "GREEN_closeout_present",
+      "767": "YELLOW_closeout_present_storeb_live_readonly_proof_needed",
+      "768": "GREEN_closeout_present",
+      "769": "GREEN_closeout_present"
+    },
+    "serialized_writer_agent": "770_phase_c_plus_synthesis_writer_after_765_766_767_768_769",
+    "serialized_writer_agent_state": "GREEN_closeout_present",
+    "watcher_checked_at_local": "2026-05-11T15:55:34+0500",
+    "recommended_next_lane": "Agent771_STOREB_ADS_READONLY_SOURCE_PACKET_AND_COPIED_TEMP_REPLAY",
+    "scope": "Review-only and inert prep only; no production, scheduler, owner-publication, external-write, cash, PO, ad-spend, price, or stock authority."
+  },
+  "latest_mvos_storeb_ads_readonly_source_proof": {
+    "status": "AGENT771_YELLOW_SOURCE_GAP_STILL_VISIBLE",
+    "generated_at_local": "2026-05-11T15:56:05+0500",
+    "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_STOREB_ADS_READONLY_SOURCE_PROOF_PLAN_20260511_155605.md",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_STOREB_ADS_READONLY_SOURCE_PROOF_ORCHESTRATOR_HANDOFF_20260511_155605.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/MVOS_STOREB_ADS_READONLY_SOURCE_PROOF_STARTERS_20260511_155605",
+    "starter_manifest": "~/Docs/Autonomous_business/docs/agent_handoffs/MVOS_STOREB_ADS_READONLY_SOURCE_PROOF_STARTERS_20260511_155605/STARTER_PACK_MANIFEST.json",
+    "launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_STOREB_ADS_AGENT771_LAUNCH_20260511_160032.md",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_160032/orchestration_manifest.json",
+    "superseded_shell_launch_manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/tmux_agents_20260511_155950/orchestration_manifest.json",
+    "superseded_shell_launch_status": "interrupted_and_replaced_before_any_closeout",
+    "evidence_root": "~/Docs/Autonomous_business/exports/validation/storeb_ads_readonly_source_packet/20260511_155605",
+    "agent771": {
+      "state": "YELLOW_closeout_present",
+      "pane": "%319",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/mvos_storeb_ads_readonly_source_20260511_155605_agent771_closeout.md",
+      "current_label_preserved": "STOREB_ADS_SOURCE_GAP_VISIBLE_NOT_ZERO_SPEND",
+      "final_label": "STOREB_ADS_SOURCE_GAP_STILL_VISIBLE",
+      "packet_created": false,
+      "copied_temp_replay_ran": false,
+      "missing_dates": [
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08",
+        "2026-05-09",
+        "2026-05-10",
+        "2026-05-11"
+      ],
+      "final_blocker_classification": "~/Docs/Autonomous_business/exports/validation/storeb_ads_readonly_source_packet/20260511_155605/final_blocker_classification.json",
+      "source_surface_inventory": "~/Docs/Autonomous_business/exports/validation/storeb_ads_readonly_source_packet/20260511_155605/source_surface_inventory.json",
+      "strict_packet_validator_result": "~/Docs/Autonomous_business/exports/validation/storeb_ads_readonly_source_packet/20260511_155605/strict_packet_validator_result.json"
+    },
+    "watcher_checked_at_local": "2026-05-11T16:05:33+0500",
+    "post_closeout_boundary_refresh": {
+      "checked_at_local": "2026-05-11T16:08:10+0500",
+      "production_db_sha256": "2bbf18558a540cd9282ce6c31ca04ed163ae05f16414afc1937e2a31820859fb",
+      "production_db_mtime_local": "2026-05-11T16:02:27+0500",
+      "production_db_integrity_check": "ok",
+      "protected_workbook_sha256": "6b1748420d1b771545b86e2558bfe1a69c177f65294a1c9d28fbd99031825327",
+      "protected_workbook_mtime_local": "2026-05-11T16:07:02+0500",
+      "observed_lsof": "Python PID 25930 held excel_ui/SALES_KSP_CRM_V3.xlsx read-only during audit; no lsof holder observed for db/app.db",
+      "likely_background_artifacts": [
+        "~/Docs/Autonomous_business/exports/google_ops_board/2026-05-11/enrich_kaspi_orders_from_activeorders_20260511_160227.json",
+        "~/Docs/Autonomous_business/exports/google_ops_board/2026-05-11/sync_google_ops_board_20260511_160133.json",
+        "~/Docs/Autonomous_business/exports/google_ops_board/health/2026-05-11/publish_health.json"
+      ],
+      "scope": "awareness_only_live_boundary_refresh_after_background_ops; does not authorize owner publication, production apply, scheduler execution, or external writes"
+    },
+    "recommended_next_lane": "obtain_fresh_storeb_source_packet_or_request_separate_exact_bounded_live_readonly_capture_authorization",
+    "scope": "STOREB ads source proof on evidence/copy/temp surfaces only; no production DB/workbook mutation, Web_automation write, browser-login automation, credential/session export, scheduler mutation, owner publication, owner approval request, external write, ad spend, cash movement, PO commitment, price change, or stock change authority."
+  },
+  "latest_storeb_live_readonly_capture": {
+    "status": "AGENT772_GREEN_MAPPING_BLOCKER_VISIBLE",
+    "generated_at_local": "2026-05-11T17:08:52+0500",
+    "launched_at_local": "2026-05-11T17:12:38+0500",
+    "completed_at_utc": "2026-05-11T12:42:57Z",
+    "checked_at_local": "2026-05-11T18:56:19+0500",
+    "owner_authorization": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_LIVE_READONLY_CAPTURE_AUTHORIZATION_20260511_170852.md",
+    "owner_authorization_scope": "bounded_storeb_live_readonly_capture_only",
+    "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_LIVE_READONLY_CAPTURE_PLAN_20260511_170852.md",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_LIVE_READONLY_CAPTURE_ORCHESTRATOR_HANDOFF_20260511_170852.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/STOREB_LIVE_READONLY_CAPTURE_STARTERS_20260511_170852",
+    "starter_manifest": "~/Docs/Autonomous_business/docs/agent_handoffs/STOREB_LIVE_READONLY_CAPTURE_STARTERS_20260511_170852/STARTER_PACK_MANIFEST.json",
+    "launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_LIVE_READONLY_CAPTURE_AGENT772_LAUNCH_20260511_171238.md",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/storeb_live_readonly_capture_20260511_170852/orchestration_manifest.json",
+    "evidence_root": "~/Docs/Autonomous_business/exports/validation/storeb_live_readonly_capture/20260511_170852",
+    "agent772": {
+      "state": "GREEN_closeout_present",
+      "pane": "%319",
+      "reused_pane": true,
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/storeb_live_readonly_capture_20260511_170852_agent772_closeout.md",
+      "packet_manifest": "~/Docs/Autonomous_business/exports/validation/storeb_live_readonly_capture/20260511_170852/agent772_packet/packet_manifest.json",
+      "strict_validator_result": "PASS_ok_true_exit_0",
+      "copied_db": "~/Docs/Autonomous_business/exports/validation/storeb_live_readonly_capture/20260511_170852/agent772_replay/app_copy.sqlite",
+      "final_blocker_classification": "~/Docs/Autonomous_business/exports/validation/storeb_live_readonly_capture/20260511_170852/final_blocker_classification.json",
+      "final_storeb_label": "STOREB_ADS_MAPPING_BLOCKER_VISIBLE",
+      "required_window_covered": "2026-05-05..2026-05-11",
+      "missing_dates": [],
+      "daily_source_rows": 70,
+      "distinct_product_codes": 10,
+      "total_report_cost_kzt": 38624.07,
+      "mapped_source_rows": 21,
+      "unmapped_rows": 49,
+      "storeb_product_code_mappings_mapped": 3,
+      "storeb_product_code_mappings_blocked": 7,
+      "unmapped_source_cost_kzt": 10206.8,
+      "ads_sidecar_readiness_after_replay": "PASS_with_ADS_SOURCE_STALE_warning",
+      "ads_offer_universe_after_replay": "PASS",
+      "apply_mode_readiness_probe": "FAIL_ADS_SOURCE_STALE_configured_external_source_path",
+      "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/storeb_live_readonly_capture_20260511_170852/completions/root/agent_772.json"
+    },
+    "orchestrator_ping_mode": "monitor-only",
+    "visibility_panes": [],
+    "forbidden_actions_preserved": [
+      "production_db_write",
+      "workbook_write",
+      "web_automation_repo_write",
+      "browser_login_automation",
+      "credential_or_session_export",
+      "scheduler_automation",
+      "launchagent_change",
+      "owner_publication",
+      "owner_approval_request",
+      "external_write",
+      "kaspi_merchant_write",
+      "ad_spend",
+      "bid_budget_campaign_mutation",
+      "cash_movement",
+      "po_commitment",
+      "price_change",
+      "stock_change"
+    ],
+    "production_boundary_note": "Agent772 closeout reports production DB SHA drifted after the copied DB was created, outside Agent772 copied/temp writes. Current live boundary was refreshed read-only after completion.",
+    "post_completion_boundary_refresh": {
+      "checked_at_local": "2026-05-11T18:56:19+0500",
+      "production_db_sha256": "8b44c925ef99ff30603b9c704279a63af31289c562589822204af6c94ceb97e0",
+      "production_db_mtime_local": "2026-05-11T17:39:41+0500",
+      "production_db_integrity_check": "ok",
+      "protected_workbook_sha256": "abef2d310e768bc76f54c9cfe5a6f72c6d22eab2504894114bafb493916f67a8",
+      "protected_workbook_mtime_local": "2026-05-11T17:06:27+0500",
+      "scope": "awareness_only_read_only_observation_not_production_authority"
+    },
+    "scope": "Agent772 completed bounded STOREB live-readonly capture into the assigned AB evidence root, strict-valid packet proof, and copied/temp replay. This does not authorize production DB/workbook mutation, owner publication, scheduler, external writes, cash/PO/ad-spend, price, or stock actions."
+  },
+  "latest_storeb_mapping_repair_proof": {
+    "status": "AGENT773_GREEN_RESIDUAL_MAPPING_BLOCKER_VISIBLE",
+    "generated_at_local": "2026-05-11T19:52:24+0500",
+    "launched_at_local": "2026-05-11T19:52:53+0500",
+    "completed_at_utc": "2026-05-11T15:12:43Z",
+    "checked_at_local": "2026-05-11T20:24:23+0500",
+    "owner_authorization": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_MAPPING_REPAIR_PROOF_AUTHORIZATION_20260511_195224.md",
+    "owner_authorization_scope": "copied_temp_storeb_mapping_repair_proof_only",
+    "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_MAPPING_REPAIR_PROOF_PLAN_20260511_195224.md",
+    "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_MAPPING_REPAIR_PROOF_ORCHESTRATOR_HANDOFF_20260511_195224.md",
+    "starter_folder": "~/Docs/Autonomous_business/docs/agent_handoffs/STOREB_MAPPING_REPAIR_PROOF_STARTERS_20260511_195224",
+    "starter_manifest": "~/Docs/Autonomous_business/docs/agent_handoffs/STOREB_MAPPING_REPAIR_PROOF_STARTERS_20260511_195224/STARTER_PACK_MANIFEST.json",
+    "launch_record": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_MAPPING_REPAIR_PROOF_AGENT773_LAUNCH_20260511_195253.md",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/storeb_mapping_repair_proof_20260511_195224/orchestration_manifest.json",
+    "evidence_root": "~/Docs/Autonomous_business/exports/validation/storeb_mapping_repair_proof/20260511_195224",
+    "agent773": {
+      "state": "GREEN_closeout_present",
+      "pane": "%319",
+      "reused_pane": true,
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/storeb_mapping_repair_proof_20260511_195224_agent773_closeout.md",
+      "copied_db": "~/Docs/Autonomous_business/exports/validation/storeb_mapping_repair_proof/20260511_195224/agent773_replay/app_copy.sqlite",
+      "final_blocker_classification": "~/Docs/Autonomous_business/exports/validation/storeb_mapping_repair_proof/20260511_195224/final_blocker_classification.json",
+      "mapping_decision_table": "~/Docs/Autonomous_business/exports/validation/storeb_mapping_repair_proof/20260511_195224/agent773_mapping_evidence/mapping_decision_table.csv",
+      "candidate_mapping_sidecar": "~/Docs/Autonomous_business/exports/validation/storeb_mapping_repair_proof/20260511_195224/agent773_mapping_evidence/candidate_mapping_sidecar.csv",
+      "candidate_mapping_sidecar_rows": 0,
+      "final_storeb_label": "STOREB_ADS_MAPPING_BLOCKER_VISIBLE",
+      "storeb_product_code_mappings_mapped": 3,
+      "storeb_product_code_mappings_blocked": 7,
+      "unmapped_rows": 49,
+      "unmapped_source_cost_kzt": 10206.8,
+      "ads_sidecar_readiness_live": "PASS_with_ADS_SOURCE_STALE_warning",
+      "ads_sidecar_readiness_apply_probe": "FAIL_ADS_SOURCE_STALE_configured_external_source_path",
+      "ads_offer_universe_coverage": "PASS",
+      "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/storeb_mapping_repair_proof_20260511_195224/completions/root/agent_773.json"
+    },
+    "upstream_agent772_final_label": "STOREB_ADS_MAPPING_BLOCKER_VISIBLE",
+    "upstream_mapping_blocker": {
+      "storeb_product_code_mappings_blocked": 7,
+      "storeb_product_code_mappings_total": 10,
+      "unmapped_rows": 49,
+      "unmapped_source_cost_kzt": 10206.8
+    },
+    "agent773_result": {
+      "new_candidate_mappings": 0,
+      "product_name_only_mapping_used": false,
+      "classification_reason": "No deterministic product-code/order-entry/article-map/catalog evidence was found for the seven Agent772 blocked STOREB product codes. The copied/temp replay preserved the blocker and did not convert blocked rows to zero spend.",
+      "blocked_product_codes": [
+        "11391140b",
+        "11391205b",
+        "11391711b",
+        "11869884b",
+        "11956144b",
+        "12071269b",
+        "12236047b"
+      ]
+    },
+    "orchestrator_ping_mode": "monitor-only",
+    "visibility_panes": [],
+    "forbidden_actions_preserved": [
+      "production_db_write",
+      "workbook_write",
+      "web_automation_repo_write",
+      "browser_login_automation",
+      "credential_or_session_export",
+      "scheduler_automation",
+      "launchagent_change",
+      "owner_publication",
+      "owner_approval_request",
+      "external_write",
+      "kaspi_merchant_write",
+      "ad_spend",
+      "bid_budget_campaign_mutation",
+      "cash_movement",
+      "po_commitment",
+      "price_change",
+      "stock_change"
+    ],
+    "post_completion_boundary_refresh": {
+      "checked_at_local": "2026-05-11T20:24:23+0500",
+      "production_db_sha256": "eae573dc7230f4f280e04160da939360aaa0af4a8ec35bc24339bcbb1326ecd2",
+      "production_db_mtime_local": "2026-05-11T19:10:56+0500",
+      "production_db_integrity_check": "ok",
+      "protected_workbook_sha256": "abef2d310e768bc76f54c9cfe5a6f72c6d22eab2504894114bafb493916f67a8",
+      "protected_workbook_mtime_local": "2026-05-11T17:06:27+0500",
+      "scope": "awareness_only_read_only_observation_not_production_authority"
+    },
+    "scope": "Agent773 completed copied/temp STOREB mapping repair proof under assigned evidence. Residual unmapped rows remain blockers. This does not authorize production DB/workbook mutation, owner publication, scheduler, external writes, cash/PO/ad-spend, price, or stock actions."
+  },
+  "latest_storeb_owner_sku_mapping_decision_packet": {
+    "status": "OWNER_DECISION_REQUIRED",
+    "generated_at_local": "2026-05-11T21:12:50+0500",
+    "packet": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_OWNER_SKU_MAPPING_DECISION_PACKET_20260511_211250.md",
+    "csv_sidecar": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_OWNER_SKU_MAPPING_DECISION_PACKET_20260511_211250.csv",
+    "basis": [
+      "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/storeb_mapping_repair_proof_20260511_195224_agent773_closeout.md",
+      "~/Docs/Autonomous_business/exports/validation/storeb_mapping_repair_proof/20260511_195224/final_blocker_classification.json",
+      "~/Docs/Autonomous_business/exports/validation/storeb_mapping_repair_proof/20260511_195224/agent773_mapping_evidence/mapping_decision_table.csv"
+    ],
+    "decision_required_for_product_codes": [
+      "11391140b",
+      "11391205b",
+      "11391711b",
+      "11869884b",
+      "11956144b",
+      "12071269b",
+      "12236047b"
+    ],
+    "blocked_source_cost_kzt": 10206.8,
+    "decision_tokens": [
+      "OWNER_APPROVES_ALL_7_STOREB_BLOCKED_PRODUCT_CODES_TO_CL_OC_MEN_LINE52_BLACK_2026-05-11",
+      "OWNER_APPROVES_STOREB_ROW_LEVEL_SKU_MAPPING_2026-05-11",
+      "OWNER_KEEP_STOREB_7_BLOCKED_PRODUCT_CODES_BLOCKED_2026-05-11"
+    ],
+    "scope": "Owner decision packet only. It does not authorize production apply, scheduler, owner publication, external writes, Kaspi merchant writes, ad spend, cash/PO, price, or stock actions. Any owner mapping decision must be replayed in a separate copied/temp proof lane before review."
+  },
+  "latest_codecaptain_proscope_full_repo_state_pack": {
+    "status": "ANSWERED_YELLOW_REFOCUS_TO_MVOS_FASTTRACK",
+    "generated_at_local": "2026-05-11T11:51:00+0500",
+    "folder": "~/Docs/Oracle/Autonomous_business/2026-05-11/115100_TASK-000_codecaptain-proscope-full-repo-state-analysis",
+    "bundle": "~/Docs/Oracle/Autonomous_business/2026-05-11/115100_TASK-000_codecaptain-proscope-full-repo-state-analysis/115100_TASK-000_codecaptain-proscope-full-repo-state-analysis.md",
+    "bundle_sha256": "294538d9900d30886f43b43d068b15a42dd6b64e2e581da62839c961d6b41773",
+    "request_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-11/115100_TASK-000_codecaptain-proscope-full-repo-state-analysis/CODECAPTAIN_PROSCOPE_FULL_REPO_STATE_ANALYSIS_REQUEST_20260511_114701.md",
+    "request_sidecar_sha256": "fbbed1ab212d91142693b4e04de3982739571a3f005dbea5aa66de608f3f5445",
+    "mandatory_csv": "~/Docs/Oracle/Autonomous_business/2026-05-11/115100_TASK-000_codecaptain-proscope-full-repo-state-analysis/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "mandatory_csv_sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "file_count": 11,
+    "bundle_size_bytes": 1272853,
+    "decision_tokens": [
+      "GREEN_ACCEPT_CURRENT_SEQUENCE_TO_CONTINUE_COPIED_TEMP_ONLY",
+      "YELLOW_AMEND_SEQUENCE_BEFORE_AGENT758_OR_NEXT_PROSCOPE",
+      "RED_DO_NOT_CONTINUE_CURRENT_PATH"
+    ],
+    "answer": "~/Docs/Oracle/Autonomous_business/2026-05-11/115100_TASK-000_codecaptain-proscope-full-repo-state-analysis/Answer/Code Captain_11.05.2026_12_36_52.md",
+    "answer_decision_token": "YELLOW_REFOCUS_AND_AMEND_SEQUENCE_BEFORE_NEXT_LANE",
+    "required_refocus": "10-day Minimum Viable Operating System centered on one daily survival operating packet.",
+    "scope": "Answered yellow/refocus for analysis-only MVOS strategy. Does not authorize production DB/workbook mutation, Web_automation writes, browser-login automation, credential/session export, scheduler mutation, owner publication, external writes, ad spend, cash movement, price changes, stock changes, or PO commitment."
+  },
+  "latest_cash_risk_daily_validate_only_proof_review_pack": {
+    "status": "ANSWERED_GREEN_ACCEPTED_REVIEW_ONLY",
+    "generated_at_local": "2026-05-10T18:11:12+0500",
+    "folder": "~/Docs/Oracle/Autonomous_business/2026-05-10/181112_TASK-000_codecaptain-cash-risk-daily-validate-only-proof-review",
+    "bundle": "~/Docs/Oracle/Autonomous_business/2026-05-10/181112_TASK-000_codecaptain-cash-risk-daily-validate-only-proof-review/181112_TASK-000_codecaptain-cash-risk-daily-validate-only-proof-review.md",
+    "bundle_sha256": "1b97a0aef1ce389284c449d17f9e8b755b85501cfd9af220a772793ae535ae6a",
+    "request_sidecar": "~/Docs/Oracle/Autonomous_business/2026-05-10/181112_TASK-000_codecaptain-cash-risk-daily-validate-only-proof-review/CODECAPTAIN_CASH_RISK_DAILY_VALIDATE_ONLY_PROOF_REVIEW_REQUEST_20260510_180844.md",
+    "request_sidecar_sha256": "6ee2a9d1a82d478df66e8da7ab66b176ab07c3a1bb41858ca7248f406883ec9d",
+    "mandatory_csv": "~/Docs/Oracle/Autonomous_business/2026-05-10/181112_TASK-000_codecaptain-cash-risk-daily-validate-only-proof-review/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "mandatory_csv_sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "file_count": 3,
+    "bundle_size_bytes": 257689,
+    "decision_tokens": [
+      "GREEN_ACCEPT_CASH_RISK_DAILY_VALIDATE_ONLY_PROOF",
+      "YELLOW_NEEDS_MORE_VALIDATE_ONLY_PROOF",
+      "RED_DO_NOT_USE_CASH_RISK_DAILY_PROOF"
+    ],
+    "answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/181112_TASK-000_codecaptain-cash-risk-daily-validate-only-proof-review/answer/Code_Captain_10.05.2026_19_59_01.md",
+    "answer_decision_token": "GREEN_ACCEPT_CASH_RISK_DAILY_VALIDATE_ONLY_PROOF",
+    "scope": "Answered green for review-only use; scheduler, production DB/workbook mutation, external writes, owner-publication green, and owner approval remain blocked."
+  },
+  "latest_agent751_753_recovery_wave": {
+    "status": "COMPLETE_MIXED_GATE_AGENT753_RED",
+    "completed_at_local": "2026-05-10T16:00:50+0500",
+    "run_id": "codecaptain_agent751_752_753_validate_only_wave_recovery_20260510_155101",
+    "manifest": "~/Docs/Autonomous_business/runs/tmux_orchestration/codecaptain_agent751_752_753_validate_only_wave_recovery_20260510_155101/orchestration_manifest.json",
+    "events": "~/Docs/Autonomous_business/runs/tmux_orchestration/codecaptain_agent751_752_753_validate_only_wave_recovery_20260510_155101/events.jsonl",
+    "recovery_closeout": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/AGENT751_752_753_RECOVERY_WAVE_CLOSEOUT_20260510_160159.md",
+    "false_red_recovery_note": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/AGENT751_752_753_FALSE_RED_RECOVERY_20260510_155014.md",
+    "orchestrator_ping_mode": "monitor-only",
+    "visibility_panes": [],
+    "completion_ping": "skipped_by_monitor_only_and_repo_ping_kill_switch",
+    "group_gate": "RED",
+    "agents": [
+      {
+        "agent_id": "751",
+        "pane": "%329",
+        "gate": "GREEN",
+        "completed_at_local": "2026-05-10T15:59:58+0500",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/codecaptain_agent751_752_753_validate_only_wave_recovery_20260510_155101/completions/agent751_752_753_validate_only_recovery/agent_751.json",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_751_option_c_validate_only_runner_contract_closeout.md"
+      },
+      {
+        "agent_id": "752",
+        "pane": "%326",
+        "gate": "GREEN",
+        "completed_at_local": "2026-05-10T15:56:21+0500",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/codecaptain_agent751_752_753_validate_only_wave_recovery_20260510_155101/completions/agent751_752_753_validate_only_recovery/agent_752.json",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_752_cash_risk_daily_surface_spec_readonly_closeout.md"
+      },
+      {
+        "agent_id": "753",
+        "pane": "%327",
+        "gate": "RED",
+        "completed_at_local": "2026-05-10T16:00:50+0500",
+        "completion_marker": "~/Docs/Autonomous_business/runs/tmux_orchestration/codecaptain_agent751_752_753_validate_only_wave_recovery_20260510_155101/completions/agent751_752_753_validate_only_recovery/agent_753.json",
+        "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_753_source_freshness_exception_queue_map_readonly_closeout.md",
+        "red_reason": "ads validators refreshed repo-local ignored report files under exports/validation outside assigned evidence folder"
+      }
+    ],
+    "out_of_bound_paths": [
+      "~/Docs/Autonomous_business/exports/validation/ads_sidecar_readiness/2026-05-04/ads_sidecar_readiness_report.json",
+      "~/Docs/Autonomous_business/exports/validation/ads_sidecar_readiness/2026-05-04/ads_sidecar_readiness_report.md",
+      "~/Docs/Autonomous_business/exports/validation/crm_north_star_rebuild/2026-03-05/ads_offer_universe_report.json"
+    ]
+  }
+}

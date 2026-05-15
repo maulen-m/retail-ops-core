@@ -1,0 +1,36 @@
+{
+  "starter_pack_id": "mvos_storeb_ads_readonly_source_proof_20260511_155605",
+  "created_at": "2026-05-11T15:56:05+05:00",
+  "repo": "~/Docs/Autonomous_business",
+  "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_STOREB_ADS_READONLY_SOURCE_PROOF_PLAN_20260511_155605.md",
+  "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_STOREB_ADS_READONLY_SOURCE_PROOF_ORCHESTRATOR_HANDOFF_20260511_155605.md",
+  "upstream_synthesis": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_SYNTHESIS_20260511_154019.md",
+  "upstream_closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/mvos_phase_c_plus_20260511_154019_agent770_synthesis_closeout.md",
+  "evidence_root": "~/Docs/Autonomous_business/exports/validation/storeb_ads_readonly_source_packet/20260511_155605",
+  "agents": [
+    {
+      "agent_id": 771,
+      "prompt": "01_AGENT_771__STOREB_ADS_READONLY_SOURCE_PACKET_AND_COPIED_TEMP_REPLAY__ROOT.md",
+      "mode": "root",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/mvos_storeb_ads_readonly_source_20260511_155605_agent771_closeout.md"
+    }
+  ],
+  "orchestrator_ping_mode": "monitor-only",
+  "forbidden": [
+    "production_db_write",
+    "workbook_write",
+    "web_automation_repo_write",
+    "browser_login_automation",
+    "credential_or_session_export",
+    "scheduler_automation",
+    "launchagent_change",
+    "owner_publication",
+    "owner_approval_request",
+    "external_write",
+    "ad_spend",
+    "cash_movement",
+    "po_commitment",
+    "price_change",
+    "stock_change"
+  ]
+}

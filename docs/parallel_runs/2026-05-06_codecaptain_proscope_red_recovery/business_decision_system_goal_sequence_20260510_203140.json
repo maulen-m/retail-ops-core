@@ -1,0 +1,119 @@
+{
+  "schema": "autonomous_business.business_decision_system_goal_sequence.v1",
+  "generated_at_local": "2026-05-10T20:31:40+0500",
+  "status": "READY_FOR_CODECAPTAIN_REEVALUATION",
+  "current_active_status": "CASH_RISK_DAILY_OPERATOR_REVIEW_SURFACE_READY",
+  "current_business_decision_grade_0_to_10": 6.5,
+  "current_authority": "review_only",
+  "current_blockers": [
+    "operator_review_surface_not_yet_accepted",
+    "owner_publication_scheduler_production_external_writes_require_separate_authorization",
+    "ADS_SOURCE_STALE"
+  ],
+  "visible_warnings": [
+    {
+      "code": "product_identity_quarantine",
+      "row_count": 23,
+      "handling": "visible_warning_do_not_treat_as_product_truth"
+    },
+    {
+      "code": "header_only_source_gap",
+      "row_count": 252,
+      "handling": "evidence_only_do_not_insert_or_productize"
+    },
+    {
+      "code": "ADS_SOURCE_STALE",
+      "row_count": null,
+      "handling": "visible_warning_blocks_ads_dependent_owner_publication_and_ad_spend_claims"
+    }
+  ],
+  "phase_ladder": [
+    {
+      "phase": 0,
+      "target_state": "no_trusted_decision_chain",
+      "state": "superseded"
+    },
+    {
+      "phase": 1,
+      "target_state": "evidence_inventory_and_boundary_awareness",
+      "state": "superseded"
+    },
+    {
+      "phase": 2,
+      "target_state": "current_boundary_validate_only_plan",
+      "state": "superseded"
+    },
+    {
+      "phase": 3,
+      "target_state": "guarded_validate_only_runner_contract",
+      "state": "complete"
+    },
+    {
+      "phase": 4,
+      "target_state": "copied_db_proof_with_validators_and_trust_banner",
+      "state": "complete"
+    },
+    {
+      "phase": 5,
+      "target_state": "operator_review_surface_with_warnings_and_blocked_decisions",
+      "state": "current"
+    },
+    {
+      "phase": 6,
+      "target_state": "owner_publication_readiness_delta_reviewed",
+      "state": "next_recommended"
+    },
+    {
+      "phase": 7,
+      "target_state": "fresh_source_proof_rerun_cleanly",
+      "state": "pending"
+    },
+    {
+      "phase": 8,
+      "target_state": "scheduler_design_only_contract",
+      "state": "pending"
+    },
+    {
+      "phase": 9,
+      "target_state": "backup_first_gated_production_apply_and_owner_safe_output_flow",
+      "state": "pending_separate_authorization"
+    },
+    {
+      "phase": 10,
+      "target_state": "fully_functional_business_decision_system_with_recurring_safe_ops",
+      "state": "final_goal"
+    }
+  ],
+  "recommended_sequence": [
+    "codecaptain_reevaluate_sequence",
+    "operator_accept_or_amend_review_surface",
+    "owner_publication_readiness_delta_review_only",
+    "fresh_copied_db_proof_refresh_if_required",
+    "decision_surface_hardening_if_useful",
+    "scheduler_design_only_after_readiness",
+    "production_live_lane_only_after_separate_authorization"
+  ],
+  "decision_tokens": [
+    "GREEN_ACCEPT_BUSINESS_DECISION_SYSTEM_SEQUENCE",
+    "YELLOW_AMEND_SEQUENCE_BEFORE_NEXT_LANE",
+    "RED_DO_NOT_USE_SEQUENCE"
+  ],
+  "not_authorized": [
+    "owner_publication_green",
+    "owner_send",
+    "owner_approval_request",
+    "scheduler_automation",
+    "launchagent_or_plist_mutation",
+    "production_db_write",
+    "protected_workbook_write",
+    "external_system_write",
+    "cash_movement",
+    "supplier_payment",
+    "po_commitment",
+    "ad_spend",
+    "price_or_stock_change",
+    "production_apply",
+    "old_phrase_reuse",
+    "agent64_activation"
+  ]
+}

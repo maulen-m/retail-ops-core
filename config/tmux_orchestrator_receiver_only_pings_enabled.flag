@@ -1,0 +1,13 @@
+Receiver-only tmux completion pings are enabled for Autonomous_business after
+the non-production dummy proof at:
+
+~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/TMUX_RECEIVER_PING_DUMMY_PROOF_CLOSEOUT_20260512_123253.md
+
+Rules:
+- Keep live/human-visible chat routing disabled via config/tmux_orchestrator_visibility_disabled.flag.
+- Use receiver-only pings with an inert/log receiver pane and manifest attestation.
+- Do not use orchestrator_ping_mode=chat or --visibility-pane LIVE until a separate live-chat proof is explicitly approved.
+- Keep closeout files and completion marker JSON as authority; receiver pings are only wake-up signals.
+
+Archived all-ping kill switch:
+~/Docs/Autonomous_business/config/tmux_orchestrator_pings_disabled.flag.archived_20260512_123253_receiver_only_proof

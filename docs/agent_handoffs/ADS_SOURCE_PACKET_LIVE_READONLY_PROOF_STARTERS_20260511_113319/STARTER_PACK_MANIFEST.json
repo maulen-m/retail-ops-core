@@ -1,0 +1,42 @@
+{
+  "starter_pack_id": "ads_source_packet_live_readonly_proof_20260511_113319",
+  "created_at": "2026-05-11T11:33:19+05:00",
+  "repo": "~/Docs/Autonomous_business",
+  "authority_answer": "~/Docs/Oracle/Autonomous_business/2026-05-10/231609_TASK-000_codecaptain-ads-source-packet-content-rereview/Answer/Code Captain_11.05.2026_11_27_43.md",
+  "authority_gate": "GREEN_ACCEPT_ADS_SOURCE_PACKET_CONTENT_CONTRACT_FOR_LIVE_READONLY_PROOF",
+  "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ADS_SOURCE_PACKET_LIVE_READONLY_PROOF_PLAN_20260511_113319.md",
+  "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/ADS_SOURCE_PACKET_LIVE_READONLY_PROOF_ORCHESTRATOR_HANDOFF_20260511_113319.md",
+  "evidence_root": "~/Docs/Autonomous_business/exports/validation/ads_source_packet_live_readonly_proof/20260511_113319",
+  "agents": [
+    {
+      "agent_id": 757,
+      "prompt": "01_AGENT_757__WEB_ADS_SOURCE_PACKET_BUILDER__SEQUENTIAL.md",
+      "mode": "sequential_first",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_757_web_ads_source_packet_builder_closeout.md"
+    },
+    {
+      "agent_id": 758,
+      "prompt": "02_AGENT_758__AB_COPIED_TEMP_ADAPTER_REPLAY__AFTER_757_GREEN.md",
+      "mode": "after_agent_757_green",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/agent_758_ab_copied_temp_adapter_replay_closeout.md"
+    }
+  ],
+  "orchestrator_ping_mode": "monitor-only",
+  "forbidden": [
+    "production_db_write",
+    "workbook_write",
+    "scheduler_automation",
+    "launchagent_change",
+    "owner_publication",
+    "owner_approval_request",
+    "web_automation_repo_write",
+    "browser_login_automation",
+    "credential_or_session_export",
+    "external_write",
+    "ad_spend",
+    "cash_movement",
+    "po_commitment",
+    "price_change",
+    "stock_change"
+  ]
+}

@@ -1,0 +1,127 @@
+{
+  "schema": "autonomous_business.business_decision_system_goal_sequence.v1",
+  "generated_at_local": "2026-05-10T22:25:29+0500",
+  "status": "PHASE_5_5_OPERATOR_ACCEPTED_REVIEW_ONLY",
+  "source_amended_phase_map_json": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/business_decision_system_goal_sequence_amended_20260510_220320.json",
+  "operator_acceptance": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/CASH_RISK_DAILY_OPERATOR_ACCEPTANCE_PHASE_5_5_20260510_222529.md",
+  "current_active_status": "CASH_RISK_DAILY_OPERATOR_ACCEPTED_REVIEW_ONLY",
+  "current_business_decision_grade_0_to_10": 6.8,
+  "current_authority": "review_only",
+  "cleared_blockers": [
+    "operator_review_surface_not_yet_accepted",
+    "codecaptain_sequence_reevaluation_yellow_amendment_requires_phase_5_5_operator_gate"
+  ],
+  "current_blockers": [
+    "ADS_SOURCE_STALE",
+    "ads_source_contract_not_reviewed",
+    "owner_publication_readiness_delta_not_yet_reviewed",
+    "owner_publication_scheduler_production_external_writes_require_separate_authorization"
+  ],
+  "visible_warnings": [
+    {
+      "code": "product_identity_quarantine",
+      "row_count": 23,
+      "handling": "visible_warning_do_not_treat_as_product_truth"
+    },
+    {
+      "code": "header_only_source_gap",
+      "row_count": 252,
+      "handling": "evidence_only_do_not_insert_or_productize"
+    },
+    {
+      "code": "ADS_SOURCE_STALE",
+      "row_count": null,
+      "handling": "visible_warning_blocks_ads_dependent_owner_publication_profit_after_ads_and_ad_spend_claims"
+    }
+  ],
+  "phase_ladder": [
+    {
+      "phase": 0,
+      "target_state": "no_trusted_decision_chain",
+      "state": "superseded"
+    },
+    {
+      "phase": 1,
+      "target_state": "evidence_inventory_and_boundary_awareness",
+      "state": "superseded"
+    },
+    {
+      "phase": 2,
+      "target_state": "current_boundary_validate_only_plan",
+      "state": "superseded"
+    },
+    {
+      "phase": 3,
+      "target_state": "guarded_validate_only_runner_contract",
+      "state": "complete"
+    },
+    {
+      "phase": 4,
+      "target_state": "copied_db_proof_with_validators_and_trust_banner",
+      "state": "complete"
+    },
+    {
+      "phase": 5,
+      "target_state": "operator_review_surface_with_warnings_and_blocked_decisions",
+      "state": "complete"
+    },
+    {
+      "phase": 5.5,
+      "target_state": "operator_acceptance_or_amendment_of_cash_risk_daily_review_surface",
+      "state": "complete"
+    },
+    {
+      "phase": 6,
+      "target_state": "owner_publication_readiness_delta_reviewed",
+      "state": "next_recommended_review_only"
+    },
+    {
+      "phase": 7,
+      "target_state": "fresh_source_proof_rerun_cleanly",
+      "state": "pending_source_contract_review_and_separate_approval"
+    },
+    {
+      "phase": 8,
+      "target_state": "scheduler_design_only_contract",
+      "state": "pending"
+    },
+    {
+      "phase": 9,
+      "target_state": "backup_first_gated_production_apply_and_owner_safe_output_flow",
+      "state": "pending_separate_authorization"
+    },
+    {
+      "phase": 10,
+      "target_state": "fully_functional_business_decision_system_with_recurring_safe_ops",
+      "state": "final_goal"
+    }
+  ],
+  "recommended_sequence": [
+    "owner_publication_readiness_delta_review_only",
+    "ads_source_contract_review_pack_design_only",
+    "fresh_copied_db_or_live_readonly_ads_proof_only_after_explicit_approval",
+    "decision_surface_hardening_if_useful",
+    "scheduler_design_only_after_readiness",
+    "production_live_lane_only_after_separate_authorization"
+  ],
+  "not_authorized": [
+    "owner_publication_green",
+    "owner_send",
+    "owner_approval_request",
+    "scheduler_automation",
+    "launchagent_or_plist_mutation",
+    "production_db_write",
+    "protected_workbook_write",
+    "web_automation_write",
+    "browser_login_or_live_fetch_without_separate_approval",
+    "external_system_write",
+    "cash_movement",
+    "supplier_payment",
+    "po_commitment",
+    "ad_spend",
+    "price_or_stock_change",
+    "production_apply",
+    "old_phrase_reuse",
+    "agent64_activation"
+  ]
+}

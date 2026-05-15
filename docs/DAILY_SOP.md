@@ -11,6 +11,7 @@ Write-side apply contract authority: `docs/WRITE_SIDE_GATING_CONTRACT.md` and `d
 Promotion evidence policy authority: `docs/OPS_ROLLOUT_EVIDENCE_V2_9_PROMOTION_POLICY_2026-02-20.md`.
 Daily import + waybill workflow contract authority: `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`.
 Google Ops Board phase-1 contract authority: `docs/ops/GOOGLE_OPS_BOARD_PHASE1_CONTRACT.md`.
+Business automation pause/resume authority: `docs/ops/BUSINESS_AUTOMATION_CONTROL_RUNBOOK.md`.
 
 Google Ops Board operational contract (employee sizing surface):
 - `SalesRaw_Today` is the primary editable daily table.
@@ -61,12 +62,28 @@ Current daily scheduler contract (GMT+5):
 - Google Ops Board closeout backstop job: `18:30`
 - closeout is checkpointed and resume-capable; later retries resume from the last safe green stage
 - after successful delivery send, closeout runs the DB-only shipped-truth sync immediately; the `19:15` and next-day `09:30` jobs are fallback repairs if the Mac/API is unavailable
+- physical courier handover is checked separately from Telegram PDF delivery:
+  - after successful Telegram bundle delivery, a passive handover watcher is armed for one compact final check at `20:00`; it must not spam interval messages into the group
+  - employee can press `Передал курьеру` or send `/handover_done`; bot waits `60s` and checks Kaspi `Передача` with a compact status
+  - employee/owner can send `Передача` or `/handover_status` for an immediate compact read-only handover check
+  - employee/owner can send `/hfull` for the full audit table when the compact status is not enough
+  - the check is green only when no assembled `KASPI_DELIVERY / ACCEPTED_BY_MERCHANT` orders remain without `courierTransmissionDate` in the target/overdue window
+  - if an order's PDF was sent in Telegram but Kaspi still shows no `courierTransmissionDate`, it remains operationally unshipped and must carry forward into the next `MERGED/SEND` batch until physically handed over
+  - overdue carry-forward is based on merged per-order DB evidence, not one physical DB row: size and waybill evidence may be split across duplicate rows, while any `courierTransmissionDate` excludes the order from re-bundling
 - owner Telegram alerts are low-noise:
   - prewindow green / red
   - closeout started / resumed
   - closeout failed / complete
 - daily ops report job: `19:10`
   - read-only reporting; it must not be treated as the shipped-truth population job
+
+Canonical business automation pause/resume:
+- inspect current daily-ops automation state with `python3 scripts/manage_business_automation.py status --scope daily-ops`
+- dry-run planned pauses/resumes before applying them
+- real launchd mutation requires both `ENABLE_BUSINESS_AUTOMATION_CONTROL=1` and `--apply`
+- frozen proof windows must pass `python3 scripts/manage_business_automation.py verify --scope daily-ops --expect paused`
+- restored daily order processing must pass `python3 scripts/manage_business_automation.py verify --scope daily-ops --expect running`
+- evidence is written under `exports/automation_control/`
 
 Daily ops orchestrator profile contract:
 - `today-fast` for strict current-day checks

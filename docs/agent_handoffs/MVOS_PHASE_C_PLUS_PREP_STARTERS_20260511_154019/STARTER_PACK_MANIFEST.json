@@ -1,0 +1,28 @@
+{
+  "schema": "autonomous_business.mvos_phase_c_plus_prep_starter_pack.v1",
+  "generated_at_local": "2026-05-11T15:40:19+0500",
+  "status": "READY_TO_LAUNCH_REVIEW_ONLY_PREP_WAVE",
+  "repo": "~/Docs/Autonomous_business",
+  "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_PREP_PLAN_20260511_154019.md",
+  "advance_authorization": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_PREP_ADVANCE_AUTHORIZATION_20260511_154019.md",
+  "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/MVOS_PHASE_C_PLUS_PREP_ORCHESTRATOR_HANDOFF_20260511_154019.md",
+  "daily_survival_brief_v1": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/DAILY_SURVIVAL_BRIEF_V1_20260511_141731.md",
+  "parallel_root_agents": [
+    "765",
+    "766",
+    "767",
+    "768",
+    "769"
+  ],
+  "serialized_writer_agent": "770",
+  "writer_dependencies": [
+    "765",
+    "766",
+    "767",
+    "768",
+    "769"
+  ],
+  "agent_count_cap": null,
+  "read_only_agents_unlimited": true,
+  "orchestrator_ping_mode": "monitor-only"
+}

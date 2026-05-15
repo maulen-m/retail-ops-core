@@ -1,0 +1,41 @@
+{
+  "starter_pack_id": "storeb_mapping_repair_proof_20260511_195224",
+  "created_at": "2026-05-11T19:52:24+05:00",
+  "repo": "~/Docs/Autonomous_business",
+  "authorization": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_MAPPING_REPAIR_PROOF_AUTHORIZATION_20260511_195224.md",
+  "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_MAPPING_REPAIR_PROOF_PLAN_20260511_195224.md",
+  "orchestrator_handoff": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-06_codecaptain_proscope_red_recovery/STOREB_MAPPING_REPAIR_PROOF_ORCHESTRATOR_HANDOFF_20260511_195224.md",
+  "upstream_agent772_closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/storeb_live_readonly_capture_20260511_170852_agent772_closeout.md",
+  "upstream_agent772_classification": "~/Docs/Autonomous_business/exports/validation/storeb_live_readonly_capture/20260511_170852/final_blocker_classification.json",
+  "upstream_agent772_lineage_sidecar": "~/Docs/Autonomous_business/exports/validation/storeb_live_readonly_capture/20260511_170852/agent772_replay/adapter_lineage_sidecar.json",
+  "evidence_root": "~/Docs/Autonomous_business/exports/validation/storeb_mapping_repair_proof/20260511_195224",
+  "agents": [
+    {
+      "agent_id": 773,
+      "prompt": "01_AGENT_773__STOREB_MAPPING_REPAIR_PROOF__ROOT.md",
+      "mode": "root",
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-06_codecaptain_proscope_red_recovery/storeb_mapping_repair_proof_20260511_195224_agent773_closeout.md"
+    }
+  ],
+  "orchestrator_ping_mode": "monitor-only",
+  "completion_ping": "disabled_by_repo_kill_switch",
+  "forbidden": [
+    "production_db_write",
+    "workbook_write",
+    "web_automation_repo_write",
+    "browser_login_automation",
+    "credential_or_session_export",
+    "scheduler_automation",
+    "launchagent_change",
+    "owner_publication",
+    "owner_approval_request",
+    "external_write",
+    "kaspi_merchant_write",
+    "ad_spend",
+    "bid_budget_campaign_mutation",
+    "cash_movement",
+    "po_commitment",
+    "price_change",
+    "stock_change"
+  ]
+}

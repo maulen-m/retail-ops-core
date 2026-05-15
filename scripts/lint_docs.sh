@@ -34,6 +34,29 @@ for pat in "${PATTERNS[@]}"; do
   fi
 done
 
+ACTIVE_AUTHORITY_DOCS=(
+  docs/inventory/Sales_Data_Model_V16.md
+  docs/inventory/Automation_Handoff_V16.md
+  docs/inventory/Excel_UI_Contract_for_CRM_V1.md
+  docs/inventory/Workflow_SOP_V2.md
+  docs/validation/SALES_ECONOMICS_TRUTH_CONTRACT.md
+)
+
+STALE_ACTIVE_AUTHORITY_PATTERNS=(
+  'update v8 first'
+  'See v8'
+  'v8/V16'
+  'Kaspi, v8'
+  'Sales_Data_Model_V15'
+)
+
+for pat in "${STALE_ACTIVE_AUTHORITY_PATTERNS[@]}"; do
+  if rg -n -i -e "$pat" "${ACTIVE_AUTHORITY_DOCS[@]}"; then
+    echo "ERROR: docs lint found stale active authority pointer: $pat" >&2
+    fail=1
+  fi
+done
+
 # Ban machine-local absolute paths in active operator-facing docs.
 # Exception: config/anchors/README.md may define operator-specific examples.
 ACTIVE_PATH_DOCS=(

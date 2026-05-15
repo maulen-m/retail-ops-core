@@ -1,0 +1,22 @@
+check	status	evidence
+plain_english_owner_title	PASS	Title says Owner Authorization Request For DB-Only Repair/Apply.
+review_required_not_sent	PASS	Status is REVIEW_REQUIRED_NOT_SENT_TO_OWNER and packet says it is not yet an owner request.
+db_only_scope	PASS	Packet limits future apply lane to ~/Docs/Autonomous_business/db/app.db only.
+workbook_no_write	PASS	Packet says workbook SHA is a no-write guard and workbook writes are not authorized.
+scheduler_no_write	PASS	Packet says scheduler pause/restart/change/disable is not authorized.
+external_no_write	PASS	Packet blocks Kaspi, Kaspi Marketing, Meta/Facebook, Google, banks, Web_automation, and external accounts.
+option_c_blocked	PASS	Packet says Option C production daily automation is not authorized.
+agent54_not_reused	PASS	Packet blocks old Agent54 phrase revival.
+agent64_not_activated	PASS	Packet blocks Agent64 inactive phrase activation.
+reviewed_db_sha_visible	PASS	Agent738 reviewed DB SHA e27952376d1a2ba1c46df0f0dbaa45cdf5e11f785862618967629e27242a88e5 is visible.
+protected_workbook_sha_visible	PASS	Agent738 protected workbook SHA 768a3440d47e89ca3eb72cc2cdf73a5394c304f59e50e8151ea775bcfbf36a86 is visible.
+live_boundary_drift_disclosed	PASS	Packet discloses later live DB SHA 2950577e7693c38a61039754fc7a7a0bc7b4512e3d36cc84f91cc60ca65a69b3 and live workbook SHA c683021ab1b8b4222c142d155c045d35e0de00ff24579f09f3aac87b53ac21db.
+fresh_refresh_required_before_owner	PASS	Packet says it must not be shown as active until a fresh boundary/preflight lane updates or re-proves live SHAs.
+warning_23_visible	PASS	Packet preserves 23 strict product-identity quarantine rows.
+warning_252_visible	PASS	Packet preserves 252 header-only source-gap quarantine rows.
+warning_249_explained	PASS	Packet explains 249 validator-visible header-only warnings due to 3 absent product-truth IDs.
+warning_not_product_truth	PASS	Packet says 23, 252, and 275 warning cohorts must not be treated as SKU/product truth.
+cash_preservation_visible	PASS	Packet says order-level CASH_IN was preserved.
+launch_time_gates_visible	PASS	Packet lists SHA, integrity, lsof, sidecar, backup, rollback, row-count, validator, leakage, and warning stoplines.
+phrase_inert_until_review	PASS	Packet says embedded phrase is draft-only and does not authorize anything.
+old_phrase_not_printed_as_active	PASS	No old Agent54 or Agent64 phrase is presented as active.

@@ -55,6 +55,7 @@ db/app.db
 
 # Logs
 *.log
+*.pid
 logs/
 logs
 logs.pre_migration_*/
@@ -118,6 +119,11 @@ excel_ui/Archive/
 # Temporary files
 tmp/
 temp/
+
+# Local orchestration runtime surfaces (traceable summaries live in docs/)
+runs/agent6_c3_source_refresh/
+runs/tmux_orchestration/
+runs/tmux_orchestration_quarantine/
 
 # Test artifacts
 .pytest_cache/

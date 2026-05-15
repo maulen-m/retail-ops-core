@@ -1,0 +1,99 @@
+{
+  "answer_dir": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/Answer",
+  "answer_dir_info": {
+    "allowed_entries": [
+      "README_SAVE_CODECAPTAIN_ANSWER_HERE.md"
+    ],
+    "answer_count": 0,
+    "entries": [
+      "README_SAVE_CODECAPTAIN_ANSWER_HERE.md"
+    ],
+    "exists": true,
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/Answer",
+    "unexpected_entries": []
+  },
+  "answer_files": [],
+  "answer_state": "waiting_for_codecaptain_answer",
+  "archive_csv": {
+    "exists": true,
+    "header": [
+      "pack_id",
+      "store_code",
+      "source_file",
+      "source_file_sha256",
+      "source_file_format",
+      "source_row_number",
+      "order_id",
+      "created_at",
+      "status_change_at",
+      "status_raw",
+      "status_internal",
+      "quantity",
+      "net_rev_kzt",
+      "warehouse_code",
+      "article",
+      "kaspi_offer_name",
+      "seller_system_name",
+      "category",
+      "pickup_or_delivery_address",
+      "cancel_reason",
+      "payment_mode",
+      "delivery_mode",
+      "courier_service",
+      "planned_courier_at",
+      "delivery_fee_buyer_kzt",
+      "delivery_fee_seller_kzt",
+      "transaction_signature_required",
+      "status_change_required",
+      "status_change_missing",
+      "row_fingerprint",
+      "window_since",
+      "window_until"
+    ],
+    "line_count": 20755,
+    "missing_required_columns": [],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv",
+    "required_columns_present": true,
+    "row_count": 20754,
+    "sha256": "e5f4ba4e5cdcf152bf01d7364fbca4d5f213ca83275cbe344cf04052e162db99",
+    "size_bytes": 17197283
+  },
+  "errors": [],
+  "expected_answer_state_for_launch": "codecaptain_answer_present_with_green_token",
+  "ok": true,
+  "pack_root": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review",
+  "prompt": {
+    "exists": true,
+    "forbidden_prompt_phrases": [],
+    "line_count": 2592,
+    "missing_required_terms": [],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/224907_TASK-000_codecaptain-agent750-validate-only-plan-review.md",
+    "sha256": "7a399d3ac0172133ec60d5a83b5ef95983e9f20ab7f41c10d62b772d4f9aef1a",
+    "size_bytes": 151683
+  },
+  "read_only": true,
+  "send_readme": {
+    "exists": true,
+    "line_count": 45,
+    "missing_required_terms": [],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review/00_SEND_TO_CODECAPTAIN_FIRST.md",
+    "sha256": "21268daf7cd5f665246eee1e4635fdee94887324252e356018055285ecbcac81",
+    "size_bytes": 1367
+  },
+  "top_level": {
+    "allowed_entries": [
+      "00_SEND_TO_CODECAPTAIN_FIRST.md",
+      "224907_TASK-000_codecaptain-agent750-validate-only-plan-review.md",
+      "Answer",
+      "ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv"
+    ],
+    "entries": [
+      "00_SEND_TO_CODECAPTAIN_FIRST.md",
+      "224907_TASK-000_codecaptain-agent750-validate-only-plan-review.md",
+      "Answer",
+      "ArchiveOrders_WEBUI_MERGED_ALL_STORES.csv"
+    ],
+    "path": "~/Docs/Oracle/Autonomous_business/2026-05-09/224907_TASK-000_codecaptain-agent750-validate-only-plan-review",
+    "unexpected_entries": []
+  }
+}

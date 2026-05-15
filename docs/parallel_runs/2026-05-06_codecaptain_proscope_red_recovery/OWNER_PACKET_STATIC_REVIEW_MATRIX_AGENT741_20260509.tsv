@@ -1,0 +1,27 @@
+check	status	evidence
+plain_english_owner_title	PASS	Title says Owner Authorization Request For DB-Only Repair/Apply.
+review_required_not_sent	PASS	Status is REVIEW_REQUIRED_NOT_SENT_TO_OWNER and packet says it is not yet an owner request.
+db_only_scope	PASS	Packet limits future apply lane to ~/Docs/Autonomous_business/db/app.db only.
+workbook_no_write	PASS	Packet says workbook SHA is a no-write guard and workbook writes are not authorized.
+scheduler_no_write	PASS	Packet says scheduler pause/restart/change/disable is not authorized.
+external_no_write	PASS	Packet blocks Kaspi, Kaspi Marketing, Meta/Facebook, Google, banks, Web_automation, and external accounts.
+option_c_blocked	PASS	Packet says Option C production daily automation is not authorized.
+agent54_not_reused	PASS	Packet blocks old Agent54 phrase revival.
+agent64_not_activated	PASS	Packet blocks Agent64 inactive phrase activation.
+agent740_drift_disclosed	PASS	Packet explains Agent740 completed GREEN but the live DB later drifted while daily ops/shipping processes were active.
+post_ops_wait_visible	PASS	Packet states Agent741 waited past the 17:02 import window plus 15-minute buffer before freezing a new boundary.
+refreshed_db_sha_visible	PASS	Agent741 refreshed DB SHA 32f157ffe2b343f2b8e0da395440f2939100ad13d547f89475b55cb8cb61ca04 is visible.
+protected_workbook_sha_visible	PASS	Agent741 protected workbook SHA 3ad4b81c39b125c48b34c02afb8a30eafd348658e07afd27c11f628b8987025c is visible.
+fresh_boundary_stable	PASS	Packet records first, frozen, final runner, and independent post-run samples with stable DB/workbook SHAs.
+backup_rollback_visible	PASS	Packet records backup path, backup SHA, backup integrity ok, and rollback command.
+staging_replay_visible	PASS	Packet records staging initial SHA tied to refreshed production pre-SHA and final staging SHA d57c94f463c8de9984e4b56ef840535ef6d316e3a2131d7df341ed575164cafd.
+validator_matrix_visible	PASS	Packet summarizes all pinned validators as pass/GREEN.
+warning_23_visible	PASS	Packet preserves 23 strict product-identity quarantine warnings.
+warning_252_visible	PASS	Packet preserves 252 header-only source-gap quarantine rows.
+warning_249_dynamic_explained	PASS	Packet explains 249 validator-visible header-only warnings from current pre-header overlap and lists the 3 absent IDs.
+warning_not_product_truth	PASS	Packet says 23, 252, and 275 warning cohorts must not be treated as SKU/product truth.
+cash_preservation_visible	PASS	Packet records preserved CASH_IN rows and amounts for strict 23, header-only 252, and combined 275.
+launch_time_gates_visible	PASS	Packet lists SHA, integrity, lsof, sidecar, backup, rollback, row-count, validator, leakage, dynamic-control, and warning stoplines.
+phrase_inert_until_review	PASS	Packet says embedded phrase is draft-only and does not authorize anything.
+old_phrase_not_printed_as_active	PASS	No old Agent54 or Agent64 phrase is presented as active.
+no_production_apply_claim	PASS	Packet says production DB/workbook were not modified and production apply remains future-gated.
