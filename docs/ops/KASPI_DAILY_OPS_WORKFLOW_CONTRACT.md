@@ -33,6 +33,13 @@ This contract is fail-closed: workflow regressions must surface as test failures
   - runs only `scripts/run_kaspi_shipped_truth_sync_scheduler.py`, which calls `scripts/sync_kaspi_orders.py --states KASPI_DELIVERY,ARCHIVE`
   - must not touch Excel CRM, Google Sheets, waybill PDFs, Telegram, or WhatsApp
 - installer: `scripts/install_scheduler.sh`
+- automation pause/resume control:
+  - manifest: `config/business_automation_manifest.json`
+  - CLI: `scripts/manage_business_automation.py`
+  - runbook: `docs/ops/BUSINESS_AUTOMATION_CONTROL_RUNBOOK.md`
+  - default daily scope: `daily-ops`
+  - mutation requires both `ENABLE_BUSINESS_AUTOMATION_CONTROL=1` and `--apply`
+  - evidence root: `exports/automation_control/`
 
 ## Multi-Store Scale Roster
 - Universal
@@ -111,6 +118,9 @@ updating this contract and corresponding tests before merge.
   - `today-fast`: `report_waybill_status.py --since-days 1` (no `--include-overdue`)
   - `catch-up`: `report_waybill_status.py --since-days 3 --include-overdue`
 - keep scheduler timings in sync with this contract and launchd plists
+- keep business automation pause/resume centralized through `scripts/manage_business_automation.py`; do not manually rediscover or hand-run one-off `launchctl bootout/bootstrap` sequences for routine proof windows or daily-ops restoration
+- keep frozen proof windows explicit: `verify --scope daily-ops --expect paused` must be green before boundary-sensitive proof work starts
+- keep daily operations restoration explicit: `verify --scope daily-ops --expect running` must be green before claiming order import, Google Ops Board, closeout watcher, Telegram control, and shipped-truth automation are live again
 - keep daily report contract fail-closed:
   - `scripts/generate_daily_ops_report.py`
   - `scripts/validate_daily_ops_report.py --strict`

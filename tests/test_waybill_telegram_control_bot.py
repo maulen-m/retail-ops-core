@@ -466,6 +466,93 @@ def test_waybill_telegram_resume_delivery_runs_scheduler_when_incomplete(monkeyp
     assert any("resuming delivery" in msg.lower() for msg in sent_messages)
 
 
+def test_waybill_telegram_ordered_resend_requires_confirm(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+    resend_calls: list[dict[str, object]] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 33,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/resend_today_ordered",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(bot_mod, "run_ordered_full_resend", lambda **kwargs: resend_calls.append(kwargs))
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 5, 7, 17, 30, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert resend_calls == []
+    assert any("confirm" in msg.lower() for msg in sent_messages)
+
+
+def test_waybill_telegram_ordered_resend_runs_full_resend(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+    resend_calls: list[dict[str, object]] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 34,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/resend_today_ordered confirm",
+                },
+            }
+        ],
+    )
+
+    def _fake_resend(**kwargs):
+        resend_calls.append(kwargs)
+        return {
+            "ok": True,
+            "sent": 31,
+            "failed": 0,
+            "confirmed_total": 31,
+            "total": 31,
+            "source_root": "/tmp/Today/MERGED/SEND/07.05.26_MERGED_qnt72",
+            "ordered_resend_proof": {
+                "ok": True,
+                "sequence_match": True,
+                "message_id_min": 626,
+                "message_id_max": 656,
+            },
+        }
+
+    monkeypatch.setattr(bot_mod, "run_ordered_full_resend", _fake_resend)
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 5, 7, 17, 30, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert len(resend_calls) == 1
+    assert resend_calls[0]["expected_target_date"].isoformat() == "2026-05-07"
+    assert any("ordered resend complete" in msg.lower() for msg in sent_messages)
+    assert any("31/31" in msg for msg in sent_messages)
+    assert any("626..656" in msg for msg in sent_messages)
+
+
 def test_waybill_telegram_final_table_resends_summary(monkeypatch, tmp_path: Path):
     sent_messages: list[str] = []
 
@@ -506,6 +593,155 @@ def test_waybill_telegram_final_table_resends_summary(monkeypatch, tmp_path: Pat
     assert rc == 0
     assert any("final table sent" in msg.lower() for msg in sent_messages)
     assert any("55" in msg for msg in sent_messages)
+
+
+def test_waybill_telegram_handover_done_waits_60_seconds_then_reports_pending(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "HANDOVER_MANUAL_DELAY_SECONDS", 60)
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    updates = [
+        {
+            "update_id": 45,
+            "message": {
+                "chat": {"id": -5102810505},
+                "from": {"id": 42},
+                "text": "Передал курьеру",
+            },
+        }
+    ]
+    monkeypatch.setattr(bot_mod, "_get_updates", lambda token, offset: updates)
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    first_rc = bot_mod.poll_once(now=datetime(2026, 5, 7, 18, 30, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    state = json.loads(bot_mod.STATE_FILE.read_text(encoding="utf-8"))
+    assert first_rc == 0
+    assert state["pending_handover_check"]["mode"] == "manual"
+    assert state["pending_handover_check"]["target_date"] == "2026-05-07"
+    assert any("60" in msg and "handover" in msg.lower() for msg in sent_messages)
+
+    updates.clear()
+    monkeypatch.setattr(
+        bot_mod,
+        "build_waybill_handover_report",
+        lambda **_kwargs: {
+            "ok": False,
+            "status": "PHYSICAL_HANDOVER_PENDING",
+            "pending_count": 1,
+            "pending_orders": [{"order_id": "914180723", "store": "AcmeWear"}],
+        },
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "format_handover_compact_status_message",
+        lambda report: f"{report['status']} {report['pending_orders'][0]['order_id']}",
+    )
+
+    second_rc = bot_mod.poll_once(now=datetime(2026, 5, 7, 18, 31, 1, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    state_after = json.loads(bot_mod.STATE_FILE.read_text(encoding="utf-8")) if bot_mod.STATE_FILE.exists() else {}
+    assert second_rc == 0
+    assert "pending_handover_check" not in state_after
+    assert any("PHYSICAL_HANDOVER_PENDING 914180723" in msg for msg in sent_messages)
+
+
+def test_waybill_telegram_handover_status_uses_compact_by_default_and_full_on_request(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
+    reports = [
+        {"ok": False, "status": "PHYSICAL_HANDOVER_PENDING", "pending_count": 70},
+        {"ok": False, "status": "PHYSICAL_HANDOVER_PENDING", "pending_count": 70},
+    ]
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda token, offset: [
+            {
+                "update_id": 90,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "Передача",
+                },
+            },
+            {
+                "update_id": 91,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/hfull",
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(bot_mod, "build_waybill_handover_report", lambda **_kwargs: reports.pop(0))
+    monkeypatch.setattr(bot_mod, "format_handover_compact_status_message", lambda report: f"COMPACT {report['pending_count']}")
+    monkeypatch.setattr(bot_mod, "format_handover_status_message", lambda report: f"FULL {report['pending_count']}")
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    rc = bot_mod.poll_once(now=datetime(2026, 5, 8, 18, 30, tzinfo=ZoneInfo("Asia/Almaty")))
+
+    assert rc == 0
+    assert sent_messages == ["COMPACT 70", "FULL 70"]
+
+
+def test_waybill_telegram_passive_handover_watch_waits_until_20_and_posts_once(monkeypatch, tmp_path: Path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "passive_handover_watch": {
+                    "target_date": "2026-05-08",
+                    "chat_id": "-5102810505",
+                    "armed_at": "2026-05-08T18:20:00+05:00",
+                    "next_check_at": "2026-05-08T18:21:00+05:00",
+                    "attempts": 0,
+                    "max_checks": 5,
+                    "interval_seconds": 60,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_messages: list[str] = []
+    reports = [
+        {
+            "ok": False,
+            "status": "PHYSICAL_HANDOVER_PENDING",
+            "pending_count": 1,
+            "pending_orders": [{"order_id": "914180723", "store": "AcmeWear"}],
+        }
+    ]
+
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", state_path)
+    monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
+    monkeypatch.setattr(bot_mod, "_get_updates", lambda token, offset: [])
+    monkeypatch.setattr(bot_mod, "build_waybill_handover_report", lambda **_kwargs: reports.pop(0))
+    monkeypatch.setattr(bot_mod, "format_handover_compact_status_message", lambda report: report["status"])
+    monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
+
+    first_rc = bot_mod.poll_once(now=datetime(2026, 5, 8, 18, 22, 0, tzinfo=ZoneInfo("Asia/Almaty")))
+    state_after_first = json.loads(state_path.read_text(encoding="utf-8"))
+    second_rc = bot_mod.poll_once(now=datetime(2026, 5, 8, 20, 0, 1, tzinfo=ZoneInfo("Asia/Almaty")))
+    state_after_second = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+
+    assert first_rc == 0
+    assert second_rc == 0
+    assert state_after_first["passive_handover_watch"]["attempts"] == 0
+    assert state_after_first["passive_handover_watch"]["next_check_at"] == "2026-05-08T20:00:00+05:00"
+    assert "passive_handover_watch" not in state_after_second
+    assert sent_messages == ["PHYSICAL_HANDOVER_PENDING"]
 
 
 def test_waybill_telegram_halt_clears_pending_and_sets_run_control_hold(monkeypatch, tmp_path: Path):

@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import json
+import os
 import sys
 import time
 from collections import Counter
@@ -20,6 +23,7 @@ from core.integrations.telegram_bot import (  # noqa: E402
     send_message,
 )
 from scripts import returns_pickup_report as returns_pickup_report_mod  # noqa: E402
+from scripts.waybill_telegram_state import arm_passive_handover_watch  # noqa: E402
 from scripts.send_waybills_whatsapp import (  # noqa: E402
     ALMATY_TZ,
     SOURCE_AUTO,
@@ -38,6 +42,7 @@ from scripts.send_waybills_whatsapp import (  # noqa: E402
 
 TELEGRAM_SEND_LEDGER_FILE = "telegram_send_ledger.json"
 TELEGRAM_SEND_STOPLINE_FILE = "telegram_send_stopline.json"
+TELEGRAM_SEND_LOCK_FILE = ".telegram_send.lock"
 TELEGRAM_LEDGER_STATES = {"pending", "api_started", "confirmed", "failed", "unsure"}
 DEFAULT_SEND_DELAY_SECONDS = 3.5
 DEFAULT_RATE_LIMIT_RETRIES = 3
@@ -167,6 +172,43 @@ def _write_stopline(today_folder: Path, payload: dict[str, Any]) -> Path:
     return output_path
 
 
+def _acquire_telegram_send_lock(batch_root: Path) -> tuple[Any | None, Path]:
+    lock_path = Path(batch_root) / TELEGRAM_SEND_LOCK_FILE
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            return None, lock_path
+        raise
+    handle.seek(0)
+    handle.truncate()
+    handle.write(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "locked_at": _now_iso(),
+                "purpose": "telegram_waybill_send",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    handle.flush()
+    return handle, lock_path
+
+
+def _release_telegram_send_lock(handle: Any | None) -> None:
+    if handle is None:
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def _format_caption(entry: dict[str, Any], *, index: int, total: int, batch_label: str) -> str:
     order_ids = ", ".join(str(value) for value in entry.get("order_ids") or [])
     filename = str(entry.get("filename") or Path(str(entry.get("path") or "")).name)
@@ -253,6 +295,8 @@ def _base_report(*, today_folder: Path, bundle_source: str, expected_target_date
         "final_status_message_id": "",
         "returns_pickup_sent": False,
         "returns_pickup_message_id": "",
+        "handover_watch_armed": False,
+        "handover_watch_next_check_at": "",
         "started_at": _now_iso(),
         "completed_at": "",
     }
@@ -429,6 +473,73 @@ def run_sender(
     manifest = load_send_batch_manifest(today_folder, source_mode=bundle_source)
     batch_root = Path(str(manifest["batch_root"]))
     ledger_path = batch_root / TELEGRAM_SEND_LEDGER_FILE
+    report.update(
+        {
+            "source_root": str(batch_root),
+            "manifest_path": str(manifest.get("manifest_path") or ""),
+            "ledger_path": str(ledger_path),
+            "batch_hash": str(manifest.get("batch_hash") or ""),
+        }
+    )
+
+    lock_handle, lock_path = _acquire_telegram_send_lock(batch_root)
+    report["lock_path"] = str(lock_path)
+    if lock_handle is None:
+        report.update(
+            {
+                "failed": 1,
+                "halted": True,
+                "halt_reason": "TELEGRAM_SEND_LOCKED",
+                "fallback_allowed": False,
+                "completed_at": _now_iso(),
+            }
+        )
+        _write_stopline(today_folder, report)
+        return report
+
+    try:
+        return _run_sender_with_lock(
+            today_folder=today_folder,
+            bundle_source=bundle_source,
+            expected_target_date=expected_target_date,
+            config=config,
+            manifest=manifest,
+            batch_root=batch_root,
+            ledger_path=ledger_path,
+            report=report,
+            dry_run=dry_run,
+            resume=resume,
+            status_messages=status_messages,
+            send_delay=send_delay,
+            fail_fast=fail_fast,
+            max_pdfs=max_pdfs,
+            timeout_seconds=timeout_seconds,
+            verbose=verbose,
+        )
+    finally:
+        _release_telegram_send_lock(lock_handle)
+
+
+def _run_sender_with_lock(
+    *,
+    today_folder: Path,
+    bundle_source: str,
+    expected_target_date: date | None,
+    config: dict[str, str],
+    manifest: dict[str, Any],
+    batch_root: Path,
+    ledger_path: Path,
+    report: dict[str, Any],
+    dry_run: bool,
+    resume: bool,
+    status_messages: bool,
+    send_delay: float,
+    fail_fast: bool,
+    max_pdfs: int | None,
+    timeout_seconds: int,
+    verbose: bool,
+) -> dict[str, Any]:
+    ledger_path = batch_root / TELEGRAM_SEND_LEDGER_FILE
     ledger = load_telegram_ledger(ledger_path, manifest)
     save_telegram_ledger(ledger_path, ledger)
 
@@ -443,13 +554,12 @@ def run_sender(
         selected_entries = selected_entries[: max(0, int(max_pdfs))]
 
     confirmed_before, confirmed_orders_by_store = _confirmed_progress_snapshot(entries, ledger)
+    if not resume:
+        confirmed_before = 0
+        confirmed_orders_by_store = Counter()
     store_stats = _store_stats_from_manifest(manifest)
     report.update(
         {
-            "source_root": str(batch_root),
-            "manifest_path": str(manifest.get("manifest_path") or ""),
-            "ledger_path": str(ledger_path),
-            "batch_hash": str(manifest.get("batch_hash") or ""),
             "total": len(entries),
             "skipped": max(0, len(entries) - len(selected_entries) - len(blocked_entries)),
             "confirmed_total": confirmed_before,
@@ -495,6 +605,7 @@ def run_sender(
     for index, entry in enumerate(selected_entries, start=1):
         pdf_key = str(entry["pdf_key"])
         pdf_path = Path(entry["path"])
+        manifest_index = int(entry.get("send_sequence") or index)
         if dry_run:
             report["sent"] = int(report["sent"]) + 1
             continue
@@ -505,7 +616,7 @@ def run_sender(
             token=config["token"],
             chat_id=config["chat_id"],
             document_path=pdf_path,
-            caption=_format_caption(entry, index=index, total=len(selected_entries), batch_label=batch_label),
+            caption=_format_caption(entry, index=manifest_index, total=len(entries), batch_label=batch_label),
             timeout_seconds=timeout_seconds,
         )
         if result.get("success"):
@@ -589,9 +700,138 @@ def run_sender(
         and int(report["confirmed_total"]) == 0
         and str(report.get("halt_reason") or "") not in {"MANIFEST_PREFLIGHT_RED", "TELEGRAM_UNSURE"}
     )
+    if report["ok"] and status_messages and (report.get("final_status_sent") or report.get("returns_pickup_sent")):
+        target_date = expected_target_date
+        if target_date is None:
+            try:
+                target_date = date.fromisoformat(str(manifest.get("target_date") or ""))
+            except ValueError:
+                target_date = datetime.now(ALMATY_TZ).date()
+        try:
+            watch = arm_passive_handover_watch(
+                chat_id=str(config["chat_id"]),
+                target_date=target_date,
+                source_batch_label=batch_label,
+            )
+            report["handover_watch_armed"] = bool(watch.get("armed"))
+            report["handover_watch_next_check_at"] = str(watch.get("next_check_at") or "")
+        except Exception as exc:
+            report["handover_watch_armed"] = False
+            report["handover_watch_error"] = str(exc)
     report["completed_at"] = _now_iso()
     if not report["ok"]:
         _write_stopline(today_folder, report)
+    return report
+
+
+def build_ordered_resend_proof(
+    *,
+    today_folder: Path = TODAY_FOLDER,
+    bundle_source: str = SOURCE_MERGED,
+    started_at: str,
+) -> dict[str, Any]:
+    """Prove the latest Telegram resend matches the manifest send sequence."""
+    manifest = load_send_batch_manifest(Path(today_folder), source_mode=bundle_source)
+    batch_root = Path(str(manifest["batch_root"]))
+    ledger_path = batch_root / TELEGRAM_SEND_LEDGER_FILE
+    ledger = load_telegram_ledger(ledger_path, manifest)
+    ordered_entries = order_pdfs_for_sending(list(manifest.get("entries") or []))
+    ledger_entries = ledger.get("entries") or {}
+
+    rows: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    for expected_index, entry in enumerate(ordered_entries, start=1):
+        pdf_key = str(entry.get("pdf_key") or "")
+        ledger_entry = dict(ledger_entries.get(pdf_key) or {})
+        filename = str(entry.get("filename") or "")
+        state = str(ledger_entry.get("state") or "")
+        last_updated = str(ledger_entry.get("last_updated") or "")
+        message_id_raw = str(ledger_entry.get("telegram_message_id") or "").strip()
+        if state != "confirmed":
+            issues.append({"code": "entry_not_confirmed", "detail": filename})
+            continue
+        if started_at and last_updated < started_at:
+            issues.append({"code": "entry_not_confirmed_in_current_resend", "detail": filename})
+            continue
+        try:
+            message_id = int(message_id_raw)
+        except ValueError:
+            issues.append({"code": "entry_message_id_invalid", "detail": f"{filename}: {message_id_raw!r}"})
+            continue
+        rows.append(
+            {
+                "expected_index": expected_index,
+                "pdf_key": pdf_key,
+                "filename": filename,
+                "telegram_message_id": message_id,
+                "last_updated": last_updated,
+            }
+        )
+
+    expected_keys = [str(entry.get("pdf_key") or "") for entry in ordered_entries]
+    actual_by_message_id = sorted(rows, key=lambda row: int(row["telegram_message_id"]))
+    actual_keys = [str(row.get("pdf_key") or "") for row in actual_by_message_id]
+    sequence_match = actual_keys == expected_keys
+    if rows and len({int(row["telegram_message_id"]) for row in rows}) != len(rows):
+        issues.append({"code": "telegram_message_id_duplicate", "detail": "duplicate message ids in resend proof"})
+    if not sequence_match:
+        issues.append({"code": "telegram_message_sequence_mismatch", "detail": "message-id order differs from manifest order"})
+
+    message_ids = [int(row["telegram_message_id"]) for row in rows]
+    return {
+        "ok": not issues,
+        "sequence_match": sequence_match,
+        "issues": issues,
+        "manifest_path": str(manifest.get("manifest_path") or ""),
+        "batch_root": str(batch_root),
+        "batch_label": str(manifest.get("batch_label") or batch_root.name),
+        "expected_count": len(ordered_entries),
+        "current_resend_confirmed_count": len(rows),
+        "message_id_min": min(message_ids) if message_ids else None,
+        "message_id_max": max(message_ids) if message_ids else None,
+        "first": actual_by_message_id[:3],
+        "last": actual_by_message_id[-3:],
+    }
+
+
+def run_ordered_full_resend(
+    *,
+    today_folder: Path = TODAY_FOLDER,
+    bundle_source: str = SOURCE_MERGED,
+    expected_target_date: date | None = None,
+    token: str | None = None,
+    chat_id: str | None = None,
+    send_delay: float = DEFAULT_SEND_DELAY_SECONDS,
+    fail_fast: bool = True,
+    timeout_seconds: int = 60,
+    verbose: bool = False,
+) -> dict[str, Any]:
+    """Live recovery path: resend the whole current manifest once in manifest order."""
+    report = run_sender(
+        today_folder=today_folder,
+        bundle_source=bundle_source,
+        expected_target_date=expected_target_date,
+        token=token,
+        chat_id=chat_id,
+        dry_run=False,
+        resume=False,
+        status_messages=False,
+        send_delay=send_delay,
+        fail_fast=fail_fast,
+        max_pdfs=None,
+        timeout_seconds=timeout_seconds,
+        verbose=verbose,
+    )
+    proof = build_ordered_resend_proof(
+        today_folder=today_folder,
+        bundle_source=bundle_source,
+        started_at=str(report.get("started_at") or ""),
+    )
+    report["ordered_resend_proof"] = proof
+    if not proof.get("ok"):
+        report["ok"] = False
+        report["halted"] = True
+        report["halt_reason"] = "ORDERED_RESEND_SEQUENCE_PROOF_FAILED"
     return report
 
 
@@ -616,6 +856,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-status-messages", dest="status_messages", action="store_false")
     parser.add_argument("--fail-fast", action="store_true", default=True)
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--ordered-full-resend", action="store_true")
+    parser.add_argument("--confirm-resend", action="store_true")
     parser.add_argument("--max-pdfs", type=int, default=None)
     parser.add_argument("--timeout-seconds", type=int, default=60)
     parser.add_argument("--json-out", type=Path, default=None)
@@ -647,6 +889,36 @@ def main(argv: list[str] | None = None) -> int:
             args.json_out.write_text(json.dumps(preflight, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(preflight, ensure_ascii=False, indent=2))
         return 0 if preflight.get("ok") else 1
+
+    if args.ordered_full_resend:
+        if not args.confirm_resend:
+            report = {
+                "ok": False,
+                "halted": True,
+                "halt_reason": "ORDERED_RESEND_REQUIRES_CONFIRM",
+                "error": "Pass --confirm-resend to perform a live ordered full resend.",
+            }
+            if args.json_out:
+                args.json_out.parent.mkdir(parents=True, exist_ok=True)
+                args.json_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 2
+        report = run_ordered_full_resend(
+            today_folder=args.today_folder,
+            bundle_source=args.bundle_source,
+            expected_target_date=expected_target_date,
+            token=args.telegram_token,
+            chat_id=args.telegram_chat_id,
+            send_delay=float(args.send_delay),
+            fail_fast=bool(args.fail_fast),
+            timeout_seconds=int(args.timeout_seconds),
+            verbose=bool(args.verbose),
+        )
+        if args.json_out:
+            args.json_out.parent.mkdir(parents=True, exist_ok=True)
+            args.json_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
 
     report = run_sender(
         today_folder=args.today_folder,

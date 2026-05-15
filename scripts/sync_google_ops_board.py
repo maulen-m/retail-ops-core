@@ -101,6 +101,10 @@ def _clean_offer_value(value: Any) -> str:
     return offer
 
 
+def _is_blankish_source_value(value: Any) -> bool:
+    return _clean_str(value).casefold() in {"", "nan", "none", "null"}
+
+
 def _first_non_empty(values: list[str]) -> str:
     for value in values:
         if value:
@@ -399,6 +403,37 @@ def _select_operational_rows(
     return selected
 
 
+def _shadow_group_key(row: sqlite3.Row) -> tuple[str, str, str]:
+    return (
+        _clean_str(row["order_id"]),
+        _normalize_store_key(row["store_code"]),
+        _clean_str(row["planned_shipment_date"]),
+    )
+
+
+def _is_placeholder_shadow_row(row: sqlite3.Row) -> bool:
+    return (
+        _is_blankish_source_value(_clean_offer_value(row["kaspi_offer_name"]))
+        and _is_blankish_source_value(row["sku_key"])
+        and _is_blankish_source_value(row["sku_id"])
+    )
+
+
+def _drop_placeholder_shadow_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    concrete_groups = {
+        _shadow_group_key(row)
+        for row in rows
+        if not _is_placeholder_shadow_row(row)
+    }
+    if not concrete_groups:
+        return rows
+    return [
+        row
+        for row in rows
+        if not (_is_placeholder_shadow_row(row) and _shadow_group_key(row) in concrete_groups)
+    ]
+
+
 def _operational_status(row: sqlite3.Row, overdue_ids_by_store: dict[str, set[str]]) -> str:
     store_code = _normalize_store_key(row["store_code"])
     order_id = _clean_str(row["order_id"])
@@ -558,6 +593,7 @@ def build_phase1_payload(
             target_date=target,
             contract=contract,
         )
+        selected_rows = _drop_placeholder_shadow_rows(selected_rows)
         kaspi_core_maps = load_active_kaspi_name_core_maps(
             conn,
             sku_keys={_clean_str(row["sku_key"]) for row in selected_rows},
@@ -770,6 +806,14 @@ def _read_previous_target_date(contract, before_snapshot: dict[str, list[list[An
     for row in readme_rows:
         if str(row.get("field") or "").strip() == "target_date":
             return str(row.get("value") or "").strip()
+    run_control_rows = extract_rows_from_matrix(
+        contract.tabs["Run_Control"].headers,
+        before_snapshot.get("Run_Control"),
+    )
+    for row in run_control_rows:
+        target_date = str(row.get("target_date") or "").strip()
+        if target_date:
+            return target_date
     return ""
 
 

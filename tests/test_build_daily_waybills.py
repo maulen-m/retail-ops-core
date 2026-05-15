@@ -1597,6 +1597,117 @@ def test_read_db_orders_prefers_sku_family_core_over_raw_offer_fallback(tmp_path
     assert orders[0].kaspi_name_core != "Комплект_Antec_RASH-_BLACK"
 
 
+def test_read_db_orders_drops_placeholder_shadow_row_when_concrete_row_exists(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE fact_orders_kaspi (
+                order_id TEXT,
+                store_code TEXT,
+                kaspi_offer_name TEXT,
+                sku_key TEXT,
+                sku_id TEXT,
+                quantity INTEGER,
+                assigned_size TEXT,
+                my_size TEXT,
+                planned_shipment_date TEXT,
+                kaspi_status TEXT,
+                kaspi_status_detail TEXT,
+                internal_status TEXT,
+                signature_required INTEGER,
+                courier_transmission_date TEXT
+            );
+            CREATE TABLE dim_kaspi_article_map (
+                store_code TEXT,
+                kaspi_offer_name TEXT,
+                sku_key TEXT,
+                kaspi_name_core TEXT,
+                active_flag INTEGER,
+                updated_at TEXT
+            );
+            """
+        )
+        rows = [
+            (
+                "913356798",
+                "STOREB",
+                "Рашгард однотонный 18209877_863780079 белый 3XL",
+                "CL_NEW-CLO_MEN_T-SHIRT_WHITE",
+                "CL_NEW-CLO_MEN_T-SHIRT_WHITE_3XL",
+                1,
+                "3XL",
+                "",
+                "2026-05-06",
+                "KASPI_DELIVERY",
+                "ACCEPTED_BY_MERCHANT",
+                "READY",
+                0,
+                "",
+            ),
+            (
+                "913356798",
+                "STOREB",
+                "nan",
+                "",
+                "",
+                1,
+                "",
+                "3XL",
+                "2026-05-06",
+                "KASPI_DELIVERY",
+                "ACCEPTED_BY_MERCHANT",
+                "READY",
+                0,
+                "",
+            ),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_offer_name, sku_key, sku_id, quantity,
+                assigned_size, my_size, planned_shipment_date, kaspi_status,
+                kaspi_status_detail, internal_status, signature_required,
+                courier_transmission_date
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.execute(
+            """
+            INSERT INTO dim_kaspi_article_map (
+                store_code, kaspi_offer_name, sku_key, kaspi_name_core,
+                active_flag, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "STOREB",
+                "Рашгард однотонный 18209877_863780079 белый 3XL",
+                "CL_NEW-CLO_MEN_T-SHIRT_WHITE",
+                "Футболка_белая",
+                1,
+                "2026-05-07T12:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    orders = build_daily_waybills_module.read_db_orders(
+        db_path=db_path,
+        target_date=date(2026, 5, 7),
+        lookback_days=3,
+    )
+
+    assert len(orders) == 1
+    assert orders[0].order_id == "913356798"
+    assert orders[0].kaspi_name_core == "Футболка_белая"
+    assert orders[0].kaspi_name_core_source == "sku_key"
+
+
 def test_sanitizes_cyrillic():
     """Test that Cyrillic characters are preserved in filenames."""
     result = sanitize_filename("Костюм мужской черный")

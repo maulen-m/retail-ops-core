@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -32,10 +32,15 @@ from core.integrations.telegram_bot import get_waybill_telegram_config, send_mes
 from core.paths import data_path  # noqa: E402
 from scripts.run_google_ops_board_closeout import build_readiness_report  # noqa: E402
 from scripts import returns_pickup_report as returns_pickup_report_mod  # noqa: E402
-from scripts.send_waybills_telegram import send_final_status_table  # noqa: E402
+from scripts.send_waybills_telegram import run_ordered_full_resend, send_final_status_table  # noqa: E402
 from scripts.waybill_delivery_completion import (  # noqa: E402
     delivery_completion_state,
     format_delivery_completion_status,
+)
+from scripts.waybill_handover_check import (  # noqa: E402
+    build_waybill_handover_report,
+    format_handover_compact_status_message,
+    format_handover_status_message,
 )
 
 
@@ -45,12 +50,24 @@ ALLOWED_USERS_FILE = PROJECT_ROOT / "runtime" / "state" / "waybill_telegram_allo
 CLOSEOUT_SCHEDULER_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_closeout_scheduler.py"
 DB_PATH = data_path("db", "app.db")
 READY_DEBOUNCE_SECONDS = 60
+HANDOVER_MANUAL_DELAY_SECONDS = 60
+HANDOVER_PASSIVE_INTERVAL_SECONDS = int(os.environ.get("WAYBILL_HANDOVER_PASSIVE_INTERVAL_SECONDS", "180"))
+HANDOVER_PASSIVE_MAX_CHECKS = int(os.environ.get("WAYBILL_HANDOVER_PASSIVE_MAX_CHECKS", "5"))
+HANDOVER_LOOKBACK_DAYS = int(os.environ.get("WAYBILL_HANDOVER_LOOKBACK_DAYS", "7"))
 MAX_MSG_LEN = 3500
 BOT_ALIAS_TO_COMMAND = {
     "/r": "/returns_pickup",
     "/ret": "/returns_pickup",
     "/p": "/returns_pickup",
+    "/h": "/handover_status",
+    "/hf": "/handover_full",
+    "/hfull": "/handover_full",
+    "/hd": "/handover_done",
     "возвраты": "/returns_pickup",
+    "передал курьеру": "/handover_done",
+    "передача": "/handover_status",
+    "полная передача": "/handover_full",
+    "проверить передачу": "/handover_status",
     "помощь": "/help",
 }
 
@@ -378,6 +395,137 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
     return int(result.returncode)
 
 
+def _parse_state_datetime(value: Any) -> datetime | None:
+    text = _clean(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ALMATY_TZ)
+    return parsed
+
+
+def _parse_state_date(value: Any) -> date | None:
+    text = _clean(value)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _clear_handover_state_key(state: dict[str, Any], key: str) -> None:
+    state.pop(key, None)
+    if state:
+        _save_state(state)
+        return
+    try:
+        Path(STATE_FILE).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _arm_pending_handover(
+    *,
+    chat_id: str,
+    user_id: str,
+    now: datetime,
+    target_date: date,
+    delay_seconds: int = HANDOVER_MANUAL_DELAY_SECONDS,
+) -> None:
+    state = _load_state()
+    next_check_at = now + timedelta(seconds=max(0, int(delay_seconds)))
+    state["pending_handover_check"] = {
+        "mode": "manual",
+        "target_date": target_date.isoformat(),
+        "chat_id": str(chat_id),
+        "user_id": str(user_id),
+        "requested_at": now.isoformat(),
+        "next_check_at": next_check_at.isoformat(),
+        "lookback_days": HANDOVER_LOOKBACK_DAYS,
+    }
+    _save_state(state)
+
+
+def _process_single_handover_watch(
+    *,
+    state: dict[str, Any],
+    key: str,
+    payload: dict[str, Any],
+    token: str,
+    default_chat_id: str,
+    now: datetime,
+) -> bool:
+    target_date = _parse_state_date(payload.get("target_date"))
+    next_check_at = _parse_state_datetime(payload.get("next_check_at") or payload.get("requested_at"))
+    chat_id = _clean(payload.get("chat_id")) or default_chat_id
+    if target_date is None or next_check_at is None or not chat_id:
+        state.pop(key, None)
+        _save_state(state)
+        return True
+    if key == "passive_handover_watch":
+        final_check_at = datetime.combine(target_date, datetime.min.time(), tzinfo=ALMATY_TZ).replace(hour=20)
+        if now < final_check_at:
+            payload["mode"] = "passive_final_20_00"
+            payload["attempts"] = 0
+            payload["max_checks"] = 1
+            payload["interval_seconds"] = 0
+            payload["next_check_at"] = final_check_at.isoformat()
+            state[key] = payload
+            _save_state(state)
+            return False
+    if now < next_check_at:
+        return False
+
+    lookback_days = int(payload.get("lookback_days") or HANDOVER_LOOKBACK_DAYS)
+    try:
+        report = build_waybill_handover_report(target_date=target_date, lookback_days=lookback_days, now=now)
+        _send_text(token=token, chat_id=chat_id, text=format_handover_compact_status_message(report))
+    except Exception as exc:
+        _send_text(token=token, chat_id=chat_id, text=f"Physical handover check failed: <code>{exc}</code>")
+        report = {"ok": False}
+
+    if key == "pending_handover_check" or key == "passive_handover_watch" or bool(report.get("ok")):
+        _clear_handover_state_key(state, key)
+        return True
+
+    attempts = int(payload.get("attempts") or 0) + 1
+    max_checks = int(payload.get("max_checks") or HANDOVER_PASSIVE_MAX_CHECKS)
+    if attempts >= max(1, max_checks):
+        state.pop(key, None)
+        _save_state(state)
+        return True
+
+    interval = int(payload.get("interval_seconds") or HANDOVER_PASSIVE_INTERVAL_SECONDS)
+    payload["attempts"] = attempts
+    payload["next_check_at"] = (now + timedelta(seconds=max(30, interval))).isoformat()
+    state[key] = payload
+    _save_state(state)
+    return True
+
+
+def _process_pending_handover(*, token: str, now: datetime, default_chat_id: str) -> int:
+    state = _load_state()
+    for key in ("pending_handover_check", "passive_handover_watch"):
+        payload = state.get(key)
+        if not isinstance(payload, dict) or not payload:
+            continue
+        _process_single_handover_watch(
+            state=state,
+            key=key,
+            payload=dict(payload),
+            token=token,
+            default_chat_id=default_chat_id,
+            now=now,
+        )
+        state = _load_state()
+    return 0
+
+
 def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: datetime) -> None:
     normalized_text = _text_to_command(text) or text
     command = _command_name(normalized_text)
@@ -395,8 +543,12 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
                 "/delivery_status — manifest/ledger delivery counts\n"
                 "/ready — start 60s closeout debounce\n"
                 "/resume_delivery — resume incomplete delivery\n"
+                "/resend_today_ordered confirm — resend full manifest in canonical order\n"
+                "/handover_done — employee handed packages to courier; check Kaspi after 60s\n"
+                "/handover_status — compact physical courier handover state\n"
+                "/hfull — full physical handover audit table\n"
                 "/r — returned/cancelled orders back at pickup point\n"
-                "Buttons: <code>Возвраты</code>, <code>Забрал OF</code>, <code>Забрал U</code>, <code>Забрал MG</code>\n"
+                "Buttons: <code>Передал курьеру</code>, <code>Передача</code>, <code>Возвраты</code>, <code>Забрал OF</code>, <code>Забрал U</code>, <code>Забрал MG</code>\n"
                 "/returns_ack_store STORE — hide picked-up store queue\n"
                 "/returns_unack ORDER_ID ... — restore orders back to queue\n"
                 "/final_table — resend final totals table\n"
@@ -412,6 +564,22 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
     if command == "/delivery_status":
         state = delivery_completion_state(target_date=target_date)
         _send_text(token=token, chat_id=chat_id, text=format_delivery_completion_status(state))
+        return
+    if command == "/handover_status":
+        report = build_waybill_handover_report(target_date=target_date, lookback_days=HANDOVER_LOOKBACK_DAYS, now=now)
+        _send_text(token=token, chat_id=chat_id, text=format_handover_compact_status_message(report))
+        return
+    if command == "/handover_full":
+        report = build_waybill_handover_report(target_date=target_date, lookback_days=HANDOVER_LOOKBACK_DAYS, now=now)
+        _send_text(token=token, chat_id=chat_id, text=format_handover_status_message(report))
+        return
+    if command == "/handover_done":
+        _arm_pending_handover(chat_id=chat_id, user_id=user_id, now=now, target_date=target_date)
+        _send_text(
+            token=token,
+            chat_id=chat_id,
+            text="Physical handover accepted. Waiting 60 seconds, then I will re-check Kaspi Передача.",
+        )
         return
     if command == "/returns_pickup":
         snapshot = returns_pickup_report_mod.build_pickup_ready_snapshot(db_path=DB_PATH, as_of=now)
@@ -466,6 +634,47 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
         )
         if result.returncode != 0:
             _send_text(token=token, chat_id=chat_id, text=f"Delivery resume failed with rc=<code>{result.returncode}</code>.")
+        return
+    if command == "/resend_today_ordered":
+        if not args or args[0].casefold() != "confirm":
+            _send_text(
+                token=token,
+                chat_id=chat_id,
+                text=(
+                    "Ordered full resend is live and can duplicate documents. "
+                    "Use <code>/resend_today_ordered confirm</code> only after checking the current batch."
+                ),
+            )
+            return
+        _send_text(token=token, chat_id=chat_id, text="Telegram ordered full resend started. Locking batch and sending in manifest order.")
+        result = run_ordered_full_resend(expected_target_date=target_date)
+        proof = dict(result.get("ordered_resend_proof") or {})
+        if result.get("ok") and proof.get("ok"):
+            sent = int(result.get("confirmed_total") or result.get("sent") or 0)
+            total = int(result.get("total") or proof.get("expected_count") or 0)
+            msg_min = proof.get("message_id_min")
+            msg_max = proof.get("message_id_max")
+            _send_text(
+                token=token,
+                chat_id=chat_id,
+                text=(
+                    "Telegram ordered resend complete.\n"
+                    f"Bundles: <code>{sent}/{total}</code>\n"
+                    f"Message IDs: <code>{msg_min}..{msg_max}</code>\n"
+                    f"Sequence match: <code>{bool(proof.get('sequence_match'))}</code>"
+                ),
+            )
+            return
+        issues = proof.get("issues") or result.get("errors") or []
+        _send_text(
+            token=token,
+            chat_id=chat_id,
+            text=(
+                "Telegram ordered resend failed or sequence proof failed.\n"
+                f"Reason: <code>{result.get('halt_reason') or result.get('error') or 'unknown'}</code>\n"
+                f"Issues: <code>{json.dumps(issues, ensure_ascii=False)[:1200]}</code>"
+            ),
+        )
         return
     if command == "/returns_ack_store":
         if not args:
@@ -563,6 +772,9 @@ def poll_once(*, now: datetime | None = None) -> int:
     pending_rc = _process_pending_ready(token=token, now=local_now)
     if pending_rc != 0:
         return pending_rc
+    handover_rc = _process_pending_handover(token=token, now=local_now, default_chat_id=chat_id)
+    if handover_rc != 0:
+        return handover_rc
 
     allowed_users = _allowed_user_ids()
     offset = _load_offset()

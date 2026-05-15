@@ -703,6 +703,75 @@ def test_build_phase1_payload_groups_orders_into_board_tabs(tmp_path: Path):
     ]
 
 
+def test_build_phase1_payload_drops_placeholder_shadow_rows_when_concrete_row_exists(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, planned_shipment_date, created_at, kaspi_status, internal_status,
+                kaspi_offer_name, sku_key, sku_id, my_size, assigned_size, quantity,
+                waybill_url, waybill_downloaded, actual_shipment_date, courier_transmission_date,
+                kaspi_status_detail, signature_required, delivery_mode, planned_delivery_date, payment_mode, returned_to_warehouse,
+                customer_first_name, customer_last_name, customer_phone,
+                customer_height_cm, customer_weight_kg, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                7,
+                "1001",
+                "UNIVERSAL",
+                "2026-04-15",
+                "2026-04-15T10:00:00",
+                "KASPI_DELIVERY",
+                "ACCEPTED",
+                "nan",
+                "",
+                "",
+                None,
+                None,
+                1,
+                None,
+                0,
+                None,
+                None,
+                "ACCEPTED_BY_MERCHANT",
+                0,
+                "DELIVERY",
+                None,
+                "PREPAID",
+                0,
+                "Ali",
+                "One",
+                "+77000000001",
+                176,
+                78,
+                "2026-04-15T10:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    contract = load_ops_board_contract()
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=contract,
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:00:00+05:00",
+    )
+
+    salesraw = payload["SalesRaw_Today"]
+
+    assert [row["_db_row_id"] for row in salesraw] == ["6", "1", "2", "3"]
+    assert all(row["KASPI_OFFER_NAME"] != "nan" for row in salesraw)
+    assert all(row["Kaspi_name_core"] != "UNKNOWN" for row in salesraw)
+
+
 def test_build_phase1_payload_respects_store_specific_same_day_cutoffs(tmp_path: Path):
     db_path = tmp_path / "app.db"
     _make_orders_db(db_path)
@@ -1660,6 +1729,96 @@ def test_build_publish_plan_same_day_appends_new_salesraw_rows_only_at_bottom():
 
     assert plan["tab_actions"]["SalesRaw_Today"]["append_rows"] == [fresh_payload["SalesRaw_Today"][0]]
     assert [row["OrderID"] for row in plan["tab_actions"]["SalesRaw_Today"]["final_rows"]] == ["1001", "0900"]
+
+
+def test_build_publish_plan_uses_run_control_target_when_readme_is_empty():
+    contract = load_ops_board_contract()
+    before_snapshot = {
+        "README": [],
+        "SalesRaw_Today": rows_to_matrix(
+            contract.tabs["SalesRaw_Today"].headers,
+            [
+                {
+                    "Status": "TODAY",
+                    "Date": "2026-04-15",
+                    "STORE_NAME": "Universal",
+                    "HEIGHT": "",
+                    "WEIGHT": "",
+                    "Quantity": 1,
+                    "Kaspi_name_core": "Nike_Tee_Black",
+                    "OrderID": "1001",
+                    "MY_SIZE": "L",
+                    "PROBABLE_SIZE": "L",
+                    "KASPI_OFFER_NAME": "Nike Tee Black",
+                    "SKU_key": "SKU-1",
+                    "_db_row_id": "1",
+                    "_line_key": "1001|1",
+                    "_probable_size_source": "CUSTOMER",
+                    "_probable_size_confidence": "HIGH",
+                }
+            ],
+        ),
+        "Run_Control": rows_to_matrix(
+            contract.tabs["Run_Control"].headers,
+            [{"target_date": "2026-04-15", "ready_for_closeout": "READY", "notes": "operator done"}],
+        ),
+    }
+    fresh_payload = {
+        "README": [{"field": "target_date", "value": "2026-04-15", "notes": "Operational date"}],
+        "SalesRaw_Today": [
+            {
+                "Status": "TODAY",
+                "Date": "2026-04-15",
+                "STORE_NAME": "Universal",
+                "HEIGHT": "",
+                "WEIGHT": "",
+                "Quantity": 1,
+                "Kaspi_name_core": "Nike_Tee_Black",
+                "OrderID": "1001",
+                "MY_SIZE": "",
+                "PROBABLE_SIZE": "L",
+                "KASPI_OFFER_NAME": "Nike Tee Black",
+                "SKU_key": "SKU-1",
+                "_db_row_id": "1",
+                "_line_key": "1001|1",
+                "_probable_size_source": "CUSTOMER",
+                "_probable_size_confidence": "HIGH",
+            },
+            {
+                "Status": "TODAY",
+                "Date": "2026-04-15",
+                "STORE_NAME": "STORE-B",
+                "HEIGHT": "",
+                "WEIGHT": "",
+                "Quantity": 1,
+                "Kaspi_name_core": "Berserk_Rashguard",
+                "OrderID": "1002",
+                "MY_SIZE": "",
+                "PROBABLE_SIZE": "XL",
+                "KASPI_OFFER_NAME": "Berserk Rashguard",
+                "SKU_key": "SKU-3",
+                "_db_row_id": "3",
+                "_line_key": "1002|1",
+                "_probable_size_source": "CUSTOMER",
+                "_probable_size_confidence": "HIGH",
+            },
+        ],
+        "Run_Control": [{"target_date": "2026-04-15", "ready_for_closeout": "HOLD"}],
+    }
+
+    plan = build_publish_plan(
+        contract=contract,
+        before_snapshot=before_snapshot,
+        fresh_payload=fresh_payload,
+        target_date="2026-04-15",
+    )
+
+    assert plan["previous_target_date"] == "2026-04-15"
+    assert plan["same_day_preserve"] is True
+    assert plan["tab_actions"]["SalesRaw_Today"]["mode"] == "upsert_preserve"
+    assert plan["tab_actions"]["SalesRaw_Today"]["append_rows"] == [fresh_payload["SalesRaw_Today"][1]]
+    assert plan["tab_actions"]["SalesRaw_Today"]["final_rows"][0]["MY_SIZE"] == "L"
+    assert plan["tab_actions"]["Run_Control"]["final_rows"][0]["ready_for_closeout"] == "READY"
 
 
 def test_build_publish_plan_force_rewrite_operational_tabs_rewrites_same_day_salesraw():

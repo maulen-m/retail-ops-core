@@ -500,6 +500,45 @@ def _pick_size(assigned_size: Any, my_size: Any) -> str:
     return ""
 
 
+def _is_blankish_db_source_value(value: Any) -> bool:
+    text = _coerce_str(value)
+    return not text or text.lower() in {"nan", "none", "null"}
+
+
+def _db_shadow_group_key(row: Any) -> tuple[str, str, str]:
+    order_id = _coerce_str(row["order_id"])
+    if order_id.endswith(".0"):
+        order_id = order_id[:-2]
+    store_code = _coerce_str(row["store_code"]).upper()
+    if store_code == "STORE-B":
+        store_code = "STOREB"
+    return (order_id, store_code, _coerce_str(row["planned_shipment_date"]))
+
+
+def _is_placeholder_db_shadow_row(row: Any) -> bool:
+    return (
+        _is_blankish_db_source_value(row["kaspi_offer_name"])
+        and _is_blankish_db_source_value(row["sku_key"])
+        and _is_blankish_db_source_value(row["sku_id"])
+    )
+
+
+def _drop_placeholder_db_shadow_rows(rows: list[Any]) -> list[Any]:
+    """Remove blank duplicate rows that would create phantom UNKNOWN multi-line bundles."""
+    concrete_groups = {
+        _db_shadow_group_key(row)
+        for row in rows
+        if not _is_placeholder_db_shadow_row(row)
+    }
+    if not concrete_groups:
+        return rows
+    return [
+        row
+        for row in rows
+        if not (_is_placeholder_db_shadow_row(row) and _db_shadow_group_key(row) in concrete_groups)
+    ]
+
+
 def read_db_orders(
     db_path: Path,
     target_date: date,
@@ -561,7 +600,7 @@ def read_db_orders(
                 query += " AND planned_shipment_date >= ?"
                 params.append(min_date)
 
-        rows = conn.execute(query, params).fetchall()
+        rows = _drop_placeholder_db_shadow_rows(conn.execute(query, params).fetchall())
         kaspi_core_maps = load_active_kaspi_name_core_maps(
             conn,
             sku_keys={_coerce_str(row["sku_key"]) for row in rows},

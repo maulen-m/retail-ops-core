@@ -1,0 +1,288 @@
+{
+  "version": 1,
+  "description": "Canonical LaunchAgent inventory for pausing, verifying, and resuming Autonomous_business business automations.",
+  "default_scope": "daily-ops",
+  "scopes": {
+    "daily-ops": {
+      "description": "Order fetch/import, Google Ops Board, waybill closeout, Telegram control, and shipped-truth repair.",
+      "labels": [
+        "com.example.kaspi-import-v2",
+        "com.example.google-ops-board-publish",
+        "com.example.google-ops-board-prewindow-health",
+        "com.example.google-ops-board-size-writeback",
+        "com.example.google-ops-board-closeout-watch",
+        "com.example.google-ops-board-closeout-caffeinate",
+        "com.example.kaspi-waybill-deadline",
+        "com.example.waybill-telegram-control",
+        "com.example.kaspi-shipped-truth-sync",
+        "com.example.kaspi-daily-ops-report"
+      ]
+    },
+    "ab-business": {
+      "description": "All known Autonomous_business-local launchd automation labels.",
+      "labels": [
+        "com.example.single-truth-preflight",
+        "com.example.table-delta-backup",
+        "com.example.external-database-backup",
+        "com.autonomous-business.end-of-day",
+        "com.example.kaspi-daily-ops-report",
+        "com.example.crm-db-sync",
+        "com.example.exchange-import",
+        "com.example.kaspi-import-v2",
+        "com.example.google-ops-board-publish",
+        "com.example.google-ops-board-prewindow-health",
+        "com.example.google-ops-board-size-writeback",
+        "com.example.google-ops-board-closeout-watch",
+        "com.example.google-ops-board-closeout-caffeinate",
+        "com.example.kaspi-waybill-deadline",
+        "com.example.waybill-telegram-control",
+        "com.example.kaspi-shipped-truth-sync",
+        "com.example.operational-stock-daily-truth",
+        "com.example.kaspi-marketing-ads",
+        "com.example.kaspi-marketing-hourly",
+        "com.example.on-delivery-residuals",
+        "com.example.gmail-pubsub",
+        "com.example.gmail-watch-refresh"
+      ]
+    },
+    "all-business": {
+      "description": "Autonomous_business plus known Web_automation business LaunchAgents used during frozen-boundary work.",
+      "labels": [
+        "com.example.single-truth-preflight",
+        "com.example.table-delta-backup",
+        "com.example.external-database-backup",
+        "com.autonomous-business.end-of-day",
+        "com.example.kaspi-daily-ops-report",
+        "com.example.crm-db-sync",
+        "com.example.exchange-import",
+        "com.example.kaspi-import-v2",
+        "com.example.google-ops-board-publish",
+        "com.example.google-ops-board-prewindow-health",
+        "com.example.google-ops-board-size-writeback",
+        "com.example.google-ops-board-closeout-watch",
+        "com.example.google-ops-board-closeout-caffeinate",
+        "com.example.kaspi-waybill-deadline",
+        "com.example.waybill-telegram-control",
+        "com.example.kaspi-shipped-truth-sync",
+        "com.example.operational-stock-daily-truth",
+        "com.example.kaspi-marketing-ads",
+        "com.example.kaspi-marketing-hourly",
+        "com.example.on-delivery-residuals",
+        "com.example.gmail-pubsub",
+        "com.example.gmail-watch-refresh",
+        "com.webautomation.dashboard_sync",
+        "com.webautomation.delivery_promise_watch",
+        "com.webautomation.kaspi_hourly_snapshot",
+        "com.webautomation.kaspi_marketing_watch",
+        "com.webautomation.line61_line51_checkpoints"
+      ]
+    }
+  },
+  "protected_surfaces": [
+    {
+      "name": "production_db",
+      "path": "${PROJECT_ROOT}/db/app.db",
+      "sidecars": [
+        "${PROJECT_ROOT}/db/app.db-wal",
+        "${PROJECT_ROOT}/db/app.db-shm",
+        "${PROJECT_ROOT}/db/app.db-journal"
+      ]
+    },
+    {
+      "name": "protected_crm_workbook",
+      "path": "${PROJECT_ROOT}/excel_ui/SALES_KSP_CRM_V3.xlsx",
+      "sidecars": []
+    }
+  ],
+  "labels": [
+    {
+      "label": "com.example.single-truth-preflight",
+      "plist": "~/Library/LaunchAgents/com.example.single-truth-preflight.plist",
+      "group": "1_internal_readiness_only",
+      "purpose": "single-truth preflight validator",
+      "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.table-delta-backup",
+      "plist": "~/Library/LaunchAgents/com.example.table-delta-backup.plist",
+      "group": "2_backups_and_reports_after_boundary_acceptance",
+      "purpose": "table delta backup",
+      "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.external-database-backup",
+      "plist": "~/Library/LaunchAgents/com.example.external-database-backup.plist",
+      "group": "2_backups_and_reports_after_boundary_acceptance",
+      "purpose": "external database backup",
+      "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.autonomous-business.end-of-day",
+      "plist": "~/Library/LaunchAgents/com.autonomous-business.end-of-day.plist",
+      "group": "2_backups_and_reports_after_boundary_acceptance",
+      "purpose": "Autonomous Business end-of-day",
+      "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.kaspi-daily-ops-report",
+      "plist": "~/Library/LaunchAgents/com.example.kaspi-daily-ops-report.plist",
+      "group": "2_backups_and_reports_after_boundary_acceptance",
+      "purpose": "Kaspi daily ops report",
+      "risk": ["external_system_or_api_access_possible"]
+    },
+    {
+      "label": "com.example.crm-db-sync",
+      "plist": "~/Library/LaunchAgents/com.example.crm-db-sync.plist",
+      "group": "3_db_import_and_crm_after_no_active_proof_window",
+      "purpose": "CRM/DB sync automation",
+      "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.exchange-import",
+      "plist": "~/Library/LaunchAgents/com.example.exchange-import.plist",
+      "group": "3_db_import_and_crm_after_no_active_proof_window",
+      "purpose": "exchange/order import automation",
+      "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.kaspi-import-v2",
+      "plist": "~/Library/LaunchAgents/com.example.kaspi-import-v2.plist",
+      "group": "3_db_import_and_crm_after_no_active_proof_window",
+      "purpose": "Kaspi import v2",
+      "risk": ["external_system_or_api_access_possible", "production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.google-ops-board-publish",
+      "plist": "~/Library/LaunchAgents/com.example.google-ops-board-publish.plist",
+      "group": "4_google_ops_board_visibility",
+      "purpose": "Google Ops Board publish",
+      "risk": ["external_google_sheet_write_possible", "production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.google-ops-board-prewindow-health",
+      "plist": "~/Library/LaunchAgents/com.example.google-ops-board-prewindow-health.plist",
+      "group": "4_google_ops_board_visibility",
+      "purpose": "Google Ops Board prewindow health",
+      "risk": ["external_system_or_api_access_possible", "production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.google-ops-board-size-writeback",
+      "plist": "~/Library/LaunchAgents/com.example.google-ops-board-size-writeback.plist",
+      "group": "5_employee_writeback_and_closeout",
+      "purpose": "Google Ops Board size writeback",
+      "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.google-ops-board-closeout-watch",
+      "plist": "~/Library/LaunchAgents/com.example.google-ops-board-closeout-watch.plist",
+      "group": "5_employee_writeback_and_closeout",
+      "purpose": "Google Ops Board READY closeout watcher",
+      "risk": ["external_system_or_api_access_possible", "production_db_or_derived_db_write_possible", "telegram_delivery_possible"]
+    },
+    {
+      "label": "com.example.google-ops-board-closeout-caffeinate",
+      "plist": "~/Library/LaunchAgents/com.example.google-ops-board-closeout-caffeinate.plist",
+      "group": "5_employee_writeback_and_closeout",
+      "purpose": "Google Ops Board closeout keep-awake guard",
+      "risk": ["keeps_mac_awake"]
+    },
+    {
+      "label": "com.example.kaspi-waybill-deadline",
+      "plist": "~/Library/LaunchAgents/com.example.kaspi-waybill-deadline.plist",
+      "group": "5_employee_writeback_and_closeout",
+      "purpose": "Kaspi waybill closeout backstop",
+      "risk": ["external_system_or_api_access_possible", "production_db_or_derived_db_write_possible", "telegram_delivery_possible"]
+    },
+    {
+      "label": "com.example.waybill-telegram-control",
+      "plist": "~/Library/LaunchAgents/com.example.waybill-telegram-control.plist",
+      "group": "5_employee_writeback_and_closeout",
+      "purpose": "Telegram closeout control bot",
+      "risk": ["telegram_control_possible", "telegram_delivery_possible"]
+    },
+    {
+      "label": "com.example.kaspi-shipped-truth-sync",
+      "plist": "~/Library/LaunchAgents/com.example.kaspi-shipped-truth-sync.plist",
+      "group": "6_post_delivery_truth_repairs",
+      "purpose": "Kaspi shipped-truth DB sync",
+      "risk": ["external_system_or_api_access_possible", "production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.operational-stock-daily-truth",
+      "plist": "~/Library/LaunchAgents/com.example.operational-stock-daily-truth.plist",
+      "group": "6_post_delivery_truth_repairs",
+      "purpose": "Operational stock daily truth",
+      "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.kaspi-marketing-ads",
+      "plist": "~/Library/LaunchAgents/com.example.kaspi-marketing-ads.plist",
+      "group": "7_marketing_and_external_source_watchers",
+      "purpose": "Kaspi marketing ads scrape",
+      "risk": ["external_system_or_api_access_possible", "production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.kaspi-marketing-hourly",
+      "plist": "~/Library/LaunchAgents/com.example.kaspi-marketing-hourly.plist",
+      "group": "7_marketing_and_external_source_watchers",
+      "purpose": "Kaspi marketing hourly watcher",
+      "risk": ["external_system_or_api_access_possible", "production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.on-delivery-residuals",
+      "plist": "~/Library/LaunchAgents/com.example.on-delivery-residuals.plist",
+      "group": "7_marketing_and_external_source_watchers",
+      "purpose": "on-delivery residuals checker",
+      "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.gmail-pubsub",
+      "plist": "~/Library/LaunchAgents/com.example.gmail-pubsub.plist",
+      "group": "7_marketing_and_external_source_watchers",
+      "purpose": "Gmail Pub/Sub watcher",
+      "risk": ["external_system_or_api_access_possible"]
+    },
+    {
+      "label": "com.example.gmail-watch-refresh",
+      "plist": "~/Library/LaunchAgents/com.example.gmail-watch-refresh.plist",
+      "group": "7_marketing_and_external_source_watchers",
+      "purpose": "Gmail watch refresh",
+      "risk": ["external_system_or_api_access_possible"]
+    },
+    {
+      "label": "com.webautomation.dashboard_sync",
+      "plist": "~/Library/LaunchAgents/com.webautomation.dashboard_sync.plist",
+      "group": "8_web_automation_watchers",
+      "purpose": "Web_automation dashboard sync",
+      "risk": ["external_system_or_api_access_possible", "web_automation_write_possible"]
+    },
+    {
+      "label": "com.webautomation.delivery_promise_watch",
+      "plist": "~/Library/LaunchAgents/com.webautomation.delivery_promise_watch.plist",
+      "group": "8_web_automation_watchers",
+      "purpose": "Web_automation delivery promise watch",
+      "risk": ["external_system_or_api_access_possible", "web_automation_write_possible"]
+    },
+    {
+      "label": "com.webautomation.kaspi_hourly_snapshot",
+      "plist": "~/Library/LaunchAgents/com.webautomation.kaspi_hourly_snapshot.plist",
+      "group": "8_web_automation_watchers",
+      "purpose": "Web_automation Kaspi hourly snapshot",
+      "risk": ["external_system_or_api_access_possible", "web_automation_write_possible"]
+    },
+    {
+      "label": "com.webautomation.kaspi_marketing_watch",
+      "plist": "~/Library/LaunchAgents/com.webautomation.kaspi_marketing_watch.plist",
+      "group": "8_web_automation_watchers",
+      "purpose": "Web_automation Kaspi marketing watch",
+      "risk": ["external_system_or_api_access_possible", "web_automation_write_possible"]
+    },
+    {
+      "label": "com.webautomation.line61_line51_checkpoints",
+      "plist": "~/Library/LaunchAgents/com.webautomation.line61_line51_checkpoints.plist",
+      "group": "8_web_automation_watchers",
+      "purpose": "Web_automation Line61/LINE51 checkpoint rail",
+      "risk": ["external_system_or_api_access_possible", "web_automation_write_possible"]
+    }
+  ]
+}
