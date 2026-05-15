@@ -2,7 +2,7 @@
 
 **Status:** active consumer pointer for Autonomous_business.
 **Scope:** Kaspi-only operations in this repo.
-**Canonical source:** `~/Cowork/Projects/E-commerce/docs/inventory/Master_Inventory_Rules_v9.md`
+**Canonical source:** `~/Cowork/Projects/Sourcing-Research/docs/inventory/Master_Inventory_Rules_v9.md`
 **PO algorithm source:** `docs/protocol/active/PO_making_logic_v3.md`
 
 Autonomous_business consumes the v9 inventory authority from the E-commerce
@@ -25,4 +25,6 @@ the authoritative rule owner to the E-commerce v9 document.
 
 | Parameter | Value | Notes |
 |---|---:|---|
-| `Max_new_SKU_capital_pct` | 20% | Compatibility anchor for local PO proposal generation; authority remains the E-commerce v9 source. |
+| `Max_new_SKU_capital_pct` | 20% | Compatibility anchor for local PO proposal generation; authority remains the Sourcing-Research v9 source. |
+| `Supplier_FX_precedence` | Routed FX first | For landed COGS in this repo: use `CNY_KZT = USDT_KZT / USDT_CNY` from `dim_fx_rates` / derived FX surfaces when available. |
+| `Supplier_FX_fallback_CNY_KZT` | 73 | Owner-approved fallback when routed supplier FX is unavailable. Legacy `75/78` may appear in archived estimates only when explicitly labeled legacy fallback. |

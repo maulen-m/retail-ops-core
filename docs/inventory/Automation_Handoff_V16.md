@@ -34,7 +34,7 @@ minimum contract to keep Excel and Python aligned.
 ## 3. Core Calculations
 
 All formulas are defined in `inventory/Master_Inventory_Rules_v9.md`.
-Do **not** duplicate formulas here. If anything changes, update v8 first.
+Do **not** duplicate formulas here. If anything changes, update `inventory/Master_Inventory_Rules_v9.md` first.
 
 Key requirements:
 - VAT_rate = **0.04**

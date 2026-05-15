@@ -27,3 +27,9 @@ Define strict integrity checks for UI-exported Kaspi archive packs used for deli
 - Script: `scripts/validate_kaspi_archive_pack_integrity.py`
 - Command:
   - `python3 scripts/validate_kaspi_archive_pack_integrity.py --source ui --strict --as-of <YYYY-MM-DD>`
+
+## Operator Wrapper
+- Preferred read-only refresh command:
+  - `python3 scripts/run_webui_archive_source_refresh.py --since <YYYY-MM-DD> --until <YYYY-MM-DD> --stores <STORE,STORE> --mode auto --strict`
+- The wrapper delegates to existing UI archive download/full-parse/normalization validators and writes immutable evidence only.
+- Production DB apply, workbook mutation, scheduler mutation, and external writes are out of scope for this wrapper.

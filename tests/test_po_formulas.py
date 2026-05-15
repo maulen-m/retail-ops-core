@@ -1,13 +1,13 @@
 """
 Tests for PO Dashboard formulas (T_post, Target, Pre-arrival).
 
-Regression tests to prevent formula drift per Master_Inventory_Rules_v6.md:
+Regression tests to prevent formula drift per Master_Inventory_Rules_v9.md:
 - T_post = R + (SS_total / D)  # NO L in T_post!
 - Target = D × T_post = D × R + SS_total
 - Pre-arrival = Current + Inbound - D × effective_L
 - effective_L = L + prep_days
 
-Reference values from Master_Inventory_Rules_v6.md:
+Reference values from Master_Inventory_Rules_v9.md:
 - L = 21 (lead time)
 - R = 10 (review period)
 - B = 14 (buffer factor)
@@ -55,7 +55,7 @@ class TestTPostFormula:
 
     def test_t_post_line52_reference(self):
         """
-        LINE52 reference case from Master_Inventory_Rules_v6.md.
+        LINE52 reference case from Master_Inventory_Rules_v9.md.
         D = 41.477, SS_total ≈ 900
         T_post should be ~31.7 days (NOT ~53 days!)
         """

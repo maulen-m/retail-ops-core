@@ -1,4 +1,4 @@
-"""Canonical parser for DIM_SKU_light_v5 workbook sheets."""
+"""Canonical parser for DIM_SKU_light workbook sheets."""
 
 from __future__ import annotations
 
@@ -72,13 +72,13 @@ def _find_header_row(raw: pd.DataFrame) -> int:
         normalized = {_norm_header(v) for v in row_vals}
         if "skukey" in normalized and "cny" in normalized and ("wtkg" in normalized or "weightkg" in normalized):
             return idx
-    raise RuntimeError("Failed to locate DIM_SKU_light_v5 header row")
+    raise RuntimeError("Failed to locate DIM_SKU_light header row")
 
 
 def parse_dim_sku_light(
     xlsx_path: Path,
     *,
-    sheet_name: str = "DIM_SKU_light_v5",
+    sheet_name: str = "DIM_SKU_light_v7",
     min_cny: float = 1.0,
     min_weight_kg: float = 0.1,
     max_weight_kg: float = 20.0,
@@ -108,7 +108,7 @@ def parse_dim_sku_light(
     avg_col = _find_column(cols, ["AvgPrc", "Avg Price", "avg_price"])
     active_col = _find_column(cols, ["Active", "Is_Active", "active_flag"])
     if not sku_col or not cny_col or not weight_col:
-        raise RuntimeError("DIM_SKU_light_v5 missing required columns: SKU_key, CNY, Wt (kg)")
+        raise RuntimeError("DIM_SKU_light missing required columns: SKU_key, CNY, Wt (kg)")
 
     candidates: dict[str, list[dict[str, Any]]] = {}
     filtered_helper_rows = 0
@@ -175,4 +175,3 @@ def parse_dim_sku_light(
         "selected_rows": int(len(out)),
     }
     return out, diagnostics
-

@@ -16,9 +16,11 @@ import pytest
 from core.config.business_params import (
     get_vat_rate,
     get_fx_rates,
+    get_supplier_fx_rates,
     set_fx_rates,
     FXRates,
     DEFAULT_FX_RATES,
+    SUPPLIER_FX_FALLBACK_CNY_KZT,
     VAT_SCHEDULE,
     get_demand_overrides,
     set_demand_override,
@@ -173,6 +175,29 @@ class TestGetFXRates:
         finally:
             db_path.unlink(missing_ok=True)
 
+    def test_get_fx_rates_accepts_string_dates_for_db_lookup(self):
+        """String as_of_date should still use effective-dated DB rows."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            set_fx_rates(
+                cny_kzt=79.0,
+                usd_kzt=535.0,
+                dlv_rate_usd_kg=2.70,
+                effective_date=date(2025, 1, 1),
+                source="STRING_DATE_TEST",
+                db_path=db_path,
+            )
+
+            rates = get_fx_rates("2025-06-15", db_path=db_path)
+            assert rates.cny_kzt == 79.0
+            assert rates.usd_kzt == 535.0
+            assert rates.dlv_rate_usd_kg == 2.70
+            assert rates.source == "STRING_DATE_TEST"
+        finally:
+            db_path.unlink(missing_ok=True)
+
     def test_get_fx_rates_none_uses_today(self):
         """None as_of_date should use today's date."""
         rates = get_fx_rates(None)
@@ -180,6 +205,87 @@ class TestGetFXRates:
         assert rates.cny_kzt > 0
         assert rates.usd_kzt > 0
         assert rates.dlv_rate_usd_kg > 0
+
+
+class TestGetSupplierFXRates:
+    """Tests for supplier-landed FX precedence."""
+
+    def test_uses_routed_cny_from_dim_fx_rates(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                """
+                CREATE TABLE dim_fx_rates (
+                    effective_date TEXT PRIMARY KEY,
+                    cny_kzt REAL,
+                    usd_kzt REAL,
+                    dlv_rate_usd_kg REAL,
+                    usdt_kzt REAL,
+                    usdt_cny REAL,
+                    source TEXT,
+                    provider TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO dim_fx_rates (
+                    effective_date, cny_kzt, usd_kzt, dlv_rate_usd_kg,
+                    usdt_kzt, usdt_cny, source, provider
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("2026-02-01", 78.0, 514.0, 2.66, 502.008, 6.9187, "DERIVED", "FX_ROUTE"),
+            )
+            conn.commit()
+            conn.close()
+
+            rates = get_supplier_fx_rates("2026-02-05", db_path=db_path)
+            assert rates.cny_kzt == pytest.approx(502.008 / 6.9187)
+            assert rates.usd_kzt == 514.0
+            assert rates.dlv_rate_usd_kg == 2.66
+            assert rates.source.startswith("ROUTED_DIM_FX")
+        finally:
+            db_path.unlink(missing_ok=True)
+
+    def test_falls_back_to_owner_73_when_routed_cny_missing(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                """
+                CREATE TABLE dim_fx_rates (
+                    effective_date TEXT PRIMARY KEY,
+                    cny_kzt REAL,
+                    usd_kzt REAL,
+                    dlv_rate_usd_kg REAL,
+                    source TEXT,
+                    provider TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO dim_fx_rates (
+                    effective_date, cny_kzt, usd_kzt, dlv_rate_usd_kg, source, provider
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("2026-02-01", 78.0, 514.0, 2.66, "LEGACY", "MANUAL"),
+            )
+            conn.commit()
+            conn.close()
+
+            rates = get_supplier_fx_rates("2026-02-05", db_path=db_path)
+            assert rates.cny_kzt == SUPPLIER_FX_FALLBACK_CNY_KZT
+            assert rates.usd_kzt == 514.0
+            assert rates.dlv_rate_usd_kg == 2.66
+            assert "OWNER_FALLBACK_73" in rates.source
+        finally:
+            db_path.unlink(missing_ok=True)
 
 
 class TestSetFXRates:

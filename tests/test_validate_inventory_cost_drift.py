@@ -1,6 +1,5 @@
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 from scripts import validate_inventory_cost_drift
 
@@ -98,22 +97,7 @@ def _seed_cashflow_row(
     conn.commit()
     conn.close()
 
-
-def _patch_fx(monkeypatch) -> None:
-    monkeypatch.setattr(
-        validate_inventory_cost_drift,
-        "get_fx_rates",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            cny_kzt=75.0,
-            dlv_rate_usd_kg=2.66,
-            usd_kzt=520.0,
-        ),
-    )
-
-
-def test_drift_uses_all_inventory_components_including_on_delivery(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_drift_uses_all_inventory_components_including_on_delivery(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     _seed_snapshot(db_path)
     _seed_cashflow_row(
@@ -123,7 +107,6 @@ def test_drift_uses_all_inventory_components_including_on_delivery(
         on_delivery=1000.0,
         inventory_cost_close=3000.0,
     )
-    _patch_fx(monkeypatch)
 
     rc = validate_inventory_cost_drift.validate_drift(
         db_path=db_path,
@@ -136,7 +119,7 @@ def test_drift_uses_all_inventory_components_including_on_delivery(
 
 
 def test_drift_fails_when_total_inventory_components_outside_tolerance(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "app.db"
     _seed_snapshot(db_path)
@@ -147,7 +130,6 @@ def test_drift_fails_when_total_inventory_components_outside_tolerance(
         on_delivery=500.0,
         inventory_cost_close=2500.0,
     )
-    _patch_fx(monkeypatch)
 
     rc = validate_inventory_cost_drift.validate_drift(
         db_path=db_path,
@@ -160,7 +142,7 @@ def test_drift_fails_when_total_inventory_components_outside_tolerance(
 
 
 def test_drift_fallback_to_inventory_cost_close_when_components_zero(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "app.db"
     _seed_snapshot(db_path)
@@ -171,7 +153,6 @@ def test_drift_fallback_to_inventory_cost_close_when_components_zero(
         on_delivery=0.0,
         inventory_cost_close=3000.0,
     )
-    _patch_fx(monkeypatch)
 
     rc = validate_inventory_cost_drift.validate_drift(
         db_path=db_path,
@@ -184,7 +165,7 @@ def test_drift_fallback_to_inventory_cost_close_when_components_zero(
 
 
 def test_drift_handles_missing_on_delivery_column_with_safe_fallback(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "app.db"
     _seed_snapshot(db_path)
@@ -195,7 +176,6 @@ def test_drift_handles_missing_on_delivery_column_with_safe_fallback(
         on_delivery=None,
         inventory_cost_close=3000.0,
     )
-    _patch_fx(monkeypatch)
 
     rc = validate_inventory_cost_drift.validate_drift(
         db_path=db_path,
@@ -207,9 +187,7 @@ def test_drift_handles_missing_on_delivery_column_with_safe_fallback(
     assert rc == 0
 
 
-def test_drift_default_compares_last_settled_day_not_latest_partial(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_drift_default_compares_last_settled_day_not_latest_partial(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     conn = sqlite3.connect(str(db_path))
     conn.executescript(
@@ -259,7 +237,6 @@ def test_drift_default_compares_last_settled_day_not_latest_partial(
     )
     conn.commit()
     conn.close()
-    _patch_fx(monkeypatch)
 
     rc = validate_inventory_cost_drift.validate_drift(
         db_path=db_path,
@@ -272,7 +249,7 @@ def test_drift_default_compares_last_settled_day_not_latest_partial(
 
 
 def test_drift_default_falls_back_when_latest_settled_exceeds_tolerance(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "app.db"
     conn = sqlite3.connect(str(db_path))
@@ -325,7 +302,6 @@ def test_drift_default_falls_back_when_latest_settled_exceeds_tolerance(
     )
     conn.commit()
     conn.close()
-    _patch_fx(monkeypatch)
 
     rc = validate_inventory_cost_drift.validate_drift(
         db_path=db_path,

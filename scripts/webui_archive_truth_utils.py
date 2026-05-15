@@ -86,6 +86,7 @@ LEDGER_COLUMNS = [
 
 WINDOW_RE = re.compile(r"(?P<since>\d{4}-\d{2}-\d{2})_to_(?P<until>\d{4}-\d{2}-\d{2})")
 ISO_RE = re.compile(r"^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})$")
+KNOWN_STORE_CODES = {"UNIVERSAL", "ACMEWEAR", "11KZ", "MELVIS", "STOREB"}
 
 
 def coerce_iso_date(value: str) -> date:
@@ -206,6 +207,9 @@ def infer_store_code_from_path(path: Path) -> str | None:
             store = part.replace("store_", "").strip().upper()
             if store:
                 return store
+        normalized_part = part.strip().upper().replace(" ", "").replace("-", "_")
+        if normalized_part in KNOWN_STORE_CODES:
+            return normalized_part
     match = re.search(r"ArchiveOrders[_ ]+([A-Za-z0-9-]+)", path.stem, flags=re.IGNORECASE)
     if match:
         store = match.group(1).upper().replace("-", "_")

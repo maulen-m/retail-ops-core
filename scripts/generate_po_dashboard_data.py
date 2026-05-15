@@ -43,6 +43,7 @@ from core.calc.economics import calc_cogs, calc_net_rev, calc_delivery_fee
 from core.calc.size_allocation import calc_deficit_capped_order_qty, round_qty_to_5_up
 from core.po.blackout import adjust_po_dates, CNY_2026
 from core.po.dashboard_math import round_half_up_1dp, compute_doc_values
+from core.po.receipt_corrections import annotate_po_payload, get_receipt_corrections_by_po
 from core.utils.sku_normalize import normalize_size
 from core.capital.guardrails import check_roic_gate
 from core.sales import ensure_sales_truth_views
@@ -1267,7 +1268,7 @@ def calc_po_draft_manual(
     """
     Calculate PO draft with pre-arrival stock projection.
 
-    Formulas (per Master_Inventory_Rules_v6.md):
+    Formulas (per Master_Inventory_Rules_v9.md):
     - Pre_i = Current_i + Inbound_i - (D_i × effective_L)
     - T_post = R + (SS_total / D_sku)  # Days of coverage post-arrival (NO L!)
     - Target_i = D_i × T_post = D_i × R + SS_i
@@ -1295,7 +1296,7 @@ def calc_po_draft_manual(
     ss_mix = TV * d_sku * L
     ss_total = ss_demand + ss_floor + ss_mix
 
-    # ROP and Target (per Master_Inventory_Rules_v6.md)
+    # ROP and Target (per Master_Inventory_Rules_v9.md)
     # T_post = R + (SS/D) = days of coverage post-arrival (NO L in T_post!)
     # Target = D × T_post = D × R + SS
     # NOTE: Lead time L is in pre-arrival consumption, not T_post
@@ -2312,6 +2313,7 @@ def load_po_orders(
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
+        receipt_corrections = get_receipt_corrections_by_po(conn)
         rows = _load_po_line_rows(conn, po_id, po_part_id=po_part_id)
         if not rows:
             return None
@@ -2396,7 +2398,7 @@ def load_po_orders(
                     )
                 normalized_parts[sku_key][size] = parts
 
-        return {
+        payload = {
             "po_id": po_id,
             "po_part_id": po_part_id,
             "message_date": (part_meta["message_date"] if part_meta else None) or (header["message_date"] if header else None),
@@ -2417,6 +2419,7 @@ def load_po_orders(
             "orders_by_sku": orders_by_sku,
             "orders_by_sku_parts": normalized_parts,
         }
+        return annotate_po_payload(payload, receipt_corrections.get(po_id))
     finally:
         conn.close()
 
@@ -2514,6 +2517,7 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
     try:
         if not _table_exists(conn, "po_header"):
             return []
+        receipt_corrections = get_receipt_corrections_by_po(conn)
 
         header_map: dict[str, sqlite3.Row] = {}
         for row in conn.execute("SELECT * FROM po_header").fetchall():
@@ -2591,39 +2595,42 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
                     units_received = units_total
 
                 real_parts.append(
-                    {
-                        "po_id": po_part_id,
-                        "parent_po_id": parent_po_id,
-                        "supplier_code": part["supplier_id"] or (header["supplier_code"] if header else None),
-                        "status": status or (header["status"] if header else None),
-                        "message_date": part["message_date"] or (header["message_date"] if header else None),
-                        "ship_date_seller": header["ship_date_seller"] if header else None,
-                        "ship_date_cargo": part["cargo_send_date"] or (header["ship_date_cargo"] if header else None),
-                        "alm_arrival_nom": header["alm_arrival_nom"] if header else None,
-                        "ast_arrival_nom": part["estimated_arrival_date"] or (header["ast_arrival_nom"] if header else None),
-                        "alm_arrival_real": header["alm_arrival_real"] if header else None,
-                        "ast_arrival_real": part["actual_arrival_date"] or (header["ast_arrival_real"] if header else None),
-                        "units_total": units_total,
-                        "units_received": units_received,
-                        "weight_nom_kg": weight_nom_kg,
-                        "weight_real_kg": weight_real_kg,
-                        "po_weight_basis": "actual" if use_actual_weight else "estimated",
-                        "total_places": part["total_bags"] if part["total_bags"] is not None else (header["total_places"] if header else None),
-                        "cargo_freight_id": _row_value(part, "cargo_freight_id"),
-                        "actual_dlv_pay_date": _row_value(part, "actual_dlv_pay_date"),
-                        "actual_dlv_days": _row_value(part, "actual_dlv_days"),
-                        "paid_dlv_usd": dlv_total_usd,
-                        "paid_dlv_kzt": dlv_total_kzt,
-                        "final_usd_per_kg": final_usd_per_kg,
-                        "usd_kzt_rate": usd_kzt_rate,
-                        "po_dlv_basis": dlv_basis,
-                        "total_cost_cny": header["total_cost_cny"] if header else None,
-                        "total_cost_kzt_supplier": header["total_cost_kzt_supplier"] if header else None,
-                        "total_landed_cost_kzt": header["total_landed_cost_kzt"] if header else None,
-                        "notes": header["notes"] if header and "notes" in header.keys() else None,
-                        "created_at": header["created_at"] if header else None,
-                        "updated_at": header["updated_at"] if header else None,
-                    }
+                    annotate_po_payload(
+                        {
+                            "po_id": po_part_id,
+                            "parent_po_id": parent_po_id,
+                            "supplier_code": part["supplier_id"] or (header["supplier_code"] if header else None),
+                            "status": status or (header["status"] if header else None),
+                            "message_date": part["message_date"] or (header["message_date"] if header else None),
+                            "ship_date_seller": header["ship_date_seller"] if header else None,
+                            "ship_date_cargo": part["cargo_send_date"] or (header["ship_date_cargo"] if header else None),
+                            "alm_arrival_nom": header["alm_arrival_nom"] if header else None,
+                            "ast_arrival_nom": part["estimated_arrival_date"] or (header["ast_arrival_nom"] if header else None),
+                            "alm_arrival_real": header["alm_arrival_real"] if header else None,
+                            "ast_arrival_real": part["actual_arrival_date"] or (header["ast_arrival_real"] if header else None),
+                            "units_total": units_total,
+                            "units_received": units_received,
+                            "weight_nom_kg": weight_nom_kg,
+                            "weight_real_kg": weight_real_kg,
+                            "po_weight_basis": "actual" if use_actual_weight else "estimated",
+                            "total_places": part["total_bags"] if part["total_bags"] is not None else (header["total_places"] if header else None),
+                            "cargo_freight_id": _row_value(part, "cargo_freight_id"),
+                            "actual_dlv_pay_date": _row_value(part, "actual_dlv_pay_date"),
+                            "actual_dlv_days": _row_value(part, "actual_dlv_days"),
+                            "paid_dlv_usd": dlv_total_usd,
+                            "paid_dlv_kzt": dlv_total_kzt,
+                            "final_usd_per_kg": final_usd_per_kg,
+                            "usd_kzt_rate": usd_kzt_rate,
+                            "po_dlv_basis": dlv_basis,
+                            "total_cost_cny": header["total_cost_cny"] if header else None,
+                            "total_cost_kzt_supplier": header["total_cost_kzt_supplier"] if header else None,
+                            "total_landed_cost_kzt": header["total_landed_cost_kzt"] if header else None,
+                            "notes": header["notes"] if header and "notes" in header.keys() else None,
+                            "created_at": header["created_at"] if header else None,
+                            "updated_at": header["updated_at"] if header else None,
+                        },
+                        receipt_corrections.get(parent_po_id),
+                    )
                 )
 
             if real_parts:
@@ -2706,38 +2713,43 @@ def load_real_pos(db_path: Path = DB_PATH) -> list[dict]:
             if not (inbound or recent_received):
                 continue
 
-            real_pos.append({
-                "po_id": po_id,
-                "supplier_code": row["supplier_code"],
-                "status": row["status"],
-                "message_date": row["message_date"],
-                "ship_date_seller": row["ship_date_seller"],
-                "ship_date_cargo": row["ship_date_cargo"],
-                "alm_arrival_nom": row["alm_arrival_nom"],
-                "ast_arrival_nom": row["ast_arrival_nom"],
-                "alm_arrival_real": row["alm_arrival_real"],
-                "ast_arrival_real": row["ast_arrival_real"],
-                "units_total": int(units_total or 0),
-                "units_received": int(units_received or 0),
-                "weight_nom_kg": row["weight_nom_kg"],
-                "weight_real_kg": row["weight_real_kg"],
-                "po_weight_basis": "estimated",
-                "total_places": row["total_places"],
-                "cargo_freight_id": None,
-                "actual_dlv_pay_date": None,
-                "actual_dlv_days": None,
-                "paid_dlv_usd": None,
-                "paid_dlv_kzt": None,
-                "final_usd_per_kg": None,
-                "usd_kzt_rate": None,
-                "po_dlv_basis": "estimated",
-                "total_cost_cny": row["total_cost_cny"],
-                "total_cost_kzt_supplier": row["total_cost_kzt_supplier"],
-                "total_landed_cost_kzt": row["total_landed_cost_kzt"],
-                "notes": row["notes"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            })
+            real_pos.append(
+                annotate_po_payload(
+                    {
+                        "po_id": po_id,
+                        "supplier_code": row["supplier_code"],
+                        "status": row["status"],
+                        "message_date": row["message_date"],
+                        "ship_date_seller": row["ship_date_seller"],
+                        "ship_date_cargo": row["ship_date_cargo"],
+                        "alm_arrival_nom": row["alm_arrival_nom"],
+                        "ast_arrival_nom": row["ast_arrival_nom"],
+                        "alm_arrival_real": row["alm_arrival_real"],
+                        "ast_arrival_real": row["ast_arrival_real"],
+                        "units_total": int(units_total or 0),
+                        "units_received": int(units_received or 0),
+                        "weight_nom_kg": row["weight_nom_kg"],
+                        "weight_real_kg": row["weight_real_kg"],
+                        "po_weight_basis": "estimated",
+                        "total_places": row["total_places"],
+                        "cargo_freight_id": None,
+                        "actual_dlv_pay_date": None,
+                        "actual_dlv_days": None,
+                        "paid_dlv_usd": None,
+                        "paid_dlv_kzt": None,
+                        "final_usd_per_kg": None,
+                        "usd_kzt_rate": None,
+                        "po_dlv_basis": "estimated",
+                        "total_cost_cny": row["total_cost_cny"],
+                        "total_cost_kzt_supplier": row["total_cost_kzt_supplier"],
+                        "total_landed_cost_kzt": row["total_landed_cost_kzt"],
+                        "notes": row["notes"],
+                        "created_at": row["created_at"],
+                        "updated_at": row["updated_at"],
+                    },
+                    receipt_corrections.get(po_id),
+                )
+            )
         return real_pos
     finally:
         conn.close()

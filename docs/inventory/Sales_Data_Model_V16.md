@@ -188,3 +188,55 @@ DB table:
 
 Sync entrypoint:
 - `scripts/sync_opex_schedule.py` (dry-run by default; apply requires `ENABLE_CASHFLOW_WRITE=1` and `--apply`)
+
+---
+
+## 10. Operational Stock Truth P0 Schema
+
+The operational-stock truth rollout uses these DB contracts before stock, order,
+PO, ads, cashflow, or owner reports can be published as decision-grade:
+
+| Table | Role |
+|---|---|
+| `source_manifest` | Source path/hash/freshness ledger |
+| `pipeline_run` | Run-level status and source manifest binding |
+| `validation_result` | Gate result records |
+| `exception_queue` | Fail-closed exception records |
+| `stock_anchor` | Immutable approved stock anchor metadata |
+| `stock_adjustment_batch` | Audited adjustment batch metadata |
+| `stock_ledger` | Append-only stock events with idempotency key support |
+| `fact_inventory_snapshot_size` | Derived size-level physical stock snapshot |
+| `offer_availability_snapshot` | Store offer availability separated from physical stock |
+| `order_status_event` | Append-only order lifecycle spine |
+| `return_qc_event` | Return/cancel quarantine and QC acceptance events |
+| `fact_orders_kaspi`, `fact_order_entries_kaspi`, `sales_fact_v2` | Order and sales projections |
+| `po_header`, `po_part`, `po_line` | PO and inbound part/line grain |
+| `fact_cashflow_events`, `fact_cashflow_daily` | Cashflow event spine and daily roll-forward |
+| `ads_source_refresh_runs`, `ads_campaign_product_daily` | Ads source coverage and product spend |
+| `owner_report_snapshot` | Published owner report lineage and trust status |
+
+Schema source:
+- `scripts/migrate_028_operational_stock_truth_p0_schema.py`
+- `scripts/validate_operational_stock_schema.py`
+
+### 10.1 Operational Stock Integration Gates
+
+Decision-grade owner outputs that depend on operational stock must also pass the
+read-only Agent 7 integration gate:
+
+- sales rows must bind to `order_status_event` completed lifecycle evidence and
+  canonical `fact_order_entries_kaspi` rows; duplicate delivered projections for
+  the same order/SKU grain block publication.
+- returned or cancelled units must stay out of active sellable stock until
+  `return_qc_event.accepted_active_qty` covers the positive restock quantity.
+- PO inbound must be keyed to `po_part` or `po_line` grain, and received inbound
+  must not remain in `fact_inventory_snapshot_size.inbound_stock`.
+- missing, blocked, or stale ads coverage, including STOREB gaps, is not zero
+  spend; it blocks profit/product-test decisions.
+- D1 Kaspi Pay cashflow recognizes delivered orders as same-day cash-in, not
+  receivables, and `fact_cashflow_daily` must roll forward opening balances from
+  prior closes.
+
+Gate source:
+- `core/ops/operational_stock_integration_gates.py`
+- `scripts/validate_operational_stock_integration_gates.py`

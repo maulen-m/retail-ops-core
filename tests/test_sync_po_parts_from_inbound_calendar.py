@@ -374,7 +374,7 @@ def _write_workbook(
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         inbounds.to_excel(writer, sheet_name="Inbounds_sheet", index=False)
         part_totals.to_excel(writer, sheet_name="PO_part_id_Totals", index=False)
-        dim_sku_light.to_excel(writer, sheet_name="DIM_SKU_light_v5", index=False)
+        dim_sku_light.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False)
 
 
 def _count(conn: sqlite3.Connection, table: str) -> int:

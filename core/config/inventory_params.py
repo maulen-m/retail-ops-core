@@ -1,7 +1,7 @@
 """
 TASK-150: Centralized Inventory Parameters
 
-All parameters match Master_Inventory_Rules_v5.3.md exactly.
+All parameters match Master_Inventory_Rules_v9.md exactly.
 This is the single source of truth for inventory calculations.
 
 Parameters:
@@ -24,7 +24,7 @@ class InventoryParams:
     """
     Immutable inventory parameters.
 
-    All values from Master_Inventory_Rules_v5.3.md:
+    All values from Master_Inventory_Rules_v9.md:
     - Section 4.1: Global Defaults (L, R, B, z, TV)
     - Section 5.1: Demand & Volatility (sigma_factor)
 
@@ -95,7 +95,7 @@ def reset_params() -> None:
 if __name__ == "__main__":
     # Quick verification
     params = get_params()
-    print("Inventory Parameters (from Master_Inventory_Rules_v5.3.md)")
+    print("Inventory Parameters (from Master_Inventory_Rules_v9.md)")
     print("=" * 60)
     print(f"  L (Lead time):         {params.L} days")
     print(f"  R (Review period):     {params.R} days")

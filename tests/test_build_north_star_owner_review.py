@@ -40,14 +40,34 @@ def _seed_db(db_path: Path) -> None:
             )
             """
         )
-        conn.execute(
+        conn.executescript(
             """
-            CREATE TABLE ads_spend_sidecar_daily_sku (
-                date TEXT,
-                store_code TEXT,
-                sku_key TEXT,
-                ads_cost_kzt REAL
-            )
+            CREATE TABLE ads_source_refresh_runs (
+                run_id TEXT PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                merchant_id TEXT,
+                store_code TEXT NOT NULL,
+                date_start TEXT NOT NULL,
+                date_end TEXT NOT NULL,
+                product_rows_total INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                notes_json TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE ads_campaign_product_daily (
+                date TEXT NOT NULL,
+                store_code TEXT NOT NULL,
+                campaign_id TEXT NOT NULL,
+                campaign_name TEXT,
+                sku_key TEXT NOT NULL DEFAULT '',
+                cost_kzt REAL NOT NULL DEFAULT 0,
+                impressions INTEGER,
+                clicks INTEGER,
+                source_run_id TEXT,
+                coverage_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+                created_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (date, store_code, campaign_id, sku_key)
+            );
             """
         )
         conn.execute(
@@ -57,7 +77,18 @@ def _seed_db(db_path: Path) -> None:
             "INSERT INTO fact_cashflow_commitments VALUES ('2026-01-20','OPEX',200)"
         )
         conn.execute(
-            "INSERT INTO ads_spend_sidecar_daily_sku VALUES ('2026-01-15','30137883','SKU_A',100)"
+            """
+            INSERT INTO ads_source_refresh_runs
+            (run_id, started_at, finished_at, merchant_id, store_code, date_start, date_end, product_rows_total, status)
+            VALUES ('run-1', '2026-01-31T01:00:00Z', '2026-01-31T01:05:00Z', '30137883', 'ACMEWEAR', '2026-01-01', '2026-01-31', 1, 'SUCCESS')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ads_campaign_product_daily
+            (date, store_code, campaign_id, campaign_name, sku_key, cost_kzt, impressions, clicks, source_run_id, coverage_status)
+            VALUES ('2026-01-15', 'ACMEWEAR', 'C1', 'Campaign', 'SKU_A', 100.0, 10, 1, 'run-1', 'COVERED')
+            """
         )
         conn.commit()
     finally:

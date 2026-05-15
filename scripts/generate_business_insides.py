@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.cashflow.paid_capital_truth import compute_paid_capital_truth
-from core.ads.sidecar_contract import resolve_ads_db_path, validate_ads_source
+from core.ads.canonical_truth import CanonicalAdsError, load_daily_total_ads
 from core.db.sales_truth_query_guard import (
     install_sales_truth_query_guard,
     remove_sales_truth_query_guard,
@@ -847,22 +847,6 @@ def _load_ads_daily(
     start_date: date,
     end_date: date,
 ) -> tuple[dict[str, float], dict[str, float]]:
-    ads_source_path = resolve_ads_db_path(require_exists=False)
-    ads_max_age_hours = float(os.environ.get("AB_ADS_DB_MAX_AGE_HOURS", "36"))
-    ads_source_status = validate_ads_source(ads_source_path, max_age_hours=ads_max_age_hours)
-    if not ads_source_status.get("ok", False):
-        return {}, {
-            "status": "unavailable",
-            "reason": str(ads_source_status.get("reason") or "unknown"),
-            "source_path": str(ads_source_status.get("path") or ads_source_path),
-            "mapped_rows": None,
-            "unmapped_rows": None,
-            "mapped_cost_kzt": None,
-            "unmapped_cost_kzt": None,
-            "total_cost_kzt": None,
-            "mapping_coverage_pct": None,
-        }
-
     effective_cost_mode = os.environ.get("AB_ADS_EFFECTIVE_COST_MODE", "").strip().lower() in {
         "1",
         "true",
@@ -875,123 +859,33 @@ def _load_ads_daily(
             str(PROJECT_ROOT / "config" / "kaspi_ads_cost_adjustments.yaml"),
         )
     ).expanduser()
-
-    policy: dict[str, Any] | None = None
-    default_multiplier = 1.0
-    date_overrides: list[dict[str, Any]] = []
-    if effective_cost_mode:
-        if not effective_policy_path.exists():
-            return {}, {
-                "status": "unavailable",
-                "reason": "policy_missing",
-                "source_path": str(ads_source_path),
-                "policy_path": str(effective_policy_path),
-                "mapped_rows": None,
-                "unmapped_rows": None,
-                "mapped_cost_kzt": None,
-                "unmapped_cost_kzt": None,
-                "total_cost_kzt": None,
-                "mapping_coverage_pct": None,
-            }
-        try:
-            policy = yaml.safe_load(effective_policy_path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            return {}, {
-                "status": "unavailable",
-                "reason": "policy_parse_error",
-                "source_path": str(ads_source_path),
-                "policy_path": str(effective_policy_path),
-                "mapped_rows": None,
-                "unmapped_rows": None,
-                "mapped_cost_kzt": None,
-                "unmapped_cost_kzt": None,
-                "total_cost_kzt": None,
-                "mapping_coverage_pct": None,
-            }
-        default_multiplier = float(policy.get("default_multiplier", 1.0) or 1.0)
-        date_overrides = list(policy.get("date_overrides") or [])
-
-    def _multiplier_for_day(day_iso: str) -> float:
-        if not effective_cost_mode:
-            return 1.0
-        multiplier = default_multiplier
-        for row in date_overrides:
-            start = str(row.get("start_date") or "").strip()
-            end = str(row.get("end_date") or "").strip()
-            if start and day_iso < start:
-                continue
-            if end and day_iso > end:
-                continue
-            candidate = float(row.get("multiplier", multiplier) or multiplier)
-            multiplier = candidate
-        return multiplier
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
     try:
-        if not _table_exists(conn, "ads_spend_sidecar_daily"):
-            return {}, {
-                "status": "unavailable",
-                "reason": "sidecar_table_missing",
-                "source_path": str(ads_source_path),
-                "mapped_rows": None,
-                "unmapped_rows": None,
-                "mapped_cost_kzt": None,
-                "unmapped_cost_kzt": None,
-                "total_cost_kzt": None,
-                "mapping_coverage_pct": None,
-            }
-        rows = conn.execute(
-            """
-            SELECT
-                date,
-                SUM(COALESCE(total_cost_kzt, 0)) AS total_cost_kzt,
-                SUM(COALESCE(mapped_rows, 0)) AS mapped_rows,
-                SUM(COALESCE(unmapped_rows, 0)) AS unmapped_rows,
-                SUM(COALESCE(mapped_cost_kzt, 0)) AS mapped_cost_kzt,
-                SUM(COALESCE(unmapped_cost_kzt, 0)) AS unmapped_cost_kzt
-            FROM ads_spend_sidecar_daily
-            WHERE date(date) BETWEEN ? AND ?
-            GROUP BY date
-            """,
-            (start_date.isoformat(), end_date.isoformat()),
-        ).fetchall()
-    finally:
-        conn.close()
-
-    by_date: dict[str, float] = {}
-    totals = {
-        "status": "available",
-        "reason": "effective_cost_policy" if effective_cost_mode else "ok",
-        "source_path": str(ads_source_path),
-        "policy_path": str(effective_policy_path) if effective_cost_mode else None,
-        "effective_cost_mode": bool(effective_cost_mode),
-        "default_multiplier": float(default_multiplier) if effective_cost_mode else 1.0,
-        "mapped_rows": 0.0,
-        "unmapped_rows": 0.0,
-        "mapped_cost_kzt": 0.0,
-        "unmapped_cost_kzt": 0.0,
-        "total_cost_kzt": 0.0,
-        "mapping_coverage_pct": 0.0,
-    }
-    for row in rows:
-        d = str(row["date"])
-        multiplier = _multiplier_for_day(d)
-        cost = float(row["total_cost_kzt"] or 0.0) * multiplier
-        mapped_cost = float(row["mapped_cost_kzt"] or 0.0) * multiplier
-        unmapped_cost = float(row["unmapped_cost_kzt"] or 0.0) * multiplier
-        by_date[d] = round(cost, 2)
-        totals["mapped_rows"] += float(row["mapped_rows"] or 0.0)
-        totals["unmapped_rows"] += float(row["unmapped_rows"] or 0.0)
-        totals["mapped_cost_kzt"] += mapped_cost
-        totals["unmapped_cost_kzt"] += unmapped_cost
-        totals["total_cost_kzt"] += cost
-    total_rows = totals["mapped_rows"] + totals["unmapped_rows"]
-    totals["mapping_coverage_pct"] = (
-        round((totals["mapped_rows"] / total_rows) * 100.0, 2) if total_rows else 0.0
-    )
-    for key in ("mapped_cost_kzt", "unmapped_cost_kzt", "total_cost_kzt"):
-        totals[key] = round(totals[key], 2)
+        by_date, totals = load_daily_total_ads(
+            db_path=db_path,
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+            effective_cost_mode=effective_cost_mode,
+            effective_policy_path=effective_policy_path if effective_cost_mode else None,
+        )
+    except CanonicalAdsError as exc:
+        message = str(exc)
+        reason = "policy_parse_error" if "parse" in message else "policy_missing" if "missing" in message else "canonical_ads_error"
+        return {}, {
+            "status": "unavailable",
+            "reason": reason,
+            "source_path": str(db_path),
+            "policy_path": str(effective_policy_path) if effective_cost_mode else None,
+            "mapped_rows": None,
+            "unmapped_rows": None,
+            "mapped_cost_kzt": None,
+            "unmapped_cost_kzt": None,
+            "total_cost_kzt": None,
+            "mapping_coverage_pct": None,
+        }
+    totals["reason"] = "effective_cost_policy" if effective_cost_mode and totals.get("status") == "available" else totals.get("reason")
+    if effective_cost_mode:
+        totals["policy_path"] = str(effective_policy_path)
+        totals["effective_cost_mode"] = True
     return by_date, totals
 
 

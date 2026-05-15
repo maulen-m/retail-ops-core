@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build profit-after-ads snapshot from published sales truth + ads sidecar."""
+"""Build profit-after-ads snapshot from published sales truth + canonical ads truth."""
 
 from __future__ import annotations
 

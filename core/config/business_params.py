@@ -85,6 +85,10 @@ DEFAULT_FX_RATES = {
     "dlv_rate_usd_kg": 2.66  # Delivery rate in USD per kg (volumetric factor)
 }
 
+# Landed supplier-cost surfaces must prefer routed FX; if routed CNY is unavailable,
+# use the owner-approved fallback instead of silently reviving legacy 75/78 anchors.
+SUPPLIER_FX_FALLBACK_CNY_KZT = 73.0
+
 # Database path (relative to project root)
 _DB_PATH = Path(__file__).parent.parent.parent / "db" / "app.db"
 
@@ -116,8 +120,26 @@ class FXRates:
         }
 
 
+def _normalize_fx_as_of_date(value: Union[str, date, datetime, None]) -> date:
+    if value is None:
+        return date.today()
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return date.today()
+        try:
+            return date.fromisoformat(raw[:10])
+        except ValueError as exc:
+            raise ValueError(f"Invalid FX as_of_date: {value}") from exc
+    raise ValueError(f"Unsupported FX as_of_date: {value}")
+
+
 def get_fx_rates(
-    as_of_date: Union[date, datetime, None] = None,
+    as_of_date: Union[str, date, datetime, None] = None,
     db_path: Union[str, Path, None] = None
 ) -> FXRates:
     """
@@ -140,12 +162,7 @@ def get_fx_rates(
         >>> rates.to_dict()
         {'cny_kzt': 75.0, 'usd_kzt': 520.0, 'dlv_rate_usd_kg': 2.66}
     """
-    if as_of_date is None:
-        as_of_date = date.today()
-
-    # Convert datetime to date if needed
-    if isinstance(as_of_date, datetime):
-        as_of_date = as_of_date.date()
+    as_of_date = _normalize_fx_as_of_date(as_of_date)
 
     # Determine database path
     if db_path is None:
@@ -170,6 +187,43 @@ def get_fx_rates(
         dlv_rate_usd_kg=DEFAULT_FX_RATES["dlv_rate_usd_kg"],
         effective_date=None,
         source="FALLBACK"
+    )
+
+
+def get_supplier_fx_rates(
+    as_of_date: Union[str, date, datetime, None] = None,
+    db_path: Union[str, Path, None] = None,
+) -> FXRates:
+    """
+    Resolve the supplier-landed FX surface for COGS.
+
+    Precedence:
+    1. Routed CNY/KZT from dim_fx_rates: usdt_kzt / usdt_cny
+    2. Owner-approved fallback CNY/KZT = 73 when routed data is unavailable
+
+    USD/KZT and delivery USD/kg continue to come from dim_fx_rates when present,
+    otherwise they use the generic runtime defaults.
+    """
+    as_of_date = _normalize_fx_as_of_date(as_of_date)
+
+    if db_path is None:
+        db_path = _DB_PATH
+    db_path = Path(db_path)
+
+    if db_path.exists():
+        try:
+            rates = _get_supplier_fx_rates_from_db(db_path, as_of_date)
+            if rates:
+                return rates
+        except Exception:
+            pass
+
+    return FXRates(
+        cny_kzt=SUPPLIER_FX_FALLBACK_CNY_KZT,
+        usd_kzt=DEFAULT_FX_RATES["usd_kzt"],
+        dlv_rate_usd_kg=DEFAULT_FX_RATES["dlv_rate_usd_kg"],
+        effective_date=None,
+        source="OWNER_FALLBACK_73",
     )
 
 
@@ -212,6 +266,88 @@ def _get_fx_rates_from_db(db_path: Path, as_of_date: date) -> Optional[FXRates]:
                 source=source or "DB"
             )
         return None
+    finally:
+        conn.close()
+
+
+def _get_supplier_fx_rates_from_db(db_path: Path, as_of_date: date) -> Optional[FXRates]:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='dim_fx_rates'
+            """
+        )
+        if not cursor.fetchone():
+            return None
+
+        cols = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(dim_fx_rates)").fetchall()
+            if len(row) > 1
+        }
+        if "effective_date" not in cols:
+            return None
+
+        select_cols = ["effective_date"]
+        for col in ("usdt_kzt", "usdt_cny", "cny_kzt", "usd_kzt", "dlv_rate_usd_kg", "source", "provider"):
+            if col in cols:
+                select_cols.append(col)
+
+        row = conn.execute(
+            f"""
+            SELECT {', '.join(select_cols)}
+            FROM dim_fx_rates
+            WHERE effective_date <= ?
+            ORDER BY effective_date DESC
+            LIMIT 1
+            """,
+            (as_of_date.isoformat(),),
+        ).fetchone()
+        if not row:
+            return None
+
+        usdt_kzt = float(row["usdt_kzt"] or 0.0) if "usdt_kzt" in row.keys() else 0.0
+        usdt_cny = float(row["usdt_cny"] or 0.0) if "usdt_cny" in row.keys() else 0.0
+        usd_kzt = (
+            float(row["usd_kzt"] or DEFAULT_FX_RATES["usd_kzt"])
+            if "usd_kzt" in row.keys()
+            else float(DEFAULT_FX_RATES["usd_kzt"])
+        )
+        dlv_rate = (
+            float(row["dlv_rate_usd_kg"] or DEFAULT_FX_RATES["dlv_rate_usd_kg"])
+            if "dlv_rate_usd_kg" in row.keys()
+            else float(DEFAULT_FX_RATES["dlv_rate_usd_kg"])
+        )
+
+        eff_date_str = row["effective_date"] if "effective_date" in row.keys() else None
+        eff_date = date.fromisoformat(eff_date_str) if eff_date_str else None
+        source_bits = [
+            str(row[key]).strip()
+            for key in ("provider", "source")
+            if key in row.keys() and row[key]
+        ]
+        base_source = " / ".join(bit for bit in source_bits if bit) or "dim_fx_rates"
+
+        if usdt_kzt > 0 and usdt_cny > 0:
+            return FXRates(
+                cny_kzt=usdt_kzt / usdt_cny,
+                usd_kzt=usd_kzt,
+                dlv_rate_usd_kg=dlv_rate,
+                effective_date=eff_date,
+                source=f"ROUTED_DIM_FX ({base_source})",
+            )
+
+        return FXRates(
+            cny_kzt=SUPPLIER_FX_FALLBACK_CNY_KZT,
+            usd_kzt=usd_kzt,
+            dlv_rate_usd_kg=dlv_rate,
+            effective_date=eff_date,
+            source=f"OWNER_FALLBACK_73 ({base_source}; routed_cny_missing)",
+        )
     finally:
         conn.close()
 

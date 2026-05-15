@@ -36,6 +36,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.paths import data_path
+from core.config.business_params import get_supplier_fx_rates
+from core.calc.economics import calc_cogs
 from core.utils.sku_normalize import infer_size_from_sku_id
 
 # Paths
@@ -448,6 +450,7 @@ def sync_dim_sku(conn: sqlite3.Connection, xl: pd.ExcelFile) -> dict:
     cutoff_result = conn.execute("SELECT MAX(order_date) FROM fact_sales").fetchone()
     cutoff_date = cutoff_result[0] if cutoff_result and cutoff_result[0] else date.today().isoformat()
     print(f"  Using cutoff date: {cutoff_date}")
+    fx_rates = get_supplier_fx_rates(cutoff_date, db_path=DB_PATH)
 
     # Rename columns
     df = df.rename(columns={
@@ -455,7 +458,6 @@ def sync_dim_sku(conn: sqlite3.Connection, xl: pd.ExcelFile) -> dict:
         'Product_Type': 'product_type',
         'Weight_kg': 'weight_kg',
         'BaseCost_CNY': 'base_cost_cny',
-        'Base_cost_kzt': 'cogs_kzt',
         'Current_stock': 'current_stock',
         'Avg_price_90D': 'avg_price_90d',
         'Is_Active': 'active_flag'
@@ -480,6 +482,18 @@ def sync_dim_sku(conn: sqlite3.Connection, xl: pd.ExcelFile) -> dict:
     df['weight_kg'] = df['weight_kg'].fillna(0.5)
     df['base_cost_cny'] = df['base_cost_cny'].fillna(50)
     df['product_type'] = df['product_type'].fillna('CL')
+    df['cogs_kzt'] = df.apply(
+        lambda row: calc_cogs(
+            float(row['base_cost_cny']),
+            float(row['weight_kg']),
+            cny_kzt=fx_rates.cny_kzt,
+            volumetric_factor=fx_rates.dlv_rate_usd_kg,
+            freight_rate=fx_rates.usd_kzt,
+        )
+        if float(row['base_cost_cny'] or 0.0) > 0 and float(row['weight_kg'] or 0.0) > 0
+        else None,
+        axis=1,
+    )
 
     # Remove rows with missing sku_key
     df = df.dropna(subset=['sku_key'])

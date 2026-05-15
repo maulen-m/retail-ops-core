@@ -362,7 +362,7 @@ def calc_safety_stock_for_size(
     """
     Calculate safety stock components for a single size.
 
-    TASK-154: Per-size safety stock using Master_Inventory_Rules_v5.3.md formulas.
+    TASK-154: Per-size safety stock using Master_Inventory_Rules_v9.md formulas.
 
     Formulas:
         σ_size = σ_sku × size_mix
@@ -540,7 +540,7 @@ def calc_status_for_size(
     """
     Determine order status for a single size.
 
-    TASK-157: Status logic from Master_Inventory_Rules_v5.3.md.
+    TASK-157: Status logic from Master_Inventory_Rules_v9.md.
 
     IMPORTANT: Check Total FIRST, then Current.
 
@@ -806,7 +806,7 @@ def calc_roic(
     """
     Calculate monthly ROIC (Return on Invested Capital) for a SKU.
 
-    TASK-162: ROIC formula from Master_Inventory_Rules_v5.3.md.
+    TASK-162: ROIC formula from Master_Inventory_Rules_v9.md.
 
     Formulas:
         K_avg = D × (L + R/2) × COGS + SS_total × COGS

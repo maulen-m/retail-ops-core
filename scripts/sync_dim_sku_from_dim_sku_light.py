@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore dim_sku values from the live DIM_SKU_light_v6 workbook surface."""
+"""Restore dim_sku values from the live DIM_SKU_light_v7 workbook surface."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ DEFAULT_XLSX = Path(
     "Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx"
 )
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
-DEFAULT_SHEET = "DIM_SKU_light_v6"
+DEFAULT_SHEET = "DIM_SKU_light_v7"
 _GUARD_KEY = "dim_sku_weight_kg"
 _GUARD_SOURCE = "sync_dim_sku_from_dim_sku_light"
 

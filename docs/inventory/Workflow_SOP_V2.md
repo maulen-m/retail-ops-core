@@ -129,7 +129,7 @@ Where:
 ## 5. Key Formulas (Reference)
 
 All formulas live in `inventory/Master_Inventory_Rules_v9.md`.
-Do not change Excel formulas without updating v8 first.
+Do not change Excel formulas without updating `inventory/Master_Inventory_Rules_v9.md` first.
 
 ---
 

@@ -40,7 +40,7 @@ def _write_dim_light(path: Path) -> None:
         ]
     )
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="DIM_SKU_light_v5", index=False)
+        df.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False)
 
 
 def test_alignment_fails_when_weight_mismatch_exceeds_tolerance(tmp_path: Path) -> None:
@@ -52,7 +52,7 @@ def test_alignment_fails_when_weight_mismatch_exceeds_tolerance(tmp_path: Path) 
     report = validate_dim_sku_light_alignment(
         db_path=db_path,
         workbook_path=xlsx_path,
-        sheet_name="DIM_SKU_light_v5",
+        sheet_name="DIM_SKU_light_v7",
         weight_tol_kg=0.01,
     )
 
@@ -70,7 +70,7 @@ def test_alignment_warns_not_fails_for_cost_reference_drift(tmp_path: Path) -> N
     report = validate_dim_sku_light_alignment(
         db_path=db_path,
         workbook_path=xlsx_path,
-        sheet_name="DIM_SKU_light_v5",
+        sheet_name="DIM_SKU_light_v7",
         weight_tol_kg=0.01,
         base_tol_cny=0.01,
     )

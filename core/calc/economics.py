@@ -10,9 +10,16 @@ Key rules (v8):
 """
 
 from datetime import date, datetime
+from pathlib import Path
 from typing import Optional
 
-from core.config.business_params import get_fx_rates, get_vat_rate, DEFAULT_FX_RATES
+from core.config.business_params import (
+    DEFAULT_FX_RATES,
+    FXRates,
+    get_fx_rates,
+    get_supplier_fx_rates,
+    get_vat_rate,
+)
 
 # Constants
 KASPI_COMMISSION = 0.125  # 12.5% Kaspi commission
@@ -112,7 +119,7 @@ def calc_cogs(
         6019.07
     """
     if cny_kzt is None or volumetric_factor is None or freight_rate is None:
-        rates = get_fx_rates()
+        rates = get_supplier_fx_rates()
         if cny_kzt is None:
             cny_kzt = rates.cny_kzt
         if volumetric_factor is None:
@@ -123,6 +130,46 @@ def calc_cogs(
     product_cost = base_cost_cny * cny_kzt
     freight_cost = weight_kg * volumetric_factor * freight_rate
     return product_cost + freight_cost
+
+
+def resolve_landed_cogs(
+    base_cost_cny: float | None,
+    weight_kg: float | None,
+    *,
+    as_of_date: Optional[date | datetime | str] = None,
+    db_path: Optional[str | Path] = None,
+    stored_cogs_kzt: float | None = None,
+) -> tuple[float | None, str, FXRates | None]:
+    """
+    Resolve a unit landed cost with explicit precedence.
+
+    Precedence:
+      1. formula_full using routed supplier FX when base_cost_cny and weight_kg are both present
+      2. stored_cogs_legacy only as an explicit last fallback
+      3. unresolved
+    """
+    base = float(base_cost_cny or 0.0)
+    weight = float(weight_kg or 0.0)
+    stored = float(stored_cogs_kzt or 0.0)
+
+    if base > 0 and weight > 0:
+        rates = get_supplier_fx_rates(as_of_date=as_of_date, db_path=db_path)
+        return (
+            calc_cogs(
+                base,
+                weight,
+                cny_kzt=rates.cny_kzt,
+                volumetric_factor=rates.dlv_rate_usd_kg,
+                freight_rate=rates.usd_kzt,
+            ),
+            "formula_full",
+            rates,
+        )
+
+    if stored > 0:
+        return stored, "stored_cogs_legacy", None
+
+    return None, "unresolved", None
 
 
 def calc_net_rev(

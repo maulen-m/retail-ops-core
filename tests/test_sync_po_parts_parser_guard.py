@@ -150,7 +150,7 @@ def _write_workbook(path: Path) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         inbounds.to_excel(writer, sheet_name="Inbounds_sheet", index=False)
         part_totals.to_excel(writer, sheet_name="PO_part_id_Totals", index=False)
-        dim_sheet.to_excel(writer, sheet_name="DIM_SKU_light_v5", index=False)
+        dim_sheet.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False)
 
 
 def test_po_parts_sync_does_not_overwrite_dim_sku_weight_from_embedded_sheet_by_default(

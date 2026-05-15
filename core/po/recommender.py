@@ -4,7 +4,7 @@ PO Recommender Engine — ONE Source of Truth
 This module provides the canonical PO (Purchase Order) calculation functions.
 All scripts should use these functions instead of implementing their own formulas.
 
-CANONICAL FORMULAS (per Master_Inventory_Rules_v6.md):
+CANONICAL FORMULAS (per Master_Inventory_Rules_v9.md):
 
     Safety Stock Components:
         SS_demand = z × σ × sqrt(L)     # Demand uncertainty buffer
@@ -158,7 +158,7 @@ def calc_order_qty(
     """
     Calculate order quantity for a SKU.
 
-    This is the canonical order quantity calculation per Master_Inventory_Rules_v6.md.
+    This is the canonical order quantity calculation per Master_Inventory_Rules_v9.md.
     Use this for SKU-level calculations. For size-level, use calc_order_qty_for_size().
 
     Args:

@@ -10,7 +10,7 @@ This contract exists to prevent capital decisions on false-green profitability.
 - `exports/sales_archive_statusdate_mapped/*/ArchiveSales_ALL_STORES_statusdate_mapped.csv` (status-date archive parity source)
 - `docs/validation/WEBUI_ARCHIVE_SINGLE_TRUTH_CONTRACT.md` (candidate WebUI archive promotion contract)
 - `docs/validation/WEBUI_CRM_CHRONOLOGY_AUTHORITY_CONTRACT.md` (fallback chronology anchor when WebUI day parity is not authority-backed)
-- `ads_spend_sidecar_daily` + `core/ads/sidecar_contract.py` (ads freshness + mapping coverage)
+- `ads_campaign_product_daily` + `ads_source_refresh_runs` through `core/ads/canonical_truth.py` (canonical ads truth, refresh range, and mapping coverage)
 
 ## Publication Surface
 - `exports/owner_pnl/<as_of>/OWNER_PNL.json`
@@ -51,15 +51,16 @@ If OPEX readiness is not PASS, `profit_after_ads_and_opex_kzt` and `opex_kzt` mu
 
 ## Ads Readiness Rule
 Ads readiness is PASS only when:
-- ads source DB is fresh (`AB_ADS_DB_MAX_AGE_HOURS`),
-- ads sidecar table exists and is readable,
+- canonical ads tables exist and are readable,
+- `ads_campaign_product_daily` covers the publication as-of date,
+- `ads_source_refresh_runs` has successful refresh coverage for the publication window,
 - mapping coverage is >= `AB_ADS_MAPPING_MIN_COVERAGE_PCT` when spend >= `AB_ADS_MAPPING_MIN_TOTAL_COST_KZT`.
 
 ## Fail-Closed Behavior
 - `build_owner_pnl_report.py --strict` exits non-zero when:
   - parity is FAIL, or
   - ads readiness is FAIL, or
-  - ads sidecar table is missing, or
+  - canonical ads tables are missing, or
   - `truth_source=webui_archive` and required WebUI promotion artifacts are red/missing, or
   - `truth_source=webui_archive` and workbook chronology anchor evidence is required but red/missing.
 - `build_owner_pnl_report.py --strict --require-opex-for-net-publication` exits non-zero when:

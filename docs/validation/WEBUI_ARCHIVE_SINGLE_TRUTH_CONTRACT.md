@@ -49,6 +49,14 @@ If any gate is red, owner publication remains locked.
 - In that DB-mode governance path, the UI integrity check must not fail solely because the frozen UI pack `until` date is older than the doctor `as_of` date.
 - Current-day freshness for historical WebUI source refresh remains a separate operational concern and must not be silently inferred from the frozen-pack integrity check.
 
+## Read-Only Source Refresh Wrapper
+- Canonical operator entrypoint: `python3 scripts/run_webui_archive_source_refresh.py --since <YYYY-MM-DD> --until <YYYY-MM-DD> --stores <STORE,STORE> --mode auto --strict`.
+- The wrapper is read-only by contract. It may import existing manual `ArchiveOrders` downloads, run 90-day WebUI archive blocks through existing Playwright methods, normalize packs, validate `status_change_at`, and emit immutable evidence.
+- The wrapper must not mutate `db/app.db`, Excel workbooks, scheduler state, external accounts, prices, stocks, ads, cash, PO state, or owner publication surfaces.
+- Safe mode order for `--mode auto`: import an explicit existing source root first, then use saved Playwright session state/headless Chrome. Headful/manual login requires explicit operator intent. Chrome CDP attach remains fail-closed until the repo-owned downloader supports it.
+- Raw downloaded files remain evidence inputs only. Any CodeCaptain or external packet that uses this data must include only the needed sanitized sidecars unless a reviewer explicitly requests raw workbook inspection.
+- Promotion or DB apply from refreshed WebUI evidence is a separate reviewed lane with backup-first, env-gated apply rules.
+
 ## Publication Rule
 - Owner-facing outputs continue to publish from DB views and DB-backed aggregations only.
 - When `truth_source=webui_archive`, publication code must require green WebUI promotion artifacts in addition to existing DB/ads/OPEX prerequisites.

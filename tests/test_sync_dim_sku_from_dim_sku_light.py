@@ -44,7 +44,7 @@ def _write_dim_sku_light(path: Path) -> None:
         ]
     )
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="DIM_SKU_light_v5", index=False, startrow=1)
+        df.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False, startrow=1)
 
 
 def test_dry_run_no_db_write(tmp_path: Path) -> None:

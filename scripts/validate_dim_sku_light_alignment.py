@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate dim_sku weight alignment against the live DIM_SKU_light_v6 workbook surface."""
+"""Validate dim_sku weight alignment against the live DIM_SKU_light_v7 workbook surface."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ DEFAULT_WORKBOOK = Path(
     "~/Documents/useful tables/Main crm spreadsheets/main tables/"
     "Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx"
 )
-DEFAULT_SHEET = "DIM_SKU_light_v6"
+DEFAULT_SHEET = "DIM_SKU_light_v7"
 
 
 def validate_dim_sku_light_alignment(

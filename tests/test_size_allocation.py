@@ -37,7 +37,7 @@ class TestInventoryParams:
     """Tests for core/config/inventory_params.py"""
 
     def test_params_match_master_rules(self):
-        """Verify all parameters match Master_Inventory_Rules_v5.3.md exactly."""
+        """Verify all parameters match Master_Inventory_Rules_v9.md exactly."""
         from core.config.inventory_params import get_params
 
         params = get_params()

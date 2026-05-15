@@ -1,7 +1,7 @@
 # Excel UI Contract for CRM (V1)
 ## Bridge Document: Project 1 (Excel) ↔ Project 3 (Python/DB)
 **Created:** December 4, 2025  
-**Status:** Active contract (Kaspi-only, v8/V16)
+**Status:** Active contract (Kaspi-only, v9/V16)
 
 ---
 

@@ -46,15 +46,31 @@ def _init_db(path: Path) -> None:
             sku_key TEXT,
             my_size TEXT
         );
-        CREATE TABLE ads_spend_sidecar_daily (
-            date TEXT,
-            store_code TEXT,
-            mapped_cost_kzt REAL,
-            unmapped_cost_kzt REAL,
-            total_cost_kzt REAL,
-            mapped_rows INTEGER,
-            unmapped_rows INTEGER,
-            mapping_coverage_pct REAL
+        CREATE TABLE ads_source_refresh_runs (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            merchant_id TEXT,
+            store_code TEXT NOT NULL,
+            date_start TEXT NOT NULL,
+            date_end TEXT NOT NULL,
+            product_rows_total INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            notes_json TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE TABLE ads_campaign_product_daily (
+            date TEXT NOT NULL,
+            store_code TEXT NOT NULL,
+            campaign_id TEXT NOT NULL,
+            campaign_name TEXT,
+            sku_key TEXT NOT NULL DEFAULT '',
+            cost_kzt REAL NOT NULL DEFAULT 0,
+            impressions INTEGER,
+            clicks INTEGER,
+            source_run_id TEXT,
+            coverage_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (date, store_code, campaign_id, sku_key)
         );
         CREATE TABLE fact_cashflow_commitments (
             commit_date TEXT,
@@ -78,9 +94,23 @@ def _init_db(path: Path) -> None:
     )
     conn.execute(
         """
-        INSERT INTO ads_spend_sidecar_daily
-        (date, store_code, mapped_cost_kzt, unmapped_cost_kzt, total_cost_kzt, mapped_rows, unmapped_rows, mapping_coverage_pct)
-        VALUES ('2026-01-15', 'UNIVERSAL', 900, 100, 1000, 9, 1, 90.0)
+        INSERT INTO ads_source_refresh_runs
+        (run_id, started_at, finished_at, merchant_id, store_code, date_start, date_end, product_rows_total, status)
+        VALUES ('run-1', '2026-03-02T01:00:00Z', '2026-03-02T01:05:00Z', '30000001', 'UNIVERSAL', '2026-01-01', '2026-03-02', 2, 'SUCCESS')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO ads_campaign_product_daily
+        (date, store_code, campaign_id, campaign_name, sku_key, cost_kzt, impressions, clicks, source_run_id, coverage_status)
+        VALUES ('2026-01-15', 'UNIVERSAL', 'C1', 'Campaign', 'SKU_A', 1000, 10, 1, 'run-1', 'COVERED')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO ads_campaign_product_daily
+        (date, store_code, campaign_id, campaign_name, sku_key, cost_kzt, impressions, clicks, source_run_id, coverage_status)
+        VALUES ('2026-03-02', 'UNIVERSAL', 'C1', 'Campaign', 'SKU_A', 0, 0, 0, 'run-1', 'NO_SPEND_VERIFIED')
         """
     )
     conn.execute(

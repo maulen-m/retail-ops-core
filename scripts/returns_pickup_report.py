@@ -98,7 +98,7 @@ def normalize_store_code(value: Any) -> str | None:
 
 def build_returns_pickup_reply_markup(snapshot: dict[str, Any]) -> dict[str, Any]:
     stores = list(snapshot.get("stores") or [])
-    keyboard: list[list[str]] = [["Возвраты", "Помощь"]]
+    keyboard: list[list[str]] = [["Передал курьеру", "Передача"], ["Возвраты", "Помощь"]]
     ack_row: list[str] = []
     for store in stores:
         store_code = _upper(store.get("store_code"))

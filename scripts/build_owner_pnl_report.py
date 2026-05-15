@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.ads.canonical_truth import canonical_tables_available, load_monthly_store_ads
 from scripts.validate_ads_sidecar_readiness import validate_ads_sidecar_readiness
 from scripts.validate_monthly_economics_parity import (
     validate_monthly_economics_parity,
@@ -68,36 +69,18 @@ def _resolve_mapped_csv(*, mapped_root: Path, since: date, until: date, explicit
 
 
 def _query_ads_monthly(*, db_path: Path, since: date, until: date) -> tuple[dict[tuple[str, str], float], bool]:
-    if not db_path.exists():
+    if not db_path.exists() or not canonical_tables_available(db_path):
         return {}, False
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ads_spend_sidecar_daily'"
-        ).fetchone()
-        if row is None:
-            return {}, False
-        rows = conn.execute(
-            """
-            SELECT
-                substr(date(date), 1, 7) AS sale_month,
-                UPPER(COALESCE(store_code, 'UNKNOWN')) AS store_code,
-                SUM(COALESCE(total_cost_kzt, 0)) AS total_cost_kzt
-            FROM ads_spend_sidecar_daily
-            WHERE date(date) BETWEEN ? AND ?
-            GROUP BY substr(date(date), 1, 7), UPPER(COALESCE(store_code, 'UNKNOWN'))
-            """,
-            (since.isoformat(), until.isoformat()),
-        ).fetchall()
-    finally:
-        conn.close()
-
+    rows = load_monthly_store_ads(
+        db_path=db_path,
+        start=since.isoformat(),
+        end=until.isoformat(),
+    )
     out: dict[tuple[str, str], float] = {}
-    for r in rows:
-        month = str(r["sale_month"] or "")
-        store = str(r["store_code"] or "UNKNOWN")
-        out[(month, store)] = round(float(r["total_cost_kzt"] or 0.0), 2)
+    for row in rows.to_dict("records"):
+        month = str(row.get("sale_month") or "")
+        store = str(row.get("store_code") or "UNKNOWN").upper()
+        out[(month, store)] = round(float(row.get("total_cost_kzt") or 0.0), 2)
 
     for month in sorted({k[0] for k in out}):
         month_sum = round(sum(v for (m, _), v in out.items() if m == month), 2)
@@ -687,7 +670,7 @@ def build_owner_pnl_report(
         )
     if not ads_table_exists:
         error_codes.append("ADS_TABLE_MISSING")
-        errors.append("ads_spend_sidecar_daily table missing in operational DB")
+        errors.append("canonical ads tables missing in operational DB")
     if truth_source == "webui_archive" and not webui_truth_ready:
         error_codes.append("WEBUI_PROMOTION_FAIL")
         failing_gates = [name for name, payload in webui_truth_gates.items() if not payload.get("ok")]

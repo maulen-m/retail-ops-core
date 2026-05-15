@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.ads.canonical_truth import load_monthly_sku_ads
 from scripts.webui_archive_truth_utils import (
     DEFAULT_LEDGER_ROOT,
     build_webui_truth_projection,
@@ -260,28 +261,10 @@ def build_north_star_owner_review(
             conn,
             params=[start, end],
         )
-        ads_raw = pd.read_sql_query(
-            """
-            SELECT
-                substr(date,1,7) AS sale_month,
-                CAST(store_code AS TEXT) AS store_code_raw,
-                COALESCE(NULLIF(sku_key, ''), '__UNMAPPED__') AS sku_key,
-                SUM(COALESCE(ads_cost_kzt,0)) AS ads_kzt
-            FROM ads_spend_sidecar_daily_sku
-            WHERE date(date) BETWEEN date(?) AND date(?)
-            GROUP BY 1,2,3
-            """,
-            conn,
-            params=[start, end],
-        )
     finally:
         conn.close()
 
-    merchant_map = _merchant_to_store_map(stores_config)
-    ads_raw["store_code"] = ads_raw["store_code_raw"].map(
-        lambda v: merchant_map.get(str(v), str(v).upper())
-    )
-    ads = ads_raw.groupby(["sale_month", "store_code", "sku_key"], as_index=False)["ads_kzt"].sum()
+    ads = load_monthly_sku_ads(db_path=db_path, start=start, end=end)
 
     sales_sku = lines.groupby(["sale_month", "store_code", "sku_key"], as_index=False).agg(
         orders=("order_id", "nunique"),
@@ -313,7 +296,7 @@ def build_north_star_owner_review(
         net_rev_kzt=("net_rev_kzt", "sum"),
         cogs_kzt=("cogs_kzt", "sum"),
     )
-    ads_month_store = ads_raw.groupby(["sale_month", "store_code"], as_index=False).agg(
+    ads_month_store = ads.groupby(["sale_month", "store_code"], as_index=False).agg(
         ads_kzt=("ads_kzt", "sum")
     )
     daily = daily_sales.merge(ads_month_store, on=["sale_month", "store_code"], how="left")

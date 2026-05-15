@@ -34,15 +34,31 @@ def _init_db(path: Path) -> None:
             sku_key TEXT NOT NULL,
             my_size TEXT
         );
-        CREATE TABLE ads_spend_sidecar_daily (
-            date TEXT,
-            store_code TEXT,
-            mapped_cost_kzt REAL,
-            unmapped_cost_kzt REAL,
-            total_cost_kzt REAL,
-            mapped_rows INTEGER,
-            unmapped_rows INTEGER,
-            mapping_coverage_pct REAL
+        CREATE TABLE ads_source_refresh_runs (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            merchant_id TEXT,
+            store_code TEXT NOT NULL,
+            date_start TEXT NOT NULL,
+            date_end TEXT NOT NULL,
+            product_rows_total INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            notes_json TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE TABLE ads_campaign_product_daily (
+            date TEXT NOT NULL,
+            store_code TEXT NOT NULL,
+            campaign_id TEXT NOT NULL,
+            campaign_name TEXT,
+            sku_key TEXT NOT NULL DEFAULT '',
+            cost_kzt REAL NOT NULL DEFAULT 0,
+            impressions INTEGER,
+            clicks INTEGER,
+            source_run_id TEXT,
+            coverage_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (date, store_code, campaign_id, sku_key)
         );
         """
     )
@@ -57,16 +73,26 @@ def _init_db(path: Path) -> None:
     )
     conn.execute(
         """
-        INSERT INTO ads_spend_sidecar_daily
-        (date, store_code, mapped_cost_kzt, unmapped_cost_kzt, total_cost_kzt, mapped_rows, unmapped_rows, mapping_coverage_pct)
-        VALUES ('2026-02-08', 'ACMEWEAR', 900, 100, 1000, 1, 1, 50.0)
+        INSERT INTO ads_source_refresh_runs
+        (run_id, started_at, finished_at, merchant_id, store_code, date_start, date_end, product_rows_total, status)
+        VALUES ('run-1', '2026-02-08T01:00:00Z', '2026-02-08T01:05:00Z', '30137883', 'ACMEWEAR', '2026-02-01', '2026-02-08', 1, 'SUCCESS')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO ads_campaign_product_daily
+        (date, store_code, campaign_id, campaign_name, sku_key, cost_kzt, impressions, clicks, source_run_id, coverage_status)
+        VALUES ('2026-02-08', 'ACMEWEAR', 'C1', 'Campaign', 'SKU_A', 1000, 10, 1, 'run-1', 'COVERED')
         """
     )
     conn.commit()
     conn.close()
 
 
-def test_build_profit_after_ads_marks_unavailable_when_ads_source_stale(tmp_path: Path, monkeypatch) -> None:
+def test_build_profit_after_ads_uses_canonical_ads_when_external_source_stale(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     db_path = tmp_path / "app.db"
     source = tmp_path / "ads.db"
     _init_db(db_path)
@@ -78,6 +104,6 @@ def test_build_profit_after_ads_marks_unavailable_when_ads_source_stale(tmp_path
     monkeypatch.setenv("AB_ADS_DB_MAX_AGE_HOURS", "36")
 
     report = build_profit_after_ads(db_path=db_path, as_of="2026-02-08", days=7)
-    assert report["ads_status"] == "unavailable"
-    assert report["avg_7d_ads_spend_kzt"] is None
-    assert report["daily"][-1]["ads_spend_kzt"] is None
+    assert report["ads_status"] == "available"
+    assert report["avg_7d_ads_spend_kzt"] == 142.86
+    assert report["daily"][-1]["ads_spend_kzt"] == 1000.0

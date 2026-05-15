@@ -5,7 +5,7 @@ Validate Size Allocation: Phase 9.6 validation script.
 TASK-168: 7 validation checks for size-aware PO allocation engine.
 
 Checks:
-1. Parameters match Master_Inventory_Rules_v5.3.md
+1. Parameters match Master_Inventory_Rules_v9.md
 2. Size mix bounds are respected (3%-40%)
 3. Safety stock formulas match documentation
 4. ROP calculations are correct
@@ -52,7 +52,7 @@ from core.db import get_db
 
 def check_1_params_match_master_rules(verbose: bool = False) -> tuple[bool, str]:
     """
-    Check 1: Parameters match Master_Inventory_Rules_v5.3.md exactly.
+    Check 1: Parameters match Master_Inventory_Rules_v9.md exactly.
 
     Expected values from Section 4.1:
     - L = 21 (lead time)
