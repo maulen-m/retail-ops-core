@@ -74,3 +74,30 @@ scripts:
   - path: scripts/run_write_canary.py
     env_gate: ENABLE_WRITE_CANARY_APPLY
     apply_flag: --apply
+  - path: scripts/rebuild_sales_fact_v2_from_kaspi_entries.py
+    env_gate: ENABLE_SALES_FACT_V2_REBUILD_APPLY
+    apply_flag: --apply
+  - path: scripts/materialize_stock_ledger_sales_from_sales_fact_v2.py
+    env_gate: ENABLE_STOCK_LEDGER_SALES_REPLAY_WRITE
+    apply_flag: --apply
+  - path: scripts/apply_rebuild_snapshot_production_safe.py
+    env_gate: ENABLE_REBUILD_SNAPSHOT_PRODUCTION_APPLY
+    apply_flag: --apply
+  - path: scripts/materialize_order_status_events_from_kaspi_orders.py
+    env_gate: ENABLE_ORDER_STATUS_EVENT_WRITE
+    apply_flag: --apply
+  - path: scripts/materialize_policy_source_freshness.py
+    env_gate: ENABLE_C3_POLICY_MATERIALIZATION_WRITE
+    apply_flag: --apply
+  - path: scripts/materialize_ads_campaign_product_daily.py
+    env_gate: ENABLE_C3_ADS_SOURCE_WRITE
+    apply_flag: --apply
+  - path: scripts/recover_order_entries_from_evidence.py
+    env_gate: ENABLE_ORDER_ENTRY_RECOVERY_WRITE
+    apply_flag: --apply
+  - path: scripts/apply_storeb_product_identity_quarantine_production_safe.py
+    env_gate: ENABLE_STOREB_PRODUCT_IDENTITY_QUARANTINE_PRODUCTION_APPLY
+    apply_flag: --apply
+  - path: scripts/apply_header_only_source_gap_quarantine_production_safe.py
+    env_gate: ENABLE_HEADER_ONLY_SOURCE_GAP_QUARANTINE_PRODUCTION_APPLY
+    apply_flag: --apply

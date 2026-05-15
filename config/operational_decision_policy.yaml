@@ -1,0 +1,156 @@
+version: 1
+status: active
+owner: business_owner
+timezone: Asia/Almaty
+fail_closed_default: true
+canonical_doc: docs/ops/OPERATIONAL_DECISION_POLICY_V1.md
+owner_qa_capture: docs/parallel_runs/2026-05-03_operational-stock-truth-system/OWNER_QA_OPTION_C_INPUTS_20260503_203849_ALMT.md
+
+store_scope:
+  all_kaspi_stores:
+    - ACMEWEAR
+    - UNIVERSAL
+    - STOREB
+    - 11KZ
+    - MELVIS
+  active_positive_stock_stores:
+    - ACMEWEAR
+    - UNIVERSAL
+    - STOREB
+  inactive_stores:
+    - 11KZ
+    - MELVIS
+  own_brand_store: ACMEWEAR
+  generic_offer_stores:
+    - UNIVERSAL
+    - STOREB
+
+stock_authority:
+  best_current_anchor_path: ~/Docs/Oracle/Autonomous_business/2026-04-24/103302_TASK-000_line51-root-cause-external-second-pass-2026-04-24/expert_answer/24.4.2026/second_pass_stock_value_evaluation_2026-04-24.xlsx
+  line51_required_baseline_adjustment:
+    type: proportional_decrease
+    pct: 20
+    apply_before_event_rebuild: true
+  negative_active_stock_action: normalize_to_zero_and_raise_exception
+  quarantined_returns_and_cancels_are_active_stock: false
+  identical_white_tshirt_sku_keys_action: merge_to_one_canonical_sku_key
+
+stock_status_rules:
+  pending_reduces_stock: false
+  dispatched_or_shipped_reduces_stock: true
+  delivered_remains_sold: true
+  cancelled_reduces_stock: false
+  cancelled_after_shipment_requires_reversal_event: true
+  returned_increases_active_stock_after: qc_acceptance
+
+ads_truth:
+  active_kaspi_internal_ads_stores:
+    - ACMEWEAR
+    - STOREB
+  storeb_marketing_access_via: UNIVERSAL
+  storeb_current_observed_daily_cost_kzt_approx: 5000
+  storeb_daily_cost_requires_reevaluation: true
+  missing_required_ads_blocks_profit_publication: true
+  external_ads_source_root: ~/Docs/Business_3/Facebook_ads
+
+purchase_order_truth:
+  canonical_inbound_workbook: ~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx
+  target_state: automate_and_remove_excel_from_critical_path
+  received_quantities_source: astana_warehouse_actual_arrival_rows
+  transaction_evidence_root: ~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Transactions
+  cargo_payment_event_basis: astana_arrival_takeover_or_explicit_delayed_payment_date
+  supplier_payment_flow: binance_kzt_to_usdt_then_exchanger_to_wechat_cny
+  open_supplier_obligations_block_cashflow_green: true
+
+cashflow_truth:
+  manual_balance_latest_path: ~/Docs/Autonomous_business/config/bank_accounts_manual_ingest_3.5.2026.yaml
+  bank_balance_manual_review_max_age_days: 7
+  owner_cash_reserve_min_kzt: 1500000
+  kaspi_pay_payout_after_customer_receipt_minutes_expected: 1
+  unknown_supplier_or_cargo_obligations_block_cashflow_green: true
+
+publication_gates:
+  unknown_cogs_blocks_profit_publication: true
+  missing_required_ads_blocks_profit_publication: true
+  missing_required_cash_balance_blocks_cashflow_green: true
+  stock_anchor_missing_or_stale_blocks_decision_grade_stock: true
+  negative_active_stock_action: normalize_to_zero_and_raise_exception
+  manual_override_requires_owner_approval: true
+
+decision_thresholds:
+  freshness:
+    kaspi_orders:
+      max_age_hours: 24
+      action_if_stale: block_decision_grade_stock_and_profit
+    kaspi_order_status_events:
+      max_age_hours: 24
+      action_if_stale: block_decision_grade_stock_and_profit
+    kaspi_internal_ads_required_stores:
+      max_age_hours: 24
+      stores:
+        - ACMEWEAR
+        - STOREB
+      action_if_stale: block_profit_publication
+    bank_balances:
+      max_age_days: 7
+      action_if_stale: block_cashflow_green_and_purchase_approval
+    inbound_workbook_or_replacement:
+      max_age_days: 7
+      action_if_stale: block_po_and_inventory_receipt_green
+    supplier_fx_for_open_po:
+      max_age_days: 7
+      action_if_stale: block_final_cogs_publication
+  reconciliation:
+    stock_units_tolerance: 0
+    po_received_units_tolerance: 0
+    profit_publish_kzt_tolerance: 100
+    cash_balance_kzt_tolerance: 100
+    ads_cost_kzt_tolerance: 100
+  sku_mapping:
+    min_confidence_for_auto_include: 1.0
+    max_sales_to_ignore_unmapped_sku: 2
+    ignore_label: ignored_unmapped_sku_under_two_sales
+    unmapped_sku_action_above_ignore_cap: quarantine_and_block_publication
+    sku_merge_requires_owner_or_catalog_evidence: true
+  reorder_and_purchase_gates:
+    use_master_inventory_rules_v9: true
+    block_if_owner_cash_reserve_would_fall_below_minimum: true
+    block_if_unknown_cogs_or_ads_for_active_sku: true
+    unproven_sku_capital_cap_source: docs/inventory/Master_Inventory_Rules_v9.md
+    new_product_test_batch_requires_owner_approval: true
+
+manual_review_ownership:
+  daily_exception_queue:
+    owner: business_owner
+    max_resolution_age_business_days: 1
+    required_review_frequency: daily
+  warehouse_qc_returns:
+    owner: warehouse_employee
+    active_stock_increase_allowed_before_qc: false
+  sku_merge_or_override:
+    owner: business_owner
+    requires_evidence: true
+  supplier_cargo_cash_obligations:
+    owner: business_owner
+    requires_evidence_path: true
+  ads_data_gap:
+    owner: ops_agent_then_business_owner
+    auto_repair_allowed_for_fetch_or_mapping_only: true
+    publication_waiver_allowed_by_agent: false
+  cogs_unknown:
+    owner: ops_agent_then_business_owner
+    publication_waiver_allowed_by_agent: false
+  agent_auto_repair:
+    allowed: true
+    requires_deterministic_source: true
+    requires_tests_or_validation_gate: true
+    may_override_publication_gates: false
+
+future_c3_migration:
+  target: effective_dated_policy_registry_in_db
+  preserve_yaml_as_bootstrap_contract: true
+  required_before_c3_green:
+    - db_table_for_policy_versions
+    - validator_that_compares_db_policy_to_yaml_contract
+    - daily_exception_queue_with_owner_assignment
+    - rollback_to_previous_policy_version
