@@ -23,6 +23,10 @@ DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_MAX_WORKBOOK_AGE_HOURS = 36.0
 DEFAULT_MAX_FUTURE_MTIME_SKEW_SECONDS = 120.0
 DEFAULT_MAX_WORKBOOK_LAG_DAYS = 1
+PROOF_WINDOW_LOCK_ENV = "AB_PROOF_WINDOW_LOCK_PATH"
+PROOF_WINDOW_LOCK_DEFAULT_RELATIVE = Path("config") / "proof_window.lock"
+PROOF_WINDOW_BLOCK_EXIT_CODE = 75
+PROOF_WINDOW_BLOCK_TOKEN = "STRICT_DAILY_PREFLIGHT_BLOCKED_BY_PROOF_WINDOW_LOCK"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -123,6 +127,35 @@ def _resolve_max_workbook_lag_days(value: int | None) -> int:
         except ValueError:
             return DEFAULT_MAX_WORKBOOK_LAG_DAYS
     return DEFAULT_MAX_WORKBOOK_LAG_DAYS
+
+
+def _resolve_proof_window_lock_path(project_root: Path | None = None) -> Path:
+    raw = os.environ.get(PROOF_WINDOW_LOCK_ENV, "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    root = project_root if project_root is not None else PROJECT_ROOT
+    return root / PROOF_WINDOW_LOCK_DEFAULT_RELATIVE
+
+
+def _proof_window_lock_block_message(lock_path: Path, *, stat_error: str | None = None) -> str:
+    msg = f"{PROOF_WINDOW_BLOCK_TOKEN} path={lock_path}"
+    if stat_error:
+        msg += f" stat_error={stat_error}"
+    return msg
+
+
+def _proof_window_lock_block_status(*, project_root: Path | None = None) -> Tuple[int, str] | None:
+    lock_path = _resolve_proof_window_lock_path(project_root)
+    try:
+        lock_path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return PROOF_WINDOW_BLOCK_EXIT_CODE, _proof_window_lock_block_message(
+            lock_path,
+            stat_error=str(exc),
+        )
+    return PROOF_WINDOW_BLOCK_EXIT_CODE, _proof_window_lock_block_message(lock_path)
 
 
 def _workbook_age_hours(path: Path) -> float:
@@ -229,6 +262,10 @@ def run_preflight(
     business_insides_as_of: str | None = None,
     emit_drift_pack: bool = True,
 ) -> Tuple[int, str]:
+    proof_window_block = _proof_window_lock_block_status()
+    if proof_window_block is not None:
+        return proof_window_block
+
     workbook = workbook_path
     if workbook is None:
         raw = os.environ.get("AB_CRM_WORKBOOK_PATH", "").strip()

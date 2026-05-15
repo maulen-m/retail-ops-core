@@ -11,6 +11,66 @@ import pytest
 from scripts.run_strict_daily_preflight import run_preflight
 
 
+def test_preflight_proof_window_lock_blocks_before_db_or_workbook_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = tmp_path / "proof_window.lock"
+    lock_path.write_text("release proof in progress\n", encoding="utf-8")
+    db_path = tmp_path / "must_not_open.db"
+    workbook_path = tmp_path / "must_not_stat.xlsx"
+
+    def _forbidden_subprocess(*_args, **_kwargs):
+        raise AssertionError("proof-window lock must block before validator subprocesses")
+
+    def _forbidden_business_insides(*_args, **_kwargs):
+        raise AssertionError("proof-window lock must block before business-insides generation")
+
+    monkeypatch.setenv("AB_PROOF_WINDOW_LOCK_PATH", str(lock_path))
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _forbidden_subprocess)
+    monkeypatch.setattr(
+        "scripts.run_strict_daily_preflight._ensure_business_insides_snapshot",
+        _forbidden_business_insides,
+    )
+
+    code, summary = run_preflight(
+        db_path=db_path,
+        workbook_path=workbook_path,
+        emit_lineage=True,
+        ensure_business_insides=True,
+        emit_drift_pack=True,
+    )
+
+    assert code != 0
+    assert "STRICT_DAILY_PREFLIGHT_BLOCKED_BY_PROOF_WINDOW_LOCK" in summary
+    assert str(lock_path) in summary
+
+
+def test_preflight_proof_window_lock_uses_repo_default_when_env_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = tmp_path / "config" / "proof_window.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text("release proof in progress\n", encoding="utf-8")
+
+    def _forbidden_subprocess(*_args, **_kwargs):
+        raise AssertionError("default proof-window lock must block validator subprocesses")
+
+    monkeypatch.delenv("AB_PROOF_WINDOW_LOCK_PATH", raising=False)
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _forbidden_subprocess)
+
+    code, summary = run_preflight(
+        db_path=tmp_path / "db" / "app.db",
+        workbook_path=None,
+        emit_lineage=False,
+        ensure_business_insides=False,
+    )
+
+    assert code != 0
+    assert "STRICT_DAILY_PREFLIGHT_BLOCKED_BY_PROOF_WINDOW_LOCK" in summary
+    assert str(lock_path) in summary
+
+
 def test_preflight_fails_closed_when_workbook_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
