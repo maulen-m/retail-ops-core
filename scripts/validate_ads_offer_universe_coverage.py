@@ -16,7 +16,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.ads.active_scope import DEFAULT_ADS_ACTIVE_SCOPE_CONFIG, is_store_active_on
+from core.ads.active_scope import (
+    ADVERTISED_PRODUCTS_ONLY_MODE,
+    ALL_SOLD_SKUS_MODE,
+    DEFAULT_ADS_ACTIVE_SCOPE_CONFIG,
+    resolve_store_scope_on,
+)
+from core.ads.canonical_truth import load_daily_sku_ads
 from scripts.webui_archive_truth_utils import (
     DEFAULT_LEDGER_ROOT,
     build_webui_truth_projection,
@@ -30,6 +36,7 @@ class AdsOfferCoverageError(RuntimeError):
 
 
 DEFAULT_ADS_SOURCE_GAP_QUARANTINE_CONFIG = PROJECT_ROOT / "config" / "ads_source_gap_quarantine.yaml"
+UNMAPPED_SKU_KEYS = frozenset({"", "__UNMAPPED__"})
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -188,6 +195,48 @@ def _apply_gap_quarantine(
     return filtered[sold.columns].copy(), quarantined.copy()
 
 
+def _attach_ads_scope(
+    frame: pd.DataFrame,
+    *,
+    store_column: str,
+    date_column: str,
+    config_path: Path,
+) -> pd.DataFrame:
+    scoped = frame.copy()
+    if scoped.empty:
+        scoped["ads_scope_active"] = pd.Series(dtype=bool, index=scoped.index)
+        scoped["ads_coverage_mode"] = pd.Series(dtype=str, index=scoped.index)
+        return scoped
+
+    resolved = scoped.apply(
+        lambda row: resolve_store_scope_on(
+            str(row[store_column]),
+            str(row[date_column]),
+            config_path=config_path,
+        ),
+        axis=1,
+    )
+    scoped["ads_scope_active"] = resolved.map(lambda item: bool(item["active"]))
+    scoped["ads_coverage_mode"] = resolved.map(
+        lambda item: str(item.get("coverage_mode") or ALL_SOLD_SKUS_MODE)
+    )
+    return scoped
+
+
+def _empty_unmapped_positive_spend_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "ads_date",
+            "sale_month",
+            "store_code",
+            "sku_key",
+            "ads_kzt",
+            "coverage_status",
+            "source_run_id",
+        ]
+    )
+
+
 def validate_ads_offer_universe_coverage(
     *,
     start: str,
@@ -215,77 +264,114 @@ def validate_ads_offer_universe_coverage(
         end=end,
         output_dir=output_dir,
     )
-    sold["ads_scope_active"] = (
-        sold.apply(
-            lambda row: is_store_active_on(
-                str(row["store_code"]),
-                str(row["sale_date"]),
-                config_path=ads_scope_config,
-            ),
-            axis=1,
-        )
-        if not sold.empty
-        else pd.Series(dtype=bool, index=sold.index)
+    sold = _attach_ads_scope(
+        sold,
+        store_column="store_code",
+        date_column="sale_date",
+        config_path=ads_scope_config,
     )
-    sold = sold[sold["ads_scope_active"]].copy()
-    sold, quarantined = _apply_gap_quarantine(sold, config_path=gap_quarantine_config)
+    active_sold, quarantined = _apply_gap_quarantine(
+        sold[sold["ads_scope_active"]].copy(),
+        config_path=gap_quarantine_config,
+    )
+    ads_raw = load_daily_sku_ads(db_path=db_path, start=start, end=end)
+    ads_raw = _attach_ads_scope(
+        ads_raw,
+        store_column="store_code",
+        date_column="ads_date",
+        config_path=ads_scope_config,
+    )
+    ads_raw = ads_raw[ads_raw["ads_scope_active"]].copy()
+    if not ads_raw.empty:
+        ads_raw["mapped"] = pd.to_numeric(ads_raw["mapped"], errors="coerce").fillna(0).astype(int)
+        ads_raw["positive_spend_rows"] = pd.to_numeric(
+            ads_raw["positive_spend_rows"], errors="coerce"
+        ).fillna(0)
+        ads_raw["ads_kzt"] = pd.to_numeric(ads_raw["ads_kzt"], errors="coerce").fillna(0.0)
+
+    ads_presence = (
+        ads_raw.groupby(["sale_month", "store_code"], as_index=False)
+        .agg(
+            ads_rows=("sku_key", "size"),
+            ads_total_kzt=("ads_kzt", "sum"),
+            verified_no_spend_rows=("verified_no_spend_rows", "sum"),
+            positive_spend_rows=("positive_spend_rows", "sum"),
+        )
+        .assign(ads_tracking_enabled=lambda d: d["ads_rows"] > 0)
+    )
+    advertised_scope_keys = (
+        ads_raw[
+            (ads_raw["mapped"] == 1)
+            & (~ads_raw["sku_key"].fillna("").astype(str).isin(UNMAPPED_SKU_KEYS))
+        ][["sale_month", "store_code", "sku_key"]]
+        .drop_duplicates()
+        .assign(advertised_product_scope=True)
+        if not ads_raw.empty
+        else pd.DataFrame(
+            columns=["sale_month", "store_code", "sku_key", "advertised_product_scope"]
+        )
+    )
+    coverage_sold = active_sold.copy()
+    if not coverage_sold.empty:
+        coverage_sold = coverage_sold.merge(
+            advertised_scope_keys,
+            on=["sale_month", "store_code", "sku_key"],
+            how="left",
+        )
+        coverage_sold["advertised_product_scope"] = coverage_sold[
+            "advertised_product_scope"
+        ].map(lambda value: bool(value) if pd.notna(value) else False)
+        coverage_sold["requires_sold_sku_coverage"] = (
+            coverage_sold["ads_coverage_mode"].fillna(ALL_SOLD_SKUS_MODE)
+            == ALL_SOLD_SKUS_MODE
+        ) | (
+            (
+                coverage_sold["ads_coverage_mode"].fillna(ALL_SOLD_SKUS_MODE)
+                == ADVERTISED_PRODUCTS_ONLY_MODE
+            )
+            & coverage_sold["advertised_product_scope"].astype(bool)
+        )
+        coverage_sold = coverage_sold[coverage_sold["requires_sold_sku_coverage"]].copy()
+    else:
+        coverage_sold["advertised_product_scope"] = pd.Series(dtype=bool, index=coverage_sold.index)
+        coverage_sold["requires_sold_sku_coverage"] = pd.Series(dtype=bool, index=coverage_sold.index)
+
     sold = (
-        sold.groupby(["sale_month", "store_code", "sku_key"], as_index=False)
+        coverage_sold.groupby(["sale_month", "store_code", "sku_key"], as_index=False)
         .agg(
             sold_lines=("order_id", "size"),
             net_rev_kzt=("net_rev_kzt", "sum"),
         )
         .sort_values(["sale_month", "store_code", "sku_key"])
     )
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ads_raw = pd.read_sql_query(
-            """
-            SELECT
-                date(date) AS ads_date,
-                substr(date, 1, 7) AS sale_month,
-                CAST(store_code AS TEXT) AS store_code_raw,
-                COALESCE(NULLIF(sku_key, ''), '__UNMAPPED__') AS sku_key,
-                CAST(COALESCE(mapped, 0) AS INTEGER) AS mapped,
-                SUM(COALESCE(ads_cost_kzt, 0)) AS ads_kzt
-            FROM ads_spend_sidecar_daily_sku
-            WHERE date(date) BETWEEN date(?) AND date(?)
-            GROUP BY 1,2,3,4,5
-            """,
-            conn,
-            params=[start, end],
-        )
-    finally:
-        conn.close()
-
-    merchant_map = _merchant_to_store_map(stores_config)
-    ads_raw["store_code"] = ads_raw["store_code_raw"].map(
-        lambda value: merchant_map.get(str(value), str(value).upper())
-    )
-    ads_raw["ads_scope_active"] = (
-        ads_raw.apply(
-            lambda row: is_store_active_on(
-                str(row["store_code"]),
-                str(row["ads_date"]),
-                config_path=ads_scope_config,
-            ),
-            axis=1,
-        )
-        if not ads_raw.empty
-        else pd.Series(dtype=bool, index=ads_raw.index)
-    )
-    ads_raw = ads_raw[ads_raw["ads_scope_active"]].copy()
-    ads_presence = (
-        ads_raw.groupby(["sale_month", "store_code"], as_index=False)
-        .agg(ads_rows=("sku_key", "size"), ads_total_kzt=("ads_kzt", "sum"))
-        .assign(ads_tracking_enabled=lambda d: d["ads_rows"] > 0)
-    )
     ads = ads_raw.groupby(["sale_month", "store_code", "sku_key"], as_index=False).agg(
         mapped=("mapped", "max"),
         ads_kzt=("ads_kzt", "sum"),
     )
     ads = ads[ads["mapped"] == 1].copy()
+    unmapped_positive_spend = (
+        ads_raw[
+            (ads_raw["mapped"] != 1)
+            & (
+                (pd.to_numeric(ads_raw["positive_spend_rows"], errors="coerce").fillna(0) > 0)
+                | (pd.to_numeric(ads_raw["ads_kzt"], errors="coerce").fillna(0.0) > 0)
+            )
+        ][
+            [
+                "ads_date",
+                "sale_month",
+                "store_code",
+                "sku_key",
+                "ads_kzt",
+                "coverage_status",
+                "source_run_id",
+            ]
+        ]
+        .copy()
+        .sort_values(["sale_month", "store_code", "sku_key", "ads_date"])
+        if not ads_raw.empty
+        else _empty_unmapped_positive_spend_frame()
+    )
 
     merged = sold.merge(
         ads[["sale_month", "store_code", "sku_key"]],
@@ -326,8 +412,8 @@ def validate_ads_offer_universe_coverage(
 
     missing = merged[~merged["is_covered"]].copy().sort_values(["sale_month", "store_code", "sku_key"])
 
-    sold_month_store = sold.groupby(["sale_month", "store_code"], as_index=False).agg(
-        sold_lines=("sold_lines", "sum"),
+    sold_month_store = active_sold.groupby(["sale_month", "store_code"], as_index=False).agg(
+        sold_lines=("order_id", "size"),
         sold_skus=("sku_key", "nunique"),
         net_rev_kzt=("net_rev_kzt", "sum"),
     )
@@ -338,11 +424,23 @@ def validate_ads_offer_universe_coverage(
         ads_month_store, on=["sale_month", "store_code"], how="left"
     )
     spend_reality = spend_reality.merge(
-        ads_presence[["sale_month", "store_code", "ads_tracking_enabled"]],
+        ads_presence[
+            [
+                "sale_month",
+                "store_code",
+                "ads_tracking_enabled",
+                "verified_no_spend_rows",
+                "positive_spend_rows",
+            ]
+        ],
         on=["sale_month", "store_code"],
         how="left",
     )
-    expected_pairs = by_month_store[["sale_month", "store_code", "ads_scope_expected"]].copy()
+    expected_pairs = (
+        active_sold[["sale_month", "store_code"]]
+        .drop_duplicates()
+        .assign(ads_scope_expected=True)
+    )
     spend_reality = spend_reality.merge(
         expected_pairs,
         on=["sale_month", "store_code"],
@@ -354,6 +452,12 @@ def validate_ads_offer_universe_coverage(
             lambda value: bool(value) if pd.notna(value) else False
         )
     )
+    spend_reality["verified_no_spend_rows"] = pd.to_numeric(
+        spend_reality["verified_no_spend_rows"], errors="coerce"
+    ).fillna(0)
+    spend_reality["positive_spend_rows"] = pd.to_numeric(
+        spend_reality["positive_spend_rows"], errors="coerce"
+    ).fillna(0)
     spend_reality["ads_kzt"] = pd.to_numeric(spend_reality["ads_kzt"], errors="coerce").fillna(0.0)
     spend_reality["ads_to_net_rev_ratio"] = (
         spend_reality["ads_kzt"] / spend_reality["net_rev_kzt"].replace({0: pd.NA})
@@ -362,6 +466,7 @@ def validate_ads_offer_universe_coverage(
         spend_reality["ads_tracking_enabled"]
         & (spend_reality["sold_lines"] > 0)
         & (spend_reality["ads_kzt"] <= 0)
+        & (spend_reality["verified_no_spend_rows"] <= 0)
     )
     spend_reality["ratio_out_of_band"] = (
         spend_reality["ads_tracking_enabled"]
@@ -377,6 +482,7 @@ def validate_ads_offer_universe_coverage(
     quarantined_csv = output_dir / "ads_quarantined_sold_offers.csv"
     month_store_csv = output_dir / "ads_coverage_by_month_store.csv"
     spend_reality_csv = output_dir / "ads_spend_reality_by_month_store.csv"
+    unmapped_positive_spend_csv = output_dir / "ads_unmapped_positive_spend.csv"
     report_md = output_dir / "ads_offer_universe_report.md"
     report_json = output_dir / "ads_offer_universe_report.json"
 
@@ -385,12 +491,19 @@ def validate_ads_offer_universe_coverage(
     quarantined.to_csv(quarantined_csv, index=False, encoding="utf-8")
     by_month_store.to_csv(month_store_csv, index=False, encoding="utf-8")
     spend_reality.to_csv(spend_reality_csv, index=False, encoding="utf-8")
+    unmapped_positive_spend.to_csv(unmapped_positive_spend_csv, index=False, encoding="utf-8")
 
     failing_pairs = int((~by_month_store["coverage_ok"]).sum())
     spend_reality_fail_pairs = int((~spend_reality["spend_reality_ok"]).sum())
+    unmapped_positive_spend_ads = len(unmapped_positive_spend)
     status = (
         "PASS"
-        if failing_pairs == 0 and spend_reality_fail_pairs == 0 and not truth_errors
+        if (
+            failing_pairs == 0
+            and spend_reality_fail_pairs == 0
+            and unmapped_positive_spend_ads == 0
+            and not truth_errors
+        )
         else "FAIL"
     )
     payload: dict[str, object] = {
@@ -409,6 +522,7 @@ def validate_ads_offer_universe_coverage(
         "max_ads_to_net_rev_ratio": float(max_ads_to_net_rev_ratio),
         "failing_month_store_pairs": failing_pairs,
         "spend_reality_fail_pairs": spend_reality_fail_pairs,
+        "unmapped_positive_spend_ads": unmapped_positive_spend_ads,
         "missing_sold_offers": len(missing),
         "quarantined_sold_offers": len(quarantined),
         "truth_errors": truth_errors,
@@ -419,6 +533,7 @@ def validate_ads_offer_universe_coverage(
             "ads_quarantined_sold_offers_csv": str(quarantined_csv.resolve()),
             "ads_coverage_by_month_store_csv": str(month_store_csv.resolve()),
             "ads_spend_reality_by_month_store_csv": str(spend_reality_csv.resolve()),
+            "ads_unmapped_positive_spend_csv": str(unmapped_positive_spend_csv.resolve()),
             "ads_offer_universe_report_md": str(report_md.resolve()),
             "ads_offer_universe_report_json": str(report_json.resolve()),
         },
@@ -435,6 +550,7 @@ def validate_ads_offer_universe_coverage(
                 f"- min_coverage: `{min_coverage}`",
                 f"- failing_month_store_pairs: `{failing_pairs}`",
                 f"- spend_reality_fail_pairs: `{spend_reality_fail_pairs}`",
+                f"- unmapped_positive_spend_ads: `{unmapped_positive_spend_ads}`",
                 f"- missing_sold_offers: `{len(missing)}`",
                 f"- quarantined_sold_offers: `{len(quarantined)}`",
                 f"- truth_errors: `{len(truth_errors)}`",
@@ -450,6 +566,7 @@ def validate_ads_offer_universe_coverage(
                 "Ads offer-universe/spend-reality failed: "
                 f"failing_month_store_pairs={failing_pairs}, "
                 f"spend_reality_fail_pairs={spend_reality_fail_pairs}, "
+                f"unmapped_positive_spend_ads={unmapped_positive_spend_ads}, "
                 f"truth_errors={len(truth_errors)}"
             )
         )

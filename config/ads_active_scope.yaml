@@ -1,18 +1,22 @@
-version: 1
+version: 2
 default_active: false
+default_coverage_mode: all_sold_skus
 stores:
   STOREB:
     windows:
       - start: "2026-03-08"
         active: true
+        coverage_mode: advertised_products_only
         reason: "operator_active_current"
   ACMEWEAR:
     windows:
       - start: "2025-01-01"
         active: true
+        coverage_mode: all_sold_skus
         reason: "historical_source_present"
   UNIVERSAL:
     windows:
       - start: "2026-02-22"
         active: false
+        coverage_mode: all_sold_skus
         reason: "operator_stop_date_and_no_historical_source"

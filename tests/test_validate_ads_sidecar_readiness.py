@@ -14,35 +14,75 @@ from scripts.validate_ads_sidecar_readiness import (
 )
 
 
-def _init_db(path: Path, *, mapped_rows: int, unmapped_rows: int) -> None:
+def _init_db(
+    path: Path,
+    *,
+    mapped_rows: int,
+    unmapped_rows: int,
+    campaign_date: str = "2026-03-04",
+    refresh_end: str = "2026-03-04",
+    include_refresh: bool = True,
+) -> None:
     conn = sqlite3.connect(path)
     conn.executescript(
         """
-        CREATE TABLE sales_fact_v2 (
-            order_id TEXT,
-            order_date DATE,
-            sku_key TEXT,
-            sku_id TEXT,
-            my_size TEXT,
-            store_code TEXT,
-            quantity INTEGER,
-            cogs REAL,
-            net_rev REAL,
-            profit REAL,
+        CREATE TABLE ads_source_refresh_runs (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            merchant_id TEXT,
+            store_code TEXT NOT NULL,
+            date_start TEXT NOT NULL,
+            date_end TEXT NOT NULL,
+            product_rows_total INTEGER NOT NULL DEFAULT 0,
             status TEXT,
-            return_flag INTEGER
+            notes_json TEXT NOT NULL DEFAULT '[]'
         );
-        CREATE TABLE dim_sku (
-            sku_key TEXT PRIMARY KEY,
-            cogs_kzt REAL,
-            base_cost_cny REAL,
-            weight_kg REAL
-        );
-        CREATE TABLE dim_sku_size (
-            sku_id TEXT PRIMARY KEY,
+        CREATE TABLE ads_campaign_product_daily (
+            date TEXT,
+            store_code TEXT,
+            campaign_id TEXT,
+            campaign_name TEXT,
             sku_key TEXT,
-            my_size TEXT
+            cost_kzt REAL,
+            impressions INTEGER,
+            clicks INTEGER,
+            source_run_id TEXT,
+            coverage_status TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (date, store_code, campaign_id, sku_key)
         );
+        """
+    )
+    if include_refresh:
+        conn.execute(
+            """
+            INSERT INTO ads_source_refresh_runs
+            (run_id, started_at, finished_at, merchant_id, store_code, date_start, date_end, product_rows_total, status)
+            VALUES ('run-1', '2026-03-04T01:00:00Z', '2026-03-04T01:05:00Z', '30137883', 'UNIVERSAL', '2026-02-04', ?, ?, 'SUCCESS')
+            """,
+            (refresh_end, mapped_rows + unmapped_rows),
+        )
+    for idx in range(mapped_rows):
+        conn.execute(
+            """
+            INSERT INTO ads_campaign_product_daily
+            (date, store_code, campaign_id, campaign_name, sku_key, cost_kzt, impressions, clicks, source_run_id, coverage_status)
+            VALUES (?, 'UNIVERSAL', ?, 'Mapped', ?, 100.0, 10, 1, 'run-1', 'COVERED')
+            """,
+            (campaign_date, f"C-M-{idx}", f"SKU_M_{idx}"),
+        )
+    for idx in range(unmapped_rows):
+        conn.execute(
+            """
+            INSERT INTO ads_campaign_product_daily
+            (date, store_code, campaign_id, campaign_name, sku_key, cost_kzt, impressions, clicks, source_run_id, coverage_status)
+            VALUES (?, 'UNIVERSAL', ?, 'Unmapped', ?, 100.0, 10, 1, 'run-1', 'UNKNOWN')
+            """,
+            (campaign_date, f"C-U-{idx}", f"SKU_U_{idx}"),
+        )
+    conn.executescript(
+        """
         CREATE TABLE ads_spend_sidecar_daily (
             date TEXT,
             store_code TEXT,
@@ -57,24 +97,10 @@ def _init_db(path: Path, *, mapped_rows: int, unmapped_rows: int) -> None:
     )
     conn.execute(
         """
-        INSERT INTO sales_fact_v2
-        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, cogs, net_rev, profit, status, return_flag)
-        VALUES ('O1', '2026-03-03', 'SKU_A', 'SKU_A_M', 'M', 'UNIVERSAL', 1, 2000, 6000, 4000, 'DELIVERED', 0)
-        """
-    )
-    conn.execute(
-        "INSERT INTO dim_sku (sku_key, cogs_kzt, base_cost_cny, weight_kg) VALUES ('SKU_A', 2000, 20, 0.8)"
-    )
-    conn.execute(
-        "INSERT INTO dim_sku_size (sku_id, sku_key, my_size) VALUES ('SKU_A_M', 'SKU_A', 'M')"
-    )
-    conn.execute(
-        """
         INSERT INTO ads_spend_sidecar_daily
         (date, store_code, mapped_cost_kzt, unmapped_cost_kzt, total_cost_kzt, mapped_rows, unmapped_rows, mapping_coverage_pct)
-        VALUES ('2026-03-03', 'UNIVERSAL', 900, 100, 1000, ?, ?, 0)
+        VALUES ('2026-03-03', 'UNIVERSAL', 0, 10000, 10000, 0, 100, 0)
         """,
-        (mapped_rows, unmapped_rows),
     )
     conn.commit()
     conn.close()
@@ -145,3 +171,64 @@ def test_validate_ads_sidecar_readiness_fails_on_low_mapping_coverage(
     )
     assert report["status"] == "FAIL"
     assert report["error_code"] == "ADS_MAPPING_COVERAGE_FAIL"
+
+
+def test_validate_ads_sidecar_readiness_fails_when_canonical_tables_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    sqlite3.connect(db_path).close()
+    ads_source = tmp_path / "ads.db"
+    ads_source.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
+
+    with pytest.raises(AdsReadinessError):
+        validate_ads_sidecar_readiness(
+            db_path=db_path,
+            as_of=date(2026, 3, 4),
+            output_root=tmp_path / "out",
+            strict=True,
+        )
+
+
+def test_validate_ads_sidecar_readiness_fails_on_stale_canonical_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path, mapped_rows=9, unmapped_rows=1, campaign_date="2026-02-20")
+    ads_source = tmp_path / "ads.db"
+    ads_source.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
+
+    report = validate_ads_sidecar_readiness(
+        db_path=db_path,
+        as_of=date(2026, 3, 4),
+        output_root=tmp_path / "out",
+        strict=False,
+    )
+
+    assert report["status"] == "FAIL"
+    assert report["error_code"] == "ADS_CANONICAL_STALE"
+
+
+def test_validate_ads_sidecar_readiness_fails_on_missing_refresh_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path, mapped_rows=9, unmapped_rows=1, include_refresh=False)
+    ads_source = tmp_path / "ads.db"
+    ads_source.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("AB_ADS_DB_PATH", str(ads_source))
+
+    report = validate_ads_sidecar_readiness(
+        db_path=db_path,
+        as_of=date(2026, 3, 4),
+        output_root=tmp_path / "out",
+        strict=False,
+    )
+
+    assert report["status"] == "FAIL"
+    assert report["error_code"] == "ADS_REFRESH_COVERAGE_MISSING"

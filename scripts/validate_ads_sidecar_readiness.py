@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed validator for ads sidecar freshness and mapping coverage."""
+"""Fail-closed validator for canonical ads freshness and mapping coverage."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.ads.canonical_truth import load_readiness_metadata
 from core.ads.sidecar_contract import resolve_ads_db_path, validate_ads_source
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
@@ -34,60 +35,50 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
-def _load_sidecar_payload(*, db_path: Path, as_of: date) -> dict[str, Any]:
+def _load_canonical_payload(*, db_path: Path, as_of: date) -> dict[str, Any]:
     start_date = as_of - timedelta(days=29)
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    try:
-        if not _table_exists(conn, "ads_spend_sidecar_daily"):
-            return {
-                "status": "unavailable",
-                "reason": "sidecar_table_missing",
-                "mapped_rows": None,
-                "unmapped_rows": None,
-                "mapped_cost_kzt": None,
-                "unmapped_cost_kzt": None,
-                "total_cost_kzt": None,
-                "mapping_coverage_pct": None,
-            }
-        row = conn.execute(
-            """
-            SELECT
-                SUM(COALESCE(mapped_rows, 0)) AS mapped_rows,
-                SUM(COALESCE(unmapped_rows, 0)) AS unmapped_rows,
-                SUM(COALESCE(mapped_cost_kzt, 0)) AS mapped_cost_kzt,
-                SUM(COALESCE(unmapped_cost_kzt, 0)) AS unmapped_cost_kzt,
-                SUM(COALESCE(total_cost_kzt, 0)) AS total_cost_kzt
-            FROM ads_spend_sidecar_daily
-            WHERE date(date) BETWEEN ? AND ?
-            """,
-            (start_date.isoformat(), as_of.isoformat()),
-        ).fetchone()
-    finally:
-        conn.close()
-
-    mapped_rows = float((row["mapped_rows"] if row is not None else 0.0) or 0.0)
-    unmapped_rows = float((row["unmapped_rows"] if row is not None else 0.0) or 0.0)
-    mapped_cost = float((row["mapped_cost_kzt"] if row is not None else 0.0) or 0.0)
-    unmapped_cost = float((row["unmapped_cost_kzt"] if row is not None else 0.0) or 0.0)
-    total_cost = float((row["total_cost_kzt"] if row is not None else 0.0) or 0.0)
+    meta = load_readiness_metadata(
+        db_path=db_path,
+        start=start_date.isoformat(),
+        end=as_of.isoformat(),
+    )
+    mapped_rows = float(meta.get("mapped_rows") or 0.0)
+    unmapped_rows = float(meta.get("unmapped_rows") or 0.0)
     total_rows = mapped_rows + unmapped_rows
-    coverage = round((mapped_rows / total_rows) * 100.0, 2) if total_rows else 0.0
+    total_cost = float(meta.get("campaign_total_cost_kzt") or 0.0)
+    coverage = float(meta.get("mapping_coverage_pct") or 0.0)
+    if not meta.get("canonical_available"):
+        status = "unavailable"
+        reason = "canonical_tables_missing"
+    elif int(meta.get("campaign_rows") or 0) <= 0:
+        status = "unavailable"
+        reason = "canonical_rows_missing"
+    else:
+        status = "available"
+        reason = "canonical_ads_truth"
     return {
-        "status": "available",
-        "reason": "ok",
+        "status": status,
+        "reason": reason,
+        "recent_start": start_date.isoformat(),
+        "campaign_max_date": meta.get("campaign_max_date"),
+        "refresh_max_date_end": meta.get("refresh_max_date_end"),
+        "refresh_rows": int(meta.get("refresh_rows") or 0),
+        "campaign_covers_end": bool(meta.get("campaign_covers_end")),
+        "refresh_covers_start": bool(meta.get("refresh_covers_start")),
+        "refresh_covers_end": bool(meta.get("refresh_covers_end")),
         "mapped_rows": mapped_rows,
         "unmapped_rows": unmapped_rows,
-        "mapped_cost_kzt": round(mapped_cost, 2),
-        "unmapped_cost_kzt": round(unmapped_cost, 2),
+        "mapped_cost_kzt": None,
+        "unmapped_cost_kzt": None,
         "total_cost_kzt": round(total_cost, 2),
         "mapping_coverage_pct": coverage,
+        "metadata": meta,
     }
 
 
 def _render_md(report: dict[str, Any]) -> str:
     lines = [
-        "# Ads Sidecar Readiness",
+        "# Ads Canonical Readiness",
         "",
         f"- generated_at: `{report['generated_at']}`",
         f"- as_of: `{report['as_of']}`",
@@ -158,14 +149,14 @@ def validate_ads_sidecar_readiness(
         else:
             warnings.append("ADS_SOURCE_STALE")
 
-    ads_payload = _load_sidecar_payload(db_path=db_path.resolve(), as_of=as_of)
+    ads_payload = _load_canonical_payload(db_path=db_path.resolve(), as_of=as_of)
     if readiness_mode == "live" and ads_payload.get("status") == "available" and not source_ok:
-        ads_payload["reason"] = "sidecar_runtime_ok"
+        ads_payload["reason"] = "canonical_runtime_ok"
     ads_status = str(ads_payload.get("status") or "")
     ads_reason = str(ads_payload.get("reason") or "unknown")
     checks.append(
         {
-            "check": "ads_metrics_available",
+            "check": "ads_canonical_metrics_available",
             "ok": ads_status == "available",
             "details": f"status={ads_status or '<empty>'} reason={ads_reason}",
         }
@@ -173,6 +164,45 @@ def validate_ads_sidecar_readiness(
     if ads_status != "available":
         error_codes.append("ADS_DATA_UNAVAILABLE")
         errors.append(f"ads metrics unavailable: reason={ads_reason}")
+
+    canonical_current = bool(ads_payload.get("campaign_covers_end"))
+    checks.append(
+        {
+            "check": "ads_canonical_range_current",
+            "ok": canonical_current,
+            "details": (
+                f"campaign_max_date={ads_payload.get('campaign_max_date')} "
+                f"as_of={as_of.isoformat()}"
+            ),
+        }
+    )
+    if not canonical_current:
+        error_codes.append("ADS_CANONICAL_STALE")
+        errors.append(
+            "canonical ads campaign rows are stale: "
+            f"campaign_max_date={ads_payload.get('campaign_max_date')} as_of={as_of.isoformat()}"
+        )
+
+    refresh_ok = bool(ads_payload.get("refresh_rows")) and bool(
+        ads_payload.get("refresh_covers_end")
+    )
+    checks.append(
+        {
+            "check": "ads_source_refresh_range",
+            "ok": refresh_ok,
+            "details": (
+                f"refresh_rows={ads_payload.get('refresh_rows')} "
+                f"refresh_max_date_end={ads_payload.get('refresh_max_date_end')} "
+                f"as_of={as_of.isoformat()}"
+            ),
+        }
+    )
+    if not refresh_ok:
+        error_codes.append("ADS_REFRESH_COVERAGE_MISSING")
+        errors.append(
+            "canonical ads source refresh coverage missing or stale: "
+            f"refresh_max_date_end={ads_payload.get('refresh_max_date_end')} as_of={as_of.isoformat()}"
+        )
 
     mapped_rows = float(ads_payload.get("mapped_rows") or 0.0)
     unmapped_rows = float(ads_payload.get("unmapped_rows") or 0.0)
@@ -227,6 +257,11 @@ def validate_ads_sidecar_readiness(
         "ads_payload": {
             "status": ads_status,
             "reason": ads_reason,
+            "canonical_table": "ads_campaign_product_daily",
+            "refresh_table": "ads_source_refresh_runs",
+            "campaign_max_date": ads_payload.get("campaign_max_date"),
+            "refresh_max_date_end": ads_payload.get("refresh_max_date_end"),
+            "refresh_rows": ads_payload.get("refresh_rows"),
             "mapped_rows": mapped_rows,
             "unmapped_rows": unmapped_rows,
             "total_rows": total_rows,
@@ -257,7 +292,7 @@ def validate_ads_sidecar_readiness(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Validate ads sidecar freshness + mapping readiness.")
+    parser = argparse.ArgumentParser(description="Validate canonical ads freshness + mapping readiness.")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
