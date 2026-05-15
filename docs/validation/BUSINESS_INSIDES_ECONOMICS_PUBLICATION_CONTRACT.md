@@ -7,7 +7,7 @@ Decision-grade economics publication for `BUSINESS_INSIDES` outputs.
 - Sales truth: `view_sales_line_truth`, `view_sales_daily_truth`
 - As-of control: `--as-of` execution input
 - Volatility window: `AB_ECONOMICS_VOLATILITY_DAYS` (default `14`)
-- Ads source readiness: `core/ads/sidecar_contract.py`
+- Canonical ads truth: `ads_campaign_product_daily` + `ads_source_refresh_runs` through `core/ads/canonical_truth.py`
 
 ## Publication Rule
 Profit-related metrics are publishable only when all checks pass.
@@ -22,7 +22,7 @@ For the 30-day window ending `as_of`:
   - no nonvolatile sales line may have missing unit cost (`cogs_kzt IS NULL` or `cogs_source='unresolved'`).
 - `locked_snapshot_masks_profit_fields`
   - if profit lock is ON, snapshot must not expose average COGS/profit fields.
-- `ads_sidecar_ready_for_owner_profit` *(owner-grade dependency)*
+- `canonical_ads_ready_for_owner_profit` *(owner-grade dependency)*
   - required for owner-facing profit-after-ads publication:
     `python3 scripts/validate_ads_sidecar_readiness.py --as-of <day> --strict`
 

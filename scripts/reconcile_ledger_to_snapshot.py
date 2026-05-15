@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from datetime import datetime, timedelta
+import os
 from pathlib import Path
 import sys
 
@@ -54,36 +55,61 @@ def _load_ledger_balances(conn, snapshot_date: str) -> dict[str, int]:
 def _load_existing_adjustments(conn, snapshot_date: str, ref_id: str) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT sku_id, sku_key, my_size, qty_change
+        SELECT event_date, sku_id, sku_key, my_size, qty_change
         FROM stock_ledger
-        WHERE event_date = ?
-          AND event_type = 'ADJUSTMENT'
+        WHERE event_type = 'ADJUSTMENT'
           AND reference_id = ?
+          AND reference_type = 'ADJUSTMENT'
         """,
-        (snapshot_date, ref_id),
+        (ref_id,),
     ).fetchall()
     return [dict(row) for row in rows]
 
 
+def _has_column(conn, table: str, column: str) -> bool:
+    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
+
+
 def _insert_adjustment(conn, event_date: str, row: dict, diff: int, ref_id: str, notes: str) -> None:
-    conn.execute(
-        """
-        INSERT INTO stock_ledger (
-            event_date, event_type, sku_key, sku_id, my_size, store_code,
-            qty_change, running_balance, reference_id, reference_type,
-            kaspi_offer_name, notes, input_source, created_by
-        ) VALUES (?, 'ADJUSTMENT', ?, ?, ?, 'UNIVERSAL', ?, NULL, ?, 'ADJUSTMENT', NULL, ?, 'SYSTEM', 'system')
-        """,
-        (
-            event_date,
-            row["sku_key"],
-            row["sku_id"],
-            row["my_size"],
-            diff,
-            ref_id,
-            notes,
-        ),
-    )
+    if _has_column(conn, "stock_ledger", "idempotency_key"):
+        conn.execute(
+            """
+            INSERT INTO stock_ledger (
+                event_date, event_type, sku_key, sku_id, my_size, store_code,
+                qty_change, running_balance, reference_id, reference_type,
+                kaspi_offer_name, notes, input_source, created_by, idempotency_key
+            ) VALUES (?, 'ADJUSTMENT', ?, ?, ?, 'UNIVERSAL', ?, NULL, ?, 'ADJUSTMENT', NULL, ?, 'SYSTEM', 'system', ?)
+            """,
+            (
+                event_date,
+                row["sku_key"],
+                row["sku_id"],
+                row["my_size"],
+                diff,
+                ref_id,
+                notes,
+                f"{ref_id}:{event_date}:{row['sku_id']}",
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO stock_ledger (
+                event_date, event_type, sku_key, sku_id, my_size, store_code,
+                qty_change, running_balance, reference_id, reference_type,
+                kaspi_offer_name, notes, input_source, created_by
+            ) VALUES (?, 'ADJUSTMENT', ?, ?, ?, 'UNIVERSAL', ?, NULL, ?, 'ADJUSTMENT', NULL, ?, 'SYSTEM', 'system')
+            """,
+            (
+                event_date,
+                row["sku_key"],
+                row["sku_id"],
+                row["my_size"],
+                diff,
+                ref_id,
+                notes,
+            ),
+        )
 
 
 def main() -> int:
@@ -97,6 +123,10 @@ def main() -> int:
         help="Reverse existing adjustments for this snapshot date before applying new ones",
     )
     args = parser.parse_args()
+
+    if args.apply and os.environ.get("ENABLE_STOCK_RECONCILE_WRITE") != "1":
+        print("ERROR: ENABLE_STOCK_RECONCILE_WRITE=1 is required with --apply.")
+        return 1
 
     snapshot_date = _parse_date(args.snapshot_date)
     ref_id = f"SNAPSHOT_RECON_{snapshot_date}"
@@ -119,7 +149,7 @@ def main() -> int:
                     if args.apply:
                         _insert_adjustment(
                             conn,
-                            snapshot_date,
+                            row.get("event_date") or adjust_date,
                             row,
                             -int(row["qty_change"] or 0),
                             rev_id,

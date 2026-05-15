@@ -43,6 +43,41 @@ INVENTORY_ACCOUNTS = {
     "INVENTORY_INBOUND_COST",
     "INVENTORY_ON_DELIVERY_COST",
 }
+DAILY_AUTO_MIGRATE_COLUMNS = {
+    "inventory_on_hand_open": "REAL NOT NULL DEFAULT 0",
+    "inventory_on_hand_close": "REAL NOT NULL DEFAULT 0",
+    "inventory_inbound_open": "REAL NOT NULL DEFAULT 0",
+    "inventory_inbound_close": "REAL NOT NULL DEFAULT 0",
+    "inventory_on_delivery_open": "REAL NOT NULL DEFAULT 0",
+    "inventory_on_delivery_close": "REAL NOT NULL DEFAULT 0",
+}
+DAILY_REQUIRED_COLUMNS = {
+    "date",
+    "cash_open",
+    "cash_close",
+    "receivables_open",
+    "receivables_close",
+    "inventory_cost_open",
+    "inventory_cost_close",
+    "capital_close",
+    "inventory_on_hand_open",
+    "inventory_on_hand_close",
+    "inventory_inbound_open",
+    "inventory_inbound_close",
+    "inventory_on_delivery_open",
+    "inventory_on_delivery_close",
+    "sales_accrued_kzt",
+    "payouts_received_kzt",
+    "refunds_kzt",
+    "po_payments_kzt",
+    "expenses_kzt",
+    "cogs_kzt",
+    "cash_flow_kzt",
+    "receivables_flow_kzt",
+    "inventory_cost_flow_kzt",
+    "profit_accrual_kzt",
+    "run_id",
+}
 
 
 def _is_cash_account(account: str | None) -> bool:
@@ -70,19 +105,33 @@ def _get_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def _ensure_daily_columns(conn: sqlite3.Connection) -> None:
+def _missing_daily_columns(conn: sqlite3.Connection) -> list[str]:
+    return sorted(DAILY_REQUIRED_COLUMNS - _get_columns(conn, "fact_cashflow_daily"))
+
+
+def _raise_missing_daily_columns(missing: list[str]) -> None:
+    missing_list = ", ".join(missing)
+    raise RuntimeError(
+        "fact_cashflow_daily missing required columns "
+        f"({missing_list}); run the reviewed cashflow schema migration before rebuild."
+    )
+
+
+def _validate_daily_columns(conn: sqlite3.Connection) -> None:
+    missing = _missing_daily_columns(conn)
+    if missing:
+        _raise_missing_daily_columns(missing)
+
+
+def _ensure_daily_columns(conn: sqlite3.Connection, *, allow_schema_write: bool) -> None:
+    if not allow_schema_write:
+        _validate_daily_columns(conn)
+        return
     cols = _get_columns(conn, "fact_cashflow_daily")
-    required = {
-        "inventory_on_hand_open": "REAL NOT NULL DEFAULT 0",
-        "inventory_on_hand_close": "REAL NOT NULL DEFAULT 0",
-        "inventory_inbound_open": "REAL NOT NULL DEFAULT 0",
-        "inventory_inbound_close": "REAL NOT NULL DEFAULT 0",
-        "inventory_on_delivery_open": "REAL NOT NULL DEFAULT 0",
-        "inventory_on_delivery_close": "REAL NOT NULL DEFAULT 0",
-    }
-    for name, ddl in required.items():
+    for name, ddl in DAILY_AUTO_MIGRATE_COLUMNS.items():
         if name not in cols:
             conn.execute(f"ALTER TABLE fact_cashflow_daily ADD COLUMN {name} {ddl}")
+    _validate_daily_columns(conn)
 
 
 def _normalize_date(value: str | date | datetime) -> str:
@@ -369,6 +418,7 @@ def compute_daily_rows(
     start_date: date,
     end_date: date,
     run_id: Optional[str] = None,
+    opening_state: dict[str, float] | None = None,
 ) -> list[dict]:
     events_by_date: dict[str, list[dict]] = {}
     for event in events:
@@ -376,8 +426,12 @@ def compute_daily_rows(
         events_by_date.setdefault(key, []).append(event)
 
     daily_rows = []
-    cash_open = receivables_open = 0.0
-    inv_on_hand_open = inv_inbound_open = inv_on_delivery_open = 0.0
+    opening_state = opening_state or {}
+    cash_open = float(opening_state.get("cash_open", 0.0) or 0.0)
+    receivables_open = float(opening_state.get("receivables_open", 0.0) or 0.0)
+    inv_on_hand_open = float(opening_state.get("inventory_on_hand_open", 0.0) or 0.0)
+    inv_inbound_open = float(opening_state.get("inventory_inbound_open", 0.0) or 0.0)
+    inv_on_delivery_open = float(opening_state.get("inventory_on_delivery_open", 0.0) or 0.0)
 
     for day in _date_range(start_date, end_date):
         day_key = day.isoformat()
@@ -493,6 +547,33 @@ def compute_daily_rows(
     return daily_rows
 
 
+def _load_opening_state(
+    conn: sqlite3.Connection,
+    start_date: date,
+) -> dict[str, float] | None:
+    if not _table_exists(conn, "fact_cashflow_daily"):
+        return None
+    previous_date = (start_date - timedelta(days=1)).isoformat()
+    row = conn.execute(
+        """
+        SELECT cash_close, receivables_close, inventory_on_hand_close,
+               inventory_inbound_close, inventory_on_delivery_close
+        FROM fact_cashflow_daily
+        WHERE date = ?
+        """,
+        (previous_date,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "cash_open": float(row["cash_close"] or 0.0),
+        "receivables_open": float(row["receivables_close"] or 0.0),
+        "inventory_on_hand_open": float(row["inventory_on_hand_close"] or 0.0),
+        "inventory_inbound_open": float(row["inventory_inbound_close"] or 0.0),
+        "inventory_on_delivery_open": float(row["inventory_on_delivery_close"] or 0.0),
+    }
+
+
 def rebuild_cashflow_calendar(
     db_path: Path,
     start_date: date,
@@ -502,6 +583,8 @@ def rebuild_cashflow_calendar(
 ) -> tuple[list[dict], list[dict]]:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
+    if apply and os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
+        raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
 
     fx_rates = get_fx_rates(end_date, db_path=db_path)
     conn = sqlite3.connect(str(db_path))
@@ -509,9 +592,12 @@ def rebuild_cashflow_calendar(
     try:
         if not _table_exists(conn, "fact_cashflow_events"):
             raise RuntimeError("fact_cashflow_events missing; run migrate_018_cashflow_calendar.py")
-        if _table_exists(conn, "fact_cashflow_daily"):
-            _ensure_daily_columns(conn)
-
+        if not _table_exists(conn, "fact_cashflow_daily"):
+            raise RuntimeError("fact_cashflow_daily missing; run migrate_018_cashflow_calendar.py")
+        if apply:
+            _ensure_daily_columns(conn, allow_schema_write=True)
+        else:
+            _validate_daily_columns(conn)
         skip_sales = _has_order_modelled_events(conn, start_date, end_date)
         system_events = _build_system_events(
             conn,
@@ -536,9 +622,6 @@ def rebuild_cashflow_calendar(
         all_events = manual_events + system_events
 
         if apply:
-            if os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
-                raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
-
             conn.execute(
                 """
                 DELETE FROM fact_cashflow_events
@@ -574,7 +657,14 @@ def rebuild_cashflow_calendar(
                     ),
                 )
 
-        daily_rows = compute_daily_rows(all_events, start_date, end_date, run_id=run_id)
+        opening_state = _load_opening_state(conn, start_date)
+        daily_rows = compute_daily_rows(
+            all_events,
+            start_date,
+            end_date,
+            run_id=run_id,
+            opening_state=opening_state,
+        )
 
         if apply:
             conn.execute(

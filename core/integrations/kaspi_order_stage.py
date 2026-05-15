@@ -165,6 +165,22 @@ STAGE_INTERNAL_STATUS = {
     StageCode.UNKNOWN: "NEW",
 }
 
+INTERNAL_STATUS_STAGE = {
+    "NEW": StageCode.NEW_APPROVED,
+    "ACCEPTED": StageCode.ACCEPTED_PENDING_ASSEMBLY,
+    "READY": StageCode.ASSEMBLED_PENDING_HANDOVER,
+    "SHIPPED": StageCode.IN_DELIVERY,
+    "ON_DELIVERY": StageCode.IN_DELIVERY,
+    "DELIVERED": StageCode.ISSUED_COMPLETED,
+    "COMPLETED": StageCode.ISSUED_COMPLETED,
+    "ISSUED": StageCode.ISSUED_COMPLETED,
+    "CANCELLING": StageCode.CANCELLING,
+    "CANCELLED": StageCode.CANCELLED,
+    "RETURNING": StageCode.RETURN_REQUESTED,
+    "RETURN_REQUESTED": StageCode.RETURN_REQUESTED,
+    "RETURNED": StageCode.RETURNED,
+}
+
 KASPI_STATUS_RU = {
     "NEW": "Новый",
     "APPROVED_BY_BANK": "Одобрен банком",
@@ -240,7 +256,23 @@ def classify_kaspi_stage_from_db_row(row: Mapping[str, Any]) -> StageCode:
         "courierTransmissionDate": row.get("courier_transmission_date")
         or row.get("actual_shipment_date")
     }
-    return classify_kaspi_order_stage({"attributes": attrs})
+    stage = classify_kaspi_order_stage({"attributes": attrs})
+    internal_stage = INTERNAL_STATUS_STAGE.get(
+        _norm(row.get("internal_status") or row.get("status_internal")),
+        StageCode.UNKNOWN,
+    )
+    has_api_status_detail = bool(
+        _norm(row.get("kaspi_status_detail") or row.get("status"))
+    )
+    if (
+        not has_api_status_detail
+        and attrs["state"] == "KASPI_DELIVERY"
+        and internal_stage != StageCode.UNKNOWN
+    ):
+        return internal_stage
+    if stage != StageCode.UNKNOWN:
+        return stage
+    return internal_stage
 
 
 KASPI_DELIVERY_STATE = "KASPI_DELIVERY"

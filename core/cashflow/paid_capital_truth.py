@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 from core.config.business_params import get_fx_rates
-from core.calc.economics import calc_cogs
+from core.calc.economics import resolve_landed_cogs
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
@@ -113,7 +113,6 @@ def _load_paid_on_hand_inventory_kzt(conn: sqlite3.Connection, *, db_path: Path,
     if not snapshot_date:
         return 0.0, None
 
-    fx = get_fx_rates(_parse_date_maybe(snapshot_date) or date.today(), db_path=db_path)
     sku_meta = {}
     for row in conn.execute("SELECT sku_key, cogs_kzt, base_cost_cny, weight_kg FROM dim_sku").fetchall():
         sku_meta[str(row[0] or "")] = {
@@ -137,19 +136,14 @@ def _load_paid_on_hand_inventory_kzt(conn: sqlite3.Connection, *, db_path: Path,
         if qty <= 0:
             continue
         meta = sku_meta.get(sku_key, {})
-        cogs_unit = _to_float(meta.get("cogs_kzt"))
-        if cogs_unit <= 0:
-            base_cost_cny = _to_float(meta.get("base_cost_cny"))
-            weight_kg = _to_float(meta.get("weight_kg"))
-            if base_cost_cny > 0:
-                cogs_unit = calc_cogs(
-                    base_cost_cny,
-                    weight_kg,
-                    cny_kzt=_to_float(fx.cny_kzt),
-                    volumetric_factor=_to_float(fx.dlv_rate_usd_kg),
-                    freight_rate=_to_float(fx.usd_kzt),
-                )
-        if cogs_unit <= 0:
+        cogs_unit, _cost_source, _fx = resolve_landed_cogs(
+            meta.get("base_cost_cny"),
+            meta.get("weight_kg"),
+            as_of_date=_parse_date_maybe(snapshot_date) or date.today(),
+            db_path=db_path,
+            stored_cogs_kzt=meta.get("cogs_kzt"),
+        )
+        if cogs_unit is None or cogs_unit <= 0:
             continue
         total += qty * cogs_unit
 
@@ -271,4 +265,3 @@ def compute_paid_capital_truth(
         "total_capital_paid_kzt": round(total_capital_paid_kzt, 2),
         "bank_by_currency": bank_by_currency,
     }
-

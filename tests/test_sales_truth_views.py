@@ -124,6 +124,56 @@ def test_view_sales_daily_truth_uses_fact_sales_when_missing_in_sales_fact_v2(tm
     assert row[1] == 15000
 
 
+def test_view_sales_truth_excludes_active_product_identity_quarantine(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        CREATE TABLE fact_order_entry_product_identity_quarantine (
+            store_code TEXT NOT NULL,
+            order_id TEXT NOT NULL,
+            publication_exclusion_required INTEGER NOT NULL DEFAULT 1,
+            active_flag INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (store_code, order_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_Q', 40, 0.5, 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-Q', '2026-02-08', 'SKU_Q', 'SKU_Q_M', 'M', 'STOREB', 1, 9000, NULL, NULL, 'DELIVERED', 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_order_entry_product_identity_quarantine (
+            store_code, order_id, publication_exclusion_required, active_flag
+        ) VALUES ('STOREB', 'ORD-Q', 1, 1)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    row = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM view_sales_line_truth
+        WHERE order_id='ORD-Q'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row[0] == 0
+
+
 def test_view_sales_truth_excludes_fact_sales_on_overlapping_dates(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     conn = sqlite3.connect(db)

@@ -99,6 +99,14 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     has_sales_ref = _table_exists(conn, "fact_sales_external_ref")
     has_workbook_anchor = _table_exists(conn, "fact_sales_workbook_anchor")
     has_workbook_anchor_quarantine = _table_exists(conn, "fact_sales_workbook_anchor_quarantine")
+    has_product_identity_quarantine = _table_exists(
+        conn,
+        "fact_order_entry_product_identity_quarantine",
+    )
+    has_header_only_source_gap_quarantine = _table_exists(
+        conn,
+        "fact_order_entry_header_only_source_gap_quarantine",
+    )
     if not has_sales_v2 and not has_fact_sales:
         raise RuntimeError(
             "Missing internal staging sales tables: sales_fact_v2, fact_sales"
@@ -400,6 +408,100 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             )
             """
         )
+    if has_product_identity_quarantine:
+        piq_store = (
+            "store_code"
+            if _column_exists(conn, "fact_order_entry_product_identity_quarantine", "store_code")
+            else "'UNKNOWN'"
+        )
+        piq_active_clause = (
+            "COALESCE(active_flag, 1) = 1"
+            if _column_exists(conn, "fact_order_entry_product_identity_quarantine", "active_flag")
+            else "1 = 1"
+        )
+        piq_publication_clause = (
+            "COALESCE(publication_exclusion_required, 1) = 1"
+            if _column_exists(
+                conn,
+                "fact_order_entry_product_identity_quarantine",
+                "publication_exclusion_required",
+            )
+            else "1 = 1"
+        )
+        ctes.append(
+            f"""
+            product_identity_quarantine AS (
+                SELECT DISTINCT
+                    CAST(order_id AS TEXT) AS order_id,
+                    UPPER(COALESCE({piq_store}, 'UNKNOWN')) AS store_code
+                FROM fact_order_entry_product_identity_quarantine
+                WHERE {piq_active_clause}
+                  AND {piq_publication_clause}
+            )
+            """
+        )
+    else:
+        ctes.append(
+            """
+            product_identity_quarantine AS (
+                SELECT
+                    NULL AS order_id,
+                    NULL AS store_code
+                WHERE 0
+            )
+            """
+        )
+    if has_header_only_source_gap_quarantine:
+        hosg_store = (
+            "store_code"
+            if _column_exists(
+                conn,
+                "fact_order_entry_header_only_source_gap_quarantine",
+                "store_code",
+            )
+            else "'UNKNOWN'"
+        )
+        hosg_active_clause = (
+            "COALESCE(active_flag, 1) = 1"
+            if _column_exists(
+                conn,
+                "fact_order_entry_header_only_source_gap_quarantine",
+                "active_flag",
+            )
+            else "1 = 1"
+        )
+        hosg_publication_clause = (
+            "COALESCE(publication_exclusion_required, 1) = 1"
+            if _column_exists(
+                conn,
+                "fact_order_entry_header_only_source_gap_quarantine",
+                "publication_exclusion_required",
+            )
+            else "1 = 1"
+        )
+        ctes.append(
+            f"""
+            header_only_source_gap_quarantine AS (
+                SELECT DISTINCT
+                    CAST(order_id AS TEXT) AS order_id,
+                    UPPER(COALESCE({hosg_store}, 'UNKNOWN')) AS store_code
+                FROM fact_order_entry_header_only_source_gap_quarantine
+                WHERE {hosg_active_clause}
+                  AND {hosg_publication_clause}
+            )
+            """
+        )
+    else:
+        ctes.append(
+            """
+            header_only_source_gap_quarantine AS (
+                SELECT
+                    NULL AS order_id,
+                    NULL AS store_code
+                WHERE 0
+            )
+            """
+        )
     ctes.append(
         """
         lifecycle_excluded_order_keys AS (
@@ -430,7 +532,15 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             LEFT JOIN lifecycle_excluded_order_keys lex
               ON lex.order_id = sv.order_id
              AND lex.store_code = UPPER(TRIM(COALESCE(sv.store_code, 'UNIVERSAL')))
+            LEFT JOIN product_identity_quarantine piq
+              ON piq.order_id = sv.order_id
+             AND piq.store_code = UPPER(TRIM(COALESCE(sv.store_code, 'UNIVERSAL')))
+            LEFT JOIN header_only_source_gap_quarantine hosg
+              ON hosg.order_id = sv.order_id
+             AND hosg.store_code = UPPER(TRIM(COALESCE(sv.store_code, 'UNIVERSAL')))
             WHERE lex.order_id IS NULL
+              AND piq.order_id IS NULL
+              AND hosg.order_id IS NULL
             UNION ALL
             SELECT sf.*
             FROM sales_fact sf
@@ -443,12 +553,20 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             LEFT JOIN lifecycle_excluded_order_keys lex
               ON lex.order_id = sf.order_id
              AND lex.store_code = UPPER(TRIM(COALESCE(sf.store_code, 'UNIVERSAL')))
+            LEFT JOIN product_identity_quarantine piq
+              ON piq.order_id = sf.order_id
+             AND piq.store_code = UPPER(TRIM(COALESCE(sf.store_code, 'UNIVERSAL')))
+            LEFT JOIN header_only_source_gap_quarantine hosg
+              ON hosg.order_id = sf.order_id
+             AND hosg.store_code = UPPER(TRIM(COALESCE(sf.store_code, 'UNIVERSAL')))
             WHERE (
                 (SELECT v2_min_sale_date FROM v2_bounds) IS NULL
                 OR date(sf.sale_date) < date((SELECT v2_min_sale_date FROM v2_bounds))
                 OR (wak.order_id IS NOT NULL AND v2a.order_id IS NULL)
             )
               AND lex.order_id IS NULL
+              AND piq.order_id IS NULL
+              AND hosg.order_id IS NULL
         )
         """
     )

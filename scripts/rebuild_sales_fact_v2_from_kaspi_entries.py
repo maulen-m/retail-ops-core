@@ -173,6 +173,7 @@ def build_sales_fact_v2_rows_from_entries(
         + """
             COALESCE(my_size, '') AS my_size,
             COALESCE(quantity, 1) AS quantity,
+            COALESCE(unit_price_kzt, 0) AS unit_price_kzt,
             COALESCE(delivery_cost_for_seller, delivery_cost, 0) AS delivery_fee,
             COALESCE(status_updated_at, '') AS status_updated_at,
             COALESCE(actual_shipment_date, '') AS actual_shipment_date,
@@ -186,6 +187,7 @@ def build_sales_fact_v2_rows_from_entries(
 
     order_by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
     order_by_id: dict[str, list[dict[str, Any]]] = {}
+    order_payloads: list[dict[str, Any]] = []
     for row in orders:
         payload = dict(zip(
             [
@@ -197,6 +199,7 @@ def build_sales_fact_v2_rows_from_entries(
                 "assigned_size",
                 "my_size",
                 "quantity",
+                "unit_price_kzt",
                 "delivery_fee",
                 "status_updated_at",
                 "actual_shipment_date",
@@ -208,6 +211,7 @@ def build_sales_fact_v2_rows_from_entries(
             row,
         ))
         key = (str(payload["order_id"]), str(payload["store_code"]))
+        order_payloads.append(payload)
         order_by_pair.setdefault(key, []).append(payload)
         order_by_id.setdefault(str(payload["order_id"]), []).append(payload)
 
@@ -232,6 +236,8 @@ def build_sales_fact_v2_rows_from_entries(
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
     skipped_open = 0
+    rows_built_from_entries = 0
+    rows_built_from_headers = 0
 
     for order_id, store_code, offer_id, qty, total in entries:
         pair = (str(order_id), str(store_code))
@@ -246,7 +252,7 @@ def build_sales_fact_v2_rows_from_entries(
         ]
         candidate_rows = order_rows + fallback_rows
         if not candidate_rows:
-            if strict:
+            if strict and start_date is None:
                 errors.append(f"order header missing for order_id={order_id} store={store_code}")
             continue
 
@@ -289,9 +295,10 @@ def build_sales_fact_v2_rows_from_entries(
         if mapped:
             sku_key, sku_id = mapped
 
-        if not sku_key:
+        weak_sku_id = bool(sku_key) and (not sku_id or sku_id == sku_key)
+        if not sku_key or weak_sku_id:
             sku_candidates = {str(r.get("sku_key") or "").strip().upper() for r in order_rows if str(r.get("sku_key") or "").strip()}
-            if len(sku_candidates) == 1:
+            if len(sku_candidates) == 1 and (not sku_key or next(iter(sku_candidates)) == sku_key):
                 sku_key = next(iter(sku_candidates))
                 sku_id_candidates = {
                     str(r.get("sku_id") or "").strip().upper()
@@ -299,9 +306,16 @@ def build_sales_fact_v2_rows_from_entries(
                     if str(r.get("sku_id") or "").strip()
                 }
                 if len(sku_id_candidates) == 1:
-                    sku_id = next(iter(sku_id_candidates))
+                    header_sku_id = next(iter(sku_id_candidates))
+                    if header_sku_id and (not sku_id or sku_id == sku_key or header_sku_id.startswith(f"{sku_key}_")):
+                        sku_id = header_sku_id
 
-        if parsed_key and (_is_generic_header_sku_key(sku_key) or not sku_key):
+        weak_sku_id = bool(sku_key) and (not sku_id or sku_id == sku_key)
+        if parsed_key and (
+            _is_generic_header_sku_key(sku_key)
+            or not sku_key
+            or (weak_sku_id and parsed_key == sku_key)
+        ):
             sku_key = parsed_key
             if parsed_id:
                 sku_id = parsed_id
@@ -323,12 +337,13 @@ def build_sales_fact_v2_rows_from_entries(
                 )
             continue
 
+        line_identity_has_sku_id = bool(sku_id and sku_id != sku_key)
         assigned_size_candidates = {
             str(r.get("assigned_size") or "").strip().upper()
             for r in order_rows
             if str(r.get("assigned_size") or "").strip()
         }
-        if assigned_size_candidates:
+        if assigned_size_candidates and not line_identity_has_sku_id:
             my_size = sorted(assigned_size_candidates)[0]
 
         size_candidates = {
@@ -336,10 +351,13 @@ def build_sales_fact_v2_rows_from_entries(
             for r in order_rows
             if str(r.get("my_size") or "").strip()
         }
-        if not my_size and size_candidates:
+        if not my_size and size_candidates and not line_identity_has_sku_id:
             my_size = sorted(size_candidates)[0]
 
-        if my_size:
+        if not my_size and sku_key and sku_id.startswith(f"{sku_key}_"):
+            my_size = sku_id[len(sku_key) + 1 :]
+
+        if my_size and (not sku_id or sku_id == sku_key):
             sku_id = f"{sku_key}_{my_size}"
         elif not sku_id:
             sku_id = sku_key
@@ -377,6 +395,93 @@ def build_sales_fact_v2_rows_from_entries(
                 "api_updated_at": None,
             }
         )
+        rows_built_from_entries += 1
+
+    entry_pairs = {(str(row[0]), str(row[1])) for row in entries}
+    seen_header_keys: set[tuple[str, str, str, str]] = set()
+    for header in order_payloads:
+        order_id = str(header.get("order_id") or "").strip()
+        store_code = str(header.get("store_code") or "").strip().upper()
+        if not order_id or not store_code:
+            continue
+        if (order_id, store_code) in entry_pairs:
+            continue
+
+        status = _normalize_status(header.get("internal_status", ""), header.get("kaspi_status", ""))
+        if status == "OPEN":
+            skipped_open += 1
+            continue
+
+        sale_date = _resolve_sale_date(header, status)
+        if not sale_date:
+            if strict and status == "DELIVERED":
+                errors.append(f"missing required evidence sale_date for order_id={order_id} store={store_code}")
+            continue
+        if start_date and sale_date < start_date.isoformat():
+            continue
+        if sale_date > as_of.isoformat():
+            continue
+
+        sku_key = str(header.get("sku_key") or "").strip().upper()
+        sku_id = str(header.get("sku_id") or "").strip().upper()
+        my_size = str(header.get("assigned_size") or header.get("my_size") or "").strip().upper()
+        if not my_size and sku_key and sku_id.startswith(f"{sku_key}_"):
+            my_size = sku_id[len(sku_key) + 1 :]
+        if my_size and sku_key and (not sku_id or sku_id == sku_key):
+            sku_id = f"{sku_key}_{my_size}"
+
+        quantity = float(header.get("quantity") or 0.0)
+        sell_price = float(header.get("unit_price_kzt") or 0.0)
+        missing_fields = []
+        if not sku_key or not sku_id:
+            missing_fields.append("sku_identity")
+        if quantity <= 0:
+            missing_fields.append("quantity")
+        if sell_price <= 0:
+            missing_fields.append("unit_price_kzt")
+        if missing_fields:
+            if strict and status == "DELIVERED":
+                errors.append(
+                    "missing required evidence "
+                    f"{','.join(missing_fields)} for order_id={order_id} store={store_code}"
+                )
+            continue
+
+        qty_int = int(round(quantity))
+        if qty_int <= 0:
+            if strict and status == "DELIVERED":
+                errors.append(f"missing required evidence quantity for order_id={order_id} store={store_code}")
+            continue
+        gross = sell_price * qty_int
+        delivery_fee = float(header.get("delivery_fee") or 0.0)
+        kaspi_offer_name = str(header.get("kaspi_offer_name") or sku_key).strip() or sku_key
+        key = (order_id, sku_id, store_code, kaspi_offer_name)
+        if key in seen_header_keys:
+            continue
+        seen_header_keys.add(key)
+        rows.append(
+            {
+                "order_id": order_id,
+                "order_date": sale_date,
+                "sku_key": sku_key,
+                "sku_id": sku_id,
+                "my_size": my_size or "",
+                "kaspi_offer_name": kaspi_offer_name,
+                "store_code": store_code,
+                "quantity": qty_int,
+                "sell_price_kzt": float(sell_price),
+                "delivery_fee": round(delivery_fee, 2),
+                "cogs": None,
+                "net_rev": round(float(gross - delivery_fee), 2),
+                "profit": None,
+                "status": status,
+                "return_flag": 1 if status == "RETURNED" else 0,
+                "return_date": sale_date if status == "RETURNED" else None,
+                "source_file": "KASPI_API_HEADER_FALLBACK_REBUILD",
+                "api_updated_at": None,
+            }
+        )
+        rows_built_from_headers += 1
 
     if strict and errors:
         raise RebuildError("; ".join(errors[:30]))
@@ -393,6 +498,8 @@ def build_sales_fact_v2_rows_from_entries(
     summary = {
         "rows_source": len(entries),
         "rows_built": len(rows),
+        "rows_built_from_entries": rows_built_from_entries,
+        "rows_built_from_headers": rows_built_from_headers,
         "errors_count": len(errors),
         "errors_sample": errors[:50],
         "skipped_open": skipped_open,
@@ -449,22 +556,45 @@ def _load_anchor_order_store_keys(conn: sqlite3.Connection) -> set[tuple[str, st
     return {(str(row[0]), str(row[1])) for row in rows}
 
 
-def _load_existing_kaspi_rebuild_keys(conn: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
+def _load_existing_kaspi_rebuild_keys(
+    conn: sqlite3.Connection,
+    *,
+    start_date: date | None = None,
+    as_of: date | None = None,
+) -> list[tuple[str, str, str, str]]:
+    filters = [
+        "UPPER(COALESCE(source_file, '')) IN ('KASPI_API_ENTRIES_REBUILD', 'KASPI_API_HEADER_FALLBACK_REBUILD')"
+    ]
+    params: list[Any] = []
+    if start_date is not None:
+        filters.append("order_date >= ?")
+        params.append(start_date.isoformat())
+    if as_of is not None:
+        filters.append("order_date <= ?")
+        params.append(as_of.isoformat())
+    where_clause = " AND ".join(filters)
     rows = conn.execute(
-        """
+        f"""
         SELECT
             CAST(order_id AS TEXT) AS order_id,
             CAST(sku_id AS TEXT) AS sku_id,
             UPPER(COALESCE(store_code, '')) AS store_code,
             CAST(kaspi_offer_name AS TEXT) AS kaspi_offer_name
         FROM sales_fact_v2
-        WHERE UPPER(COALESCE(source_file, '')) = 'KASPI_API_ENTRIES_REBUILD'
-        """
+        WHERE {where_clause}
+        """,
+        params,
     ).fetchall()
     return [(str(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
 
 
-def build_rebuild_plan(*, rows: list[dict[str, Any]], conn: sqlite3.Connection) -> dict[str, Any]:
+def build_rebuild_plan(
+    *,
+    rows: list[dict[str, Any]],
+    conn: sqlite3.Connection,
+    start_date: date | None = None,
+    as_of: date | None = None,
+) -> dict[str, Any]:
     anchor_order_store = _load_anchor_order_store_keys(conn)
     filtered_rows: list[dict[str, Any]] = []
     skipped_anchor_overlap = 0
@@ -508,7 +638,11 @@ def build_rebuild_plan(*, rows: list[dict[str, Any]], conn: sqlite3.Connection) 
             unchanged += 1
 
     target_keys = set(keys)
-    existing_kaspi_rebuild_keys = _load_existing_kaspi_rebuild_keys(conn)
+    existing_kaspi_rebuild_keys = _load_existing_kaspi_rebuild_keys(
+        conn,
+        start_date=start_date,
+        as_of=as_of,
+    )
     delete_keys = sorted(key for key in existing_kaspi_rebuild_keys if key not in target_keys)
 
     return {
@@ -605,7 +739,7 @@ def run_rebuild(
             start_date=start_date,
             strict=strict,
         )
-        plan = build_rebuild_plan(rows=rows, conn=conn)
+        plan = build_rebuild_plan(rows=rows, conn=conn, start_date=start_date, as_of=as_of)
 
         payload = {
             "generated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -613,6 +747,8 @@ def run_rebuild(
             "start_date": start_date.isoformat() if start_date else None,
             "rows_source": summary["rows_source"],
             "rows_built": summary["rows_built"],
+            "rows_built_from_entries": summary["rows_built_from_entries"],
+            "rows_built_from_headers": summary["rows_built_from_headers"],
             "rows_input_count": plan["rows_input_count"],
             "rows_filtered_count": plan["rows_filtered_count"],
             "skipped_anchor_overlap_count": plan["skipped_anchor_overlap_count"],
@@ -646,6 +782,8 @@ def run_rebuild(
                     f"- rows_filtered_count: `{plan['rows_filtered_count']}`",
                     f"- skipped_anchor_overlap_count: `{plan['skipped_anchor_overlap_count']}`",
                     f"- rows_built: `{summary['rows_built']}`",
+                    f"- rows_built_from_entries: `{summary['rows_built_from_entries']}`",
+                    f"- rows_built_from_headers: `{summary['rows_built_from_headers']}`",
                     f"- insert_count: `{plan['insert_count']}`",
                     f"- update_count: `{plan['update_count']}`",
                     f"- delete_count: `{plan['delete_count']}`",

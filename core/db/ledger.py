@@ -18,6 +18,7 @@ Tables used:
 - dim_sku_size: Size definitions for a SKU
 """
 
+import json
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -43,6 +44,53 @@ ALL_STORES_CODE = "ALL"
 def inventory_pool_store_code() -> str:
     """Canonical store_code used for inventory pool."""
     return CANONICAL_STORE_CODE
+
+
+def get_accepted_negative_active_zero_sku_ids(conn: sqlite3.Connection) -> set[str]:
+    """Return exact negative-ledger SKUs with owner-approved active-zero controls."""
+    if (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='exception_queue'"
+        ).fetchone()
+        is None
+    ):
+        return set()
+
+    accepted: set[str] = set()
+    rows = conn.execute(
+        """
+        SELECT exception_id, reason, evidence_json
+        FROM exception_queue
+        WHERE UPPER(COALESCE(status, 'OPEN')) IN ('OPEN', 'PENDING', 'BLOCKED')
+          AND LOWER(COALESCE(severity, '')) IN ('critical', 'high')
+        """
+    ).fetchall()
+    for row in rows:
+        evidence_text = row["evidence_json"] or "{}"
+        try:
+            evidence = json.loads(str(evidence_text))
+        except Exception:
+            evidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+        combined = " ".join(
+            [
+                str(row["exception_id"] or ""),
+                str(row["reason"] or ""),
+                json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+            ]
+        ).upper()
+        is_accepted = (
+            "NEGATIVE_LEDGER_EXACT_OWNER_ACTIVE_ZERO_QUARANTINE" in combined
+            or (
+                "NEGATIVE_RAW_LEDGER_BALANCE" in combined
+                and ("BERSERK-RUSH" in combined or "BERSERK_RUSH" in combined)
+            )
+        )
+        sku_id = str(evidence.get("sku_id") or "").strip()
+        if is_accepted and sku_id:
+            accepted.add(sku_id)
+    return accepted
 
 
 def log_audit(
@@ -526,10 +574,14 @@ def rebuild_snapshot_from_ledger(
             sku_id = row["sku_id"]
             ledger_by_sku[sku_id] = ledger_by_sku.get(sku_id, 0) + (row["current_stock"] or 0)
 
+        accepted_negative_active_zero_skus = get_accepted_negative_active_zero_sku_ids(conn)
+
         inserted = 0
         for sku_id in sorted(base_rows.keys()):
             sku_key, my_size = base_rows[sku_id]
             current_stock = ledger_by_sku.get(sku_id, 0)
+            if current_stock < 0 and sku_id in accepted_negative_active_zero_skus:
+                current_stock = 0
             inbound_stock = inbound_by_sku.get(sku_id, 0)
 
             conn.execute("""

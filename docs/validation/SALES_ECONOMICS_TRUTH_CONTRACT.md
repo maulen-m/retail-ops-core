@@ -13,7 +13,7 @@ This contract is the authority for:
 3. DB truth views (`view_sales_line_truth`, `view_sales_daily_truth`)
 4. Derived reports (`BUSINESS_INSIDES`, scorecards)
 
-If code differs from v8 formulas, update v8 first, then this contract, then code/tests.
+If code differs from v9 formulas, update `docs/inventory/Master_Inventory_Rules_v9.md` first, then this contract, then code/tests.
 
 ## Delivered Date Basis
 - `transaction_date` for archive parity rows is resolved in this order:
@@ -27,7 +27,7 @@ If code differs from v8 formulas, update v8 first, then this contract, then code
     - Current locked archive evidence still contains non-zero legacy fallback rows for `STOREB` up to `2026-02-19`.
     - Those rows remain provisional until a full UI status-date refresh replaces them with authoritative `Дата изменения статуса`.
 
-## Economics Formulas (Kaspi, v8)
+## Economics Formulas (Kaspi, v9)
 Per unit:
 - `NetRev = (SellPrice * (1 - CommissionRate) - NetDeliveryFee) * (1 - VATRate) - AdsCostUnit`
 - `COGS = BaseCostCNY * CNY_KZT + WeightKG * DLV_RATE_USD_KG * USD_KZT`

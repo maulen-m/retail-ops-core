@@ -19,8 +19,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config.business_params import get_fx_rates
-from core.calc.economics import calc_cogs
+from core.calc.economics import resolve_landed_cogs
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 EXPORT_PATH = PROJECT_ROOT / "exports" / "opening_balance_import_report.txt"
@@ -86,7 +85,7 @@ def _load_dim_sku_costs(conn: sqlite3.Connection) -> dict[str, dict]:
     }
 
 
-def _compute_inventory_cost(conn: sqlite3.Connection, snapshot_date: str) -> float:
+def _compute_inventory_cost(conn: sqlite3.Connection, snapshot_date: str, *, db_path: Path) -> float:
     if not _table_exists(conn, "fact_inventory_snapshot_size"):
         return 0.0
 
@@ -100,24 +99,21 @@ def _compute_inventory_cost(conn: sqlite3.Connection, snapshot_date: str) -> flo
         (snapshot_date,),
     ).fetchall()
 
-    fx_rates = get_fx_rates(snapshot_date, db_path=DEFAULT_DB)
     dim_costs = _load_dim_sku_costs(conn)
     total = 0.0
     for sku_key, stock in rows:
         if stock is None or stock <= 0:
             continue
         meta = dim_costs.get(sku_key, {})
-        cogs_unit = meta.get("cogs_kzt") or 0.0
-        if cogs_unit <= 0:
-            base_cost = meta.get("base_cost_cny", 0.0)
-            weight = meta.get("weight_kg", 0.0)
-            cogs_unit = calc_cogs(
-                base_cost,
-                weight,
-                cny_kzt=fx_rates.cny_kzt,
-                volumetric_factor=fx_rates.dlv_rate_usd_kg,
-                freight_rate=fx_rates.usd_kzt,
-            )
+        cogs_unit, _cost_source, _fx = resolve_landed_cogs(
+            meta.get("base_cost_cny", 0.0),
+            meta.get("weight_kg", 0.0),
+            as_of_date=snapshot_date,
+            db_path=db_path,
+            stored_cogs_kzt=meta.get("cogs_kzt", 0.0),
+        )
+        if cogs_unit is None:
+            continue
         total += float(stock) * cogs_unit
     return round(total, 2)
 
@@ -152,7 +148,7 @@ def import_opening_balances(csv_path: Path, db_path: Path, apply: bool, run_id: 
                 snapshot_date = _latest_snapshot_on_or_before(conn, as_of)
                 if not snapshot_date:
                     raise RuntimeError(f"No inventory snapshot on/before {as_of}")
-                computed_inventory = _compute_inventory_cost(conn, snapshot_date)
+                computed_inventory = _compute_inventory_cost(conn, snapshot_date, db_path=db_path)
                 amount = computed_inventory
                 report_lines.append(f"Computed INVENTORY_COST from snapshot {snapshot_date}: {computed_inventory:,.2f} KZT")
 
