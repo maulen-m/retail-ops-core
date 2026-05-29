@@ -25,6 +25,7 @@ Task Routes
   - `docs/inventory/Automation_Handoff_V16.md`
   - `docs/inventory/Excel_UI_Contract_for_CRM_V1.md`
 - WebUI ArchiveOrders source refresh / status-change truth:
+  - `docs/validation/WEBUI_ARCHIVE_AUTONOMOUS_REFRESH_WORKFLOW.md`
   - `docs/validation/WEBUI_ARCHIVE_SINGLE_TRUTH_CONTRACT.md`
   - `docs/validation/KASPI_ARCHIVE_UI_PACK_CONTRACT.md`
   - `scripts/run_webui_archive_source_refresh.py`
@@ -39,6 +40,9 @@ Task Routes
 - Daily ops / waybills / WhatsApp:
   - `docs/DAILY_SOP.md`
   - `KASPI_API_INTEGRATION.md`
+- Kaspi merchant pricelist price / stock-display / sellability requests:
+  - `docs/contracts/KASPI_PRICELIST_SAFE_ACTIVE_PATCH_CONTRACT.md`
+  - `$HOME/Docs/Web_automation/Docs/offer_ops/PRICELIST_SAFE_ACTIVE_PATCH_CONTRACT.md`
 - Business automation pause/resume / frozen proof windows:
   - `docs/ops/BUSINESS_AUTOMATION_CONTROL_RUNBOOK.md`
   - `config/business_automation_manifest.json`
