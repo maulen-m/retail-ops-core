@@ -63,6 +63,8 @@ Earlier phase checkpoints on this branch:
 - Order-entry recovery backup: `exports/validation/orchestrator_order_entry_missing_recovery_20260614/backups_order_entry/app_2026-06-14_031017.db`
 - Focused D1 cash-in backup: `exports/validation/orchestrator_order_entry_missing_recovery_20260614/backups_d1_cash_in/app_2026-06-14_031022.db`
 - Cashflow daily rebuild backup: `exports/validation/orchestrator_order_entry_missing_recovery_20260614/backups_cashflow_rebuild/app_2026-06-14_031029.db`
+- STOREB current-63 order-entry recovery backup: `exports/validation/orchestrator_storeb_63_api_refetch_20260614/backups_order_entry_current_63/app_2026-06-14_032820.db`
+- Lifecycle residual repair backup: `exports/validation/orchestrator_lifecycle_residual_repair_20260614/backups_prod_lifecycle/app_2026-06-14_033810.db`
 
 ## Validation
 
@@ -104,6 +106,29 @@ Commands/results already run for this closeout:
 - Daily ops pause verification after order-entry/D1 production apply:
   `exports/validation/orchestrator_order_entry_missing_recovery_20260614/daily_ops_paused_after_prod_apply_retry.json`
   Result: `ok=true`, `labels: 0/10 loaded`, protected surfaces quiet, cron quiet.
+- STOREB current-63 scoped order-entry tests:
+  `pytest -q tests/test_recover_order_entries_from_evidence.py`
+  Result: `20 passed`.
+- STOREB current-63 production apply validation:
+  `exports/validation/orchestrator_storeb_63_api_refetch_20260614/prod_operational_stock_after_current_63.json`
+  Result: `RED`, `finding_count=275`; `ORDER_ENTRY_MISSING` cleared to `0`, no D1 cash-in gap.
+- Lifecycle residual repair tests:
+  `pytest -q tests/test_repair_sales_fact_v2_lifecycle_residual.py tests/test_recover_order_entries_from_evidence.py`
+  Result: `25 passed`.
+- Lifecycle production apply validation:
+  `exports/validation/orchestrator_lifecycle_residual_repair_20260614/prod_operational_stock_after_lifecycle.json`
+  Result: `GREEN`, `finding_count=267`, with only warning quarantines:
+  `ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_QUARANTINED=244`,
+  `ORDER_ENTRY_PRODUCT_IDENTITY_QUARANTINED=23`.
+- Current D1 coverage probe:
+  `exports/validation/orchestrator_lifecycle_residual_repair_20260614/prod_d1_cash_in_probe_after_lifecycle/summary.json`
+  Result: `PASS`, `cash_in_missing_count=0`, `would_insert_event_rows=0`.
+- Current strict source freshness:
+  `exports/validation/orchestrator_lifecycle_residual_repair_20260614/prod_policy_source_freshness_after_lifecycle.json`
+  Result: fails only `src_ab_db_stock_truth STALE`.
+- Governed stock materializer guard tests:
+  `pytest -q tests/test_materialize_governed_stock_repairs.py tests/test_repair_sales_fact_v2_lifecycle_residual.py tests/test_recover_order_entries_from_evidence.py`
+  Result: `30 passed`.
 
 Known validation caveat:
 
@@ -130,22 +155,24 @@ Snapshot rebuild still correctly refuses while those rows remain negative.
 Prepared approval-gated manifest:
 
 - `config/governed_stock_owner_approval_repairs_20260614.json`
-- No-approval dry-run proof: `exports/validation/orchestrator_stock_owner_approval_remaining_dryrun_20260614/no_approval/`
+- No-approval dry-run proof: `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/dry_run_without_owner_evidence/`
 - Result: `blocked_count=9`, `candidate_event_count=0`, `applied_rows=0`
 - Approval evidence under `docs/agent_handoffs` is rejected by the materializer so closeouts and starter prompts cannot authorize a write.
 
 ## Additional Phase 2 Blockers From Current Audit
 
-Current operational stock integration finding census after order-entry/D1 production apply:
+Current operational stock integration finding census after STOREB current-63 and lifecycle production applies:
 
 ```text
-ERROR ORDER_ENTRY_MISSING                                    63
-ERROR ORDER_LIFECYCLE_MISSING_COMPLETED                       8
 WARN  ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_QUARANTINED         244
 WARN  ORDER_ENTRY_PRODUCT_IDENTITY_QUARANTINED                23
 ```
 
-The 251-row header-only cleanup, `906730647` real-entry reclassification, 169 source-backed order-entry recovery rows, 2 focused D1 cash-in rows, and cashflow daily rebuild are now applied in production. Final DB SHA after this lane: `11e3979042a9f7ee5990bc8b6ca4123145208a51a9433029c2f45e5c5e61a596`.
+There are no remaining operational-stock `ERROR` findings. The validator status is `GREEN`; these 267 rows are retained warning quarantines and remain excluded from product-level stock/COGS/profit publication truth.
+
+The 251-row header-only cleanup, `906730647` real-entry reclassification, 169 source-backed order-entry recovery rows, 2 focused D1 cash-in rows, cashflow daily rebuild, 64 STOREB API-entry rows, and 8 lifecycle residual reclassifications are now applied in production.
+
+Final DB SHA after this lane: `6a3292128172d6f271bd00f1e78da043c07f3e657d542019a700722ad85365cb`.
 
 ## Approval Phrases Needed
 
@@ -165,9 +192,9 @@ I create a manual owner stock fact for KID-31 black letter rows because no exact
 
 After the owner supplies the exact approval phrase(s), run the same backup-first pattern:
 
-1. Create a manifest for the approved LINE/SUIT allocation and/or KID-31 manual facts.
-2. Dry-run on production DB and copied DB.
-3. Apply only with explicit env gates and a DB backup.
+1. Save the exact owner approval text in a separate non-handoff evidence file.
+2. Dry-run `config/governed_stock_owner_approval_repairs_20260614.json` on production DB and copied DB with `--approval-evidence`.
+3. Apply only with explicit env gates, `--expected-pre-sha256`, and `--backup-dir`.
 4. Rebuild the stock snapshot for `2026-06-13`.
 5. Replay C3 materialization.
 6. Re-run DB guard, stock validators, source-freshness gate, and daily-ops paused verification.
