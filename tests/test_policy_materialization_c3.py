@@ -14,6 +14,7 @@ from core.ops.policy_materialization_c3 import (
     C3_MATERIALIZATION_ENV_GATE,
     backfill_exception_queue_metadata,
     materialize_c3_policy_state,
+    materialize_copied_temp_source_freshness_bridge,
     materialize_policy_gate_results,
     materialize_source_freshness_results,
 )
@@ -69,6 +70,43 @@ def _write_tiny_sqlite(path: Path) -> None:
 def _write_json_fixture(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_copied_temp_bridge_input(
+    tmp_path: Path,
+    *,
+    source_id: str = "src_payment_evidence_root",
+    production_authority: bool = False,
+    source_packet_sha: str | None = None,
+) -> tuple[Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    packet_path = tmp_path / "NO_NEW_PAYMENT_CONTRACT_COPIED_TEMP_20260517.md"
+    packet_path.write_text(
+        "SOURCE_FRESHNESS_BRIDGE_COPIED_TEMP_V1\n"
+        "No production authority.\n",
+        encoding="utf-8",
+    )
+    bridge_path = tmp_path / "copied_temp_bridge_rows.json"
+    _write_json_fixture(
+        bridge_path,
+        {
+            "bridge_rows": [
+                {
+                    "source_id": source_id,
+                    "source_packet_path": str(packet_path),
+                    "source_packet_sha": source_packet_sha or _test_sha256_file(packet_path),
+                    "captured_at": "2026-05-17T22:20:00+05:00",
+                    "as_of": "2026-05-17",
+                    "status": "FRESH",
+                    "blocks_publication": False,
+                    "proof_scope": "copied_temp",
+                    "production_authority": production_authority,
+                    "contract_id": "PAYMENT_ROOT_NO_NEW_PAYMENT_COPIED_TEMP_20260517",
+                }
+            ]
+        },
+    )
+    return bridge_path, packet_path
 
 
 def _zero_write_safety() -> dict[str, object]:
@@ -465,6 +503,8 @@ def _write_meta_source_packet(
     autonomous_business_writes_performed: bool = False,
     deterministic_purchase_attribution_claimed: bool = False,
     any_spend_found: bool = False,
+    ab_can_clear: bool = True,
+    packet_account_id: str | None = None,
 ) -> Path:
     requested_dates = dates or ["2026-05-03", "2026-05-04"]
     fetched_dates = requested_dates if successfully_fetched is None else successfully_fetched
@@ -475,7 +515,17 @@ def _write_meta_source_packet(
     for date in requested_dates:
         raw_path = raw_root / date / f"meta_insights_live_readonly_{date}.json"
         raw_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_path.write_text("[]\n", encoding="utf-8")
+        raw_path.write_text(
+            json.dumps(
+                {
+                    "run_id": "pytest-meta-live-read",
+                    "run_date": date,
+                    "account_id": "1517999585924947",
+                    "levels": {"campaign": []},
+                }
+            ),
+            encoding="utf-8",
+        )
         raw_paths[date] = str(raw_path)
         date_results.append(
             {
@@ -500,12 +550,87 @@ def _write_meta_source_packet(
         "autonomous_business_writes_performed": autonomous_business_writes_performed,
         "deterministic_purchase_attribution_claimed": deterministic_purchase_attribution_claimed,
         "any_spend_found": any_spend_found,
-        "ab_can_clear_src_facebook_ads_external_ads": True,
+        "ab_can_clear_src_facebook_ads_external_ads": ab_can_clear,
         "date_results": date_results,
     }
+    if packet_account_id is not None:
+        packet["account_id"] = packet_account_id
     packet_path = run_root / "meta_live_refresh_summary.json"
     packet_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2), encoding="utf-8")
     return packet_path
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _insert_meta_external_spend_ingestion(
+    db_path: Path,
+    *,
+    packet_path: Path,
+    source_root: Path,
+) -> None:
+    raw_path = (
+        source_root
+        / "runs"
+        / "ab_source_freshness_20260505_acmewear_meta_live_refresh"
+        / "raw_meta_source"
+        / "2026-05-04"
+        / "meta_insights_live_readonly_2026-05-04.json"
+    )
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE meta_external_ads_spend_daily (
+                date TEXT NOT NULL,
+                store_code TEXT NOT NULL,
+                source_system TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                spend_amount REAL NOT NULL,
+                currency_code TEXT NOT NULL,
+                spend_basis TEXT NOT NULL,
+                campaign_row_count INTEGER NOT NULL DEFAULT 0,
+                adset_row_count INTEGER NOT NULL DEFAULT 0,
+                ad_row_count INTEGER NOT NULL DEFAULT 0,
+                packet_path TEXT NOT NULL,
+                packet_sha256 TEXT NOT NULL,
+                raw_evidence_path TEXT NOT NULL,
+                raw_evidence_sha256 TEXT NOT NULL,
+                raw_source_run_id TEXT,
+                raw_source_fetched_at TEXT,
+                generated_at_utc TEXT,
+                publication_attribution_claimed INTEGER NOT NULL DEFAULT 0,
+                run_id TEXT NOT NULL,
+                ingested_at TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                PRIMARY KEY (source_system, store_code, date, account_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO meta_external_ads_spend_daily (
+                date, store_code, source_system, account_id, spend_amount,
+                currency_code, spend_basis, campaign_row_count, adset_row_count,
+                ad_row_count, packet_path, packet_sha256, raw_evidence_path,
+                raw_evidence_sha256, raw_source_run_id, raw_source_fetched_at,
+                generated_at_utc, publication_attribution_claimed, run_id,
+                ingested_at, created_by
+            ) VALUES (
+                '2026-05-04', 'ACMEWEAR', 'meta_instagram', '1517999585924947', 100.0,
+                'UNKNOWN_META_ACCOUNT_CURRENCY', 'campaign', 0, 0, 0,
+                ?, ?, ?, ?, 'pytest', '2026-05-05T07:55:12Z',
+                '2026-05-05T07:55:12Z', 0, 'pytest-meta-spend-ingest',
+                '2026-05-05T07:56:00Z', 'pytest'
+            )
+            """,
+            (str(packet_path), _sha256_file(packet_path), str(raw_path), _sha256_file(raw_path)),
+        )
+        conn.commit()
 
 
 def _point_facebook_source_to_root(db_path: Path, source_root: Path) -> None:
@@ -718,6 +843,236 @@ def test_source_freshness_materializer_records_current_rows_without_hiding_block
     assert validate_policy_source_freshness(db_path, as_of="2026-05-03")
 
 
+def test_source_freshness_materializer_can_filter_source_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _promoted_db(tmp_path, monkeypatch)
+    _seed_stale_operational_truth(db_path)
+    _point_sources_to_fixtures(db_path, tmp_path)
+
+    dry = materialize_source_freshness_results(
+        db_path=db_path,
+        as_of="2026-05-03",
+        run_id="pytest-filtered-source-dry",
+        apply=False,
+        source_ids={"src_bank_manual_ingest"},
+    )
+    assert dry["applied"] is False
+    assert dry["row_count"] == 1
+    assert dry["active_source_count"] == 1
+    assert dry["source_ids"] == ["src_bank_manual_ingest"]
+    assert dry["source_filter"] == ["src_bank_manual_ingest"]
+
+    monkeypatch.setenv(C3_MATERIALIZATION_ENV_GATE, "1")
+    applied = materialize_source_freshness_results(
+        db_path=db_path,
+        as_of="2026-05-03",
+        run_id="pytest-filtered-source-apply",
+        apply=True,
+        backup_dir=tmp_path / "backups",
+        source_ids={"src_bank_manual_ingest"},
+    )
+    assert applied["inserted_or_replaced"] == 1
+
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT policy_source_id, freshness_status
+            FROM source_freshness_result
+            WHERE run_id='pytest-filtered-source-apply'
+            """
+        ).fetchall()
+
+    assert [row["policy_source_id"] for row in rows] == ["src_bank_manual_ingest"]
+
+
+def test_ab_operational_truth_child_split_blocks_dependent_gates_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _promoted_db(tmp_path, monkeypatch)
+    _seed_stale_operational_truth(db_path)
+    _point_sources_to_fixtures(db_path, tmp_path)
+    monkeypatch.setenv(C3_MATERIALIZATION_ENV_GATE, "1")
+
+    materialize_source_freshness_results(
+        db_path=db_path,
+        as_of="2026-05-03",
+        run_id="pytest-ab-child-split-source",
+        apply=True,
+        backup_dir=tmp_path / "backups",
+    )
+    materialize_policy_gate_results(
+        db_path=db_path,
+        as_of="2026-05-03",
+        run_id="pytest-ab-child-split-gates",
+        apply=True,
+        backup_dir=tmp_path / "backups",
+    )
+
+    with _connect(db_path) as conn:
+        source_rows = conn.execute(
+            """
+            SELECT psr.policy_source_id, psr.required_for_gate,
+                   psr.required_for_publication, current.freshness_status,
+                   current.blocks_publication, current.evidence_json
+            FROM policy_source_registry psr
+            LEFT JOIN v_source_freshness_current current
+              ON current.policy_source_id = psr.policy_source_id
+            WHERE psr.policy_source_id LIKE 'src_ab_db_%truth'
+            ORDER BY psr.policy_source_id
+            """
+        ).fetchall()
+        gate_rows = conn.execute(
+            """
+            SELECT gate_name, status, blocks_owner_publication,
+                   source_ids_json, evidence_json
+            FROM v_policy_gate_latest
+            WHERE gate_name IN ('stock_source_truth', 'ads_source_truth', 'source_freshness')
+            ORDER BY gate_name
+            """
+        ).fetchall()
+
+    sources = {row["policy_source_id"]: row for row in source_rows}
+    expected_children = {
+        "src_ab_db_order_entry_truth",
+        "src_ab_db_cashflow_truth",
+        "src_ab_db_stock_truth",
+        "src_ab_db_sales_truth",
+        "src_ab_db_order_status_truth",
+        "src_ab_db_ads_truth",
+    }
+    assert expected_children.issubset(sources)
+    assert sources["src_ab_db_operational_truth"]["required_for_publication"] == 0
+    assert sources["src_ab_db_operational_truth"]["required_for_gate"] == "source_freshness_rollup"
+    assert sources["src_ab_db_stock_truth"]["freshness_status"] == "STALE"
+    assert sources["src_ab_db_stock_truth"]["blocks_publication"] == 1
+    stock_evidence = json.loads(sources["src_ab_db_stock_truth"]["evidence_json"])
+    assert stock_evidence["contract_id"] == "AB_OPERATIONAL_TRUTH_TABLE_SPLIT_V1"
+    assert {item["table"] for item in stock_evidence["table_observations"]} == {
+        "fact_inventory_snapshot_size",
+        "stock_ledger",
+    }
+
+    gate_by_name = {row["gate_name"]: row for row in gate_rows}
+    assert gate_by_name["stock_source_truth"]["status"] == "BLOCKED"
+    assert gate_by_name["stock_source_truth"]["blocks_owner_publication"] == 1
+    stock_gate_source_ids = set(json.loads(gate_by_name["stock_source_truth"]["source_ids_json"]))
+    assert "src_ab_db_stock_truth" in stock_gate_source_ids
+    assert "src_ab_db_sales_truth" in stock_gate_source_ids
+    assert "src_ab_db_order_status_truth" in stock_gate_source_ids
+    assert "src_ab_db_operational_truth" not in stock_gate_source_ids
+
+    assert gate_by_name["ads_source_truth"]["status"] == "BLOCKED"
+    ads_gate_source_ids = set(json.loads(gate_by_name["ads_source_truth"]["source_ids_json"]))
+    assert "src_ab_db_ads_truth" in ads_gate_source_ids
+
+    source_errors = validate_policy_source_freshness(db_path, as_of="2026-05-03")
+    assert any("src_ab_db_stock_truth" in err and "STALE" in err for err in source_errors)
+    assert not any("src_ab_db_operational_truth" in err for err in source_errors)
+
+
+def test_copied_temp_source_freshness_bridge_materializes_exact_packet_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _promoted_db(tmp_path, monkeypatch)
+    bridge_path, packet_path = _write_copied_temp_bridge_input(tmp_path)
+
+    dry = materialize_copied_temp_source_freshness_bridge(
+        db_path=db_path,
+        bridge_path=bridge_path,
+        as_of="2026-05-17",
+        run_id="pytest-copied-temp-bridge",
+        apply=False,
+    )
+    assert dry["applied"] is False
+    assert dry["row_count"] == 1
+    assert dry["production_authority"] is False
+    assert dry["proof_scope"] == "copied_temp"
+
+    monkeypatch.setenv(C3_MATERIALIZATION_ENV_GATE, "1")
+    applied = materialize_copied_temp_source_freshness_bridge(
+        db_path=db_path,
+        bridge_path=bridge_path,
+        as_of="2026-05-17",
+        run_id="pytest-copied-temp-bridge",
+        apply=True,
+        backup_dir=tmp_path / "backups",
+    )
+    assert Path(applied["backup_path"]).exists()
+    assert applied["inserted_or_replaced"] == 1
+
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT policy_source_id, freshness_status, blocks_publication,
+                   source_sha256, evidence_json
+            FROM source_freshness_result
+            WHERE run_id='pytest-copied-temp-bridge'
+            """
+        ).fetchone()
+
+    assert row["policy_source_id"] == "src_payment_evidence_root"
+    assert row["freshness_status"] == "FRESH"
+    assert row["blocks_publication"] == 0
+    assert row["source_sha256"] == _test_sha256_file(packet_path)
+    evidence = json.loads(row["evidence_json"])
+    assert evidence["bridge_contract"] == "SOURCE_FRESHNESS_BRIDGE_COPIED_TEMP_V1"
+    assert evidence["proof_scope"] == "copied_temp"
+    assert evidence["production_authority"] is False
+    assert evidence["owner_publication_authority"] is False
+    errors = validate_policy_source_freshness(db_path, as_of="2026-05-17", strict=True)
+    assert errors
+    assert all("src_payment_evidence_root" not in error for error in errors)
+
+
+def test_copied_temp_source_freshness_bridge_fails_closed_on_authority_or_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _promoted_db(tmp_path, monkeypatch)
+    authority_bridge, _ = _write_copied_temp_bridge_input(tmp_path, production_authority=True)
+    monkeypatch.setenv(C3_MATERIALIZATION_ENV_GATE, "1")
+    with pytest.raises(RuntimeError, match="production_authority must be false"):
+        materialize_copied_temp_source_freshness_bridge(
+            db_path=db_path,
+            bridge_path=authority_bridge,
+            as_of="2026-05-17",
+            run_id="pytest-copied-temp-bridge-authority",
+            apply=True,
+            backup_dir=tmp_path / "backups",
+        )
+
+    hash_bridge, _ = _write_copied_temp_bridge_input(
+        tmp_path / "hash_mismatch",
+        source_packet_sha="0" * 64,
+    )
+    with pytest.raises(RuntimeError, match="source_packet_sha mismatch"):
+        materialize_copied_temp_source_freshness_bridge(
+            db_path=db_path,
+            bridge_path=hash_bridge,
+            as_of="2026-05-17",
+            run_id="pytest-copied-temp-bridge-hash",
+            apply=True,
+            backup_dir=tmp_path / "backups",
+        )
+
+    with _connect(db_path) as conn:
+        count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM source_freshness_result
+            WHERE run_id IN (
+                'pytest-copied-temp-bridge-authority',
+                'pytest-copied-temp-bridge-hash'
+            )
+            """
+        ).fetchone()[0]
+    assert count == 0
+
+
 def test_operational_truth_uses_latest_eligible_order_rows_before_as_of(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -881,6 +1236,36 @@ def test_meta_source_freshness_spend_found_requires_ingestion_lane(
     assert row["freshness_status"] == "BLOCKED"
     assert row["blocks_publication"] == 1
     assert "SPEND_FOUND_REQUIRES_EXTERNAL_ADS_INGESTION" in evidence["issues"]
+
+
+def test_meta_source_freshness_positive_spend_clears_after_ingestion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _promoted_db(tmp_path, monkeypatch)
+    source_root = tmp_path / "Facebook_ads"
+    packet_path = _write_meta_source_packet(
+        source_root,
+        dates=["2026-05-04"],
+        gate="YELLOW",
+        any_spend_found=True,
+        ab_can_clear=False,
+    )
+    _insert_meta_external_spend_ingestion(db_path, packet_path=packet_path, source_root=source_root)
+    _point_facebook_source_to_root(db_path, source_root)
+
+    row = _materialize_and_get_facebook_source(db_path, tmp_path, monkeypatch)
+    evidence = json.loads(row["evidence_json"])
+
+    assert row["freshness_status"] == "FRESH"
+    assert row["blocks_publication"] == 0
+    assert evidence["packet_gate"] == "YELLOW"
+    assert evidence["ab_can_clear_src_facebook_ads_external_ads"] is False
+    assert evidence["any_spend_found"] is True
+    assert evidence["positive_spend_by_date"] == {"2026-05-04": 100.0}
+    assert evidence["external_spend_ingestion"]["ingestion_complete"] is True
+    assert evidence["external_spend_ingestion"]["account_ids"] == ["1517999585924947"]
+    assert evidence["issues"] == []
 
 
 def test_web_automation_kaspi_marketing_strict_green_packet_clears_directapi_source(

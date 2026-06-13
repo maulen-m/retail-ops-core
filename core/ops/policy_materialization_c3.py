@@ -33,6 +33,18 @@ from core.ops.policy_registry_c3 import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 C3_MATERIALIZATION_ENV_GATE = "ENABLE_C3_POLICY_MATERIALIZATION_WRITE"
+COPIED_TEMP_SOURCE_FRESHNESS_BRIDGE_CONTRACT = "SOURCE_FRESHNESS_BRIDGE_COPIED_TEMP_V1"
+COPIED_TEMP_SOURCE_FRESHNESS_BRIDGE_REQUIRED_FIELDS = {
+    "source_id",
+    "source_packet_path",
+    "source_packet_sha",
+    "captured_at",
+    "as_of",
+    "status",
+    "blocks_publication",
+    "proof_scope",
+    "production_authority",
+}
 ALMATY = timezone(timedelta(hours=5))
 
 OPERATIONAL_TABLE_SOURCES: tuple[tuple[str, str], ...] = (
@@ -46,6 +58,25 @@ OPERATIONAL_TABLE_SOURCES: tuple[tuple[str, str], ...] = (
     ("fact_cashflow_events", "event_date"),
     ("fact_cashflow_daily", "date"),
 )
+
+AB_OPERATIONAL_ROLLUP_SOURCE_ID = "src_ab_db_operational_truth"
+AB_OPERATIONAL_CHILD_SOURCE_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
+    "src_ab_db_order_entry_truth": (("fact_order_entries_kaspi", "updated_at"),),
+    "src_ab_db_cashflow_truth": (
+        ("fact_cashflow_events", "event_date"),
+        ("fact_cashflow_daily", "date"),
+    ),
+    "src_ab_db_stock_truth": (
+        ("fact_inventory_snapshot_size", "snapshot_date"),
+        ("stock_ledger", "event_date"),
+    ),
+    "src_ab_db_sales_truth": (("sales_fact_v2", "order_date"),),
+    "src_ab_db_order_status_truth": (("order_status_event", "event_ts"),),
+    "src_ab_db_ads_truth": (
+        ("ads_source_refresh_runs", "date_end"),
+        ("ads_campaign_product_daily", "date"),
+    ),
+}
 
 TABLE_DATE_COLUMNS = dict(OPERATIONAL_TABLE_SOURCES)
 
@@ -73,6 +104,8 @@ DIRECTORY_SCAN_HINTS: dict[str, tuple[str, ...]] = {
 }
 
 META_FACEBOOK_SOURCE_ID = "src_facebook_ads_external_ads"
+META_EXTERNAL_SPEND_TABLE = "meta_external_ads_spend_daily"
+META_EXTERNAL_SPEND_SOURCE_SYSTEM = "meta_instagram"
 META_SOURCE_FRESHNESS_PACKET_NAMES = (
     "meta_live_refresh_summary.json",
     "meta_source_freshness_summary.json",
@@ -411,8 +444,135 @@ def _numeric_value(value: Any) -> float | None:
         return None
 
 
+def _positive_meta_spend_by_date(
+    *,
+    packet: dict[str, Any],
+    requested_dates: list[str],
+    date_results: dict[str, dict[str, Any]],
+) -> dict[str, float]:
+    spend_by_date: dict[str, float] = {}
+    packet_spend = packet.get("spend_by_date")
+    if isinstance(packet_spend, dict):
+        for date in requested_dates:
+            amount = _numeric_value(packet_spend.get(date))
+            if amount is not None and amount > 0:
+                spend_by_date[date] = amount
+    for date in requested_dates:
+        result = date_results.get(date)
+        if result is None:
+            continue
+        amount = _numeric_value(result.get("spend"))
+        if amount is not None and amount > 0:
+            spend_by_date[date] = amount
+    return spend_by_date
+
+
+def _raw_meta_account_id(raw_path_text: str | None) -> str:
+    if not raw_path_text:
+        return ""
+    raw_path = Path(str(raw_path_text)).expanduser()
+    if not raw_path.exists() or not raw_path.is_file():
+        return ""
+    try:
+        payload = json.loads(raw_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("account_id") or "").strip()
+
+
+def _meta_external_spend_ingestion_status(
+    *,
+    conn: sqlite3.Connection | None,
+    source: sqlite3.Row,
+    packet: dict[str, Any],
+    packet_path: Path,
+    packet_sha256: str,
+    positive_spend_by_date: dict[str, float],
+    date_results: dict[str, dict[str, Any]],
+) -> tuple[list[str], dict[str, Any]]:
+    evidence: dict[str, Any] = {
+        "ingestion_table": META_EXTERNAL_SPEND_TABLE,
+        "source_system": META_EXTERNAL_SPEND_SOURCE_SYSTEM,
+        "positive_spend_dates": sorted(positive_spend_by_date),
+        "ingested_rows": [],
+    }
+    if not positive_spend_by_date:
+        return [], evidence
+    if conn is None:
+        return ["EXTERNAL_SPEND_INGESTION_CONN_MISSING"], evidence
+    if not _table_exists(conn, META_EXTERNAL_SPEND_TABLE):
+        return ["EXTERNAL_SPEND_INGESTION_TABLE_MISSING"], evidence
+
+    issues: list[str] = []
+    store_code = str(source["route_key"] or "ACMEWEAR").strip().upper() or "ACMEWEAR"
+    packet_account_id = str(packet.get("account_id") or "").strip()
+    account_ids: set[str] = set()
+
+    for date, expected_spend in sorted(positive_spend_by_date.items()):
+        result = date_results.get(date) or {}
+        raw_from_packet = _raw_meta_evidence_path_for_date(packet, date, result)
+        account_id = packet_account_id or _raw_meta_account_id(raw_from_packet)
+        if not account_id:
+            issues.append(f"EXTERNAL_SPEND_ACCOUNT_ID_MISSING:{date}")
+            continue
+        account_ids.add(account_id)
+        rows = conn.execute(
+            f"""
+            SELECT date, store_code, source_system, account_id, spend_amount,
+                   spend_basis, packet_path, packet_sha256, raw_evidence_path,
+                   raw_evidence_sha256, publication_attribution_claimed
+            FROM {META_EXTERNAL_SPEND_TABLE}
+            WHERE source_system=?
+              AND store_code=?
+              AND date=?
+              AND account_id=?
+            ORDER BY ingested_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (META_EXTERNAL_SPEND_SOURCE_SYSTEM, store_code, date, account_id),
+        ).fetchone()
+        if rows is None:
+            issues.append(f"EXTERNAL_SPEND_INGESTION_ROW_MISSING:{date}")
+            continue
+        row = dict(rows)
+        evidence["ingested_rows"].append(row)
+        amount = _numeric_value(row.get("spend_amount"))
+        if amount is None or abs(amount - expected_spend) > 0.01:
+            issues.append(f"EXTERNAL_SPEND_AMOUNT_MISMATCH:{date}")
+        if str(row.get("packet_sha256") or "") != packet_sha256:
+            issues.append(f"EXTERNAL_SPEND_PACKET_SHA_MISMATCH:{date}")
+        raw_path_text = row.get("raw_evidence_path")
+        if not raw_path_text:
+            issues.append(f"EXTERNAL_SPEND_RAW_PATH_MISSING:{date}")
+        else:
+            raw_path = Path(str(raw_path_text)).expanduser()
+            if not raw_path.exists() or not raw_path.is_file():
+                issues.append(f"EXTERNAL_SPEND_RAW_FILE_MISSING:{date}")
+            else:
+                raw_hash = _sha256_file(raw_path)
+                if str(row.get("raw_evidence_sha256") or "") != raw_hash:
+                    issues.append(f"EXTERNAL_SPEND_RAW_SHA_MISMATCH:{date}")
+        if int(row.get("publication_attribution_claimed") or 0) != 0:
+            issues.append(f"EXTERNAL_SPEND_ATTRIBUTION_CLAIMED:{date}")
+        if raw_from_packet and raw_path_text and str(Path(str(raw_path_text)).expanduser()) != str(
+            Path(str(raw_from_packet)).expanduser()
+        ):
+            issues.append(f"EXTERNAL_SPEND_RAW_PATH_DIFFERS_FROM_PACKET:{date}")
+        packet_path_text = str(row.get("packet_path") or "")
+        if packet_path_text and str(Path(packet_path_text).expanduser()) != str(packet_path):
+            issues.append(f"EXTERNAL_SPEND_PACKET_PATH_MISMATCH:{date}")
+
+    evidence["ingestion_issues"] = issues
+    evidence["ingestion_complete"] = not issues
+    evidence["account_ids"] = sorted(account_ids)
+    return issues, evidence
+
+
 def _observe_meta_source_freshness_packet(
     *,
+    conn: sqlite3.Connection | None,
     source: sqlite3.Row,
     path: Path,
     as_of: str,
@@ -476,11 +636,6 @@ def _observe_meta_source_freshness_packet(
     if set(successfully_fetched) != set(requested_dates):
         issues.append("REQUESTED_DATES_NOT_ALL_SUCCESSFULLY_FETCHED")
 
-    if packet.get("gate") != "GREEN":
-        issues.append("GATE_NOT_GREEN")
-    if packet.get("ab_can_clear_src_facebook_ads_external_ads") is not True:
-        issues.append("AB_CAN_CLEAR_NOT_TRUE")
-
     false_flag_issues = {
         "platform_writes_occurred": "PLATFORM_WRITES_OCCURRED",
         "budget_status_campaign_adset_ad_writes_occurred": (
@@ -495,16 +650,39 @@ def _observe_meta_source_freshness_packet(
         if packet.get(key) is not False:
             issues.append(issue)
 
-    spend_issue_added = False
-    if packet.get("any_spend_found") is not False:
-        issues.append("SPEND_FOUND_REQUIRES_EXTERNAL_ADS_INGESTION")
-        spend_issue_added = True
-
     date_results = _meta_date_results_by_date(packet.get("date_results"), issues)
     cleared_by_date = packet.get("source_freshness_cleared_by_date")
     if cleared_by_date is not None and not isinstance(cleared_by_date, dict):
         issues.append("SOURCE_FRESHNESS_CLEARED_BY_DATE_NOT_MAPPING")
         cleared_by_date = {}
+
+    positive_spend_by_date = _positive_meta_spend_by_date(
+        packet=packet,
+        requested_dates=requested_dates,
+        date_results=date_results,
+    )
+    if packet.get("any_spend_found") not in {False, None} and not positive_spend_by_date:
+        issues.append("SPEND_FOUND_REQUIRES_EXTERNAL_ADS_INGESTION")
+    external_spend_issues, external_spend_evidence = _meta_external_spend_ingestion_status(
+        conn=conn,
+        source=source,
+        packet=packet,
+        packet_path=packet_path,
+        packet_sha256=_sha256_file(packet_path),
+        positive_spend_by_date=positive_spend_by_date,
+        date_results=date_results,
+    )
+    if positive_spend_by_date:
+        issues.extend(external_spend_issues)
+        if packet.get("gate") not in {"GREEN", "YELLOW"}:
+            issues.append("GATE_NOT_GREEN")
+        if external_spend_issues:
+            issues.append("SPEND_FOUND_REQUIRES_EXTERNAL_ADS_INGESTION")
+    else:
+        if packet.get("gate") != "GREEN":
+            issues.append("GATE_NOT_GREEN")
+        if packet.get("ab_can_clear_src_facebook_ads_external_ads") is not True:
+            issues.append("AB_CAN_CLEAR_NOT_TRUE")
 
     verified_raw_paths: dict[str, str] = {}
     for date in requested_dates:
@@ -518,14 +696,6 @@ def _observe_meta_source_freshness_packet(
             issues.append(f"DATE_RESULT_DOES_NOT_CLEAR_SOURCE_FRESHNESS:{date}")
         if isinstance(cleared_by_date, dict) and cleared_by_date.get(date) is not True:
             issues.append(f"SUMMARY_DATE_DOES_NOT_CLEAR_SOURCE_FRESHNESS:{date}")
-        if result.get("any_spend_found") is True:
-            if not spend_issue_added:
-                issues.append("SPEND_FOUND_REQUIRES_EXTERNAL_ADS_INGESTION")
-                spend_issue_added = True
-        spend = _numeric_value(result.get("spend"))
-        if spend is not None and spend > 0 and not spend_issue_added:
-            issues.append("SPEND_FOUND_REQUIRES_EXTERNAL_ADS_INGESTION")
-            spend_issue_added = True
         raw_path_text = _raw_meta_evidence_path_for_date(packet, date, result)
         if not raw_path_text:
             issues.append(f"RAW_EVIDENCE_PATH_MISSING:{date}")
@@ -575,6 +745,8 @@ def _observe_meta_source_freshness_packet(
         "dates_successfully_fetched": successfully_fetched,
         "verified_raw_evidence_paths": verified_raw_paths,
         "any_spend_found": packet.get("any_spend_found"),
+        "positive_spend_by_date": positive_spend_by_date,
+        "external_spend_ingestion": external_spend_evidence,
         "platform_writes_occurred": packet.get("platform_writes_occurred"),
         "budget_status_campaign_adset_ad_writes_occurred": packet.get(
             "budget_status_campaign_adset_ad_writes_occurred"
@@ -1272,6 +1444,81 @@ def _observe_ab_operational_truth(
     }
 
 
+def _child_status_from_table_observations(table_observations: list[dict[str, Any]]) -> str:
+    statuses = {str(item["status"]).upper() for item in table_observations}
+    if not statuses:
+        return "UNKNOWN"
+    if statuses == {"FRESH"}:
+        return "FRESH"
+    if statuses.issubset({"FRESH", "STALE"}) and "STALE" in statuses:
+        return "STALE"
+    if "FUTURE" in statuses:
+        return "FUTURE"
+    if "MISSING" in statuses:
+        return "MISSING"
+    if "EMPTY" in statuses:
+        return "EMPTY"
+    if "UNKNOWN" in statuses:
+        return "UNKNOWN"
+    return "BLOCKED"
+
+
+def _observe_ab_operational_child_truth(
+    conn: sqlite3.Connection,
+    *,
+    source: sqlite3.Row,
+    db_path: Path,
+    as_of: str,
+    observed_at: str,
+    table_sources: tuple[tuple[str, str], ...],
+) -> dict[str, Any]:
+    cutoff = _as_of_cutoff(as_of)
+    max_age = _max_age_seconds(source)
+    table_observations = [
+        _table_observation(
+            conn,
+            table=table,
+            date_column=date_column,
+            cutoff=cutoff,
+            max_age_seconds=max_age,
+        )
+        for table, date_column in table_sources
+    ]
+    issue_counts = Counter(item["issue"] for item in table_observations if item.get("issue"))
+    max_values = [
+        _parse_observed_at(item.get("max_observed_at"))
+        for item in table_observations
+        if item.get("max_observed_at")
+    ]
+    max_observed = max((item for item in max_values if item is not None), default=None)
+    row_count = sum(int(item.get("row_count") or 0) for item in table_observations)
+    status = _child_status_from_table_observations(table_observations)
+    _, lag_seconds = _status_from_observed(
+        max_observed_at=max_observed,
+        cutoff=cutoff,
+        max_age_seconds=max_age,
+    )
+    evidence = {
+        "contract_id": "AB_OPERATIONAL_TRUTH_TABLE_SPLIT_V1",
+        "parent_policy_source_id": AB_OPERATIONAL_ROLLUP_SOURCE_ID,
+        "source_path": str(db_path),
+        "source_table": source["source_table"],
+        "observation_type": "sqlite_operational_child_required_tables",
+        "table_observations": table_observations,
+        "issue_counts": dict(sorted(issue_counts.items())),
+        "publication_rule": "child_source_status_controls_dependent_gate",
+    }
+    return {
+        "status": status,
+        "max_observed_at": max_observed.isoformat(timespec="seconds") if max_observed else None,
+        "source_sha256": _sha256_text(_json(evidence)),
+        "row_count": row_count,
+        "lag_seconds": lag_seconds,
+        "evidence": evidence,
+        "observed_at": observed_at,
+    }
+
+
 def _observe_sqlite_table(
     conn: sqlite3.Connection,
     *,
@@ -1307,6 +1554,7 @@ def _observe_sqlite_table(
 
 def _observe_path_source(
     *,
+    conn: sqlite3.Connection | None = None,
     source: sqlite3.Row,
     as_of: str,
     observed_at: str,
@@ -1350,6 +1598,7 @@ def _observe_path_source(
 
     if source["policy_source_id"] == META_FACEBOOK_SOURCE_ID and path.is_dir():
         return _observe_meta_source_freshness_packet(
+            conn=conn,
             source=source,
             path=path,
             as_of=as_of,
@@ -1422,9 +1671,13 @@ def _observe_path_source(
     }
 
 
-def _active_source_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def _active_source_rows(
+    conn: sqlite3.Connection,
+    *,
+    source_ids: set[str] | None = None,
+) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
-    return conn.execute(
+    rows = conn.execute(
         """
         SELECT *
         FROM policy_source_registry
@@ -1433,6 +1686,13 @@ def _active_source_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY policy_source_id
         """
     ).fetchall()
+    if source_ids is None:
+        return rows
+    available = {str(row["policy_source_id"]) for row in rows}
+    missing = sorted(source_ids - available)
+    if missing:
+        raise RuntimeError(f"Unknown or inactive C3 policy source ids: {', '.join(missing)}")
+    return [row for row in rows if str(row["policy_source_id"]) in source_ids]
 
 
 def _build_source_freshness_rows(
@@ -1442,17 +1702,28 @@ def _build_source_freshness_rows(
     as_of: str,
     run_id: str,
     observed_at: str,
+    source_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     active = _active_policy(conn)
     rows: list[dict[str, Any]] = []
-    for source in _active_source_rows(conn):
-        if source["policy_source_id"] == "src_ab_db_operational_truth":
+    for source in _active_source_rows(conn, source_ids=source_ids):
+        source_id = str(source["policy_source_id"])
+        if source_id == AB_OPERATIONAL_ROLLUP_SOURCE_ID:
             observation = _observe_ab_operational_truth(
                 conn,
                 source=source,
                 db_path=db_path,
                 as_of=as_of,
                 observed_at=observed_at,
+            )
+        elif source_id in AB_OPERATIONAL_CHILD_SOURCE_TABLES:
+            observation = _observe_ab_operational_child_truth(
+                conn,
+                source=source,
+                db_path=db_path,
+                as_of=as_of,
+                observed_at=observed_at,
+                table_sources=AB_OPERATIONAL_CHILD_SOURCE_TABLES[source_id],
             )
         elif source["source_kind"] == "sqlite_table":
             observation = _observe_sqlite_table(
@@ -1463,6 +1734,7 @@ def _build_source_freshness_rows(
             )
         else:
             observation = _observe_path_source(
+                conn=conn,
                 source=source,
                 as_of=as_of,
                 observed_at=observed_at,
@@ -2129,6 +2401,253 @@ def _ensure_apply_allowed(db_path: Path) -> None:
         raise RuntimeError(f"DB does not exist: {db_path}")
 
 
+def _ensure_copied_temp_bridge_db_target(db_path: Path) -> None:
+    try:
+        if db_path.expanduser().resolve() == DEFAULT_DB_PATH.expanduser().resolve():
+            raise RuntimeError(
+                "Copied-temp source-freshness bridge refuses to apply to production db/app.db"
+            )
+    except FileNotFoundError:
+        pass
+
+
+def _load_copied_temp_bridge_rows(bridge_path: Path) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(bridge_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Copied-temp bridge JSON parse failed: {bridge_path}: {exc}") from exc
+    rows = payload.get("bridge_rows") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise RuntimeError("Copied-temp bridge input must be a list or object with bridge_rows")
+    normalized: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise RuntimeError(f"Copied-temp bridge row {index} is not an object")
+        normalized.append(row)
+    return normalized
+
+
+def _resolve_bridge_packet_path(path_value: Any, *, bridge_path: Path) -> Path:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return Path("")
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    bridge_relative = (bridge_path.parent / path).expanduser()
+    if bridge_relative.exists():
+        return bridge_relative
+    return (PROJECT_ROOT / path).expanduser()
+
+
+def _active_source_rows_by_id(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM policy_source_registry
+        WHERE active_to IS NULL
+        ORDER BY policy_source_id
+        """
+    ).fetchall()
+    return {str(row["policy_source_id"]): row for row in rows}
+
+
+def _bridge_bool(value: Any, *, field: str, index: int) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise RuntimeError(f"Copied-temp bridge row {index} field {field} must be a JSON boolean")
+
+
+def _build_copied_temp_bridge_rows(
+    conn: sqlite3.Connection,
+    *,
+    bridge_path: Path,
+    as_of: str,
+    run_id: str,
+    observed_at: str,
+) -> list[dict[str, Any]]:
+    active_policy = _active_policy(conn)
+    active_sources = _active_source_rows_by_id(conn)
+    input_rows = _load_copied_temp_bridge_rows(bridge_path)
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for index, input_row in enumerate(input_rows):
+        missing = sorted(COPIED_TEMP_SOURCE_FRESHNESS_BRIDGE_REQUIRED_FIELDS - set(input_row))
+        if missing:
+            errors.append(f"row {index}: missing required fields: {', '.join(missing)}")
+            continue
+
+        source_id = str(input_row["source_id"]).strip()
+        source = active_sources.get(source_id)
+        if source is None:
+            errors.append(f"row {index}: unknown or inactive policy source id: {source_id}")
+            continue
+        if str(input_row["as_of"]) != as_of:
+            errors.append(f"row {index}: as_of {input_row['as_of']} does not match requested {as_of}")
+            continue
+        if str(input_row["proof_scope"]) != "copied_temp":
+            errors.append(f"row {index}: proof_scope must be copied_temp")
+            continue
+        try:
+            production_authority = _bridge_bool(
+                input_row["production_authority"],
+                field="production_authority",
+                index=index,
+            )
+            blocks_publication = _bridge_bool(
+                input_row["blocks_publication"],
+                field="blocks_publication",
+                index=index,
+            )
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            continue
+        if production_authority is not False:
+            errors.append(f"row {index}: production_authority must be false")
+            continue
+
+        status = str(input_row["status"]).strip().upper()
+        if not status:
+            errors.append(f"row {index}: status is empty")
+            continue
+        if status not in {"FRESH", *BLOCKING_FRESHNESS_STATUSES}:
+            errors.append(f"row {index}: unsupported freshness status: {status}")
+            continue
+        captured_at = _parse_observed_at(input_row["captured_at"])
+        if captured_at is None:
+            errors.append(f"row {index}: captured_at is invalid: {input_row['captured_at']}")
+            continue
+
+        packet_path = _resolve_bridge_packet_path(input_row["source_packet_path"], bridge_path=bridge_path)
+        if not packet_path.exists() or not packet_path.is_file():
+            errors.append(f"row {index}: source_packet_path is not a file: {packet_path}")
+            continue
+        packet_sha = _sha256_file(packet_path)
+        expected_sha = str(input_row["source_packet_sha"]).strip()
+        if packet_sha != expected_sha:
+            errors.append(f"row {index}: source_packet_sha mismatch for {packet_path}")
+            continue
+
+        _, lag_seconds = _status_from_observed(
+            max_observed_at=captured_at,
+            cutoff=_as_of_cutoff(as_of),
+            max_age_seconds=_max_age_seconds(source),
+        )
+        row_count = int(input_row.get("row_count", 1) or 0)
+        freshness_result_id = "fresh_bridge:" + _sha256_text(
+            f"{active_policy['policy_version_id']}:{source_id}:{as_of}:{run_id}:{packet_sha}"
+        )[:32]
+        evidence = {
+            "bridge_contract": COPIED_TEMP_SOURCE_FRESHNESS_BRIDGE_CONTRACT,
+            "source_packet_path": str(packet_path),
+            "source_packet_sha": packet_sha,
+            "captured_at": str(input_row["captured_at"]),
+            "as_of": as_of,
+            "status": status,
+            "blocks_publication": blocks_publication,
+            "proof_scope": "copied_temp",
+            "production_authority": False,
+            "owner_publication_authority": False,
+            "does_not_update_production_db": True,
+            "policy_source_id": source_id,
+            "domain": source["domain"],
+            "required_for_gate": source["required_for_gate"],
+            "required_for_publication": int(source["required_for_publication"] or 0),
+        }
+        for optional_field in ("contract_id", "contract_registry_path", "notes"):
+            if optional_field in input_row:
+                evidence[optional_field] = input_row[optional_field]
+        rows.append(
+            {
+                "freshness_result_id": freshness_result_id,
+                "run_id": run_id,
+                "policy_version_id": active_policy["policy_version_id"],
+                "policy_source_id": source_id,
+                "as_of_date": as_of,
+                "observed_at": observed_at,
+                "max_observed_at": captured_at.isoformat(timespec="seconds"),
+                "source_sha256": packet_sha,
+                "row_count": row_count,
+                "freshness_status": status,
+                "max_age_value": source["max_age_value"],
+                "max_age_unit": source["max_age_unit"],
+                "lag_seconds": lag_seconds,
+                "blocks_publication": 1 if blocks_publication else 0,
+                "evidence_json": _json(evidence),
+            }
+        )
+    if errors:
+        raise RuntimeError("Copied-temp source-freshness bridge validation failed: " + "; ".join(errors))
+    return rows
+
+
+def materialize_copied_temp_source_freshness_bridge(
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+    bridge_path: Path,
+    as_of: str,
+    run_id: str,
+    apply: bool = False,
+    backup_dir: Path | None = None,
+) -> dict[str, Any]:
+    db_path = db_path.expanduser().resolve()
+    bridge_path = bridge_path.expanduser().resolve()
+    if apply:
+        _ensure_copied_temp_bridge_db_target(db_path)
+        _ensure_apply_allowed(db_path)
+    if not bridge_path.exists():
+        raise RuntimeError(f"Copied-temp bridge input does not exist: {bridge_path}")
+
+    observed_at = _now_iso()
+    with connect_readonly(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        validate_errors = validate_policy_registry_schema(db_path)
+        if validate_errors:
+            raise RuntimeError("C3 policy registry schema is not valid: " + "; ".join(validate_errors))
+        bridge_rows = _build_copied_temp_bridge_rows(
+            conn,
+            bridge_path=bridge_path,
+            as_of=as_of,
+            run_id=run_id,
+            observed_at=observed_at,
+        )
+
+    backup_path: Path | None = None
+    if apply:
+        backup_path = backup_database(
+            db_path,
+            backup_dir or (PROJECT_ROOT / "runtime" / "backups"),
+            label="copied_temp_source_freshness_bridge",
+        )
+        with sqlite3.connect(str(db_path)) as conn:
+            _insert_source_freshness_rows(conn, bridge_rows)
+            conn.commit()
+            source_freshness_count = _count_table(conn, "source_freshness_result")
+    else:
+        source_freshness_count = None
+
+    return {
+        "applied": apply,
+        "db_path": str(db_path),
+        "bridge_path": str(bridge_path),
+        "as_of": as_of,
+        "run_id": run_id,
+        "backup_path": str(backup_path) if backup_path else None,
+        "bridge_contract": COPIED_TEMP_SOURCE_FRESHNESS_BRIDGE_CONTRACT,
+        "proof_scope": "copied_temp",
+        "production_authority": False,
+        "row_count": len(bridge_rows),
+        "source_ids": [row["policy_source_id"] for row in bridge_rows],
+        "status_counts": dict(Counter(row["freshness_status"] for row in bridge_rows)),
+        "blocks_publication_counts": dict(
+            Counter(str(bool(row["blocks_publication"])) for row in bridge_rows)
+        ),
+        "inserted_or_replaced": len(bridge_rows) if apply else 0,
+        "source_freshness_result_count_after": source_freshness_count,
+    }
+
+
 def _materialize(
     *,
     db_path: Path,
@@ -2138,6 +2657,7 @@ def _materialize(
     apply: bool,
     backup_dir: Path | None,
     sections: set[str],
+    source_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     db_path = db_path.expanduser().resolve()
     policy_path = policy_path.expanduser().resolve()
@@ -2159,6 +2679,7 @@ def _materialize(
         "run_id": run_id,
         "backup_path": str(backup_path) if backup_path else None,
         "sections": sorted(sections),
+        "source_filter": sorted(source_ids) if source_ids else None,
     }
     with (sqlite3.connect(str(db_path)) if apply else connect_readonly(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -2174,9 +2695,11 @@ def _materialize(
                 as_of=as_of,
                 run_id=run_id,
                 observed_at=observed_at,
+                source_ids=source_ids,
             )
             report["active_source_count"] = len(source_rows)
             report["row_count"] = len(source_rows)
+            report["source_ids"] = [row["policy_source_id"] for row in source_rows]
             report["source_status_counts"] = dict(Counter(row["freshness_status"] for row in source_rows))
             if apply:
                 _insert_source_freshness_rows(conn, source_rows)
@@ -2231,6 +2754,7 @@ def materialize_source_freshness_results(
     apply: bool = False,
     backup_dir: Path | None = None,
     policy_path: Path = DEFAULT_POLICY_PATH,
+    source_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     return _materialize(
         db_path=db_path,
@@ -2240,6 +2764,7 @@ def materialize_source_freshness_results(
         apply=apply,
         backup_dir=backup_dir,
         sections={"source_freshness"},
+        source_ids=source_ids,
     )
 
 
@@ -2291,6 +2816,7 @@ def materialize_c3_policy_state(
     apply: bool = False,
     backup_dir: Path | None = None,
     policy_path: Path = DEFAULT_POLICY_PATH,
+    source_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     return _materialize(
         db_path=db_path,
@@ -2300,4 +2826,5 @@ def materialize_c3_policy_state(
         apply=apply,
         backup_dir=backup_dir,
         sections={"source_freshness", "exceptions", "gates"},
+        source_ids=source_ids,
     )
