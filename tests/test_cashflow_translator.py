@@ -1,9 +1,17 @@
+import hashlib
 import sqlite3
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+import scripts.translate_orders_to_cashflow_events as cashflow_translator
 from scripts.translate_orders_to_cashflow_events import _unit_cost_kzt_for_sku, translate_orders
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _init_db(db_path: Path) -> None:
@@ -92,6 +100,80 @@ def _init_db(db_path: Path) -> None:
         )
     finally:
         conn.close()
+
+
+def test_production_cashflow_apply_requires_dedicated_prod_env(tmp_path, monkeypatch):
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    monkeypatch.setattr(cashflow_translator, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    monkeypatch.delenv("ENABLE_CASHFLOW_PROD_WRITE", raising=False)
+
+    with pytest.raises(RuntimeError, match="ENABLE_CASHFLOW_PROD_WRITE=1"):
+        translate_orders(
+            db_path,
+            since=date(2026, 1, 1),
+            until=date(2026, 1, 1),
+            apply=True,
+            run_id="blocked-prod",
+            expected_pre_sha256=_sha256(db_path),
+            backup_dir=tmp_path / "backups",
+        )
+
+
+def test_production_cashflow_apply_requires_expected_sha_and_backup_dir(tmp_path, monkeypatch):
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    monkeypatch.setattr(cashflow_translator, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    monkeypatch.setenv("ENABLE_CASHFLOW_PROD_WRITE", "1")
+
+    with pytest.raises(RuntimeError, match="--expected-pre-sha256"):
+        translate_orders(
+            db_path,
+            since=date(2026, 1, 1),
+            until=date(2026, 1, 1),
+            apply=True,
+            run_id="missing-sha",
+            backup_dir=tmp_path / "backups",
+        )
+
+    with pytest.raises(RuntimeError, match="--backup-dir"):
+        translate_orders(
+            db_path,
+            since=date(2026, 1, 1),
+            until=date(2026, 1, 1),
+            apply=True,
+            run_id="missing-backup",
+            expected_pre_sha256=_sha256(db_path),
+        )
+
+
+def test_production_cashflow_apply_creates_verified_backup_and_report(tmp_path, monkeypatch):
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    backup_dir = tmp_path / "backups"
+    report_path = tmp_path / "cashflow_report.txt"
+    monkeypatch.setattr(cashflow_translator, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    monkeypatch.setenv("ENABLE_CASHFLOW_PROD_WRITE", "1")
+
+    translate_orders(
+        db_path,
+        since=date(2026, 1, 1),
+        until=date(2026, 1, 1),
+        apply=True,
+        run_id="prod-ok",
+        output_path=report_path,
+        expected_pre_sha256=_sha256(db_path),
+        backup_dir=backup_dir,
+    )
+
+    backups = list(backup_dir.glob("app_*.db"))
+    assert len(backups) == 1
+    report = report_path.read_text(encoding="utf-8")
+    assert "Apply production target: True" in report
+    assert f"Production backup path: {backups[0]}" in report
 
 
 def test_translate_orders_uses_stagecode_over_stale_internal_completed(tmp_path, monkeypatch):

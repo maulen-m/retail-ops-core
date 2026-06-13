@@ -20,6 +20,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.backup_db import backup_database  # noqa: E402
 from core.db.queries import get_cutoff_date_almaty
 from core.config.business_params import get_supplier_fx_rates, get_vat_rate
 from core.calc.economics import calc_delivery_fee, calc_net_rev, calc_cogs
@@ -32,11 +33,95 @@ from core.integrations.kaspi_order_stage import (
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "kaspi_column_map.yaml"
 EXPORT_PATH = PROJECT_ROOT / "exports" / "orders_to_cashflow_report.txt"
+PROD_WRITE_ENV_GATE = "ENABLE_CASHFLOW_PROD_WRITE"
 _DELIVERY_STATE = api_state_filter_for_stage(StageCode.ACCEPTED_PENDING_ASSEMBLY) or ""
 DELIVERED_STAGE_CODES = {"COMPLETED", "DELIVERED", "ISSUED_COMPLETED"}
 RETURN_STAGE_CODES = {"RETURNED", "CANCELLED_AFTER_DELIVERY", "CANCELLED_DELIVERED"}
 CANCEL_STAGE_CODES = {"CANCELLED"}
 UNKNOWN_STORE_CODES = {"", "UNKNOWN"}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_integrity_check(path: Path) -> str:
+    conn = sqlite3.connect(str(path))
+    try:
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+        return str(row[0]) if row else "missing"
+    finally:
+        conn.close()
+
+
+def _sidecar_paths(db_path: Path) -> list[Path]:
+    return [db_path.with_name(db_path.name + suffix) for suffix in ("-wal", "-shm", "-journal")]
+
+
+def _fail_on_sqlite_sidecars(db_path: Path) -> None:
+    existing = [path for path in _sidecar_paths(db_path) if path.exists()]
+    if existing:
+        joined = ", ".join(str(path) for path in existing)
+        raise RuntimeError(f"refusing production cashflow apply while SQLite sidecars exist: {joined}")
+
+
+def _is_production_db(db_path: Path) -> bool:
+    return db_path.resolve() == DEFAULT_DB.resolve()
+
+
+def _prepare_cashflow_apply_guard(
+    db_path: Path,
+    *,
+    expected_pre_sha256: str | None = None,
+    backup_dir: Path | None = None,
+) -> dict[str, object]:
+    if os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
+        raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
+
+    production_apply = _is_production_db(db_path)
+    metadata: dict[str, object] = {
+        "production_apply": production_apply,
+        "pre_sha256": _sha256_file(db_path),
+    }
+    if not production_apply:
+        return metadata
+
+    if os.environ.get(PROD_WRITE_ENV_GATE) != "1":
+        raise RuntimeError(f"{PROD_WRITE_ENV_GATE}=1 is required for production cashflow apply.")
+    if not expected_pre_sha256:
+        raise RuntimeError("--expected-pre-sha256 is required for production cashflow apply.")
+    if backup_dir is None:
+        raise RuntimeError("--backup-dir is required for production cashflow apply.")
+
+    _fail_on_sqlite_sidecars(db_path)
+    pre_integrity = _sqlite_integrity_check(db_path)
+    if pre_integrity.lower() != "ok":
+        raise RuntimeError(f"production DB integrity_check failed before cashflow apply: {pre_integrity}")
+    pre_sha256 = str(metadata["pre_sha256"])
+    if pre_sha256 != expected_pre_sha256:
+        raise RuntimeError(
+            "production DB SHA mismatch before cashflow apply: "
+            f"expected {expected_pre_sha256}, observed {pre_sha256}"
+        )
+
+    backup_path = backup_database(db_path, backup_dir, compress=False)
+    backup_integrity = _sqlite_integrity_check(backup_path)
+    if backup_integrity.lower() != "ok":
+        raise RuntimeError(f"cashflow backup integrity_check failed: {backup_integrity}")
+    metadata.update(
+        {
+            "expected_pre_sha256": expected_pre_sha256,
+            "backup_path": str(backup_path),
+            "backup_sha256": _sha256_file(backup_path),
+            "pre_integrity_check": pre_integrity,
+            "backup_integrity_check": backup_integrity,
+        }
+    )
+    return metadata
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return conn.execute(
@@ -883,11 +968,20 @@ def translate_orders(
     run_id: str,
     allow_missing: bool = False,
     output_path: Path | None = None,
+    expected_pre_sha256: str | None = None,
+    backup_dir: Path | None = None,
 ) -> int:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
 
     report_lines = []
+    apply_metadata: dict[str, object] = {}
+    if apply:
+        apply_metadata = _prepare_cashflow_apply_guard(
+            db_path,
+            expected_pre_sha256=expected_pre_sha256,
+            backup_dir=backup_dir,
+        )
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         if not _table_exists(conn, "fact_orders_kaspi"):
@@ -1636,8 +1730,6 @@ def translate_orders(
         report_lines.append(f"New cashflow events: {len(new_events)}")
 
         if apply:
-            if os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
-                raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
             for event in new_events:
                 conn.execute(
                     """
@@ -1664,6 +1756,20 @@ def translate_orders(
                 )
             conn.commit()
 
+    if apply_metadata:
+        report_lines.append(f"Apply production target: {bool(apply_metadata.get('production_apply'))}")
+    if apply_metadata.get("production_apply"):
+        post_integrity = _sqlite_integrity_check(db_path)
+        if post_integrity.lower() != "ok":
+            raise RuntimeError(f"production DB integrity_check failed after cashflow apply: {post_integrity}")
+        apply_metadata["post_sha256"] = _sha256_file(db_path)
+        apply_metadata["post_integrity_check"] = post_integrity
+        report_lines.append(f"Production pre SHA256: {apply_metadata['pre_sha256']}")
+        report_lines.append(f"Production post SHA256: {apply_metadata['post_sha256']}")
+        report_lines.append(f"Production backup path: {apply_metadata['backup_path']}")
+        report_lines.append(f"Production backup SHA256: {apply_metadata['backup_sha256']}")
+        report_lines.append(f"Production integrity check: {apply_metadata['post_integrity_check']}")
+
     report_path = output_path or EXPORT_PATH
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(report_lines) + "\n")
@@ -1688,6 +1794,8 @@ def main() -> int:
         default=None,
         help="Write the dry-run/apply report to this path instead of exports/orders_to_cashflow_report.txt",
     )
+    parser.add_argument("--expected-pre-sha256", type=str, default=None)
+    parser.add_argument("--backup-dir", type=Path, default=None)
     args = parser.parse_args()
 
     cutoff = get_cutoff_date_almaty()
@@ -1706,6 +1814,8 @@ def main() -> int:
         run_id,
         allow_missing=bool(args.allow_missing),
         output_path=args.output_path,
+        expected_pre_sha256=args.expected_pre_sha256,
+        backup_dir=args.backup_dir,
     )
 
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.rebuild_cashflow_calendar as cashflow_calendar
 from scripts.rebuild_cashflow_calendar import rebuild_cashflow_calendar
 
 
@@ -123,6 +124,93 @@ def test_apply_without_env_gate_fails_before_schema_mutation(tmp_path, monkeypat
 
     assert _sha256(db_path) == before_hash
     assert missing_column not in _daily_columns(db_path)
+
+
+def test_production_rebuild_requires_dedicated_prod_env(tmp_path, monkeypatch):
+    db_path = tmp_path / "app.db"
+    missing_column = "inventory_on_delivery_close"
+    _init_cashflow_db_missing_daily_column(db_path, missing_column)
+    monkeypatch.setattr(cashflow_calendar, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    monkeypatch.delenv("ENABLE_CASHFLOW_PROD_WRITE", raising=False)
+    before_hash = _sha256(db_path)
+
+    with pytest.raises(RuntimeError, match="ENABLE_CASHFLOW_PROD_WRITE=1"):
+        rebuild_cashflow_calendar(
+            db_path=db_path,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 1),
+            apply=True,
+            run_id="blocked-prod",
+            expected_pre_sha256=before_hash,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert _sha256(db_path) == before_hash
+    assert missing_column not in _daily_columns(db_path)
+
+
+def test_production_rebuild_requires_expected_sha_and_backup_dir(tmp_path, monkeypatch):
+    db_path = tmp_path / "app.db"
+    missing_column = "inventory_on_delivery_close"
+    _init_cashflow_db_missing_daily_column(db_path, missing_column)
+    monkeypatch.setattr(cashflow_calendar, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    monkeypatch.setenv("ENABLE_CASHFLOW_PROD_WRITE", "1")
+    before_hash = _sha256(db_path)
+
+    with pytest.raises(RuntimeError, match="--expected-pre-sha256"):
+        rebuild_cashflow_calendar(
+            db_path=db_path,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 1),
+            apply=True,
+            run_id="missing-sha",
+            backup_dir=tmp_path / "backups",
+        )
+
+    with pytest.raises(RuntimeError, match="--backup-dir"):
+        rebuild_cashflow_calendar(
+            db_path=db_path,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 1),
+            apply=True,
+            run_id="missing-backup",
+            expected_pre_sha256=before_hash,
+        )
+
+    assert _sha256(db_path) == before_hash
+    assert missing_column not in _daily_columns(db_path)
+
+
+def test_production_rebuild_creates_verified_backup(tmp_path, monkeypatch):
+    db_path = tmp_path / "app.db"
+    missing_column = "inventory_on_delivery_close"
+    _init_cashflow_db_missing_daily_column(db_path, missing_column)
+    backup_dir = tmp_path / "backups"
+    monkeypatch.setattr(cashflow_calendar, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    monkeypatch.setenv("ENABLE_CASHFLOW_PROD_WRITE", "1")
+
+    rows, system_events = rebuild_cashflow_calendar(
+        db_path=db_path,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 1),
+        apply=True,
+        run_id="prod-ok",
+        expected_pre_sha256=_sha256(db_path),
+        backup_dir=backup_dir,
+    )
+
+    metadata = rebuild_cashflow_calendar.last_apply_metadata
+    backups = list(backup_dir.glob("app_*.db"))
+    assert len(backups) == 1
+    assert metadata["production_apply"] is True
+    assert metadata["backup_path"] == str(backups[0])
+    assert metadata["post_integrity_check"] == "ok"
+    assert missing_column in _daily_columns(db_path)
+    assert len(rows) == 1
+    assert system_events == []
 
 
 def test_env_gated_apply_can_backfill_existing_auto_migration_column(tmp_path, monkeypatch):

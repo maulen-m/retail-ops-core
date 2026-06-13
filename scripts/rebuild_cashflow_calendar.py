@@ -20,10 +20,12 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.backup_db import backup_database  # noqa: E402
 from core.db.queries import get_cutoff_date_almaty
 from core.config.business_params import get_fx_rates
 from core.calc.economics import calc_cogs
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
+PROD_WRITE_ENV_GATE = "ENABLE_CASHFLOW_PROD_WRITE"
 
 AUTO_EVENT_TYPES = {"COGS_RECOGNIZED"}
 EXPENSE_EVENT_TYPES = {
@@ -78,6 +80,89 @@ DAILY_REQUIRED_COLUMNS = {
     "profit_accrual_kzt",
     "run_id",
 }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_integrity_check(path: Path) -> str:
+    conn = sqlite3.connect(str(path))
+    try:
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+        return str(row[0]) if row else "missing"
+    finally:
+        conn.close()
+
+
+def _sidecar_paths(db_path: Path) -> list[Path]:
+    return [db_path.with_name(db_path.name + suffix) for suffix in ("-wal", "-shm", "-journal")]
+
+
+def _fail_on_sqlite_sidecars(db_path: Path) -> None:
+    existing = [path for path in _sidecar_paths(db_path) if path.exists()]
+    if existing:
+        joined = ", ".join(str(path) for path in existing)
+        raise RuntimeError(f"refusing production cashflow rebuild while SQLite sidecars exist: {joined}")
+
+
+def _is_production_db(db_path: Path) -> bool:
+    return db_path.resolve() == DEFAULT_DB.resolve()
+
+
+def _prepare_cashflow_rebuild_apply_guard(
+    db_path: Path,
+    *,
+    expected_pre_sha256: str | None = None,
+    backup_dir: Path | None = None,
+) -> dict[str, object]:
+    if os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
+        raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
+
+    production_apply = _is_production_db(db_path)
+    metadata: dict[str, object] = {
+        "production_apply": production_apply,
+        "pre_sha256": _sha256_file(db_path),
+    }
+    if not production_apply:
+        return metadata
+
+    if os.environ.get(PROD_WRITE_ENV_GATE) != "1":
+        raise RuntimeError(f"{PROD_WRITE_ENV_GATE}=1 is required for production cashflow rebuild.")
+    if not expected_pre_sha256:
+        raise RuntimeError("--expected-pre-sha256 is required for production cashflow rebuild.")
+    if backup_dir is None:
+        raise RuntimeError("--backup-dir is required for production cashflow rebuild.")
+
+    _fail_on_sqlite_sidecars(db_path)
+    pre_integrity = _sqlite_integrity_check(db_path)
+    if pre_integrity.lower() != "ok":
+        raise RuntimeError(f"production DB integrity_check failed before cashflow rebuild: {pre_integrity}")
+    pre_sha256 = str(metadata["pre_sha256"])
+    if pre_sha256 != expected_pre_sha256:
+        raise RuntimeError(
+            "production DB SHA mismatch before cashflow rebuild: "
+            f"expected {expected_pre_sha256}, observed {pre_sha256}"
+        )
+
+    backup_path = backup_database(db_path, backup_dir, compress=False)
+    backup_integrity = _sqlite_integrity_check(backup_path)
+    if backup_integrity.lower() != "ok":
+        raise RuntimeError(f"cashflow rebuild backup integrity_check failed: {backup_integrity}")
+    metadata.update(
+        {
+            "expected_pre_sha256": expected_pre_sha256,
+            "backup_path": str(backup_path),
+            "backup_sha256": _sha256_file(backup_path),
+            "pre_integrity_check": pre_integrity,
+            "backup_integrity_check": backup_integrity,
+        }
+    )
+    return metadata
 
 
 def _is_cash_account(account: str | None) -> bool:
@@ -580,11 +665,20 @@ def rebuild_cashflow_calendar(
     end_date: date,
     apply: bool,
     run_id: str,
+    *,
+    expected_pre_sha256: str | None = None,
+    backup_dir: Path | None = None,
 ) -> tuple[list[dict], list[dict]]:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
-    if apply and os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
-        raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
+    rebuild_cashflow_calendar.last_apply_metadata = {}
+    apply_metadata: dict[str, object] = {}
+    if apply:
+        apply_metadata = _prepare_cashflow_rebuild_apply_guard(
+            db_path,
+            expected_pre_sha256=expected_pre_sha256,
+            backup_dir=backup_dir,
+        )
 
     fx_rates = get_fx_rates(end_date, db_path=db_path)
     conn = sqlite3.connect(str(db_path))
@@ -716,10 +810,20 @@ def rebuild_cashflow_calendar(
 
         if apply:
             conn.commit()
-
-        return daily_rows, system_events
     finally:
         conn.close()
+
+    if apply_metadata:
+        rebuild_cashflow_calendar.last_apply_metadata = apply_metadata
+    if apply_metadata.get("production_apply"):
+        post_integrity = _sqlite_integrity_check(db_path)
+        if post_integrity.lower() != "ok":
+            raise RuntimeError(f"production DB integrity_check failed after cashflow rebuild: {post_integrity}")
+        apply_metadata["post_sha256"] = _sha256_file(db_path)
+        apply_metadata["post_integrity_check"] = post_integrity
+        rebuild_cashflow_calendar.last_apply_metadata = apply_metadata
+
+    return daily_rows, system_events
 
 
 def _resolve_start_end(conn: sqlite3.Connection) -> tuple[date, date]:
@@ -748,6 +852,8 @@ def main() -> int:
     parser.add_argument("--end-date", type=str, help="End date (YYYY-MM-DD)")
     parser.add_argument("--apply", action="store_true", help="Write derived tables/events (requires ENABLE_CASHFLOW_WRITE=1)")
     parser.add_argument("--run-id", type=str, default=None, help="Run id for audit")
+    parser.add_argument("--expected-pre-sha256", type=str, default=None)
+    parser.add_argument("--backup-dir", type=Path, default=None)
     args = parser.parse_args()
 
     conn = sqlite3.connect(str(args.db))
@@ -762,7 +868,15 @@ def main() -> int:
         conn.close()
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-    daily_rows, system_events = rebuild_cashflow_calendar(args.db, start, end, args.apply, run_id)
+    daily_rows, system_events = rebuild_cashflow_calendar(
+        args.db,
+        start,
+        end,
+        args.apply,
+        run_id,
+        expected_pre_sha256=args.expected_pre_sha256,
+        backup_dir=args.backup_dir,
+    )
     ignored_count, ignored_amount = (0, 0.0)
     with sqlite3.connect(str(args.db)) as conn:
         conn.row_factory = sqlite3.Row
@@ -787,6 +901,13 @@ def main() -> int:
     print(f"  Daily rows computed: {len(daily_rows)}")
     if args.apply:
         print("  APPLY: wrote SYSTEM events + daily table.")
+        metadata = getattr(rebuild_cashflow_calendar, "last_apply_metadata", {})
+        if metadata.get("production_apply"):
+            print(f"  Production pre SHA256: {metadata.get('pre_sha256')}")
+            print(f"  Production post SHA256: {metadata.get('post_sha256')}")
+            print(f"  Production backup path: {metadata.get('backup_path')}")
+            print(f"  Production backup SHA256: {metadata.get('backup_sha256')}")
+            print(f"  Production integrity check: {metadata.get('post_integrity_check')}")
     else:
         print("  DRY RUN: no DB writes.")
 
