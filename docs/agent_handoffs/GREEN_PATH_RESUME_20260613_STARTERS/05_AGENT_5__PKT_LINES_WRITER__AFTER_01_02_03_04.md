@@ -56,7 +56,55 @@ ENABLE_KASPI_ENRICHMENT=1 PYTHONPATH=. .venv/bin/python scripts/enrich_kaspi_ord
 - Repeat the same dry-run/apply sequence for `ACMEWEAR` and `STOREB` only after confirming the dry-run evidence and pre-apply backup for the current store.
 - Apply only through the script's explicit env gate and `--apply`.
 - After any DB write, run `PYTHONPATH=. .venv/bin/python scripts/validate_kaspi_order_sync_freshness.py`.
+- Status-event materialization is part of this lane. After entry backfill and before final validators, run a dry-run and then, if the candidate set is sane and in-scope, apply through the dedicated env gate:
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/materialize_order_status_events_from_kaspi_orders.py \
+  --db db/app.db \
+  --run-id greenpath_pkt_lines_status_20260613_<hhmm> \
+  --backup-dir <lane_evidence_dir>/backups \
+  --json
+```
+
+```bash
+ENABLE_ORDER_STATUS_EVENT_WRITE=1 PYTHONPATH=. .venv/bin/python scripts/materialize_order_status_events_from_kaspi_orders.py \
+  --db db/app.db \
+  --run-id greenpath_pkt_lines_status_20260613_<hhmm> \
+  --backup-dir <lane_evidence_dir>/backups \
+  --apply \
+  --json
+```
+
+- The status materializer writes only `order_status_event` from local evidence and creates a DB backup on apply. Do not use any API state-changing command for status validation.
 - Run the `PKT-LINES` validators named in `03_packets_phase2.md`.
+- Validator command forms to prefer:
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/validate_order_entries_freshness.py \
+  --db db/app.db \
+  --as-of 2026-06-13 \
+  --lookback-days 30 \
+  --stores UNIVERSAL,ACMEWEAR,STOREB \
+  --output-root <lane_evidence_dir>/validators \
+  --strict
+```
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/validate_order_status_audit_history.py \
+  --db db/app.db \
+  --as-of 2026-06-13 \
+  --output-root <lane_evidence_dir>/validators \
+  --strict
+```
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/audit_orders_size_integrity.py \
+  --db db/app.db \
+  --since 2026-05-15 \
+  --until 2026-06-13
+```
+
+- `scripts/validate_kaspi_state_transition.py` requires a transition-events JSON input and is only relevant if this lane performed or generated write-like Kaspi API transition events. If no such transition events exist, do not fabricate them; record `not_applicable_no_api_state_transition_events` in the closeout and explain which commands were DB-only.
 - If a validator writes reports by default, send its output to this lane's evidence folder where possible and list every artifact in the closeout.
 - If historical API throttles/fails, backfill what is safely available, park the remainder with order IDs and exposure, and close `Gate: YELLOW`.
 
