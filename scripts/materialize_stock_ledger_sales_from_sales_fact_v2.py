@@ -218,10 +218,13 @@ def _candidate_events(
         if (source_store_code, order_id) in header_only_quarantined_pairs:
             quarantine_counts["header_only_source_gap_quarantined_order_count"] += 1
             continue
-        if not order_id or not sku_key or not sku_id or not my_size or qty <= 0 or not order_date:
+        emits_stock_event = status in {"DELIVERED", "RETURNED"} or bool(return_flag)
+        if emits_stock_event and (
+            not order_id or not sku_key or not sku_id or not my_size or qty <= 0 or not order_date
+        ):
             errors.append(f"missing required sales evidence for order_id={order_id or '<blank>'} sku_id={sku_id or '<blank>'}")
             continue
-        if status in {"DELIVERED", "RETURNED"} or return_flag:
+        if emits_stock_event:
             events.append(
                 {
                     "event_date": order_date,

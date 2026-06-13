@@ -45,6 +45,7 @@ def _create_sales_rebuild_db(path: Path) -> sqlite3.Connection:
             order_id TEXT,
             store_code TEXT,
             offer_id TEXT,
+            raw_json TEXT,
             quantity REAL,
             total_price_kzt REAL
         )
@@ -182,6 +183,61 @@ def test_rebuild_delete_scope_stays_inside_requested_window(tmp_path: Path) -> N
     assert plan["rows_delete_keys"] == []
 
 
+def test_strict_rebuild_skips_identityless_duplicate_archive_header(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _create_sales_rebuild_db(db_path)
+    conn.executemany(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, kaspi_offer_name, sku_key, sku_id, my_size,
+            quantity, unit_price_kzt, delivery_cost, status_updated_at, internal_status, kaspi_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "DUP-ARCHIVE-1",
+                "STOREB",
+                "nan",
+                "",
+                "",
+                "",
+                1,
+                2800,
+                0,
+                "2026-05-10T02:02:11",
+                "COMPLETED",
+                "ARCHIVE",
+            ),
+            (
+                "DUP-ARCHIVE-1",
+                "STOREB",
+                "Рашгард 30203092_627506878 черный 46",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_L",
+                "L",
+                1,
+                2800,
+                0,
+                "",
+                "ACCEPTED",
+                "KASPI_DELIVERY",
+            ),
+        ],
+    )
+
+    rows, summary = build_sales_fact_v2_rows_from_entries(
+        conn,
+        as_of=date(2026, 5, 31),
+        start_date=date(2026, 5, 5),
+        strict=True,
+    )
+
+    assert summary["skipped_identityless_duplicate_headers"] == 1
+    assert len(rows) == 1
+    assert rows[0]["order_id"] == "DUP-ARCHIVE-1"
+    assert rows[0]["sku_id"] == "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_L"
+
+
 def test_entry_rebuild_upgrades_weak_article_map_with_entry_size_identity(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     conn = _create_sales_rebuild_db(db_path)
@@ -218,6 +274,96 @@ def test_entry_rebuild_upgrades_weak_article_map_with_entry_size_identity(tmp_pa
 
     assert rows[0]["sku_id"] == "CL_TEST_WEAK_L"
     assert rows[0]["my_size"] == "L"
+
+
+def test_entry_rebuild_uses_raw_json_offer_code_when_flat_offer_id_blank(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _create_sales_rebuild_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO dim_kaspi_article_map
+            (store_code, kaspi_article, kaspi_offer_name, sku_key, sku_id, active_flag)
+        VALUES ('ACMEWEAR', 'CL_RAW_TEST_BLACK_L_123456', '', 'CL_RAW_TEST_BLACK', 'CL_RAW_TEST_BLACK_L', 1)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, kaspi_offer_name, sku_key, sku_id, my_size,
+            quantity, unit_price_kzt, delivery_cost, status_updated_at, internal_status
+        ) VALUES ('RAW-1', 'ACMEWEAR', '', '', '', '',
+                  1, 15000, 0, '2026-06-10T12:00:00', 'COMPLETED')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_order_entries_kaspi
+            (entry_id, order_id, store_code, offer_id, raw_json, quantity, total_price_kzt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "entry-raw",
+            "RAW-1",
+            "ACMEWEAR",
+            "",
+            json.dumps({"attributes": {"offer": {"code": "CL_RAW_TEST_BLACK_L_123456", "name": "Raw Test L"}}}),
+            1,
+            15000,
+        ),
+    )
+
+    rows, summary = build_sales_fact_v2_rows_from_entries(
+        conn,
+        as_of=date(2026, 6, 13),
+        start_date=date(2026, 6, 1),
+        strict=True,
+    )
+
+    assert summary["errors_count"] == 0
+    assert len(rows) == 1
+    assert rows[0]["sku_key"] == "CL_RAW_TEST_BLACK"
+    assert rows[0]["sku_id"] == "CL_RAW_TEST_BLACK_L"
+    assert rows[0]["kaspi_offer_name"] == "CL_RAW_TEST_BLACK_L_123456"
+
+
+def test_entry_rebuild_skips_cancelled_unmapped_entry_without_relaxing_sales(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _create_sales_rebuild_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, kaspi_offer_name, sku_key, sku_id, my_size,
+            quantity, unit_price_kzt, delivery_cost, status_updated_at, internal_status
+        ) VALUES ('CANCEL-UNMAPPED-1', 'STOREB', '', '', '', '',
+                  1, 9499, 0, '2026-06-10T12:00:00', 'CANCELLED')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_order_entries_kaspi
+            (entry_id, order_id, store_code, offer_id, raw_json, quantity, total_price_kzt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "entry-cancel-unmapped",
+            "CANCEL-UNMAPPED-1",
+            "STOREB",
+            "",
+            json.dumps({"attributes": {"offer": {"code": "116515378_626543467", "name": "Ambiguous"}}}),
+            1,
+            9499,
+        ),
+    )
+
+    rows, summary = build_sales_fact_v2_rows_from_entries(
+        conn,
+        as_of=date(2026, 6, 13),
+        start_date=date(2026, 6, 1),
+        strict=True,
+    )
+
+    assert rows == []
+    assert summary["errors_count"] == 0
 
 
 def test_strict_rebuild_fails_when_completed_header_lacks_sku_identity(tmp_path: Path) -> None:

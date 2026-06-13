@@ -138,6 +138,27 @@ def _load_offer_map(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple[str
     return mapping
 
 
+def _extract_entry_offer_from_raw_json(raw_json: Any) -> tuple[str, str]:
+    """Return offer code/name preserved in the raw Kaspi order-entry payload."""
+    if not raw_json:
+        return "", ""
+    try:
+        payload = json.loads(str(raw_json))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "", ""
+    if not isinstance(payload, dict):
+        return "", ""
+    attributes = payload.get("attributes")
+    if not isinstance(attributes, dict):
+        return "", ""
+    offer = attributes.get("offer")
+    if not isinstance(offer, dict):
+        return "", ""
+    code = str(offer.get("code") or "").strip().upper()
+    name = str(offer.get("name") or "").strip()
+    return code, name
+
+
 def build_sales_fact_v2_rows_from_entries(
     conn: sqlite3.Connection,
     *,
@@ -154,12 +175,30 @@ def build_sales_fact_v2_rows_from_entries(
     entry_cols = _table_columns(conn, "fact_order_entries_kaspi")
     if "offer_id" not in entry_cols:
         raise RebuildError("fact_order_entries_kaspi missing offer_id")
+    raw_json_sql = (
+        "COALESCE(raw_json, '') AS raw_json,"
+        if "raw_json" in entry_cols
+        else "'' AS raw_json,"
+    )
 
     assigned_size_sql = (
         "COALESCE(assigned_size, '') AS assigned_size,"
         if "assigned_size" in order_cols
         else "'' AS assigned_size,"
     )
+    unit_price_sql = (
+        "COALESCE(unit_price_kzt, 0) AS unit_price_kzt,"
+        if "unit_price_kzt" in order_cols
+        else "0 AS unit_price_kzt,"
+    )
+    if "delivery_cost_for_seller" in order_cols and "delivery_cost" in order_cols:
+        delivery_fee_sql = "COALESCE(delivery_cost_for_seller, delivery_cost, 0) AS delivery_fee,"
+    elif "delivery_cost_for_seller" in order_cols:
+        delivery_fee_sql = "COALESCE(delivery_cost_for_seller, 0) AS delivery_fee,"
+    elif "delivery_cost" in order_cols:
+        delivery_fee_sql = "COALESCE(delivery_cost, 0) AS delivery_fee,"
+    else:
+        delivery_fee_sql = "0 AS delivery_fee,"
     orders = conn.execute(
         """
         SELECT
@@ -173,8 +212,10 @@ def build_sales_fact_v2_rows_from_entries(
         + """
             COALESCE(my_size, '') AS my_size,
             COALESCE(quantity, 1) AS quantity,
-            COALESCE(unit_price_kzt, 0) AS unit_price_kzt,
-            COALESCE(delivery_cost_for_seller, delivery_cost, 0) AS delivery_fee,
+            """
+        + unit_price_sql
+        + delivery_fee_sql
+        + """
             COALESCE(status_updated_at, '') AS status_updated_at,
             COALESCE(actual_shipment_date, '') AS actual_shipment_date,
             COALESCE(planned_shipment_date, '') AS planned_shipment_date,
@@ -221,15 +262,50 @@ def build_sales_fact_v2_rows_from_entries(
             order_id,
             UPPER(COALESCE(store_code, '')) AS store_code,
             UPPER(COALESCE(offer_id, '')) AS offer_id,
-            SUM(COALESCE(quantity, 0)) AS quantity,
-            SUM(COALESCE(total_price_kzt, 0)) AS total_price_kzt
+            """
+        + raw_json_sql
+        + """
+            COALESCE(quantity, 0) AS quantity,
+            COALESCE(total_price_kzt, 0) AS total_price_kzt
         FROM fact_order_entries_kaspi
-        GROUP BY order_id, UPPER(COALESCE(store_code, '')), UPPER(COALESCE(offer_id, ''))
         """
     ).fetchall()
+    entry_groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for order_id, store_code, offer_id, raw_json, qty, total in entries:
+        offer_norm = str(offer_id or "").strip().upper()
+        raw_offer_code, raw_offer_name = _extract_entry_offer_from_raw_json(raw_json)
+        if not offer_norm and raw_offer_code:
+            offer_norm = raw_offer_code
+        key = (str(order_id), str(store_code), offer_norm)
+        grouped = entry_groups.setdefault(
+            key,
+            {
+                "order_id": str(order_id),
+                "store_code": str(store_code),
+                "offer_id": offer_norm,
+                "quantity": 0.0,
+                "total_price_kzt": 0.0,
+                "raw_offer_name": raw_offer_name,
+            },
+        )
+        grouped["quantity"] += float(qty or 0.0)
+        grouped["total_price_kzt"] += float(total or 0.0)
+        if raw_offer_name and not grouped.get("raw_offer_name"):
+            grouped["raw_offer_name"] = raw_offer_name
+    entries = [
+        (
+            row["order_id"],
+            row["store_code"],
+            row["offer_id"],
+            row["quantity"],
+            row["total_price_kzt"],
+            row.get("raw_offer_name") or "",
+        )
+        for row in entry_groups.values()
+    ]
 
     totals_by_order: dict[tuple[str, str], float] = {}
-    for order_id, store_code, _offer_id, _qty, total in entries:
+    for order_id, store_code, _offer_id, _qty, total, _raw_offer_name in entries:
         key = (str(order_id), str(store_code))
         totals_by_order[key] = totals_by_order.get(key, 0.0) + float(total or 0.0)
 
@@ -239,7 +315,7 @@ def build_sales_fact_v2_rows_from_entries(
     rows_built_from_entries = 0
     rows_built_from_headers = 0
 
-    for order_id, store_code, offer_id, qty, total in entries:
+    for order_id, store_code, offer_id, qty, total, raw_offer_name in entries:
         pair = (str(order_id), str(store_code))
         order_rows = list(order_by_pair.get(pair, []))
         if not order_rows:
@@ -331,7 +407,7 @@ def build_sales_fact_v2_rows_from_entries(
                 my_size = parsed_size
 
         if not sku_key:
-            if strict:
+            if strict and status != "CANCELLED":
                 errors.append(
                     f"missing sku mapping for order_id={order_id} store={store_code} offer_id={offer_norm}"
                 )
@@ -372,7 +448,7 @@ def build_sales_fact_v2_rows_from_entries(
         delivery_fee = delivery_fee_total * (gross / order_total) if order_total > 0 else delivery_fee_total
         net_rev = gross - delivery_fee
 
-        offer_name = offer_norm or sku_key
+        offer_name = offer_norm or str(raw_offer_name or "").strip() or sku_key
         rows.append(
             {
                 "order_id": str(order_id),
@@ -398,13 +474,40 @@ def build_sales_fact_v2_rows_from_entries(
         rows_built_from_entries += 1
 
     entry_pairs = {(str(row[0]), str(row[1])) for row in entries}
+    entry_order_ids = {str(row[0]) for row in entries}
+    specific_header_order_ids = {
+        str(header.get("order_id") or "").strip()
+        for header in order_payloads
+        if str(header.get("store_code") or "").strip().upper() not in {"", "UNKNOWN"}
+    }
+    identity_header_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    for header in order_payloads:
+        order_id = str(header.get("order_id") or "").strip()
+        store_code = str(header.get("store_code") or "").strip().upper()
+        sku_key = str(header.get("sku_key") or "").strip().upper()
+        sku_id = str(header.get("sku_id") or "").strip().upper()
+        offer_name = str(header.get("kaspi_offer_name") or "").strip().lower()
+        if (
+            order_id
+            and store_code
+            and sku_key
+            and sku_id
+            and offer_name not in {"", "nan", "none", "null"}
+        ):
+            identity_header_by_pair.setdefault((order_id, store_code), header)
+
     seen_header_keys: set[tuple[str, str, str, str]] = set()
+    skipped_identityless_duplicate_headers = 0
     for header in order_payloads:
         order_id = str(header.get("order_id") or "").strip()
         store_code = str(header.get("store_code") or "").strip().upper()
         if not order_id or not store_code:
             continue
         if (order_id, store_code) in entry_pairs:
+            continue
+        if store_code in {"", "UNKNOWN"} and (
+            order_id in entry_order_ids or order_id in specific_header_order_ids
+        ):
             continue
 
         status = _normalize_status(header.get("internal_status", ""), header.get("kaspi_status", ""))
@@ -425,6 +528,22 @@ def build_sales_fact_v2_rows_from_entries(
         sku_key = str(header.get("sku_key") or "").strip().upper()
         sku_id = str(header.get("sku_id") or "").strip().upper()
         my_size = str(header.get("assigned_size") or header.get("my_size") or "").strip().upper()
+        offer_name_raw = str(header.get("kaspi_offer_name") or "").strip()
+        identity_header = identity_header_by_pair.get((order_id, store_code))
+        if (
+            not sku_key
+            and not sku_id
+            and identity_header is not None
+            and offer_name_raw.lower() in {"", "nan", "none", "null"}
+        ):
+            skipped_identityless_duplicate_headers += 1
+            sku_key = str(identity_header.get("sku_key") or "").strip().upper()
+            sku_id = str(identity_header.get("sku_id") or "").strip().upper()
+            my_size = str(
+                identity_header.get("assigned_size") or identity_header.get("my_size") or ""
+            ).strip().upper()
+            offer_name_raw = str(identity_header.get("kaspi_offer_name") or "").strip()
+
         if not my_size and sku_key and sku_id.startswith(f"{sku_key}_"):
             my_size = sku_id[len(sku_key) + 1 :]
         if my_size and sku_key and (not sku_id or sku_id == sku_key):
@@ -432,6 +551,11 @@ def build_sales_fact_v2_rows_from_entries(
 
         quantity = float(header.get("quantity") or 0.0)
         sell_price = float(header.get("unit_price_kzt") or 0.0)
+        if identity_header is not None:
+            if quantity <= 0:
+                quantity = float(identity_header.get("quantity") or 0.0)
+            if sell_price <= 0:
+                sell_price = float(identity_header.get("unit_price_kzt") or 0.0)
         missing_fields = []
         if not sku_key or not sku_id:
             missing_fields.append("sku_identity")
@@ -454,7 +578,7 @@ def build_sales_fact_v2_rows_from_entries(
             continue
         gross = sell_price * qty_int
         delivery_fee = float(header.get("delivery_fee") or 0.0)
-        kaspi_offer_name = str(header.get("kaspi_offer_name") or sku_key).strip() or sku_key
+        kaspi_offer_name = offer_name_raw if offer_name_raw.lower() not in {"", "nan", "none", "null"} else sku_key
         key = (order_id, sku_id, store_code, kaspi_offer_name)
         if key in seen_header_keys:
             continue
@@ -503,6 +627,7 @@ def build_sales_fact_v2_rows_from_entries(
         "errors_count": len(errors),
         "errors_sample": errors[:50],
         "skipped_open": skipped_open,
+        "skipped_identityless_duplicate_headers": skipped_identityless_duplicate_headers,
     }
     return rows, summary
 

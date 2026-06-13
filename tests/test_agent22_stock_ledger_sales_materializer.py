@@ -217,6 +217,44 @@ def test_stock_ledger_sales_materializer_only_activates_qc_accepted_returns(
     )
 
 
+def test_stock_ledger_sales_materializer_skips_cancelled_rows_without_stock_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _create_stock_materializer_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO sales_fact_v2 (
+                order_id, order_date, sku_key, sku_id, my_size, kaspi_offer_name, store_code,
+                quantity, sell_price_kzt, status, return_flag, return_date, source_file
+            ) VALUES ('CANCEL-NOSIZE', '2026-04-23', 'SKU_CANCEL', 'SKU_CANCEL', '', 'Cancelled',
+                      'STOREB', 1, 12000, 'CANCELLED', 0, NULL,
+                      'KASPI_API_ENTRIES_REBUILD')
+            """
+        )
+        conn.commit()
+
+    monkeypatch.setenv("ENABLE_STOCK_LEDGER_SALES_REPLAY_WRITE", "1")
+    applied = run_materialization(
+        db_path=db_path,
+        start_date=date(2026, 4, 16),
+        end_date=date(2026, 5, 4),
+        output_root=tmp_path / "apply_cancelled",
+        apply=True,
+    )
+
+    assert applied["errors_count"] == 0
+    assert applied["rows_applied"] == 2
+    with sqlite3.connect(db_path) as conn:
+        leaked = conn.execute(
+            "SELECT COUNT(*) FROM stock_ledger WHERE reference_id='CANCEL-NOSIZE'"
+        ).fetchone()[0]
+
+    assert leaked == 0
+
+
 def test_stock_ledger_sales_materializer_skips_product_identity_quarantine(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
