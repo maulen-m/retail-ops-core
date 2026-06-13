@@ -5,3 +5,8 @@ quarantines:
     store_code: "ACMEWEAR"
     sku_key: "CL_NEW-CLO2_MEN_HUS_GREEN"
     reason: "missing_external_marketing_source_evidence_after_fresh_jan_feb_refresh"
+  - order_id: "956184861"
+    sale_date: "2026-06-13"
+    store_code: "ACMEWEAR"
+    sku_key: "LINE-31-TS"
+    reason: "missing_external_marketing_source_evidence_after_fresh_2026_06_13_acmewear_refresh"

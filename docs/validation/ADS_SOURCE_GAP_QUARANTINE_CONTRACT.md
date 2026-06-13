@@ -21,6 +21,12 @@
 - `sku_key=CL_NEW-CLO2_MEN_HUS_GREEN`
 - reason: refreshed Jan-Feb 2026 marketing source has no HUS evidence in `campaign_product_daily_current` or `campaign_product_daily_history`
 
+- `order_id=956184861`
+- `sale_date=2026-06-13`
+- `store_code=ACMEWEAR`
+- `sku_key=LINE-31-TS`
+- reason: refreshed 2026-06-13 ACMEWEAR marketing source run `agent12-ads-source-acmewear-2026-06-13` has exact campaign-product rows for the store/day, no fake zero spend, and no `LINE-31-TS` source row
+
 ## Evidence Standard
 - The source refresh for the relevant period/store must be fresh and successful.
 - Recovery attempts must show no matching source evidence.

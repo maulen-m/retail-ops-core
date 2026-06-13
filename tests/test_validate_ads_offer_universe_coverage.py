@@ -714,3 +714,27 @@ def test_validate_ads_offer_universe_coverage_does_not_quarantine_partial_match(
             gap_quarantine_config=quarantine,
             output_dir=tmp_path / "out",
         )
+
+
+def test_repo_ads_gap_quarantine_config_is_exact_and_narrow() -> None:
+    rules = ads_mod._load_gap_quarantine_rules(
+        ads_mod.DEFAULT_ADS_SOURCE_GAP_QUARANTINE_CONFIG
+    )
+    required_columns = ["order_id", "sale_date", "store_code", "sku_key", "reason"]
+
+    assert list(rules.columns) == required_columns
+    assert not rules.empty
+    assert not rules[required_columns].eq("").any().any()
+    assert not rules[["order_id", "sale_date", "store_code", "sku_key"]].duplicated().any()
+    assert not rules[["order_id", "sale_date", "store_code", "sku_key"]].isin(
+        ["*", "ALL", "ANY"]
+    ).any().any()
+    assert (
+        (
+            (rules["order_id"] == "956184861")
+            & (rules["sale_date"] == "2026-06-13")
+            & (rules["store_code"] == "ACMEWEAR")
+            & (rules["sku_key"] == "LINE-31-TS")
+        )
+        .any()
+    )
