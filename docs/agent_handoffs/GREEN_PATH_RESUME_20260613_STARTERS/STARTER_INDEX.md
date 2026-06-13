@@ -39,4 +39,10 @@ Prep wave roles:
 - Agent 9: Kaspi-only `PKT-ADS` apply readiness.
 - Agent 10: `PKT-PROFIT`, `PKT-QUAR`, and `PKT-RETURNS` readiness.
 
+Prepared downstream write lanes, not auto-launched:
+
+- Agent 11: `PKT-RESID` scoped writer after Agent 5 and Agent 7 review.
+- Agent 12: `PKT-FX` writer hardener after Agent 5 and Agent 6 review. This is code/test hardening only, not production FX apply.
+
 Do not auto-advance to Agent 5 without closeout review.
+Do not launch Agents 11 or 12 while Agent 5 holds the DB/repo write lease.
