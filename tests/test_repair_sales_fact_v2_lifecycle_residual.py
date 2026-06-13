@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+import hashlib
 from pathlib import Path
 
+import scripts.repair_sales_fact_v2_lifecycle_residual_from_status_evidence as lifecycle_repair
 from scripts.repair_sales_fact_v2_lifecycle_residual_from_status_evidence import (
     build_lifecycle_repair_plan,
     repair_sales_fact_v2_lifecycle_residual,
@@ -48,6 +50,14 @@ def _connect(path: Path) -> sqlite3.Connection:
         """
     )
     return conn
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _seed_sale(
@@ -148,3 +158,83 @@ def test_lifecycle_repair_ledgers_store_conflicts_without_synthesizing_completio
     assert plan.summary["store_conflict_count"] == 1
     assert plan.conflict_rows[0]["same_store_stage_code"] == "CANCELLED"
     assert plan.conflict_rows[0]["other_store_completed_stage_count"] == 1
+
+
+def test_production_lifecycle_repair_requires_expected_sha_and_backup_dir(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _connect(db_path)
+    _seed_sale(conn, order_id="O_RETURN", stage_code="RETURNED")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(lifecycle_repair, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setenv("ALLOW_PRODUCTION_SALES_FACT_V2_LIFECYCLE_REPAIR", "1")
+
+    try:
+        repair_sales_fact_v2_lifecycle_residual(
+            db_path=db_path,
+            as_of="2026-05-03",
+            run_id="test-run",
+            output_root=tmp_path / "missing_sha",
+            apply=True,
+            env_gate_value="1",
+            backup_dir=tmp_path / "backups",
+        )
+    except RuntimeError as exc:
+        assert "expected-pre-sha256" in str(exc)
+    else:
+        raise AssertionError("production lifecycle repair should require expected SHA")
+
+    try:
+        repair_sales_fact_v2_lifecycle_residual(
+            db_path=db_path,
+            as_of="2026-05-03",
+            run_id="test-run",
+            output_root=tmp_path / "missing_backup",
+            apply=True,
+            env_gate_value="1",
+            expected_pre_sha256=_sha256(db_path),
+        )
+    except RuntimeError as exc:
+        assert "backup-dir" in str(exc)
+    else:
+        raise AssertionError("production lifecycle repair should require backup dir")
+
+
+def test_production_lifecycle_repair_records_backup_and_integrity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _connect(db_path)
+    _seed_sale(conn, order_id="O_RETURN", stage_code="RETURNED")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(lifecycle_repair, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setenv("ALLOW_PRODUCTION_SALES_FACT_V2_LIFECYCLE_REPAIR", "1")
+    pre_sha = _sha256(db_path)
+
+    result = repair_sales_fact_v2_lifecycle_residual(
+        db_path=db_path,
+        as_of="2026-05-03",
+        run_id="test-run",
+        output_root=tmp_path / "evidence",
+        apply=True,
+        env_gate_value="1",
+        expected_pre_sha256=pre_sha,
+        backup_dir=tmp_path / "backups",
+    )
+
+    assert result["summary"]["applied_count"] == 1
+    assert result["production_apply"] is True
+    assert result["production_db_modified"] is True
+    assert result["expected_pre_sha256"] == pre_sha
+    assert result["pre_sha256"] == pre_sha
+    assert result["post_sha256"] != pre_sha
+    assert Path(result["backup_path"]).exists()
+    assert len(result["backup_sha256"]) == 64
+    assert result["integrity_check"] == {"before": "ok", "backup": "ok", "after": "ok"}
