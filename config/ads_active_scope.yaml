@@ -5,15 +5,26 @@ stores:
   STOREB:
     windows:
       - start: "2026-03-08"
+        end: "2026-05-20"
         active: true
         coverage_mode: advertised_products_only
-        reason: "operator_active_current"
+        reason: "operator_active_until_manual_stop_day"
+      - start: "2026-05-21"
+        active: false
+        coverage_mode: advertised_products_only
+        reason: "owner_manual_storeb_ads_campaign_stop_2026-05-20T09:46:41+05"
+        source_event: "docs/marketing/STOREB_ADS_CAMPAIGN_MANUAL_STOP_20260520_094641.md"
   ACMEWEAR:
     windows:
       - start: "2025-01-01"
+        end: "2026-05-04"
         active: true
         coverage_mode: all_sold_skus
-        reason: "historical_source_present"
+        reason: "historical_full_sold_sku_source_present_through_2026-05-04"
+      - start: "2026-05-05"
+        active: true
+        coverage_mode: advertised_products_only
+        reason: "post_2026-05-04_exact_campaign_product_source_only"
   UNIVERSAL:
     windows:
       - start: "2026-02-22"

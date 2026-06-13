@@ -729,12 +729,79 @@ def _load_acmewear_sku_daily_classification_rows(
     return rows_out
 
 
+def _load_campaign_daily_refresh_only_rows(
+    conn: sqlite3.Connection,
+    path: Path,
+    *,
+    start: str,
+    end: str,
+    stores: set[str],
+    meta: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows_out: list[dict[str, Any]] = []
+    for table in ("campaign_daily_current", "campaign_daily_history"):
+        if not _table_exists(conn, table):
+            continue
+        cols = _columns(conn, table)
+        if "date" not in cols:
+            continue
+        select_cols = _select_existing_columns(
+            conn,
+            table,
+            ["date", "merchant_id", "store_code", "campaign_id", "cost", "record_timestamp", "ingested_at"],
+        )
+        if "date" not in select_cols:
+            continue
+        rows = conn.execute(
+            f"""
+            SELECT {", ".join(select_cols)}
+            FROM {table}
+            WHERE date(date) >= date(?) AND date(date) <= date(?)
+            ORDER BY date
+            """,
+            (start, end),
+        ).fetchall()
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        for raw in rows:
+            row = dict(raw)
+            date_key = _date_key(row.get("date"))
+            business_store = _normalize_store(row.get("store_code"), row.get("merchant_id"))
+            if not date_key or business_store not in stores or not is_store_active_on(business_store, date_key):
+                continue
+            key = (business_store, date_key)
+            current = grouped.setdefault(
+                key,
+                {
+                    "date": date_key,
+                    "business_store_code": business_store,
+                    "merchant_id": str(row.get("merchant_id") or ""),
+                    "source_table": table,
+                    "refresh_only": True,
+                    "refresh_row_count": 0,
+                    "campaign_ids": set(),
+                    "cost_sum": 0.0,
+                    **meta,
+                },
+            )
+            current["refresh_row_count"] += 1
+            if row.get("campaign_id"):
+                current["campaign_ids"].add(str(row["campaign_id"]))
+            current["cost_sum"] = round(float(current["cost_sum"]) + _to_float(row.get("cost")), 6)
+        for item in grouped.values():
+            item["campaign_ids_json"] = json.dumps(sorted(item.pop("campaign_ids")), sort_keys=True)
+            rows_out.append(item)
+        if rows_out:
+            break
+    return rows_out
+
+
 def _source_rows_from_db(
     path: Path,
     *,
     start: str,
     end: str,
     stores: set[str],
+    allow_campaign_daily_refresh_only: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows_out: list[dict[str, Any]] = []
     unmapped_source: list[dict[str, Any]] = []
@@ -782,6 +849,18 @@ def _source_rows_from_db(
                     meta=meta,
                 )
             )
+        if allow_campaign_daily_refresh_only:
+            refresh_only = _load_campaign_daily_refresh_only_rows(
+                conn,
+                path,
+                start=start,
+                end=end,
+                stores=stores,
+                meta=meta,
+            )
+            if refresh_only:
+                source_tables_seen = True
+                rows_out.extend(refresh_only)
         if not source_tables_seen:
             return rows_out, [{"source_path": str(path), "reason": "SOURCE_TABLE_MISSING"}]
     return rows_out, unmapped_source
@@ -1195,6 +1274,7 @@ def _build_plan(
     start: str,
     end: str,
     owner_product_code_map_path: Path | None,
+    allow_campaign_daily_refresh_only: bool,
 ) -> dict[str, Any]:
     with _connect(app_db) as app:
         article_map = _load_article_map(app)
@@ -1211,7 +1291,13 @@ def _build_plan(
     source_issues: list[dict[str, Any]] = []
     aggregate_windows: list[dict[str, Any]] = []
     for source_db in source_dbs:
-        rows, issues = _source_rows_from_db(source_db, start=start, end=end, stores=store_set)
+        rows, issues = _source_rows_from_db(
+            source_db,
+            start=start,
+            end=end,
+            stores=store_set,
+            allow_campaign_daily_refresh_only=allow_campaign_daily_refresh_only,
+        )
         source_rows.extend(rows)
         source_issues.extend(issues)
         aggregate_windows.extend(
@@ -1228,7 +1314,18 @@ def _build_plan(
     mapped_source_rows: list[dict[str, Any]] = []
     unmapped_rows: list[dict[str, Any]] = []
     refresh_key_counts: dict[tuple[str, str], int] = {}
+    refresh_only_rows = 0
     for row in source_rows:
+        if row.get("refresh_only"):
+            business_store = str(row["business_store_code"])
+            date_key = str(row.get("date") or "")[:10]
+            if business_store and date_key:
+                refresh_key_counts[(business_store, date_key)] = (
+                    refresh_key_counts.get((business_store, date_key), 0)
+                    + _to_int(row.get("refresh_row_count"))
+                )
+                refresh_only_rows += 1
+            continue
         sku_key = _resolve_sku_key(row, article_map)
         business_store = row["business_store_code"]
         date_key = str(row.get("date") or "")[:10]
@@ -1327,6 +1424,7 @@ def _build_plan(
     )
     summary = {
         "source_rows": len(source_rows),
+        "refresh_only_rows": refresh_only_rows,
         "mapped_rows": len(mapped_rows),
         "mapped_source_rows": len(mapped_source_rows),
         "unmapped_rows": len(unmapped_rows),
@@ -1435,6 +1533,7 @@ def materialize_ads_campaign_product_daily(
     apply: bool = False,
     env_gate_value: str | None = None,
     owner_product_code_map_path: Path | None = None,
+    allow_campaign_daily_refresh_only: bool = False,
 ) -> dict[str, Any]:
     backup_path: Path | None = None
     if apply:
@@ -1449,6 +1548,7 @@ def materialize_ads_campaign_product_daily(
         start=start,
         end=end,
         owner_product_code_map_path=owner_product_code_map_path,
+        allow_campaign_daily_refresh_only=allow_campaign_daily_refresh_only,
     )
     if apply:
         with _connect(app_db) as conn:
@@ -1490,6 +1590,11 @@ def main() -> int:
     parser.add_argument("--end", required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--owner-product-code-map-csv", type=Path, default=None)
+    parser.add_argument(
+        "--allow-campaign-daily-refresh-only",
+        action="store_true",
+        help="Allow campaign_daily_current/history rows to create refresh coverage only.",
+    )
     parser.add_argument("--report-path", type=Path, default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -1508,6 +1613,7 @@ def main() -> int:
             output_root=args.output_root,
             apply=args.apply,
             owner_product_code_map_path=args.owner_product_code_map_csv,
+            allow_campaign_daily_refresh_only=args.allow_campaign_daily_refresh_only,
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -308,6 +308,28 @@ def _storeb_campaign_list_only_db(path: Path) -> None:
     conn.close()
 
 
+def _storeb_campaign_daily_refresh_only_db(path: Path) -> None:
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE campaign_daily_current (
+            date TEXT,
+            merchant_id TEXT,
+            store_code TEXT,
+            campaign_id TEXT,
+            campaign_name TEXT,
+            cost REAL
+        );
+        INSERT INTO campaign_daily_current VALUES (
+            '2026-05-15', '1065684', 'STOREB',
+            '2609342', 'Line52_storeb_26.2.2026', 1107.63
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
 def _storeb_live_chrome_product_report_db(path: Path) -> None:
     conn = sqlite3.connect(str(path))
     conn.executescript(
@@ -704,6 +726,50 @@ def test_ads_materializer_keeps_storeb_campaign_list_only_evidence_blocked(tmp_p
     assert result["summary"]["aggregate_no_spend_rows"] == 0
     assert product_count == 0
     assert refresh_count == 0
+
+
+def test_ads_materializer_imports_campaign_daily_refresh_only_when_explicitly_allowed(
+    tmp_path: Path,
+) -> None:
+    app_db = tmp_path / "app.db"
+    evidence_db = tmp_path / "storeb_campaign_daily.sqlite"
+    _app_db(app_db)
+    _storeb_campaign_daily_refresh_only_db(evidence_db)
+
+    result = materialize_ads_campaign_product_daily(
+        app_db=app_db,
+        source_dbs=[evidence_db],
+        child_registry=None,
+        stores=["STOREB"],
+        start="2026-05-15",
+        end="2026-05-15",
+        output_root=tmp_path / "evidence",
+        apply=True,
+        env_gate_value="1",
+        allow_campaign_daily_refresh_only=True,
+    )
+
+    conn = sqlite3.connect(str(app_db))
+    product_count = conn.execute("SELECT COUNT(*) FROM ads_campaign_product_daily").fetchone()[0]
+    refresh = conn.execute(
+        """
+        SELECT run_id, store_code, date_start, date_end, product_rows_total, status
+        FROM ads_source_refresh_runs
+        """
+    ).fetchone()
+    conn.close()
+
+    assert result["summary"]["refresh_only_rows"] == 1
+    assert result["summary"]["mapped_rows"] == 0
+    assert product_count == 0
+    assert refresh == (
+        "agent12-ads-source-storeb-2026-05-15",
+        "STOREB",
+        "2026-05-15",
+        "2026-05-15",
+        1,
+        "SUCCESS",
+    )
 
 
 def test_ads_materializer_reads_live_chrome_rows_with_stable_product_code_mapping(tmp_path: Path) -> None:

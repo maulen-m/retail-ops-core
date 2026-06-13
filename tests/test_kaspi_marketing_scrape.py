@@ -21,6 +21,7 @@ from scripts.kaspi_marketing_scrape import (
     login_required,
     should_skip_inactive,
     record_ads_source_refresh_run,
+    update_bookkeeper_sheets,
 )
 
 
@@ -214,6 +215,30 @@ def test_maybe_pause_after_login_calls_sleep() -> None:
     assert calls["seconds"] == [2.5]
 
     assert maybe_pause_after_login(0, sleep_fn=fake_sleep) is False
+
+
+def test_update_bookkeeper_sheets_can_skip_xlsx_writes(monkeypatch, tmp_path: Path) -> None:
+    calls = {"count": 0}
+
+    def fail_if_called(*args, **kwargs) -> None:
+        calls["count"] += 1
+        raise AssertionError("bookkeeper writer should not run")
+
+    monkeypatch.setattr("scripts.kaspi_marketing_scrape.update_bookkeeper", fail_if_called)
+    run_log = {"notes": []}
+
+    updated = update_bookkeeper_sheets(
+        bookkeeper=tmp_path / "bookkeeper.xlsx",
+        campaign_daily_rows=[{"date": "2026-05-19", "merchant_id": "1065684", "campaign_id": "2609342"}],
+        product_rows=[{"date": "2026-05-19", "merchant_id": "1065684", "campaign_id": "2609342", "sku_key": "x"}],
+        anomalies=[],
+        skip_bookkeeper=True,
+        run_log=run_log,
+    )
+
+    assert updated is False
+    assert calls["count"] == 0
+    assert "bookkeeper_update_skipped" in run_log["notes"]
 
 
 def test_wait_for_login_times_out() -> None:

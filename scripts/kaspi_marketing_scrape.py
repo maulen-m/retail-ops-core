@@ -1158,6 +1158,48 @@ def update_bookkeeper(
         raise RuntimeError(f"Bookkeeper sheet missing after write: {sheet_name}")
 
 
+def update_bookkeeper_sheets(
+    *,
+    bookkeeper: Path,
+    campaign_daily_rows: list[dict[str, Any]],
+    product_rows: list[dict[str, Any]],
+    anomalies: list[dict[str, Any]],
+    skip_bookkeeper: bool,
+    run_log: dict[str, Any],
+) -> bool:
+    if skip_bookkeeper:
+        run_log["notes"].append("bookkeeper_update_skipped")
+        return False
+
+    backup_dir = bookkeeper.parent / "backups"
+    update_bookkeeper(
+        bookkeeper,
+        "campaign_daily",
+        [
+            {k: v for k, v in row.items() if k not in {"run_id"}}
+            for row in campaign_daily_rows
+        ],
+        ["date", "merchant_id", "campaign_id"],
+        "cost",
+        anomalies,
+        backup_dir,
+    )
+    update_bookkeeper(
+        bookkeeper,
+        "campaign_product_daily",
+        [
+            {k: v for k, v in row.items() if k not in {"run_id"}}
+            | {"bid_cpc_note": "bid_cpc is current API snapshot; no historical bid data available."}
+            for row in product_rows
+        ],
+        ["date", "merchant_id", "campaign_id", "sku_key"],
+        "cost",
+        anomalies,
+        backup_dir,
+    )
+    return True
+
+
 def export_to_app_db(app_db: Path, source_db: Path) -> None:
     if not app_db.exists() or not source_db.exists():
         return
@@ -1266,6 +1308,11 @@ def main() -> int:
     parser.add_argument("--store-code", default=env_store_code)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--bookkeeper", type=Path, default=DEFAULT_BOOKKEEPER)
+    parser.add_argument(
+        "--skip-bookkeeper",
+        action="store_true",
+        help="Skip bookkeeper XLSX updates while still writing run-local SQLite/raw evidence.",
+    )
     parser.add_argument("--owner-workbook-path", type=Path, default=DEFAULT_OWNER_WORKBOOK)
     parser.add_argument("--owner-csv-dir", type=Path, default=DEFAULT_OWNER_CSV_DIR)
     parser.add_argument("--history-start-date", default="2025-01-01")
@@ -1628,32 +1675,13 @@ def main() -> int:
                     anomalies,
                 )
 
-            # Bookkeeper update
-            backup_dir = args.bookkeeper.parent / "backups"
-            update_bookkeeper(
-                args.bookkeeper,
-                "campaign_daily",
-                [
-                    {k: v for k, v in row.items() if k not in {"run_id"}}
-                    for row in campaign_daily_rows
-                ],
-                ["date", "merchant_id", "campaign_id"],
-                "cost",
-                anomalies,
-                backup_dir,
-            )
-            update_bookkeeper(
-                args.bookkeeper,
-                "campaign_product_daily",
-                [
-                    {k: v for k, v in row.items() if k not in {"run_id"}}
-                    | {"bid_cpc_note": "bid_cpc is current API snapshot; no historical bid data available."}
-                    for row in product_rows
-                ],
-                ["date", "merchant_id", "campaign_id", "sku_key"],
-                "cost",
-                anomalies,
-                backup_dir,
+            update_bookkeeper_sheets(
+                bookkeeper=args.bookkeeper,
+                campaign_daily_rows=campaign_daily_rows,
+                product_rows=product_rows,
+                anomalies=anomalies,
+                skip_bookkeeper=args.skip_bookkeeper,
+                run_log=run_log,
             )
 
             log_day_progress(
