@@ -1,4 +1,5 @@
 import json
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -16,6 +17,14 @@ from scripts.recover_order_entries_from_evidence import (
     recover_order_entries,
     redacted_workbook_raw_json,
 )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _make_db(path: Path) -> None:
@@ -314,12 +323,63 @@ def test_production_apply_summary_marks_production_modified(tmp_path: Path, monk
         as_of="2026-01-03",
         output_root=tmp_path / "apply",
         source_bundles=[source],
+        expected_pre_sha256=_sha256(db_path),
+        backup_dir=tmp_path / "backups",
         apply=True,
         strict=True,
     )
 
     assert applied["apply"]["inserted_entry_rows"] == 1
+    assert applied["apply"]["production_apply"] is True
     assert applied["production_db_modified"] is True
+    assert Path(applied["backup_path"]).exists()
+    assert applied["integrity_check"]["backup"] == "ok"
+    assert len(applied["backup_sha256"]) == 64
+
+
+def test_production_apply_requires_expected_sha_and_backup_dir(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "app.db"
+    _make_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO sales_fact_v2(order_id, order_date, store_code, sku_key, sku_id, my_size, quantity, status)
+            VALUES ('O-1', '2026-01-02', 'ACMEWEAR', 'SKU', 'SKU_L', 'L', 1, 'DELIVERED')
+            """
+        )
+    source = SourceBundle("CURRENT_CRM", "HIGH", {("O-1", "ACMEWEAR"): [_evidence("CURRENT_CRM")]})
+
+    monkeypatch.setattr(recovery, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_ORDER_ENTRY_RECOVERY_WRITE", "1")
+    monkeypatch.setenv("ENABLE_ORDER_ENTRY_RECOVERY_PROD_WRITE", "1")
+
+    try:
+        recover_order_entries(
+            db_path=db_path,
+            as_of="2026-01-03",
+            output_root=tmp_path / "missing_sha",
+            source_bundles=[source],
+            backup_dir=tmp_path / "backups",
+            apply=True,
+        )
+    except recovery.RecoveryError as exc:
+        assert "expected-pre-sha256" in str(exc)
+    else:
+        raise AssertionError("production apply should require expected SHA")
+
+    try:
+        recover_order_entries(
+            db_path=db_path,
+            as_of="2026-01-03",
+            output_root=tmp_path / "missing_backup",
+            source_bundles=[source],
+            expected_pre_sha256=_sha256(db_path),
+            apply=True,
+        )
+    except recovery.RecoveryError as exc:
+        assert "backup-dir" in str(exc)
+    else:
+        raise AssertionError("production apply should require backup dir")
 
 
 def test_validator_facing_dry_run_counts(tmp_path: Path) -> None:
@@ -456,6 +516,115 @@ def test_fact_orders_entry_required_only_matches_freshness_skip_rules(tmp_path: 
     )
 
     assert [target.order_id for target in targets] == ["O-COMPLETE"]
+
+
+def test_strict_fact_orders_missing_evidence_still_fails_without_accepted_quarantine(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.sqlite"
+    _make_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi(
+                order_id, created_at, store_code, quantity, kaspi_status, internal_status, kaspi_status_detail
+            )
+            VALUES ('O-MISSING', '2026-05-15T10:00:00+05:00', 'UNIVERSAL', 1,
+                    'ARCHIVE', 'COMPLETED', 'COMPLETED')
+            """
+        )
+
+    try:
+        recover_order_entries(
+            db_path=db_path,
+            as_of="2026-05-18",
+            start_date="2026-05-05",
+            target_source="fact_orders_kaspi",
+            stores=("UNIVERSAL",),
+            entry_required_only=True,
+            output_root=tmp_path / "dry_run",
+            source_bundles=[],
+            recovery_ts="2026-05-18T23:59:59+05:00",
+            strict=True,
+        )
+    except recovery.RecoveryError as exc:
+        assert "unrecovered target rows=1" in str(exc)
+    else:
+        raise AssertionError("strict missing evidence should fail without accepted quarantine")
+
+
+def test_strict_fact_orders_can_accept_copied_temp_no_entry_quarantine(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "app.sqlite"
+    contract_path = tmp_path / "accepted_no_entry_quarantine.csv"
+    _make_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi(
+                order_id, created_at, store_code, sku_key, sku_id, my_size, quantity,
+                kaspi_status, internal_status, kaspi_status_detail
+            )
+            VALUES ('O-MISSING', '2026-05-15T10:00:00+05:00', 'UNIVERSAL',
+                    'SKU', 'SKU_XL', 'XL', 1, 'ARCHIVE', 'COMPLETED', 'COMPLETED')
+            """
+        )
+    contract_path.write_text(
+        "\n".join(
+            [
+                "order_id,store_code,classification,copied_temp_only,production_write_authorized,source_authority,notes",
+                "O-MISSING,UNIVERSAL,RETAINED_ORDER_ENTRY_QUARANTINE,true,false,owner_confirmed,no real item-entry evidence",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ENABLE_ORDER_ENTRY_RECOVERY_WRITE", "1")
+    summary = recover_order_entries(
+        db_path=db_path,
+        as_of="2026-05-18",
+        start_date="2026-05-05",
+        target_source="fact_orders_kaspi",
+        stores=("UNIVERSAL",),
+        entry_required_only=True,
+        output_root=tmp_path / "apply",
+        source_bundles=[],
+        recovery_ts="2026-05-18T23:59:59+05:00",
+        accepted_no_entry_quarantine_csv=contract_path,
+        apply=True,
+        strict=True,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        entry_count = conn.execute("SELECT COUNT(*) FROM fact_order_entries_kaspi").fetchone()[0]
+
+    assert summary["quarantine"]["target_rows"] == 1
+    assert summary["accepted_no_entry_quarantine"]["accepted_target_rows"] == 1
+    assert summary["strict"]["passed"] is True
+    assert summary["strict"]["passed_by_accepted_no_entry_quarantine"] is True
+    assert summary["apply"]["inserted_entry_rows"] == 0
+    assert entry_count == 0
+
+
+def test_accepted_no_entry_quarantine_rejects_production_write_authority(tmp_path: Path) -> None:
+    contract_path = tmp_path / "accepted_no_entry_quarantine.csv"
+    contract_path.write_text(
+        "\n".join(
+            [
+                "order_id,store_code,classification,copied_temp_only,production_write_authorized",
+                "O-MISSING,UNIVERSAL,RETAINED_ORDER_ENTRY_QUARANTINE,true,true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    try:
+        recovery.load_accepted_no_entry_quarantine(contract_path)
+    except recovery.RecoveryError as exc:
+        assert "must not authorize production writes" in str(exc)
+    else:
+        raise AssertionError("no-entry quarantine contract must deny production write authority")
 
 
 def test_fact_orders_target_mode_defaults_to_api_only_sources(

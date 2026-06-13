@@ -25,7 +25,6 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_CURRENT_CRM = PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
@@ -54,6 +53,8 @@ DEFAULT_WEBUI_ARCHIVE_CSVS = (
 )
 CURRENT_CRM_SHEET = "SALES_KSP_CRM_1"
 RESERVE_ARCHIVE_SHEET = "Archive_sales"
+WRITE_ENV_GATE = "ENABLE_ORDER_ENTRY_RECOVERY_WRITE"
+PROD_WRITE_ENV_GATE = "ENABLE_ORDER_ENTRY_RECOVERY_PROD_WRITE"
 
 DELIVERED_SALES_STATUSES = {"COMPLETED", "DELIVERED", "SOLD"}
 STORE_ALIASES = {
@@ -125,6 +126,11 @@ RAW_JSON_PII_RE = re.compile(
     r"(phone|address|customer_phone|pickup_or_delivery_address|адрес|телефон)",
     re.IGNORECASE,
 )
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.backup_db import backup_database  # noqa: E402
 
 
 class RecoveryError(RuntimeError):
@@ -223,6 +229,21 @@ class Assignment:
         return len(self.target_rows)
 
 
+@dataclass(frozen=True)
+class AcceptedNoEntryQuarantine:
+    order_id: str
+    store_code: str
+    classification: str
+    copied_temp_only: bool
+    production_write_authorized: bool
+    source_authority: str = ""
+    notes: str = ""
+
+    @property
+    def pair(self) -> tuple[str, str]:
+        return (self.order_id, self.store_code)
+
+
 def norm(value: Any) -> str:
     if value is None:
         return ""
@@ -288,6 +309,11 @@ def coerce_int(value: Any) -> int | None:
     return int(number)
 
 
+def coerce_bool(value: Any) -> bool:
+    text = norm(value).lower()
+    return text in {"1", "true", "yes", "y", "approved"}
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, (dt.date, dt.datetime)):
         return value.isoformat()
@@ -316,6 +342,84 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _sqlite_integrity_check(path: Path) -> str:
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+    return str(row[0] if row else "")
+
+
+def _sidecar_paths(db_path: Path) -> list[Path]:
+    return [Path(f"{db_path}-wal"), Path(f"{db_path}-shm"), Path(f"{db_path}-journal")]
+
+
+def _fail_on_sqlite_sidecars(db_path: Path) -> None:
+    existing = [path for path in _sidecar_paths(db_path) if path.exists()]
+    if existing:
+        joined = ", ".join(str(path) for path in existing)
+        raise RecoveryError(f"refusing production apply while SQLite sidecars exist: {joined}")
+
+
+def load_accepted_no_entry_quarantine(path: Path | None) -> dict[tuple[str, str], AcceptedNoEntryQuarantine]:
+    """Load an explicit copied-temp no-entry quarantine contract.
+
+    This contract is intentionally narrow: it can only retain target rows that
+    have no real item-entry evidence, and it must explicitly deny production
+    write authority.
+    """
+    if path is None:
+        return {}
+    if not path.exists():
+        raise RecoveryError(f"Accepted no-entry quarantine CSV missing: {path}")
+    required = {
+        "order_id",
+        "store_code",
+        "classification",
+        "copied_temp_only",
+        "production_write_authorized",
+    }
+    accepted: dict[tuple[str, str], AcceptedNoEntryQuarantine] = {}
+    with path.open("r", encoding="utf-8-sig", newline="") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            raise RecoveryError(f"Accepted no-entry quarantine CSV has no header: {path}")
+        missing = sorted(required - set(reader.fieldnames))
+        if missing:
+            raise RecoveryError(f"Accepted no-entry quarantine CSV missing columns: {missing}")
+        for line_no, row in enumerate(reader, start=2):
+            order_id = norm(row.get("order_id"))
+            store_code = normalize_store(row.get("store_code"))
+            classification = norm(row.get("classification")).upper()
+            if not order_id:
+                raise RecoveryError(f"Accepted no-entry quarantine row {line_no} missing order_id")
+            if classification != "RETAINED_ORDER_ENTRY_QUARANTINE":
+                raise RecoveryError(
+                    "Accepted no-entry quarantine row "
+                    f"{line_no} has unsupported classification={classification!r}"
+                )
+            item = AcceptedNoEntryQuarantine(
+                order_id=order_id,
+                store_code=store_code,
+                classification=classification,
+                copied_temp_only=coerce_bool(row.get("copied_temp_only")),
+                production_write_authorized=coerce_bool(row.get("production_write_authorized")),
+                source_authority=norm(row.get("source_authority")),
+                notes=norm(row.get("notes")),
+            )
+            if not item.copied_temp_only:
+                raise RecoveryError(
+                    f"Accepted no-entry quarantine row {line_no} must set copied_temp_only=true"
+                )
+            if item.production_write_authorized:
+                raise RecoveryError(
+                    "Accepted no-entry quarantine row "
+                    f"{line_no} must not authorize production writes"
+                )
+            if item.pair in accepted:
+                raise RecoveryError(f"Duplicate accepted no-entry quarantine pair: {item.pair}")
+            accepted[item.pair] = item
+    return accepted
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -963,6 +1067,47 @@ def _assignment_summary(assignments: dict[tuple[str, str], Assignment]) -> dict[
     return grouped
 
 
+def _accepted_no_entry_quarantine_summary(
+    assignments: dict[tuple[str, str], Assignment],
+    accepted: dict[tuple[str, str], AcceptedNoEntryQuarantine],
+) -> dict[str, Any]:
+    quarantine_assignments = {
+        pair: assignment
+        for pair, assignment in assignments.items()
+        if assignment.source_name == "UNRECOVERED_QUARANTINE"
+    }
+    quarantine_pairs = set(quarantine_assignments)
+    accepted_pairs = set(accepted)
+    matched_pairs = sorted(quarantine_pairs & accepted_pairs)
+    missing_pairs = sorted(quarantine_pairs - accepted_pairs)
+    unexpected_pairs = sorted(accepted_pairs - quarantine_pairs)
+    accepted_target_rows = sum(quarantine_assignments[pair].target_row_count for pair in matched_pairs)
+    quarantine_target_rows = sum(assignment.target_row_count for assignment in quarantine_assignments.values())
+    by_store: dict[str, dict[str, int]] = defaultdict(lambda: {"pairs": 0, "target_rows": 0})
+    for pair in matched_pairs:
+        assignment = quarantine_assignments[pair]
+        item = by_store[assignment.store_code]
+        item["pairs"] += 1
+        item["target_rows"] += assignment.target_row_count
+    return {
+        "contract_rows": len(accepted),
+        "contract_pairs": len(accepted_pairs),
+        "matched_pairs": len(matched_pairs),
+        "accepted_target_rows": accepted_target_rows,
+        "quarantine_target_rows": quarantine_target_rows,
+        "missing_pairs": [{"order_id": order_id, "store_code": store} for order_id, store in missing_pairs],
+        "unexpected_pairs": [{"order_id": order_id, "store_code": store} for order_id, store in unexpected_pairs],
+        "all_unrecovered_targets_accepted": bool(
+            quarantine_target_rows > 0
+            and accepted
+            and accepted_target_rows == quarantine_target_rows
+            and not missing_pairs
+            and not unexpected_pairs
+        ),
+        "by_store": {store: dict(data) for store, data in sorted(by_store.items())},
+    }
+
+
 def _candidate_entries(
     assignments: dict[tuple[str, str], Assignment],
     article_map: dict[tuple[str, str], dict[str, str]],
@@ -1043,19 +1188,36 @@ def _insert_entries(conn: sqlite3.Connection, entries: list[dict[str, Any]]) -> 
     return inserted
 
 
-def _guard_apply_path(db_path: Path) -> None:
-    if os.environ.get("ENABLE_ORDER_ENTRY_RECOVERY_WRITE") != "1":
-        raise RecoveryError("ENABLE_ORDER_ENTRY_RECOVERY_WRITE=1 is required with --apply")
+def _is_production_db(db_path: Path) -> bool:
     try:
         resolved = db_path.resolve()
         production = DEFAULT_DB.resolve()
     except FileNotFoundError:
         resolved = db_path.absolute()
         production = DEFAULT_DB.absolute()
-    if resolved == production and os.environ.get("ENABLE_ORDER_ENTRY_RECOVERY_PROD_WRITE") != "1":
+    return resolved == production
+
+
+def _guard_apply_path(
+    db_path: Path,
+    *,
+    expected_pre_sha256: str | None = None,
+    backup_dir: Path | None = None,
+) -> bool:
+    if os.environ.get(WRITE_ENV_GATE) != "1":
+        raise RecoveryError(f"{WRITE_ENV_GATE}=1 is required with --apply")
+    production = _is_production_db(db_path)
+    if production and os.environ.get(PROD_WRITE_ENV_GATE) != "1":
         raise RecoveryError(
-            "Refusing production db/app.db apply without ENABLE_ORDER_ENTRY_RECOVERY_PROD_WRITE=1"
+            f"Refusing production db/app.db apply without {PROD_WRITE_ENV_GATE}=1"
         )
+    if production and not expected_pre_sha256:
+        raise RecoveryError("--expected-pre-sha256 is required for production apply")
+    if production and backup_dir is None:
+        raise RecoveryError("--backup-dir is required for production apply")
+    if production:
+        _fail_on_sqlite_sidecars(db_path)
+    return production
 
 
 def _write_preview_outputs(
@@ -1064,6 +1226,7 @@ def _write_preview_outputs(
     summary: dict[str, Any],
     entries: list[dict[str, Any]],
     assignments: dict[tuple[str, str], Assignment],
+    accepted_no_entry_quarantine: dict[tuple[str, str], AcceptedNoEntryQuarantine],
 ) -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     _write_json(output_root / "summary.json", summary)
@@ -1117,6 +1280,30 @@ def _write_preview_outputs(
                     )
                     + "\n"
                 )
+    with (output_root / "accepted_no_entry_quarantine_preview.jsonl").open("w", encoding="utf-8") as fh:
+        for pair, accepted in sorted(accepted_no_entry_quarantine.items()):
+            assignment = assignments.get(pair)
+            fh.write(
+                json.dumps(
+                    {
+                        "order_id": accepted.order_id,
+                        "store_code": accepted.store_code,
+                        "classification": accepted.classification,
+                        "copied_temp_only": accepted.copied_temp_only,
+                        "production_write_authorized": accepted.production_write_authorized,
+                        "source_authority": accepted.source_authority,
+                        "notes": accepted.notes,
+                        "matched_unrecovered_quarantine": bool(
+                            assignment and assignment.source_name == "UNRECOVERED_QUARANTINE"
+                        ),
+                        "target_rows": assignment.target_row_count if assignment else 0,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=_json_default,
+                )
+                + "\n"
+            )
 
 
 def _load_default_source_bundles(
@@ -1182,6 +1369,9 @@ def recover_order_entries(
     start_date: str | None = None,
     stores: tuple[str, ...] = DEFAULT_FACT_ORDER_TARGET_STORES,
     entry_required_only: bool = False,
+    accepted_no_entry_quarantine_csv: Path | None = None,
+    expected_pre_sha256: str | None = None,
+    backup_dir: Path | None = None,
     apply: bool = False,
     strict: bool = False,
 ) -> dict[str, Any]:
@@ -1202,6 +1392,16 @@ def recover_order_entries(
         )
     else:
         raise RecoveryError(f"unsupported target_source: {target_source}")
+    accepted_no_entry_quarantine = load_accepted_no_entry_quarantine(accepted_no_entry_quarantine_csv)
+    if accepted_no_entry_quarantine:
+        try:
+            accepted_db_is_production = db_path.resolve() == DEFAULT_DB.resolve()
+        except FileNotFoundError:
+            accepted_db_is_production = db_path.absolute() == DEFAULT_DB.absolute()
+        if accepted_db_is_production:
+            raise RecoveryError(
+                "Accepted no-entry quarantine contract is copied-temp only and cannot target production db/app.db"
+            )
     article_map = load_article_map(db_path)
     source_info: dict[str, Any] = {}
     if source_bundles is None:
@@ -1218,20 +1418,6 @@ def recover_order_entries(
             )
     assignments = assign_evidence_to_targets(targets, source_bundles, article_map=article_map)
     candidates = _candidate_entries(assignments, article_map, recovery_ts=recovery_ts)
-
-    if apply:
-        conn_cm = sqlite3.connect(db_path)
-    else:
-        conn_cm = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    with conn_cm as conn:
-        existing = _existing_entry_ids(conn, [entry["entry_id"] for entry in candidates])
-        new_candidates = [entry for entry in candidates if entry["entry_id"] not in existing]
-        inserted = 0
-        if apply:
-            _guard_apply_path(db_path)
-            inserted = _insert_entries(conn, new_candidates)
-            conn.commit()
-
     source_summary = _assignment_summary(assignments)
     quarantine = source_summary.get(
         "UNRECOVERED_QUARANTINE",
@@ -1245,6 +1431,55 @@ def recover_order_entries(
             "by_store": {},
         },
     )
+    accepted_quarantine_summary = _accepted_no_entry_quarantine_summary(
+        assignments,
+        accepted_no_entry_quarantine,
+    )
+    if accepted_no_entry_quarantine and accepted_quarantine_summary["unexpected_pairs"]:
+        raise RecoveryError(
+            "Accepted no-entry quarantine CSV contains pairs that are not unrecovered target rows: "
+            f"{accepted_quarantine_summary['unexpected_pairs']}"
+        )
+    accepted_strict_pass = bool(accepted_quarantine_summary["all_unrecovered_targets_accepted"])
+    strict_passed = quarantine["target_rows"] == 0 or accepted_strict_pass
+
+    backup_path: Path | None = None
+    backup_sha256 = ""
+    backup_integrity = None
+    pre_sha256 = _file_sha256(db_path)
+    integrity_before = _sqlite_integrity_check(db_path)
+    if apply:
+        production_apply = _guard_apply_path(
+            db_path,
+            expected_pre_sha256=expected_pre_sha256,
+            backup_dir=backup_dir,
+        )
+        if integrity_before.lower() != "ok":
+            raise RecoveryError(f"pre-write integrity_check failed: {integrity_before}")
+        if expected_pre_sha256 and pre_sha256 != expected_pre_sha256:
+            raise RecoveryError(
+                f"pre-write SHA mismatch: expected {expected_pre_sha256}, got {pre_sha256}"
+            )
+        if production_apply and backup_dir is not None:
+            backup_path = backup_database(db_path, backup_dir, compress=False)
+            backup_sha256 = _file_sha256(backup_path)
+            backup_integrity = _sqlite_integrity_check(backup_path)
+            if backup_integrity.lower() != "ok":
+                raise RecoveryError(f"backup integrity_check failed: {backup_integrity}")
+        conn_cm = sqlite3.connect(db_path)
+    else:
+        production_apply = False
+        conn_cm = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    with conn_cm as conn:
+        existing = _existing_entry_ids(conn, [entry["entry_id"] for entry in candidates])
+        new_candidates = [entry for entry in candidates if entry["entry_id"] not in existing]
+        inserted = 0
+        if apply:
+            inserted = _insert_entries(conn, new_candidates)
+            conn.commit()
+
+    post_sha256 = _file_sha256(db_path)
+    integrity_after = _sqlite_integrity_check(db_path)
     mappable = sum(1 for entry in candidates if entry.get("sku_rebuild_mappable"))
     by_entry_source = Counter(str(entry.get("recovery_source_name")) for entry in candidates)
     production_db_target = db_path.resolve() == DEFAULT_DB.resolve()
@@ -1267,6 +1502,14 @@ def recover_order_entries(
             "target_rows": quarantine["target_rows"],
             "preview_path": str(output_root / "quarantine_preview.jsonl"),
         },
+        "accepted_no_entry_quarantine": {
+            **accepted_quarantine_summary,
+            "contract_path": str(accepted_no_entry_quarantine_csv) if accepted_no_entry_quarantine_csv else None,
+            "preview_path": str(output_root / "accepted_no_entry_quarantine_preview.jsonl"),
+            "contract_sha256": _file_sha256(accepted_no_entry_quarantine_csv)
+            if accepted_no_entry_quarantine_csv
+            else "",
+        },
         "entry_candidates": {
             "candidate_entry_rows": len(candidates),
             "new_candidate_entry_rows": len(new_candidates),
@@ -1282,16 +1525,40 @@ def recover_order_entries(
             "would_insert_entry_rows": len(new_candidates),
             "inserted_entry_rows": inserted,
             "skipped_existing_entry_rows": len(candidates) - len(new_candidates),
+            "production_apply": production_apply,
         },
         "strict": {
             "requested": strict,
-            "passed": quarantine["target_rows"] == 0,
+            "passed": strict_passed,
+            "passed_by_accepted_no_entry_quarantine": bool(
+                quarantine["target_rows"] and accepted_strict_pass
+            ),
         },
         "production_db_modified": bool(apply and inserted > 0) if production_db_target else None,
+        "pre_sha256": pre_sha256,
+        "post_sha256": post_sha256,
+        "expected_pre_sha256": expected_pre_sha256,
+        "backup_path": str(backup_path) if backup_path else None,
+        "backup_sha256": backup_sha256,
+        "integrity_check": {
+            "before": integrity_before,
+            "backup": backup_integrity,
+            "after": integrity_after,
+        },
     }
-    _write_preview_outputs(output_root, summary=summary, entries=candidates, assignments=assignments)
-    if strict and quarantine["target_rows"]:
-        raise RecoveryError(f"Strict recovery failed: unrecovered target rows={quarantine['target_rows']}")
+    _write_preview_outputs(
+        output_root,
+        summary=summary,
+        entries=candidates,
+        assignments=assignments,
+        accepted_no_entry_quarantine=accepted_no_entry_quarantine,
+    )
+    if strict and not strict_passed:
+        raise RecoveryError(
+            "Strict recovery failed: "
+            f"unrecovered target rows={quarantine['target_rows']}, "
+            f"accepted_no_entry_missing_pairs={accepted_quarantine_summary['missing_pairs']}"
+        )
     return summary
 
 
@@ -1322,9 +1589,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--webui-archive-csv", type=Path, action="append", default=None)
     parser.add_argument("--reserve-archive", type=Path, default=DEFAULT_RESERVE_ARCHIVE)
     parser.add_argument(
+        "--accepted-no-entry-quarantine-csv",
+        type=Path,
+        help=(
+            "Copied-temp-only CSV contract that explicitly retains unrecovered target rows "
+            "without creating synthetic item entries."
+        ),
+    )
+    parser.add_argument(
         "--recovery-ts",
         help="Timestamp to store in fact_order_entries_kaspi.updated_at; defaults to execution time.",
     )
+    parser.add_argument("--expected-pre-sha256")
+    parser.add_argument("--backup-dir", type=Path)
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--apply", action="store_true")
     return parser.parse_args(argv)
@@ -1346,6 +1623,9 @@ def main(argv: list[str] | None = None) -> int:
             api_entry_roots=args.api_entry_root,
             webui_archive_csvs=args.webui_archive_csv,
             reserve_archive=args.reserve_archive,
+            accepted_no_entry_quarantine_csv=args.accepted_no_entry_quarantine_csv,
+            expected_pre_sha256=args.expected_pre_sha256,
+            backup_dir=args.backup_dir,
             recovery_ts=args.recovery_ts,
             apply=args.apply,
             strict=args.strict,
