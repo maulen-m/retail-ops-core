@@ -29,6 +29,26 @@ class CogsAuditError(RuntimeError):
     """Raised when strict COGS realism audit fails."""
 
 
+def _connect_readonly(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _relation_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return (
+        conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE name=? AND type IN ('table', 'view')
+            """,
+            (name,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _render_md(report: dict[str, Any]) -> str:
     lines = [
         "# COGS Realism Audit",
@@ -223,6 +243,7 @@ def audit_cogs_realism(
     output_root: Path,
     min_formula_input_coverage_pct: float = 90.0,
     strict: bool = False,
+    ensure_views: bool = False,
 ) -> dict[str, Any]:
     if days <= 0:
         raise CogsAuditError("days must be > 0")
@@ -233,10 +254,16 @@ def audit_cogs_realism(
     if not db_path.exists():
         raise CogsAuditError(f"db not found: {db_path}")
 
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path)) if ensure_views else _connect_readonly(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        ensure_sales_truth_views(conn)
+        if ensure_views:
+            ensure_sales_truth_views(conn)
+        elif not _relation_exists(conn, "view_sales_line_truth"):
+            raise CogsAuditError(
+                "view_sales_line_truth is missing. Build sales truth views through a governed "
+                "schema/view-refresh lane before running the read-only COGS audit."
+            )
         top_skus = _load_top_skus(conn=conn, start_date=start_date, end_date=as_of, top_n=top_n)
         formula_lines, total_lines = _load_formula_lines(conn=conn, start_date=start_date, end_date=as_of)
     finally:
@@ -320,6 +347,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--min-formula-input-coverage-pct", type=float, default=90.0)
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument(
+        "--ensure-views",
+        action="store_true",
+        help=(
+            "Create/recreate sales truth views before auditing. Intended for temp DB tests; "
+            "normal production audit mode is read-only."
+        ),
+    )
     return parser
 
 
@@ -333,6 +368,7 @@ def main() -> int:
         output_root=args.output_root,
         min_formula_input_coverage_pct=float(args.min_formula_input_coverage_pct),
         strict=bool(args.strict),
+        ensure_views=bool(args.ensure_views),
     )
     print(f"cogs_realism_json={report['json_path']}")
     print(f"cogs_realism_md={report['md_path']}")

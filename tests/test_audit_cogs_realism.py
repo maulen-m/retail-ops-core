@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,12 @@ def _init_db(path: Path, *, with_dim_inputs: bool) -> None:
     conn.close()
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def test_audit_cogs_realism_pass(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     _init_db(db_path, with_dim_inputs=True)
@@ -72,6 +79,7 @@ def test_audit_cogs_realism_pass(tmp_path: Path) -> None:
         output_root=tmp_path / "out",
         min_formula_input_coverage_pct=50.0,
         strict=True,
+        ensure_views=True,
     )
     assert report["status"] == "PASS"
     assert report["coverage"]["formula_input_coverage_pct"] >= 50.0
@@ -92,4 +100,35 @@ def test_audit_cogs_realism_fails_on_missing_formula_inputs(tmp_path: Path) -> N
             output_root=tmp_path / "out",
             min_formula_input_coverage_pct=90.0,
             strict=True,
+            ensure_views=True,
         )
+
+
+def test_audit_cogs_realism_default_is_read_only_after_views_exist(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path, with_dim_inputs=True)
+
+    audit_cogs_realism(
+        db_path=db_path,
+        as_of=date(2026, 3, 2),
+        days=30,
+        top_n=10,
+        output_root=tmp_path / "setup",
+        min_formula_input_coverage_pct=50.0,
+        strict=True,
+        ensure_views=True,
+    )
+    before = _sha256(db_path)
+
+    report = audit_cogs_realism(
+        db_path=db_path,
+        as_of=date(2026, 3, 2),
+        days=30,
+        top_n=10,
+        output_root=tmp_path / "readonly",
+        min_formula_input_coverage_pct=50.0,
+        strict=True,
+    )
+
+    assert report["status"] == "PASS"
+    assert _sha256(db_path) == before
