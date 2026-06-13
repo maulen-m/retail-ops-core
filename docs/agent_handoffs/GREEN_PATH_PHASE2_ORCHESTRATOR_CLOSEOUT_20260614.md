@@ -13,10 +13,11 @@ Phase 2 implementation is durably committed for the lanes that had source-backed
 - Stock source-backed negative rows are repaired in production.
 - STOREB 251-row header-only source-gap cleanup is repaired in production without replacing the hot DB file.
 - The `906730647` stale header-only quarantine row is reclassified against real API entry evidence.
+- Source-backed ACMEWEAR/UNIVERSAL missing order-entry rows are recovered in production, with focused D1 cash-in repair and no broad cashflow replay.
 
 The repo is not yet allowed to claim full green state because `stock_source_truth` still has 9 negative stock_ledger rows that require explicit owner approval or a new exact source artifact, and the deeper operational stock integration validator still has order-entry and lifecycle blockers. These are intentional stoplines, not code failures.
 
-Current audit addendum: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`. Header-only production apply closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`. Real-entry reclassification closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`. The compact C3 publication blockers are stock-related, but full Phase-2 closeout also requires resolving the current `ORDER_ENTRY_MISSING` and lifecycle findings.
+Current audit addendum: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`. Header-only production apply closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`. Real-entry reclassification closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`. Order-entry/D1 recovery closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_ORDER_ENTRY_D1_RECOVERY_20260614.md`. The compact C3 publication blockers are stock-related, but full Phase-2 closeout also requires resolving the current remaining STOREB `ORDER_ENTRY_MISSING` and lifecycle findings.
 
 No Kaspi merchant, pricing, Telegram, LaunchAgent, workbook, customer, or operator-message writes were performed by this orchestrator closeout step.
 
@@ -27,6 +28,9 @@ No Kaspi merchant, pricing, Telegram, LaunchAgent, workbook, customer, or operat
 - `b849ef6 feat: apply governed stock source repairs`
 - `48f7e93 fix: apply header-only quarantine safely`
 - `3609334 fix: reclassify header-only order with real entry`
+- `74734f2 fix: harden order-entry recovery production apply`
+- `8d701f29 fix: gate production cashflow applies`
+- `d0ee151e fix: add focused d1 cash-in repair`
 
 Earlier phase checkpoints on this branch:
 
@@ -45,6 +49,7 @@ Earlier phase checkpoints on this branch:
 - Current gate audit and header-only copied proof: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`
 - Header-only production apply: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`
 - `906730647` real-entry reclassification: `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`
+- Order-entry and focused D1 recovery: `docs/agent_handoffs/GREEN_PATH_PHASE2_ORDER_ENTRY_D1_RECOVERY_20260614.md`
 
 ## Production DB Evidence
 
@@ -55,6 +60,9 @@ Earlier phase checkpoints on this branch:
 - Stock source-backed backup: `exports/validation/orchestrator_stock_source_backed_repair_prod_apply_20260614/backups/app_before_stock_source_backed_repair_prod_apply_20260614.db`
 - Header-only production apply backup: `exports/validation/orchestrator_header_only_prod_apply_20260614/backups/app_2026-06-14_004623.db`
 - `906730647` real-entry reclassification backup: `exports/validation/orchestrator_906730647_real_entry_reclassification_20260614/backups/app_2026-06-14_011044.db`
+- Order-entry recovery backup: `exports/validation/orchestrator_order_entry_missing_recovery_20260614/backups_order_entry/app_2026-06-14_031017.db`
+- Focused D1 cash-in backup: `exports/validation/orchestrator_order_entry_missing_recovery_20260614/backups_d1_cash_in/app_2026-06-14_031022.db`
+- Cashflow daily rebuild backup: `exports/validation/orchestrator_order_entry_missing_recovery_20260614/backups_cashflow_rebuild/app_2026-06-14_031029.db`
 
 ## Validation
 
@@ -86,6 +94,15 @@ Commands/results already run for this closeout:
   Result: `RED`, `finding_count=494`; header-only leak errors are gone.
 - Daily ops pause verification after `906730647` production apply:
   `exports/validation/orchestrator_906730647_real_entry_reclassification_20260614/daily_ops_paused_after_prod_apply.json`
+  Result: `ok=true`, `labels: 0/10 loaded`, protected surfaces quiet, cron quiet.
+- Order-entry/D1 focused pytest:
+  `pytest -q tests/test_repair_d1_cash_in_from_validator_evidence.py tests/test_recover_order_entries_from_evidence.py tests/test_cashflow_translator.py tests/test_rebuild_cashflow_calendar_write_gate.py`
+  Result: `63 passed`.
+- Order-entry/D1 production apply validation:
+  `exports/validation/orchestrator_order_entry_missing_recovery_20260614/prod_operational_stock_after_focused_recovery.json`
+  Result: `RED`, `finding_count=338`; no `CASHFLOW_D1_CASH_IN_MISSING`, no quarantine leakage.
+- Daily ops pause verification after order-entry/D1 production apply:
+  `exports/validation/orchestrator_order_entry_missing_recovery_20260614/daily_ops_paused_after_prod_apply_retry.json`
   Result: `ok=true`, `labels: 0/10 loaded`, protected surfaces quiet, cron quiet.
 
 Known validation caveat:
@@ -119,16 +136,16 @@ Prepared approval-gated manifest:
 
 ## Additional Phase 2 Blockers From Current Audit
 
-Current operational stock integration finding census after `906730647` production apply:
+Current operational stock integration finding census after order-entry/D1 production apply:
 
 ```text
-ERROR ORDER_ENTRY_MISSING                                   219
+ERROR ORDER_ENTRY_MISSING                                    63
 ERROR ORDER_LIFECYCLE_MISSING_COMPLETED                       8
 WARN  ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_QUARANTINED         244
 WARN  ORDER_ENTRY_PRODUCT_IDENTITY_QUARANTINED                23
 ```
 
-The 251-row header-only cleanup and `906730647` real-entry reclassification are now applied in production.
+The 251-row header-only cleanup, `906730647` real-entry reclassification, 169 source-backed order-entry recovery rows, 2 focused D1 cash-in rows, and cashflow daily rebuild are now applied in production. Final DB SHA after this lane: `11e3979042a9f7ee5990bc8b6ca4123145208a51a9433029c2f45e5c5e61a596`.
 
 ## Approval Phrases Needed
 
