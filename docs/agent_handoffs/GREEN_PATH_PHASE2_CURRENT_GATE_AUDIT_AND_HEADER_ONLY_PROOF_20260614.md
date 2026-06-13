@@ -10,6 +10,8 @@ This audit re-baselined the current post-apply state after the committed cashflo
 
 Update: the 251-row header-only cleanup was subsequently applied safely in production after the wrapper was hardened. See `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`.
 
+Update 2: the remaining `906730647` header-only leak was subsequently reclassified from stale header-only quarantine to real API entry evidence. See `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`.
+
 The result corrects an overly narrow reading of the previous closeout: the compact C3 publication blockers are stock-related, but the deeper operational stock integration validator still reports order-entry and lifecycle blockers that must be repaired before Phase 2 can honestly close.
 
 ## Read-Only Gate Evidence
@@ -122,11 +124,10 @@ The remaining header-only source-gap product/entry leak is `906730647`; it now h
 
 ## Current Next-Best Repair Order
 
-1. Resolve `906730647` by de-quarantining/reclassifying it from header-only once the real API entry evidence is carried through the contract.
-2. Repair the 219 `ORDER_ENTRY_MISSING` rows from real source evidence or strict quarantine.
-3. Repair the 8 `ORDER_LIFECYCLE_MISSING_COMPLETED` rows.
-4. Apply the 9 remaining owner-approval stock repairs only after exact owner evidence exists.
-5. Rebuild the `2026-06-13` stock snapshot and replay C3.
+1. Repair the 219 `ORDER_ENTRY_MISSING` rows from real source evidence or strict quarantine.
+2. Repair the 8 `ORDER_LIFECYCLE_MISSING_COMPLETED` rows.
+3. Apply the 9 remaining owner-approval stock repairs only after exact owner evidence exists.
+4. Rebuild the `2026-06-13` stock snapshot and replay C3.
 
 ## Production Apply Addendum
 
@@ -138,8 +139,16 @@ The production-safe wrapper was hardened and applied after this audit:
 - wrapper mode: `sqlite_in_place`, `target_replaced=False`
 - operational stock finding count after apply: `496`
 
+The `906730647` real-entry reclassification was then applied:
+
+- closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`
+- evidence: `exports/validation/orchestrator_906730647_real_entry_reclassification_20260614/`
+- result: `updated_rows=1`, `active_header_only_after=0`
+- operational stock finding count after apply: `494`
+
 ## Safety Notes
 
 - Production DB write occurred only in the later addendum lane, with backup and rollback evidence in `exports/validation/orchestrator_header_only_prod_apply_20260614/`.
+- The `906730647` production DB write occurred only in its later addendum lane, with backup and rollback evidence in `exports/validation/orchestrator_906730647_real_entry_reclassification_20260614/`.
 - No customer, Telegram, LaunchAgent, Kaspi merchant, pricing, workbook, or external-system write occurred.
 - The earlier wrapper file-replacement stopline is closed by `GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`; the wrapper now uses SQLite backup, staging proof, and in-place target apply.

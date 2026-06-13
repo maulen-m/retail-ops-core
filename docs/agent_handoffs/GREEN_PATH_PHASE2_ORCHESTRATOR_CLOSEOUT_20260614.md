@@ -12,10 +12,11 @@ Phase 2 implementation is durably committed for the lanes that had source-backed
 - Ads source truth is green after scope/backfill repair.
 - Stock source-backed negative rows are repaired in production.
 - STOREB 251-row header-only source-gap cleanup is repaired in production without replacing the hot DB file.
+- The `906730647` stale header-only quarantine row is reclassified against real API entry evidence.
 
 The repo is not yet allowed to claim full green state because `stock_source_truth` still has 9 negative stock_ledger rows that require explicit owner approval or a new exact source artifact, and the deeper operational stock integration validator still has order-entry and lifecycle blockers. These are intentional stoplines, not code failures.
 
-Current audit addendum: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`. Header-only production apply closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`. The compact C3 publication blockers are stock-related, but full Phase-2 closeout also requires resolving the current `ORDER_ENTRY_MISSING`, remaining `906730647` header-only reclassification leak, and lifecycle findings.
+Current audit addendum: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`. Header-only production apply closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`. Real-entry reclassification closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`. The compact C3 publication blockers are stock-related, but full Phase-2 closeout also requires resolving the current `ORDER_ENTRY_MISSING` and lifecycle findings.
 
 No Kaspi merchant, pricing, Telegram, LaunchAgent, workbook, customer, or operator-message writes were performed by this orchestrator closeout step.
 
@@ -25,6 +26,7 @@ No Kaspi merchant, pricing, Telegram, LaunchAgent, workbook, customer, or operat
 - `14311b0 fix: backfill ads source truth`
 - `b849ef6 feat: apply governed stock source repairs`
 - `48f7e93 fix: apply header-only quarantine safely`
+- pending current commit: 906730647 real-entry reclassification
 
 Earlier phase checkpoints on this branch:
 
@@ -42,6 +44,7 @@ Earlier phase checkpoints on this branch:
 - Stock owner-approval remaining dry-run: `docs/agent_handoffs/GREEN_PATH_PHASE2_STOCK_OWNER_APPROVAL_REMAINING_DRYRUN_20260614.md`
 - Current gate audit and header-only copied proof: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`
 - Header-only production apply: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`
+- `906730647` real-entry reclassification: `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`
 
 ## Production DB Evidence
 
@@ -51,6 +54,7 @@ Earlier phase checkpoints on this branch:
 - Ads scope/backfill backup: `exports/validation/orchestrator_ads_scope_backfill_prod_apply_20260613/backups/app_before_ads_scope_backfill_prod_apply_20260613.db`
 - Stock source-backed backup: `exports/validation/orchestrator_stock_source_backed_repair_prod_apply_20260614/backups/app_before_stock_source_backed_repair_prod_apply_20260614.db`
 - Header-only production apply backup: `exports/validation/orchestrator_header_only_prod_apply_20260614/backups/app_2026-06-14_004623.db`
+- `906730647` real-entry reclassification backup: `exports/validation/orchestrator_906730647_real_entry_reclassification_20260614/backups/app_2026-06-14_011044.db`
 
 ## Validation
 
@@ -73,6 +77,15 @@ Commands/results already run for this closeout:
   Result: `RED`, `finding_count=496`; C3 strict validators still block on `src_ab_db_stock_truth`, `source_freshness`, and `stock_source_truth`.
 - Daily ops pause verification after header-only production apply:
   `exports/validation/orchestrator_header_only_prod_apply_20260614/daily_ops_paused_after_prod_apply.json`
+  Result: `ok=true`, `labels: 0/10 loaded`, protected surfaces quiet, cron quiet.
+- `906730647` reclassification focused pytest:
+  `pytest -q tests/test_header_only_real_entry_reclassification.py tests/test_header_only_source_gap_quarantine.py tests/test_header_only_source_gap_quarantine_prod_wrapper.py`
+  Result: `14 passed`.
+- `906730647` production apply validation:
+  `exports/validation/orchestrator_906730647_real_entry_reclassification_20260614/operational_stock_after_prod_apply.json`
+  Result: `RED`, `finding_count=494`; header-only leak errors are gone.
+- Daily ops pause verification after `906730647` production apply:
+  `exports/validation/orchestrator_906730647_real_entry_reclassification_20260614/daily_ops_paused_after_prod_apply.json`
   Result: `ok=true`, `labels: 0/10 loaded`, protected surfaces quiet, cron quiet.
 
 Known validation caveat:
@@ -106,18 +119,16 @@ Prepared approval-gated manifest:
 
 ## Additional Phase 2 Blockers From Current Audit
 
-Current operational stock integration finding census after header-only production apply:
+Current operational stock integration finding census after `906730647` production apply:
 
 ```text
-ERROR ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_ENTRY_LEAK            1
-ERROR ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_PRODUCT_COGS_LEAK    1
 ERROR ORDER_ENTRY_MISSING                                   219
 ERROR ORDER_LIFECYCLE_MISSING_COMPLETED                       8
 WARN  ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_QUARANTINED         244
 WARN  ORDER_ENTRY_PRODUCT_IDENTITY_QUARANTINED                23
 ```
 
-The 251-row header-only cleanup is now applied in production. The remaining `906730647` header-only leak now has real API entry evidence and requires a separate de-quarantine/reclassification repair.
+The 251-row header-only cleanup and `906730647` real-entry reclassification are now applied in production.
 
 ## Approval Phrases Needed
 
