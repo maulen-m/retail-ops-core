@@ -28,6 +28,10 @@ ENV_GATE = "ENABLE_GOVERNED_STOCK_REPAIR_WRITE"
 PRODUCTION_ENV_GATE = "ALLOW_PRODUCTION_GOVERNED_STOCK_REPAIR_WRITE"
 DEFAULT_MANIFEST = PROJECT_ROOT / "config" / "governed_stock_repair_events_20260613.json"
 RECEIVED_STATUSES = {"RECEIVED", "ARRIVED", "CLOSED", "DONE"}
+OWNER_APPROVAL_REPAIR_TYPES = {
+    "owner_parent_child_allocation_delta",
+    "owner_manual_stock_fact_delta",
+}
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,35 @@ def _resolve_path(path_text: str) -> Path:
 
 def _load_manifest(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _normalize_path(path: Path) -> Path:
+    return path.expanduser().resolve()
+
+
+def _normalize_evidence_paths(paths: list[Path] | None) -> list[Path]:
+    return [_normalize_path(_resolve_path(str(path))) for path in paths or []]
+
+
+def _is_forbidden_approval_evidence_path(path: Path) -> bool:
+    parts = path.parts
+    return any(
+        parts[index : index + 2] == ("docs", "agent_handoffs")
+        for index in range(max(len(parts) - 1, 0))
+    )
+
+
+def _approval_definitions(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    approvals = manifest.get("approvals") or {}
+    if isinstance(approvals, dict):
+        return {str(key): dict(value or {}) for key, value in approvals.items()}
+    if isinstance(approvals, list):
+        out: dict[str, dict[str, Any]] = {}
+        for item in approvals:
+            if isinstance(item, dict) and item.get("approval_id"):
+                out[str(item["approval_id"])] = dict(item)
+        return out
+    return {}
 
 
 def _read_manual_count_csv(path: Path) -> dict[str, dict[str, str]]:
@@ -179,6 +212,46 @@ def _validate_po_line_repair(conn: sqlite3.Connection, repair: dict[str, Any]) -
     return errors
 
 
+def _validate_owner_approval_repair(
+    repair: dict[str, Any],
+    *,
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    approval_evidence_paths: list[Path],
+) -> list[str]:
+    errors: list[str] = []
+    approval_id = str(repair.get("approval_id") or "").strip()
+    if not approval_id:
+        return ["APPROVAL_ID_MISSING"]
+    approval = _approval_definitions(manifest).get(approval_id)
+    if approval is None:
+        return [f"APPROVAL_DEFINITION_MISSING:{approval_id}"]
+    required_phrase = str(approval.get("required_phrase") or "").strip()
+    if not required_phrase:
+        return [f"APPROVAL_REQUIRED_PHRASE_MISSING:{approval_id}"]
+    if not approval_evidence_paths:
+        return [f"APPROVAL_EVIDENCE_MISSING:{approval_id}"]
+
+    valid_texts: list[str] = []
+    manifest_resolved = _normalize_path(manifest_path)
+    for evidence_path in approval_evidence_paths:
+        if evidence_path == manifest_resolved:
+            errors.append(f"APPROVAL_EVIDENCE_MUST_BE_SEPARATE_FROM_MANIFEST:{approval_id}")
+            continue
+        if _is_forbidden_approval_evidence_path(evidence_path):
+            errors.append(f"APPROVAL_EVIDENCE_HANDOFF_PATH_FORBIDDEN:{approval_id}:{evidence_path}")
+            continue
+        if not evidence_path.exists() or not evidence_path.is_file():
+            errors.append(f"APPROVAL_EVIDENCE_FILE_MISSING:{approval_id}:{evidence_path}")
+            continue
+        valid_texts.append(evidence_path.read_text(encoding="utf-8"))
+    if not valid_texts:
+        return errors or [f"APPROVAL_EVIDENCE_MISSING:{approval_id}"]
+    if not any(required_phrase in text for text in valid_texts):
+        errors.append(f"APPROVAL_EXACT_PHRASE_NOT_FOUND:{approval_id}")
+    return errors
+
+
 def _build_event(
     repair: dict[str, Any],
     *,
@@ -201,8 +274,8 @@ def _build_event(
         "reference_type": str(repair["reference_type"]),
         "kaspi_offer_name": "",
         "notes": str(repair.get("notes") or repair.get("source_basis") or ""),
-        "input_source": "GOVERNED_STOCK_REPAIR_SOURCE_BACKED",
-        "created_by": "orchestrator_greenpath_20260613",
+        "input_source": str(repair.get("input_source") or "GOVERNED_STOCK_REPAIR_SOURCE_BACKED"),
+        "created_by": str(repair.get("created_by") or "orchestrator_greenpath_20260613"),
         "idempotency_key": str(
             repair.get("idempotency_key")
             or f"GOVERNED_STOCK_REPAIR:{manifest_run_id}:{repair_id}"
@@ -215,6 +288,7 @@ def build_governed_stock_repair_plan(
     conn: sqlite3.Connection,
     *,
     manifest_path: Path,
+    approval_evidence_paths: list[Path] | None = None,
 ) -> RepairPlan:
     required = {"stock_ledger"}
     missing = sorted(table for table in required if not _table_exists(conn, table))
@@ -229,6 +303,7 @@ def build_governed_stock_repair_plan(
     manifest = _load_manifest(manifest_path)
     manifest_run_id = str(manifest.get("run_id") or manifest_path.stem)
     repairs = list(manifest.get("repairs") or [])
+    normalized_approval_paths = _normalize_evidence_paths(approval_evidence_paths)
     keys = [
         str(repair.get("idempotency_key") or f"GOVERNED_STOCK_REPAIR:{manifest_run_id}:{repair.get('repair_id')}")
         for repair in repairs
@@ -289,6 +364,15 @@ def build_governed_stock_repair_plan(
             )
         elif repair_type == "po_line_received_delta":
             errors.extend(_validate_po_line_repair(conn, repair))
+        elif repair_type in OWNER_APPROVAL_REPAIR_TYPES:
+            errors.extend(
+                _validate_owner_approval_repair(
+                    repair,
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                    approval_evidence_paths=normalized_approval_paths,
+                )
+            )
         else:
             errors.append(f"UNKNOWN_REPAIR_TYPE:{repair_type}")
 
@@ -311,6 +395,15 @@ def build_governed_stock_repair_plan(
     summary = {
         "manifest_path": str(manifest_path),
         "manifest_run_id": manifest_run_id,
+        "approval_evidence_paths": [str(path) for path in normalized_approval_paths],
+        "approval_ids_required": sorted(
+            {
+                str(repair.get("approval_id"))
+                for repair in repairs
+                if repair.get("repair_type") in OWNER_APPROVAL_REPAIR_TYPES
+                and repair.get("approval_id")
+            }
+        ),
         "repair_count": len(repairs),
         "candidate_event_count": len(events),
         "blocked_count": len(blocked_rows),
@@ -382,6 +475,7 @@ def materialize_governed_stock_repairs(
     manifest_path: Path,
     output_root: Path,
     apply: bool = False,
+    approval_evidence_paths: list[Path] | None = None,
 ) -> dict[str, Any]:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
@@ -394,7 +488,11 @@ def materialize_governed_stock_repairs(
         backup_path = backup_database(db_path, output_root / "backups", compress=False)
 
     with _connect(db_path) as conn:
-        plan = build_governed_stock_repair_plan(conn, manifest_path=manifest_path)
+        plan = build_governed_stock_repair_plan(
+            conn,
+            manifest_path=manifest_path,
+            approval_evidence_paths=approval_evidence_paths,
+        )
         if apply and not plan.is_safe_to_apply:
             raise RuntimeError("Governed stock repair plan is not safe to apply; see blocked rows")
         applied_rows = 0
@@ -431,6 +529,13 @@ def main() -> int:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument(
+        "--approval-evidence",
+        type=Path,
+        action="append",
+        default=[],
+        help="Path to owner approval evidence text. May be repeated.",
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -440,6 +545,7 @@ def main() -> int:
             manifest_path=args.manifest,
             output_root=args.output_root,
             apply=args.apply,
+            approval_evidence_paths=args.approval_evidence,
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

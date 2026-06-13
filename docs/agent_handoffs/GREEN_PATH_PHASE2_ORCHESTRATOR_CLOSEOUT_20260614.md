@@ -35,6 +35,7 @@ Earlier phase checkpoints on this branch:
 - Meta external spend: `docs/agent_handoffs/GREEN_PATH_PHASE2_META_EXTERNAL_SPEND_PROD_APPLY_20260613.md`
 - Ads source truth: `docs/agent_handoffs/GREEN_PATH_PHASE2_ADS_SCOPE_BACKFILL_PROD_APPLY_20260613.md`
 - Stock source-backed repair: `docs/agent_handoffs/GREEN_PATH_PHASE2_STOCK_SOURCE_BACKED_PROD_APPLY_20260614.md`
+- Stock owner-approval remaining dry-run: `docs/agent_handoffs/GREEN_PATH_PHASE2_STOCK_OWNER_APPROVAL_REMAINING_DRYRUN_20260614.md`
 
 ## Production DB Evidence
 
@@ -80,6 +81,13 @@ SUIT-31-TS_XL|UNIVERSAL|-1
 
 Snapshot rebuild still correctly refuses while those rows remain negative.
 
+Prepared approval-gated manifest:
+
+- `config/governed_stock_owner_approval_repairs_20260614.json`
+- No-approval dry-run proof: `exports/validation/orchestrator_stock_owner_approval_remaining_dryrun_20260614/no_approval/`
+- Result: `blocked_count=9`, `candidate_event_count=0`, `applied_rows=0`
+- Approval evidence under `docs/agent_handoffs` is rejected by the materializer so closeouts and starter prompts cannot authorize a write.
+
 ## Approval Phrases Needed
 
 LINE/SUIT parent-child allocation:
@@ -104,4 +112,3 @@ After the owner supplies the exact approval phrase(s), run the same backup-first
 4. Rebuild the stock snapshot for `2026-06-13`.
 5. Replay C3 materialization.
 6. Re-run DB guard, stock validators, source-freshness gate, and daily-ops paused verification.
-

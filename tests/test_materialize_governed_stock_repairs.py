@@ -12,6 +12,21 @@ from scripts.materialize_governed_stock_repairs import (
 )
 
 
+OWNER_ALLOCATION_PHRASE = (
+    "I approve a governed stock allocation contract from the approved parent physical stock pools "
+    "to these compact child stock_ledger rows, effective 2026-06-11T22:00:00+05:00, using the "
+    "2026-06-04 approved manual stock count plus the 2026-06-11 owner-authoritative ADDITION batch "
+    "and the existing compact child article-map evidence as source artifacts. Allocate exactly: "
+    "SUIT-31-LS_3XL +3 from CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL; SUIT-31-LS_XL +2 from "
+    "CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL; SUIT-31-TS_XL +1 from CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL; "
+    "LINE-31-LS_XL +1 from CL_OC_MEN_LINE51_WHITE_XL; LINE-31-TS_XL +1 from "
+    "CL_OC_MEN_LINE51_WHITE_XL; LINE-31-TS_3XL +2 from CL_OC_MEN_LINE51_WHITE_3XL. This "
+    "authorizes a mapping/allocation contract, not invented stock and not a NEGATIVE_CLAMP_* "
+    "repair. It does not authorize Kaspi merchant, pricing, workbook, Telegram, LaunchAgent, "
+    "customer, or operator-message writes."
+)
+
+
 def _create_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -128,6 +143,38 @@ def _write_manifest(path: Path, manual_csv: Path) -> None:
     path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
+def _write_owner_approval_manifest(path: Path) -> None:
+    manifest = {
+        "schema_version": "governed_stock_repair_events.v1",
+        "run_id": "pytest_owner_approval_stock_repair",
+        "approvals": {
+            "LINE_SUIT_PARENT_CHILD_ALLOCATION_20260613": {
+                "required_phrase": OWNER_ALLOCATION_PHRASE,
+            }
+        },
+        "repairs": [
+            {
+                "repair_id": "suit_ls_3xl_allocation",
+                "repair_type": "owner_parent_child_allocation_delta",
+                "approval_id": "LINE_SUIT_PARENT_CHILD_ALLOCATION_20260613",
+                "sku_key": "SUIT-31-LS",
+                "sku_id": "SUIT-31-LS_3XL",
+                "my_size": "3XL",
+                "store_code": "UNIVERSAL",
+                "qty_change": 3,
+                "expected_current_balance": -3,
+                "event_date": "2026-06-11",
+                "event_type": "ADJUSTMENT",
+                "reference_type": "OWNER_APPROVED_PARENT_CHILD_ALLOCATION",
+                "reference_id": "OWNER_APPROVAL:LINE_SUIT_PARENT_CHILD_ALLOCATION_20260613",
+                "input_source": "GOVERNED_STOCK_REPAIR_OWNER_ALLOCATION",
+                "source_basis": "Exact owner-approved parent-child allocation phrase.",
+            }
+        ],
+    }
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def test_governed_stock_repair_is_dry_run_and_apply_gated(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "app.db"
     conn = _create_db(db_path)
@@ -235,3 +282,82 @@ def test_governed_stock_repair_blocks_when_balance_drifted(tmp_path: Path) -> No
 
     assert plan.summary["blocked_count"] == 2
     assert any("CURRENT_BALANCE_MISMATCH" in row["errors"] for row in plan.blocked_rows)
+
+
+def test_owner_approval_repair_requires_separate_exact_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _create_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO stock_ledger (
+            event_date, event_type, sku_key, sku_id, my_size, store_code,
+            qty_change, reference_type, reference_id
+        ) VALUES ('2026-06-13', 'SALE', 'SUIT-31-LS',
+                  'SUIT-31-LS_3XL', '3XL', 'UNIVERSAL',
+                  -3, 'SALE', 'ORDER-1')
+        """
+    )
+    conn.commit()
+    manifest = tmp_path / "owner_manifest.json"
+    _write_owner_approval_manifest(manifest)
+
+    no_evidence_plan = build_governed_stock_repair_plan(conn, manifest_path=manifest)
+    assert no_evidence_plan.summary["candidate_event_count"] == 0
+    assert no_evidence_plan.summary["blocked_count"] == 1
+    assert "APPROVAL_EVIDENCE_MISSING" in no_evidence_plan.blocked_rows[0]["errors"]
+
+    handoff_evidence = tmp_path / "docs" / "agent_handoffs" / "closeout.md"
+    handoff_evidence.parent.mkdir(parents=True)
+    handoff_evidence.write_text(OWNER_ALLOCATION_PHRASE, encoding="utf-8")
+    handoff_plan = build_governed_stock_repair_plan(
+        conn,
+        manifest_path=manifest,
+        approval_evidence_paths=[handoff_evidence],
+    )
+    assert "APPROVAL_EVIDENCE_HANDOFF_PATH_FORBIDDEN" in handoff_plan.blocked_rows[0]["errors"]
+
+    wrong_evidence = tmp_path / "owner_chat_wrong.txt"
+    wrong_evidence.write_text("owner said okay, but not the exact phrase", encoding="utf-8")
+    wrong_plan = build_governed_stock_repair_plan(
+        conn,
+        manifest_path=manifest,
+        approval_evidence_paths=[wrong_evidence],
+    )
+    assert "APPROVAL_EXACT_PHRASE_NOT_FOUND" in wrong_plan.blocked_rows[0]["errors"]
+
+    exact_evidence = tmp_path / "owner_chat_exact.txt"
+    exact_evidence.write_text(f"Owner message:\n{OWNER_ALLOCATION_PHRASE}\n", encoding="utf-8")
+    exact_plan = build_governed_stock_repair_plan(
+        conn,
+        manifest_path=manifest,
+        approval_evidence_paths=[exact_evidence],
+    )
+    assert exact_plan.summary["candidate_event_count"] == 1
+    assert exact_plan.summary["blocked_count"] == 0
+    assert exact_plan.events[0]["input_source"] == "GOVERNED_STOCK_REPAIR_OWNER_ALLOCATION"
+
+    dry = materialize_governed_stock_repairs(
+        db_path=db_path,
+        manifest_path=manifest,
+        output_root=tmp_path / "dry_owner",
+        approval_evidence_paths=[exact_evidence],
+    )
+    assert dry["summary"]["candidate_event_count"] == 1
+    assert dry["summary"]["applied_rows"] == 0
+
+    monkeypatch.setenv(ENV_GATE, "1")
+    applied = materialize_governed_stock_repairs(
+        db_path=db_path,
+        manifest_path=manifest,
+        output_root=tmp_path / "apply_owner",
+        approval_evidence_paths=[exact_evidence],
+        apply=True,
+    )
+    assert applied["summary"]["applied_rows"] == 1
+    balance = sqlite3.connect(str(db_path)).execute(
+        "SELECT SUM(qty_change) FROM stock_ledger WHERE sku_id='SUIT-31-LS_3XL'"
+    ).fetchone()[0]
+    assert balance == 0
