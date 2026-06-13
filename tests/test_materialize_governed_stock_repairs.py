@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
 
+import scripts.materialize_governed_stock_repairs as stock_repairs
 from scripts.materialize_governed_stock_repairs import (
     ENV_GATE,
+    PRODUCTION_ENV_GATE,
     build_governed_stock_repair_plan,
     materialize_governed_stock_repairs,
 )
@@ -73,6 +76,14 @@ def _create_db(path: Path) -> sqlite3.Connection:
         """
     )
     return conn
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _write_manual_count(path: Path) -> None:
@@ -361,3 +372,109 @@ def test_owner_approval_repair_requires_separate_exact_evidence(
         "SELECT SUM(qty_change) FROM stock_ledger WHERE sku_id='SUIT-31-LS_3XL'"
     ).fetchone()[0]
     assert balance == 0
+
+
+def test_production_governed_stock_repair_requires_expected_sha_and_backup_dir(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _create_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO stock_ledger (
+            event_date, event_type, sku_key, sku_id, my_size, store_code,
+            qty_change, reference_type, reference_id
+        ) VALUES ('2026-06-13', 'SALE', 'SUIT-31-LS',
+                  'SUIT-31-LS_3XL', '3XL', 'UNIVERSAL',
+                  -3, 'SALE', 'ORDER-1')
+        """
+    )
+    conn.commit()
+    conn.close()
+    manifest = tmp_path / "owner_manifest.json"
+    evidence = tmp_path / "owner_approval.txt"
+    _write_owner_approval_manifest(manifest)
+    evidence.write_text(OWNER_ALLOCATION_PHRASE, encoding="utf-8")
+
+    monkeypatch.setattr(stock_repairs, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setenv(ENV_GATE, "1")
+    monkeypatch.setenv(PRODUCTION_ENV_GATE, "1")
+
+    try:
+        materialize_governed_stock_repairs(
+            db_path=db_path,
+            manifest_path=manifest,
+            output_root=tmp_path / "missing_sha",
+            approval_evidence_paths=[evidence],
+            backup_dir=tmp_path / "backups",
+            apply=True,
+        )
+    except RuntimeError as exc:
+        assert "expected-pre-sha256" in str(exc)
+    else:
+        raise AssertionError("production governed stock repair should require expected SHA")
+
+    try:
+        materialize_governed_stock_repairs(
+            db_path=db_path,
+            manifest_path=manifest,
+            output_root=tmp_path / "missing_backup",
+            approval_evidence_paths=[evidence],
+            expected_pre_sha256=_sha256(db_path),
+            apply=True,
+        )
+    except RuntimeError as exc:
+        assert "backup-dir" in str(exc)
+    else:
+        raise AssertionError("production governed stock repair should require backup dir")
+
+
+def test_production_governed_stock_repair_records_backup_and_integrity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _create_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO stock_ledger (
+            event_date, event_type, sku_key, sku_id, my_size, store_code,
+            qty_change, reference_type, reference_id
+        ) VALUES ('2026-06-13', 'SALE', 'SUIT-31-LS',
+                  'SUIT-31-LS_3XL', '3XL', 'UNIVERSAL',
+                  -3, 'SALE', 'ORDER-1')
+        """
+    )
+    conn.commit()
+    conn.close()
+    manifest = tmp_path / "owner_manifest.json"
+    evidence = tmp_path / "owner_approval.txt"
+    _write_owner_approval_manifest(manifest)
+    evidence.write_text(OWNER_ALLOCATION_PHRASE, encoding="utf-8")
+
+    monkeypatch.setattr(stock_repairs, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setenv(ENV_GATE, "1")
+    monkeypatch.setenv(PRODUCTION_ENV_GATE, "1")
+    pre_sha = _sha256(db_path)
+
+    result = materialize_governed_stock_repairs(
+        db_path=db_path,
+        manifest_path=manifest,
+        output_root=tmp_path / "apply",
+        approval_evidence_paths=[evidence],
+        expected_pre_sha256=pre_sha,
+        backup_dir=tmp_path / "backups",
+        apply=True,
+    )
+
+    summary = result["summary"]
+    assert summary["applied_rows"] == 1
+    assert summary["production_apply"] is True
+    assert summary["production_db_modified"] is True
+    assert summary["expected_pre_sha256"] == pre_sha
+    assert summary["pre_sha256"] == pre_sha
+    assert summary["post_sha256"] != pre_sha
+    assert Path(summary["backup_path"]).exists()
+    assert len(summary["backup_sha256"]) == 64
+    assert summary["integrity_check"] == {"before": "ok", "backup": "ok", "after": "ok"}

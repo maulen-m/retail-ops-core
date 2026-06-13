@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -117,6 +118,40 @@ def _as_int(value: Any) -> int:
 
 def _upper(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def _file_sha256(path: Path) -> str:
+    if not path.exists():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_integrity_check(path: Path) -> str:
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+    return str(row[0] if row else "")
+
+
+def _sidecar_paths(db_path: Path) -> list[Path]:
+    return [Path(f"{db_path}-wal"), Path(f"{db_path}-shm"), Path(f"{db_path}-journal")]
+
+
+def _fail_on_sqlite_sidecars(db_path: Path) -> None:
+    existing = [path for path in _sidecar_paths(db_path) if path.exists()]
+    if existing:
+        joined = ", ".join(str(path) for path in existing)
+        raise RuntimeError(f"refusing production apply while SQLite sidecars exist: {joined}")
+
+
+def _is_production_db(db_path: Path) -> bool:
+    try:
+        return db_path.resolve() == DEFAULT_DB_PATH.resolve()
+    except FileNotFoundError:
+        return db_path.absolute() == DEFAULT_DB_PATH.absolute()
 
 
 def _current_balances(conn: sqlite3.Connection) -> dict[tuple[str, str], int]:
@@ -462,11 +497,24 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow(row)
 
 
-def _assert_apply_allowed(db_path: Path) -> None:
+def _assert_apply_allowed(
+    db_path: Path,
+    *,
+    expected_pre_sha256: str | None,
+    backup_dir: Path | None,
+) -> bool:
     if os.environ.get(ENV_GATE) != "1":
         raise RuntimeError(f"{ENV_GATE}=1 is required for --apply")
-    if db_path.resolve() == DEFAULT_DB_PATH.resolve() and os.environ.get(PRODUCTION_ENV_GATE) != "1":
+    production = _is_production_db(db_path)
+    if production and os.environ.get(PRODUCTION_ENV_GATE) != "1":
         raise RuntimeError(f"{PRODUCTION_ENV_GATE}=1 is required for production DB apply")
+    if production and not expected_pre_sha256:
+        raise RuntimeError("--expected-pre-sha256 is required for production DB apply")
+    if production and backup_dir is None:
+        raise RuntimeError("--backup-dir is required for production DB apply")
+    if production:
+        _fail_on_sqlite_sidecars(db_path)
+    return production
 
 
 def materialize_governed_stock_repairs(
@@ -476,6 +524,8 @@ def materialize_governed_stock_repairs(
     output_root: Path,
     apply: bool = False,
     approval_evidence_paths: list[Path] | None = None,
+    expected_pre_sha256: str | None = None,
+    backup_dir: Path | None = None,
 ) -> dict[str, Any]:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
@@ -483,9 +533,28 @@ def materialize_governed_stock_repairs(
         raise FileNotFoundError(f"manifest not found: {manifest_path}")
 
     backup_path: Path | None = None
+    backup_sha256 = ""
+    backup_integrity: str | None = None
+    pre_sha256 = _file_sha256(db_path)
+    integrity_before = _sqlite_integrity_check(db_path)
+    production_apply = False
     if apply:
-        _assert_apply_allowed(db_path)
-        backup_path = backup_database(db_path, output_root / "backups", compress=False)
+        production_apply = _assert_apply_allowed(
+            db_path,
+            expected_pre_sha256=expected_pre_sha256,
+            backup_dir=backup_dir,
+        )
+        if integrity_before.lower() != "ok":
+            raise RuntimeError(f"pre-write integrity_check failed: {integrity_before}")
+        if expected_pre_sha256 and pre_sha256 != expected_pre_sha256:
+            raise RuntimeError(
+                f"pre-write SHA mismatch: expected {expected_pre_sha256}, got {pre_sha256}"
+            )
+        backup_path = backup_database(db_path, backup_dir or (output_root / "backups"), compress=False)
+        backup_sha256 = _file_sha256(backup_path)
+        backup_integrity = _sqlite_integrity_check(backup_path)
+        if backup_integrity.lower() != "ok":
+            raise RuntimeError(f"backup integrity_check failed: {backup_integrity}")
 
     with _connect(db_path) as conn:
         plan = build_governed_stock_repair_plan(
@@ -500,12 +569,25 @@ def materialize_governed_stock_repairs(
             applied_rows = _apply_events(conn, plan.events)
             conn.commit()
 
+    post_sha256 = _file_sha256(db_path)
+    integrity_after = _sqlite_integrity_check(db_path)
     summary = {
         **plan.summary,
         "applied": apply,
         "applied_rows": applied_rows,
         "db_path": str(db_path),
         "backup_path": str(backup_path) if backup_path else None,
+        "backup_sha256": backup_sha256,
+        "expected_pre_sha256": expected_pre_sha256,
+        "pre_sha256": pre_sha256,
+        "post_sha256": post_sha256,
+        "production_apply": production_apply,
+        "production_db_modified": bool(production_apply and applied_rows > 0),
+        "integrity_check": {
+            "before": integrity_before,
+            "backup": backup_integrity,
+            "after": integrity_after,
+        },
     }
     payload = {
         "summary": summary,
@@ -537,6 +619,8 @@ def main() -> int:
         help="Path to owner approval evidence text. May be repeated.",
     )
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--expected-pre-sha256")
+    parser.add_argument("--backup-dir", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     try:
@@ -546,6 +630,8 @@ def main() -> int:
             output_root=args.output_root,
             apply=args.apply,
             approval_evidence_paths=args.approval_evidence,
+            expected_pre_sha256=args.expected_pre_sha256,
+            backup_dir=args.backup_dir,
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
