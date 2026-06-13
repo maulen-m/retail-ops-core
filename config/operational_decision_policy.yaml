@@ -63,9 +63,9 @@ purchase_order_truth:
   open_supplier_obligations_block_cashflow_green: true
 
 cashflow_truth:
-  manual_balance_latest_path: ~/Docs/Autonomous_business/config/bank_accounts_manual_ingest_3.5.2026.yaml
+  manual_balance_latest_path: ~/Docs/Autonomous_business/config/bank_accounts.yaml
   bank_balance_manual_review_max_age_days: 7
-  owner_cash_reserve_min_kzt: 1500000
+  owner_cash_reserve_min_kzt: 800000
   kaspi_pay_payout_after_customer_receipt_minutes_expected: 1
   unknown_supplier_or_cargo_obligations_block_cashflow_green: true
 

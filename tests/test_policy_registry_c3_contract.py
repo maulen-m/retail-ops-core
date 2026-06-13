@@ -326,6 +326,16 @@ def test_policy_promotion_is_deterministic_idempotent_and_detects_yaml_drift(
         ).fetchone()["value_json"]
         assert json.loads(ads_value) == ["ACMEWEAR", "STOREB"]
 
+        bank_source = conn.execute(
+            """
+            SELECT source_path
+            FROM policy_source_registry
+            WHERE policy_source_id = 'src_bank_manual_ingest'
+              AND active_to IS NULL
+            """
+        ).fetchone()["source_path"]
+        assert bank_source.endswith("/config/bank_accounts.yaml")
+
         conn.execute(
             """
             UPDATE policy_value

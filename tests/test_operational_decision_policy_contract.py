@@ -66,7 +66,8 @@ def test_decision_thresholds_protect_capital_and_profit_publication() -> None:
     assert publication["negative_active_stock_action"] == "normalize_to_zero_and_raise_exception"
 
     cash = policy["cashflow_truth"]
-    assert cash["owner_cash_reserve_min_kzt"] == 1_500_000
+    assert cash["manual_balance_latest_path"].endswith("/config/bank_accounts.yaml")
+    assert cash["owner_cash_reserve_min_kzt"] == 800_000
     assert cash["bank_balance_manual_review_max_age_days"] <= 7
 
 
