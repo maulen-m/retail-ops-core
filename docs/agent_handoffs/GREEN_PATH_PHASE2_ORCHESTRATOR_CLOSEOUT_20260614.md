@@ -26,7 +26,7 @@ No Kaspi merchant, pricing, Telegram, LaunchAgent, workbook, customer, or operat
 - `14311b0 fix: backfill ads source truth`
 - `b849ef6 feat: apply governed stock source repairs`
 - `48f7e93 fix: apply header-only quarantine safely`
-- pending current commit: 906730647 real-entry reclassification
+- `3609334 fix: reclassify header-only order with real entry`
 
 Earlier phase checkpoints on this branch:
 
