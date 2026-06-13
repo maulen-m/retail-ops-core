@@ -9,6 +9,7 @@ from scripts import validate_params as vp
 def test_upsert_fx_rates_seed_and_validate(tmp_path):
     db_path = Path(tmp_path) / "app.db"
     db_path.touch()
+    backup_dir = Path(tmp_path) / "backups"
 
     fx = build_fx_input(
         effective_date=date.today(),
@@ -21,7 +22,15 @@ def test_upsert_fx_rates_seed_and_validate(tmp_path):
         source="pytest",
         force=False,
     )
-    upsert_fx_rates(fx, db_path=db_path)
+    result = upsert_fx_rates(
+        fx,
+        db_path=db_path,
+        apply=True,
+        backup_dir=backup_dir,
+        env_gate_value="1",
+    )
+    assert result["applied"] is True
+    assert Path(str(result["backup_path"])).exists()
 
     conn = sqlite3.connect(str(db_path))
     try:

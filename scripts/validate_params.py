@@ -124,12 +124,14 @@ def validate_fx_rates(conn: sqlite3.Connection, result: ValidationResult, *, as_
 
     today = as_of or date.today().isoformat()
     seed_cmd = (
-        "python3 scripts/upsert_fx_rates.py "
+        "ENABLE_FX_RATES_WRITE=1 python3 scripts/upsert_fx_rates.py "
         f"--effective-date {today} "
         "--usdt-kzt 510 --usdt-cny 6.80 "
         "--usd-kzt 514 --dlv-rate-usd-kg 2.66 "
         "--provider MANUAL "
-        "--source \"Binance P2P + BestChange\""
+        "--source \"Binance P2P + BestChange\" "
+        "--backup-dir exports/validation/fx_rates_seed/backups "
+        "--apply"
     )
 
     # Check if table exists

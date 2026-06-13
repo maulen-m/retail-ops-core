@@ -20,7 +20,7 @@ This script is intentionally:
 Usage examples
 --------------
 
-Seed today's rates (Asia/Almaty date):
+Validate today's rates without writing (Asia/Almaty date):
 
     python scripts/upsert_fx_rates.py \
       --usdt-kzt 510 \
@@ -30,20 +30,24 @@ Seed today's rates (Asia/Almaty date):
       --provider MANUAL \
       --source "Binance P2P (median-bottom) + BestChange + Google"
 
-Backfill a prior date:
+Apply a prior date after taking a DB backup:
 
-    python scripts/upsert_fx_rates.py \
+    ENABLE_FX_RATES_WRITE=1 python scripts/upsert_fx_rates.py \
       --effective-date 2025-12-26 \
       --usdt-kzt 508 \
       --usdt-cny 6.80 \
       --usd-kzt 512 \
-      --dlv-rate-usd-kg 2.66
+      --dlv-rate-usd-kg 2.66 \
+      --backup-dir backups/fx_rates \
+      --apply
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
+import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -56,9 +60,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db import get_db  # noqa: E402
+from scripts.backup_db import backup_database  # noqa: E402
 
 
 DB_PATH = PROJECT_ROOT / "db" / "app.db"
+ENV_GATE = "ENABLE_FX_RATES_WRITE"
 
 
 def _today_almaty() -> date:
@@ -224,25 +230,58 @@ def build_fx_input(
     )
 
 
-def upsert_fx_rates(fx: FxInput, db_path: Path = DB_PATH, dry_run: bool = False) -> None:
+def _log_fx_plan(fx: FxInput, *, prefix: str) -> None:
+    logging.info("%s: would upsert dim_fx_rates row:", prefix)
+    logging.info(f"  effective_date={fx.effective_date.isoformat()}")
+    logging.info(f"  usdt_kzt={fx.usdt_kzt}")
+    logging.info(f"  usdt_cny={fx.usdt_cny}")
+    logging.info(f"  cny_kzt={fx.cny_kzt:.6f}")
+    logging.info(f"  usd_kzt={fx.usd_kzt}")
+    logging.info(f"  dlv_rate_usd_kg={fx.dlv_rate_usd_kg}")
+    logging.info(f"  provider={fx.provider}")
+    logging.info(f"  source={fx.source}")
+
+
+def upsert_fx_rates(
+    fx: FxInput,
+    db_path: Path = DB_PATH,
+    dry_run: bool = False,
+    *,
+    apply: bool = False,
+    backup_dir: Optional[Path] = None,
+    env_gate_value: Optional[str] = None,
+) -> dict[str, object]:
     if not db_path.exists():
         raise FileNotFoundError(
             f"Database not found: {db_path}\n"
             "Create it first with: python scripts/bootstrap_db.py"
         )
+    if dry_run and apply:
+        raise ValueError("--dry-run and --apply are mutually exclusive")
+    if not apply:
+        prefix = "DRY RUN" if dry_run else "NO WRITE"
+        _log_fx_plan(fx, prefix=prefix)
+        logging.info(
+            "No DB writes performed. To apply, pass --apply with %s=1 and --backup-dir.",
+            ENV_GATE,
+        )
+        return {
+            "applied": False,
+            "backup_path": None,
+            "effective_date": fx.effective_date.isoformat(),
+        }
+
+    gate_value = env_gate_value if env_gate_value is not None else os.environ.get(ENV_GATE)
+    if gate_value != "1":
+        raise RuntimeError(f"{ENV_GATE}=1 is required with --apply")
+    if backup_dir is None:
+        raise RuntimeError("--backup-dir is required with --apply")
+
+    backup_path = backup_database(db_path, Path(backup_dir), compress=False)
+    logging.info("Pre-apply DB backup created: %s", backup_path)
+
     with get_db(db_path) as conn:
         _ensure_dim_fx_rates_schema(conn)
-        if dry_run:
-            logging.info("DRY RUN: would upsert dim_fx_rates row:")
-            logging.info(f"  effective_date={fx.effective_date.isoformat()}")
-            logging.info(f"  usdt_kzt={fx.usdt_kzt}")
-            logging.info(f"  usdt_cny={fx.usdt_cny}")
-            logging.info(f"  cny_kzt={fx.cny_kzt:.6f}")
-            logging.info(f"  usd_kzt={fx.usd_kzt}")
-            logging.info(f"  dlv_rate_usd_kg={fx.dlv_rate_usd_kg}")
-            logging.info(f"  provider={fx.provider}")
-            logging.info(f"  source={fx.source}")
-            return
         conn.execute(
             """
             INSERT OR REPLACE INTO dim_fx_rates (
@@ -278,12 +317,33 @@ def upsert_fx_rates(fx: FxInput, db_path: Path = DB_PATH, dry_run: bool = False)
             f"USD/KZT={fx.usd_kzt:.2f} | "
             f"DLV_USD_KG={fx.dlv_rate_usd_kg:.4f}"
         )
+    return {
+        "applied": True,
+        "backup_path": str(backup_path),
+        "effective_date": fx.effective_date.isoformat(),
+    }
+
+
+def _connect_readonly(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def show_latest(db_path: Path = DB_PATH) -> None:
     if not db_path.exists():
         raise FileNotFoundError(f"Database not found: {db_path}")
-    with get_db(db_path) as conn:
+    with _connect_readonly(db_path) as conn:
+        table = conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table' AND name='dim_fx_rates'
+            """
+        ).fetchone()
+        if not table:
+            print("dim_fx_rates table does not exist.")
+            return
         cursor = conn.execute(
             """
             SELECT
@@ -311,7 +371,7 @@ def show_latest(db_path: Path = DB_PATH) -> None:
             )
 
 
-def main() -> int:
+def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Upsert daily FX rates into dim_fx_rates",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -340,7 +400,25 @@ def main() -> int:
     )
     parser.add_argument("--provider", type=str, default="MANUAL", help="Rate provider label")
     parser.add_argument("--source", type=str, default="", help="Free-text provenance")
-    parser.add_argument("--dry-run", action="store_true", help="Validate only; do not write")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Explicit no-write validation; also the default when --apply is omitted",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help=f"Write the row. Requires {ENV_GATE}=1 and --backup-dir.",
+    )
+    parser.add_argument(
+        "--backup-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Required with --apply. Directory where scripts.backup_db.backup_database() "
+            "creates the pre-apply DB backup."
+        ),
+    )
     parser.add_argument(
         "--show-latest",
         action="store_true",
@@ -352,8 +430,12 @@ def main() -> int:
         help="Allow out-of-range or inconsistent inputs (dangerous; logged)",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
-    args = parser.parse_args()
+    args = parser.parse_args(list(argv) if argv is not None else None)
     setup_logging(args.verbose)
+    if args.apply and args.dry_run:
+        parser.error("--apply and --dry-run are mutually exclusive")
+    if args.apply and args.backup_dir is None:
+        parser.error("--backup-dir is required with --apply")
     if args.show_latest:
         show_latest(args.db)
         return 0
@@ -371,18 +453,28 @@ def main() -> int:
     if missing:
         parser.error("Missing required args: " + ", ".join(missing))
     eff = args.effective_date or _today_almaty()
-    fx = build_fx_input(
-        effective_date=eff,
-        usdt_kzt=float(args.usdt_kzt),
-        usdt_cny=float(args.usdt_cny),
-        usd_kzt=float(args.usd_kzt),
-        dlv_rate_usd_kg=float(args.dlv_rate_usd_kg),
-        cny_kzt=args.cny_kzt,
-        provider=args.provider,
-        source=args.source,
-        force=args.force,
-    )
-    upsert_fx_rates(fx, db_path=args.db, dry_run=args.dry_run)
+    try:
+        fx = build_fx_input(
+            effective_date=eff,
+            usdt_kzt=float(args.usdt_kzt),
+            usdt_cny=float(args.usdt_cny),
+            usd_kzt=float(args.usd_kzt),
+            dlv_rate_usd_kg=float(args.dlv_rate_usd_kg),
+            cny_kzt=args.cny_kzt,
+            provider=args.provider,
+            source=args.source,
+            force=args.force,
+        )
+        upsert_fx_rates(
+            fx,
+            db_path=args.db,
+            dry_run=args.dry_run,
+            apply=args.apply,
+            backup_dir=args.backup_dir,
+        )
+    except Exception as exc:
+        logging.error("%s", exc)
+        return 1
     return 0
 
 
