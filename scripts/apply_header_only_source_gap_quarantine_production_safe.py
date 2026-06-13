@@ -2,9 +2,10 @@
 """Production-safe wrapper for the STOREB header-only source-gap quarantine.
 
 The direct header-only materializer is intentionally temp-only. This wrapper
-keeps that boundary intact by applying the materializer to a staging copy,
-proving exact deltas, and replacing the requested DB only after backup, SHA,
-sidecar, and integrity gates pass.
+keeps that boundary intact by proving exact deltas on a SQLite-backup staging
+copy first, then applying the same materializer in place to the requested DB
+only after backup, SHA, sidecar, and integrity gates pass. It never swaps a
+staging DB file over the target.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sqlite3
 import sys
 from typing import Any
@@ -30,6 +30,7 @@ from scripts.materialize_header_only_source_gap_quarantine import (  # noqa: E40
     HeaderOnlySourceGapQuarantineError,
     materialize_header_only_source_gap_quarantine,
 )
+from scripts.backup_db import backup_database  # noqa: E402
 
 
 PRODUCTION_ENV_GATE = "ENABLE_HEADER_ONLY_SOURCE_GAP_QUARANTINE_PRODUCTION_APPLY"
@@ -70,24 +71,12 @@ def _fail_on_sqlite_sidecars(db_path: Path) -> None:
     if existing:
         joined = ", ".join(str(path) for path in existing)
         raise ProductionHeaderOnlySourceGapQuarantineApplyError(
-            f"refusing file replacement while SQLite sidecars exist: {joined}"
+            f"refusing production apply while SQLite sidecars exist: {joined}"
         )
 
 
-def _copy_or_raise(source: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
-    if not target.exists():
-        raise ProductionHeaderOnlySourceGapQuarantineApplyError(f"required copy was not created: {target}")
-
-
-def _verify_copy(*, source_sha256: str, copied_path: Path, label: str) -> str:
-    copied_sha256 = _sha256(copied_path)
-    if copied_sha256 != source_sha256:
-        raise ProductionHeaderOnlySourceGapQuarantineApplyError(
-            f"{label} SHA mismatch: expected {source_sha256}, got {copied_sha256}"
-        )
-    integrity = _integrity_check(copied_path)
+def _verify_sqlite_database(*, path: Path, label: str) -> str:
+    integrity = _integrity_check(path)
     if integrity.lower() != "ok":
         raise ProductionHeaderOnlySourceGapQuarantineApplyError(
             f"{label} integrity_check failed: {integrity}"
@@ -156,14 +145,29 @@ def _write_summary(output_root: Path, summary: dict[str, Any]) -> Path:
     return summary_path
 
 
-def _backup_path_for(db_path: Path, backup_dir: Path, generated_at: str) -> Path:
-    safe_ts = generated_at.replace(":", "").replace("-", "").replace("+", "_").replace("T", "_")
-    return backup_dir / f"{db_path.stem}_pre_header_only_source_gap_quarantine_{safe_ts}{db_path.suffix}"
+def _sqlite_backup_copy(*, source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    with sqlite3.connect(str(source)) as source_conn, sqlite3.connect(str(target)) as target_conn:
+        source_conn.backup(target_conn)
 
 
 def _staging_path_for(db_path: Path, output_root: Path, generated_at: str) -> Path:
     safe_ts = generated_at.replace(":", "").replace("-", "").replace("+", "_").replace("T", "_")
     return output_root / "staging" / f"{db_path.stem}_header_only_source_gap_quarantine_staging_{safe_ts}{db_path.suffix}"
+
+
+def _restore_command(*, backup_path: Path, target_db: Path) -> str:
+    return (
+        "python3 - <<'PY'\n"
+        "import sqlite3\n"
+        f"backup_path = {str(backup_path)!r}\n"
+        f"target_db = {str(target_db)!r}\n"
+        "with sqlite3.connect(backup_path) as source, sqlite3.connect(target_db) as target:\n"
+        "    source.backup(target)\n"
+        "PY"
+    )
 
 
 def apply_header_only_source_gap_quarantine_production_safe(
@@ -265,6 +269,7 @@ def apply_header_only_source_gap_quarantine_production_safe(
             "applied": False,
             "target_replaced": False,
             "staging_path": None,
+            "write_mode": "dry_run",
         },
         "materializer_summary": dry_run_summary,
         "production_db_target": production_target,
@@ -284,25 +289,65 @@ def apply_header_only_source_gap_quarantine_production_safe(
 
     _fail_on_sqlite_sidecars(target_db)
 
-    backup_path = _backup_path_for(target_db, backups, generated_at)
+    backup_path = backup_database(target_db, backups, compress=False)
+    if not backup_path.exists():
+        raise ProductionHeaderOnlySourceGapQuarantineApplyError(f"required backup was not created: {backup_path}")
+    backup_integrity = _verify_sqlite_database(path=backup_path, label="backup")
+
     staging_path = _staging_path_for(target_db, output, generated_at)
-    _copy_or_raise(target_db, backup_path)
-    backup_integrity = _verify_copy(source_sha256=pre_sha256, copied_path=backup_path, label="backup")
-    _copy_or_raise(target_db, staging_path)
-    staging_integrity_before = _verify_copy(
-        source_sha256=pre_sha256,
-        copied_path=staging_path,
-        label="staging",
+    _sqlite_backup_copy(source=target_db, target=staging_path)
+    staging_sha256_before = _sha256(staging_path)
+    staging_integrity_before = _verify_sqlite_database(path=staging_path, label="staging")
+
+    previous_temp_gate = os.environ.get(TEMP_ENV_GATE)
+    os.environ[TEMP_ENV_GATE] = "1"
+    try:
+        staging_materializer_summary = materialize_header_only_source_gap_quarantine(
+            db_path=staging_path,
+            classification_path=classification,
+            output_root=output / "materializer_staging_apply",
+            apply=True,
+        )
+    except HeaderOnlySourceGapQuarantineError as exc:
+        raise ProductionHeaderOnlySourceGapQuarantineApplyError(str(exc)) from exc
+    finally:
+        if previous_temp_gate is None:
+            os.environ.pop(TEMP_ENV_GATE, None)
+        else:
+            os.environ[TEMP_ENV_GATE] = previous_temp_gate
+
+    staging_actual_deltas = _validate_expected_deltas(
+        materializer_summary=staging_materializer_summary,
+        expected_deltas=expected_deltas,
     )
+    cash_in_after_staging = _cash_in_count(staging_path, order_ids)
+    if cash_in_after_staging != cash_in_before:
+        raise ProductionHeaderOnlySourceGapQuarantineApplyError(
+            f"staging order-level CASH_IN preservation failed: before {cash_in_before}, "
+            f"after {cash_in_after_staging}"
+        )
+    staging_sha256_after = _sha256(staging_path)
+    staging_integrity_after = _integrity_check(staging_path)
+    if staging_integrity_after.lower() != "ok":
+        raise ProductionHeaderOnlySourceGapQuarantineApplyError(
+            f"post-write integrity_check failed on staging: {staging_integrity_after}"
+        )
+
+    current_sha256 = _sha256(target_db)
+    if current_sha256 != expected_pre_sha256:
+        raise ProductionHeaderOnlySourceGapQuarantineApplyError(
+            f"target changed before apply: expected {expected_pre_sha256}, got {current_sha256}"
+        )
 
     previous_temp_gate = os.environ.get(TEMP_ENV_GATE)
     os.environ[TEMP_ENV_GATE] = "1"
     try:
         materializer_summary = materialize_header_only_source_gap_quarantine(
-            db_path=staging_path,
+            db_path=target_db,
             classification_path=classification,
             output_root=output / "materializer_apply",
             apply=True,
+            allow_production_apply=True,
         )
     except HeaderOnlySourceGapQuarantineError as exc:
         raise ProductionHeaderOnlySourceGapQuarantineApplyError(str(exc)) from exc
@@ -316,40 +361,30 @@ def apply_header_only_source_gap_quarantine_production_safe(
         materializer_summary=materializer_summary,
         expected_deltas=expected_deltas,
     )
+    if actual_deltas != staging_actual_deltas:
+        raise ProductionHeaderOnlySourceGapQuarantineApplyError(
+            f"production deltas diverged from staging proof: staging {staging_actual_deltas}, "
+            f"production {actual_deltas}"
+        )
 
-    cash_in_after = _cash_in_count(staging_path, order_ids)
+    cash_in_after = _cash_in_count(target_db, order_ids)
     if cash_in_after != cash_in_before:
         raise ProductionHeaderOnlySourceGapQuarantineApplyError(
             f"order-level CASH_IN preservation failed: before {cash_in_before}, after {cash_in_after}"
         )
 
-    staging_sha256_after = _sha256(staging_path)
-    staging_integrity_after = _integrity_check(staging_path)
-    if staging_integrity_after.lower() != "ok":
-        raise ProductionHeaderOnlySourceGapQuarantineApplyError(
-            f"post-write integrity_check failed on staging: {staging_integrity_after}"
-        )
-
-    _fail_on_sqlite_sidecars(target_db)
-    current_sha256 = _sha256(target_db)
-    if current_sha256 != expected_pre_sha256:
-        raise ProductionHeaderOnlySourceGapQuarantineApplyError(
-            f"target changed before replace: expected {expected_pre_sha256}, got {current_sha256}"
-        )
-
-    os.replace(staging_path, target_db)
     final_sha256 = _sha256(target_db)
     final_integrity = _integrity_check(target_db)
     if final_integrity.lower() != "ok":
         raise ProductionHeaderOnlySourceGapQuarantineApplyError(
-            f"post-replace integrity_check failed: {final_integrity}"
+            f"post-apply integrity_check failed: {final_integrity}"
         )
 
     summary.update(
         {
             "backup_path": str(backup_path),
             "backup_sha256": _sha256(backup_path),
-            "staging_sha256_before_apply": pre_sha256,
+            "staging_sha256_before_apply": staging_sha256_before,
             "staging_sha256_after_apply": staging_sha256_after,
             "actual": actual_deltas,
             "post_sha256": final_sha256,
@@ -369,16 +404,18 @@ def apply_header_only_source_gap_quarantine_production_safe(
             "apply": {
                 "requested": True,
                 "applied": True,
-                "target_replaced": True,
+                "target_replaced": False,
                 "staging_path": str(staging_path),
+                "write_mode": "sqlite_in_place",
             },
             "materializer_summary": materializer_summary,
+            "staging_materializer_summary": staging_materializer_summary,
             "production_db_modified": production_target,
             "fact_order_entries_inserted": 0,
             "header_fields_used_as_canonical_item_entry_truth": False,
             "rollback": {
                 "backup_path": str(backup_path),
-                "restore_command": f"cp {backup_path} {target_db}",
+                "restore_command": _restore_command(backup_path=backup_path, target_db=target_db),
                 "verify_command": f"sqlite3 -readonly {target_db} 'PRAGMA integrity_check;'",
             },
         }

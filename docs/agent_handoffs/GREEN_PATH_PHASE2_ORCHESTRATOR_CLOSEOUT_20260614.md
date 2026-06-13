@@ -11,10 +11,11 @@ Phase 2 implementation is durably committed for the lanes that had source-backed
 - C3/source-freshness and Meta external spend provenance are committed.
 - Ads source truth is green after scope/backfill repair.
 - Stock source-backed negative rows are repaired in production.
+- STOREB 251-row header-only source-gap cleanup is repaired in production without replacing the hot DB file.
 
-The repo is not yet allowed to claim full green state because `stock_source_truth` still has 9 negative stock_ledger rows that require explicit owner approval or a new exact source artifact. This is an intentional stopline, not a code failure.
+The repo is not yet allowed to claim full green state because `stock_source_truth` still has 9 negative stock_ledger rows that require explicit owner approval or a new exact source artifact, and the deeper operational stock integration validator still has order-entry and lifecycle blockers. These are intentional stoplines, not code failures.
 
-Current audit addendum: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`. The compact C3 publication blockers are stock-related, but the deeper operational stock integration validator still reports order-entry and lifecycle blockers. Full Phase-2 closeout therefore also requires resolving the current `ORDER_ENTRY_MISSING`, header-only quarantine leak, and lifecycle findings.
+Current audit addendum: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`. Header-only production apply closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`. The compact C3 publication blockers are stock-related, but full Phase-2 closeout also requires resolving the current `ORDER_ENTRY_MISSING`, remaining `906730647` header-only reclassification leak, and lifecycle findings.
 
 No Kaspi merchant, pricing, Telegram, LaunchAgent, workbook, customer, or operator-message writes were performed by this orchestrator closeout step.
 
@@ -23,6 +24,7 @@ No Kaspi merchant, pricing, Telegram, LaunchAgent, workbook, customer, or operat
 - `5e943c5 feat: harden c3 source freshness evidence`
 - `14311b0 fix: backfill ads source truth`
 - `b849ef6 feat: apply governed stock source repairs`
+- pending current commit: header-only production wrapper hardening and apply closeout
 
 Earlier phase checkpoints on this branch:
 
@@ -39,6 +41,7 @@ Earlier phase checkpoints on this branch:
 - Stock source-backed repair: `docs/agent_handoffs/GREEN_PATH_PHASE2_STOCK_SOURCE_BACKED_PROD_APPLY_20260614.md`
 - Stock owner-approval remaining dry-run: `docs/agent_handoffs/GREEN_PATH_PHASE2_STOCK_OWNER_APPROVAL_REMAINING_DRYRUN_20260614.md`
 - Current gate audit and header-only copied proof: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`
+- Header-only production apply: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`
 
 ## Production DB Evidence
 
@@ -47,6 +50,7 @@ Earlier phase checkpoints on this branch:
 - Meta spend backup: `exports/validation/orchestrator_meta_external_spend_prod_apply_20260613/backups/app_before_meta_external_spend_prod_apply_20260613.db`
 - Ads scope/backfill backup: `exports/validation/orchestrator_ads_scope_backfill_prod_apply_20260613/backups/app_before_ads_scope_backfill_prod_apply_20260613.db`
 - Stock source-backed backup: `exports/validation/orchestrator_stock_source_backed_repair_prod_apply_20260614/backups/app_before_stock_source_backed_repair_prod_apply_20260614.db`
+- Header-only production apply backup: `exports/validation/orchestrator_header_only_prod_apply_20260614/backups/app_2026-06-14_004623.db`
 
 ## Validation
 
@@ -61,6 +65,15 @@ Commands/results already run for this closeout:
 - Daily ops pause verification:
   `python3 scripts/manage_business_automation.py verify --scope daily-ops --expect paused --output-json exports/automation_control/2026-06-14/20260614_final_orchestrator_verify_daily_ops_paused.json`
   Result: `verify: OK`, `labels: 0/10 loaded`, evidence `exports/automation_control/2026-06-14/20260614_001645_verify_daily-ops`.
+- Header-only wrapper focused pytest:
+  `pytest -q tests/test_header_only_source_gap_quarantine.py tests/test_header_only_source_gap_quarantine_prod_wrapper.py`
+  Result: `8 passed`.
+- Header-only production apply validation:
+  `exports/validation/orchestrator_header_only_prod_apply_20260614/operational_stock_after_prod_apply.json`
+  Result: `RED`, `finding_count=496`; C3 strict validators still block on `src_ab_db_stock_truth`, `source_freshness`, and `stock_source_truth`.
+- Daily ops pause verification after header-only production apply:
+  `exports/validation/orchestrator_header_only_prod_apply_20260614/daily_ops_paused_after_prod_apply.json`
+  Result: `ok=true`, `labels: 0/10 loaded`, protected surfaces quiet, cron quiet.
 
 Known validation caveat:
 
@@ -93,18 +106,18 @@ Prepared approval-gated manifest:
 
 ## Additional Phase 2 Blockers From Current Audit
 
-Current operational stock integration finding census:
+Current operational stock integration finding census after header-only production apply:
 
 ```text
-ERROR ORDER_ENTRY_MISSING                                   219
-ERROR ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_PRODUCT_COGS_LEAK    8
-ERROR ORDER_LIFECYCLE_MISSING_COMPLETED                       8
 ERROR ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_ENTRY_LEAK            1
+ERROR ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_PRODUCT_COGS_LEAK    1
+ERROR ORDER_ENTRY_MISSING                                   219
+ERROR ORDER_LIFECYCLE_MISSING_COMPLETED                       8
 WARN  ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_QUARANTINED         244
 WARN  ORDER_ENTRY_PRODUCT_IDENTITY_QUARANTINED                23
 ```
 
-Copied DB proof exists for a safe 251-row header-only cleanup that would reduce product-cashflow leaks from 8 to 1 without synthesizing entries. The remaining `906730647` header-only leak now has real API entry evidence and requires a separate de-quarantine/reclassification repair.
+The 251-row header-only cleanup is now applied in production. The remaining `906730647` header-only leak now has real API entry evidence and requires a separate de-quarantine/reclassification repair.
 
 ## Approval Phrases Needed
 

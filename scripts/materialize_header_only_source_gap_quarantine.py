@@ -159,9 +159,14 @@ def _read_header_only_candidates(path: Path) -> tuple[list[dict[str, Any]], int]
     return candidates, len(source_rows)
 
 
-def _guard_apply_path(db_path: Path) -> None:
+def _guard_apply_path(db_path: Path, *, allow_production_apply: bool = False) -> None:
     if os.environ.get(WRITE_ENV_GATE) != "1":
         raise HeaderOnlySourceGapQuarantineError(f"{WRITE_ENV_GATE}=1 is required for --apply")
+    if not allow_production_apply:
+        _guard_production_apply_path(db_path)
+
+
+def _guard_production_apply_path(db_path: Path) -> None:
     try:
         resolved = db_path.resolve()
         production = DEFAULT_DB.resolve()
@@ -471,6 +476,7 @@ def materialize_header_only_source_gap_quarantine(
     classification_path: Path,
     output_root: Path,
     apply: bool = False,
+    allow_production_apply: bool = False,
 ) -> dict[str, Any]:
     if not db_path.exists():
         raise HeaderOnlySourceGapQuarantineError(f"db not found: {db_path}")
@@ -492,7 +498,9 @@ def materialize_header_only_source_gap_quarantine(
         leakage_after = dict(leakage_before)
 
         if apply:
-            _guard_apply_path(db_path)
+            # The production override is Python-only and intended solely for the
+            # vetted production wrapper after its external safety gates pass.
+            _guard_apply_path(db_path, allow_production_apply=allow_production_apply)
             _ensure_table(conn)
             provisional_proof = json.dumps(
                 {

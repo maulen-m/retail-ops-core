@@ -304,10 +304,14 @@ def test_prod_safe_wrapper_applies_via_backup_staging_and_writes_rollback_metada
     )
 
     assert summary["apply"]["applied"] is True
-    assert summary["apply"]["target_replaced"] is True
+    assert summary["apply"]["target_replaced"] is False
+    assert summary["apply"]["write_mode"] == "sqlite_in_place"
     assert summary["apply"]["staging_path"] is not None
-    assert summary["backup_sha256"] == original_sha
+    assert len(summary["backup_sha256"]) == 64
+    assert len(summary["staging_sha256_before_apply"]) == 64
+    assert len(summary["staging_sha256_after_apply"]) == 64
     assert Path(summary["backup_path"]).exists()
+    assert Path(summary["apply"]["staging_path"]).exists()
     assert summary["integrity_check"]["backup"] == "ok"
     assert summary["integrity_check"]["staging_before_apply"] == "ok"
     assert summary["integrity_check"]["staging_after_apply"] == "ok"
@@ -323,7 +327,8 @@ def test_prod_safe_wrapper_applies_via_backup_staging_and_writes_rollback_metada
     assert summary["cash_in_preservation"]["preserved"] is True
     assert summary["fact_order_entries_inserted"] == 0
     assert summary["header_fields_used_as_canonical_item_entry_truth"] is False
-    assert "cp " in summary["rollback"]["restore_command"]
+    assert "source.backup(target)" in summary["rollback"]["restore_command"]
+    assert "cp " not in summary["rollback"]["restore_command"]
 
     persisted = json.loads(Path(summary["summary_json"]).read_text(encoding="utf-8"))
     assert persisted["rollback"]["backup_path"] == summary["backup_path"]
@@ -358,7 +363,7 @@ def test_prod_safe_wrapper_applies_via_backup_staging_and_writes_rollback_metada
     assert quarantine == (1, 1, 1, 1)
 
 
-def test_prod_safe_wrapper_expected_delta_mismatch_fails_before_target_replacement(
+def test_prod_safe_wrapper_expected_delta_mismatch_fails_before_target_apply(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -384,3 +389,4 @@ def test_prod_safe_wrapper_expected_delta_mismatch_fails_before_target_replaceme
 
     assert _sha256(db_path) == original_sha
     assert list((tmp_path / "backups").glob("*.db"))
+    assert not (tmp_path / "mismatch" / "materializer_apply").exists()

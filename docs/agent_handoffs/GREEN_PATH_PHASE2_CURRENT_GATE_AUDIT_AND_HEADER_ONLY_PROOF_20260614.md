@@ -6,7 +6,9 @@ Date: 2026-06-14
 
 ## Scope
 
-This audit re-baselined the current post-apply state after the committed cashflow, ads, Meta spend, and source-backed stock repairs. It did not perform production DB writes.
+This audit re-baselined the current post-apply state after the committed cashflow, ads, Meta spend, and source-backed stock repairs. It originally did not perform production DB writes.
+
+Update: the 251-row header-only cleanup was subsequently applied safely in production after the wrapper was hardened. See `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`.
 
 The result corrects an overly narrow reading of the previous closeout: the compact C3 publication blockers are stock-related, but the deeper operational stock integration validator still reports order-entry and lifecycle blockers that must be repaired before Phase 2 can honestly close.
 
@@ -120,16 +122,24 @@ The remaining header-only source-gap product/entry leak is `906730647`; it now h
 
 ## Current Next-Best Repair Order
 
-1. Apply or rework the 251-row header-only cleanup through a production-safe path that does not use file-copy replacement for the hot DB.
-2. Resolve `906730647` by de-quarantining/reclassifying it from header-only once the real API entry evidence is carried through the contract.
-3. Repair the 219 `ORDER_ENTRY_MISSING` rows from real source evidence or strict quarantine.
-4. Repair the 8 `ORDER_LIFECYCLE_MISSING_COMPLETED` rows.
-5. Apply the 9 remaining owner-approval stock repairs only after exact owner evidence exists.
-6. Rebuild the `2026-06-13` stock snapshot and replay C3.
+1. Resolve `906730647` by de-quarantining/reclassifying it from header-only once the real API entry evidence is carried through the contract.
+2. Repair the 219 `ORDER_ENTRY_MISSING` rows from real source evidence or strict quarantine.
+3. Repair the 8 `ORDER_LIFECYCLE_MISSING_COMPLETED` rows.
+4. Apply the 9 remaining owner-approval stock repairs only after exact owner evidence exists.
+5. Rebuild the `2026-06-13` stock snapshot and replay C3.
+
+## Production Apply Addendum
+
+The production-safe wrapper was hardened and applied after this audit:
+
+- closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`
+- evidence: `exports/validation/orchestrator_header_only_prod_apply_20260614/`
+- result: `candidate_rows=251`, `deleted_product_cashflow_rows=7`, `deleted_stock_ledger_rows=0`, `cash_in_preserved=True`
+- wrapper mode: `sqlite_in_place`, `target_replaced=False`
+- operational stock finding count after apply: `496`
 
 ## Safety Notes
 
-- No production DB write occurred in this audit.
+- Production DB write occurred only in the later addendum lane, with backup and rollback evidence in `exports/validation/orchestrator_header_only_prod_apply_20260614/`.
 - No customer, Telegram, LaunchAgent, Kaspi merchant, pricing, workbook, or external-system write occurred.
-- The existing production wrapper `scripts/apply_header_only_source_gap_quarantine_production_safe.py` still uses file copy/replacement internally; the original green-path handoff says hot DB backup/write paths must use SQLite backup discipline. Do not use that wrapper for production until this boundary is reviewed or the wrapper is hardened.
-
+- The earlier wrapper file-replacement stopline is closed by `GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`; the wrapper now uses SQLite backup, staging proof, and in-place target apply.
