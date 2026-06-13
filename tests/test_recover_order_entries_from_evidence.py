@@ -424,6 +424,75 @@ def test_validator_facing_dry_run_counts(tmp_path: Path) -> None:
     assert summary["apply"]["applied"] is False
 
 
+def test_target_order_csv_filter_narrows_missing_scope(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.sqlite"
+    target_csv = tmp_path / "target_orders.csv"
+    _make_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO sales_fact_v2(order_id, order_date, store_code, sku_key, sku_id, my_size, quantity, status)
+            VALUES (?, '2026-01-02', 'ACMEWEAR', 'SKU', 'SKU_L', 'L', 1, 'DELIVERED')
+            """,
+            [("O-1",), ("O-2",)],
+        )
+    target_csv.write_text(
+        "order_id,store_code,order_date\nO-2,ACMEWEAR,2026-01-02\n",
+        encoding="utf-8",
+    )
+    source = SourceBundle(
+        "CURRENT_CRM",
+        "HIGH",
+        {("O-2", "ACMEWEAR"): [_evidence("CURRENT_CRM", order_id="O-2")]},
+    )
+
+    summary = recover_order_entries(
+        db_path=db_path,
+        as_of="2026-01-03",
+        output_root=tmp_path / "dry_run",
+        source_bundles=[source],
+        target_order_csv=target_csv,
+        apply=False,
+        strict=True,
+    )
+
+    assert summary["target_filter"]["applied"] is True
+    assert summary["target_filter"]["requested_order_store_pairs"] == 1
+    assert summary["target"]["validator_rows"] == 1
+    assert summary["recovery_by_source"]["CURRENT_CRM"]["target_rows"] == 1
+    assert summary["quarantine"]["target_rows"] == 0
+
+
+def test_target_order_csv_filter_rejects_unmatched_pairs(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.sqlite"
+    target_csv = tmp_path / "target_orders.csv"
+    _make_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO sales_fact_v2(order_id, order_date, store_code, sku_key, sku_id, my_size, quantity, status)
+            VALUES ('O-1', '2026-01-02', 'ACMEWEAR', 'SKU', 'SKU_L', 'L', 1, 'DELIVERED')
+            """
+        )
+    target_csv.write_text(
+        "order_id,store_code\nO-2,ACMEWEAR\n",
+        encoding="utf-8",
+    )
+
+    try:
+        recover_order_entries(
+            db_path=db_path,
+            as_of="2026-01-03",
+            output_root=tmp_path / "dry_run",
+            source_bundles=[],
+            target_order_csv=target_csv,
+        )
+    except recovery.RecoveryError as exc:
+        assert "not in the current missing target set" in str(exc)
+    else:
+        raise AssertionError("stale target-order CSV should fail closed")
+
+
 def test_evidence_to_entry_keeps_recovered_entry_separate_from_sku_mapping() -> None:
     entry = evidence_to_entry(
         _evidence("API_RAW_ORDER_ENTRIES", source_kind="api_raw_order_entry", entry_id="api-entry", sku_id=""),

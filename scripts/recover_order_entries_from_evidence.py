@@ -592,6 +592,63 @@ def build_missing_fact_order_targets(
     ]
 
 
+def load_target_order_pairs(path: Path | None) -> set[tuple[str, str]]:
+    if path is None:
+        return set()
+    if not path.exists():
+        raise RecoveryError(f"Target order CSV missing: {path}")
+    required = {"order_id", "store_code"}
+    pairs: set[tuple[str, str]] = set()
+    with path.open("r", encoding="utf-8-sig", newline="") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            raise RecoveryError(f"Target order CSV has no header: {path}")
+        missing = sorted(required - set(reader.fieldnames))
+        if missing:
+            raise RecoveryError(f"Target order CSV missing columns: {missing}")
+        for line_no, row in enumerate(reader, start=2):
+            order_id = norm(row.get("order_id"))
+            store_code = normalize_store(row.get("store_code"))
+            if not order_id:
+                raise RecoveryError(f"Target order CSV row {line_no} missing order_id")
+            pair = (order_id, store_code)
+            if pair in pairs:
+                raise RecoveryError(f"Target order CSV duplicate order/store pair: {pair}")
+            pairs.add(pair)
+    if not pairs:
+        raise RecoveryError(f"Target order CSV has no order rows: {path}")
+    return pairs
+
+
+def filter_targets_by_order_pairs(
+    targets: list[TargetRow],
+    *,
+    requested_pairs: set[tuple[str, str]],
+) -> tuple[list[TargetRow], dict[str, Any]]:
+    if not requested_pairs:
+        return targets, {
+            "applied": False,
+            "requested_order_store_pairs": 0,
+            "matched_order_store_pairs": 0,
+            "unmatched_order_store_pairs": [],
+        }
+    target_pairs = {target.pair for target in targets}
+    unmatched_pairs = sorted(requested_pairs - target_pairs)
+    if unmatched_pairs:
+        raise RecoveryError(
+            "Target order CSV contains pairs that are not in the current missing target set: "
+            f"{[{'order_id': order_id, 'store_code': store} for order_id, store in unmatched_pairs]}"
+        )
+    filtered = [target for target in targets if target.pair in requested_pairs]
+    matched_pairs = {target.pair for target in filtered}
+    return filtered, {
+        "applied": True,
+        "requested_order_store_pairs": len(requested_pairs),
+        "matched_order_store_pairs": len(matched_pairs),
+        "unmatched_order_store_pairs": [],
+    }
+
+
 def load_article_map(db_path: Path) -> dict[tuple[str, str], dict[str, str]]:
     uri = f"file:{db_path}?mode=ro"
     with sqlite3.connect(uri, uri=True) as conn:
@@ -1369,6 +1426,7 @@ def recover_order_entries(
     start_date: str | None = None,
     stores: tuple[str, ...] = DEFAULT_FACT_ORDER_TARGET_STORES,
     entry_required_only: bool = False,
+    target_order_csv: Path | None = None,
     accepted_no_entry_quarantine_csv: Path | None = None,
     expected_pre_sha256: str | None = None,
     backup_dir: Path | None = None,
@@ -1392,6 +1450,11 @@ def recover_order_entries(
         )
     else:
         raise RecoveryError(f"unsupported target_source: {target_source}")
+    requested_target_pairs = load_target_order_pairs(target_order_csv)
+    targets, target_filter_summary = filter_targets_by_order_pairs(
+        targets,
+        requested_pairs=requested_target_pairs,
+    )
     accepted_no_entry_quarantine = load_accepted_no_entry_quarantine(accepted_no_entry_quarantine_csv)
     if accepted_no_entry_quarantine:
         try:
@@ -1493,6 +1556,11 @@ def recover_order_entries(
         "target_start_date": start_date,
         "target_stores": list(stores),
         "entry_required_only": bool(entry_required_only),
+        "target_filter": {
+            **target_filter_summary,
+            "target_order_csv": str(target_order_csv) if target_order_csv else None,
+            "target_order_csv_sha256": _file_sha256(target_order_csv) if target_order_csv else "",
+        },
         "target": _target_summary(targets),
         "source_hierarchy": [bundle.source_name for bundle in source_bundles],
         "sources": source_info,
@@ -1583,6 +1651,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="In fact_orders_kaspi mode, target only rows required by the freshness validator.",
     )
+    parser.add_argument(
+        "--target-order-csv",
+        type=Path,
+        help=(
+            "Optional narrow order/store CSV filter. The CSV must contain order_id and store_code, "
+            "and every pair must already be present in the current missing target set."
+        ),
+    )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--current-crm", type=Path, default=DEFAULT_CURRENT_CRM)
     parser.add_argument("--api-entry-root", type=Path, action="append", default=None)
@@ -1619,6 +1695,7 @@ def main(argv: list[str] | None = None) -> int:
             start_date=args.start_date,
             stores=stores,
             entry_required_only=bool(args.entry_required_only),
+            target_order_csv=args.target_order_csv,
             current_crm=args.current_crm,
             api_entry_roots=args.api_entry_root,
             webui_archive_csvs=args.webui_archive_csv,
