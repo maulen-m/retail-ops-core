@@ -1,0 +1,31 @@
+{
+  "schema_version": "owner_decision.v1",
+  "decision_id": "OWNER_STOCK_APPROVAL_2026_06_14",
+  "captured_at_local": "2026-06-14",
+  "scope": "green_path_phase2_owner_stock_approval",
+  "source_chat_summary": "Owner approved the governed stock allocation and manual owner fact phrases, and added a compatibility note for suit/Nike 3 in 1 sets.",
+  "compatibility_note": "Suit 3 in 1 sets and Nike 3 in 1 sets are fully backwards-compatible, which means they can be sold as regular suit 3 in 1 sets. For S size, all same as the kids 3 in 1 S size.",
+  "approvals": [
+    {
+      "approval_id": "LINE_SUIT_PARENT_CHILD_ALLOCATION_20260613",
+      "approval_type": "mapping_allocation_contract",
+      "exact_phrase": "I approve a governed stock allocation contract from the approved parent physical stock pools to these compact child stock_ledger rows, effective 2026-06-11T22:00:00+05:00, using the 2026-06-04 approved manual stock count plus the 2026-06-11 owner-authoritative ADDITION batch and the existing compact child article-map evidence as source artifacts. Allocate exactly: SUIT-31-LS_3XL +3 from CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL; SUIT-31-LS_XL +2 from CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL; SUIT-31-TS_XL +1 from CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL; LINE-31-LS_XL +1 from CL_OC_MEN_LINE51_WHITE_XL; LINE-31-TS_XL +1 from CL_OC_MEN_LINE51_WHITE_XL; LINE-31-TS_3XL +2 from CL_OC_MEN_LINE51_WHITE_3XL. This authorizes a mapping/allocation contract, not invented stock and not a NEGATIVE_CLAMP_* repair. It does not authorize Kaspi merchant, pricing, workbook, Telegram, LaunchAgent, customer, or operator-message writes."
+    },
+    {
+      "approval_id": "KID31_BLACK_MANUAL_OWNER_FACT_20260613",
+      "approval_type": "manual_owner_stock_fact",
+      "exact_phrase": "I create a manual owner stock fact for KID-31 black letter rows because no exact source artifact currently proves the S/M/L allocation. Effective 2026-06-04T14:00:23+05:00, add exactly CL_NEW-CLO_KIDS_KID-31_BLACK_L +1, CL_NEW-CLO_KIDS_KID-31_BLACK_M +1, and CL_NEW-CLO_KIDS_KID-31_BLACK_S +1 to the UNIVERSAL stock ledger as owner-approved manual facts. This approval does not claim these rows came from the numeric/height 22/24/26/28/30 count unless a separate mapping contract is approved. This is not a NEGATIVE_CLAMP_* repair and does not authorize external writes."
+    }
+  ],
+  "explicit_non_authorizations": [
+    "Kaspi merchant writes",
+    "pricing writes",
+    "workbook writes",
+    "Telegram writes",
+    "LaunchAgent writes",
+    "customer messages",
+    "operator messages"
+  ],
+  "applied_by_lane": "docs/agent_handoffs/GREEN_PATH_PHASE2_OWNER_STOCK_APPROVAL_APPLY_20260614.md",
+  "runtime_evidence_file": "exports/validation/orchestrator_owner_approval_stock_stopline_20260614/owner_approval_evidence/owner_stock_approval_20260614.txt"
+}

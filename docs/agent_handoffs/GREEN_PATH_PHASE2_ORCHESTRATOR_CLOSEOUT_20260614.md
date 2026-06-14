@@ -1,12 +1,12 @@
 # Green Path Phase 2 Orchestrator Closeout
 
-Gate: YELLOW
+Gate: GREEN
 
 Date: 2026-06-14
 
 ## Current State
 
-Phase 2 implementation is durably committed for the lanes that had source-backed authority:
+Phase 2 implementation is durably committed for the source-backed and owner-approved lanes:
 
 - C3/source-freshness and Meta external spend provenance are committed.
 - Ads source truth is green after scope/backfill repair.
@@ -14,10 +14,13 @@ Phase 2 implementation is durably committed for the lanes that had source-backed
 - STOREB 251-row header-only source-gap cleanup is repaired in production without replacing the hot DB file.
 - The `906730647` stale header-only quarantine row is reclassified against real API entry evidence.
 - Source-backed ACMEWEAR/UNIVERSAL missing order-entry rows are recovered in production, with focused D1 cash-in repair and no broad cashflow replay.
+- STOREB current-63 missing order-entry rows are recovered in production from fresh API entry evidence.
+- Lifecycle residual rows are reclassified in production from same-store returned-status evidence.
+- Owner-approved stock allocation/manual fact rows are applied in production, the `2026-06-13` stock snapshot is rebuilt, and C3/source freshness is green.
 
-The repo is not yet allowed to claim full green state because `stock_source_truth` still has 9 negative stock_ledger rows that require explicit owner approval or a new exact source artifact, and the deeper operational stock integration validator still has order-entry and lifecycle blockers. These are intentional stoplines, not code failures.
+The repo is now allowed to claim the Phase 2 green state for the lanes covered by this closeout. Operational stock integration is `GREEN`; the remaining 267 findings are warning quarantines that stay visible and excluded from product-level publication truth.
 
-Current audit addendum: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`. Header-only production apply closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`. Real-entry reclassification closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`. Order-entry/D1 recovery closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_ORDER_ENTRY_D1_RECOVERY_20260614.md`. The compact C3 publication blockers are stock-related, but full Phase-2 closeout also requires resolving the current remaining STOREB `ORDER_ENTRY_MISSING` and lifecycle findings.
+Current audit addendum: `docs/agent_handoffs/GREEN_PATH_PHASE2_CURRENT_GATE_AUDIT_AND_HEADER_ONLY_PROOF_20260614.md`. Header-only production apply closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`. Real-entry reclassification closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`. Order-entry/D1 recovery closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_ORDER_ENTRY_D1_RECOVERY_20260614.md`. Owner stock approval closeout: `docs/agent_handoffs/GREEN_PATH_PHASE2_OWNER_STOCK_APPROVAL_APPLY_20260614.md`.
 
 No Kaspi merchant, pricing, Telegram, LaunchAgent, workbook, customer, or operator-message writes were performed by this orchestrator closeout step.
 
@@ -31,6 +34,11 @@ No Kaspi merchant, pricing, Telegram, LaunchAgent, workbook, customer, or operat
 - `74734f2 fix: harden order-entry recovery production apply`
 - `8d701f29 fix: gate production cashflow applies`
 - `d0ee151e fix: add focused d1 cash-in repair`
+- `a21caf35 docs: anchor order-entry d1 recovery checkpoint`
+- `2631c5bd fix: scope order entry recovery targets`
+- `f8307b69 fix: gate lifecycle residual production repair`
+- `45b73fb8 fix: gate governed stock repair production apply`
+- `83a5a3d4 docs: refresh phase2 closeout after repairs`
 
 Earlier phase checkpoints on this branch:
 
@@ -50,6 +58,7 @@ Earlier phase checkpoints on this branch:
 - Header-only production apply: `docs/agent_handoffs/GREEN_PATH_PHASE2_HEADER_ONLY_PROD_APPLY_20260614.md`
 - `906730647` real-entry reclassification: `docs/agent_handoffs/GREEN_PATH_PHASE2_906730647_REAL_ENTRY_RECLASSIFICATION_20260614.md`
 - Order-entry and focused D1 recovery: `docs/agent_handoffs/GREEN_PATH_PHASE2_ORDER_ENTRY_D1_RECOVERY_20260614.md`
+- Owner stock approval, snapshot rebuild, and C3 replay: `docs/agent_handoffs/GREEN_PATH_PHASE2_OWNER_STOCK_APPROVAL_APPLY_20260614.md`
 
 ## Production DB Evidence
 
@@ -65,6 +74,9 @@ Earlier phase checkpoints on this branch:
 - Cashflow daily rebuild backup: `exports/validation/orchestrator_order_entry_missing_recovery_20260614/backups_cashflow_rebuild/app_2026-06-14_031029.db`
 - STOREB current-63 order-entry recovery backup: `exports/validation/orchestrator_storeb_63_api_refetch_20260614/backups_order_entry_current_63/app_2026-06-14_032820.db`
 - Lifecycle residual repair backup: `exports/validation/orchestrator_lifecycle_residual_repair_20260614/backups_prod_lifecycle/app_2026-06-14_033810.db`
+- Owner-approved stock repair backup: `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/backups_prod_stock_approval/app_2026-06-14_063651.db`
+- Snapshot rebuild backup: `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/backups_rebuild_snapshot_20260613/app_pre_rebuild_snapshot_20260614_063834_0500.db`
+- C3 materialization backup: `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/backups_c3_owner_stock_approval/app_before_agent8_c3_policy_materialization_20260614_064239.db`
 
 ## Validation
 
@@ -129,35 +141,37 @@ Commands/results already run for this closeout:
 - Governed stock materializer guard tests:
   `pytest -q tests/test_materialize_governed_stock_repairs.py tests/test_repair_sales_fact_v2_lifecycle_residual.py tests/test_recover_order_entries_from_evidence.py`
   Result: `30 passed`.
+- Owner-approved stock repair production apply:
+  `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/prod_apply/governed_stock_repair_summary.json`
+  Result: `applied_rows=9`, `blocked_count=0`, post-SHA `2a1afca16c8d9044b221a8abb58fbbb24ec31754b7a1245d1329c3bf0678391b`.
+- Snapshot rebuild production-safe apply:
+  `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/rebuild_snapshot_20260613_apply/summary.json`
+  Result: `rows=419`, `current_stock_total=9123`, `inbound_stock_total=475`, post-SHA `31575c6894fb8b8c4144b7bc22848d2b1bd2672e17ecf8c1fee7b882ba1f5cab`.
+- C3 policy materialization:
+  `ENABLE_C3_POLICY_MATERIALIZATION_WRITE=1 .venv/bin/python scripts/materialize_c3_policy_state.py --db db/app.db --as-of 2026-06-13 --run-id orchestrator_owner_stock_approval_c3_20260614 --backup-dir exports/validation/orchestrator_owner_approval_stock_stopline_20260614/backups_c3_owner_stock_approval --apply --json`
+  Result: `source_status_counts={FRESH: 17}`, `gate_status_counts={PASS: 9}`.
+- Strict source freshness:
+  `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/validate_policy_source_freshness_after_c3.json`
+  Result: `ok=true`.
+- Policy gate results:
+  `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/validate_policy_gate_results_after_c3.json`
+  Result: `ok=true`.
+- Operational stock daily truth:
+  `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/operational_stock_daily_truth_after_stock_approval.json`
+  Result: `status=GREEN`, `owner_trust_status=GREEN_DECISION_GRADE`, `exception_count_total=0`.
+- Final focused tests:
+  `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q tests/test_materialize_governed_stock_repairs.py tests/test_apply_rebuild_snapshot_production_safe.py tests/test_policy_materialization_c3.py`
+  Result: `41 passed`.
 
 Known validation caveat:
 
-- `scripts/lint_docs.sh` still fails on pre-existing green-path banned-number references outside the newly committed lane closeouts.
+- `scripts/lint_docs.sh` still fails on pre-existing green-path banned-number references outside the newly committed lane closeouts, including `\b856\b` in canonical profit docs and `\b1259\b` in `green_path_run/line31_prechange_export_20260613_034450.json`.
 
-## Remaining Stopline
+## Closed Owner Stock Stopline
 
-Production negative stock rows after source-backed repairs:
+The 9 remaining negative stock rows were owner-approved, materialized, and replayed through snapshot/C3. The post-apply idempotency dry-run reports `candidate_event_count=0`, `existing_count=9`, and the production negative-balance query returns no rows.
 
-```text
-SUIT-31-LS_3XL|UNIVERSAL|-3
-LINE-31-TS_3XL|UNIVERSAL|-2
-SUIT-31-LS_XL|UNIVERSAL|-2
-LINE-31-LS_XL|UNIVERSAL|-1
-LINE-31-TS_XL|UNIVERSAL|-1
-CL_NEW-CLO_KIDS_KID-31_BLACK_L|UNIVERSAL|-1
-CL_NEW-CLO_KIDS_KID-31_BLACK_M|UNIVERSAL|-1
-CL_NEW-CLO_KIDS_KID-31_BLACK_S|UNIVERSAL|-1
-SUIT-31-TS_XL|UNIVERSAL|-1
-```
-
-Snapshot rebuild still correctly refuses while those rows remain negative.
-
-Prepared approval-gated manifest:
-
-- `config/governed_stock_owner_approval_repairs_20260614.json`
-- No-approval dry-run proof: `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/dry_run_without_owner_evidence/`
-- Result: `blocked_count=9`, `candidate_event_count=0`, `applied_rows=0`
-- Approval evidence under `docs/agent_handoffs` is rejected by the materializer so closeouts and starter prompts cannot authorize a write.
+Owner evidence is stored outside handoff docs at `exports/validation/orchestrator_owner_approval_stock_stopline_20260614/owner_approval_evidence/owner_stock_approval_20260614.txt`. The durable owner decision record is `config/owner_decisions/owner_stock_approval_2026_06_14.json`. These files preserve the owner's compatibility note for suit/Nike 3 in 1 set backwards compatibility and kids S-size equivalence.
 
 ## Additional Phase 2 Blockers From Current Audit
 
@@ -172,29 +186,4 @@ There are no remaining operational-stock `ERROR` findings. The validator status 
 
 The 251-row header-only cleanup, `906730647` real-entry reclassification, 169 source-backed order-entry recovery rows, 2 focused D1 cash-in rows, cashflow daily rebuild, 64 STOREB API-entry rows, and 8 lifecycle residual reclassifications are now applied in production.
 
-Final DB SHA after this lane: `6a3292128172d6f271bd00f1e78da043c07f3e657d542019a700722ad85365cb`.
-
-## Approval Phrases Needed
-
-LINE/SUIT parent-child allocation:
-
-```text
-I approve a governed stock allocation contract from the approved parent physical stock pools to these compact child stock_ledger rows, effective 2026-06-11T22:00:00+05:00, using the 2026-06-04 approved manual stock count plus the 2026-06-11 owner-authoritative ADDITION batch and the existing compact child article-map evidence as source artifacts. Allocate exactly: SUIT-31-LS_3XL +3 from CL_NEW-CLO2_MEN_SUIT-61_BLACK_3XL; SUIT-31-LS_XL +2 from CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL; SUIT-31-TS_XL +1 from CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL; LINE-31-LS_XL +1 from CL_OC_MEN_LINE51_WHITE_XL; LINE-31-TS_XL +1 from CL_OC_MEN_LINE51_WHITE_XL; LINE-31-TS_3XL +2 from CL_OC_MEN_LINE51_WHITE_3XL. This authorizes a mapping/allocation contract, not invented stock and not a NEGATIVE_CLAMP_* repair. It does not authorize Kaspi merchant, pricing, workbook, Telegram, LaunchAgent, customer, or operator-message writes.
-```
-
-KID-31 black manual owner fact:
-
-```text
-I create a manual owner stock fact for KID-31 black letter rows because no exact source artifact currently proves the S/M/L allocation. Effective 2026-06-04T14:00:23+05:00, add exactly CL_NEW-CLO_KIDS_KID-31_BLACK_L +1, CL_NEW-CLO_KIDS_KID-31_BLACK_M +1, and CL_NEW-CLO_KIDS_KID-31_BLACK_S +1 to the UNIVERSAL stock ledger as owner-approved manual facts. This approval does not claim these rows came from the numeric/height 22/24/26/28/30 count unless a separate mapping contract is approved. This is not a NEGATIVE_CLAMP_* repair and does not authorize external writes.
-```
-
-## Next Step After Approval
-
-After the owner supplies the exact approval phrase(s), run the same backup-first pattern:
-
-1. Save the exact owner approval text in a separate non-handoff evidence file.
-2. Dry-run `config/governed_stock_owner_approval_repairs_20260614.json` on production DB and copied DB with `--approval-evidence`.
-3. Apply only with explicit env gates, `--expected-pre-sha256`, and `--backup-dir`.
-4. Rebuild the stock snapshot for `2026-06-13`.
-5. Replay C3 materialization.
-6. Re-run DB guard, stock validators, source-freshness gate, and daily-ops paused verification.
+Final DB SHA after this lane: `5a53f2b0e15c2127a088d41ddb11740c5b63ef1ac06d595a1423fdf329608f8e`.
