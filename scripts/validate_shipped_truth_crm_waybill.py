@@ -449,6 +449,10 @@ def _find_latest_archive_input_dir(archive_root: Path, day: date) -> Path | None
 def _extract_pdf_order_ids(waybill_dir: Path) -> set[str]:
     ids: set[str] = set()
     for pdf in sorted(waybill_dir.glob("*.pdf")):
+        stem = pdf.stem.strip()
+        if stem.isdigit():
+            ids.add(stem)
+            continue
         match = ORDER_ID_RE.search(pdf.name)
         if match:
             ids.add(str(match.group(1)))

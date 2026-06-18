@@ -14,6 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.generate_business_insides import compute_sales_metrics
 from core.cashflow.paid_capital_truth import compute_paid_capital_truth
+from core.db.validation_copy import validation_db_path
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_BANK = PROJECT_ROOT / "config" / "bank_accounts.yaml"
@@ -30,12 +31,13 @@ def validate_business_insides(
 ) -> list[str]:
     errors: list[str] = []
     as_of_date = date.fromisoformat(as_of) if isinstance(as_of, str) else (as_of or date.today())
-    metrics = compute_sales_metrics(db_path=db_path, as_of=as_of_date)
-    capital = compute_paid_capital_truth(
-        db_path=db_path,
-        bank_accounts_path=bank_accounts_path,
-        as_of=as_of_date,
-    )
+    with validation_db_path(db_path) as copied_db_path:
+        metrics = compute_sales_metrics(db_path=copied_db_path, as_of=as_of_date)
+        capital = compute_paid_capital_truth(
+            db_path=copied_db_path,
+            bank_accounts_path=bank_accounts_path,
+            as_of=as_of_date,
+        )
 
     if metrics["total_rows"] <= 0:
         errors.append("sales metrics: no DELIVERED rows in last 30d window")

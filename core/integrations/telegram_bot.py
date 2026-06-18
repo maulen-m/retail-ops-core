@@ -54,8 +54,8 @@ def get_waybill_telegram_config(
     resolved_token = str(
         token
         or os.environ.get("TELEGRAM_BOT_TOKEN_WAYBILL")
-        or os.environ.get("TELEGRAM_BOT_TOKEN")
         or dotenv.get("TELEGRAM_BOT_TOKEN_WAYBILL")
+        or os.environ.get("TELEGRAM_BOT_TOKEN")
         or dotenv.get("TELEGRAM_BOT_TOKEN")
         or ""
     ).strip()

@@ -30,6 +30,11 @@ DEFAULT_XLSX = Path(
     "Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx"
 )
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
+PO_PART_TOTALS_COLUMN_ALIASES = {
+    "To_pay_BASE_KZT (live)": "To_pay_BASE_KZT",
+    "To_pay_BASE_KZT_reference": "To_pay_BASE_KZT",
+    "To_pay_DLV_KZT (live)": "To_pay_DLV_KZT",
+}
 
 REQUIRED_INBOUNDS_COLS = [
     "SKU Key",
@@ -61,6 +66,10 @@ REQUIRED_PART_COLS = [
     "Status",
     "Total Units",
     "Base_cost_CNY",
+    "is_paid_BASE",
+    "is_paid_DLV",
+    "To_pay_BASE_KZT",
+    "To_pay_DLV_KZT",
     "Actual_Weight_kg",
     "Paid_DLV_USD",
     "Paid_DLV_KZT",
@@ -77,6 +86,26 @@ def _normalize_size(raw: Any) -> str:
     if not txt or txt == "NAN":
         return ""
     return txt.replace(" ", "_")
+
+
+def _normalize_header(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _canonicalize_po_part_totals_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename: dict[Any, str] = {}
+    seen: dict[str, Any] = {}
+    for col in df.columns:
+        label = _normalize_header(col)
+        canonical = PO_PART_TOTALS_COLUMN_ALIASES.get(label, label)
+        if canonical in seen:
+            raise RuntimeError(
+                "PO_part_id_Totals ambiguous columns for "
+                f"{canonical}: {seen[canonical]!r}, {col!r}"
+            )
+        seen[canonical] = col
+        rename[col] = canonical
+    return df.rename(columns=rename)
 
 
 def _parse_date(value: Any) -> str | None:
@@ -130,6 +159,85 @@ def _to_float(value: Any) -> float:
         return 0.0
 
 
+def _normalize_dim_sku_markdown_header(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    for ch in (" ", "_", "-", "/", "\\", "(", ")", "\t", "\n", "\r"):
+        text = text.replace(ch, "")
+    return text
+
+
+def _split_markdown_table_row(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text.startswith("|") or "|" not in text[1:]:
+        return []
+    cells = [cell.strip() for cell in text.strip("|").split("|")]
+    if not cells or all(not cell or set(cell) <= {"-", ":", " "} for cell in cells):
+        return []
+    return cells
+
+
+def _find_dim_sku_markdown_column(headers: list[str], aliases: list[str]) -> str | None:
+    normalized = {_normalize_dim_sku_markdown_header(header): header for header in headers}
+    for alias in aliases:
+        key = _normalize_dim_sku_markdown_header(alias)
+        if key in normalized:
+            return normalized[key]
+    return None
+
+
+def _load_dim_sku_light_markdown_price_map(
+    xlsx_path: Path,
+    sheet_name: str,
+) -> dict[str, dict[str, float]]:
+    raw = pd.read_excel(xlsx_path, sheet_name=sheet_name, header=None, dtype=object)
+    headers: list[str] | None = None
+    rows: list[list[str]] = []
+    for _, workbook_row in raw.iterrows():
+        for value in workbook_row.tolist():
+            cells = _split_markdown_table_row(value)
+            if not cells:
+                continue
+            normalized = {_normalize_dim_sku_markdown_header(cell) for cell in cells}
+            if (
+                "skukey" in normalized
+                and "cny" in normalized
+                and ("wtkg" in normalized or "weightkg" in normalized)
+            ):
+                headers = cells
+                rows = []
+                continue
+            if headers:
+                rows.append(cells)
+    if not headers:
+        raise RuntimeError("Failed to locate DIM_SKU_light header row")
+
+    sku_col = _find_dim_sku_markdown_column(headers, ["SKU_key", "sku key", "sku"])
+    cny_col = _find_dim_sku_markdown_column(headers, ["CNY", "base_cost_cny", "BaseCost_CNY"])
+    weight_col = _find_dim_sku_markdown_column(headers, ["Wt (kg)", "Wt kg", "Weight_kg", "weight_kg", "Weight"])
+    avg_col = _find_dim_sku_markdown_column(headers, ["AvgPrc", "AvgPrc KZT", "Avg Price", "avg_price"])
+    if not sku_col or not cny_col or not weight_col:
+        raise RuntimeError("DIM_SKU_light missing required columns: SKU_key, CNY, Wt (kg)")
+
+    out: dict[str, dict[str, float]] = {}
+    for cells in rows:
+        if len(cells) != len(headers):
+            continue
+        row = dict(zip(headers, cells))
+        sku_key = str(row.get(sku_col) or "").strip()
+        if not sku_key or not sku_key.upper().startswith(("CL_", "ELS_", "WB_")):
+            continue
+        base_cost_cny = _to_float(row.get(cny_col))
+        weight_kg = _to_float(row.get(weight_col))
+        if base_cost_cny <= 0 or weight_kg <= 0:
+            continue
+        out[sku_key] = {
+            "avg_price": _to_float(row.get(avg_col)) if avg_col else 0.0,
+            "weight_kg": weight_kg,
+            "base_cost_cny": base_cost_cny,
+        }
+    return out
+
+
 def _to_paid_flag(value: Any) -> int:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return 0
@@ -151,10 +259,15 @@ def _ensure_columns(df: pd.DataFrame, required: list[str], sheet: str) -> None:
 
 
 def _load_sku_price_map(xlsx_path: Path, sheet_name: str) -> dict[str, dict[str, float]]:
-    parsed, _ = parse_dim_sku_light(
-        xlsx_path,
-        sheet_name=sheet_name,
-    )
+    try:
+        parsed, _ = parse_dim_sku_light(
+            xlsx_path,
+            sheet_name=sheet_name,
+        )
+    except RuntimeError as exc:
+        if "Failed to locate DIM_SKU_light header row" not in str(exc):
+            raise
+        return _load_dim_sku_light_markdown_price_map(xlsx_path, sheet_name)
     out: dict[str, dict[str, float]] = {}
     for sku_key, row in parsed.items():
         out[sku_key] = {
@@ -328,7 +441,9 @@ def sync_po_parts_from_workbook(
         raise RuntimeError("ENABLE_PO_PART_SYNC_WRITE=1 is required with --apply")
 
     inbounds_df = pd.read_excel(xlsx_path, sheet_name=sheet_inbounds, dtype=object)
-    parts_df = pd.read_excel(xlsx_path, sheet_name=sheet_parts, dtype=object)
+    parts_df = _canonicalize_po_part_totals_columns(
+        pd.read_excel(xlsx_path, sheet_name=sheet_parts, dtype=object)
+    )
     _ensure_columns(inbounds_df, REQUIRED_INBOUNDS_COLS, sheet_inbounds)
     _ensure_columns(parts_df, REQUIRED_PART_COLS, sheet_parts)
     sku_price_map = _load_sku_price_map(xlsx_path, sheet_sku)

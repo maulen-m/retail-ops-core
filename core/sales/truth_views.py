@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date
 
-from core.config.business_params import DEFAULT_FX_RATES
+from core.config.business_params import get_supplier_fx_rates_from_conn
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -22,33 +22,12 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
 
 
 def _resolve_fx_rates(conn: sqlite3.Connection) -> tuple[float, float, float]:
-    cny_kzt = float(DEFAULT_FX_RATES["cny_kzt"])
-    usd_kzt = float(DEFAULT_FX_RATES["usd_kzt"])
-    dlv_rate_usd_kg = float(DEFAULT_FX_RATES["dlv_rate_usd_kg"])
-
-    if not _table_exists(conn, "dim_fx_rates"):
-        return cny_kzt, usd_kzt, dlv_rate_usd_kg
-
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(dim_fx_rates)").fetchall()}
-    required = {"effective_date", "cny_kzt", "usd_kzt", "dlv_rate_usd_kg"}
-    if not required.issubset(cols):
-        return cny_kzt, usd_kzt, dlv_rate_usd_kg
-
-    today = date.today().isoformat()
-    row = conn.execute(
-        """
-        SELECT cny_kzt, usd_kzt, dlv_rate_usd_kg
-        FROM dim_fx_rates
-        WHERE effective_date <= ?
-        ORDER BY effective_date DESC
-        LIMIT 1
-        """,
-        (today,),
-    ).fetchone()
-    if row is None:
-        return cny_kzt, usd_kzt, dlv_rate_usd_kg
-
-    return float(row[0]), float(row[1]), float(row[2])
+    rates = get_supplier_fx_rates_from_conn(conn, date.today())
+    return (
+        float(rates.cny_kzt),
+        float(rates.usd_kzt),
+        float(rates.dlv_rate_usd_kg),
+    )
 
 
 def get_article_aliases_for_sku(
@@ -107,6 +86,7 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         conn,
         "fact_order_entry_header_only_source_gap_quarantine",
     )
+    has_owner_cogs_override = _table_exists(conn, "fact_sales_owner_cogs_override")
     if not has_sales_v2 and not has_fact_sales:
         raise RuntimeError(
             "Missing internal staging sales tables: sales_fact_v2, fact_sales"
@@ -696,24 +676,92 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         """
     )
 
+    if has_owner_cogs_override:
+        owner_cogs_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(fact_sales_owner_cogs_override)").fetchall()
+        }
+        required_owner_cogs_cols = {"order_id", "store_code", "sku_key", "sku_id", "unit_cogs_kzt"}
+        if required_owner_cogs_cols.issubset(owner_cogs_cols):
+            owner_cogs_source_expr = (
+                "COALESCE(cogs_source, 'owner_row_override')"
+                if "cogs_source" in owner_cogs_cols
+                else "'owner_row_override'"
+            )
+            owner_cogs_active_clause = (
+                "COALESCE(active_flag, 1) = 1"
+                if "active_flag" in owner_cogs_cols
+                else "1 = 1"
+            )
+            ctes.append(
+                f"""
+                owner_cogs_override AS (
+                    SELECT
+                        CAST(order_id AS TEXT) AS order_id,
+                        UPPER(TRIM(COALESCE(store_code, 'UNIVERSAL'))) AS store_code,
+                        CAST(COALESCE(sku_key, '') AS TEXT) AS sku_key,
+                        CAST(COALESCE(sku_id, '') AS TEXT) AS sku_id,
+                        CAST(unit_cogs_kzt AS REAL) AS unit_cogs_kzt,
+                        CAST({owner_cogs_source_expr} AS TEXT) AS cogs_source
+                    FROM fact_sales_owner_cogs_override
+                    WHERE {owner_cogs_active_clause}
+                      AND CAST(unit_cogs_kzt AS REAL) > 0
+                )
+                """
+            )
+        else:
+            ctes.append(
+                """
+                owner_cogs_override AS (
+                    SELECT
+                        NULL AS order_id,
+                        NULL AS store_code,
+                        NULL AS sku_key,
+                        NULL AS sku_id,
+                        NULL AS unit_cogs_kzt,
+                        NULL AS cogs_source
+                    WHERE 0
+                )
+                """
+            )
+    else:
+        ctes.append(
+            """
+            owner_cogs_override AS (
+                SELECT
+                    NULL AS order_id,
+                    NULL AS store_code,
+                    NULL AS sku_key,
+                    NULL AS sku_id,
+                    NULL AS unit_cogs_kzt,
+                    NULL AS cogs_source
+                WHERE 0
+            )
+            """
+        )
+
     has_dim_sku = _table_exists(conn, "dim_sku")
     has_base_cost = has_dim_sku and _column_exists(conn, "dim_sku", "base_cost_cny")
     has_weight = has_dim_sku and _column_exists(conn, "dim_sku", "weight_kg")
+    has_stored_cogs = has_dim_sku and _column_exists(conn, "dim_sku", "cogs_kzt")
 
-    if has_dim_sku and has_base_cost and has_weight:
+    if has_dim_sku and (has_base_cost or has_weight or has_stored_cogs):
         dim_join = "LEFT JOIN dim_sku ds ON ds.sku_key = rl.canonical_sku_key"
-        base_expr = "CAST(ds.base_cost_cny AS REAL)"
-        weight_expr = "CAST(ds.weight_kg AS REAL)"
+        base_expr = "CAST(ds.base_cost_cny AS REAL)" if has_base_cost else "NULL"
+        weight_expr = "CAST(ds.weight_kg AS REAL)" if has_weight else "NULL"
+        stored_cogs_expr = "CAST(ds.cogs_kzt AS REAL)" if has_stored_cogs else "NULL"
     else:
         dim_join = ""
         base_expr = "NULL"
         weight_expr = "NULL"
+        stored_cogs_expr = "NULL"
 
     formula_unit_expr = (
         f"(({base_expr}) * {cny_kzt:.8f}) + "
         f"(({weight_expr}) * {usd_kzt:.8f} * {dlv_rate_usd_kg:.8f})"
     )
     formula_ready_expr = f"(({base_expr}) IS NOT NULL AND ({base_expr}) > 0 AND ({weight_expr}) IS NOT NULL AND ({weight_expr}) > 0 AND COALESCE(rl.units, 0) > 0)"
+    stored_cogs_ready_expr = f"(({stored_cogs_expr}) IS NOT NULL AND ({stored_cogs_expr}) > 0 AND COALESCE(rl.units, 0) > 0)"
+    owner_cogs_ready_expr = "(oco.unit_cogs_kzt IS NOT NULL AND oco.unit_cogs_kzt > 0 AND COALESCE(rl.units, 0) > 0)"
 
     cte_sql = ",\n".join(ctes)
     line_view_sql = f"""
@@ -731,15 +779,25 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             CASE
                 WHEN {formula_ready_expr}
                     THEN ROUND(({formula_unit_expr}) * rl.units, 2)
+                WHEN {stored_cogs_ready_expr}
+                    THEN ROUND(({stored_cogs_expr}) * rl.units, 2)
+                WHEN {owner_cogs_ready_expr}
+                    THEN ROUND(oco.unit_cogs_kzt * rl.units, 2)
                 ELSE NULL
             END AS cogs_kzt,
             CASE
                 WHEN {formula_ready_expr}
                     THEN ROUND(rl.net_rev_kzt - ROUND(({formula_unit_expr}) * rl.units, 2), 2)
+                WHEN {stored_cogs_ready_expr}
+                    THEN ROUND(rl.net_rev_kzt - ROUND(({stored_cogs_expr}) * rl.units, 2), 2)
+                WHEN {owner_cogs_ready_expr}
+                    THEN ROUND(rl.net_rev_kzt - ROUND(oco.unit_cogs_kzt * rl.units, 2), 2)
                 ELSE NULL
             END AS profit_kzt,
             CASE
                 WHEN {formula_ready_expr} THEN 'formula_full'
+                WHEN {stored_cogs_ready_expr} THEN 'dim_sku_fallback'
+                WHEN {owner_cogs_ready_expr} THEN COALESCE(oco.cogs_source, 'owner_row_override')
                 ELSE 'unresolved'
             END AS cogs_source,
             rl.source_table,
@@ -751,6 +809,11 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             rl.source_profit_kzt
         FROM resolved_lines rl
         {dim_join}
+        LEFT JOIN owner_cogs_override oco
+          ON oco.order_id = rl.order_id
+         AND oco.store_code = UPPER(TRIM(COALESCE(rl.store_code, 'UNIVERSAL')))
+         AND oco.sku_key = rl.canonical_sku_key
+         AND oco.sku_id = rl.canonical_sku_id
     """
     conn.execute(line_view_sql)
 
@@ -891,15 +954,20 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
                 CASE
                     WHEN {formula_ready_expr}
                         THEN ROUND(({formula_unit_expr}) * rl.units, 2)
+                    WHEN {stored_cogs_ready_expr}
+                        THEN ROUND(({stored_cogs_expr}) * rl.units, 2)
                     ELSE NULL
                 END AS cogs_kzt,
                 CASE
                     WHEN {formula_ready_expr}
                         THEN ROUND(rl.net_rev_kzt - ROUND(({formula_unit_expr}) * rl.units, 2), 2)
+                    WHEN {stored_cogs_ready_expr}
+                        THEN ROUND(rl.net_rev_kzt - ROUND(({stored_cogs_expr}) * rl.units, 2), 2)
                     ELSE NULL
                 END AS profit_kzt,
                 CASE
                     WHEN {formula_ready_expr} THEN 'formula_full'
+                    WHEN {stored_cogs_ready_expr} THEN 'dim_sku_fallback'
                     ELSE 'unresolved'
                 END AS cogs_source,
                 rl.source_table,

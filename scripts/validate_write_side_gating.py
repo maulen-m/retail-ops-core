@@ -75,6 +75,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate write-side env + apply gate manifest")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
+    parser.add_argument("--strict", action="store_true", help="Accepted for MVOS gate compatibility")
     args = parser.parse_args()
 
     if not args.manifest.exists():

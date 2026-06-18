@@ -11,6 +11,7 @@ from pathlib import Path
 from core.db.queries import get_cutoff_date_almaty
 from core.sync.kaspi_order_enrichment import enrich_orders, _load_config
 from core.integrations.kaspi_api_client import STORE_TOKEN_MAP
+from core.stores.roster import load_sync_enabled_kaspi_store_codes
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "kaspi_enrichment.yaml"
@@ -41,7 +42,7 @@ def main() -> int:
 
     stores = []
     if args.all:
-        stores = sorted(STORE_TOKEN_MAP.keys())
+        stores = [store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP]
     elif args.store:
         stores = [args.store]
     else:

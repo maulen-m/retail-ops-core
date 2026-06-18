@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.export_kaspi_archive_ui_history import WINDOW_DAYS, plan_windows
 from scripts.normalize_kaspi_webui_archive_pack import (
     WebuiPackNormalizeError,
     normalize_kaspi_webui_archive_pack,
@@ -47,7 +48,7 @@ from scripts.validate_webui_archive_pack_integrity import (
     WebuiPackIntegrityError,
     validate_webui_archive_pack_integrity,
 )
-from scripts.webui_archive_truth_utils import DEFAULT_STORES_CONFIG
+from scripts.webui_archive_truth_utils import DEFAULT_STORES_CONFIG, load_enabled_stores
 
 
 DEFAULT_SOURCE_REFRESH_ROOT = PROJECT_ROOT / "exports" / "webui_archive_source_refresh_runs"
@@ -115,7 +116,11 @@ def _write_summary(report: dict[str, Any], summary_path: Path) -> None:
         f"- effective_mode: `{report['effective_mode']}`",
         f"- since: `{report.get('since') or ''}`",
         f"- until: `{report.get('until') or ''}`",
+        f"- all_enabled_stores: `{', '.join(report.get('all_enabled_stores') or [])}`",
         f"- target_stores: `{', '.join(report.get('target_stores') or [])}`",
+        f"- omitted_enabled_stores: `{', '.join(report.get('omitted_enabled_stores') or [])}`",
+        f"- window_days: `{report.get('window_days') or ''}`",
+        f"- expected_block_count: `{report.get('expected_block_count') or ''}`",
         f"- read_only: `{str(report['read_only']).lower()}`",
         f"- production_db_modified: `{str(report['production_db_modified']).lower()}`",
         f"- workbook_modified: `{str(report['workbook_modified']).lower()}`",
@@ -164,8 +169,16 @@ def _base_report(
     until: date,
     strict: bool,
     target_stores: list[str] | None,
+    requested_store_codes: list[str] | None,
+    all_enabled_stores: list[str],
+    omitted_enabled_stores: list[str],
+    planned_windows: list[tuple[date, date]],
     stores_config: Path,
 ) -> dict[str, Any]:
+    planned_window_rows = [
+        {"window_since": ws.isoformat(), "window_until": we.isoformat()}
+        for ws, we in planned_windows
+    ]
     return {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "run_id": run_root.name,
@@ -175,13 +188,20 @@ def _base_report(
         "since": since.isoformat(),
         "until": until.isoformat(),
         "strict": bool(strict),
+        "requested_store_codes": requested_store_codes or [],
+        "all_enabled_stores": all_enabled_stores,
         "target_stores": target_stores or [],
+        "omitted_enabled_stores": omitted_enabled_stores,
+        "window_days": WINDOW_DAYS,
+        "planned_windows": planned_window_rows,
+        "expected_block_count": len(target_stores or []) * len(planned_windows),
         "stores_config": str(stores_config),
         "read_only": True,
         "production_db_modified": False,
         "workbook_modified": False,
         "scheduler_modified": False,
         "external_writes": False,
+        "source_pointer_anchor_written": False,
         "authorized_scope": "read_only_webui_archive_source_refresh",
         "not_authorized": [
             "production_db_apply",
@@ -221,6 +241,7 @@ def _run_import_existing(
         store_codes=target_stores,
         since=since,
         until=until,
+        write_anchor=False,
     )
     download_validation = validate_playwright_archive_downloads(
         run_id=str(download_report["run_root"]),
@@ -248,6 +269,7 @@ def _run_import_existing(
         "ok": ok,
         "source_root": str(source_root),
         "child_run_manifest_json": download_report.get("run_manifest_json"),
+        "source_window_provenance_json": download_report.get("source_window_provenance_json"),
         "download_validation_json": download_validation.get("download_validation_json"),
         "store_results": download_report.get("store_results") or [],
         "pack_root": str(pack_root),
@@ -295,6 +317,7 @@ def _run_live(
         archive_url=archive_url,
         dotenv_path=dotenv_path,
         allow_manual_download=allow_manual_download,
+        write_child_anchors=False,
     )
     return {
         "status": str(full_parse_report.get("status") or "FAIL"),
@@ -349,6 +372,10 @@ def run_webui_archive_source_refresh(
     run_root = output_root.expanduser().resolve() / str(run_id or _default_run_id())
     run_root.mkdir(parents=True, exist_ok=True)
     effective_stores_config = _scoped_stores_config(stores_config, store_codes, run_root)
+    all_enabled_stores = load_enabled_stores(stores_config.expanduser().resolve())
+    target_store_codes = store_codes or load_enabled_stores(effective_stores_config)
+    omitted_enabled_stores = [store for store in all_enabled_stores if store not in set(target_store_codes)]
+    planned_windows = plan_windows(since, until, WINDOW_DAYS)
     report = _base_report(
         run_root=run_root,
         requested_mode=requested_mode,
@@ -356,7 +383,11 @@ def run_webui_archive_source_refresh(
         since=since,
         until=until,
         strict=strict,
-        target_stores=store_codes,
+        target_stores=target_store_codes,
+        requested_store_codes=store_codes,
+        all_enabled_stores=all_enabled_stores,
+        omitted_enabled_stores=omitted_enabled_stores,
+        planned_windows=planned_windows,
         stores_config=effective_stores_config,
     )
     report["original_stores_config"] = str(stores_config.expanduser().resolve())
@@ -373,6 +404,7 @@ def run_webui_archive_source_refresh(
             store_codes=store_codes,
             since=since,
             until=until,
+            write_anchor=False,
         )
         report.update(
             {

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
 import hashlib
 import json
@@ -37,12 +36,13 @@ class IdentityPlanError(RuntimeError):
     """Raised when identity-plan contracts fail."""
 
 
-@dataclass(frozen=True)
 class StatusError(IdentityPlanError):
     """Fail-closed error carrying explicit status code for stopline reporting."""
 
-    code: str
-    message: str
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(str(self))
 
     def __str__(self) -> str:
         return f"{self.code}: {self.message}"

@@ -20,10 +20,21 @@ DEFAULT_ALLOWED_INTERNAL_SOURCES: tuple[str, ...] = (
     "sales_v2",
     "sales_fact",
     "v2_bounds",
+    "v2_order_keys",
+    "v2_any_order_keys",
+    "workbook_anchor_keys",
+    "internal_order_totals",
+    "workbook_anchor",
+    "workbook_anchor_quarantine",
+    "product_identity_quarantine",
+    "header_only_source_gap_quarantine",
+    "lifecycle_excluded_order_keys",
     "base_lines",
     "resolved_lines",
     "article_store_map",
     "article_any_map",
+    "sales_ref",
+    "resolved_ref_lines",
 )
 
 

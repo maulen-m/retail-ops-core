@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.sales import ensure_sales_truth_views
+from core.db.validation_copy import validation_db_copy
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "returns_economics"
@@ -25,6 +26,20 @@ DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "returns_economi
 
 class ReturnsEconomicsError(RuntimeError):
     """Raised when strict returns economics validation fails."""
+
+
+def _relation_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name=?",
+            (name,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _column_exists(conn: sqlite3.Connection, relation: str, column: str) -> bool:
+    return any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({relation})").fetchall())
 
 
 def _render_md(report: dict[str, Any]) -> str:
@@ -86,17 +101,48 @@ def _load_leaked_sales_for_returned_orders(
     for start in range(0, len(order_ids), chunk_size):
         chunk = order_ids[start : start + chunk_size]
         placeholders = ",".join("?" for _ in chunk)
-        query = f"""
-            SELECT
-                CAST(order_id AS TEXT) AS order_id,
-                UPPER(COALESCE(store_code, 'UNKNOWN')) AS store_code,
-                date(sale_date) AS sale_date
-            FROM view_sales_line_truth
-            WHERE CAST(order_id AS TEXT) IN ({placeholders})
-              AND date(sale_date) <= ?
-        """
         params = [*chunk, as_of.isoformat()]
-        sales_frames.append(pd.read_sql_query(query, conn, params=params))
+        if _relation_exists(conn, "view_sales_line_truth"):
+            sales_frames.append(
+                pd.read_sql_query(
+                    f"""
+                    SELECT
+                        CAST(order_id AS TEXT) AS order_id,
+                        UPPER(COALESCE(store_code, 'UNKNOWN')) AS store_code,
+                        date(sale_date) AS sale_date,
+                        'view_sales_line_truth' AS source_table
+                    FROM view_sales_line_truth
+                    WHERE CAST(order_id AS TEXT) IN ({placeholders})
+                      AND date(sale_date) <= ?
+                    """,
+                    conn,
+                    params=params,
+                )
+            )
+        if _relation_exists(conn, "sales_fact_v2"):
+            sale_date_col = "order_date" if _column_exists(conn, "sales_fact_v2", "order_date") else "sale_date"
+            if _column_exists(conn, "sales_fact_v2", sale_date_col):
+                store_expr = "store_code" if _column_exists(conn, "sales_fact_v2", "store_code") else "'UNKNOWN'"
+                status_expr = "status" if _column_exists(conn, "sales_fact_v2", "status") else "'DELIVERED'"
+                return_expr = "return_flag" if _column_exists(conn, "sales_fact_v2", "return_flag") else "0"
+                sales_frames.append(
+                    pd.read_sql_query(
+                        f"""
+                        SELECT
+                            CAST(order_id AS TEXT) AS order_id,
+                            UPPER(COALESCE({store_expr}, 'UNKNOWN')) AS store_code,
+                            date({sale_date_col}) AS sale_date,
+                            'sales_fact_v2' AS source_table
+                        FROM sales_fact_v2
+                        WHERE CAST(order_id AS TEXT) IN ({placeholders})
+                          AND date({sale_date_col}) <= ?
+                          AND UPPER(COALESCE({status_expr}, 'DELIVERED')) IN ('DELIVERED', 'COMPLETED', 'ВЫДАН')
+                          AND COALESCE({return_expr}, 0) = 0
+                        """,
+                        conn,
+                        params=params,
+                    )
+                )
 
     sales = (
         pd.concat(sales_frames, ignore_index=True)
@@ -104,7 +150,7 @@ def _load_leaked_sales_for_returned_orders(
         else pd.DataFrame(columns=["order_id", "store_code", "sale_date"])
     )
     if sales.empty:
-        return pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date"])
+        return pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date", "source_table"])
     return sales.merge(scoped[["order_id", "return_date"]], on="order_id", how="inner")
 
 
@@ -124,8 +170,8 @@ def validate_returns_economics_audit(
     if not db_path.exists():
         raise ReturnsEconomicsError(f"db not found: {db_path}")
 
-    conn = sqlite3.connect(str(db_path))
-    try:
+    with validation_db_copy(db_path) as conn:
+        conn.row_factory = sqlite3.Row
         ensure_sales_truth_views(conn)
         returned = pd.read_sql_query(
             """
@@ -177,13 +223,11 @@ def validate_returns_economics_audit(
             conn,
             params=(since.isoformat(), as_of.isoformat()),
         )
-    finally:
-        conn.close()
 
     now_cutoff = as_of - timedelta(days=int(volatility_days))
 
     if leaked.empty:
-        leaked = pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date"])
+        leaked = pd.DataFrame(columns=["order_id", "store_code", "sale_date", "return_date", "source_table"])
     leaked["return_date"] = pd.to_datetime(leaked["return_date"], errors="coerce").dt.date
     leaked["sale_date"] = pd.to_datetime(leaked["sale_date"], errors="coerce").dt.date
     stale_leaks = leaked[leaked["return_date"].notna() & (leaked["return_date"] <= now_cutoff)].copy()

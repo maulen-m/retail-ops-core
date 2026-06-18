@@ -25,6 +25,7 @@ import pandas as pd
 from core.db import get_db, DEFAULT_DB_PATH
 from core.db.ledger import add_ledger_event, log_audit, inventory_pool_store_code
 from core.calc.economics import calc_cogs, calc_delivery_fee, calc_net_rev
+from core.product_truth.rombik_kid30_alias import apply_rombik_kid30_alias
 from core.utils.sku_normalize import (
     VALID_SIZES,
     infer_size_from_sku_id,
@@ -225,16 +226,19 @@ def parse_sales_excel(
     """
     df = pd.read_excel(xlsx_path, sheet_name=sheet_name)
 
-    # Column name normalization (handle both English and Russian)
-    # IMPORTANT: Only rename columns that don't create duplicates (English takes priority)
+    # Column name normalization (handle both English and Russian).
+    # English columns define the target schema, but some live workbook rows have
+    # blank English formula cells and populated raw Russian source cells.
     col_map = {}
     target_cols_used = set()
+    fallback_fill_sources: dict[str, list[str]] = {}
 
     # Define priority order: English columns first, then Russian fallbacks
     column_targets = [
         (["orderid", "order_id"], "order_id"),
         (["date", "order_date"], "order_date"),
         (["kaspi_offer_name"], "kaspi_offer_name"),
+        (["kaspi_article", "article", "артикул"], "kaspi_article"),
         (["sku_id", "skuid"], "sku_id"),
         (["sku_key", "skukey"], "sku_key"),
         (["my_size", "mysize", "size"], "my_size"),
@@ -249,7 +253,8 @@ def parse_sales_excel(
         (["total_price", "totalprice"], "total_price"),
     ]
 
-    # Russian fallbacks (only used if English not found)
+    # Russian fallbacks. If the English target exists, use these row-by-row only
+    # where the English cell is blank.
     russian_fallbacks = {
         "№ заказа": "order_id",
         "дата поступления заказа": "order_date",
@@ -274,11 +279,27 @@ def parse_sales_excel(
         col_lower = col.lower().strip()
         if col_lower in russian_fallbacks:
             target = russian_fallbacks[col_lower]
+            fallback_fill_sources.setdefault(target, []).append(col)
             if target not in target_cols_used:
                 col_map[col] = target
                 target_cols_used.add(target)
 
     df = df.rename(columns=col_map)
+
+    def _blank_mask(series: pd.Series) -> pd.Series:
+        text = series.astype(str).str.strip().str.lower()
+        return series.isna() | text.isin({"", "nan", "none", "null"})
+
+    for target, source_cols in fallback_fill_sources.items():
+        if target not in df.columns:
+            continue
+        df[target] = df[target].astype("object")
+        for source_col in source_cols:
+            if source_col not in df.columns:
+                continue
+            target_blank = _blank_mask(df[target])
+            source_present = ~_blank_mask(df[source_col])
+            df.loc[target_blank & source_present, target] = df.loc[target_blank & source_present, source_col]
 
     # Validate required columns
     required = ["order_id", "order_date", "kaspi_offer_name", "quantity"]
@@ -302,6 +323,9 @@ def parse_sales_excel(
         kaspi_offer_name = str(kaspi_offer_name).strip()
 
         # Get SKU info
+        kaspi_article = row.get("kaspi_article")
+        kaspi_article = str(kaspi_article).strip() if not pd.isna(kaspi_article) else None
+
         sku_id = row.get("sku_id")
         sku_id = str(sku_id).strip() if not pd.isna(sku_id) else None
 
@@ -326,18 +350,36 @@ def parse_sales_excel(
 
         # Get date
         order_date = row.get("order_date")
+        order_event_at = order_date
         if pd.isna(order_date):
             continue
         if isinstance(order_date, datetime):
+            order_event_at = order_date
             order_date = order_date.date()
         elif isinstance(order_date, str):
             try:
-                order_date = datetime.strptime(order_date, "%Y-%m-%d").date()
+                parsed_order_dt = datetime.strptime(order_date, "%Y-%m-%d")
+                order_event_at = parsed_order_dt
+                order_date = parsed_order_dt.date()
             except ValueError:
                 try:
-                    order_date = datetime.strptime(order_date, "%d.%m.%Y").date()
+                    parsed_order_dt = datetime.strptime(order_date, "%d.%m.%Y")
+                    order_event_at = parsed_order_dt
+                    order_date = parsed_order_dt.date()
                 except ValueError:
                     continue
+
+        alias = apply_rombik_kid30_alias(
+            sku_key=sku_key,
+            sku_id=sku_id,
+            my_size=my_size,
+            event_at=order_event_at,
+            kaspi_article=kaspi_article,
+            kaspi_offer_name=kaspi_offer_name,
+        )
+        sku_key = alias["sku_key"]
+        sku_id = alias["sku_id"]
+        my_size = alias["my_size"]
 
         # Get quantity
         quantity = row.get("quantity", 1)
@@ -397,6 +439,7 @@ def parse_sales_excel(
             "order_id": order_id,
             "order_date": order_date,
             "kaspi_offer_name": kaspi_offer_name,
+            "kaspi_article": kaspi_article,
             "sku_id": sku_id,
             "sku_key": sku_key,
             "my_size": my_size,
@@ -686,6 +729,8 @@ def ingest_sales_to_fact_sales(
     dry_run: bool = False,
     source_file: str | None = None,
     db_path: Optional[Path] = None,
+    from_date: str | date | None = None,
+    to_date: str | date | None = None,
 ) -> dict:
     """
     Ingest sales from CRM sheet into fact_sales with v8 economics.
@@ -699,6 +744,20 @@ def ingest_sales_to_fact_sales(
         source_file = Path(xlsx_path).name
 
     records = parse_sales_excel(xlsx_path, sheet_name)
+    if from_date is not None or to_date is not None:
+        from_key = from_date.isoformat() if isinstance(from_date, date) else str(from_date) if from_date else None
+        to_key = to_date.isoformat() if isinstance(to_date, date) else str(to_date) if to_date else None
+
+        def _date_key(rec: dict) -> str:
+            value = rec.get("order_date")
+            return value.isoformat() if isinstance(value, date) else str(value)
+
+        records = [
+            rec
+            for rec in records
+            if (from_key is None or _date_key(rec) >= from_key)
+            and (to_key is None or _date_key(rec) <= to_key)
+        ]
 
     stats = {
         "inserted": 0,

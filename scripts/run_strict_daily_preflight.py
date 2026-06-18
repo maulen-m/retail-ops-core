@@ -30,6 +30,8 @@ PROOF_WINDOW_BLOCK_TOKEN = "STRICT_DAILY_PREFLIGHT_BLOCKED_BY_PROOF_WINDOW_LOCK"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.db.validation_copy import validation_db_path
+
 # Optional dependency loaded lazily for bootstrap safety and test injection.
 build_single_truth_drift_pack: Callable[..., dict] | None = None
 send_run_failure_alert: Callable[..., bool] | None = None
@@ -216,9 +218,11 @@ def _ensure_business_insides_snapshot(
     as_of_iso: str,
     send_alert_on_fail: bool,
     workbook_path: Path,
+    alert_db_path: Path | None = None,
 ) -> Tuple[int, str | None]:
     if _business_insides_snapshot_exists(as_of_iso):
         return 0, None
+    alert_db = alert_db_path or db_path
 
     cmd = [
         sys.executable,
@@ -236,7 +240,7 @@ def _ensure_business_insides_snapshot(
             f"rc={int(completed.returncode)} as_of={as_of_iso}"
         )
         if send_alert_on_fail:
-            _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook_path)
+            _best_effort_failure_alert(message=msg, db_path=alert_db, workbook_path=workbook_path)
         return int(completed.returncode), msg
     if not _business_insides_snapshot_exists(as_of_iso):
         msg = (
@@ -244,7 +248,7 @@ def _ensure_business_insides_snapshot(
             f"as_of={as_of_iso}"
         )
         if send_alert_on_fail:
-            _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook_path)
+            _best_effort_failure_alert(message=msg, db_path=alert_db, workbook_path=workbook_path)
         return 2, msg
     return 0, None
 
@@ -282,6 +286,11 @@ def run_preflight(
         if send_alert_on_fail:
             _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
         return 2, msg
+    if not db_path.exists():
+        msg = f"STRICT_DAILY_PREFLIGHT FAIL: database does not exist: {db_path}"
+        if send_alert_on_fail:
+            _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
+        return 2, msg
 
     allowed_future_skew = _resolve_max_future_mtime_skew_seconds(max_future_mtime_skew_seconds)
     now_ts = time.time()
@@ -307,54 +316,56 @@ def run_preflight(
                 _best_effort_failure_alert(message=msg, db_path=db_path, workbook_path=workbook)
             return 2, msg
 
-    if ensure_business_insides:
-        as_of_iso = (business_insides_as_of or date.today().isoformat()).strip()
-        generate_code, generate_error = _ensure_business_insides_snapshot(
-            db_path=db_path,
-            as_of_iso=as_of_iso,
-            send_alert_on_fail=send_alert_on_fail,
-            workbook_path=workbook,
-        )
-        if generate_code != 0:
-            return generate_code, str(generate_error)
-
-    env = os.environ.copy()
-    env["AB_CRM_WORKBOOK_PATH"] = str(workbook)
-
-    cmd = [sys.executable, "scripts/validate_params.py", "--strict", "--db", str(db_path)]
-    completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env, check=False)
-    strict_code = int(completed.returncode)
-
-    lineage_path = lineage_output
-    if emit_lineage and lineage_path is None:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        lineage_path = PROJECT_ROOT / "exports" / "lineage" / f"lineage_{ts}.json"
-
-    if emit_lineage and lineage_path is not None:
-        lineage_path.parent.mkdir(parents=True, exist_ok=True)
-        emit_lineage_report(
-            db_path=db_path,
-            workbook_path=workbook,
-            output_path=lineage_path,
-            strict_exit_code=strict_code,
-        )
-
-    drift_pack_path: Path | None = None
-    drift_pack_error: str | None = None
-    drift_pack_builder = _load_drift_pack_builder() if emit_drift_pack else None
-    if strict_code == 0 and emit_drift_pack and callable(drift_pack_builder):
-        try:
+    with validation_db_path(db_path) as validation_db:
+        if ensure_business_insides:
             as_of_iso = (business_insides_as_of or date.today().isoformat()).strip()
-            max_lag_days = _resolve_max_workbook_lag_days(None)
-            drift_result = drift_pack_builder(
-                db_path=db_path,
-                as_of=as_of_iso,
+            generate_code, generate_error = _ensure_business_insides_snapshot(
+                db_path=validation_db,
+                as_of_iso=as_of_iso,
+                send_alert_on_fail=send_alert_on_fail,
                 workbook_path=workbook,
-                max_lag_days=max_lag_days,
+                alert_db_path=db_path,
             )
-            drift_pack_path = Path(str(drift_result.get("markdown_path", "")))
-        except Exception as exc:
-            drift_pack_error = str(exc)
+            if generate_code != 0:
+                return generate_code, str(generate_error)
+
+        env = os.environ.copy()
+        env["AB_CRM_WORKBOOK_PATH"] = str(workbook)
+
+        cmd = [sys.executable, "scripts/validate_params.py", "--strict", "--db", str(validation_db)]
+        completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env, check=False)
+        strict_code = int(completed.returncode)
+
+        lineage_path = lineage_output
+        if emit_lineage and lineage_path is None:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            lineage_path = PROJECT_ROOT / "exports" / "lineage" / f"lineage_{ts}.json"
+
+        if emit_lineage and lineage_path is not None:
+            lineage_path.parent.mkdir(parents=True, exist_ok=True)
+            emit_lineage_report(
+                db_path=validation_db,
+                workbook_path=workbook,
+                output_path=lineage_path,
+                strict_exit_code=strict_code,
+            )
+
+        drift_pack_path: Path | None = None
+        drift_pack_error: str | None = None
+        drift_pack_builder = _load_drift_pack_builder() if emit_drift_pack else None
+        if strict_code == 0 and emit_drift_pack and callable(drift_pack_builder):
+            try:
+                as_of_iso = (business_insides_as_of or date.today().isoformat()).strip()
+                max_lag_days = _resolve_max_workbook_lag_days(None)
+                drift_result = drift_pack_builder(
+                    db_path=validation_db,
+                    as_of=as_of_iso,
+                    workbook_path=workbook,
+                    max_lag_days=max_lag_days,
+                )
+                drift_pack_path = Path(str(drift_result.get("markdown_path", "")))
+            except Exception as exc:
+                drift_pack_error = str(exc)
 
     status = "PASS" if strict_code == 0 else "FAIL"
     msg = f"STRICT_DAILY_PREFLIGHT {status}: validate_params --strict rc={strict_code}"

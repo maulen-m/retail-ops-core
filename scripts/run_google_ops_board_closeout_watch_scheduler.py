@@ -47,10 +47,16 @@ READY_DEBOUNCE_STATE_PATH = DEFAULT_READY_DEBOUNCE_STATE_PATH
 AUTO_PROBABLE_AUDIT_ROOT = PROJECT_ROOT / "exports" / "google_ops_board" / "auto_probable_fill"
 IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
 AUTO_READY_SET_BY = "AUTO_CLOSEOUT_1857"
+FORCE_FRESH_ENV = "AB_GOOGLE_OPS_BOARD_FORCE_FRESH_CLOSEOUT"
+AUTO_PROBABLE_FILL_ENV = "AB_GOOGLE_OPS_BOARD_ALLOW_AUTO_PROBABLE_FILL"
 
 
 def _in_watch_window() -> bool:
     return within_early_closeout_watch_window(now_almaty())
+
+
+def _auto_probable_fill_enabled(env: dict[str, str]) -> bool:
+    return str(env.get(AUTO_PROBABLE_FILL_ENV) or "").strip() == "1"
 
 
 def _clean(value: object) -> str:
@@ -307,6 +313,7 @@ def main() -> int:
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, "1")
+    auto_probable_fill_enabled = _auto_probable_fill_enabled(env)
     os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
 
     contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
@@ -327,13 +334,19 @@ def main() -> int:
 
     completion = closeout_completion_state(client=client, contract=contract, target_date=target_date)
     if completion["completed"]:
-        clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
-        run_id = completion["run_id"] or "unknown"
+        ready_value = _clean((completion.get("row") or {}).get("ready_for_closeout")).upper()
+        if ready_value != "READY":
+            clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
+            run_id = completion["run_id"] or "unknown"
+            print(
+                f"Google Ops Board early-closeout watch: closeout already completed for {completion['target_date']} "
+                f"(run_id={run_id}); skipping.",
+            )
+            return 0
         print(
-            f"Google Ops Board early-closeout watch: closeout already completed for {completion['target_date']} "
-            f"(run_id={run_id}); skipping.",
+            "Google Ops Board early-closeout watch: completed delivery exists but Run_Control is READY; "
+            "treating this as a fresh operator request."
         )
-        return 0
     if completion["status"] == "OK":
         print(
             "Google Ops Board early-closeout watch: Run_Control is OK but delivery is incomplete "
@@ -357,7 +370,7 @@ def main() -> int:
         "run_control_updated": False,
         "blank_rows_remaining": [],
     }
-    if cutoff_reached and (
+    if auto_probable_fill_enabled and cutoff_reached and (
         readiness["blank_size_count"] > 0 or not readiness["run_control_ready_ok"]
     ):
         auto_prepare = _maybe_auto_prepare_closeout(
@@ -388,6 +401,9 @@ def main() -> int:
         auto_bits = []
         if cutoff_reached:
             auto_bits.append(f"cutoff_reached=True")
+            auto_bits.append(
+                f"auto_probable_fill={'enabled' if auto_probable_fill_enabled else 'disabled'}"
+            )
             auto_bits.append(f"auto_filled={auto_prepare['salesraw_updates_applied']}")
             auto_bits.append(f"auto_ready={auto_prepare['run_control_updated']}")
             auto_bits.append(f"blanks_remaining={len(auto_prepare['blank_rows_remaining'])}")
@@ -413,6 +429,7 @@ def main() -> int:
                 "Google Ops Board early-closeout watch: after 18:57 the board is green; "
                 "triggering closeout immediately."
             )
+        env[FORCE_FRESH_ENV] = "1"
         result = subprocess.run([sys.executable, str(SCRIPT_PATH), "--resume"], cwd=str(PROJECT_ROOT), env=env)
         return int(result.returncode)
 
@@ -440,6 +457,7 @@ def main() -> int:
         return 0
 
     print("Google Ops Board early-closeout watch: board is READY; triggering closeout immediately.")
+    env[FORCE_FRESH_ENV] = "1"
     result = subprocess.run([sys.executable, str(SCRIPT_PATH), "--resume"], cwd=str(PROJECT_ROOT), env=env)
     clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
     return int(result.returncode)

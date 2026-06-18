@@ -58,6 +58,15 @@ def main() -> int:
 
     print(f"Eligible orders: {report.details.get('eligible_orders', 0)}")
     print(f"Violations: {report.details.get('violations', 0)}")
+    print(f"Skipped missing line items: {report.details.get('skipped_missing_line_items', 0)}")
+    print(
+        "Skipped cancelled/returned archive: "
+        f"{report.details.get('skipped_cancelled_returned_archive', 0)}"
+    )
+    print(
+        "Manual offer text classifications: "
+        f"{report.details.get('manual_offer_text_classifications', 0)}"
+    )
 
     if report.ok:
         print("\nDAY COMPLETE: OK")

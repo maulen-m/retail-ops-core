@@ -43,6 +43,7 @@ from core.integrations.kaspi_api_client import (
     KaspiAuthError,
     STORE_TOKEN_MAP,
 )
+from core.stores.roster import load_sync_enabled_kaspi_store_codes
 from core.integrations.kaspi_order_stage import StageCode, api_state_filter_for_stage
 from core.integrations.kaspi_order_stage import (
     classify_kaspi_order_stage,
@@ -1085,7 +1086,7 @@ def download_all_waybills(
     api_errors: set[str] = set()
     source_label = None
 
-    stores = list(STORE_TOKEN_MAP.keys())
+    stores = [store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP]
     if store_filter:
         store_filter_api = normalize_api_store_code(store_filter)
         if store_filter_api:
@@ -1117,6 +1118,7 @@ def download_all_waybills(
 
     # Current-batch CRM manual sizes are the only authoritative actionable target set.
     manual_orders_by_store: dict[str, set[str]] = {}
+    db_orders_by_store: dict[str, set[str]] = {}
     if fallback_crm and crm_path:
         manual_orders_by_store = get_target_order_ids_from_crm(
             crm_path,
@@ -1129,8 +1131,27 @@ def download_all_waybills(
         )
         if manual_orders_by_store:
             source_label = "CRM current-batch manual sizes + API detail lookup"
+        else:
+            db_orders_by_store = get_target_order_ids_from_db(
+                resolved_db_path,
+                target_date,
+                store_filter,
+                exact_date=exact_date,
+                lookback_days=None if all_dates or exact_date else since_days,
+            )
 
-    target_selection_by_store = manual_orders_by_store if fallback_crm else target_orders_by_store
+    if fallback_crm and manual_orders_by_store:
+        target_selection_by_store = manual_orders_by_store
+    elif fallback_crm and db_orders_by_store:
+        target_selection_by_store = {
+            store: set(ids)
+            for store, ids in target_orders_by_store.items()
+        }
+        for store, ids in db_orders_by_store.items():
+            target_selection_by_store.setdefault(store, set()).update(ids)
+        source_label = "Kaspi API + DB cached overdue fallback"
+    else:
+        target_selection_by_store = target_orders_by_store
 
     if not target_selection_by_store:
         print("  No orders found for the target date.")
@@ -1148,8 +1169,9 @@ def download_all_waybills(
     if source_label:
         print(f"  Using {source_label} for order selection")
 
-    fallback_used = bool(fallback_crm and manual_orders_by_store)
-    fallback_stores = sorted(manual_orders_by_store.keys()) if fallback_used else []
+    fallback_used = bool(fallback_crm and (manual_orders_by_store or db_orders_by_store))
+    fallback_source_by_store = manual_orders_by_store or db_orders_by_store
+    fallback_stores = sorted(fallback_source_by_store.keys()) if fallback_used else []
 
     if api_errors and not fallback_used:
         logger.warning(

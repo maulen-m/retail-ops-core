@@ -462,13 +462,38 @@ def _resolve_kaspi_name_core(
     return resolution.core or "UNKNOWN"
 
 
+def _row_store_sort_value(row: dict[str, Any]) -> str:
+    return _display_store_name(row.get("STORE_NAME") or row.get("store")).casefold()
+
+
+def _row_order_sort_value(row: dict[str, Any]) -> str:
+    return _clean_str(row.get("OrderID") or row.get("order_id"))
+
+
 def _salesraw_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
-        _clean_str(row.get("OrderID")),
-        _clean_str(row.get("STORE_NAME")).casefold(),
+        _row_store_sort_value(row),
+        _row_order_sort_value(row),
         _clean_str(row.get("Kaspi_name_core")).casefold(),
         _clean_str(row.get("_db_row_id")),
     )
+
+
+def _operational_tab_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        _row_store_sort_value(row),
+        _row_order_sort_value(row),
+        _clean_str(row.get("planned_date") or row.get("Date")),
+        _clean_str(row.get("exception_key") or row.get("_db_row_id")),
+    )
+
+
+def _sort_operational_rows(tab_name: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if tab_name == "SalesRaw_Today":
+        return sorted(rows, key=_salesraw_sort_key)
+    if tab_name in {"Orders_Today", "Needs_Size", "Shipping_Queue", "Exceptions", "Shipped_Today"}:
+        return sorted(rows, key=_operational_tab_sort_key)
+    return list(rows)
 
 
 def _build_salesraw_row(
@@ -716,7 +741,13 @@ def build_phase1_payload(
                     order_core_overrides=order_core_overrides,
                 )
         salesraw_rows.append({key: built.get(key, "") for key in contract.tabs["SalesRaw_Today"].headers})
-    salesraw_rows.sort(key=_salesraw_sort_key)
+
+    salesraw_rows = _sort_operational_rows("SalesRaw_Today", salesraw_rows)
+    active_order_rows = _sort_operational_rows("Orders_Today", active_order_rows)
+    needs_size_rows = _sort_operational_rows("Needs_Size", needs_size_rows)
+    shipping_rows = _sort_operational_rows("Shipping_Queue", shipping_rows)
+    exception_rows = _sort_operational_rows("Exceptions", exception_rows)
+    shipped_rows = _sort_operational_rows("Shipped_Today", shipped_rows)
 
     readme_rows = [
         {"field": "contract_version", "value": str(contract.version), "notes": "Repo-owned Google ops board contract"},
@@ -913,7 +944,7 @@ def build_publish_plan(
             tab_contract.headers,
             before_snapshot.get(tab_name),
         )
-        fresh_rows = fresh_payload.get(tab_name) or []
+        fresh_rows = _sort_operational_rows(tab_name, fresh_payload.get(tab_name) or [])
         if tab_name in METADATA_TABS or not same_day or tab_name not in SAME_DAY_PRESERVE_TABS:
             tab_actions[tab_name] = {
                 "mode": "rewrite",

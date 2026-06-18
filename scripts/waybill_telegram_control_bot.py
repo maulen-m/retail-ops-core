@@ -48,6 +48,7 @@ ALMATY_TZ = ZoneInfo("Asia/Almaty")
 STATE_FILE = PROJECT_ROOT / "runtime" / "state" / "waybill_telegram_control_bot.json"
 ALLOWED_USERS_FILE = PROJECT_ROOT / "runtime" / "state" / "waybill_telegram_allowed_users.txt"
 CLOSEOUT_SCHEDULER_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_closeout_scheduler.py"
+FORCE_FRESH_CLOSEOUT_ENV = "AB_GOOGLE_OPS_BOARD_FORCE_FRESH_CLOSEOUT"
 DB_PATH = data_path("db", "app.db")
 READY_DEBOUNCE_SECONDS = 60
 HANDOVER_MANUAL_DELAY_SECONDS = 60
@@ -383,6 +384,7 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
     env = os.environ.copy()
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env[FORCE_FRESH_CLOSEOUT_ENV] = "1"
     result = subprocess.run(
         [sys.executable, str(CLOSEOUT_SCHEDULER_PATH), "--resume"],
         cwd=str(PROJECT_ROOT),

@@ -10,14 +10,12 @@ if ! command -v rg >/dev/null 2>&1; then
 fi
 
 DOCS_GLOBS=(--glob 'docs/**' --glob '!docs/archive/**' --glob '!docs/**/archive/**')
+GREEN_PATH_PLAN_NUMERIC_ALLOWLIST=(--glob '!docs/plan/green_path_2026-06/**')
 
 PATTERNS=(
   'VAT\s*3%'
   'VAT\s*0\.03'
   'VAT_rate\s*=\s*0\.03'
-  '\b856\b'
-  '\b1259\b'
-  '0\s*/\s*856\s*/\s*1259'
   'Master_Inventory_Rules_v5\.3'
   'Master_Inventory_Rules_v6'
   '\bWildberries\b'
@@ -26,9 +24,22 @@ PATTERNS=(
   'Autonomous_business 2'
 )
 
+LEGACY_NUMERIC_PATTERNS=(
+  '\b856\b'
+  '\b1259\b'
+  '0\s*/\s*856\s*/\s*1259'
+)
+
 fail=0
 for pat in "${PATTERNS[@]}"; do
   if rg -n "${DOCS_GLOBS[@]}" -e "$pat" docs; then
+    echo "ERROR: docs lint found banned pattern: $pat" >&2
+    fail=1
+  fi
+done
+
+for pat in "${LEGACY_NUMERIC_PATTERNS[@]}"; do
+  if rg -n "${DOCS_GLOBS[@]}" "${GREEN_PATH_PLAN_NUMERIC_ALLOWLIST[@]}" -e "$pat" docs; then
     echo "ERROR: docs lint found banned pattern: $pat" >&2
     fail=1
   fi

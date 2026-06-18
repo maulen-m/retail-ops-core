@@ -37,6 +37,12 @@ def main() -> int:
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY_PATH)
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument(
+        "--source-id",
+        action="append",
+        default=None,
+        help="Limit materialization to one C3 policy source id; repeat for multiple ids.",
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--backup-dir", type=Path, default=None)
     parser.add_argument("--json", action="store_true")
@@ -49,6 +55,7 @@ def main() -> int:
         run_id=args.run_id,
         apply=args.apply,
         backup_dir=args.backup_dir,
+        source_ids=set(args.source_id) if args.source_id else None,
     )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))

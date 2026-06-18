@@ -39,6 +39,7 @@ from core.integrations.kaspi_order_stage import (  # noqa: E402
     api_state_filter_for_stage,
     classify_kaspi_order_stage,
 )
+from core.stores.roster import load_sync_enabled_kaspi_store_codes  # noqa: E402
 from core.utils.kaspi_dates import parse_kaspi_date, planned_date_from_order  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -119,7 +120,7 @@ def get_api_orders_by_store(
 ) -> tuple[dict[str, set[str]], set[str]]:
     orders_by_store: dict[str, set[str]] = {}
     error_stores: set[str] = set()
-    stores = list(STORE_TOKEN_MAP.keys())
+    stores = [store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP]
     if store_filter:
         sf = store_filter.upper()
         if sf in STORE_TOKEN_MAP:

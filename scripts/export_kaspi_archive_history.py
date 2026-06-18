@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
+from dotenv import load_dotenv
 
 # Ensure repo root imports when invoked from anywhere
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -797,6 +798,11 @@ def main() -> int:
     )
     parser.add_argument("--out-dir", default="", help="Output root directory")
     parser.add_argument(
+        "--dotenv-path",
+        default=str(PROJECT_ROOT / ".env"),
+        help="Optional dotenv file for Kaspi API tokens; values are loaded but never printed",
+    )
+    parser.add_argument(
         "--copy-to",
         default="",
         help="Mirror output root into this directory (creates subfolder with output basename)",
@@ -852,6 +858,9 @@ def main() -> int:
     since = parse_date(args.since)
     until = parse_date(args.until)
     stores = [s.strip().upper() for s in args.stores.split(",") if s.strip()]
+    dotenv_path = Path(str(args.dotenv_path)).expanduser()
+    if dotenv_path.exists():
+        load_dotenv(dotenv_path=dotenv_path, override=False)
 
     invalid = [s for s in stores if s not in STORE_TOKEN_MAP]
     if invalid:

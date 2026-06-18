@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
+import os
 from pathlib import Path
 import sys
 
@@ -17,6 +18,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db import get_db, DEFAULT_DB_PATH
 from core.db.ledger import add_ledger_event
+
+
+ENV_GATE = "ENABLE_NEGATIVE_LEDGER_CLAMP_WRITE"
 
 
 def _parse_date(value: str) -> str:
@@ -73,6 +77,9 @@ def main() -> int:
         help="Reverse existing clamp adjustments for the snapshot date before applying new ones",
     )
     args = parser.parse_args()
+
+    if args.apply and os.environ.get(ENV_GATE) != "1":
+        raise RuntimeError(f"{ENV_GATE}=1 is required for --apply")
 
     snapshot_date = _parse_date(args.snapshot_date)
     ref_id = f"NEGATIVE_CLAMP_{snapshot_date}"

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Repair D1 CASH_IN rows for recovered order entries only.
+"""Repair D1 CASH_IN rows for focused missing order-entry candidates.
 
 Default: dry run. Apply requires ENABLE_D1_CASH_IN_REPAIR_WRITE=1.
 Production db/app.db apply additionally requires
 ENABLE_D1_CASH_IN_REPAIR_PROD_WRITE=1, --expected-pre-sha256, and --backup-dir.
+
+By default this remains limited to recovered CRM entry rows. Passing
+--allow-fact-order-entries also permits complete real fact_order_entries_kaspi
+ORDER_ENTRY candidates from the validator evidence.
 """
 
 from __future__ import annotations
@@ -183,6 +187,20 @@ def _is_allowed_recovered_entry(candidate: dict[str, Any]) -> bool:
     )
 
 
+def _is_allowed_fact_order_entry(candidate: dict[str, Any]) -> bool:
+    return (
+        str(candidate.get("ref_type") or "").strip().upper() == "ORDER_ENTRY"
+        and str(candidate.get("source") or "").strip() == "fact_order_entries_kaspi"
+        and not str(candidate.get("ref_id") or "").startswith("RECOV-CURRENT_CRM-")
+        and bool(str(candidate.get("ref_id") or "").strip())
+        and bool(str(candidate.get("order_id") or "").strip())
+        and bool(str(candidate.get("store_code") or "").strip())
+        and bool(str(candidate.get("delivered_date") or "").strip())
+        and float(candidate.get("quantity") or 0.0) > 0
+        and float(candidate.get("amount_basis_kzt") or 0.0) > 0
+    )
+
+
 def _entry_delivery_costs(conn: sqlite3.Connection, entry_ids: list[str]) -> dict[str, float]:
     if not entry_ids:
         return {}
@@ -257,6 +275,7 @@ def repair_d1_cash_in_from_validator_evidence(
     expected_missing_count: int | None = None,
     expected_pre_sha256: str | None = None,
     backup_dir: Path | None = None,
+    allow_fact_order_entries: bool = False,
 ) -> dict[str, Any]:
     db_path = db_path.resolve()
     output_root = output_root.resolve()
@@ -277,8 +296,19 @@ def repair_d1_cash_in_from_validator_evidence(
         conn.row_factory = sqlite3.Row
         coverage_before = evaluate_order_cashflow_coverage_conn(conn, as_of=as_of)
         missing = _missing_cash_candidates(conn, as_of=as_of)
-        blocked = [candidate for candidate in missing if not _is_allowed_recovered_entry(candidate)]
-        allowed = [candidate for candidate in missing if _is_allowed_recovered_entry(candidate)]
+        allowed_recovered = [candidate for candidate in missing if _is_allowed_recovered_entry(candidate)]
+        allowed_fact_entries = [
+            candidate
+            for candidate in missing
+            if allow_fact_order_entries and _is_allowed_fact_order_entry(candidate)
+        ]
+        allowed = allowed_recovered + allowed_fact_entries
+        allowed_keys = {(candidate.get("ref_type"), candidate.get("ref_id")) for candidate in allowed}
+        blocked = [
+            candidate
+            for candidate in missing
+            if (candidate.get("ref_type"), candidate.get("ref_id")) not in allowed_keys
+        ]
         if expected_missing_count is not None and len(missing) != expected_missing_count:
             raise D1CashInRepairError(
                 f"expected {expected_missing_count} missing D1 cash-in candidates, observed {len(missing)}"
@@ -371,7 +401,8 @@ def repair_d1_cash_in_from_validator_evidence(
             "modeled_receivables_count": coverage_after.get("modeled_receivables_count"),
         },
         "missing_candidate_count": len(missing),
-        "allowed_recovered_entry_count": len(allowed),
+        "allowed_recovered_entry_count": len(allowed_recovered),
+        "allowed_fact_order_entry_count": len(allowed_fact_entries),
         "blocked_candidate_count": len(blocked),
         "already_present_event_rows": len(events) - len(insert_events),
     }
@@ -391,6 +422,11 @@ def main() -> int:
     parser.add_argument("--expected-missing-count", type=int, default=None)
     parser.add_argument("--expected-pre-sha256", default=None)
     parser.add_argument("--backup-dir", type=Path, default=None)
+    parser.add_argument(
+        "--allow-fact-order-entries",
+        action="store_true",
+        help="Permit complete fact_order_entries_kaspi ORDER_ENTRY candidates in addition to recovered CRM rows.",
+    )
     args = parser.parse_args()
 
     summary = repair_d1_cash_in_from_validator_evidence(
@@ -402,10 +438,12 @@ def main() -> int:
         expected_missing_count=args.expected_missing_count,
         expected_pre_sha256=args.expected_pre_sha256,
         backup_dir=args.backup_dir,
+        allow_fact_order_entries=bool(args.allow_fact_order_entries),
     )
     print(f"status={summary['status']}")
     print(f"missing_candidate_count={summary['missing_candidate_count']}")
     print(f"allowed_recovered_entry_count={summary['allowed_recovered_entry_count']}")
+    print(f"allowed_fact_order_entry_count={summary['allowed_fact_order_entry_count']}")
     print(f"blocked_candidate_count={summary['blocked_candidate_count']}")
     print(f"would_insert_event_rows={summary['apply']['would_insert_event_rows']}")
     print(f"inserted_event_rows={summary['apply']['inserted_event_rows']}")

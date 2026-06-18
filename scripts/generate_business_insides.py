@@ -6,6 +6,7 @@ Generate single-truth business insides snapshot from paid capital + delivered sa
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from datetime import date, datetime, timedelta
 import glob
 import json
@@ -30,6 +31,7 @@ from core.db.sales_truth_query_guard import (
     install_sales_truth_query_guard,
     remove_sales_truth_query_guard,
 )
+from core.db.validation_copy import validation_db_path
 from core.sales.ocean_drop_anchor import (
     DEFAULT_REGISTRY as DEFAULT_OCEAN_DROP_ANCHOR_REGISTRY,
     OceanDropAnchorError,
@@ -621,15 +623,12 @@ def load_waybill_selection_snapshot(
             archive_snapshot["cache_status"] = "as_of_mismatch"
             archive_snapshot["cache_reason"] = f"target_date={target_date} expected={target_as_of}"
             return archive_snapshot
-        live_snapshot = _load_waybill_live_snapshot(
-            db_path=db_path.resolve(),
-            as_of_date=as_of_date,
-            selection_cache_path=selection_cache_path.resolve(),
-        )
-        live_snapshot["cache_target_date"] = target_date
-        live_snapshot["cache_status"] = "as_of_mismatch"
-        live_snapshot["cache_reason"] = f"target_date={target_date} expected={target_as_of}"
-        return live_snapshot
+        snapshot["status"] = "as_of_mismatch"
+        snapshot["reason"] = f"target_date={target_date} expected={target_as_of}"
+        snapshot["cache_target_date"] = target_date
+        snapshot["cache_status"] = "as_of_mismatch"
+        snapshot["cache_reason"] = f"target_date={target_date} expected={target_as_of}"
+        return snapshot
 
     stores_raw = payload.get("stores") or {}
     if not isinstance(stores_raw, dict):
@@ -905,7 +904,9 @@ def compute_sales_metrics(
     start_30 = as_of_date - timedelta(days=max(1, int(last_30_days)) - 1)
     start_7 = as_of_date - timedelta(days=max(1, int(last_7_days)) - 1)
 
-    conn = sqlite3.connect(str(db_path))
+    validation_stack = ExitStack()
+    query_db_path = validation_stack.enter_context(validation_db_path(db_path))
+    conn = sqlite3.connect(str(query_db_path))
     conn.row_factory = sqlite3.Row
     guard_installed = False
     fallback_completed_daily_rows: list[sqlite3.Row] = []
@@ -1005,6 +1006,7 @@ def compute_sales_metrics(
         if guard_installed:
             remove_sales_truth_query_guard(conn)
         conn.close()
+        validation_stack.close()
 
     by_date: dict[str, dict[str, float]] = {}
     fallback_rows = 0

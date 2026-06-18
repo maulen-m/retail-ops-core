@@ -128,6 +128,9 @@ def _evaluate_supersession(
     manifest: dict[str, object],
     manifest_path: Path | None,
     truth_source: str,
+    start: str,
+    forensic_rows_in_window: int,
+    forensic_max_sale_date: str | None,
 ) -> tuple[bool, list[dict[str, object]], str | None]:
     truth_sources = manifest.get("truth_sources") if isinstance(manifest, dict) else None
     if not isinstance(truth_sources, dict):
@@ -138,8 +141,30 @@ def _evaluate_supersession(
     if str(decision.get("decision") or "").upper() != "SUPERSEDED":
         return False, [], None
 
-    required_reports = decision.get("required_reports")
     checks: list[dict[str, object]] = []
+    applies_when = decision.get("applies_when")
+    if isinstance(applies_when, dict):
+        if bool(applies_when.get("requires_no_forensic_rows_in_window")):
+            ok = int(forensic_rows_in_window) == 0
+            checks.append(
+                {
+                    "name": "requires_no_forensic_rows_in_window",
+                    "ok": ok,
+                    "forensic_rows_in_window": int(forensic_rows_in_window),
+                }
+            )
+        if bool(applies_when.get("window_start_after_forensic_max_sale_date")):
+            ok = bool(forensic_max_sale_date) and str(start) > str(forensic_max_sale_date)
+            checks.append(
+                {
+                    "name": "window_start_after_forensic_max_sale_date",
+                    "ok": ok,
+                    "window_start": str(start),
+                    "forensic_max_sale_date": forensic_max_sale_date,
+                }
+            )
+
+    required_reports = decision.get("required_reports")
     if not isinstance(required_reports, dict) or not required_reports:
         return False, checks, "supersession decision missing required_reports"
 
@@ -263,9 +288,14 @@ def validate_cogs_realism_vs_forensic(
         end=end,
         output_dir=output_dir,
     )
-    forensic_lines = _load_forensic(forensic_file)
-    forensic_lines = forensic_lines[
-        (forensic_lines["sale_date"] >= start) & (forensic_lines["sale_date"] <= end)
+    forensic_all_lines = _load_forensic(forensic_file)
+    forensic_max_sale_date = (
+        str(forensic_all_lines["sale_date"].dropna().max())
+        if not forensic_all_lines.empty
+        else None
+    )
+    forensic_lines = forensic_all_lines[
+        (forensic_all_lines["sale_date"] >= start) & (forensic_all_lines["sale_date"] <= end)
     ].copy()
 
     db_month = db_lines.groupby("sale_month", as_index=False).agg(
@@ -323,6 +353,9 @@ def validate_cogs_realism_vs_forensic(
         manifest=manifest_payload,
         manifest_path=forensic_reference_manifest,
         truth_source=truth_source,
+        start=start,
+        forensic_rows_in_window=len(forensic_lines),
+        forensic_max_sale_date=forensic_max_sale_date,
     )
     forensic_comparison_status = "SUPERSEDED" if superseded_ok else "ACTIVE"
     status = (
@@ -345,6 +378,8 @@ def validate_cogs_realism_vs_forensic(
         "supersession_reason": supersession_reason,
         "supersession_checks": supersession_checks,
         "period": {"start": start, "end": end},
+        "forensic_rows_in_window": int(len(forensic_lines)),
+        "forensic_max_sale_date": forensic_max_sale_date,
         "max_month_gap_pct": float(max_month_gap_pct),
         "fail_months": fail_months,
         "forensic_file": str(forensic_file),

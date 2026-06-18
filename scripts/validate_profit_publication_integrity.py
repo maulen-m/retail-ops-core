@@ -15,6 +15,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.db.validation_copy import validation_db_copy
 from core.sales import ensure_sales_truth_views
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
@@ -80,6 +81,24 @@ def _load_unresolved_from_db(
     return {str(row[0]): int(row[1] or 0) for row in rows}
 
 
+def _iter_dashboard_publication_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    top_level = payload.get("sku_level") or []
+    if isinstance(top_level, list):
+        rows.extend(row for row in top_level if isinstance(row, dict))
+
+    pos_payload = payload.get("pos") or {}
+    if isinstance(pos_payload, dict):
+        for po_data in pos_payload.values():
+            if not isinstance(po_data, dict):
+                continue
+            for key in ("sku_level", "skipped_skus"):
+                nested = po_data.get(key) or []
+                if isinstance(nested, list):
+                    rows.extend(row for row in nested if isinstance(row, dict))
+    return rows
+
+
 def validate_profit_publication_integrity(
     *,
     db_path: Path = DEFAULT_DB,
@@ -92,15 +111,12 @@ def validate_profit_publication_integrity(
     window_end = as_of_date
     window_start = as_of_date - timedelta(days=max(1, int(days)) - 1)
 
-    conn = sqlite3.connect(str(db_path))
-    try:
+    with validation_db_copy(db_path) as conn:
         unresolved_by_sku = _load_unresolved_from_db(
             conn,
             start_date=window_start.isoformat(),
             end_date=window_end.isoformat(),
         )
-    finally:
-        conn.close()
 
     unresolved_rows_total = int(sum(unresolved_by_sku.values()))
     unresolved_sku_total = len(unresolved_by_sku)
@@ -147,7 +163,7 @@ def validate_profit_publication_integrity(
 
     if po_dashboard_path.exists():
         payload = json.loads(po_dashboard_path.read_text(encoding="utf-8"))
-        sku_rows = payload.get("sku_level") or []
+        sku_rows = _iter_dashboard_publication_rows(payload)
         unresolved_rows = {
             str(row.get("sku_key") or ""): row
             for row in sku_rows

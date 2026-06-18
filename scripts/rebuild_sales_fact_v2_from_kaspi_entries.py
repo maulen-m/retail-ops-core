@@ -105,6 +105,16 @@ def _is_generic_header_sku_key(value: str | None) -> bool:
     return str(value or "").strip().upper() in GENERIC_HEADER_SKU_KEYS
 
 
+def _article_suffix_key(value: Any) -> str:
+    article = str(value or "").strip().upper()
+    if "_" not in article:
+        return ""
+    suffix = article.rsplit("_", 1)[-1]
+    if suffix.isdigit() and len(suffix) >= 6:
+        return f"_{suffix}"
+    return ""
+
+
 def _load_offer_map(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple[str, str]]:
     if not _table_exists(conn, "dim_kaspi_article_map"):
         return {}
@@ -112,14 +122,18 @@ def _load_offer_map(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple[str
     where_clause = ""
     if "active_flag" in cols:
         where_clause = "WHERE COALESCE(active_flag, 1) = 1"
+    article_expr = "UPPER(COALESCE(kaspi_article, ''))" if "kaspi_article" in cols else "''"
+    offer_expr = "UPPER(COALESCE(kaspi_offer_name, ''))" if "kaspi_offer_name" in cols else "''"
+    sku_key_expr = "UPPER(COALESCE(sku_key, ''))" if "sku_key" in cols else "''"
+    sku_id_expr = "UPPER(COALESCE(sku_id, ''))" if "sku_id" in cols else "''"
     rows = conn.execute(
         f"""
         SELECT
             UPPER(COALESCE(store_code, '')),
-            UPPER(COALESCE(kaspi_article, '')),
-            UPPER(COALESCE(kaspi_offer_name, '')),
-            UPPER(COALESCE(sku_key, '')),
-            UPPER(COALESCE(sku_id, ''))
+            {article_expr},
+            {offer_expr},
+            {sku_key_expr},
+            {sku_id_expr}
         FROM dim_kaspi_article_map
         {where_clause}
         """
@@ -135,6 +149,9 @@ def _load_offer_map(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple[str
             token_norm = str(token or "").strip().upper()
             if token_norm:
                 mapping[(store_norm, token_norm)] = (sku_key_norm, sid)
+                suffix_norm = _article_suffix_key(token_norm)
+                if suffix_norm:
+                    mapping[(store_norm, suffix_norm)] = (sku_key_norm, sid)
     return mapping
 
 
@@ -368,6 +385,10 @@ def build_sales_fact_v2_rows_from_entries(
         parsed_size = str(parsed.get("my_size") or "").strip().upper()
 
         mapped = offer_map.get((str(store_code), offer_norm))
+        if not mapped:
+            suffix_norm = _article_suffix_key(offer_norm)
+            if suffix_norm:
+                mapped = offer_map.get((str(store_code), suffix_norm))
         if mapped:
             sku_key, sku_id = mapped
 
@@ -419,8 +440,10 @@ def build_sales_fact_v2_rows_from_entries(
             for r in order_rows
             if str(r.get("assigned_size") or "").strip()
         }
-        if assigned_size_candidates and not line_identity_has_sku_id:
+        if assigned_size_candidates:
             my_size = sorted(assigned_size_candidates)[0]
+            if sku_key and (not sku_id or sku_id == sku_key or sku_id.startswith(f"{sku_key}_")):
+                sku_id = f"{sku_key}_{my_size}"
 
         size_candidates = {
             str(r.get("my_size") or "").strip().upper()

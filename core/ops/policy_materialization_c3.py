@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from core.ads.active_scope import resolve_active_store_codes
 from core.ops.operational_stock_integration_gates import (
     evaluate_operational_stock_integration_gates,
 )
@@ -117,7 +118,7 @@ WEB_AUTOMATION_KASPI_MARKETING_PACKET_RELATIVE = (
     / "20260505_source_packet_standardization"
     / "kaspi_marketing_source_freshness_packet.json"
 )
-WEB_AUTOMATION_KASPI_MARKETING_REQUIRED_STORES = ("ACMEWEAR", "STOREB")
+WEB_AUTOMATION_KASPI_MARKETING_SUPPORTED_STORES = ("ACMEWEAR", "STOREB")
 WEB_AUTOMATION_KASPI_MARKETING_ZERO_FIELDS = (
     "external_write_operations",
     "ad_platform_write_operations",
@@ -914,7 +915,13 @@ def _validate_zero_write_map(
         elif payload.get(field) != 0:
             issues.append(f"{issue_prefix}_FIELD_NONZERO:{label}:{field}")
     if "secret_values_stored" in payload and payload.get("secret_values_stored") is not False:
-        issues.append(f"{issue_prefix}_SECRET_VALUES_STORED:{label}")
+            issues.append(f"{issue_prefix}_SECRET_VALUES_STORED:{label}")
+
+
+def _web_automation_kaspi_marketing_required_stores(as_of: str) -> tuple[str, ...]:
+    supported = set(WEB_AUTOMATION_KASPI_MARKETING_SUPPORTED_STORES)
+    active = {str(store).strip().upper() for store in resolve_active_store_codes(as_of)}
+    return tuple(sorted(store for store in active if store in supported))
 
 
 def _web_automation_packet_observed_window(
@@ -1004,6 +1011,11 @@ def _observe_web_automation_kaspi_marketing_packet(
         issues.append("AB_CAN_CLEAR_NOT_TRUE")
     if packet.get("as_of") != as_of:
         issues.append(f"PACKET_AS_OF_MISMATCH:{packet.get('as_of')}")
+    try:
+        required_stores = _web_automation_kaspi_marketing_required_stores(as_of)
+    except Exception as exc:
+        issues.append(f"ACTIVE_SCOPE_RESOLUTION_ERROR:{exc}")
+        required_stores = WEB_AUTOMATION_KASPI_MARKETING_SUPPORTED_STORES
 
     for field in WEB_AUTOMATION_KASPI_MARKETING_ZERO_FIELDS:
         if field not in packet:
@@ -1033,13 +1045,13 @@ def _observe_web_automation_kaspi_marketing_packet(
                 issues.append(f"STRICT_REQUIREMENT_NOT_TRUE:{field}")
         required = strict_requirements.get("stores_required")
         covered = strict_requirements.get("stores_covered")
-        if set(required or []) != set(WEB_AUTOMATION_KASPI_MARKETING_REQUIRED_STORES):
+        if set(required or []) != set(required_stores):
             issues.append("STORES_REQUIRED_MISMATCH")
         if not isinstance(covered, list):
             issues.append("STORES_COVERED_MISSING_OR_INVALID")
         else:
             stores_covered = sorted(str(item) for item in covered)
-            for store in WEB_AUTOMATION_KASPI_MARKETING_REQUIRED_STORES:
+            for store in required_stores:
                 if store not in stores_covered:
                     issues.append(f"STORE_COVERAGE_MISSING:{store}")
         date_coverage = strict_requirements.get("date_coverage_through")
@@ -1108,7 +1120,7 @@ def _observe_web_automation_kaspi_marketing_packet(
     if not isinstance(store_coverage, dict):
         issues.append("STORE_COVERAGE_MISSING")
         store_coverage = {}
-    for store in WEB_AUTOMATION_KASPI_MARKETING_REQUIRED_STORES:
+    for store in required_stores:
         store_payload = store_coverage.get(store)
         if not isinstance(store_payload, dict):
             issues.append(f"STORE_COVERAGE_MISSING:{store}")
@@ -1155,6 +1167,7 @@ def _observe_web_automation_kaspi_marketing_packet(
         "ab_can_clear_src_web_automation_kaspi_marketing_directapi": packet.get(
             "ab_can_clear_src_web_automation_kaspi_marketing_directapi"
         ),
+        "stores_required": list(required_stores),
         "stores_covered": stores_covered,
         "date_coverage_through": strict_requirements.get("date_coverage_through")
         if isinstance(strict_requirements, dict)

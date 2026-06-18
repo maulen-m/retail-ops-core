@@ -14,8 +14,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.calc.economics import resolve_landed_cogs
+from core.cashflow.paid_capital_truth import compute_paid_capital_truth
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
+DEFAULT_BANK_ACCOUNTS = PROJECT_ROOT / "config" / "bank_accounts.yaml"
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -46,7 +48,12 @@ def _load_dim_sku_costs(conn: sqlite3.Connection) -> dict[str, dict]:
     }
 
 
-def _compute_inventory_cost(conn: sqlite3.Connection, snapshot_date: str, *, db_path: Path) -> float:
+def _compute_inventory_cost_components(
+    conn: sqlite3.Connection,
+    snapshot_date: str,
+    *,
+    db_path: Path,
+) -> dict[str, float]:
     rows = conn.execute(
         """
         SELECT sku_key, SUM(current_stock) as stock, SUM(inbound_stock) as inbound_stock
@@ -58,7 +65,8 @@ def _compute_inventory_cost(conn: sqlite3.Connection, snapshot_date: str, *, db_
     ).fetchall()
 
     dim_costs = _load_dim_sku_costs(conn)
-    total = 0.0
+    on_hand_total = 0.0
+    inbound_total = 0.0
     for sku_key, stock, inbound_stock in rows:
         meta = dim_costs.get(sku_key, {})
         unit_cost, _cost_source, _fx = resolve_landed_cogs(
@@ -71,13 +79,48 @@ def _compute_inventory_cost(conn: sqlite3.Connection, snapshot_date: str, *, db_
         if unit_cost is None:
             continue
         if stock and stock > 0:
-            total += float(stock) * unit_cost
+            on_hand_total += float(stock) * unit_cost
         if inbound_stock and inbound_stock > 0:
-            total += float(inbound_stock) * unit_cost
-    return round(total, 2)
+            inbound_total += float(inbound_stock) * unit_cost
+    return {
+        "on_hand_cost": round(on_hand_total, 2),
+        "inbound_snapshot_cost": round(inbound_total, 2),
+        "snapshot_cost": round(on_hand_total + inbound_total, 2),
+    }
 
 
-def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, tolerance_kzt: float) -> int:
+def _default_can_use_paid_truth(db_path: Path, bank_accounts_path: Path) -> bool:
+    try:
+        return db_path.resolve() == DEFAULT_DB.resolve() and bank_accounts_path.exists()
+    except FileNotFoundError:
+        return False
+
+
+def _latest_snapshot_on_or_before(
+    conn: sqlite3.Connection,
+    cutoff: str | None,
+) -> str | None:
+    if cutoff:
+        row = conn.execute(
+            "SELECT MAX(snapshot_date) as snap_date FROM fact_inventory_snapshot_size WHERE snapshot_date <= ?",
+            (cutoff,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT MAX(snapshot_date) as snap_date FROM fact_inventory_snapshot_size"
+        ).fetchone()
+    return row["snap_date"] if row and row["snap_date"] else None
+
+
+def validate_drift(
+    db_path: Path,
+    as_of: str | None,
+    tolerance_pct: float,
+    tolerance_kzt: float,
+    *,
+    mode: str = "auto",
+    bank_accounts_path: Path = DEFAULT_BANK_ACCOUNTS,
+) -> int:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
     conn = sqlite3.connect(str(db_path))
@@ -102,6 +145,43 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
         if has_on_delivery:
             select_cols.append("inventory_on_delivery_close")
         select_cols.append("inventory_cost_close")
+        use_paid_truth = mode == "paid-truth" or (
+            mode == "auto" and _default_can_use_paid_truth(db_path, bank_accounts_path)
+        )
+        if use_paid_truth:
+            snapshot_date = _latest_snapshot_on_or_before(conn, as_of or max_cashflow_date)
+            if not snapshot_date:
+                print("SKIP: no snapshot available to compare")
+                return 0
+            components = _compute_inventory_cost_components(conn, snapshot_date, db_path=db_path)
+            paid_truth = compute_paid_capital_truth(
+                db_path=db_path,
+                bank_accounts_path=bank_accounts_path,
+                as_of=snapshot_date,
+            )
+            paid_on_hand = float(paid_truth.get("inventory_on_hand_paid_kzt") or 0.0)
+            diff = abs(components["on_hand_cost"] - paid_on_hand)
+            allowed = max(tolerance_kzt, abs(components["on_hand_cost"]) * tolerance_pct)
+            print("mode=paid_truth")
+            print(f"snapshot_date={snapshot_date}")
+            print(f"snapshot_on_hand_cost_kzt={components['on_hand_cost']:,.2f}")
+            print(f"snapshot_inbound_rows_cost_kzt={components['inbound_snapshot_cost']:,.2f}")
+            print(f"paid_truth_on_hand_cost_kzt={paid_on_hand:,.2f}")
+            print(
+                "paid_truth_components_kzt="
+                f"cash:{float(paid_truth.get('cash_actual_kzt') or 0.0):,.2f}, "
+                f"inbound_paid:{float(paid_truth.get('inventory_inbound_paid_kzt') or 0.0):,.2f}, "
+                f"on_delivery_paid:{float(paid_truth.get('inventory_on_delivery_paid_kzt') or 0.0):,.2f}, "
+                f"inbound_unpaid:{float(paid_truth.get('inbound_unpaid_obligations_kzt') or 0.0):,.2f}"
+            )
+            print(f"diff_kzt={diff:,.2f}")
+            print(f"allowed_kzt={allowed:,.2f}")
+            if diff > allowed:
+                print("FAIL: paid-truth on-hand inventory drift exceeds tolerance")
+                return 1
+            print("PASS: paid-truth on-hand inventory drift within tolerance")
+            return 0
+
         def _evaluate_snapshot(snapshot_date: str) -> dict | None:
             cashflow_row = conn.execute(
                 f"SELECT {', '.join(select_cols)} FROM fact_cashflow_daily WHERE date = ?",
@@ -110,7 +190,8 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
             if not cashflow_row:
                 return None
 
-            snapshot_cost = _compute_inventory_cost(conn, snapshot_date, db_path=db_path)
+            components = _compute_inventory_cost_components(conn, snapshot_date, db_path=db_path)
+            snapshot_cost = components["snapshot_cost"]
             on_hand_close = float(cashflow_row["inventory_on_hand_close"] or 0.0)
             inbound_close = float(cashflow_row["inventory_inbound_close"] or 0.0)
             on_delivery_close = (
@@ -127,6 +208,8 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
             return {
                 "snapshot_date": snapshot_date,
                 "snapshot_cost": snapshot_cost,
+                "snapshot_on_hand_cost": components["on_hand_cost"],
+                "snapshot_inbound_rows_cost": components["inbound_snapshot_cost"],
                 "on_hand_close": on_hand_close,
                 "inbound_close": inbound_close,
                 "on_delivery_close": on_delivery_close,
@@ -138,11 +221,7 @@ def validate_drift(db_path: Path, as_of: str | None, tolerance_pct: float, toler
             }
 
         if as_of:
-            snapshot_row = conn.execute(
-                "SELECT MAX(snapshot_date) as snap_date FROM fact_inventory_snapshot_size WHERE snapshot_date <= ?",
-                (as_of,),
-            ).fetchone()
-            snapshot_date = snapshot_row["snap_date"] if snapshot_row and snapshot_row["snap_date"] else None
+            snapshot_date = _latest_snapshot_on_or_before(conn, as_of)
             if not snapshot_date:
                 print("SKIP: no snapshot available to compare")
                 return 0
@@ -243,8 +322,22 @@ def main() -> int:
     parser.add_argument("--as-of", type=str, default=None)
     parser.add_argument("--tolerance-pct", type=float, default=0.02)
     parser.add_argument("--tolerance-kzt", type=float, default=50000.0)
+    parser.add_argument(
+        "--mode",
+        choices=("auto", "legacy", "paid-truth"),
+        default="auto",
+        help="auto uses paid-truth for the production DB and legacy model-ledger checks elsewhere",
+    )
+    parser.add_argument("--bank-accounts", type=Path, default=DEFAULT_BANK_ACCOUNTS)
     args = parser.parse_args()
-    return validate_drift(args.db, args.as_of, args.tolerance_pct, args.tolerance_kzt)
+    return validate_drift(
+        args.db,
+        args.as_of,
+        args.tolerance_pct,
+        args.tolerance_kzt,
+        mode=args.mode,
+        bank_accounts_path=args.bank_accounts,
+    )
 
 
 if __name__ == "__main__":

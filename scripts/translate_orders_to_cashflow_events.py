@@ -39,6 +39,7 @@ DELIVERED_STAGE_CODES = {"COMPLETED", "DELIVERED", "ISSUED_COMPLETED"}
 RETURN_STAGE_CODES = {"RETURNED", "CANCELLED_AFTER_DELIVERY", "CANCELLED_DELIVERED"}
 CANCEL_STAGE_CODES = {"CANCELLED"}
 UNKNOWN_STORE_CODES = {"", "UNKNOWN"}
+SUPPORTED_ONLY_CASHFLOW_STATUSES = {"ON_DELIVERY"}
 
 
 def _sha256_file(path: Path) -> str:
@@ -71,6 +72,57 @@ def _fail_on_sqlite_sidecars(db_path: Path) -> None:
 
 def _is_production_db(db_path: Path) -> bool:
     return db_path.resolve() == DEFAULT_DB.resolve()
+
+
+def _read_order_id_file(path: Path) -> set[str]:
+    if not path.exists():
+        raise FileNotFoundError(f"order allowlist file not found: {path}")
+    order_ids = {
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    if not order_ids:
+        raise RuntimeError(f"order allowlist file is empty: {path}")
+    return order_ids
+
+
+def _normalize_order_id_allowlist(order_id_allowlist: set[str] | None) -> set[str] | None:
+    if order_id_allowlist is None:
+        return None
+    normalized = {str(order_id).strip() for order_id in order_id_allowlist if str(order_id).strip()}
+    if not normalized:
+        raise RuntimeError("order_id_allowlist must not be empty")
+    return normalized
+
+
+def _normalize_only_cashflow_status(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    if normalized not in SUPPORTED_ONLY_CASHFLOW_STATUSES:
+        supported = ", ".join(sorted(SUPPORTED_ONLY_CASHFLOW_STATUSES))
+        raise RuntimeError(f"unsupported --only-cashflow-status {value!r}; supported: {supported}")
+    return normalized
+
+
+def _event_scope_line(event: dict) -> str:
+    columns = [
+        "EVENT",
+        str(event.get("event_date") or ""),
+        str(event.get("event_type") or ""),
+        str(event.get("account") or ""),
+        f"{float(event.get('amount_kzt') or 0.0):.2f}",
+        str(event.get("store_code") or ""),
+        str(event.get("sku_key") or ""),
+        str(event.get("sku_id") or ""),
+        str(event.get("ref_type") or ""),
+        str(event.get("ref_id") or ""),
+        str(event.get("notes") or "").replace("\t", " "),
+        str(event.get("source") or ""),
+        str(event.get("run_id") or ""),
+    ]
+    return "\t".join(columns)
 
 
 def _prepare_cashflow_apply_guard(
@@ -970,9 +1022,14 @@ def translate_orders(
     output_path: Path | None = None,
     expected_pre_sha256: str | None = None,
     backup_dir: Path | None = None,
+    order_id_allowlist: set[str] | None = None,
+    only_cashflow_status: str | None = None,
 ) -> int:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
+
+    order_id_filter = _normalize_order_id_allowlist(order_id_allowlist)
+    status_filter = _normalize_only_cashflow_status(only_cashflow_status)
 
     report_lines = []
     apply_metadata: dict[str, object] = {}
@@ -1021,6 +1078,22 @@ def translate_orders(
             """,
             (since.isoformat(), until.isoformat()),
         ).fetchall()
+        if order_id_filter is not None:
+            rows = [
+                row
+                for row in rows
+                if str(row["order_id"] or "").strip() in order_id_filter
+            ]
+        status_filtered_out = 0
+        if status_filter is not None:
+            status_filtered_rows = []
+            for row in rows:
+                row_status = _cashflow_status_from_stage(classify_kaspi_stage_from_db_row(row))
+                if row_status == status_filter:
+                    status_filtered_rows.append(row)
+                else:
+                    status_filtered_out += 1
+            rows = status_filtered_rows
         # Some orders have duplicate history rows where one row already has SKU identity,
         # but the resolved sibling can be outside this date window.
         # Build resolved keys from the whole table and use them only as a missing-SKU guard.
@@ -1107,16 +1180,19 @@ def translate_orders(
         missing_sku = []
         missing_cost = []
         counts = {"completed": 0, "cancelled": 0, "on_delivery": 0, "ignored": 0}
-        stagecode_events, stagecode_counts = _build_stagecode_d1_events(
-            conn,
-            since=since,
-            until=until,
-            run_id=run_id,
-            weights=weights,
-            entries_by_order=entries_by_order,
-            sales_fact_fallback=sales_fact_fallback,
-            fact_order_fallback=fact_order_fallback,
-        )
+        stagecode_events: list[dict] = []
+        stagecode_counts: Counter = Counter()
+        if status_filter is None:
+            stagecode_events, stagecode_counts = _build_stagecode_d1_events(
+                conn,
+                since=since,
+                until=until,
+                run_id=run_id,
+                weights=weights,
+                entries_by_order=entries_by_order,
+                sales_fact_fallback=sales_fact_fallback,
+                fact_order_fallback=fact_order_fallback,
+            )
         events.extend(stagecode_events)
         for event in stagecode_events:
             if event.get("event_type") != "CASH_IN":
@@ -1141,48 +1217,53 @@ def translate_orders(
         # Global corrective pass: if completed orders already have cash/cogs but their
         # INVENTORY_ON_DELIVERY_COST balance is non-zero, add a balancing COGS entry.
         # Restrict corrections to cogs dates inside the requested window.
-        stagecode_d1_order_pairs = set(_stage_events_by_order(conn, since, until).keys())
-        for (order_id, order_sku_id), row_meta in resolved_completed_rows_by_key.items():
-            if (order_id, str(row_meta["store_code"] or "").strip().upper()) in stagecode_d1_order_pairs:
-                continue
-            if not _has_existing(existing_cash, order_id, order_sku_id):
-                continue
-            cogs_date = _get_existing_date(existing_cogs_dates, order_id, order_sku_id)
-            if not cogs_date:
-                continue
-            try:
-                cogs_date_obj = date.fromisoformat(str(cogs_date))
-            except ValueError:
-                continue
-            if cogs_date_obj < since or cogs_date_obj > until:
-                continue
-            imbalance = _get_existing_balance(on_delivery_balances, order_id, order_sku_id)
-            if abs(imbalance) <= 0.01:
-                continue
-            correction = round(-imbalance, 2)
-            events.append(
-                {
-                    "event_date": cogs_date_obj.isoformat(),
-                    "event_type": "COGS_RECOGNIZED",
-                    "account": "INVENTORY_ON_DELIVERY_COST",
-                    "amount_kzt": correction,
-                    "store_code": row_meta["store_code"],
-                    "sku_key": row_meta["sku_key"],
-                    "sku_id": row_meta["sku_id"],
-                    "ref_type": "ORDER",
-                    "ref_id": row_meta["order_id"],
-                    "source": "ORDER_MODELLED",
-                    "run_id": run_id,
-                    "notes": "Backfill on-delivery balance correction",
-                }
-            )
-            _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, correction)
+        stagecode_d1_order_pairs = set()
+        if status_filter is None:
+            stagecode_d1_order_pairs = set(_stage_events_by_order(conn, since, until).keys())
+            for (order_id, order_sku_id), row_meta in resolved_completed_rows_by_key.items():
+                if (order_id, str(row_meta["store_code"] or "").strip().upper()) in stagecode_d1_order_pairs:
+                    continue
+                if not _has_existing(existing_cash, order_id, order_sku_id):
+                    continue
+                cogs_date = _get_existing_date(existing_cogs_dates, order_id, order_sku_id)
+                if not cogs_date:
+                    continue
+                try:
+                    cogs_date_obj = date.fromisoformat(str(cogs_date))
+                except ValueError:
+                    continue
+                if cogs_date_obj < since or cogs_date_obj > until:
+                    continue
+                imbalance = _get_existing_balance(on_delivery_balances, order_id, order_sku_id)
+                if abs(imbalance) <= 0.01:
+                    continue
+                correction = round(-imbalance, 2)
+                events.append(
+                    {
+                        "event_date": cogs_date_obj.isoformat(),
+                        "event_type": "COGS_RECOGNIZED",
+                        "account": "INVENTORY_ON_DELIVERY_COST",
+                        "amount_kzt": correction,
+                        "store_code": row_meta["store_code"],
+                        "sku_key": row_meta["sku_key"],
+                        "sku_id": row_meta["sku_id"],
+                        "ref_type": "ORDER",
+                        "ref_id": row_meta["order_id"],
+                        "source": "ORDER_MODELLED",
+                        "run_id": run_id,
+                        "notes": "Backfill on-delivery balance correction",
+                    }
+                )
+                _apply_balance_delta(on_delivery_balances, order_id, order_sku_id, correction)
 
         for row in rows:
             stage = classify_kaspi_stage_from_db_row(row)
             raw_internal_status = str(row["internal_status"] or "").strip().upper()
             status = _cashflow_status_from_stage(stage)
             if status is None:
+                counts["ignored"] += 1
+                continue
+            if status_filter is not None and status != status_filter:
                 counts["ignored"] += 1
                 continue
             event_date = (
@@ -1717,6 +1798,11 @@ def translate_orders(
             }
             new_events = [e for e in events if e["event_hash"] not in existing_hashes]
 
+        if order_id_filter is not None:
+            report_lines.append(f"Order allowlist entries: {len(order_id_filter)}")
+        if status_filter is not None:
+            report_lines.append(f"Only cashflow status: {status_filter}")
+            report_lines.append(f"Rows filtered by cashflow status: {status_filtered_out}")
         report_lines.append(f"Orders scanned: {len(rows)}")
         report_lines.append(f"StageCode D1 cash-in candidates: {stagecode_counts.get('cash_in_candidates', 0)}")
         report_lines.append(f"StageCode D1 existing cash-in lines: {stagecode_counts.get('cash_in_existing', 0)}")
@@ -1728,6 +1814,21 @@ def translate_orders(
         report_lines.append(f"On-delivery orders: {counts['on_delivery']}")
         report_lines.append(f"Ignored orders: {counts['ignored']}")
         report_lines.append(f"New cashflow events: {len(new_events)}")
+        if new_events:
+            report_lines.append(
+                "EVENT_HEADER\tevent_date\tevent_type\taccount\tamount_kzt\tstore_code\t"
+                "sku_key\tsku_id\tref_type\tref_id\tnotes\tsource\trun_id"
+            )
+            for event in sorted(
+                new_events,
+                key=lambda item: (
+                    str(item.get("ref_id") or ""),
+                    str(item.get("event_type") or ""),
+                    str(item.get("account") or ""),
+                    float(item.get("amount_kzt") or 0.0),
+                ),
+            ):
+                report_lines.append(_event_scope_line(event))
 
         if apply:
             for event in new_events:
@@ -1796,6 +1897,18 @@ def main() -> int:
     )
     parser.add_argument("--expected-pre-sha256", type=str, default=None)
     parser.add_argument("--backup-dir", type=Path, default=None)
+    parser.add_argument(
+        "--order-id-file",
+        type=Path,
+        default=None,
+        help="Restrict modeled order rows to newline-delimited order IDs; empty files fail closed.",
+    )
+    parser.add_argument(
+        "--only-cashflow-status",
+        type=str,
+        default=None,
+        help="Restrict modeled order rows to a supported cashflow status (currently: ON_DELIVERY).",
+    )
     args = parser.parse_args()
 
     cutoff = get_cutoff_date_almaty()
@@ -1816,6 +1929,8 @@ def main() -> int:
         output_path=args.output_path,
         expected_pre_sha256=args.expected_pre_sha256,
         backup_dir=args.backup_dir,
+        order_id_allowlist=_read_order_id_file(args.order_id_file) if args.order_id_file else None,
+        only_cashflow_status=args.only_cashflow_status,
     )
 
 

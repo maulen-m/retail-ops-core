@@ -15,6 +15,29 @@ import pandas as pd
 INBOUNDS_SHEET = "Inbounds_sheet"
 TOTALS_SHEET = "PO_part_id_Totals"
 CARGO_PREFIX = "cargo_send_"
+LINE61_SHORTAGE_CLASSIFICATION_ID = "PO_ACCEPTED_REAL_SHORTAGE_LINE61_2026_05_OWNER_CONFIRMED"
+LINE61_SHORTAGE_BY_SIZE = {"XL": 7, "2XL": 5, "3XL": 6, "4XL": 5}
+LINE61_SHORTAGE_CONTRACT_PATH = (
+    "docs/contracts/mvos_source_contracts/PO_LINE61_REAL_SHORTAGE_PRODUCTION_SAFE_V1.md"
+)
+LINE61_ACCEPTED_SHORTAGE_RULES = (
+    {
+        "type": "cargo_vs_inbounds",
+        "po_part_id": "PO-4.0",
+        "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+        "expected_qty": 92.0,
+        "observed_qty": 115.0,
+        "delta_qty": 23.0,
+    },
+    {
+        "type": "totals_vs_inbounds",
+        "po_part_id": "PO-4.0",
+        "sku_key": "*PART_TOTAL*",
+        "expected_qty": 1902.0,
+        "observed_qty": 1925.0,
+        "delta_qty": 23.0,
+    },
+)
 
 
 def _is_valid_part_id(value: Any) -> bool:
@@ -237,7 +260,49 @@ def _load_cargo_sheets(path: Path) -> tuple[dict[tuple[str, str], float], dict[t
     return observed, key_sources
 
 
-def validate_inbound_sheet_consistency(*, workbook_path: Path, tolerance: float = 0.0) -> dict[str, Any]:
+def _matches_rule(mismatch: dict[str, Any], rule: dict[str, Any]) -> bool:
+    if mismatch.get("type") != rule["type"]:
+        return False
+    if mismatch.get("po_part_id") != rule["po_part_id"]:
+        return False
+    if mismatch.get("sku_key") != rule["sku_key"]:
+        return False
+    for qty_key in ("expected_qty", "observed_qty", "delta_qty"):
+        if round(_to_float(mismatch.get(qty_key)), 2) != round(_to_float(rule[qty_key]), 2):
+            return False
+    return True
+
+
+def _classify_mismatch(mismatch: dict[str, Any]) -> dict[str, Any]:
+    for rule in LINE61_ACCEPTED_SHORTAGE_RULES:
+        if not _matches_rule(mismatch, rule):
+            continue
+        classified = dict(mismatch)
+        classified.update(
+            {
+                "classification": "accepted_real_shortage_production_safe",
+                "classification_id": LINE61_SHORTAGE_CLASSIFICATION_ID,
+                "classification_reason": "owner_confirmed_po4_line61_real_shortage",
+                "contract_path": LINE61_SHORTAGE_CONTRACT_PATH,
+                "ordered_cargo_units": 115.0,
+                "actual_received_units": 92.0,
+                "shortage_units": 23.0,
+                "shortage_by_size": LINE61_SHORTAGE_BY_SIZE,
+                "production_authority": True,
+                "clears_inbound_sheet_consistency": True,
+                "clears_po_money_gate": False,
+            }
+        )
+        return classified
+    return dict(mismatch)
+
+
+def validate_inbound_sheet_consistency(
+    *,
+    workbook_path: Path,
+    tolerance: float = 0.0,
+    allow_accepted_shortages_for_copied_temp: bool = False,
+) -> dict[str, Any]:
     expected_by_key, expected_by_part, quantity_column = _load_inbounds(workbook_path)
     totals_by_part = _load_totals(workbook_path)
     observed_by_key, key_sources = _load_cargo_sheets(workbook_path)
@@ -292,16 +357,45 @@ def validate_inbound_sheet_consistency(*, workbook_path: Path, tolerance: float 
                 }
             )
 
+    classified_mismatches = [_classify_mismatch(mismatch) for mismatch in mismatches]
+    accepted_shortages = [
+        mismatch
+        for mismatch in classified_mismatches
+        if mismatch.get("classification_id") == LINE61_SHORTAGE_CLASSIFICATION_ID
+    ]
+    unknown_mismatches = [
+        mismatch
+        for mismatch in classified_mismatches
+        if mismatch.get("classification_id") != LINE61_SHORTAGE_CLASSIFICATION_ID
+    ]
+
     display_quantity_column = "Actual_qty" if quantity_column == "actual_qty" else ("Qty" if quantity_column == "qty" else quantity_column)
 
+    ok = len(unknown_mismatches) == 0
+    copied_temp_allowance_applied = False
+    if allow_accepted_shortages_for_copied_temp and classified_mismatches and not unknown_mismatches:
+        ok = True
+        copied_temp_allowance_applied = True
+
     return {
-        "ok": len(mismatches) == 0,
+        "ok": ok,
         "workbook_path": str(workbook_path),
         "authoritative_sheet": INBOUNDS_SHEET,
         "authoritative_quantity_column": display_quantity_column,
         "checked_keys": len(common_keys),
-        "mismatch_count": len(mismatches),
-        "mismatches": mismatches,
+        "mismatch_count": len(classified_mismatches),
+        "unknown_mismatch_count": len(unknown_mismatches),
+        "accepted_shortage_count": len(accepted_shortages),
+        "copied_temp_accepted_shortage_allowance_applied": copied_temp_allowance_applied,
+        "copied_temp_accepted_shortage_allowance_note": (
+            "accepted Line61 shortage is production-safe shortage truth and clears no PO money gate"
+            if copied_temp_allowance_applied
+            else ""
+        ),
+        "production_safe_accepted_shortage_applied": bool(accepted_shortages and not unknown_mismatches),
+        "mismatches": classified_mismatches,
+        "unknown_mismatches": unknown_mismatches,
+        "accepted_shortages": accepted_shortages,
     }
 
 
@@ -310,12 +404,22 @@ def main() -> int:
     parser.add_argument("--xlsx", type=Path, required=True, help="Inbound workbook path")
     parser.add_argument("--tolerance", type=float, default=0.0, help="Absolute qty tolerance")
     parser.add_argument("--json", action="store_true", help="Print JSON report")
+    parser.add_argument(
+        "--allow-accepted-shortages-for-copied-temp",
+        action="store_true",
+        help=(
+            "Exit 0 only when every mismatch is the exact owner-confirmed Line61 "
+            "accepted real shortage. Kept for compatibility; the exact shortage "
+            "is now production-safe inbound truth and still does not clear PO money gate."
+        ),
+    )
     args = parser.parse_args()
 
     try:
         report = validate_inbound_sheet_consistency(
             workbook_path=args.xlsx.expanduser(),
             tolerance=max(0.0, float(args.tolerance)),
+            allow_accepted_shortages_for_copied_temp=args.allow_accepted_shortages_for_copied_temp,
         )
     except Exception as exc:
         payload = {"ok": False, "error": str(exc)}
@@ -333,11 +437,16 @@ def main() -> int:
             f"ok={report['ok']} checked_keys={report['checked_keys']} mismatch_count={report['mismatch_count']}"
         )
         for mismatch in report["mismatches"]:
+            classification = (
+                f" classification_id={mismatch['classification_id']}"
+                if mismatch.get("classification_id")
+                else ""
+            )
             print(
                 "MISMATCH "
                 f"type={mismatch['type']} po_part_id={mismatch['po_part_id']} "
                 f"sku_key={mismatch['sku_key']} expected={mismatch['expected_qty']} "
-                f"observed={mismatch['observed_qty']}"
+                f"observed={mismatch['observed_qty']}{classification}"
             )
 
     return 0 if report["ok"] else 1

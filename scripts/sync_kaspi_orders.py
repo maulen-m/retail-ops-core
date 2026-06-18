@@ -248,7 +248,10 @@ def main():
     args = parser.parse_args()
 
     setup_logging(args.verbose)
-    engine = OrderSyncEngine(db_path=args.db_path)
+    engine_kwargs = {}
+    if args.db_path is not None:
+        engine_kwargs["db_path"] = args.db_path
+    engine = OrderSyncEngine(**engine_kwargs)
 
     max_lookback_days = 13
 
@@ -305,8 +308,13 @@ def main():
             dry_run=args.dry_run,
         )
         if args.enrich:
+            synced_stores = [
+                store
+                for store, store_result in result.store_results.items()
+                if getattr(store_result, "success", False)
+            ]
             _run_enrichment(
-                ["UNIVERSAL", "ACMEWEAR", "11KZ", "MELVIS", "STOREB"],
+                synced_stores,
                 args.since,
                 args.until,
                 args.dry_run,

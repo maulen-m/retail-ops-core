@@ -41,7 +41,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -152,16 +152,103 @@ class PipelineStep:
         script: str,
         args: Optional[list[str]] = None,
         required: bool = True,
-        skip_on_dry_run: bool = False
+        skip_on_dry_run: bool = False,
+        dry_run_args: Optional[list[str]] = None,
     ):
         self.name = name
         self.script = script
         self.args = args or []
         self.required = required
         self.skip_on_dry_run = skip_on_dry_run
+        self.dry_run_args = dry_run_args
         self.success: Optional[bool] = None
         self.duration_s: float = 0.0
         self.error: Optional[str] = None
+
+
+class DryRunTracker:
+    """RunTracker-compatible no-op tracker for production dry-runs.
+
+    The real RunTracker persists audit rows to ``fact_runs`` and
+    ``fact_run_steps``. End-of-day ``--dry-run`` must not mutate production DB,
+    so this class keeps only in-memory summary state while preserving the small
+    method surface used by this script.
+    """
+
+    def __init__(
+        self,
+        run_type: str,
+        db_path: Optional[Path] = None,
+        triggered_by: str = "MANUAL",
+        environment: str = "PRODUCTION",
+    ):
+        self.run_type = run_type
+        self.db_path = db_path
+        self.triggered_by = triggered_by
+        self.environment = environment
+        self.run_id = "dry-run"
+        self.started_at: Optional[datetime] = None
+        self.completed_at: Optional[datetime] = None
+        self.current_step: Optional[str] = None
+        self.steps_total = 0
+        self.steps_completed = 0
+        self.errors_count = 0
+        self.output_files: list[str] = []
+        self.error_summary: list[str] = []
+
+    def start(self):
+        self.started_at = datetime.now()
+        return self
+
+    def start_step(self, step_name: str, notes: str = None):
+        self.current_step = step_name
+        self.steps_total += 1
+
+    def complete_step(self, records: int = 0, notes: str = None):
+        self.steps_completed += 1
+        self.current_step = None
+
+    def fail_step(self, error_message: str):
+        self.errors_count += 1
+        self.error_summary.append(error_message)
+        self.current_step = None
+
+    def add_output_file(self, path: str):
+        self.output_files.append(path)
+
+    def success(self):
+        self.completed_at = datetime.now()
+
+    def fail(self, error_message: str):
+        self.completed_at = datetime.now()
+        if error_message:
+            self.error_summary.append(error_message)
+
+    def to_summary(self) -> dict:
+        end = self.completed_at or datetime.now()
+        duration = (end - self.started_at).total_seconds() if self.started_at else 0.0
+        return {
+            "run_id": self.run_id,
+            "run_type": self.run_type,
+            "duration_seconds": duration,
+            "steps_total": self.steps_total,
+            "steps_completed": self.steps_completed,
+            "errors_count": self.errors_count,
+            "output_files": self.output_files,
+            "error_summary": self.error_summary,
+            "triggered_by": self.triggered_by,
+            "environment": self.environment,
+        }
+
+
+def build_run_tracker(args) -> RunTracker | DryRunTracker:
+    tracker_cls = DryRunTracker if args.dry_run else RunTracker
+    return tracker_cls(
+        run_type="END_OF_DAY",
+        db_path=DB_PATH,
+        triggered_by="CRON" if os.environ.get("LAUNCHED_BY_LAUNCHD") else "MANUAL",
+        environment=os.environ.get("ENVIRONMENT", "PRODUCTION"),
+    )
 
 
 def load_dotenv(dotenv_path: Path) -> None:
@@ -201,6 +288,14 @@ def resolve_po4_inbound_path() -> Optional[Path]:
     return None
 
 
+def get_validation_date_almaty() -> date:
+    """Current operational validation date in Asia/Almaty."""
+    import zoneinfo
+
+    almaty_tz = zoneinfo.ZoneInfo("Asia/Almaty")
+    return datetime.now(almaty_tz).date()
+
+
 def _format_step_error(returncode: int, stdout: str, stderr: str) -> str:
     parts = [f"Exit code: {returncode}"]
     if stderr:
@@ -234,8 +329,8 @@ def run_step(step: PipelineStep, dry_run: bool = False, verbose: bool = False) -
         return True
 
     cmd = [sys.executable, str(script_path)] + step.args
-    if dry_run:
-        cmd.append("--dry-run")
+    if dry_run and step.dry_run_args:
+        cmd.extend(step.dry_run_args)
 
     if verbose:
         print(f"  Running: {' '.join(cmd)}")
@@ -456,8 +551,9 @@ def main():
 
 def _run_pipeline(args, start_time: datetime) -> int:
     """Run the actual pipeline steps. Returns exit code."""
-    from datetime import date, timedelta
+    from datetime import timedelta
     cutoff_date = get_cutoff_date_almaty()
+    validation_date = get_validation_date_almaty()
     os.environ.setdefault("AB_DAY_COMPLETE", "1")
     api_since = (cutoff_date - timedelta(days=args.api_lookback_days)).isoformat()
 
@@ -467,25 +563,28 @@ def _run_pipeline(args, start_time: datetime) -> int:
         PipelineStep(
             name="0. Validate Parameters",
             script="validate_params.py",
-            args=["--strict"],  # Part 5: fail on warnings too
+            args=["--strict", "--as-of", validation_date.isoformat()],
             required=True  # MUST pass before any other step
         ),
         PipelineStep(
             name="1. Sync Truth Workbook",
             script="sync_truth_workbook_to_db.py",
             args=["--workbook", str(args.workbook)],
-            required=not args.skip_workbook_sync
+            required=not args.skip_workbook_sync,
+            dry_run_args=["--dry-run"],
         ),
         PipelineStep(
             name="2. Sync CRM to DB",
             script="sync_crm_to_db.py",
-            required=not args.skip_sync
+            required=not args.skip_sync,
+            dry_run_args=["--dry-run"],
         ),
         PipelineStep(
             name="2a. Sync Kaspi Orders (API)",
             script="sync_kaspi_orders.py",
             args=["--all", "--since", api_since],
             required=not args.skip_api_sync,
+            dry_run_args=["--dry-run"],
         ),
         PipelineStep(
             name="2a2. Validate Kaspi Orders Sync Freshness",
@@ -507,12 +606,14 @@ def _run_pipeline(args, start_time: datetime) -> int:
                 or "14",
             ],
             required=not args.skip_api_sync,
+            skip_on_dry_run=True,
         ),
         PipelineStep(
             name="2b. Backfill Order Sizes (Archive)",
             script="backfill_kaspi_order_sizes.py",
             args=["--cutoff-date", cutoff_date.isoformat()],
             required=True,
+            dry_run_args=["--dry-run"],
         ),
         PipelineStep(
             name="2b2. Translate Orders to Cashflow",
@@ -599,9 +700,15 @@ def _run_pipeline(args, start_time: datetime) -> int:
         )
 
     snapshot_z_path = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
-    snapshot_z_required = snapshot_z_path.exists()
-    if not snapshot_z_required:
+    snapshot_z_canary_required = os.environ.get("AB_REQUIRE_SNAPSHOT_Z_CANARY") == "1"
+    snapshot_z_required = snapshot_z_path.exists() and snapshot_z_canary_required
+    if not snapshot_z_path.exists():
         print("Note: Snapshot_Z workbook missing; skipping validate_snapshot_vs_snapshot_z (DB is source of truth).")
+    elif not snapshot_z_canary_required:
+        print(
+            "Note: Snapshot_Z workbook canary skipped; DB/current stock rebuild is source of truth "
+            "(set AB_REQUIRE_SNAPSHOT_Z_CANARY=1 to enforce legacy workbook comparison)."
+        )
 
     if snapshot_z_required:
         steps.append(
@@ -622,7 +729,8 @@ def _run_pipeline(args, start_time: datetime) -> int:
         PipelineStep(
             name="3. Generate PO Dashboard Data",
             script="generate_po_dashboard_data.py",
-            required=True
+            required=True,
+            skip_on_dry_run=True,
         ),
         PipelineStep(
             name="4. Smoke Test Dashboard",
@@ -639,7 +747,8 @@ def _run_pipeline(args, start_time: datetime) -> int:
         PipelineStep(
             name="5. Update PO Dashboard",
             script="update_po_dashboard.py",
-            required=True
+            required=True,
+            skip_on_dry_run=True,
         ),
         PipelineStep(
             name="5a. Update Cashflow Dashboard",
@@ -649,13 +758,15 @@ def _run_pipeline(args, start_time: datetime) -> int:
                 if os.environ.get("ENABLE_CASHFLOW_WRITE") == "1" and not args.dry_run
                 else ["--rebuild"]
             ),
-            required=True
+            required=True,
+            skip_on_dry_run=True,
         ),
         PipelineStep(
             name="5a1. Generate Business Insides",
             script="generate_business_insides.py",
             args=["--as-of", cutoff_date.isoformat()],
             required=True,
+            skip_on_dry_run=True,
         ),
         PipelineStep(
             name="5a2. Cashflow PO Preflight",
@@ -680,7 +791,8 @@ def _run_pipeline(args, start_time: datetime) -> int:
         PipelineStep(
             name="7. Generate Shadow Scorecard",
             script="generate_shadow_scorecard.py",
-            required=True  # Part 5: Always generate scorecard
+            required=True,  # Part 5: Always generate scorecard
+            skip_on_dry_run=True,
         ),
     ])
 
@@ -702,13 +814,8 @@ def _run_pipeline(args, start_time: datetime) -> int:
         steps = [s for s in steps if s.script not in skip_scripts]
         print()
 
-    # Part 5: Track run with RunTracker
-    tracker = RunTracker(
-        run_type="END_OF_DAY",
-        db_path=DB_PATH,
-        triggered_by="CRON" if os.environ.get("LAUNCHED_BY_LAUNCHD") else "MANUAL",
-        environment=os.environ.get("ENVIRONMENT", "PRODUCTION")
-    )
+    # Part 5: Track live runs in DB; keep dry-run tracking in memory only.
+    tracker = build_run_tracker(args)
     tracker.start()
 
     # Run each step
@@ -804,33 +911,39 @@ def _run_pipeline(args, start_time: datetime) -> int:
         if scorecard_path and scorecard_path.exists():
             print(f"  - {scorecard_path}")
 
-        # Send enhanced Shadow Mode digest with scorecard metrics (Part 5)
-        print("\nSending Shadow Mode digest to Telegram...")
-        try:
-            summary = tracker.to_summary()
-            digest_sent = send_shadow_mode_digest(
-                run_id=tracker.run_id,
-                duration_seconds=summary["duration_seconds"],
-                db_path=str(DB_PATH),
-            )
-            if digest_sent:
-                print("  Telegram digest sent successfully")
-        except Exception as e:
-            print(f"  Warning: Failed to send Telegram: {e}")
+        if args.dry_run:
+            print("\nDry-run mode: Telegram digest skipped.")
+        else:
+            # Send enhanced Shadow Mode digest with scorecard metrics (Part 5)
+            print("\nSending Shadow Mode digest to Telegram...")
+            try:
+                summary = tracker.to_summary()
+                digest_sent = send_shadow_mode_digest(
+                    run_id=tracker.run_id,
+                    duration_seconds=summary["duration_seconds"],
+                    db_path=str(DB_PATH),
+                )
+                if digest_sent:
+                    print("  Telegram digest sent successfully")
+            except Exception as e:
+                print(f"  Warning: Failed to send Telegram: {e}")
 
         return 0
     else:
         tracker.fail("; ".join(s.error for s in steps if s.error))
         print("STATUS: FAILED")
 
-        # Send Telegram failure alert
-        print("\nSending Telegram failure alert...")
-        try:
-            alert_sent = alert_from_run_tracker(tracker)
-            if alert_sent:
-                print("  Telegram alert sent successfully")
-        except Exception as e:
-            print(f"  Warning: Failed to send Telegram: {e}")
+        if args.dry_run:
+            print("\nDry-run mode: Telegram failure alert skipped.")
+        else:
+            # Send Telegram failure alert
+            print("\nSending Telegram failure alert...")
+            try:
+                alert_sent = alert_from_run_tracker(tracker)
+                if alert_sent:
+                    print("  Telegram alert sent successfully")
+            except Exception as e:
+                print(f"  Warning: Failed to send Telegram: {e}")
 
         return 1
 

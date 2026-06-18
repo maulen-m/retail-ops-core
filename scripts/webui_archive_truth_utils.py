@@ -66,6 +66,7 @@ PACK_NORMALIZED_COLUMNS = [
     "row_fingerprint",
     "window_since",
     "window_until",
+    "window_provenance",
 ]
 
 LEDGER_COLUMNS = [
@@ -252,6 +253,19 @@ def find_webui_source_files(source_root: Path) -> list[Path]:
     return [best_by_key[key] for key in sorted(best_by_key)]
 
 
+def _load_window_provenance(source_root: Path) -> dict[str, dict[str, Any]]:
+    manifest_path = source_root / "source_window_provenance.json"
+    if not manifest_path.exists():
+        return {}
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    out: dict[str, dict[str, Any]] = {}
+    for item in payload.get("files") or []:
+        copied = str(item.get("copied_file") or "").strip()
+        if copied:
+            out[copied.replace("\\", "/")] = dict(item)
+    return out
+
+
 def read_archive_frame(path: Path) -> pd.DataFrame:
     if path.suffix.lower() == ".csv":
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
@@ -269,6 +283,7 @@ def normalize_source_file(
     source_root: Path,
     pack_id: str,
     merchant_uid_store_map: dict[str, str] | None = None,
+    window_metadata: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     df = read_archive_frame(path)
     store_hint = infer_store_code_from_path(path)
@@ -293,6 +308,25 @@ def normalize_source_file(
 
     source_sha = compute_sha256(path)
     window_since, window_until = infer_window_from_path(path)
+    window_provenance = "source_path" if window_since and window_until else ""
+    requested_since = None
+    requested_until = None
+    if window_metadata:
+        expected_sha = str(
+            window_metadata.get("copied_file_sha256")
+            or window_metadata.get("source_file_sha256")
+            or ""
+        ).strip()
+        if expected_sha and expected_sha != source_sha:
+            raise ValueError(f"{path}: window provenance hash mismatch")
+        metadata_since = str(window_metadata.get("window_since") or "").strip()
+        metadata_until = str(window_metadata.get("window_until") or "").strip()
+        if metadata_since and metadata_until:
+            window_since = metadata_since
+            window_until = metadata_until
+            window_provenance = str(window_metadata.get("window_provenance") or "wrapper_manifest").strip()
+        requested_since = window_metadata.get("requested_since")
+        requested_until = window_metadata.get("requested_until")
     rows: list[dict[str, Any]] = []
     delivered_rows = 0
     missing_status_change_date = 0
@@ -342,6 +376,7 @@ def normalize_source_file(
             "status_change_missing": status_change_missing,
             "window_since": window_since,
             "window_until": window_until,
+            "window_provenance": window_provenance,
         }
         norm_row["row_fingerprint"] = hashlib.sha256(
             json.dumps(
@@ -378,6 +413,9 @@ def normalize_source_file(
         "created_at_max": out["created_at"].dropna().max() if not out.empty else None,
         "status_change_at_min": out["status_change_at"].dropna().min() if not out.empty else None,
         "status_change_at_max": out["status_change_at"].dropna().max() if not out.empty else None,
+        "window_provenance": window_provenance,
+        "requested_since": requested_since,
+        "requested_until": requested_until,
     }
     return out, record
 
@@ -398,12 +436,15 @@ def write_pack(
     normalized_frames: list[pd.DataFrame] = []
     manifest_files: list[dict[str, Any]] = []
     stores_present: set[str] = set()
+    window_provenance = _load_window_provenance(source_root)
     for path in files:
+        rel_path = str(path.relative_to(source_root)).replace("\\", "/")
         norm_df, record = normalize_source_file(
             path=path,
             source_root=source_root,
             pack_id=pack_id,
             merchant_uid_store_map=merchant_uid_store_map,
+            window_metadata=window_provenance.get(rel_path),
         )
         normalized_frames.append(norm_df)
         manifest_files.append(record)
@@ -498,6 +539,10 @@ def build_status_ledger(
                     "store_code": row.get("store_code"),
                     "window_since": row.get("window_since"),
                     "window_until": row.get("window_until"),
+                    "window_provenance": row.get("window_provenance"),
+                    "source_file_sha256": row.get("source_file_sha256"),
+                    "requested_since": row.get("requested_since"),
+                    "requested_until": row.get("requested_until"),
                     "source_file": row.get("source_file"),
                 }
             )

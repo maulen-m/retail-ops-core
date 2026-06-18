@@ -29,6 +29,26 @@ def _normalize_size(size: str | None) -> str:
     return str(size or "").strip().upper().replace(" ", "").replace("-", "")
 
 
+def _date_token(value: object) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+        return text[:10]
+    return text
+
+
+def _is_current_replay_plan(po_data: dict) -> bool:
+    """Current dashboard replays can have a newer baseline than the original PO note."""
+
+    po_message_date = _date_token(po_data.get("po_message_date"))
+    if not po_message_date:
+        return False
+    for field in ("generated_at", "cutoff_date"):
+        replay_date = _date_token(po_data.get(field))
+        if replay_date and replay_date > po_message_date:
+            return True
+    return False
+
+
 def _po_has_part_rows(conn: sqlite3.Connection, po_id: str) -> bool:
     row = conn.execute(
         """
@@ -191,12 +211,13 @@ def validate_alignment_payload(
                             f"{po_id}/{key[0]}/{key[1]}: po_line qty={qty_db} != dashboard qty={qty_payload}"
                         )
 
-            # Baseline date monotonicity applies to PLAN rows (future projections),
-            # not REAL_ARCHIVE rows whose baseline snapshot can intentionally be newer.
+            # Baseline date monotonicity applies to true future PLAN rows.
+            # Current dashboard replay/scenario rows can intentionally use a current
+            # baseline against an older historical PO message date.
             for po_name, po_data in pos.items():
                 if not isinstance(po_data, dict):
                     continue
-                if po_data.get("po_kind") == "REAL_ARCHIVE":
+                if po_data.get("po_kind") == "REAL_ARCHIVE" or _is_current_replay_plan(po_data):
                     continue
                 po_id = str(po_data.get("po_name") or po_name)
                 po_message_date = po_data.get("po_message_date")

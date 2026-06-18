@@ -673,6 +673,24 @@ class GoogleOpsBoardClient:
         )
         self._request("POST", url, json={"data": data})
 
+    def update_cells(self, updates: list[dict[str, Any]]) -> None:
+        if not updates:
+            return
+        data = []
+        for update in updates:
+            data.append(
+                {
+                    "range": str(update["range"]),
+                    "majorDimension": "ROWS",
+                    "values": [[update.get("value", "")]],
+                }
+            )
+        url = (
+            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values:batchUpdate"
+            "?valueInputOption=RAW"
+        )
+        self._request("POST", url, json={"data": data})
+
     def snapshot_tabs(self, tab_names: list[str]) -> dict[str, list[list[Any]]]:
         return {tab: self.get_tab_values(tab) for tab in tab_names}
 

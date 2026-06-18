@@ -223,6 +223,9 @@ def audit_prep_model(data: dict) -> tuple[bool, list[str]]:
     for po_name, po_data in pos.items():
         if not isinstance(po_data, dict):
             continue
+        if str(po_data.get("po_kind") or "").upper() == "REAL_ARCHIVE":
+            messages.append(f"SKIP: {po_name} is REAL_ARCHIVE; prep model applies to future planning POs only")
+            continue
 
         sku_level = po_data.get('sku_level', [])
 

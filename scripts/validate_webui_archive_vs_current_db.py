@@ -117,34 +117,39 @@ def _fetch_returned_sales_v2_any_date(*, db_path: Path, order_ids: list[str]) ->
     conn = sqlite3.connect(str(db_path))
     try:
         frames: list[pd.DataFrame] = []
+        has_sales_fact_v2 = _table_exists(conn, "sales_fact_v2")
+        has_fact_orders_kaspi = _table_exists(conn, "fact_orders_kaspi")
         lifecycle_store_expr = (
-            "store_code" if _column_exists(conn, "fact_orders_kaspi", "store_code") else "'UNIVERSAL'"
+            "store_code" if has_fact_orders_kaspi and _column_exists(conn, "fact_orders_kaspi", "store_code") else "'UNIVERSAL'"
         )
-        lifecycle_date_parts = [
-            col
-            for col in ("status_updated_at", "updated_at", "created_at")
-            if _column_exists(conn, "fact_orders_kaspi", col)
-        ]
-        lifecycle_date_expr = (
-            f"COALESCE({', '.join(lifecycle_date_parts)})" if lifecycle_date_parts else "NULL"
+        lifecycle_date_parts = (
+            [
+                col
+                for col in ("status_updated_at", "updated_at", "created_at")
+                if _column_exists(conn, "fact_orders_kaspi", col)
+            ]
+            if has_fact_orders_kaspi
+            else []
         )
+        lifecycle_date_expr = f"COALESCE({', '.join(lifecycle_date_parts)})" if lifecycle_date_parts else "NULL"
         for offset in range(0, len(order_ids), 900):
             chunk = order_ids[offset : offset + 900]
             placeholders = ",".join(["?"] * len(chunk))
-            query = f"""
-                SELECT
-                    CAST(order_id AS TEXT) AS order_id,
-                    UPPER(TRIM(COALESCE(store_code, 'UNIVERSAL'))) AS store_code,
-                    date(COALESCE(return_date, order_date)) AS return_date
-                FROM sales_fact_v2
-                WHERE CAST(order_id AS TEXT) IN ({placeholders})
-                  AND (
-                    CAST(COALESCE(return_flag, 0) AS INTEGER) = 1
-                    OR UPPER(COALESCE(status, '')) = 'RETURNED'
-                  )
-            """
-            frames.append(pd.read_sql_query(query, conn, params=chunk))
-            if _table_exists(conn, "fact_orders_kaspi") and _column_exists(conn, "fact_orders_kaspi", "internal_status"):
+            if has_sales_fact_v2:
+                query = f"""
+                    SELECT
+                        CAST(order_id AS TEXT) AS order_id,
+                        UPPER(TRIM(COALESCE(store_code, 'UNIVERSAL'))) AS store_code,
+                        date(COALESCE(return_date, order_date)) AS return_date
+                    FROM sales_fact_v2
+                    WHERE CAST(order_id AS TEXT) IN ({placeholders})
+                      AND (
+                        CAST(COALESCE(return_flag, 0) AS INTEGER) = 1
+                        OR UPPER(COALESCE(status, '')) = 'RETURNED'
+                      )
+                """
+                frames.append(pd.read_sql_query(query, conn, params=chunk))
+            if has_fact_orders_kaspi and _column_exists(conn, "fact_orders_kaspi", "internal_status"):
                 lifecycle_query = f"""
                     SELECT
                         CAST(order_id AS TEXT) AS order_id,
@@ -179,6 +184,8 @@ def _fetch_workbook_anchor_any_date(*, db_path: Path, order_ids: list[str]) -> p
 
     conn = sqlite3.connect(str(db_path))
     try:
+        if not _table_exists(conn, "fact_sales_workbook_anchor"):
+            return pd.DataFrame(columns=["order_id", "store_code", "sale_date"])
         frames: list[pd.DataFrame] = []
         for offset in range(0, len(order_ids), 900):
             chunk = order_ids[offset : offset + 900]
@@ -216,9 +223,6 @@ def _load_quarantine_order_ids(quarantine_csv: Path | None) -> set[str]:
 def _iter_quarantine_csv_paths(output_dir: Path) -> list[Path]:
     candidates: list[Path] = [output_dir / "db_quarantine_candidates.csv"]
     validation_root = PROJECT_ROOT / "exports" / "validation"
-    resolved_output_dir = output_dir.expanduser().resolve()
-    if not resolved_output_dir.is_relative_to(validation_root.resolve()):
-        return [candidate.resolve() for candidate in candidates]
     for folder_name in ["webui_archive_single_truth", "webui_shipped_authority_recon"]:
         folder = validation_root / folder_name
         if not folder.exists():
@@ -236,6 +240,14 @@ def _iter_quarantine_csv_paths(output_dir: Path) -> list[Path]:
         seen.add(resolved)
         deduped.append(resolved)
     return deduped
+
+
+def _iter_local_chronology_authority_decision_paths(output_dir: Path) -> list[Path]:
+    resolved_output_dir = output_dir.expanduser().resolve()
+    return [
+        candidate_dir / "shipped_day_authority_decision.json"
+        for candidate_dir in [resolved_output_dir, *list(resolved_output_dir.parents[:2])]
+    ]
 
 
 def _load_workbook_anchor_quarantine_pairs(db_path: Path) -> set[tuple[str, str]]:
@@ -279,6 +291,11 @@ def _load_workbook_anchor_quarantine_pairs(db_path: Path) -> set[tuple[str, str]
 def _resolve_quarantine_csv(quarantine_csv: Path | None, output_dir: Path) -> Path | None:
     if quarantine_csv is not None:
         return quarantine_csv
+    local_csv = output_dir.expanduser().resolve() / "db_quarantine_candidates.csv"
+    if local_csv.exists():
+        return local_csv
+    if any(candidate.exists() for candidate in _iter_local_chronology_authority_decision_paths(output_dir)):
+        return None
     for candidate in _iter_quarantine_csv_paths(output_dir):
         if candidate.exists():
             return candidate
@@ -286,13 +303,8 @@ def _resolve_quarantine_csv(quarantine_csv: Path | None, output_dir: Path) -> Pa
 
 
 def _iter_chronology_authority_decision_paths(output_dir: Path) -> list[Path]:
-    resolved_output_dir = output_dir.expanduser().resolve()
-    candidates: list[Path] = []
-    for candidate_dir in [resolved_output_dir, *list(resolved_output_dir.parents[:2])]:
-        candidates.append(candidate_dir / "shipped_day_authority_decision.json")
+    candidates: list[Path] = _iter_local_chronology_authority_decision_paths(output_dir)
     validation_root = PROJECT_ROOT / "exports" / "validation"
-    if not resolved_output_dir.is_relative_to(validation_root.resolve()):
-        return [candidate.resolve() for candidate in candidates]
     for folder_name in ["webui_archive_single_truth", "webui_shipped_authority_recon"]:
         folder = validation_root / folder_name
         if not folder.exists():
@@ -584,7 +596,11 @@ def validate_webui_archive_vs_current_db(
         for row in missing_in_db_rows.itertuples(index=False)
     ]
     missing_pairs = {(row["order_id"], row["store_code"]) for row in missing_rows_records}
-    workbook_anchor_quarantine_missing_pairs = missing_pairs & workbook_anchor_quarantine_pairs
+    workbook_anchor_quarantine_missing_pairs = (
+        missing_pairs & workbook_anchor_quarantine_pairs
+        if chronology_authority_decision == "CRM_REMAINS_CHRONOLOGY_AUTHORITY"
+        else set()
+    )
     explicit_quarantine_missing_pairs = {
         (row["order_id"], row["store_code"])
         for row in missing_rows_records

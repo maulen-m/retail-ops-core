@@ -451,6 +451,13 @@ class OrderSyncEngine:
         # Extract waybill URL
         waybill_url = delivery.get('waybill')
         waybill_number = delivery.get('waybillNumber') or attrs.get('waybillNumber')
+        returned_to_warehouse = (
+            delivery.get('returnedToWarehouse')
+            if delivery.get('returnedToWarehouse') is not None
+            else attrs.get('returnedToWarehouse')
+        )
+        if stage == StageCode.RETURNED:
+            returned_to_warehouse = 1
 
         order_data = {
             'order_id': attrs.get('code', api_order.get('id', '')),
@@ -484,10 +491,7 @@ class OrderSyncEngine:
             'delivery_address': delivery_address,
             'is_imei_required': attrs.get('isImeiRequired'),
             'express': delivery.get('express') or attrs.get('express'),
-            'returned_to_warehouse': (
-                delivery.get('returnedToWarehouse')
-                or attrs.get('returnedToWarehouse')
-            ),
+            'returned_to_warehouse': returned_to_warehouse,
             'category': attrs.get('category'),
             'customer_first_name': customer.get('firstName'),
             'customer_last_name': customer.get('lastName'),

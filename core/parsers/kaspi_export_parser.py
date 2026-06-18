@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from core.product_truth.rombik_kid30_alias import apply_rombik_kid30_alias
 from core.utils.sku_map import lookup_sku_from_offer
 
 
@@ -490,6 +491,16 @@ def _parse_order_row(
 
     # Extract SKU parts
     sku_parts = _extract_sku_parts(article, kaspi_offer_name)
+    sku_parts.update(
+        apply_rombik_kid30_alias(
+            sku_key=sku_parts["sku_key"],
+            sku_id=sku_parts["sku_id"],
+            my_size=sku_parts["my_size"],
+            event_at=created_date,
+            kaspi_article=article,
+            kaspi_offer_name=kaspi_offer_name,
+        )
+    )
 
     # Get store and normalize
     store_raw = row.get(column_map['store'])

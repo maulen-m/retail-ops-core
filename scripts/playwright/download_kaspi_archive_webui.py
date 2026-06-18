@@ -33,13 +33,18 @@ DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "webui_archive_download_runs"
 DEFAULT_ANCHOR = PROJECT_ROOT / "config" / "anchors" / "kaspi_webui_archive_downloads.json"
 DEFAULT_SESSION_STATE = PROJECT_ROOT / "runtime" / "playwright" / "kaspi_webui_archive_session.json"
 DEFAULT_DOTENV_PATH = PROJECT_ROOT / ".env"
-DEFAULT_ARCHIVE_URL = "https://kaspi.kz/mc/#/orders-new?status=ARCHIVE"
+DEFAULT_ARCHIVE_URL = "https://kaspi.kz/mc/#/orders-new?status=ARCHIVED"
+WINDOW_PROVENANCE_MANIFEST = "source_window_provenance.json"
 DEFAULT_LOGIN_URL = "https://idmc.shop.kaspi.kz/login"
 DOWNLOAD_SELECTOR_CANDIDATES = [
+    "button:has-text('Выгрузить в EXCEL')",
+    "button:has-text('Выгрузить')",
     "button:has-text('Скачать Excel')",
     "button:has-text('Скачать')",
     "button:has-text('Экспорт')",
     "button:has-text('Excel')",
+    "a:has-text('Выгрузить в EXCEL')",
+    "a:has-text('Выгрузить')",
     "a:has-text('Скачать Excel')",
     "a:has-text('Скачать')",
     "a:has-text('Экспорт')",
@@ -228,6 +233,8 @@ def _run_import_existing(
     source_root: Path,
     stores_config: Path,
     target_stores: list[str],
+    since: date | None,
+    until: date | None,
 ) -> dict[str, Any]:
     source_files = find_webui_source_files(source_root)
     by_store = {str(infer_store_code_from_path(path) or "").upper(): path for path in source_files}
@@ -235,6 +242,9 @@ def _run_import_existing(
     downloads_root.mkdir(parents=True, exist_ok=True)
 
     store_results: list[dict[str, Any]] = []
+    provenance_files: list[dict[str, Any]] = []
+    requested_since = since.isoformat() if since else None
+    requested_until = until.isoformat() if until else None
     for store in target_stores:
         source_file = by_store.get(store)
         if source_file is None:
@@ -242,30 +252,85 @@ def _run_import_existing(
             continue
         target_dir = downloads_root / f"store_{store}"
         target_dir.mkdir(parents=True, exist_ok=True)
-        target_path = target_dir / source_file.name
+        source_window_since, source_window_until = infer_window_from_path(source_file)
+        if source_window_since and source_window_until:
+            window_since = source_window_since
+            window_until = source_window_until
+            window_provenance = "source_path"
+        elif requested_since and requested_until:
+            window_since = requested_since
+            window_until = requested_until
+            window_provenance = "requested_cli_with_source_file_hash"
+        else:
+            window_since = None
+            window_until = None
+            window_provenance = ""
+        if window_since and window_until:
+            target_path = target_dir / f"ArchiveOrders_{store}_{window_since}_to_{window_until}{source_file.suffix}"
+        else:
+            target_path = target_dir / source_file.name
+        if target_path.exists():
+            target_path = target_dir / f"{target_path.stem}_{datetime.now().strftime('%H%M%S')}{target_path.suffix}"
+        source_sha = compute_sha256(source_file)
         shutil.copy2(source_file, target_path)
-        window_since, window_until = infer_window_from_path(source_file)
+        copied_sha = compute_sha256(target_path)
+        provenance_row = {
+            "store_code": store,
+            "source_file": str(source_file),
+            "copied_file": str(target_path.relative_to(downloads_root)),
+            "source_file_sha256": source_sha,
+            "copied_file_sha256": copied_sha,
+            "window_since": window_since,
+            "window_until": window_until,
+            "window_provenance": window_provenance,
+            "requested_since": requested_since,
+            "requested_until": requested_until,
+        }
+        provenance_files.append(provenance_row)
         store_results.append(
             {
                 "store_code": store,
                 "status": "PASS",
                 "source_file": str(source_file),
                 "copied_file": str(target_path),
-                "sha256": compute_sha256(target_path),
+                "sha256": copied_sha,
+                "source_file_sha256": source_sha,
+                "copied_file_sha256": copied_sha,
                 "window_since": window_since,
                 "window_until": window_until,
+                "window_provenance": window_provenance,
+                "requested_since": requested_since,
+                "requested_until": requested_until,
                 "download_trigger": "import-existing",
             }
         )
 
     ok = all(item["status"] == "PASS" for item in store_results)
+    provenance_manifest_path = downloads_root / WINDOW_PROVENANCE_MANIFEST
+    provenance_manifest = {
+        "schema_version": "webui_archive_source_window_provenance.v1",
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "mode": "import-existing",
+        "source_root": str(source_root),
+        "downloads_root": str(downloads_root),
+        "requested_since": requested_since,
+        "requested_until": requested_until,
+        "files": provenance_files,
+    }
+    provenance_manifest_path.write_text(
+        json.dumps(provenance_manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return {
         "mode": "import-existing",
         "source_root": str(source_root),
+        "requested_since": requested_since,
+        "requested_until": requested_until,
         "status": "PASS" if ok else "FAIL",
         "ok": ok,
         "store_results": store_results,
         "target_stores": target_stores,
+        "source_window_provenance_json": str(provenance_manifest_path),
     }
 
 
@@ -808,6 +873,7 @@ def download_kaspi_archive_webui(
     allow_manual_download: bool = False,
     since: date | None = None,
     until: date | None = None,
+    write_anchor: bool = True,
 ) -> dict[str, Any]:
     run_root = output_root.resolve() / str(run_id or _default_run_id())
     run_root.mkdir(parents=True, exist_ok=True)
@@ -822,6 +888,8 @@ def download_kaspi_archive_webui(
             source_root=source_root.expanduser().resolve(),
             stores_config=stores_config,
             target_stores=target_stores,
+            since=since,
+            until=until,
         )
     elif mode == "live-download":
         payload = _run_live_download(
@@ -851,6 +919,8 @@ def download_kaspi_archive_webui(
             "stores_config": str(stores_config),
             "strict": bool(strict),
             "target_stores": target_stores,
+            "anchor_written": bool(write_anchor),
+            "anchor_path": str(DEFAULT_ANCHOR),
         }
     )
     run_manifest = run_root / "run_manifest.json"
@@ -877,7 +947,8 @@ def download_kaspi_archive_webui(
             f"`{row.get('download_trigger', '')}` | `{row.get('error', '')}` |"
         )
     download_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    _write_anchor(run_root, run_manifest)
+    if write_anchor:
+        _write_anchor(run_root, run_manifest)
     payload["run_manifest_json"] = str(run_manifest)
     payload["download_log_md"] = str(download_log)
     if strict and not bool(payload.get("ok", False)):
@@ -908,6 +979,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-manual-download", action="store_true")
     parser.add_argument("--since", default=None)
     parser.add_argument("--until", default=None)
+    parser.add_argument("--no-anchor-write", action="store_true")
     parser.add_argument("--strict", action="store_true")
     return parser
 
@@ -933,6 +1005,7 @@ def main() -> int:
             allow_manual_download=bool(args.allow_manual_download),
             since=_parse_iso_date(args.since),
             until=_parse_iso_date(args.until),
+            write_anchor=not bool(args.no_anchor_write),
         )
     except WebuiArchiveDownloadError as exc:
         print("status=FAIL")

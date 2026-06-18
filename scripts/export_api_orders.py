@@ -43,6 +43,7 @@ from core.integrations.kaspi_order_stage import (
     kaspi_order_to_russian_status,
     stage_to_crm_indicators,
 )
+from core.stores.roster import load_sync_enabled_kaspi_store_codes
 from core.utils.kaspi_dates import planned_date_from_order
 
 logger = logging.getLogger(__name__)
@@ -666,7 +667,7 @@ def export_all_stores(
     """
     all_rows = []
 
-    for store_code in STORE_TOKEN_MAP.keys():
+    for store_code in (store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP):
         rows = export_store_orders(
             store_code=store_code,
             state=state,

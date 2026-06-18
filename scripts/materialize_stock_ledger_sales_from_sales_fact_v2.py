@@ -294,6 +294,76 @@ def _existing_idempotency_keys(conn: sqlite3.Connection, keys: list[str]) -> set
     return {str(row[0]) for row in rows if row[0]}
 
 
+def _event_identity(event: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(event.get("event_type") or "").strip().upper(),
+        str(event.get("reference_id") or "").strip(),
+        str(event.get("sku_id") or "").strip(),
+        str(event.get("store_code") or INVENTORY_POOL_STORE_CODE).strip().upper(),
+    )
+
+
+def _existing_event_identities(
+    conn: sqlite3.Connection,
+    events: list[dict[str, Any]],
+) -> set[tuple[str, str, str, str]]:
+    reference_ids = sorted({str(event.get("reference_id") or "").strip() for event in events if event.get("reference_id")})
+    if not reference_ids:
+        return set()
+    placeholders = ",".join("?" for _ in reference_ids)
+    rows = conn.execute(
+        f"""
+        SELECT
+            UPPER(COALESCE(event_type, '')) AS event_type,
+            CAST(reference_id AS TEXT) AS reference_id,
+            CAST(sku_id AS TEXT) AS sku_id,
+            UPPER(COALESCE(store_code, 'UNIVERSAL')) AS store_code
+        FROM stock_ledger
+        WHERE CAST(reference_id AS TEXT) IN ({placeholders})
+          AND UPPER(COALESCE(event_type, '')) IN ('SALE', 'RETURN')
+        """,
+        reference_ids,
+    ).fetchall()
+    return {
+        (
+            str(row["event_type"] or "").strip().upper(),
+            str(row["reference_id"] or "").strip(),
+            str(row["sku_id"] or "").strip(),
+            str(row["store_code"] or INVENTORY_POOL_STORE_CODE).strip().upper(),
+        )
+        for row in rows
+    }
+
+
+def _new_events_to_insert(
+    candidates: list[dict[str, Any]],
+    *,
+    existing_keys: set[str],
+    existing_identities: set[tuple[str, str, str, str]],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    to_insert: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    skip_counts = {
+        "existing_idempotency_key_count": 0,
+        "existing_event_identity_count": 0,
+        "duplicate_candidate_key_count": 0,
+    }
+    for event in candidates:
+        key = str(event["idempotency_key"])
+        if key in existing_keys:
+            skip_counts["existing_idempotency_key_count"] += 1
+            continue
+        if _event_identity(event) in existing_identities:
+            skip_counts["existing_event_identity_count"] += 1
+            continue
+        if key in seen_keys:
+            skip_counts["duplicate_candidate_key_count"] += 1
+            continue
+        seen_keys.add(key)
+        to_insert.append(event)
+    return to_insert, skip_counts
+
+
 def _current_balances(conn: sqlite3.Connection) -> dict[tuple[str, str], int]:
     rows = conn.execute(
         """
@@ -354,9 +424,13 @@ def run_materialization(
             conn,
             [str(event["idempotency_key"]) for event in candidates],
         )
-        to_insert = [
-            event for event in candidates if str(event["idempotency_key"]) not in existing_keys
-        ]
+        existing_identities = _existing_event_identities(conn, candidates)
+        to_insert, skip_counts = _new_events_to_insert(
+            candidates,
+            existing_keys=existing_keys,
+            existing_identities=existing_identities,
+        )
+        existing_count = len(candidates) - len(to_insert)
         summary: dict[str, Any] = {
             "generated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z"),
             "db_path": str(db_path),
@@ -365,7 +439,8 @@ def run_materialization(
             "apply_status": "DRY_RUN",
             "candidate_count": len(candidates),
             "insert_count": len(to_insert),
-            "existing_count": len(candidates) - len(to_insert),
+            "existing_count": existing_count,
+            **skip_counts,
             "rows_applied": 0,
             "errors_count": len(errors),
             "errors_sample": errors[:50],

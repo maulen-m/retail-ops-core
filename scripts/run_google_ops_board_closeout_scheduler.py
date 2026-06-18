@@ -29,9 +29,18 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_closeout.py"
 DB_CHECK_PATH = PROJECT_ROOT / "scripts" / "check_local_app_db.py"
 IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
+FORCE_FRESH_ENV = "AB_GOOGLE_OPS_BOARD_FORCE_FRESH_CLOSEOUT"
 
 
-def _closeout_already_completed(*, service_account_json: str, spreadsheet_id_override: str | None) -> bool:
+def _closeout_already_completed(
+    *,
+    service_account_json: str,
+    spreadsheet_id_override: str | None,
+    force_fresh: bool = False,
+) -> bool:
+    if force_fresh:
+        print("Google Ops Board closeout force-fresh requested; not reusing completed delivery.", file=sys.stderr)
+        return False
     contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
     spreadsheet_id = resolve_spreadsheet_id(spreadsheet_id_override, contract=contract)
     client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, Path(service_account_json))
@@ -66,6 +75,7 @@ def main() -> int:
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, "1")
     env.setdefault(AUTOMATION_LOCK_HELD_ENV, "1")
+    force_fresh = str(env.get(FORCE_FRESH_ENV) or "").strip() == "1"
     ensure_kaspi_api_call_ledger_env(env, target_date=today_almaty(), project_root=PROJECT_ROOT)
     os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
     if env.get("KASPI_API_CALL_LEDGER_PATH"):
@@ -85,6 +95,7 @@ def main() -> int:
         if _closeout_already_completed(
             service_account_json=service_account_json,
             spreadsheet_id_override=spreadsheet_id_override,
+            force_fresh=force_fresh,
         ):
             return 0
     except Exception as exc:
@@ -103,7 +114,9 @@ def main() -> int:
                 print("ERROR: local DB preflight failed; skipping Google Ops Board closeout.", file=sys.stderr)
                 return int(check.returncode)
 
-            cmd = [sys.executable, str(SCRIPT_PATH), "--apply", "--resume"]
+            cmd = [sys.executable, str(SCRIPT_PATH), "--apply"]
+            if not force_fresh:
+                cmd.append("--resume")
             if spreadsheet_id_override:
                 cmd.extend(["--spreadsheet-id", spreadsheet_id_override])
             cmd.extend(["--service-account-json", service_account_json])

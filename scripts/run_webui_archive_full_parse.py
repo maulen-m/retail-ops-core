@@ -13,6 +13,7 @@ from typing import Any
 
 import openpyxl
 import pandas as pd
+from dotenv import dotenv_values
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -147,6 +148,17 @@ def _store_has_auth_material(store_code: str, env: dict[str, str], session_state
     return has_email_login or has_phone_login
 
 
+def _load_full_parse_env(dotenv_path: Path | None) -> dict[str, str]:
+    path = dotenv_path.expanduser().resolve() if dotenv_path is not None else DEFAULT_DOTENV_PATH
+    if dotenv_path is not None and path != DEFAULT_DOTENV_PATH.expanduser().resolve():
+        return {
+            str(key): str(value)
+            for key, value in dotenv_values(path).items()
+            if key and value is not None
+        }
+    return _load_env(dotenv_path)
+
+
 def run_webui_archive_full_parse(
     *,
     since: date,
@@ -165,6 +177,7 @@ def run_webui_archive_full_parse(
     archive_url: str = DEFAULT_ARCHIVE_URL,
     dotenv_path: Path | None = DEFAULT_DOTENV_PATH,
     allow_manual_download: bool = False,
+    write_child_anchors: bool = True,
 ) -> dict[str, Any]:
     if until < since:
         raise FullWebuiArchiveParseError("until must be >= since")
@@ -180,7 +193,7 @@ def run_webui_archive_full_parse(
     target_stores = _resolve_target_stores(stores_config, store_codes)
     blocks = plan_full_parse_blocks(stores=target_stores, since=since, until=until)
     block_results: list[dict[str, Any]] = []
-    env = _load_env(dotenv_path)
+    env = _load_full_parse_env(dotenv_path)
 
     store_session_paths = {
         store_code: _store_session_state_path(session_state, store_code)
@@ -244,6 +257,7 @@ def run_webui_archive_full_parse(
                 allow_manual_download=bool(allow_manual_download),
                 since=date.fromisoformat(window_since),
                 until=date.fromisoformat(window_until),
+                write_anchor=bool(write_child_anchors),
             )
         except Exception as exc:
             block_results.append(
@@ -323,6 +337,7 @@ def run_webui_archive_full_parse(
         "window_days": WINDOW_DAYS,
         "stores_config": str(stores_config),
         "target_stores": target_stores,
+        "write_child_anchors": bool(write_child_anchors),
         "block_count": len(blocks),
         "successful_block_count": len(successful_blocks),
         "failed_block_count": len(blocks) - len(successful_blocks),
@@ -390,6 +405,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--archive-url", default=DEFAULT_ARCHIVE_URL)
     parser.add_argument("--dotenv-path", type=Path, default=DEFAULT_DOTENV_PATH)
     parser.add_argument("--allow-manual-download", action="store_true")
+    parser.add_argument("--no-child-anchor-write", action="store_true")
     parser.add_argument("--strict", action="store_true")
     return parser
 
@@ -414,6 +430,7 @@ def main() -> int:
             archive_url=str(args.archive_url),
             dotenv_path=args.dotenv_path,
             allow_manual_download=bool(args.allow_manual_download),
+            write_child_anchors=not bool(args.no_child_anchor_write),
         )
     except FullWebuiArchiveParseError as exc:
         print("status=FAIL")

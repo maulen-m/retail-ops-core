@@ -19,6 +19,13 @@ DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_DASHBOARD = PROJECT_ROOT / "exports" / "po_dashboard_data.json"
 DEFAULT_CASHFLOW_CSV = PROJECT_ROOT / "exports" / "cashflow_calendar.csv"
 DEFAULT_WORKBOOK = PROJECT_ROOT / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+DEFAULT_PO_PART_SCOPE_CONTRACT = PROJECT_ROOT / "config" / "validation" / "po_part_current_scope_contract.tsv"
+PO_PART_TOTALS_COLUMN_ALIASES = {
+    "To_pay_BASE_KZT (live)": "To_pay_BASE_KZT",
+    "To_pay_BASE_KZT_reference": "To_pay_BASE_KZT",
+    "To_pay_DLV_KZT (live)": "To_pay_DLV_KZT",
+}
+HISTORICAL_DB_ONLY_DECISION = "HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE"
 
 
 def resolve_workbook_path(workbook_path: Path | None = None) -> Path:
@@ -29,6 +36,55 @@ def resolve_workbook_path(workbook_path: Path | None = None) -> Path:
     if env_raw:
         return Path(env_raw).expanduser()
     return DEFAULT_WORKBOOK
+
+
+def resolve_po_part_scope_contract(path: Path | None = None) -> Path | None:
+    if path is not None:
+        return Path(path).expanduser()
+    env_raw = str(os.environ.get("AB_PO_PART_SCOPE_CONTRACT", "")).strip()
+    if env_raw:
+        return Path(env_raw).expanduser()
+    if DEFAULT_PO_PART_SCOPE_CONTRACT.exists():
+        return DEFAULT_PO_PART_SCOPE_CONTRACT
+    return None
+
+
+def _parse_false(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"false", "0", "no", "n"}
+
+
+def _load_po_part_scope_contract(path: Path | None) -> set[str]:
+    if path is None:
+        return set()
+    resolved = path.expanduser()
+    if not resolved.exists():
+        raise RuntimeError(f"PO part scope contract not found: {resolved}")
+    df = pd.read_csv(resolved, sep="\t", dtype=str, keep_default_na=False)
+    required = {"po_part_id", "canonical_decision", "production_authority"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise RuntimeError(
+            f"PO part scope contract missing required columns: {', '.join(missing)}"
+        )
+
+    scoped: set[str] = set()
+    for idx, row in df.iterrows():
+        row_number = int(idx) + 2
+        part_id = str(row.get("po_part_id") or "").strip()
+        decision = str(row.get("canonical_decision") or "").strip()
+        if not part_id:
+            raise RuntimeError(f"PO part scope contract row {row_number} missing po_part_id")
+        if decision != HISTORICAL_DB_ONLY_DECISION:
+            raise RuntimeError(
+                f"PO part scope contract row {row_number} has unsupported decision: {decision}"
+            )
+        if not _parse_false(row.get("production_authority")):
+            raise RuntimeError(
+                f"PO part scope contract row {row_number} requires production_authority=false"
+            )
+        scoped.add(part_id)
+    return scoped
 
 
 def _is_valid_part_id(raw: Any) -> bool:
@@ -67,6 +123,27 @@ def _to_int(value: Any) -> int:
 
 def _to_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalize_header(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _canonicalize_po_part_totals_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Map explicit workbook display aliases to canonical parser columns."""
+    rename: dict[Any, str] = {}
+    seen: dict[str, Any] = {}
+    for col in df.columns:
+        label = _normalize_header(col)
+        canonical = PO_PART_TOTALS_COLUMN_ALIASES.get(label, label)
+        if canonical in seen:
+            raise RuntimeError(
+                "PO_part_id_Totals ambiguous columns for "
+                f"{canonical}: {seen[canonical]!r}, {col!r}"
+            )
+        seen[canonical] = col
+        rename[col] = canonical
+    return df.rename(columns=rename)
 
 
 def _to_iso_date(value: Any) -> str:
@@ -127,7 +204,9 @@ def _normalize_status(value: Any) -> str:
 
 
 def _load_workbook_parts(workbook_path: Path) -> dict[str, dict[str, Any]]:
-    df = pd.read_excel(workbook_path, sheet_name="PO_part_id_Totals", dtype=object)
+    df = _canonicalize_po_part_totals_columns(
+        pd.read_excel(workbook_path, sheet_name="PO_part_id_Totals", dtype=object)
+    )
     required = {
         "PO_part_id",
         "Status",
@@ -233,6 +312,7 @@ def validate_system(
     db_path: Path,
     workbook_path: Path,
     dashboard_path: Path,
+    po_part_scope_contract: Path | None = None,
     tol_kzt: float = 1.0,
     tol_weight: float = 0.1,
     tol_usd: float = 0.05,
@@ -249,14 +329,21 @@ def validate_system(
     workbook_parts = _load_workbook_parts(workbook_path)
     db_parts = _load_db_parts(db_path)
     dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    scoped_historical_db_only_ids = _load_po_part_scope_contract(po_part_scope_contract)
 
     wb_ids = set(workbook_parts.keys())
     db_ids = set(db_parts.keys())
+    unknown_scoped_ids = sorted(scoped_historical_db_only_ids - db_ids)
+    if unknown_scoped_ids:
+        errors.append(
+            "PO part scope contract ids missing in db: "
+            + ", ".join(unknown_scoped_ids[:20])
+        )
 
     missing_in_db = sorted(wb_ids - db_ids)
     if missing_in_db:
         errors.append(f"workbook part ids missing in db: {', '.join(missing_in_db[:20])}")
-    extra_in_db = sorted(db_ids - wb_ids)
+    extra_in_db = sorted((db_ids - wb_ids) - scoped_historical_db_only_ids)
     if extra_in_db:
         errors.append(f"db part ids missing in workbook: {', '.join(extra_in_db[:20])}")
 
@@ -323,17 +410,18 @@ def validate_system(
             )
 
     archived = set(dashboard.get("archived_pos") or [])
-    missing_archived = sorted(db_ids - archived)
+    current_db_ids = db_ids - scoped_historical_db_only_ids
+    missing_archived = sorted(current_db_ids - archived)
     if missing_archived:
         errors.append(f"db part ids missing in dashboard archived_pos: {', '.join(missing_archived[:20])}")
 
     pos = dashboard.get("pos") or {}
-    missing_pos = sorted(db_ids - set(pos.keys()))
+    missing_pos = sorted(current_db_ids - set(pos.keys()))
     if missing_pos:
         errors.append(f"db part ids missing in dashboard pos entries: {', '.join(missing_pos[:20])}")
 
     real_pos_rows = {str(row.get("po_id")): row for row in (dashboard.get("real_pos") or []) if isinstance(row, dict)}
-    for part_id in sorted(db_ids):
+    for part_id in sorted(current_db_ids):
         db_row = db_parts[part_id]
         row = real_pos_rows.get(part_id)
         if not row:
@@ -382,14 +470,25 @@ def main() -> int:
         ),
     )
     parser.add_argument("--dashboard", type=Path, default=DEFAULT_DASHBOARD)
+    parser.add_argument(
+        "--po-part-scope-contract",
+        type=Path,
+        default=None,
+        help=(
+            "TSV contract listing DB-only historical PO part IDs that are out "
+            "of current workbook scope. Defaults to config/validation when present."
+        ),
+    )
     args = parser.parse_args()
 
     try:
         workbook_path = resolve_workbook_path(args.xlsx)
+        scope_contract = resolve_po_part_scope_contract(args.po_part_scope_contract)
         errors = validate_system(
             db_path=args.db,
             workbook_path=workbook_path,
             dashboard_path=args.dashboard,
+            po_part_scope_contract=scope_contract,
         )
     except Exception as exc:
         print(f"ERROR: {exc}")

@@ -157,6 +157,8 @@ def import_map(
     store_filter: str | None,
     apply_changes: bool,
     *,
+    include_v2_aliases: bool = False,
+    sku_key_filter: str | None = None,
     as_of: date | None = None,
     output_root: Path | None = None,
     backup_root: Path = DEFAULT_BACKUP_ROOT,
@@ -203,6 +205,7 @@ def import_map(
     missing_sku_id = 0
     created_sku_size = 0
     candidate_count = 0
+    filtered_out = 0
     per_store_rows: dict[str, int] = {}
 
     report_json: Path | None = None
@@ -220,11 +223,23 @@ def import_map(
 
         for _, row in df.iterrows():
             row_store_name = _clean_str(row.get(store_col)) if store_col else None
-            kaspi_article = _clean_str(row.get(article_col)) if article_col else None
-            if not kaspi_article and article_v2_col:
-                kaspi_article = _clean_str(row.get(article_v2_col))
+            primary_article = _clean_str(row.get(article_col)) if article_col else None
+            article_v2 = _clean_str(row.get(article_v2_col)) if article_v2_col else None
             sku_key = _clean_str(row.get(sku_key_col)) if sku_key_col else None
-            if not kaspi_article or not sku_key:
+            if sku_key_filter and sku_key != sku_key_filter:
+                filtered_out += 1
+                continue
+
+            article_candidates: list[str] = []
+            if primary_article:
+                article_candidates.append(primary_article)
+            if include_v2_aliases and article_v2:
+                article_candidates.append(article_v2)
+            elif not primary_article and article_v2:
+                article_candidates.append(article_v2)
+            article_candidates = list(dict.fromkeys(article_candidates))
+
+            if not article_candidates or not sku_key:
                 skipped += 1
                 continue
 
@@ -270,52 +285,78 @@ def import_map(
                 row_store_name=row_store_name,
                 store_filter=store_filter,
             )
-            for store_code in target_stores:
-                candidate_count += 1
-                per_store_rows[store_code] = per_store_rows.get(store_code, 0) + 1
-                merchant_id = _clean_str(store_catalog.get(store_code, {}).get("merchant_id")) if store_catalog else None
-                existing = conn.execute(
-                    "SELECT id, kaspi_offer_name, kaspi_name_core, sku_key, sku_id, model, brand FROM dim_kaspi_article_map WHERE store_code = ? AND kaspi_article = ?",
-                    (store_code, kaspi_article),
-                ).fetchone()
+            for kaspi_article in article_candidates:
+                for store_code in target_stores:
+                    candidate_count += 1
+                    per_store_rows[store_code] = per_store_rows.get(store_code, 0) + 1
+                    merchant_id = _clean_str(store_catalog.get(store_code, {}).get("merchant_id")) if store_catalog else None
+                    existing = conn.execute(
+                        "SELECT id, kaspi_offer_name, kaspi_name_core, sku_key, sku_id, model, brand FROM dim_kaspi_article_map WHERE store_code = ? AND kaspi_article = ?",
+                        (store_code, kaspi_article),
+                    ).fetchone()
 
-                if existing:
-                    existing_values = {
-                        "kaspi_offer_name": _clean_str(existing[1]),
-                        "kaspi_name_core": _clean_str(existing[2]),
-                        "sku_key": _clean_str(existing[3]),
-                        "sku_id": _clean_str(existing[4]),
-                        "model": _clean_str(existing[5]),
-                        "brand": _clean_str(existing[6]),
-                    }
-                    next_values = {
-                        "kaspi_offer_name": kaspi_offer_name,
-                        "kaspi_name_core": kaspi_name_core,
-                        "sku_key": sku_key,
-                        "sku_id": sku_id,
-                        "model": model,
-                        "brand": brand,
-                    }
-                    if existing_values == next_values:
-                        unchanged += 1
+                    if existing:
+                        existing_values = {
+                            "kaspi_offer_name": _clean_str(existing[1]),
+                            "kaspi_name_core": _clean_str(existing[2]),
+                            "sku_key": _clean_str(existing[3]),
+                            "sku_id": _clean_str(existing[4]),
+                            "model": _clean_str(existing[5]),
+                            "brand": _clean_str(existing[6]),
+                        }
+                        next_values = {
+                            "kaspi_offer_name": kaspi_offer_name,
+                            "kaspi_name_core": kaspi_name_core,
+                            "sku_key": sku_key,
+                            "sku_id": sku_id,
+                            "model": model,
+                            "brand": brand,
+                        }
+                        if existing_values == next_values:
+                            unchanged += 1
+                            continue
+                        if apply_changes:
+                            conn.execute(
+                                """
+                                UPDATE dim_kaspi_article_map
+                                SET merchant_id = ?,
+                                    kaspi_offer_name = ?,
+                                    kaspi_name_core = ?,
+                                    sku_key = ?,
+                                    sku_id = ?,
+                                    model = ?,
+                                    brand = ?,
+                                    source = ?,
+                                    updated_at = datetime('now')
+                                WHERE id = ?
+                                """,
+                                (
+                                    merchant_id,
+                                    kaspi_offer_name,
+                                    kaspi_name_core,
+                                    sku_key,
+                                    sku_id,
+                                    model,
+                                    brand,
+                                    f"CRM:{sheet}",
+                                    existing[0],
+                                ),
+                            )
+                        updated += 1
                         continue
+
                     if apply_changes:
                         conn.execute(
                             """
-                            UPDATE dim_kaspi_article_map
-                            SET merchant_id = ?,
-                                kaspi_offer_name = ?,
-                                kaspi_name_core = ?,
-                                sku_key = ?,
-                                sku_id = ?,
-                                model = ?,
-                                brand = ?,
-                                source = ?,
-                                updated_at = datetime('now')
-                            WHERE id = ?
+                            INSERT INTO dim_kaspi_article_map (
+                                store_code, merchant_id, kaspi_article, kaspi_offer_name,
+                                kaspi_name_core, sku_key, sku_id, model, brand, source
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
+                                store_code,
                                 merchant_id,
+                                kaspi_article,
                                 kaspi_offer_name,
                                 kaspi_name_core,
                                 sku_key,
@@ -323,44 +364,22 @@ def import_map(
                                 model,
                                 brand,
                                 f"CRM:{sheet}",
-                                existing[0],
                             ),
                         )
-                    updated += 1
-                    continue
-
-                if apply_changes:
-                    conn.execute(
-                        """
-                        INSERT INTO dim_kaspi_article_map (
-                            store_code, merchant_id, kaspi_article, kaspi_offer_name,
-                            kaspi_name_core, sku_key, sku_id, model, brand, source
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            store_code,
-                            merchant_id,
-                            kaspi_article,
-                            kaspi_offer_name,
-                            kaspi_name_core,
-                            sku_key,
-                            sku_id,
-                            model,
-                            brand,
-                            f"CRM:{sheet}",
-                        ),
-                    )
-                inserted += 1
+                    inserted += 1
 
     report = {
         "workbook": str(workbook),
         "sheet": sheet,
         "store_filter": normalize_store_code(store_filter) if store_filter else None,
+        "include_v2_aliases": include_v2_aliases,
+        "sku_key_filter": sku_key_filter or "",
         "candidate_count": candidate_count,
         "inserted": inserted,
         "updated": updated,
         "unchanged": unchanged,
         "skipped": skipped,
+        "filtered_out": filtered_out,
         "missing_sku_key": missing_sku_key,
         "missing_sku_id": missing_sku_id,
         "created_sku_size": created_sku_size,
@@ -381,11 +400,14 @@ def import_map(
             f"- workbook: `{workbook}`",
             f"- sheet: `{sheet}`",
             f"- status: `{report['status']}`",
+            f"- include_v2_aliases: `{include_v2_aliases}`",
+            f"- sku_key_filter: `{sku_key_filter or ''}`",
             f"- candidate_count: `{candidate_count}`",
             f"- inserted: `{inserted}`",
             f"- updated: `{updated}`",
             f"- unchanged: `{unchanged}`",
             f"- skipped: `{skipped}`",
+            f"- filtered_out: `{filtered_out}`",
             f"- missing_sku_key: `{missing_sku_key}`",
             f"- missing_sku_id: `{missing_sku_id}`",
             f"- created_sku_size: `{created_sku_size}`",
@@ -404,6 +426,8 @@ def main() -> int:
     parser.add_argument("--workbook", default=str(_resolve_default_workbook()), help="Path to CRM workbook")
     parser.add_argument("--sheet", default=DEFAULT_SHEET, help="Sheet name to import")
     parser.add_argument("--store", default=None, help="Optional store code filter (default seeds all stores)")
+    parser.add_argument("--include-v2-aliases", action="store_true", help="Also import SKU_ID_KSP_v2 as article aliases")
+    parser.add_argument("--sku-key-filter", default=None, help="Optional exact SKU_key filter for narrow alias syncs")
     parser.add_argument("--as-of", default=None, help="Optional as-of date for artifact output")
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT), help="Artifact output root")
     parser.add_argument("--backup-root", default=str(DEFAULT_BACKUP_ROOT), help="Backup output root")
@@ -416,6 +440,8 @@ def main() -> int:
         sheet=args.sheet,
         store_filter=args.store,
         apply_changes=args.apply,
+        include_v2_aliases=args.include_v2_aliases,
+        sku_key_filter=args.sku_key_filter,
         as_of=date.fromisoformat(args.as_of) if args.as_of else None,
         output_root=Path(args.output_root),
         backup_root=Path(args.backup_root),
@@ -425,11 +451,15 @@ def main() -> int:
     print(f"  Sheet: {report['sheet']}")
     if report["store_filter"]:
         print(f"  Store filter: {report['store_filter']}")
+    print(f"  Include v2 aliases: {report['include_v2_aliases']}")
+    if report["sku_key_filter"]:
+        print(f"  SKU key filter: {report['sku_key_filter']}")
     print(f"  Candidate count: {report['candidate_count']}")
     print(f"  Inserted: {report['inserted']}")
     print(f"  Updated: {report['updated']}")
     print(f"  Unchanged: {report['unchanged']}")
     print(f"  Skipped: {report['skipped']}")
+    print(f"  Filtered out: {report['filtered_out']}")
     print(f"  Missing sku_key: {report['missing_sku_key']}")
     print(f"  Missing sku_id: {report['missing_sku_id']}")
     print(f"  Created sku_size rows: {report['created_sku_size']}")

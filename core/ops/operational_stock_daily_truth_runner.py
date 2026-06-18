@@ -346,6 +346,8 @@ def _source_manifest_for_table(
     row_count = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
     cols = _columns(conn, table)
     max_observed_date: str | None = None
+    latest_table_date: str | None = None
+    future_row_count = 0
     notes = ""
     freshness_status = "FRESH"
     issue: dict[str, Any] | None = None
@@ -361,27 +363,49 @@ def _source_manifest_for_table(
             "date_column": date_column,
         }
     else:
-        raw_max = conn.execute(
-            f"SELECT MAX(substr(CAST({date_column} AS TEXT), 1, 10)) FROM {table}"
-        ).fetchone()[0]
+        date_expr = f"substr(CAST({date_column} AS TEXT), 1, 10)"
+        as_of_date = _parse_iso_date(as_of)
+        raw_latest = conn.execute(f"SELECT MAX({date_expr}) FROM {table}").fetchone()[0]
+        latest_observed = _parse_iso_date(raw_latest)
+        latest_table_date = latest_observed.isoformat() if latest_observed else None
+        raw_max = None
+        if as_of_date is not None:
+            raw_max = conn.execute(
+                f"SELECT MAX({date_expr}) FROM {table} WHERE {date_expr} <= ?",
+                (as_of,),
+            ).fetchone()[0]
+            future_row_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {date_expr} > ?",
+                    (as_of,),
+                ).fetchone()[0]
+                or 0
+            )
+            if future_row_count:
+                notes = (
+                    f"{future_row_count} row(s) exist after as_of; "
+                    "freshness uses the latest row on or before as_of."
+                )
         max_observed = _parse_iso_date(raw_max)
         max_observed_date = max_observed.isoformat() if max_observed else None
-        as_of_date = _parse_iso_date(as_of)
         if max_observed is None or as_of_date is None:
-            freshness_status = "UNKNOWN"
-            issue = {
-                "reason": "SOURCE_DATE_UNPARSEABLE",
-                "table": table,
-                "max_observed_date": raw_max,
-            }
-        elif max_observed > as_of_date:
-            freshness_status = "FUTURE"
-            issue = {
-                "reason": "SOURCE_FUTURE_DATED",
-                "table": table,
-                "max_observed_date": max_observed.isoformat(),
-                "as_of_date": as_of,
-            }
+            if as_of_date is not None and latest_observed is not None and latest_observed > as_of_date:
+                freshness_status = "FUTURE"
+                issue = {
+                    "reason": "SOURCE_FUTURE_DATED",
+                    "table": table,
+                    "max_observed_date": latest_observed.isoformat(),
+                    "as_of_date": as_of,
+                    "future_row_count": future_row_count,
+                    "notes": "source has future rows but no rows on or before as_of",
+                }
+            else:
+                freshness_status = "UNKNOWN"
+                issue = {
+                    "reason": "SOURCE_DATE_UNPARSEABLE",
+                    "table": table,
+                    "max_observed_date": raw_max,
+                }
         elif max_observed < as_of_date - timedelta(days=max_source_lag_days):
             freshness_status = "STALE"
             issue = {
@@ -399,6 +423,8 @@ def _source_manifest_for_table(
                 "table": table,
                 "row_count": row_count,
                 "max_observed_date": max_observed_date,
+                "latest_table_date": latest_table_date,
+                "future_row_count": future_row_count,
                 "freshness_status": freshness_status,
             },
             sort_keys=True,
@@ -415,6 +441,8 @@ def _source_manifest_for_table(
         "freshness_status": freshness_status,
         "row_count": row_count,
         "max_observed_date": max_observed_date,
+        "latest_table_date": latest_table_date,
+        "future_row_count": future_row_count,
         "notes": notes,
     }
     return manifest, issue

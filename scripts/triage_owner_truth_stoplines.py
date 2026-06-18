@@ -172,7 +172,7 @@ def triage_owner_truth_stoplines(
     download_run_id: str | None,
     output_path: Path | None,
     strict: bool,
-    allow_missing_publication_readiness: bool,
+    allow_missing_publication_readiness: bool = False,
 ) -> dict[str, Any]:
     root = project_root.resolve()
     as_of_str = as_of.isoformat()

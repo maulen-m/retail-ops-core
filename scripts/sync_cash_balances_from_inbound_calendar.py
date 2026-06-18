@@ -7,6 +7,7 @@ import argparse
 from datetime import date, datetime
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -52,6 +53,17 @@ def _parse_sheet_ts(value: Any) -> datetime:
     raw = str(value or "").replace("\n", " ").strip()
     if not raw:
         raise ValueError("empty timestamp header")
+    underscore_match = re.fullmatch(
+        r"(\d{1,2}\.\d{1,2}\.\d{4})_(\d{1,2})_(\d{1,2})_(\d{1,2})",
+        raw,
+    )
+    if underscore_match:
+        raw = (
+            f"{underscore_match.group(1)} "
+            f"{int(underscore_match.group(2)):02d}:"
+            f"{int(underscore_match.group(3)):02d}:"
+            f"{int(underscore_match.group(4)):02d}"
+        )
     for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.strptime(raw, fmt)
@@ -113,8 +125,12 @@ def _read_snapshot(
     selected_populated = 0
     if snapshot_ts:
         target = snapshot_ts.strip()
+        try:
+            target_dt = _parse_sheet_ts(target)
+        except ValueError:
+            target_dt = None
         for c, dt, label, populated_cells in ts_cols:
-            if label == target:
+            if label == target or (target_dt is not None and dt == target_dt):
                 if populated_cells == 0:
                     raise RuntimeError(
                         f"Requested snapshot timestamp has no populated balances: {snapshot_ts}"

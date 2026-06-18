@@ -36,6 +36,7 @@ from scripts.validate_schema import validate_schema
 from scripts.validate_single_truth_system import (
     validate_system as validate_single_truth_system,
     DEFAULT_DASHBOARD as DEFAULT_SINGLE_TRUTH_DASHBOARD,
+    resolve_po_part_scope_contract,
 )
 from scripts.validate_inbound_sheet_consistency import validate_inbound_sheet_consistency
 from scripts.validate_astana_totals_alignment import validate_astana_totals_alignment
@@ -333,6 +334,12 @@ def main():
     parser.add_argument("--db", type=str, default=str(DB_PATH), help="Database path")
     parser.add_argument("--as-of", type=str, default=None, help="As-of date YYYY-MM-DD (default: today)")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument(
+        "--business-insides-output-dir",
+        type=Path,
+        default=None,
+        help="Directory containing BUSINESS_INSIDES_<as-of>.md for strict publication checks",
+    )
     args = parser.parse_args()
 
     if args.as_of:
@@ -410,6 +417,12 @@ def main():
                         )
                 else:
                     result.add_info("inbound_sheet_consistency: OK")
+                    accepted_count = int(inbound_consistency.get("accepted_shortage_count") or 0)
+                    if accepted_count:
+                        result.add_info(
+                            "inbound_sheet_consistency: "
+                            f"accepted Line61 real-shortage rows visible={accepted_count}"
+                        )
 
                 astana_alignment = validate_astana_totals_alignment(
                     workbook_path=single_truth_workbook,
@@ -426,6 +439,7 @@ def main():
                     db_path=db_path,
                     workbook_path=single_truth_workbook,
                     dashboard_path=DEFAULT_SINGLE_TRUTH_DASHBOARD,
+                    po_part_scope_contract=resolve_po_part_scope_contract(),
                 )
                 if system_errors:
                     for err in system_errors:
@@ -449,9 +463,13 @@ def main():
             result.add_error(f"on_delivery_freeze error: {exc}")
 
         try:
+            business_insides_output_dir = args.business_insides_output_dir or (
+                PROJECT_ROOT / "config" / "business_insides"
+            )
             business_errors = validate_business_insides(
                 db_path=db_path,
                 as_of=as_of_iso,
+                output_dir=business_insides_output_dir,
             )
             if business_errors:
                 for err in business_errors:
@@ -576,10 +594,15 @@ def main():
             result.add_error(f"cogs_integrity error: {exc}")
 
         try:
+            business_insides_output_dir = args.business_insides_output_dir or (
+                PROJECT_ROOT / "config" / "business_insides"
+            )
             profit_publication = validate_profit_publication_integrity(
                 db_path=db_path,
                 as_of=as_of_iso,
                 days=30,
+                business_insides_path=business_insides_output_dir
+                / f"BUSINESS_INSIDES_{as_of_iso}.md",
             )
             if not profit_publication["ok"]:
                 for err in profit_publication["errors"]:

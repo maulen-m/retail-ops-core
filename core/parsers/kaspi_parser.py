@@ -26,6 +26,7 @@ import pandas as pd
 
 from core.utils.sku_normalize import normalize_size
 from core.utils.sku_map import lookup_sku_from_offer
+from core.product_truth.rombik_kid30_alias import apply_rombik_kid30_alias
 
 
 # Russian column names from Kaspi ActiveOrders export
@@ -604,6 +605,18 @@ def _process_row(
         sku_id = sku_info["sku_id"]
         my_size = sku_info["my_size"]
         product_type = sku_info["product_type"]
+
+    alias = apply_rombik_kid30_alias(
+        sku_key=sku_key,
+        sku_id=sku_id,
+        my_size=my_size,
+        event_at=order_date,
+        kaspi_article=kaspi_article,
+        kaspi_offer_name=kaspi_offer,
+    )
+    sku_key = alias["sku_key"]
+    sku_id = alias["sku_id"]
+    my_size = alias["my_size"]
 
     # Get numeric values with defaults
     quantity = _safe_int(row.get("quantity"), default=1)

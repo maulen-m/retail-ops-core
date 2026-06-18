@@ -23,6 +23,8 @@ from core.config.business_params import (
 
 # Constants
 KASPI_COMMISSION = 0.125  # 12.5% Kaspi commission
+GIFT_BAG_COST_CNY_PER_UNIT = 3.0
+GIFT_BAG_WEIGHT_KG_PER_UNIT = 0.10
 
 # Backwards-compatible FX constants (mirror DEFAULT_FX_RATES)
 CNY_KZT = DEFAULT_FX_RATES["cny_kzt"]
@@ -95,6 +97,10 @@ def calc_cogs(
     cny_kzt: Optional[float] = None,
     volumetric_factor: Optional[float] = None,
     freight_rate: Optional[float] = None,
+    *,
+    include_gift_bag: bool = False,
+    gift_bag_cost_cny: float = GIFT_BAG_COST_CNY_PER_UNIT,
+    gift_bag_weight_kg: float = GIFT_BAG_WEIGHT_KG_PER_UNIT,
 ) -> float:
     """
     Calculate cost of goods sold (landed cost) per unit.
@@ -102,12 +108,19 @@ def calc_cogs(
     Formula:
         cogs_unit = base_cost_cny × cny_kzt + weight_kg × volumetric_factor × freight_rate
 
+    Internal planning option:
+        when include_gift_bag=True, add gift_bag_cost_cny to base_cost_cny and
+        gift_bag_weight_kg to weight_kg before applying the landed-cost formula.
+
     Args:
         base_cost_cny: Base product cost in CNY
         weight_kg: Product weight in kg
         cny_kzt: CNY to KZT exchange rate (optional; uses current FX rates if None)
         volumetric_factor: Delivery rate in USD per kg (optional; uses current FX rates if None)
         freight_rate: USD to KZT exchange rate (optional; uses current FX rates if None)
+        include_gift_bag: Include internal gift-bag cost and delivery weight effect
+        gift_bag_cost_cny: Gift-bag cost in CNY per unit
+        gift_bag_weight_kg: Gift-bag delivery weight per unit
 
     Returns:
         COGS per unit in KZT
@@ -127,6 +140,10 @@ def calc_cogs(
         if freight_rate is None:
             freight_rate = rates.usd_kzt
 
+    if include_gift_bag:
+        base_cost_cny += gift_bag_cost_cny
+        weight_kg += gift_bag_weight_kg
+
     product_cost = base_cost_cny * cny_kzt
     freight_cost = weight_kg * volumetric_factor * freight_rate
     return product_cost + freight_cost
@@ -139,6 +156,7 @@ def resolve_landed_cogs(
     as_of_date: Optional[date | datetime | str] = None,
     db_path: Optional[str | Path] = None,
     stored_cogs_kzt: float | None = None,
+    include_gift_bag: bool = False,
 ) -> tuple[float | None, str, FXRates | None]:
     """
     Resolve a unit landed cost with explicit precedence.
@@ -161,8 +179,9 @@ def resolve_landed_cogs(
                 cny_kzt=rates.cny_kzt,
                 volumetric_factor=rates.dlv_rate_usd_kg,
                 freight_rate=rates.usd_kzt,
+                include_gift_bag=include_gift_bag,
             ),
-            "formula_full",
+            "formula_full_with_gift_bag" if include_gift_bag else "formula_full",
             rates,
         )
 
@@ -234,6 +253,7 @@ def calc_profit(
     ads_cost_unit: float = 0.0,
     vat_rate: Optional[float] = None,
     as_of_date: Optional[date | datetime] = None,
+    include_gift_bag: bool = False,
 ) -> float:
     """
     Calculate profit per unit.
@@ -257,7 +277,7 @@ def calc_profit(
         4349.61  # ~4,350
     """
     if cogs is None:
-        cogs = calc_cogs(base_cost_cny, weight_kg)
+        cogs = calc_cogs(base_cost_cny, weight_kg, include_gift_bag=include_gift_bag)
 
     if net_rev is None:
         net_rev = calc_net_rev(
@@ -282,6 +302,7 @@ def calc_line_values(
     delivery_type: str = "city",
     ads_cost_unit: float = 0.0,
     as_of_date: Optional[date | datetime] = None,
+    include_gift_bag: bool = False,
 ) -> dict:
     """
     Calculate all economics for a sales line item.
@@ -313,7 +334,7 @@ def calc_line_values(
         weight_kg=weight_kg,
         delivery_type=delivery_type,
     )
-    cogs_unit = calc_cogs(base_cost_cny, weight_kg)
+    cogs_unit = calc_cogs(base_cost_cny, weight_kg, include_gift_bag=include_gift_bag)
     net_rev_unit = calc_net_rev(
         sell_price_kzt,
         delivery_fee,

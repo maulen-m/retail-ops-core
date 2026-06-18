@@ -8,6 +8,7 @@ ROIC shown for info (not filtered). All active SKUs included.
 Data cutoff: Yesterday in Asia/Almaty timezone.
 """
 
+import argparse
 import sqlite3
 import os
 import json
@@ -58,6 +59,7 @@ SUPPLIER_EXPORT_PATH = PROJECT_ROOT / "exports" / "po_supplier_export"
 SUPPLIER_SUMMARY_PATH = PROJECT_ROOT / "exports" / "po_supplier_summary"
 DIM_SKU_EXCEL_PATH = PROJECT_ROOT / "excel" / "Inventory_Core_V18.1_V2.xlsx"
 PO_SCHEDULE_PATH = PROJECT_ROOT / "config" / "po_schedule.yaml"
+CLI_PLAN0_ANCHOR_MESSAGE_DATE: str | None = None
 ROIC_THRESHOLD = 0.15  # 15% - for display only, not filtering
 
 # Valid size codes (filter out messy data like 'CB', '0', 'DRIVE', 'NAN')
@@ -914,7 +916,7 @@ def export_supplier_po(
         base_cost_cny = meta.get("base_cost_cny") or 0
         weight_per_unit = meta.get("weight_kg") or 0
         unit_cost = (
-            calc_cogs(base_cost_cny, weight_per_unit)
+            calc_cogs(base_cost_cny, weight_per_unit, include_gift_bag=True)
             if base_cost_cny and weight_per_unit
             else 0.0
         )
@@ -1075,6 +1077,23 @@ def filter_sizes(data: dict, allow_all: bool = False, product_type: str | None =
     return normalized
 
 
+def drop_zero_size_demand_aliases(
+    size_demands: dict[str, float],
+    size_sales_90d: dict[str, int],
+) -> tuple[dict[str, float], dict[str, int]]:
+    """Drop zero-demand alias sizes before later canonical size row rendering."""
+    if not size_demands:
+        return size_demands, size_sales_90d
+    positive_sizes = {k for k, v in size_demands.items() if float(v or 0) > 0}
+    filtered_demands = {k: v for k, v in size_demands.items() if k in positive_sizes}
+    filtered_sales = {
+        k: v
+        for k, v in size_sales_90d.items()
+        if k in positive_sizes or int(v or 0) > 0
+    }
+    return filtered_demands, filtered_sales
+
+
 def get_size_sales_history_with_cutoff(
     conn,
     sku_key: str,
@@ -1167,6 +1186,31 @@ def _load_sku_cogs_quality(
             "total_rows": total_rows,
         }
     return out
+
+
+def _annotate_skipped_skus_with_cogs_locks(
+    skipped_skus: list[dict],
+    sku_cogs_quality: dict[str, dict[str, int]],
+) -> None:
+    for row in skipped_skus:
+        sku_key = str(row.get("sku_key") or "").strip()
+        if not sku_key:
+            continue
+        cogs_quality = sku_cogs_quality.get(sku_key, {})
+        unresolved_rows = int(cogs_quality.get("unresolved_rows") or 0)
+        if unresolved_rows <= 0:
+            continue
+        row["cogs_unresolved_rows"] = unresolved_rows
+        row["cogs_total_rows"] = int(cogs_quality.get("total_rows") or 0)
+        row["profit_publishable"] = False
+        row["profit_unit"] = None
+        row["monthly_profit"] = None
+        row["roic_pct"] = None
+        row["profit_margin_pct"] = None
+        row["cogs_source"] = "unresolved"
+        detail = str(row.get("details") or "").strip()
+        lock_detail = f"COGS_UNRESOLVED_LOCK rows={unresolved_rows}"
+        row["details"] = f"{detail}; {lock_detail}" if detail else lock_detail
 
 
 def calc_d_sku_simple(size_sales_90d: dict[str, int]) -> float:
@@ -1535,6 +1579,7 @@ def generate_po_data(
             cutoff_date=DATA_CUTOFF,
             days=90,
         )
+        _annotate_skipped_skus_with_cogs_locks(skipped_skus, sku_cogs_quality)
 
     for sku in skus:
         sku_key = sku['sku_key']
@@ -1624,7 +1669,8 @@ def generate_po_data(
 
             # COGS calculation (using economics.py - single source of truth)
             # Formula: COGS = base_cost_cny × CNY_KZT + weight_kg × 2.66 × 530
-            unit_cogs = calc_cogs(base_cost_cny, weight_kg)
+            unit_cogs = calc_cogs(base_cost_cny, weight_kg, include_gift_bag=True)
+            notes_list.append("INTERNAL_GIFT_BAG_COGS_INCLUDED")
 
             # Use canonical published sales truth for realized net price.
             price_row = conn.execute("""
@@ -1699,6 +1745,10 @@ def generate_po_data(
             allow_all=allow_all_sizes,
             product_type=product_type,
         )
+        # DemandEstimator can emit zero-demand alias sizes from legacy anchors
+        # (for example numeric apparel aliases). Drop those before allocation so
+        # they cannot later canonicalize over a real positive-demand size row.
+        size_demands, size_sales_90d = drop_zero_size_demand_aliases(size_demands, size_sales_90d)
 
         if size_demands and sum(size_demands.values()) <= 0:
             size_demands = {}
@@ -3636,18 +3686,20 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
     """
     params = get_params()
     schedule_cfg = _load_po_schedule_config()
+    if CLI_PLAN0_ANCHOR_MESSAGE_DATE is not None:
+        schedule_cfg["plan0_anchor_message_date"] = CLI_PLAN0_ANCHOR_MESSAGE_DATE
     fx_rates = get_fx_rates(CUTOFF_DATE, db_path=DB_PATH)
     R = int(schedule_cfg.get("reorder_cycle_days") or params.R)  # Reorder cycle
     L = params.L  # Lead time
 
-    base_po_id, last_real_po_num, _ = resolve_last_real_po()
+    base_po_id, last_real_po_num, _ = resolve_last_real_po(db_path=DB_PATH)
     plan_base_num = last_real_po_num + 1
     global PLAN_BASE_PO_NUM
     PLAN_BASE_PO_NUM = plan_base_num
 
     base_template = generate_po_data()
     base_data = copy.deepcopy(base_template)
-    base_po_actual = load_po_orders(base_po_id)
+    base_po_actual = load_po_orders(base_po_id, db_path=DB_PATH)
     if base_po_actual:
         base_data = apply_po_overrides(base_data, base_po_actual, params, fx_rates)
     # PLAN-0 is the next planned PO after the latest real PO (not the real PO itself).
@@ -4448,15 +4500,90 @@ def generate_multi_po_data(num_pos: int = 7) -> tuple[dict, dict]:
     return all_pos, base_template
 
 
-if __name__ == "__main__":
+def _parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate PO dashboard data for webapp.")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=DB_PATH,
+        help="SQLite DB to read/write derived demand estimates against.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=OUTPUT_PATH,
+        help="Dashboard JSON output path.",
+    )
+    parser.add_argument(
+        "--demand-diagnostics",
+        type=Path,
+        default=DIAGNOSTICS_PATH,
+        help="Demand diagnostics CSV output path.",
+    )
+    parser.add_argument(
+        "--stock-diagnostics",
+        type=Path,
+        default=STOCK_DIAGNOSTICS_PATH,
+        help="Stock rebuild diagnostics CSV output path.",
+    )
+    parser.add_argument(
+        "--supplier-export-stem",
+        type=Path,
+        default=SUPPLIER_EXPORT_PATH,
+        help="Supplier export filename stem; the cutoff date and .csv suffix are added.",
+    )
+    parser.add_argument(
+        "--supplier-summary-stem",
+        type=Path,
+        default=SUPPLIER_SUMMARY_PATH,
+        help="Supplier summary filename stem; the cutoff date and .md suffix are added.",
+    )
+    parser.add_argument(
+        "--num-pos",
+        type=int,
+        default=7,
+        help="Number of future PLAN-* purchase orders to generate.",
+    )
+    parser.add_argument(
+        "--plan0-anchor-message-date",
+        default=None,
+        help="Copied-temp/evidence override for PLAN-0 message date; does not edit config/po_schedule.yaml.",
+    )
+    return parser.parse_args(argv)
+
+
+def _apply_cli_runtime_paths(args: argparse.Namespace) -> None:
+    """Route runtime inputs/outputs to a copied-temp evidence folder when requested."""
+    global DB_PATH
+    global OUTPUT_PATH
+    global DIAGNOSTICS_PATH
+    global STOCK_DIAGNOSTICS_PATH
+    global SUPPLIER_EXPORT_PATH
+    global SUPPLIER_SUMMARY_PATH
+    global CLI_PLAN0_ANCHOR_MESSAGE_DATE
+
+    DB_PATH = args.db
+    OUTPUT_PATH = args.output
+    DIAGNOSTICS_PATH = args.demand_diagnostics
+    STOCK_DIAGNOSTICS_PATH = args.stock_diagnostics
+    SUPPLIER_EXPORT_PATH = args.supplier_export_stem
+    SUPPLIER_SUMMARY_PATH = args.supplier_summary_stem
+    CLI_PLAN0_ANCHOR_MESSAGE_DATE = args.plan0_anchor_message_date
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_cli_args(argv)
+    _apply_cli_runtime_paths(args)
+
     print("Generating PO dashboard data with DemandEstimator...")
+    print(f"DB path: {DB_PATH}")
     print(f"Cutoff date (Asia/Almaty yesterday): {DATA_CUTOFF}")
     print(f"Stock snapshot date: {STOCK_DATE}")
     print(f"ROIC threshold (display only): {ROIC_THRESHOLD * 100}%")
     print()
 
     # Generate all plans (PLAN-0 through PLAN-6)
-    all_pos, base_template = generate_multi_po_data(num_pos=7)
+    all_pos, base_template = generate_multi_po_data(num_pos=args.num_pos)
 
     # Ensure output directory exists
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -4502,7 +4629,7 @@ if __name__ == "__main__":
 
     active_pos = [name for name in all_pos.keys() if name.startswith("PLAN-")]
     active_pos.sort(key=plan_index_from_name)
-    real_pos = load_real_pos()
+    real_pos = load_real_pos(DB_PATH)
     usdt_cny_rate, usdt_cny_source = get_last_usdt_cny_rate(DB_PATH)
 
     # Save combined data
@@ -4530,3 +4657,7 @@ if __name__ == "__main__":
     print(f"  - Plans generated: {len(all_pos)}")
     for po_name, po_data in all_pos.items():
         print(f"  - {po_name}: {po_data['summary']['skus_with_orders']} SKUs need {po_data['summary']['total_units']} units")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

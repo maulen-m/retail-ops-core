@@ -80,6 +80,7 @@ from core.utils.kaspi_dates import parse_kaspi_date
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
 from core.waybill.pdf_grouper import merge_pdfs
 from core.integrations.kaspi_api_client import KaspiAPIClient, STORE_TOKEN_MAP, KaspiAuthError
+from core.stores.roster import load_sync_enabled_kaspi_store_codes
 from core.integrations.kaspi_order_stage import (
     StageCode,
     api_state_filter_for_stage,
@@ -148,6 +149,21 @@ def _is_pending_handover_stage(order: dict) -> bool:
         StageCode.ACCEPTED_PENDING_ASSEMBLY,
         StageCode.ASSEMBLED_PENDING_HANDOVER,
     }
+
+
+def _is_legacy_db_ready_for_waybill(row: Any) -> bool:
+    if not hasattr(row, "get"):
+        row = dict(row)
+    state = _coerce_str(row.get("kaspi_status") or row.get("state")).upper()
+    detail = _coerce_str(row.get("kaspi_status_detail") or row.get("status"))
+    legacy_handover_state = str(api_state_filter_for_stage(StageCode.ASSEMBLED_PENDING_HANDOVER) or "").upper()
+    if state != legacy_handover_state or detail:
+        return False
+    if _is_signature_required(row.get("signature_required") or row.get("signatureRequired")):
+        return False
+    if row.get("courier_transmission_date") or row.get("actual_shipment_date"):
+        return False
+    return _is_ready_status(row.get("internal_status") or row.get("status_internal"))
 
 # Reverse mapping for lookup
 STORE_NAME_TO_CODE = {v: k for k, v in STORE_MAP.items()}
@@ -355,7 +371,7 @@ def get_api_order_ids_for_date(
     orders_by_store: dict[str, set[str]] = {}
     error_stores: set[str] = set()
 
-    stores = list(STORE_TOKEN_MAP.keys())
+    stores = [store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP]
     if store_filter:
         store_filter = store_filter.upper()
         if store_filter in STORE_TOKEN_MAP:
@@ -638,7 +654,7 @@ def read_db_orders(
         if stage not in {
             StageCode.ACCEPTED_PENDING_ASSEMBLY,
             StageCode.ASSEMBLED_PENDING_HANDOVER,
-        }:
+        } and not _is_legacy_db_ready_for_waybill(row):
             continue
 
         kaspi_offer_name = _coerce_str(row["kaspi_offer_name"])

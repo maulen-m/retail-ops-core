@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -58,6 +60,7 @@ from scripts.waybill_delivery_completion import delivery_completion_state  # noq
 
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
+DEFAULT_DOTENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_RUN_ROOT = data_path("exports", "google_ops_board", "workflow_runs")
 DEFAULT_TODAY_FOLDER = data_path("excel_ui", "Kaspi_orders", "Today")
 STAGE_ORDER = [
@@ -80,6 +83,10 @@ STORE_NAME_TO_API_CODE = {
 def _require_apply_gate(apply: bool, env_name: str) -> None:
     if apply and str(os.environ.get(env_name) or "").strip() != "1":
         raise RuntimeError(f"{env_name}=1 is required with --apply")
+
+
+def _load_repo_dotenv() -> None:
+    load_dotenv(DEFAULT_DOTENV_PATH, override=False)
 
 
 def _resolve_target_date(value: str) -> date:
@@ -140,6 +147,8 @@ def _update_run_control_status(
     updated["last_verified_ready_at"] = datetime.now(ALMATY_TZ).isoformat()
     updated["last_orchestrator_run_id"] = run_id
     updated["last_orchestrator_status"] = status
+    if str(status or "").strip().upper() == "OK":
+        updated["ready_for_closeout"] = "HOLD"
     client.update_tab_rows(
         "Run_Control",
         headers,
@@ -1107,6 +1116,8 @@ def _run_closeout(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _load_repo_dotenv()
+
     parser = argparse.ArgumentParser(description="Run fail-closed Google Ops Board daily closeout.")
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT_PATH, help="Contract YAML path")
     parser.add_argument("--db-path", type=Path, default=None, help="Optional DB path (default: db/app.db)")

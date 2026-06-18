@@ -22,8 +22,11 @@ from scripts.webui_archive_truth_utils import (
 )
 from scripts.webui_db_gate_utils import resolve_effective_missing_in_db_orders
 
+CHILDSUM_CNY_KZT = 72.55808287
 USD_KZT = 514.0
 DLV = 2.66
+UNIT_COGS_COPIED_TEMP_SOURCE = "owner_approved_unit_cogs_copied_temp"
+CHILDSUM_COGS_COPIED_TEMP_SOURCE = "childsum_component_formula_copied_temp"
 
 
 class CogsCompletenessError(RuntimeError):
@@ -40,6 +43,26 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ledger-root", type=Path, default=None)
     parser.add_argument("--as-of", default="2026-03-06")
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--unit-cogs-evidence-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Optional copied-temp-only unit COGS evidence CSV. "
+            "Rows must include sku_key, approved_unit_cogs_kzt, copied_temp_only=true, "
+            "and production_write_authorized=false."
+        ),
+    )
+    parser.add_argument(
+        "--childsum-cogs-evidence-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Optional copied-temp-only ChildSum component COGS evidence CSV. "
+            "Rows must include child_sku_key, component_key, component_base_cost_cny, "
+            "component_weight_kg, copied_temp_only=true, and production_write_authorized=false."
+        ),
+    )
     return parser
 
 
@@ -137,6 +160,451 @@ def _load_lines(
     return lines, None, []
 
 
+def _normalize_key(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip().upper()
+
+
+def _parse_evidence_bool(value: object, *, column: str, row_number: int, path: Path) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = "" if value is None or pd.isna(value) else str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    raise CogsCompletenessError(
+        f"{path}: row {row_number} has invalid {column}; expected explicit true/false"
+    )
+
+
+def _load_unit_cogs_evidence(unit_cogs_evidence_csv: Path) -> pd.DataFrame:
+    path = unit_cogs_evidence_csv.expanduser()
+    if not path.exists():
+        raise CogsCompletenessError(f"unit COGS evidence CSV not found: {path}")
+
+    evidence = pd.read_csv(path, dtype=str, keep_default_na=False)
+    required = {
+        "sku_key",
+        "approved_unit_cogs_kzt",
+        "copied_temp_only",
+        "production_write_authorized",
+    }
+    missing = sorted(required - set(evidence.columns))
+    if missing:
+        raise CogsCompletenessError(
+            f"{path}: unit COGS evidence missing required columns: {', '.join(missing)}"
+        )
+    if evidence.empty:
+        raise CogsCompletenessError(f"{path}: unit COGS evidence is empty")
+
+    records: list[dict[str, object]] = []
+    for idx, row in evidence.iterrows():
+        row_number = int(idx) + 2
+        sku_key = str(row.get("sku_key", "")).strip()
+        sku_key_norm = _normalize_key(sku_key)
+        if not sku_key_norm:
+            raise CogsCompletenessError(f"{path}: row {row_number} missing sku_key")
+
+        unit_cogs = pd.to_numeric(row.get("approved_unit_cogs_kzt"), errors="coerce")
+        if pd.isna(unit_cogs) or float(unit_cogs) <= 0:
+            raise CogsCompletenessError(
+                f"{path}: row {row_number} approved_unit_cogs_kzt must be positive"
+            )
+
+        if not _parse_evidence_bool(
+            row.get("copied_temp_only"),
+            column="copied_temp_only",
+            row_number=row_number,
+            path=path,
+        ):
+            raise CogsCompletenessError(
+                f"{path}: row {row_number} requires copied_temp_only=true"
+            )
+        if _parse_evidence_bool(
+            row.get("production_write_authorized"),
+            column="production_write_authorized",
+            row_number=row_number,
+            path=path,
+        ):
+            raise CogsCompletenessError(
+                f"{path}: row {row_number} requires production_write_authorized=false"
+            )
+
+        order_id = str(row.get("order_id", "")).strip() if "order_id" in evidence.columns else ""
+        order_id_norm = _normalize_key(order_id)
+        scope = "order_sku" if order_id_norm else "sku"
+        records.append(
+            {
+                "scope": scope,
+                "order_id": order_id,
+                "order_id_norm": order_id_norm,
+                "sku_key": sku_key,
+                "sku_key_norm": sku_key_norm,
+                "approved_unit_cogs_kzt": float(unit_cogs),
+                "source_parent_sku": str(row.get("source_parent_sku", "")).strip(),
+                "decision_basis": str(row.get("decision_basis", "")).strip(),
+            }
+        )
+
+    loaded = pd.DataFrame(records)
+    exact_dupes = loaded[loaded["scope"] == "order_sku"].duplicated(
+        ["order_id_norm", "sku_key_norm"],
+        keep=False,
+    )
+    sku_dupes = loaded[loaded["scope"] == "sku"].duplicated(["sku_key_norm"], keep=False)
+    if exact_dupes.any() or sku_dupes.any():
+        raise CogsCompletenessError(f"{path}: ambiguous duplicate unit COGS evidence rows")
+    return loaded
+
+
+def _empty_unit_cogs_applied() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "order_id",
+            "sale_date",
+            "store_code",
+            "sku_key",
+            "units",
+            "approved_unit_cogs_kzt",
+            "resolved_cogs_kzt",
+            "cogs_source",
+            "evidence_scope",
+            "source_parent_sku",
+            "decision_basis",
+        ]
+    )
+
+
+def _load_childsum_cogs_evidence(childsum_cogs_evidence_csv: Path) -> pd.DataFrame:
+    path = childsum_cogs_evidence_csv.expanduser()
+    if not path.exists():
+        raise CogsCompletenessError(f"ChildSum COGS evidence CSV not found: {path}")
+
+    evidence = pd.read_csv(path, dtype=str, keep_default_na=False)
+    required = {
+        "child_sku_key",
+        "component_key",
+        "component_base_cost_cny",
+        "component_weight_kg",
+        "copied_temp_only",
+        "production_write_authorized",
+    }
+    missing = sorted(required - set(evidence.columns))
+    if missing:
+        raise CogsCompletenessError(
+            f"{path}: ChildSum COGS evidence missing required columns: {', '.join(missing)}"
+        )
+    if evidence.empty:
+        raise CogsCompletenessError(f"{path}: ChildSum COGS evidence is empty")
+
+    records: list[dict[str, object]] = []
+    for idx, row in evidence.iterrows():
+        row_number = int(idx) + 2
+        child_sku_key = str(row.get("child_sku_key", "")).strip()
+        child_sku_key_norm = _normalize_key(child_sku_key)
+        if not child_sku_key_norm:
+            raise CogsCompletenessError(f"{path}: row {row_number} missing child_sku_key")
+
+        component_key = str(row.get("component_key", "")).strip()
+        component_key_norm = _normalize_key(component_key)
+        if not component_key_norm:
+            raise CogsCompletenessError(f"{path}: row {row_number} missing component_key")
+
+        base_cost_cny = pd.to_numeric(row.get("component_base_cost_cny"), errors="coerce")
+        weight_kg = pd.to_numeric(row.get("component_weight_kg"), errors="coerce")
+        if pd.isna(base_cost_cny) or float(base_cost_cny) <= 0:
+            raise CogsCompletenessError(
+                f"{path}: row {row_number} component_base_cost_cny must be positive"
+            )
+        if pd.isna(weight_kg) or float(weight_kg) <= 0:
+            raise CogsCompletenessError(
+                f"{path}: row {row_number} component_weight_kg must be positive"
+            )
+
+        if not _parse_evidence_bool(
+            row.get("copied_temp_only"),
+            column="copied_temp_only",
+            row_number=row_number,
+            path=path,
+        ):
+            raise CogsCompletenessError(
+                f"{path}: row {row_number} requires copied_temp_only=true"
+            )
+        if _parse_evidence_bool(
+            row.get("production_write_authorized"),
+            column="production_write_authorized",
+            row_number=row_number,
+            path=path,
+        ):
+            raise CogsCompletenessError(
+                f"{path}: row {row_number} requires production_write_authorized=false"
+            )
+
+        order_id = str(row.get("order_id", "")).strip() if "order_id" in evidence.columns else ""
+        order_id_norm = _normalize_key(order_id)
+        scope = "order_sku" if order_id_norm else "sku"
+        records.append(
+            {
+                "scope": scope,
+                "order_id": order_id,
+                "order_id_norm": order_id_norm,
+                "child_sku_key": child_sku_key,
+                "child_sku_key_norm": child_sku_key_norm,
+                "component_key": component_key,
+                "component_key_norm": component_key_norm,
+                "component_base_cost_cny": float(base_cost_cny),
+                "component_weight_kg": float(weight_kg),
+                "component_source_sku": str(row.get("component_source_sku", "")).strip(),
+                "decision_basis": str(row.get("decision_basis", "")).strip(),
+            }
+        )
+
+    loaded = pd.DataFrame(records)
+    duplicate_components = loaded.duplicated(
+        ["scope", "order_id_norm", "child_sku_key_norm", "component_key_norm"],
+        keep=False,
+    )
+    if duplicate_components.any():
+        raise CogsCompletenessError(f"{path}: duplicate ChildSum component evidence rows")
+
+    group_sizes = loaded.groupby(
+        ["scope", "order_id_norm", "child_sku_key_norm"],
+        dropna=False,
+    )["component_key_norm"].nunique()
+    if (group_sizes < 2).any():
+        raise CogsCompletenessError(
+            f"{path}: ChildSum evidence requires at least two components per child bundle"
+        )
+    return loaded
+
+
+def _empty_childsum_cogs_applied() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "order_id",
+            "sale_date",
+            "store_code",
+            "sku_key",
+            "units",
+            "component_count",
+            "component_base_cost_cny_sum",
+            "component_weight_kg_sum",
+            "approved_unit_cogs_kzt",
+            "resolved_cogs_kzt",
+            "cogs_source",
+            "evidence_scope",
+            "component_keys",
+            "component_source_skus",
+            "decision_basis",
+        ]
+    )
+
+
+def _build_childsum_lookup(evidence: pd.DataFrame) -> dict[tuple[str, str, str], dict[str, object]]:
+    grouped: dict[tuple[str, str, str], dict[str, object]] = {}
+    for (scope, order_id_norm, child_sku_key_norm), group in evidence.groupby(
+        ["scope", "order_id_norm", "child_sku_key_norm"],
+        dropna=False,
+    ):
+        base_sum = float(group["component_base_cost_cny"].sum())
+        weight_sum = float(group["component_weight_kg"].sum())
+        unit_cogs = round(
+            (base_sum * CHILDSUM_CNY_KZT) + (weight_sum * USD_KZT * DLV),
+            2,
+        )
+        grouped[(str(scope), str(order_id_norm), str(child_sku_key_norm))] = {
+            "scope": str(scope),
+            "order_id_norm": str(order_id_norm),
+            "child_sku_key_norm": str(child_sku_key_norm),
+            "component_count": int(group["component_key_norm"].nunique()),
+            "component_base_cost_cny_sum": base_sum,
+            "component_weight_kg_sum": weight_sum,
+            "approved_unit_cogs_kzt": unit_cogs,
+            "component_keys": ";".join(group["component_key"].astype(str).tolist()),
+            "component_source_skus": ";".join(
+                sorted(
+                    {
+                        value
+                        for value in group["component_source_sku"].astype(str).tolist()
+                        if value
+                    }
+                )
+            ),
+            "decision_basis": "; ".join(
+                sorted(
+                    {
+                        value
+                        for value in group["decision_basis"].astype(str).tolist()
+                        if value
+                    }
+                )
+            ),
+        }
+    return grouped
+
+
+def _apply_childsum_cogs_evidence(
+    lines: pd.DataFrame,
+    childsum_cogs_evidence_csv: Path | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if childsum_cogs_evidence_csv is None:
+        return lines, _empty_childsum_cogs_applied()
+
+    evidence = _load_childsum_cogs_evidence(childsum_cogs_evidence_csv)
+    if lines.empty:
+        return lines, _empty_childsum_cogs_applied()
+
+    lines = lines.copy()
+    if "cogs_source" not in lines.columns:
+        lines["cogs_source"] = "unresolved"
+    lines["units"] = pd.to_numeric(lines["units"], errors="coerce").fillna(0.0)
+    lines["cogs_kzt"] = pd.to_numeric(lines["cogs_kzt"], errors="coerce")
+
+    lookup = _build_childsum_lookup(evidence)
+    applied: list[dict[str, object]] = []
+    unresolved_mask = (
+        (lines["cogs_source"].fillna("unresolved").astype(str).str.lower() == "unresolved")
+        | (lines["cogs_kzt"].isna())
+        | (lines["cogs_kzt"].fillna(0) <= 0)
+    )
+    for idx, row in lines[unresolved_mask].iterrows():
+        units = float(row.get("units") or 0.0)
+        if units <= 0:
+            continue
+
+        order_id_norm = _normalize_key(row.get("order_id"))
+        sku_key_norm = _normalize_key(row.get("sku_key"))
+        if not sku_key_norm:
+            continue
+
+        exact_match = lookup.get(("order_sku", order_id_norm, sku_key_norm))
+        sku_match = lookup.get(("sku", "", sku_key_norm))
+        if exact_match is not None and sku_match is not None:
+            exact_unit = float(exact_match["approved_unit_cogs_kzt"])
+            sku_unit = float(sku_match["approved_unit_cogs_kzt"])
+            if abs(exact_unit - sku_unit) > 0.0001:
+                raise CogsCompletenessError(
+                    f"conflicting ChildSum COGS evidence for order={row.get('order_id')} "
+                    f"sku={row.get('sku_key')}"
+                )
+        match = exact_match if exact_match is not None else sku_match
+        if match is None:
+            continue
+
+        unit_cogs = float(match["approved_unit_cogs_kzt"])
+        resolved_cogs = round(unit_cogs * units, 2)
+        lines.at[idx, "cogs_kzt"] = resolved_cogs
+        lines.at[idx, "cogs_source"] = CHILDSUM_COGS_COPIED_TEMP_SOURCE
+        applied.append(
+            {
+                "order_id": row.get("order_id"),
+                "sale_date": row.get("sale_date"),
+                "store_code": row.get("store_code"),
+                "sku_key": row.get("sku_key"),
+                "units": units,
+                "component_count": match["component_count"],
+                "component_base_cost_cny_sum": match["component_base_cost_cny_sum"],
+                "component_weight_kg_sum": match["component_weight_kg_sum"],
+                "approved_unit_cogs_kzt": unit_cogs,
+                "resolved_cogs_kzt": resolved_cogs,
+                "cogs_source": CHILDSUM_COGS_COPIED_TEMP_SOURCE,
+                "evidence_scope": match["scope"],
+                "component_keys": match["component_keys"],
+                "component_source_skus": match["component_source_skus"],
+                "decision_basis": match["decision_basis"],
+            }
+        )
+
+    applied_df = pd.DataFrame(applied)
+    if applied_df.empty:
+        applied_df = _empty_childsum_cogs_applied()
+    return lines, applied_df
+
+
+def _apply_unit_cogs_evidence(
+    lines: pd.DataFrame,
+    unit_cogs_evidence_csv: Path | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if unit_cogs_evidence_csv is None:
+        return lines, _empty_unit_cogs_applied()
+
+    evidence = _load_unit_cogs_evidence(unit_cogs_evidence_csv)
+    if lines.empty:
+        return lines, _empty_unit_cogs_applied()
+
+    lines = lines.copy()
+    if "cogs_source" not in lines.columns:
+        lines["cogs_source"] = "unresolved"
+    lines["units"] = pd.to_numeric(lines["units"], errors="coerce").fillna(0.0)
+    lines["cogs_kzt"] = pd.to_numeric(lines["cogs_kzt"], errors="coerce")
+
+    exact_lookup = {
+        (str(row["order_id_norm"]), str(row["sku_key_norm"])): row
+        for _, row in evidence[evidence["scope"] == "order_sku"].iterrows()
+    }
+    sku_lookup = {
+        str(row["sku_key_norm"]): row
+        for _, row in evidence[evidence["scope"] == "sku"].iterrows()
+    }
+
+    applied: list[dict[str, object]] = []
+    unresolved_mask = (
+        (lines["cogs_source"].fillna("unresolved").astype(str).str.lower() == "unresolved")
+        | (lines["cogs_kzt"].isna())
+        | (lines["cogs_kzt"].fillna(0) <= 0)
+    )
+    for idx, row in lines[unresolved_mask].iterrows():
+        units = float(row.get("units") or 0.0)
+        if units <= 0:
+            continue
+
+        order_id_norm = _normalize_key(row.get("order_id"))
+        sku_key_norm = _normalize_key(row.get("sku_key"))
+        if not sku_key_norm:
+            continue
+
+        exact_match = exact_lookup.get((order_id_norm, sku_key_norm))
+        sku_match = sku_lookup.get(sku_key_norm)
+        if exact_match is not None and sku_match is not None:
+            exact_unit = float(exact_match["approved_unit_cogs_kzt"])
+            sku_unit = float(sku_match["approved_unit_cogs_kzt"])
+            if abs(exact_unit - sku_unit) > 0.0001:
+                raise CogsCompletenessError(
+                    f"conflicting unit COGS evidence for order={row.get('order_id')} "
+                    f"sku={row.get('sku_key')}"
+                )
+        match = exact_match if exact_match is not None else sku_match
+        if match is None:
+            continue
+
+        unit_cogs = float(match["approved_unit_cogs_kzt"])
+        resolved_cogs = round(unit_cogs * units, 2)
+        lines.at[idx, "cogs_kzt"] = resolved_cogs
+        lines.at[idx, "cogs_source"] = UNIT_COGS_COPIED_TEMP_SOURCE
+        applied.append(
+            {
+                "order_id": row.get("order_id"),
+                "sale_date": row.get("sale_date"),
+                "store_code": row.get("store_code"),
+                "sku_key": row.get("sku_key"),
+                "units": units,
+                "approved_unit_cogs_kzt": unit_cogs,
+                "resolved_cogs_kzt": resolved_cogs,
+                "cogs_source": UNIT_COGS_COPIED_TEMP_SOURCE,
+                "evidence_scope": match["scope"],
+                "source_parent_sku": match["source_parent_sku"],
+                "decision_basis": match["decision_basis"],
+            }
+        )
+
+    applied_df = pd.DataFrame(applied)
+    if applied_df.empty:
+        applied_df = _empty_unit_cogs_applied()
+    return lines, applied_df
+
+
 def validate_cogs_completeness_by_month(
     *,
     start: str,
@@ -147,6 +615,8 @@ def validate_cogs_completeness_by_month(
     ledger_root: Path | None = None,
     as_of: str = "2026-03-06",
     output_dir: Path | None = None,
+    unit_cogs_evidence_csv: Path | None = None,
+    childsum_cogs_evidence_csv: Path | None = None,
 ) -> dict[str, object]:
     output_dir = _resolve_output_dir(output_dir, truth_source=truth_source, as_of=as_of)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -177,16 +647,21 @@ def validate_cogs_completeness_by_month(
             ]
         )
 
-    lines["is_unresolved"] = (
-        (lines["cogs_source"].fillna("unresolved").astype(str).str.lower() == "unresolved")
-        | (lines["cogs_kzt"].isna())
-        | (lines["cogs_kzt"].fillna(0) <= 0)
-    )
     lines["base_cost_cny"] = pd.to_numeric(lines["base_cost_cny"], errors="coerce").fillna(0.0)
     lines["weight_kg"] = pd.to_numeric(lines["weight_kg"], errors="coerce").fillna(0.0)
     lines["units"] = pd.to_numeric(lines["units"], errors="coerce").fillna(0.0)
     lines["net_rev_kzt"] = pd.to_numeric(lines["net_rev_kzt"], errors="coerce").fillna(0.0)
     lines["cogs_kzt"] = pd.to_numeric(lines["cogs_kzt"], errors="coerce")
+    lines, childsum_cogs_applied = _apply_childsum_cogs_evidence(
+        lines,
+        childsum_cogs_evidence_csv,
+    )
+    lines, unit_cogs_applied = _apply_unit_cogs_evidence(lines, unit_cogs_evidence_csv)
+    lines["is_unresolved"] = (
+        (lines["cogs_source"].fillna("unresolved").astype(str).str.lower() == "unresolved")
+        | (lines["cogs_kzt"].isna())
+        | (lines["cogs_kzt"].fillna(0) <= 0)
+    )
     lines["is_base_only"] = (
         lines["is_unresolved"]
         & (lines["base_cost_cny"] > 0)
@@ -255,6 +730,8 @@ def validate_cogs_completeness_by_month(
     unresolved_csv = output_dir / "cogs_unresolved_lines.csv"
     base_only_csv = output_dir / "cogs_base_only_lines.csv"
     drift_csv = output_dir / "weight_drift_impact_report.csv"
+    unit_cogs_csv = output_dir / "cogs_unit_evidence_applied_lines.csv"
+    childsum_cogs_csv = output_dir / "cogs_childsum_evidence_applied_lines.csv"
     report_md = output_dir / "cogs_completeness_report.md"
     report_json = output_dir / "cogs_completeness_report.json"
 
@@ -262,6 +739,8 @@ def validate_cogs_completeness_by_month(
     unresolved.to_csv(unresolved_csv, index=False, encoding="utf-8")
     base_only.to_csv(base_only_csv, index=False, encoding="utf-8")
     weight_drift.to_csv(drift_csv, index=False, encoding="utf-8")
+    unit_cogs_applied.to_csv(unit_cogs_csv, index=False, encoding="utf-8")
+    childsum_cogs_applied.to_csv(childsum_cogs_csv, index=False, encoding="utf-8")
 
     status = (
         "PASS"
@@ -278,11 +757,25 @@ def validate_cogs_completeness_by_month(
         "unresolved_lines": int(unresolved["is_unresolved"].sum()),
         "base_only_lines": int(base_only["is_base_only"].sum()),
         "weight_drift_rows": len(weight_drift),
+        "unit_cogs_evidence_source_csv": (
+            str(unit_cogs_evidence_csv.expanduser().resolve())
+            if unit_cogs_evidence_csv is not None
+            else None
+        ),
+        "childsum_cogs_evidence_source_csv": (
+            str(childsum_cogs_evidence_csv.expanduser().resolve())
+            if childsum_cogs_evidence_csv is not None
+            else None
+        ),
+        "unit_cogs_evidence_applied_lines": len(unit_cogs_applied),
+        "childsum_cogs_evidence_applied_lines": len(childsum_cogs_applied),
         "outputs": {
             "cogs_completeness_by_month_csv": str(month_csv.resolve()),
             "cogs_unresolved_lines_csv": str(unresolved_csv.resolve()),
             "cogs_base_only_lines_csv": str(base_only_csv.resolve()),
             "weight_drift_impact_report_csv": str(drift_csv.resolve()),
+            "cogs_unit_evidence_applied_lines_csv": str(unit_cogs_csv.resolve()),
+            "cogs_childsum_evidence_applied_lines_csv": str(childsum_cogs_csv.resolve()),
             "cogs_completeness_report_md": str(report_md.resolve()),
             "cogs_completeness_report_json": str(report_json.resolve()),
         },
@@ -299,6 +792,8 @@ def validate_cogs_completeness_by_month(
                 f"- unresolved_lines: `{payload['unresolved_lines']}`",
                 f"- base_only_lines: `{payload['base_only_lines']}`",
                 f"- weight_drift_rows: `{payload['weight_drift_rows']}`",
+                f"- unit_cogs_evidence_applied_lines: `{payload['unit_cogs_evidence_applied_lines']}`",
+                f"- childsum_cogs_evidence_applied_lines: `{payload['childsum_cogs_evidence_applied_lines']}`",
                 f"- truth_errors: `{len(truth_errors)}`",
             ]
         )
@@ -325,6 +820,8 @@ def main() -> int:
             ledger_root=args.ledger_root,
             as_of=str(args.as_of),
             output_dir=args.output_dir,
+            unit_cogs_evidence_csv=args.unit_cogs_evidence_csv,
+            childsum_cogs_evidence_csv=args.childsum_cogs_evidence_csv,
         )
     except CogsCompletenessError as exc:
         print(str(exc))
