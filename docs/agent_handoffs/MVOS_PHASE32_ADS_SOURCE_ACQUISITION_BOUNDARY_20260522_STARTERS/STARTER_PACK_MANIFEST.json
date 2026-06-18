@@ -1,0 +1,37 @@
+{
+  "starter_pack_id": "mvos_phase32_ads_source_acquisition_boundary_20260522",
+  "status": "READY_AFTER_EXACT_OWNER_APPROVAL_OR_CODECAPTAIN_CLEARANCE",
+  "repo": "~/Docs/Autonomous_business",
+  "plan": "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-22_mvos_phase32_ads_source_acquisition_boundary/PHASE32_ADS_SOURCE_ACQUISITION_BOUNDARY.md",
+  "orchestrator_handoff": "~/Docs/Autonomous_business/docs/agent_handoffs/MVOS_PHASE32_ADS_SOURCE_ACQUISITION_BOUNDARY_20260522_STARTERS/00_ORCHESTRATOR_HANDOFF.md",
+  "agents": [
+    {
+      "agent": "32A",
+      "prompt": "~/Docs/Autonomous_business/docs/agent_handoffs/MVOS_PHASE32_ADS_SOURCE_ACQUISITION_BOUNDARY_20260522_STARTERS/01_AGENT_32A__KASPI_MARKETING_CURRENT_PACKET__PARALLEL_AFTER_APPROVAL.md",
+      "parallel_group": "source_acquisition",
+      "dependencies": [
+        "exact_phase32_owner_approval_or_codecaptain_clearance"
+      ],
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-22_mvos_phase32_ads_source_acquisition_boundary/agent32a_kaspi_marketing_current_packet_closeout.md"
+    },
+    {
+      "agent": "32B",
+      "prompt": "~/Docs/Autonomous_business/docs/agent_handoffs/MVOS_PHASE32_ADS_SOURCE_ACQUISITION_BOUNDARY_20260522_STARTERS/02_AGENT_32B__META_FACEBOOK_CURRENT_PACKET__PARALLEL_AFTER_APPROVAL.md",
+      "parallel_group": "source_acquisition",
+      "dependencies": [
+        "exact_phase32_owner_approval_or_codecaptain_clearance"
+      ],
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-22_mvos_phase32_ads_source_acquisition_boundary/agent32b_meta_facebook_current_packet_closeout.md"
+    },
+    {
+      "agent": "32C",
+      "prompt": "~/Docs/Autonomous_business/docs/agent_handoffs/MVOS_PHASE32_ADS_SOURCE_ACQUISITION_BOUNDARY_20260522_STARTERS/03_AGENT_32C__AB_COPIED_TEMP_ADS_RERUN__AFTER_32A_32B_GREEN.md",
+      "parallel_group": "after_32a_32b",
+      "dependencies": [
+        "32A_GREEN",
+        "32B_GREEN"
+      ],
+      "closeout": "~/Docs/Autonomous_business_agent_handoffs/2026-05-22_mvos_phase32_ads_source_acquisition_boundary/agent32c_ab_copied_temp_ads_rerun_closeout.md"
+    }
+  ]
+}

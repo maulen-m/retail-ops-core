@@ -1,0 +1,1147 @@
+{
+  "approval_evidence_requirement": "Before publish, save the exact owner approval phrase in a separate evidence file and reference it from publish_authority.approval_evidence_path with matching SHA-256. Strict publish also requires a current tracking/redirect QA JSON evidence file with matching tracking_redirect_qa.evidence_sha256. For the standalone/manual route, use --require-mapping-ready so approval evidence cannot be recorded against a placeholder creative mapping.",
+  "approval_phrase_path": "~/Docs/Autonomous_business/exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/final_creative_publish_intake_and_approval.md",
+  "completion_audit_command": "python3 scripts/audit_line31_active_goal_completion.py --json",
+  "current_drop_validator_command": "python3 scripts/validate_line31_current_final_creative_drop.py --json",
+  "deploy_liveqa_sequence_execute_command": "python3 scripts/run_line31_deploy_liveqa_readiness_sequence.py --approval-text-file /absolute/path/to/exact_deploy_liveqa_approval.txt --execute-approved-deploy-liveqa --json",
+  "deploy_liveqa_sequence_plan_command": "python3 scripts/run_line31_deploy_liveqa_readiness_sequence.py --json",
+  "generated_at": "2026-06-18T20:59:46+05:00",
+  "internal_kaspi_policy": "KEEP_INTERNAL_KASPI_LINE31_CAMPAIGNS_ON_UNTIL_SEPARATE_OWNER_APPROVAL",
+  "latest_customer_journey_traceability_audit": {
+    "audit_command": "python3 scripts/build_line31_customer_journey_traceability_audit.py --json",
+    "checks_csv": "~/Docs/Autonomous_business/exports/validation/line31_customer_journey_traceability_audit_20260604_125048/checks.csv",
+    "checks_failed": 0,
+    "checks_total": 122,
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_customer_journey_traceability_audit_20260604_125048",
+    "exists": true,
+    "external_write_attempted": false,
+    "gate": "GREEN_LINE31_CUSTOMER_JOURNEY_TRACEABILITY_READY_PENDING_APPROVAL_NO_WRITE",
+    "generated_at": "2026-06-04T12:50:48+05:00",
+    "journey_chain": [
+      "Meta ad CTA uses final 3 creative mapping and UTM-tagged https://acmewear.pro/line31 landing URLs.",
+      "Live /line31 route serves a LINE31 page with no raw Kaspi product hrefs in landing HTML.",
+      "Landing CTA uses /go/:color routes, preserving UTM, landing_color, and landing_source into Kaspi redirects.",
+      "Website events store PageView, ViewContent, ColorSelect, QualifiedVisit, KaspiClick, and HighIntentKaspiClick.",
+      "Kaspi order truth remains separate from website click truth; attribution stays directional until order matching proves it."
+    ],
+    "live_qa_summary": {
+      "browser_events": [
+        "ColorSelect",
+        "HighIntentKaspiClick",
+        "KaspiClick",
+        "PageView",
+        "QualifiedVisit",
+        "ViewContent"
+      ],
+      "redirect_slugs": [
+        "cardamom-green-olive-green",
+        "espresso",
+        "iris-purple",
+        "ivory",
+        "ivory-white-starry-black",
+        "misty-blue",
+        "starry-black",
+        "whale-blue"
+      ]
+    },
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_customer_journey_traceability_audit_20260604_125048/traceability_manifest.json",
+    "mapping_summary": {
+      "assets": [
+        {
+          "creative_id": "line31_cw_ann_vse_eshe_v1",
+          "kaspi_marketplace_cta_url": "https://acmewear.pro/go/starry-black",
+          "landing_url": "https://acmewear.pro/line31?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide&utm_content=line31_cw_ann_vse_eshe_v1&utm_placement=reels"
+        },
+        {
+          "creative_id": "line31_cw_ann_dumala_v1",
+          "kaspi_marketplace_cta_url": "https://acmewear.pro/go/starry-black",
+          "landing_url": "https://acmewear.pro/line31?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide&utm_content=line31_cw_ann_dumala_v1&utm_placement=reels"
+        },
+        {
+          "creative_id": "line31_cw_mulena_madina_v1",
+          "kaspi_marketplace_cta_url": "https://acmewear.pro/go/starry-black",
+          "landing_url": "https://acmewear.pro/line31?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide&utm_content=line31_cw_mulena_madina_v1&utm_placement=reels"
+        }
+      ]
+    },
+    "meta_write_attempted": false
+  },
+  "latest_deploy_liveqa_sequence": {
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_deploy_liveqa_readiness_sequence_20260603_180957",
+    "exists": true,
+    "external_write_attempted": false,
+    "gate": "GREEN_READY_FOR_EXACT_META_PUBLISH_APPROVAL_NO_META_WRITE",
+    "generated_at": "2026-06-03T18:09:58+05:00",
+    "live_qa": {
+      "path": "~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_live_tracking_redirect_qa_after_deploy_20260603_173544/line31_tracking_redirect_qa.json",
+      "payload": {
+        "browser_events": [
+          {
+            "api_status": 204,
+            "click_id_redacted_in_evidence": true,
+            "event_name": "PageView",
+            "redirect_slug": null,
+            "selected_color": "starry-black",
+            "stored": true,
+            "stored_header": "stored",
+            "utm_id_present": true,
+            "utm_placement_present": true
+          },
+          {
+            "api_status": 204,
+            "click_id_redacted_in_evidence": true,
+            "event_name": "ViewContent",
+            "redirect_slug": null,
+            "selected_color": "starry-black",
+            "stored": true,
+            "stored_header": "stored",
+            "utm_id_present": true,
+            "utm_placement_present": true
+          },
+          {
+            "api_status": 204,
+            "click_id_redacted_in_evidence": true,
+            "event_name": "ColorSelect",
+            "redirect_slug": null,
+            "selected_color": "starry-black",
+            "stored": true,
+            "stored_header": "stored",
+            "utm_id_present": true,
+            "utm_placement_present": true
+          },
+          {
+            "api_status": 204,
+            "click_id_redacted_in_evidence": true,
+            "event_name": "QualifiedVisit",
+            "redirect_slug": null,
+            "selected_color": "starry-black",
+            "stored": true,
+            "stored_header": "stored",
+            "utm_id_present": true,
+            "utm_placement_present": true
+          },
+          {
+            "api_status": 204,
+            "click_id_redacted_in_evidence": true,
+            "event_name": "KaspiClick",
+            "redirect_slug": "ivory-white-starry-black",
+            "selected_color": "starry-black",
+            "stored": true,
+            "stored_header": "stored",
+            "utm_id_present": true,
+            "utm_placement_present": true
+          },
+          {
+            "api_status": 204,
+            "click_id_redacted_in_evidence": true,
+            "event_name": "HighIntentKaspiClick",
+            "redirect_slug": "ivory-white-starry-black",
+            "selected_color": "starry-black",
+            "stored": true,
+            "stored_header": "stored",
+            "utm_id_present": true,
+            "utm_placement_present": true
+          }
+        ],
+        "fail_closed_checks": {
+          "blocked_origin_status": 403,
+          "blocked_page_host_status": 403,
+          "blocked_request_host_status": null,
+          "browser_spoofed_kaspi_redirect_status": 400,
+          "fake_purchase_status": 400,
+          "unknown_color_status": 404
+        },
+        "failure_summary": [],
+        "fallback_route": {
+          "destination_route_matches_registry": true,
+          "http_status": 302,
+          "landing_color_preserved": true,
+          "landing_source_preserved": true,
+          "location_redacted": "https://kaspi.kz/shop/p/sportivnyi-kostjum-acmewear-of-line31-st-sb-xl-belyi-chernyi-48-163252477/?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide_tracking_qa&utm_content=line31_probe_creative&utm_term=line31&utm_placement=instagram_reels&utm_id=line31_tracking_qa_probe&fbclid=%5Bredacted-click-id-present%5D&landing_color=starry-black&landing_source=color-chooser",
+          "redirect_slug": "ivory-white-starry-black",
+          "selected_color": "starry-black",
+          "selected_color_truth_preserved": true,
+          "tracked_utm_keys_missing_or_wrong": []
+        },
+        "gate": "GREEN",
+        "generated_at": "2026-06-03T13:06:37.956Z",
+        "landing": {
+          "chooser_fallback_cta_route": "/go/ivory-white-starry-black",
+          "missing_expected_utm_params": [],
+          "path": "/line31",
+          "primary_cta_route": "/go/starry-black",
+          "raw_kaspi_href_in_landing_html": false,
+          "status": 200,
+          "tracked_params_in_runtime_config": [
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+            "utm_content",
+            "utm_placement"
+          ]
+        },
+        "live_signal_writes_allowed_by_cli": true,
+        "local_only": false,
+        "no_deploy_or_meta_write_performed_by_probe": true,
+        "no_fake_ecommerce_events": {
+          "fake_purchase_rejected": true,
+          "forbidden_event_statuses": {
+            "AddPaymentInfo": 400,
+            "AddToCart": 400,
+            "InitiateCheckout": 400,
+            "Purchase": 400
+          },
+          "forbidden_events_checked": [
+            "Purchase",
+            "AddToCart",
+            "InitiateCheckout",
+            "AddPaymentInfo"
+          ],
+          "landing_client_static_scan_passed": true
+        },
+        "offer_id": "line31_womens_3in1_launch_2026_03",
+        "pending_routes": [],
+        "product_slug": "line31",
+        "qa_scope": "live_postdeploy",
+        "redirect_routes": [
+          {
+            "click_id_param_present_but_redacted": true,
+            "destination_route_matches_registry": true,
+            "http_status": 302,
+            "landing_color_preserved": true,
+            "landing_source_preserved": true,
+            "location_redacted": "https://kaspi.kz/shop/p/sportivnyi-kostjum-acmewear-of-line31-st-sb-l-chernyi-l-161761317/?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide_tracking_qa&utm_content=line31_probe_creative&utm_term=line31&utm_placement=instagram_reels&utm_id=line31_tracking_qa_probe&fbclid=%5Bredacted-click-id-present%5D&landing_color=starry-black&landing_source=color-chooser",
+            "slug": "starry-black",
+            "tracked_utm_keys_missing_or_wrong": []
+          },
+          {
+            "click_id_param_present_but_redacted": true,
+            "destination_route_matches_registry": true,
+            "http_status": 302,
+            "landing_color_preserved": true,
+            "landing_source_preserved": true,
+            "location_redacted": "https://kaspi.kz/shop/p/sportivnyi-kostjum-acmewear-of-line31-st-sb-xl-belyi-chernyi-48-163252477/?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide_tracking_qa&utm_content=line31_probe_creative&utm_term=line31&utm_placement=instagram_reels&utm_id=line31_tracking_qa_probe&fbclid=%5Bredacted-click-id-present%5D&landing_color=ivory-white-starry-black&landing_source=color-chooser",
+            "slug": "ivory-white-starry-black",
+            "tracked_utm_keys_missing_or_wrong": []
+          },
+          {
+            "click_id_param_present_but_redacted": true,
+            "destination_route_matches_registry": true,
+            "http_status": 302,
+            "landing_color_preserved": true,
+            "landing_source_preserved": true,
+            "location_redacted": "https://kaspi.kz/shop/p/sportivnyi-kostjum-acmewear-of-line31-st-sb-l-chernyi-l-161761317/?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide_tracking_qa&utm_content=line31_probe_creative&utm_term=line31&utm_placement=instagram_reels&utm_id=line31_tracking_qa_probe&fbclid=%5Bredacted-click-id-present%5D&landing_color=misty-blue&landing_source=color-chooser",
+            "slug": "misty-blue",
+            "tracked_utm_keys_missing_or_wrong": []
+          },
+          {
+            "click_id_param_present_but_redacted": true,
+            "destination_route_matches_registry": true,
+            "http_status": 302,
+            "landing_color_preserved": true,
+            "landing_source_preserved": true,
+            "location_redacted": "https://kaspi.kz/shop/p/acmewear-of-line31-st-sb-xl-162585865/?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide_tracking_qa&utm_content=line31_probe_creative&utm_term=line31&utm_placement=instagram_reels&utm_id=line31_tracking_qa_probe&fbclid=%5Bredacted-click-id-present%5D&landing_color=cardamom-green-olive-green&landing_source=color-chooser",
+            "slug": "cardamom-green-olive-green",
+            "tracked_utm_keys_missing_or_wrong": []
+          },
+          {
+            "click_id_param_present_but_redacted": true,
+            "destination_route_matches_registry": true,
+            "http_status": 302,
+            "landing_color_preserved": true,
+            "landing_source_preserved": true,
+            "location_redacted": "https://kaspi.kz/shop/p/sportivnyi-kostjum-acmewear-of-line31-st-sb-l-chernyi-l-161761317/?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide_tracking_qa&utm_content=line31_probe_creative&utm_term=line31&utm_placement=instagram_reels&utm_id=line31_tracking_qa_probe&fbclid=%5Bredacted-click-id-present%5D&landing_color=whale-blue&landing_source=color-chooser",
+            "slug": "whale-blue",
+            "tracked_utm_keys_missing_or_wrong": []
+          },
+          {
+            "click_id_param_present_but_redacted": true,
+            "destination_route_matches_registry": true,
+            "http_status": 302,
+            "landing_color_preserved": true,
+            "landing_source_preserved": true,
+            "location_redacted": "https://kaspi.kz/shop/p/sportivnyi-kostjum-acmewear-of-line31-st-sb-l-chernyi-l-161761317/?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide_tracking_qa&utm_content=line31_probe_creative&utm_term=line31&utm_placement=instagram_reels&utm_id=line31_tracking_qa_probe&fbclid=%5Bredacted-click-id-present%5D&landing_color=iris-purple&landing_source=color-chooser",
+            "slug": "iris-purple",
+            "tracked_utm_keys_missing_or_wrong": []
+          },
+          {
+            "click_id_param_present_but_redacted": true,
+            "destination_route_matches_registry": true,
+            "http_status": 302,
+            "landing_color_preserved": true,
+            "landing_source_preserved": true,
+            "location_redacted": "https://kaspi.kz/shop/p/sportivnyi-kostjum-acmewear-of-line31-st-sb-xl-bezhevyi-48-163252700/?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide_tracking_qa&utm_content=line31_probe_creative&utm_term=line31&utm_placement=instagram_reels&utm_id=line31_tracking_qa_probe&fbclid=%5Bredacted-click-id-present%5D&landing_color=ivory&landing_source=color-chooser",
+            "slug": "ivory",
+            "tracked_utm_keys_missing_or_wrong": []
+          },
+          {
+            "click_id_param_present_but_redacted": true,
+            "destination_route_matches_registry": true,
+            "http_status": 302,
+            "landing_color_preserved": true,
+            "landing_source_preserved": true,
+            "location_redacted": "https://kaspi.kz/shop/p/acmewear-of-line31-st-sb-xl-162585889/?utm_source=meta&utm_medium=paid_social&utm_campaign=line31_countrywide_tracking_qa&utm_content=line31_probe_creative&utm_term=line31&utm_placement=instagram_reels&utm_id=line31_tracking_qa_probe&fbclid=%5Bredacted-click-id-present%5D&landing_color=espresso&landing_source=color-chooser",
+            "slug": "espresso",
+            "tracked_utm_keys_missing_or_wrong": []
+          }
+        ],
+        "session_id": "line31_tracking_qa_live_postdeploy_20260603130636",
+        "static_checks": {
+          "high_intent_intent_tier_high": true,
+          "high_intent_requires_qualified_visit": true,
+          "kaspi_click_before_navigation": true,
+          "kaspi_redirect_write_before_302": true,
+          "no_fake_ecommerce_events_in_landing_client": true
+        },
+        "target_base_url": "https://acmewear.pro"
+      },
+      "sha256": "15fffa2d26f18682a4de9b15b82520a4f34653039e6895f4a66320f3a3e55369"
+    },
+    "live_route_probe": {
+      "checked_paths": [
+        "/line31",
+        "/line31/"
+      ],
+      "note": "Read-only route probe only. It does not post synthetic QA events and does not replace live post-deploy tracking QA.",
+      "results": [
+        {
+          "bytes": 44570,
+          "final_url": "https://acmewear.pro/line31",
+          "has_404_title_or_body": false,
+          "has_gtag_code": false,
+          "has_meta_pixel_code": true,
+          "has_raw_kaspi_product_href": false,
+          "has_line31_go_starry_black": true,
+          "has_line31_go_wib": true,
+          "http_status": 200,
+          "ok": true,
+          "route": "/line31",
+          "sha256": "ba14604e6cfedd60e167ebbd8223862129d86af0b930dd5dfb92b392dec5bfbb",
+          "title": "ACMEWEAR LINE31 — Заказать на Kaspi",
+          "url": "https://acmewear.pro/line31"
+        },
+        {
+          "bytes": 44570,
+          "final_url": "https://acmewear.pro/line31/",
+          "has_404_title_or_body": false,
+          "has_gtag_code": false,
+          "has_meta_pixel_code": true,
+          "has_raw_kaspi_product_href": false,
+          "has_line31_go_starry_black": true,
+          "has_line31_go_wib": true,
+          "http_status": 200,
+          "ok": true,
+          "route": "/line31/",
+          "sha256": "ba14604e6cfedd60e167ebbd8223862129d86af0b930dd5dfb92b392dec5bfbb",
+          "title": "ACMEWEAR LINE31 — Заказать на Kaspi",
+          "url": "https://acmewear.pro/line31/"
+        }
+      ],
+      "route_ready_for_postdeploy_qa": true,
+      "target_base_url": "https://acmewear.pro"
+    },
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_deploy_liveqa_readiness_sequence_20260603_180957/sequence_manifest.json",
+    "mapping_validation": {
+      "command": "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 scripts/validate_line31_final_creative_mapping.py --mapping ~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json --json",
+      "cwd": "~/Docs/Autonomous_business",
+      "expected_pending_meta_approval_only": true,
+      "ok": false,
+      "returncode": 1,
+      "stderr_tail": "",
+      "stdout_tail": "{\n  \"errors\": [\n    \"publish_authority.approved must be true for publish readiness\"\n  ],\n  \"mapping\": \"~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json\",\n  \"metrics\": {\n    \"approval_evidence_checked\": 0,\n    \"assets_count\": 3,\n    \"local_thumbnail_hashes_checked\": 3,\n    \"local_video_hashes_checked\": 3,\n    \"remote_assets\": 0,\n    \"template_ok\": false,\n    \"tracking_redirect_qa_checked\": 1\n  },\n  \"ok\": false,\n  \"warnings\": []\n}\n",
+      "validator_payload": {
+        "errors": [
+          "publish_authority.approved must be true for publish readiness"
+        ],
+        "mapping": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json",
+        "metrics": {
+          "approval_evidence_checked": 0,
+          "assets_count": 3,
+          "local_thumbnail_hashes_checked": 3,
+          "local_video_hashes_checked": 3,
+          "remote_assets": 0,
+          "template_ok": false,
+          "tracking_redirect_qa_checked": 1
+        },
+        "ok": false,
+        "warnings": []
+      }
+    },
+    "meta_publish_approval_phrase_present": true,
+    "meta_write_attempted": false,
+    "next_meta_publish_approval_phrase_path": "~/Docs/Autonomous_business/exports/validation/line31_deploy_liveqa_readiness_sequence_20260603_180957/NEXT_META_PUBLISH_APPROVAL_PHRASE.txt"
+  },
+  "latest_drop_intake": {
+    "approval_text_file": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_drop_intake_20260602_121150/approval/PASTE_EXACT_OWNER_APPROVAL_HERE.txt",
+    "asset_dir": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_drop_intake_20260602_121150/final_assets",
+    "checklist_path": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_drop_intake_20260602_121150/FINAL_CREATIVE_DROP_CHECKLIST.json",
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_drop_intake_20260602_121150",
+    "drop_validator_command": "python3 scripts/validate_line31_final_creative_drop_intake.py --asset-dir ~/Docs/Autonomous_business/exports/validation/line31_final_creative_drop_intake_20260602_121150/final_assets --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' --json",
+    "exists": true,
+    "generated_at": "2026-06-02T12:11:50+05:00",
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_drop_intake_20260602_121150/line31_final_creative_drop_intake_manifest.json",
+    "mapping_only_command": "python3 scripts/prepare_line31_final_creative_mapping.py --creative-id line31_countrywide_v1 --asset-dir ~/Docs/Autonomous_business/exports/validation/line31_final_creative_drop_intake_20260602_121150/final_assets --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 --duration-seconds 18 --utm-placement reels --landing-url 'https://acmewear.pro/line31' --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' --creative-ready-declared --tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json --output ~/Docs/Autonomous_business/exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/final_creative_asset_mapping_template.json --overwrite",
+    "one_shot_command": "python3 scripts/prepare_line31_launch_readiness_from_assets.py --creative-id line31_countrywide_v1 --asset-dir ~/Docs/Autonomous_business/exports/validation/line31_final_creative_drop_intake_20260602_121150/final_assets --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 --duration-seconds 18 --utm-placement reels --landing-url 'https://acmewear.pro/line31' --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' --creative-ready-declared --approval-text-file ~/Docs/Autonomous_business/exports/validation/line31_final_creative_drop_intake_20260602_121150/approval/PASTE_EXACT_OWNER_APPROVAL_HERE.txt --tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json --overwrite --json"
+  },
+  "latest_expert_launch_answer_intake": {
+    "answer_dir": "~/Docs/Oracle/oracle_packs/Instagram_funnel_packs/line31_countrywide_three_day_meta_resume_truth_oracle_pack_v2_UNDER20_FLAT__20260530_GMT5/Answer",
+    "answer_path": "",
+    "decision": "PENDING_ANSWER",
+    "decision_confidence": "NONE",
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_expert_launch_answer_intake_20260604_112156",
+    "exists": true,
+    "gate": "YELLOW_LINE31_EXPERT_ANSWER_PENDING_NO_WRITE",
+    "generated_at": "2026-06-04T11:21:56+05:00",
+    "intake_command": "python3 scripts/ingest_line31_expert_launch_answer.py --json",
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_expert_launch_answer_intake_20260604_112156/expert_answer_intake_manifest.json",
+    "next_safe_action": {
+      "action": "WAIT_FOR_EXPERT_ANSWER",
+      "activation_allowed_after_exact_owner_phrase": false,
+      "activation_command_template": "",
+      "activation_phrase_path": "",
+      "notes": [
+        "Oracle pack can be sent now; put the expert answer into the pack Answer/ folder.",
+        "Rerun this intake after the answer lands."
+      ]
+    }
+  },
+  "latest_final_creative_assets": {
+    "assets_count": 3,
+    "campaign_shape": {
+      "ad_count": 3,
+      "adset_count": 1,
+      "daily_budget_kzt": 15000,
+      "hard_cap_kzt": 20000,
+      "internal_kaspi_policy": "KEEP_ON_UNLESS_SEPARATE_EXACT_OWNER_APPROVAL",
+      "landing_url": "https://acmewear.pro/line31",
+      "meta_campaign": "LINE31 countrywide"
+    },
+    "creative_ids": [
+      "line31_cw_ann_vse_eshe_v1",
+      "line31_cw_ann_dumala_v1",
+      "line31_cw_mulena_madina_v1"
+    ],
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442",
+    "exists": true,
+    "gate": "LOCAL_FINAL_CREATIVE_ASSETS_STAGED_PENDING_MAPPING_TRACKING_QA_APPROVAL",
+    "generated_at": "2026-06-03T15:45:35+05:00",
+    "landing_cta_priority": [
+      "starry_black",
+      "wib_mixed_color_set",
+      "blue_misty",
+      "olive_green",
+      "remaining_colors",
+      "espresso_last"
+    ],
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/manifest.json",
+    "mapping_path": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json"
+  },
+  "latest_meta_api_live_partial_blocker": {
+    "adset": {
+      "daily_budget": "15000",
+      "effective_status": "ACTIVE",
+      "id": "120245481997290641",
+      "name": "AS | LINE31 | KZ | Women18-44 | IGOnly | LPV | ABO15000 | 20260603",
+      "status": "ACTIVE"
+    },
+    "approval": {
+      "approval_paste_file": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/OWNER_PASTED_EXACT_META_API_LIVE_WRITE_APPROVAL.txt",
+      "approval_preflight_lock": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_publish_preflight_20260603_190353/preflight_evidence_lock.json",
+      "approval_preflight_lock_sha256": "f962690950df10b269c6849ffa8e2f7b2d71c8282ae464b09b9a7147d7aebb97",
+      "required_phrase_file": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_publish_preflight_20260603_190353/REQUIRED_EXACT_META_API_LIVE_WRITE_APPROVAL_PHRASE.txt",
+      "required_phrase_file_sha256": "3c1713b45ea0ec795ba5b6e8c4a308116ee36444a6e9b21e51e748316d9fba86"
+    },
+    "campaign": {
+      "effective_status": "ACTIVE",
+      "id": "120245481137650641",
+      "name": "OF | LINE31 | KZ | Meta | Traffic LPV | Countrywide | 20260603",
+      "status": "ACTIVE"
+    },
+    "created_at": "2026-06-03T19:44:05+05:00",
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_meta_api_live_partial_blocker_20260603_194405",
+    "exists": true,
+    "gate": "YELLOW_PARTIAL_META_LAUNCH_BLOCKED_BY_META_APP_DEV_MODE",
+    "last_source_backed_exact_ad_count": 0,
+    "latest_blocker": {
+      "error_subcode": 1885183,
+      "message": "Ads creative post was created by an app that is in development mode. It must be in public to create this ad."
+    },
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_meta_api_live_partial_blocker_20260603_194405/manifest.json",
+    "post_attempt_verification": {
+      "gate": "YELLOW_RATE_LIMITED",
+      "message": "A later read-only verification call was temporarily rejected because the ad account had too many API calls."
+    },
+    "safe_next_options": [
+      "Make Ads_ACMEWEAR app public/live or provide live app token, then rerun API after rate-limit cooldown.",
+      "Approve Chrome/Ads Manager UI fallback to create exactly three ads under the existing campaign/adset.",
+      "Optionally approve pausing only the partial LINE31 campaign/adset shell while deciding."
+    ],
+    "three_ads_live_verified": false
+  },
+  "latest_meta_api_primary_preflight": {
+    "dir": "~/Docs/Business_3/Facebook_ads/exports/validation/meta_api_primary_preflight_20260618_200624",
+    "env": {
+      "enable_meta_write_env": "0",
+      "meta_ad_account_id": "1517999585924947",
+      "meta_api_primary": true,
+      "meta_api_version": "v20.0",
+      "meta_app_id_present": true,
+      "meta_business_id": "1888644255371360",
+      "meta_system_user_token_present": true,
+      "meta_token_source": "META_SYSTEM_USER_TOKEN",
+      "write_authority_note": "ENABLE_META_WRITE=1 is capability only. Live Meta mutations still require an exact owner approval phrase tied to a preflight path and SHA."
+    },
+    "exists": true,
+    "gate": "GREEN_META_API_PRIMARY_LIVE_READONLY_READY",
+    "generated_at": "2026-06-18T20:06:24+05:00",
+    "live_readonly": true,
+    "manifest": "~/Docs/Business_3/Facebook_ads/exports/validation/meta_api_primary_preflight_20260618_200624/manifest.json",
+    "preflight_command": "cd ~/Docs/Business_3/Facebook_ads && PYTHONPATH=. python3 scripts/preflight_meta_api_primary.py --live-readonly --json",
+    "write_gate_without_owner_phrase": {
+      "ok": false,
+      "reasons": [
+        "ENABLE_META_WRITE is not enabled",
+        "owner approval text is empty"
+      ]
+    }
+  },
+  "latest_meta_budget_currency_stopline": {
+    "approved_intent": {
+      "daily_budget_kzt": 15000,
+      "hard_cap_kzt": 20000,
+      "landing_url": "https://acmewear.pro/line31"
+    },
+    "created_at": "2026-06-03T19:51:44+05:00",
+    "currency_safe_preflight": {
+      "account_currency": "USD",
+      "daily_budget_account_currency": "30.93",
+      "daily_budget_kzt_intent": 15000,
+      "daily_budget_minor_units": 3093,
+      "existing_paused_adset_daily_budget": "15000",
+      "fx_kzt_per_account_unit": "485",
+      "hard_cap_account_currency": "41.24",
+      "hard_cap_kzt_intent": 20000,
+      "hard_cap_minor_units": 4124,
+      "must_repair_or_rebuild_before_ad_creation": true,
+      "preflight_evidence_lock": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_publish_preflight_20260603_budget_currency_repair_plan_fx485/preflight_evidence_lock.json",
+      "preflight_evidence_lock_sha256": "58c31f4a79cf71d8431810b874cfe594e615cfdb58de119a4f6297029670114e"
+    },
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_meta_budget_currency_stopline_20260603_195144",
+    "exists": true,
+    "gate": "RED_META_BUDGET_CURRENCY_MISMATCH_STOPLINE",
+    "handoff": {
+      "path": "~/Docs/Autonomous_business/exports/validation/line31_meta_budget_currency_stopline_20260603_195144/NEXT_OWNER_DECISION_AND_EXECUTION_HANDOFF.md",
+      "recommended_first_action": "LINE31_META_PARTIAL_SHELL_SAFETY_PAUSE_ONLY"
+    },
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_meta_budget_currency_stopline_20260603_195144/manifest.json",
+    "meta_objects": {
+      "adset_id": "120245481997290641",
+      "campaign_id": "120245481137650641"
+    },
+    "owner_observation": {
+      "observed_budget_display": "$150.00",
+      "observed_budget_period": "Daily",
+      "observed_budget_sharing": "Not shared",
+      "source": "owner_provided_ads_manager_screenshot_in_chat",
+      "url": "https://adsmanager.facebook.com/adsmanager/manage/adsets?act=1517999585924947&business_id=1888644255371360&nav_entry_point=mbs_sub_nav&selected_campaign_ids=120245481137650641&selected_adset_ids=120245481997290641"
+    },
+    "risk": {
+      "summary": "Ads Manager UI indicates the live adset shell budget is USD-denominated or displayed as USD, not KZT.",
+      "three_ads_live_verified": false,
+      "unsafe_script_assumption": "preflight_line31_countrywide_meta_publish.py assumed API daily_budget=15000 means 15000 KZT/day for this account."
+    },
+    "safe_next_options": [
+      "Approve pausing only campaign 120245481137650641 and adset 120245481997290641 while correcting the budget/app-mode blocker.",
+      "Approve correcting only adset 120245481997290641 to the owner-approved KZT-equivalent daily budget in the ad account currency after fresh preflight.",
+      "Approve rebuilding/deleting the partial shell only with exact object IDs and rollback scope."
+    ],
+    "safety_pause": {
+      "adset_id": "120245481997290641",
+      "adset_status_paused": true,
+      "campaign_id": "120245481137650641",
+      "campaign_status_paused": true,
+      "gate": "GREEN_LINE31_META_PARTIAL_SHELL_SAFETY_PAUSED",
+      "manifest": "~/Docs/Autonomous_business/exports/validation/line31_meta_partial_shell_safety_pause_20260603_201456/manifest.json"
+    }
+  },
+  "latest_meta_current_activation_preflight": {
+    "activation_scope": {
+      "activation_order": [
+        "ads",
+        "adset",
+        "campaign"
+      ],
+      "ad_ids": [
+        "120245492808400641",
+        "120245488532270641",
+        "120245492808390641"
+      ],
+      "adset_id": "120245481997290641",
+      "allowed_action": "activate_existing_current_line31_meta_objects_only",
+      "campaign_id": "120245481137650641",
+      "daily_budget_minor_units_must_remain": "3093",
+      "forbidden_actions": [
+        "campaign/adset/ad creation",
+        "budget changes",
+        "targeting changes",
+        "bid strategy changes",
+        "creative/copy/CTA/URL changes",
+        "website deploy",
+        "Kaspi/WebUI/API writes",
+        "price or stock changes",
+        "cash/supplier/PO actions",
+        "DB/workbook writes",
+        "scheduler/source-pointer changes",
+        "owner publication",
+        "internal Kaspi campaign changes"
+      ],
+      "from_status": "PAUSED",
+      "landing_url_must_remain": "https://acmewear.pro/line31",
+      "to_status": "ACTIVE"
+    },
+    "apply_requested": true,
+    "created_at_local": "2026-06-04T13:04:12+05:00",
+    "dir": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_current_activation_preflight_20260604_124916",
+    "exists": true,
+    "gate": "GREEN_LINE31_META_ACTIVATE_ONLY_PREFLIGHT_READY_NO_WRITE",
+    "manifest": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_current_activation_preflight_20260604_124916/manifest.json",
+    "meta_write_attempted": true,
+    "preflight_command": "cd ~/Docs/Business_3/Facebook_ads && PYTHONPATH=. python3 scripts/preflight_line31_current_meta_activation.py --json",
+    "preflight_evidence_lock": {
+      "path": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_current_activation_preflight_20260604_124916/preflight_evidence_lock.json",
+      "sha256": "9c0df2e236529e3b4eea3891a8c344c35184245fcd3fff4bd8024e1b5fc6ba47"
+    },
+    "required_meta_write_phrase_path": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_current_activation_preflight_20260604_124916/REQUIRED_EXACT_LINE31_META_ACTIVATION_APPROVAL_PHRASE.txt",
+    "write_gate": {
+      "approval_text_present": true,
+      "ok": true,
+      "reasons": []
+    }
+  },
+  "latest_meta_current_readonly_snapshot": {
+    "checks_csv": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_current_readonly_api_snapshot_20260608_214131/checks.csv",
+    "checks_failed": 3,
+    "checks_review": 0,
+    "checks_total": 54,
+    "current_state_summary": {
+      "ad_creative_ids": [
+        "2262251671269732",
+        "939485362451622",
+        "1354388986562898"
+      ],
+      "ad_ids": [
+        "120245488532270641",
+        "120245492808390641",
+        "120245492808400641"
+      ],
+      "ad_video_ids": [
+        "2217447645679706",
+        "1530176111842168",
+        "3525164544314819"
+      ],
+      "ads_by_adset_count": 3,
+      "ads_by_campaign_count": 3,
+      "adset_daily_budget": "3000",
+      "adset_effective_status": "ACTIVE",
+      "adset_id": "120245481997290641",
+      "adset_status": "ACTIVE",
+      "campaign_effective_status": "ACTIVE",
+      "campaign_id": "120245481137650641",
+      "campaign_status": "ACTIVE",
+      "creative_feature_enroll_statuses": {
+        "120245488532270641": {
+          "advantage_plus_creative": "OPT_OUT",
+          "enhance_cta": "OPT_OUT",
+          "inline_comment": "OPT_IN",
+          "product_extensions": "OPT_OUT",
+          "reveal_details_over_time": "OPT_OUT",
+          "show_destination_blurbs": "OPT_OUT",
+          "site_extensions": "OPT_OUT",
+          "standard_enhancements": "OPT_OUT",
+          "text_optimizations": "OPT_OUT",
+          "video_auto_crop": "OPT_OUT",
+          "video_filtering": "OPT_OUT",
+          "video_uncrop": "OPT_OUT"
+        },
+        "120245492808390641": {
+          "advantage_plus_creative": "OPT_OUT",
+          "enhance_cta": "OPT_OUT",
+          "inline_comment": "OPT_IN",
+          "product_extensions": "OPT_IN",
+          "reveal_details_over_time": "OPT_OUT",
+          "show_destination_blurbs": "OPT_OUT",
+          "site_extensions": "OPT_OUT",
+          "standard_enhancements": "OPT_OUT",
+          "text_optimizations": "OPT_OUT",
+          "translate_voiceover": "OPT_IN",
+          "video_auto_crop": "OPT_OUT",
+          "video_filtering": "OPT_OUT",
+          "video_uncrop": "OPT_OUT"
+        },
+        "120245492808400641": {
+          "advantage_plus_creative": "OPT_OUT",
+          "enhance_cta": "OPT_OUT",
+          "inline_comment": "OPT_IN",
+          "product_extensions": "OPT_IN",
+          "reveal_details_over_time": "OPT_OUT",
+          "show_destination_blurbs": "OPT_OUT",
+          "site_extensions": "OPT_OUT",
+          "standard_enhancements": "OPT_OUT",
+          "text_optimizations": "OPT_OUT",
+          "translate_voiceover": "OPT_IN",
+          "video_auto_crop": "OPT_OUT",
+          "video_filtering": "OPT_OUT",
+          "video_uncrop": "OPT_OUT"
+        }
+      },
+      "customer_visible_cta": "ORDER_NOW",
+      "customer_visible_message": "Женский комплект AcmeWear 3в1. Закажи на Каспи и получи сумку в подарок!",
+      "customer_visible_title": "AcmeWear 3в1",
+      "landing_url": "https://acmewear.pro/line31",
+      "multi_advertiser_ads_enroll_statuses": {
+        "120245488532270641": "OPT_OUT",
+        "120245492808390641": "OPT_OUT",
+        "120245492808400641": "OPT_OUT"
+      }
+    },
+    "dir": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_current_readonly_api_snapshot_20260608_214131",
+    "exists": true,
+    "gate": "YELLOW_META_LINE31_CURRENT_API_STATE_REVIEW_REQUIRED_NO_WRITE",
+    "generated_at": "2026-06-08T21:41:31+05:00",
+    "manifest": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_current_readonly_api_snapshot_20260608_214131/manifest.json",
+    "retained_ui_only_gaps": [],
+    "snapshot_command": "cd ~/Docs/Business_3/Facebook_ads && PYTHONPATH=. python3 scripts/snapshot_line31_current_meta_state.py --json"
+  },
+  "latest_meta_launch_identity_discovery": {
+    "created_at_local": "2026-06-18T20:09:27+05:00",
+    "dir": "~/Docs/Business_3/Facebook_ads/exports/validation/meta_launch_identity_discovery_20260618_200927",
+    "discovery_command": "cd ~/Docs/Business_3/Facebook_ads && PYTHONPATH=. python3 scripts/discover_meta_launch_identity.py --live-readonly --json",
+    "exists": true,
+    "gate": "YELLOW_META_LAUNCH_IDENTITY_INCOMPLETE_NO_WRITE",
+    "instagram_actor_id_optional_evidence": {
+      "evidence_rows": [],
+      "interpretation": "",
+      "observation_count": 0,
+      "supported": false
+    },
+    "manifest": "~/Docs/Business_3/Facebook_ads/exports/validation/meta_launch_identity_discovery_20260618_200927/identity_discovery_manifest.json",
+    "missing": [
+      "META_PAGE_ID",
+      "META_INSTAGRAM_ACTOR_ID",
+      "META_PIXEL_ID"
+    ],
+    "recommended": {
+      "META_INSTAGRAM_ACTOR_ID": "",
+      "META_PAGE_ID": "",
+      "META_PIXEL_ID": ""
+    },
+    "recommended_env_lines_path": "~/Docs/Business_3/Facebook_ads/exports/validation/meta_launch_identity_discovery_20260618_200927/recommended_env_lines.txt",
+    "secondary_lookup_errors": []
+  },
+  "latest_meta_live_write_ready_stopline": {
+    "apply_command": "cd ~/Docs/Business_3/Facebook_ads && PYTHONPATH=. python3 scripts/preflight_line31_countrywide_meta_publish.py --mapping '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json' --approval-text-file '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/OWNER_PASTED_EXACT_META_API_LIVE_WRITE_APPROVAL.txt' --execute-approved-meta-publish --json",
+    "approval_paste_file": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/OWNER_PASTED_EXACT_META_API_LIVE_WRITE_APPROVAL.txt",
+    "created_at": "2026-06-03T19:16:43+05:00",
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_meta_live_write_ready_stopline_20260603_191643",
+    "exists": true,
+    "external_write_attempted": false,
+    "gate": "GREEN_READY_FOR_EXACT_META_API_LIVE_WRITE_APPROVAL_NO_WRITE",
+    "goal_complete": false,
+    "live_apply_expected_gate_after_approval": "GREEN_META_LINE31_PUBLISH_APPLIED_VERIFY_REQUIRED",
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_meta_live_write_ready_stopline_20260603_191643/manifest.json",
+    "meta_write_attempted": false,
+    "owner_approved_mapping": {
+      "path": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json",
+      "sha256": "a1aa8179971af51772f1eca1ddde47fa0e0c77cffbee49da51cfe17cb1e43c87"
+    },
+    "preflight_evidence_lock": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_publish_preflight_20260603_190353/preflight_evidence_lock.json",
+    "preflight_evidence_lock_sha256": "f962690950df10b269c6849ffa8e2f7b2d71c8282ae464b09b9a7147d7aebb97",
+    "required_live_write_phrase_file": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_publish_preflight_20260603_190353/REQUIRED_EXACT_META_API_LIVE_WRITE_APPROVAL_PHRASE.txt",
+    "required_live_write_phrase_file_sha256": "3c1713b45ea0ec795ba5b6e8c4a308116ee36444a6e9b21e51e748316d9fba86"
+  },
+  "latest_meta_partial_shell_safety_pause": {
+    "after": {
+      "adset": {
+        "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+        "campaign_id": "120245481137650641",
+        "daily_budget": "15000",
+        "effective_status": "PAUSED",
+        "id": "120245481997290641",
+        "lifetime_budget": "0",
+        "name": "AS | LINE31 | KZ | Women18-44 | IGOnly | LPV | ABO15000 | 20260603",
+        "optimization_goal": "LANDING_PAGE_VIEWS",
+        "status": "PAUSED",
+        "updated_time": "2026-06-03T15:14:57+0000"
+      },
+      "campaign": {
+        "effective_status": "PAUSED",
+        "id": "120245481137650641",
+        "name": "OF | LINE31 | KZ | Meta | Traffic LPV | Countrywide | 20260603",
+        "objective": "OUTCOME_TRAFFIC",
+        "status": "PAUSED",
+        "updated_time": "2026-06-03T15:14:59+0000"
+      }
+    },
+    "approval_phrase_recorded": "~/Docs/Autonomous_business/exports/validation/line31_meta_partial_shell_safety_pause_20260603_201456/OWNER_APPROVAL_LINE31_META_PARTIAL_SHELL_SAFETY_PAUSE_ONLY.txt",
+    "before": {
+      "adset": {
+        "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+        "campaign_id": "120245481137650641",
+        "daily_budget": "15000",
+        "effective_status": "ACTIVE",
+        "id": "120245481997290641",
+        "lifetime_budget": "0",
+        "name": "AS | LINE31 | KZ | Women18-44 | IGOnly | LPV | ABO15000 | 20260603",
+        "optimization_goal": "LANDING_PAGE_VIEWS",
+        "status": "ACTIVE",
+        "updated_time": "2026-06-03T14:38:51+0000"
+      },
+      "campaign": {
+        "effective_status": "ACTIVE",
+        "id": "120245481137650641",
+        "name": "OF | LINE31 | KZ | Meta | Traffic LPV | Countrywide | 20260603",
+        "objective": "OUTCOME_TRAFFIC",
+        "status": "ACTIVE",
+        "updated_time": "2026-06-03T14:33:21+0000"
+      }
+    },
+    "created_at": "2026-06-03T20:14:56+05:00",
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_meta_partial_shell_safety_pause_20260603_201456",
+    "errors": [],
+    "exists": true,
+    "gate": "GREEN_LINE31_META_PARTIAL_SHELL_SAFETY_PAUSED",
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_meta_partial_shell_safety_pause_20260603_201456/manifest.json",
+    "scope": {
+      "adset_id": "120245481997290641",
+      "allowed_action": "pause only the named campaign and adset",
+      "campaign_id": "120245481137650641",
+      "forbidden_actions": [
+        "ads create/update/delete",
+        "budget changes",
+        "targeting changes",
+        "website deploy",
+        "Kaspi/WebUI/API writes",
+        "price or stock changes",
+        "cash/supplier/PO actions",
+        "DB/workbook writes",
+        "scheduler/source-pointer changes",
+        "owner publication",
+        "internal Kaspi campaign changes"
+      ]
+    },
+    "verification": {
+      "adset_effective_status": "PAUSED",
+      "adset_status_paused": true,
+      "campaign_effective_status": "PAUSED",
+      "campaign_status_paused": true,
+      "only_target_adset_id": "120245481997290641",
+      "only_target_campaign_id": "120245481137650641"
+    }
+  },
+  "latest_meta_publish_bridge": {
+    "bridge_plan_command": "python3 scripts/plan_line31_meta_publish_bridge.py --json",
+    "commands": {
+      "execute_meta_publish_after_exact_meta_api_live_write_approval": "cd ~/Docs/Business_3/Facebook_ads && PYTHONPATH=. python3 scripts/preflight_line31_countrywide_meta_publish.py --mapping '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json' --approval-text-file '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/OWNER_PASTED_EXACT_META_API_LIVE_WRITE_APPROVAL.txt' --execute-approved-meta-publish --json",
+      "green_meta_publish_preflight_no_write": "cd ~/Docs/Business_3/Facebook_ads && PYTHONPATH=. python3 scripts/preflight_line31_countrywide_meta_publish.py --mapping '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json' --json",
+      "record_line31_owner_publish_approval": "cd ~/Docs/Autonomous_business && python3 scripts/record_line31_owner_publish_approval.py --approval-phrase-path '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/REQUIRED_EXACT_LINE31_META_PUBLISH_APPROVAL_PHRASE.txt' --approval-text-file '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/OWNER_PASTED_EXACT_LINE31_META_PUBLISH_APPROVAL.txt' --mapping '~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json' --require-mapping-ready --output '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/owner_publish_approval_evidence.md' --json",
+      "validate_owner_approved_mapping": "cd ~/Docs/Autonomous_business && python3 scripts/validate_line31_launch_readiness.py --mapping '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json' --json",
+      "write_owner_approved_mapping": "cd ~/Docs/Autonomous_business && python3 scripts/prepare_line31_multi_creative_mapping.py --asset-manifest '~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/manifest.json' --landing-url https://acmewear.pro/line31 --kaspi-marketplace-cta-url https://acmewear.pro/go/starry-black --creative-ready-declared --owner-approved --approval-phrase-path '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/REQUIRED_EXACT_LINE31_META_PUBLISH_APPROVAL_PHRASE.txt' --approval-evidence-file '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/owner_publish_approval_evidence.md' --tracking-qa-evidence-file '~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_live_tracking_redirect_qa_after_deploy_20260603_173544/line31_tracking_redirect_qa.json' --output '~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json' --overwrite --json"
+    },
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005",
+    "exists": true,
+    "external_write_attempted": false,
+    "gate": "GREEN_LINE31_META_APPROVAL_BRIDGE_READY_NO_WRITE",
+    "generated_at": "2026-06-03T18:30:05+05:00",
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/bridge_manifest.json",
+    "meta_api_live_write_approval_file": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/OWNER_PASTED_EXACT_META_API_LIVE_WRITE_APPROVAL.txt",
+    "meta_write_attempted": false,
+    "owner_approval_evidence": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/owner_publish_approval_evidence.md",
+    "owner_approved_mapping": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json",
+    "owner_paste_file": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/OWNER_PASTED_EXACT_LINE31_META_PUBLISH_APPROVAL.txt",
+    "required_line31_meta_publish_phrase_copy": "~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/REQUIRED_EXACT_LINE31_META_PUBLISH_APPROVAL_PHRASE.txt",
+    "two_stage_approval_boundary": [
+      "Stage 1 records the exact LINE31_COUNTRYWIDE_META_PUBLISH owner approval and makes the mapping strict-ready.",
+      "Stage 2 runs Meta publish preflight, which generates a separate exact META_API_LIVE_WRITE phrase.",
+      "Stage 3 executes Graph API writes only after that exact META_API_LIVE_WRITE phrase is pasted into the approval file."
+    ]
+  },
+  "latest_meta_line31_publish_preflight": {
+    "apply_requested": false,
+    "apply_result": null,
+    "created_at_local": "2026-06-04T13:24:19+05:00",
+    "dir": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_publish_preflight_20260604_132419",
+    "errors": [
+      "publish_authority.approved must be true",
+      "publish_authority.approval_evidence_path is required"
+    ],
+    "exists": true,
+    "gate": "YELLOW_META_LINE31_PUBLISH_PREFLIGHT_BLOCKED_NO_WRITE",
+    "launch_shape": {
+      "account_currency": "USD",
+      "ad_count": 3,
+      "adset_name": "AS | LINE31 | KZ | Women18-44 | IGOnly | LPV | ABO15000 | 20260603",
+      "budget_currency_guard": "ACCOUNT_CURRENCY_MINOR_UNITS_COMPUTED",
+      "budget_plan": {
+        "account_currency": "USD",
+        "currency_minor_unit_scale": 100,
+        "daily_budget_account_currency": "30.93",
+        "daily_budget_kzt": 15000,
+        "daily_budget_minor_units": 3093,
+        "errors": [],
+        "fx_kzt_per_account_unit": "485",
+        "guard": "ACCOUNT_CURRENCY_MINOR_UNITS_COMPUTED",
+        "hard_cap_account_currency": "41.24",
+        "hard_cap_kzt": 20000,
+        "hard_cap_minor_units": 4124,
+        "ok": true
+      },
+      "campaign_name": "OF | LINE31 | KZ | Meta | Traffic LPV | Countrywide | 20260603",
+      "daily_budget_kzt": 15000,
+      "hard_cap_kzt": 20000,
+      "internal_kaspi_policy": "KEEP_ON_UNLESS_SEPARATE_EXACT_OWNER_APPROVAL",
+      "landing_url": "https://acmewear.pro/line31",
+      "publish_status": "PAUSED"
+    },
+    "manifest": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_publish_preflight_20260604_132419/manifest.json",
+    "mapping": {
+      "path": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json",
+      "sha256": "66ed9ec9abfcd80824bb86c852f82018bebfe3d8f999d31d63738c00f6bdcf2a"
+    },
+    "meta_write_attempted": false,
+    "preflight_command": "cd ~/Docs/Business_3/Facebook_ads && PYTHONPATH=. python3 scripts/preflight_line31_countrywide_meta_publish.py --json",
+    "preflight_evidence_lock": {
+      "path": "~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_publish_preflight_20260604_132419/preflight_evidence_lock.json",
+      "sha256": "b36bd2dc970509fd8e07f96a7faf289b1d4cc8aa14dd32d82cd64bbd522df651"
+    },
+    "required_meta_write_phrase_path": "",
+    "required_meta_write_phrase_present": false,
+    "write_gate": {
+      "approval_text_present": false,
+      "ok": false,
+      "reasons": [
+        "required exact owner approval phrase is empty",
+        "owner approval text is empty"
+      ]
+    }
+  },
+  "latest_post_expert_answer_sequence": {
+    "completion_audit": {
+      "complete": false,
+      "gate": "INCOMPLETE",
+      "markdown_path": "~/Docs/Autonomous_business/docs/current/LINE31_ACTIVE_GOAL_COMPLETION_AUDIT_CURRENT.md",
+      "next_action": "External expert answer is classified as CHANGE_BEFORE_START. Keep the LINE31 Meta campaign/adset/three ads paused, record the owner-updated facts (internal Kaspi campaigns paused at 04.06.2026_12_14_49, Meta budget currency is USD, LINE31 stock anchor/backfill rule), complete the bounded same-day prelaunch checks, then rerun current Meta snapshot and activate-only preflight before asking for the final activation phrase. Use the current activation phrase path only after those checks: ~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_current_activation_preflight_20260604_124916/REQUIRED_EXACT_LINE31_META_ACTIVATION_APPROVAL_PHRASE.txt.",
+      "ready_to_publish": false
+    },
+    "current_status": {
+      "json_path": "~/Docs/Autonomous_business/docs/current/LINE31_LAUNCH_CURRENT_STATUS.json",
+      "markdown_path": "~/Docs/Autonomous_business/docs/current/LINE31_LAUNCH_CURRENT_STATUS.md",
+      "missing_or_pending": [
+        "LINE31 Meta campaign, ad set, and exactly three ads are source-verified but still PAUSED",
+        "final launch/start decision remains pending before activation"
+      ],
+      "owner_facing_publish_status": "YELLOW_META_SETUP_READY_PAUSED__PENDING_FINAL_START_DECISION",
+      "ready_to_publish": false,
+      "status": "YELLOW_META_CURRENT_SETUP_PAUSED_PRESTART_REVIEW_REQUIRED"
+    },
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_post_expert_answer_sequence_20260604_125048",
+    "exists": true,
+    "expert_intake": {
+      "answer_dir": "~/Docs/Oracle/oracle_packs/Instagram_funnel_packs/line31_countrywide_three_day_meta_resume_truth_oracle_pack_v2_UNDER20_FLAT__20260530_GMT5/Answer",
+      "answer_path": "~/Docs/Oracle/oracle_packs/Instagram_funnel_packs/line31_countrywide_three_day_meta_resume_truth_oracle_pack_v2_UNDER20_FLAT__20260530_GMT5/Answer/Strategy_expert_04.06.2026_12_17_53.md",
+      "decision": "CHANGE_BEFORE_START",
+      "decision_confidence": "HIGH",
+      "gate": "YELLOW_LINE31_EXPERT_CHANGE_BEFORE_START_NO_WRITE",
+      "manifest_path": "~/Docs/Autonomous_business/exports/validation/line31_post_expert_answer_sequence_20260604_125048__expert_intake/expert_answer_intake_manifest.json",
+      "next_safe_action": {
+        "action": "DO_NOT_ACTIVATE__SCOPE_CHANGES_AND_RERUN_PREFLIGHT",
+        "activation_allowed_after_exact_owner_phrase": false,
+        "activation_command_template": "",
+        "activation_phrase_path": "",
+        "notes": [
+          "Keep the campaign paused.",
+          "Turn the expert changes into bounded tasks with exact approvals, then rerun read-only Meta snapshot and activation preflight."
+        ]
+      },
+      "next_safe_action_md": "~/Docs/Autonomous_business/exports/validation/line31_post_expert_answer_sequence_20260604_125048__expert_intake/NEXT_SAFE_ACTION.md",
+      "summary_md": "~/Docs/Autonomous_business/exports/validation/line31_post_expert_answer_sequence_20260604_125048__expert_intake/expert_answer_summary.md"
+    },
+    "gate": "YELLOW_LINE31_POST_EXPERT_SEQUENCE_CHANGES_REQUIRED_NO_WRITE",
+    "generated_at": "2026-06-04T12:50:48+05:00",
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_post_expert_answer_sequence_20260604_125048/post_expert_answer_sequence_manifest.json",
+    "next_safe_action": "External expert answer is classified as CHANGE_BEFORE_START. Keep the LINE31 Meta campaign/adset/three ads paused, record the owner-updated facts (internal Kaspi campaigns paused at 04.06.2026_12_14_49, Meta budget currency is USD, LINE31 stock anchor/backfill rule), complete the bounded same-day prelaunch checks, then rerun current Meta snapshot and activate-only preflight before asking for the final activation phrase. Use the current activation phrase path only after those checks: ~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_current_activation_preflight_20260604_124916/REQUIRED_EXACT_LINE31_META_ACTIVATION_APPROVAL_PHRASE.txt.",
+    "next_safe_action_md": "~/Docs/Autonomous_business/exports/validation/line31_post_expert_answer_sequence_20260604_125048/NEXT_SAFE_ACTION.md",
+    "oracle_pack": "~/Docs/Oracle/oracle_packs/Instagram_funnel_packs/line31_countrywide_three_day_meta_resume_truth_oracle_pack_v2_UNDER20_FLAT__20260530_GMT5",
+    "sequence_command": "python3 scripts/run_line31_post_expert_answer_sequence.py --json",
+    "summary_md": "~/Docs/Autonomous_business/exports/validation/line31_post_expert_answer_sequence_20260604_125048/post_expert_answer_sequence_summary.md"
+  },
+  "latest_post_publish_monitoring_packet": {
+    "checks": {
+      "bridge_later_meta_live_write_file_declared": true,
+      "bridge_owner_paste_file_declared": true,
+      "current_status_exists": true,
+      "deploy_liveqa_sequence_green": true,
+      "latest_meta_preflight_blocked_only_by_approval": true,
+      "live_route_ready": true,
+      "live_tracking_qa_green": true,
+      "meta_publish_bridge_green": true,
+      "pending_mapping_exists": true
+    },
+    "commands_tsv": "~/Docs/Autonomous_business/exports/validation/line31_post_publish_monitoring_packet_20260603_184254/commands.tsv",
+    "decision_gates": {
+      "first_hour": "campaign/adset/3 ads active, no delivery errors, landing route 200, redirects 302, no fake ecommerce accepted",
+      "next_morning": "dashboard has spend, LPV, website intent, redirect, and LINE31 order rows separated by source",
+      "same_day": "Meta traffic, website intent, redirect, and order truth refresh without mixing channels"
+    },
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_post_publish_monitoring_packet_20260603_184254",
+    "exists": true,
+    "external_write_attempted": false,
+    "future_synthetic_tracking_qa_approval_phrase_path": "~/Docs/Autonomous_business/exports/validation/line31_post_publish_monitoring_packet_20260603_184254/NEXT_POST_PUBLISH_SYNTHETIC_TRACKING_QA_APPROVAL_PHRASE.txt",
+    "gate": "GREEN_LINE31_POST_PUBLISH_MONITORING_PLAN_READY_NO_WRITE",
+    "generated_at": "2026-06-03T18:42:54+05:00",
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_post_publish_monitoring_packet_20260603_184254/post_publish_monitoring_manifest.json",
+    "meta_write_attempted": false,
+    "packet_command": "python3 scripts/build_line31_post_publish_monitoring_packet.py --json",
+    "truth_separation_contract": [
+      "Meta traffic truth: impressions, clicks, LPV, spend, and ad delivery only.",
+      "Website truth: PageView, ViewContent, ColorSelect, QualifiedVisit, KaspiClick, and HighIntentKaspiClick.",
+      "Redirect truth: /go/:color 302 destination, UTM preservation, landing_color, and landing_source.",
+      "Kaspi order truth: real order rows only; no purchase is inferred from Meta or website clicks.",
+      "Attribution truth: directional until order matching proves stronger evidence."
+    ]
+  },
+  "latest_preflight_packet": {
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_final_launch_preflight_20260603_starry_black_predeploy",
+    "exists": true,
+    "gate": "GREEN_EXCEPT_CREATIVE",
+    "generated_at": "2026-06-03T16:12:26+05:00",
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_final_launch_preflight_20260603_starry_black_predeploy/line31_launch_preflight_manifest.json",
+    "ready_to_publish": false
+  },
+  "latest_line31_live_customer_label_probe": {
+    "checks_csv": "~/Docs/Autonomous_business/exports/validation/line31_live_customer_label_probe_20260604_103115/checks.csv",
+    "checks_failed": 0,
+    "checks_total": 9,
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_live_customer_label_probe_20260604_103115",
+    "exists": true,
+    "gate": "GREEN_LINE31_LIVE_CUSTOMER_LABEL_VERIFIED_NO_WRITE",
+    "generated_at": "2026-06-04T10:31:15+05:00",
+    "landing_html_sha256": "24e44a7fc6781390d3eeaeb492f208786bf4aae5711cbfe01b7037d495d91210",
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_live_customer_label_probe_20260604_103115/manifest.json",
+    "probe_command": "python3 scripts/probe_line31_live_customer_label.py --json",
+    "summary": {
+      "contains_forbidden_customer_label": false,
+      "contains_raw_kaspi_product_href": false,
+      "contains_required_customer_label": true,
+      "effective_url": "https://acmewear.pro/line31",
+      "forbidden_labels": [
+        "ACMEWEAR LINE31",
+        "AcmeWear LINE31"
+      ],
+      "http_status": 200,
+      "required_customer_label": "AcmeWear 3в1",
+      "required_routes": [
+        "/go/starry-black",
+        "/go/ivory-white-starry-black"
+      ],
+      "url": "https://acmewear.pro/line31"
+    }
+  },
+  "latest_line31_meta_30min_rescue": {
+    "dir": "~/Docs/Autonomous_business_agent_handoffs/2026-06-03_line31_meta_30min_rescue",
+    "exists": true,
+    "files": {
+      "agent1_budget_repair": {
+        "exists": true,
+        "gate": "YELLOW",
+        "path": "~/Docs/Autonomous_business_agent_handoffs/2026-06-03_line31_meta_30min_rescue/agent1_budget_repair_controller_closeout.md"
+      },
+      "agent2_three_ad_route": {
+        "exists": true,
+        "gate": "YELLOW",
+        "path": "~/Docs/Autonomous_business_agent_handoffs/2026-06-03_line31_meta_30min_rescue/agent2_three_ad_creation_controller_closeout.md"
+      },
+      "agent4_ui_fallback": {
+        "exists": true,
+        "gate": "GREEN",
+        "path": "~/Docs/Autonomous_business_agent_handoffs/2026-06-03_line31_meta_30min_rescue/agent4_app_mode_ui_fallback_prep_closeout.md"
+      },
+      "agent4_ui_fallback_recovery": {
+        "exists": true,
+        "gate": "YELLOW_RECOVERY_NOTE_AGENT_STALLED_WITH_PARTIAL_EVIDENCE",
+        "path": "~/Docs/Autonomous_business_agent_handoffs/2026-06-03_line31_meta_30min_rescue/agent4_app_mode_ui_fallback_prep_recovery_note.md"
+      },
+      "agent5_monitoring_scaffold": {
+        "exists": true,
+        "gate": "GREEN",
+        "path": "~/Docs/Autonomous_business_agent_handoffs/2026-06-03_line31_meta_30min_rescue/agent5_final_monitoring_scaffold_closeout.md"
+      }
+    },
+    "synthesis": {
+      "exists": true,
+      "gate": "YELLOW_APPROVAL_GATED_NOT_LAUNCHED",
+      "path": "~/Docs/Autonomous_business_agent_handoffs/2026-06-03_line31_meta_30min_rescue/ORCHESTRATOR_RESCUE_SYNTHESIS_20260603_204138.md"
+    }
+  },
+  "latest_web_deploy_approval_packet": {
+    "build_dist_fingerprint_sha256": "d545a308136352b856b0200bc39add9fbb3c6b2bd85a4d6f3a2502369284f817",
+    "created_at_local": "2026-06-03T21:44:27+05:00",
+    "customer_visible_copy_contract": {
+      "forbidden_customer_visible_copy": [
+        "ACMEWEAR LINE31",
+        "AcmeWear LINE31"
+      ],
+      "internal_identifier_allowed": "LINE31",
+      "required_customer_visible_label": "AcmeWear 3в1"
+    },
+    "deploy_command_if_approved": "cd ~/Docs/acmewear_web_v2/workspace/landing_build && npx wrangler deploy --config tmp/wrangler.no-analytics.jsonc --message \"AcmeWear 3в1 /line31 paid traffic route deploy 2026-06-03\"",
+    "deploy_preflight_path": "~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_customer_label_deploy_liveqa_approval_20260603_214427/deploy_preflight_closeout.md",
+    "dir": "~/Docs/Autonomous_business/exports/validation/line31_web_deploy_approval_packet_20260603_customer_label_214427",
+    "exact_owner_deploy_approval_phrase": "I approve ACMEWEAR_WEB_LINE31_DEPLOY_AND_POSTDEPLOY_LIVE_QA for commit/build d545a308136352b856b0200bc39add9fbb3c6b2bd85a4d6f3a2502369284f817, limited to LINE31 /line31 paid-traffic route customer-visible label correction to AcmeWear 3в1, landing CTA color order, and live-QA-capable tracking/redirect QA tooling described in ~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_customer_label_deploy_liveqa_approval_20260603_214427/deploy_preflight_closeout.md. This approves the Cloudflare deploy command and immediate synthetic post-deploy live tracking/redirect QA against https://acmewear.pro/line31 and https://acmewear.pro/go/:color only. No Meta publish, Kaspi/WebUI/API writes, campaign changes, price changes, stock changes, cash/PO/supplier actions, DB/workbook writes, scheduler/source-pointer changes, or owner publication are approved.",
+    "exists": true,
+    "gate": "GREEN_DEPLOY_AND_POSTDEPLOY_LIVE_QA_APPROVAL_READY_NO_DEPLOY_PERFORMED",
+    "live_probe_before_deploy": {
+      "contains_forbidden_customer_copy": true,
+      "contains_required_customer_copy": false,
+      "http_status": 200,
+      "url": "https://acmewear.pro/line31"
+    },
+    "manifest": "~/Docs/Autonomous_business/exports/validation/line31_web_deploy_approval_packet_20260603_customer_label_214427/deploy_preflight_manifest.json",
+    "paired_meta_preflight": {},
+    "postdeploy_live_qa_command_if_approved": "cd ~/Docs/acmewear_web_v2 && node scripts/probe_line31_tracking_qa.mjs --base-url https://acmewear.pro --allow-live-signal-writes --evidence-dir ~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_live_tracking_redirect_qa_after_customer_label_deploy_20260603_214427",
+    "postdeploy_live_qa_expected_json": "~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_live_tracking_redirect_qa_after_customer_label_deploy_20260603_214427/line31_tracking_redirect_qa.json",
+    "validation": {}
+  },
+  "latest_web_wrangler_dryrun": {
+    "bundle_index_path": "~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_wrangler_dryrun_20260603_1751/bundle/index.js",
+    "bundle_index_sha256": "a0860aeb376055e8dedb2d3aec4715c51a5f1dcd6fc14138077e77546e9071d6",
+    "closeout": "~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_wrangler_dryrun_20260603_1751/closeout.md",
+    "dir": "~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_wrangler_dryrun_20260603_1751",
+    "exists": true,
+    "gate": "GREEN_WRANGLER_DRY_RUN_READY_NO_DEPLOY",
+    "log_path": "~/Docs/acmewear_web_v2/docs/90_REPORTS/line31_wrangler_dryrun_20260603_1751/wrangler_dryrun.log",
+    "log_sha256": "4a38f4187e7556dbcf7b31a2876736110d7bc54187b79dda30336df48ee2ea08"
+  },
+  "mapping_path": "~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json",
+  "missing_or_pending": [
+    "partial LINE31 Meta campaign/adset shell is paused and spend-risk is contained",
+    "Meta adset still has the previously unsafe budget payload and must be repaired or rebuilt before launch",
+    "Meta app development-mode creative blocker still needs app-live or approved UI fallback resolution",
+    "three LINE31 Meta ads are not live/source-verified"
+  ],
+  "next_action": "Keep the paused shell paused. Next, run/read a currency-safe Meta preflight and either repair/rebuild the paused shell with exact owner approval, then solve the app-mode/UI fallback path before creating exactly three ads.",
+  "noncreative_blockers": [],
+  "one_shot_example_command": "python3 scripts/prepare_line31_launch_readiness_from_assets.py --creative-id line31_countrywide_v1 --asset-dir /absolute/path/to/final_creative_drop_folder --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 --duration-seconds 18 --utm-placement reels --landing-url 'https://acmewear.pro/line31' --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' --creative-ready-declared --approval-text-file /absolute/path/to/pasted_owner_approval.txt --tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json --overwrite --json",
+  "owner_facing_publish_status": "YELLOW_SAFE_PAUSED__BUDGET_AND_APP_BLOCKERS_REMAIN",
+  "pending_gate": "GREEN_LINE31_META_PARTIAL_SHELL_SAFETY_PAUSED",
+  "post_expert_integration_status": "INTEGRATED_STRICT_GATE_ADDENDUM_20260602",
+  "ready_to_publish": false,
+  "safety": {
+    "external_writes": false,
+    "purpose": "stable local operator pointer only",
+    "writes_protected_surfaces": false
+  },
+  "standalone_approval_recorder_example_command": "python3 scripts/record_line31_owner_publish_approval.py --require-mapping-ready --mapping ~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json --approval-text-file /absolute/path/to/pasted_owner_approval.txt --json",
+  "starter_prompt": "Read the repo bootstrap context and execute ~/Docs/Autonomous_business/docs/agent_handoffs/LINE31_FINAL_CREATIVE_META_PUBLISH_20260601_STARTERS/01_AGENT_1__FINAL_CREATIVE_META_PUBLISH__SERIAL.md.",
+  "status": "YELLOW_META_PARTIAL_SHELL_PAUSED_BUDGET_REPAIR_PENDING",
+  "strict_gate": "GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH"
+}

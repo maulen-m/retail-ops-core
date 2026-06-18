@@ -1,0 +1,28 @@
+{
+  "workflow": "LINE31_EXPERT_PLAN_COMPLETION_WAVE_20260606",
+  "created_at_gmt5": "2026-06-06_16_53_12",
+  "plan_path": "~/Docs/Autonomous_business/docs/parallel_runs/2026-06-06_line31_expert_plan_completion_wave/PLAN.md",
+  "orchestrator_handoff": "~/Docs/Autonomous_business/docs/agent_handoffs/LINE31_EXPERT_PLAN_COMPLETION_WAVE_20260606_STARTERS/00_ORCHESTRATOR_HANDOFF.md",
+  "closeout_root": "~/Docs/Autonomous_business_agent_handoffs/2026-06-06_line31_expert_plan_completion_wave",
+  "parallel_root_agents": ["1", "2", "3", "4", "5"],
+  "synthesis_agents": ["6"],
+  "dependencies": {
+    "6": ["1", "2", "3", "4", "5"]
+  },
+  "approval_phrase": "LINE31_EXPERT_PLAN_COMPLETION_WAVE_20260606_ONE_TAKE",
+  "current_owner_budget_guard_minor_units": 5500,
+  "forbidden_live_actions_except_smoke": [
+    "campaign_create_update",
+    "adset_create_update",
+    "ad_create_update",
+    "budget_status_targeting_landing_url_change",
+    "website_deploy",
+    "kaspi_webui_api_write",
+    "crm_write",
+    "price_stock_cash_po_supplier_action",
+    "production_db_workbook_write",
+    "scheduler_source_pointer_change",
+    "owner_publication",
+    "internal_kaspi_campaign_change"
+  ]
+}

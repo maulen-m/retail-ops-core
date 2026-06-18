@@ -1,0 +1,32 @@
+path_or_pattern	status	recommended_action	active_route	notes
+docs/current/FINAL_10_OUT_OF_10_EXECUTION_PLAN.md	ACTIVE_CANONICAL	KEEP_ACTIVE	self	Active execution contract; no production writes authorized by it.
+docs/PLAN*.md	HISTORICAL_PLAN_SET	SUPERSEDE_AND_INDEX	docs/current/FINAL_10_OUT_OF_10_EXECUTION_PLAN.md	Top-level historical plans are not current execution authority.
+docs/archive/PLAN*.md	HISTORICAL_ARCHIVE	DO_NOT_DELETE_YET	docs/current/SUPERSEDED_PLAN_INDEX.tsv	Already archived; keep as evidence/history.
+docs/legacy/PLAN_NEXT_PHASES_AUTONOMY_V2.md	HISTORICAL_LEGACY	SUPERSEDE_AND_INDEX	docs/current/SUPERSEDED_PLAN_INDEX.tsv	Old autonomy route; history only.
+docs/docs/PLAN_NEXT_PHASES_AUTONOMY_V2.md	HISTORICAL_DUPLICATE	REVIEW_BEFORE_MOVE	docs/current/SUPERSEDED_PLAN_INDEX.tsv	Duplicate-looking nested docs path.
+docs/ideas/PLAN_*.md	IDEA_HISTORY	SUPERSEDE_AND_INDEX	docs/current/SUPERSEDED_PLAN_INDEX.tsv	Idea plans are not active execution authority.
+docs/transfer_ledger/plan.md	HISTORICAL_OR_LOCAL	DO_NOT_DELETE_YET	docs/current/SUPERSEDED_PLAN_INDEX.tsv	Preserve until transfer-ledger role is confirmed.
+docs/parallel_runs/2026-05-16_mvos_source_fact_resolution_wave/	HISTORICAL_RUN	SUPERSEDE_AND_INDEX	docs/current/CURRENT_SOURCE_TRUTH_MAP.md	Feeds source-truth history only.
+docs/parallel_runs/2026-05-16_mvos_source_fact_repair_round2/	HISTORICAL_RUN	SUPERSEDE_AND_INDEX	docs/current/CURRENT_SOURCE_TRUTH_MAP.md	Feeds retained blocker lineage only.
+docs/parallel_runs/2026-05-17_mvos_owner_qa_repair_wave/	HISTORICAL_RUN	DO_NOT_DELETE_YET	docs/current/CURRENT_BLOCKER_BOARD.tsv	May preserve important owner-QA retained blockers.
+docs/parallel_runs/2026-05-18_mvos-10-out-of-10-contract-execution/	RECENT_CONTRACT_RUN	DO_NOT_DELETE_YET	docs/current/FINAL_10_OUT_OF_10_EXECUTION_PLAN.md	Ancestor to current plan; review before superseding.
+docs/parallel_runs/2026-05-18_mvos_agent912_operational_source_refresh_c3_split/	RECENT_SOURCE_RUN	DO_NOT_DELETE_YET	docs/current/CURRENT_SOURCE_TRUTH_MAP.md	Useful for Phase 1 source route.
+docs/parallel_runs/2026-05-19_mvos_agent913_source_acquisition_contract_wave/	RECENT_SOURCE_RUN	DO_NOT_DELETE_YET	docs/current/CURRENT_SOURCE_TRUTH_MAP.md	Useful for Phase 1 source route.
+docs/parallel_runs/2026-05-19_mvos_agent914_readonly_source_acquisition_wave/	RECENT_SOURCE_RUN	DO_NOT_DELETE_YET	docs/current/CURRENT_SOURCE_TRUTH_MAP.md	Useful for Phase 1 source route.
+docs/parallel_runs/2026-05-19_mvos_agent915_copied_temp_proof_wave/	RECENT_PROOF_RUN	DO_NOT_DELETE_YET	docs/current/CURRENT_GATE_MATRIX.tsv	Useful for Phase 2 copied-temp proof gate.
+docs/parallel_runs/2026-05-19_mvos_agent916_nonproduction_repair_wave/	RECENT_REPAIR_RUN	DO_NOT_DELETE_YET	docs/current/CURRENT_BLOCKER_BOARD.tsv	Review blocker changes before superseding.
+docs/parallel_runs/2026-05-19_mvos_agent917_yellow_to_green_repair_wave/	LATEST_REPAIR_LINEAGE	DO_NOT_DELETE_YET	docs/current/CURRENT_BLOCKER_BOARD.tsv	Agent9178 remains YELLOW retained-blocker evidence, not full green proof.
+docs/parallel_runs/2026-05-21_mvos-phase0-canonical-route/	CURRENT_OR_DUPLICATE	REVIEW_BEFORE_COMMIT	docs/parallel_runs/2026-05-21_mvos_phase0_canonical_route/	Duplicate/alternate slug risk; compare before deciding.
+docs/parallel_runs/2026-05-21_mvos_phase0_canonical_route/	CURRENT_ACTIVE_CANDIDATE	KEEP_ACTIVE	docs/current/FINAL_10_OUT_OF_10_EXECUTION_PLAN.md	Matches current handoff slug.
+docs/agent_handoffs/MVOS_PHASE0_CANONICAL_ROUTE_20260521_STARTERS/	CURRENT_STARTERS	KEEP_ACTIVE	docs/current/CURRENT_AGENT_OPERATING_CONTRACT.md	Current Phase 0 starter pack.
+docs/agent_handoffs/MVOS_*_STARTERS/	HANDOFF_HISTORY	DO_NOT_DELETE_YET	docs/current/SUPERSEDED_PLAN_INDEX.tsv	Index as history; not active authority unless current route references it.
+docs/contracts/	UNTRACKED_AUTHORITY_CANDIDATE	KEEP_ACTIVE	docs/current/CURRENT_AUTHORITY_INDEX.md	Review exact files before commit; likely active acceptance/source contracts.
+docs/marketing/STOREB_ADS_CAMPAIGN_MANUAL_STOP_20260520_094641.md	SOURCE_EVENT_CANDIDATE	PARK_UNTIL_PHASE1	docs/current/CURRENT_SOURCE_TRUTH_MAP.md	Manual ads stop event can affect ads source truth; not Phase 0 docs cleanup.
+imports/	UNTRACKED_IMPORT_DATA	PARK_UNTIL_PHASE1	docs/current/CURRENT_SOURCE_TRUTH_MAP.md	Provenance-sensitive import data; do not commit blindly.
+scripts/materialize_copied_temp_source_freshness_bridge.py	SOURCE_MATERIALIZER_OR_IMPORT	REVIEW_BEFORE_COMMIT	docs/current/CURRENT_GATE_MATRIX.tsv	New copied-temp bridge materializer; must remain scoped.
+scripts/materialize_merchant_cabinet_offer_availability.py	SOURCE_MATERIALIZER_OR_IMPORT	REVIEW_BEFORE_COMMIT	docs/current/CURRENT_SOURCE_TRUTH_MAP.md	Offer availability materializer; not physical stock truth.
+scripts/validate_mvos_source_contract_registry.py	VALIDATOR_OR_TEST	COMMIT_AS_LOGICAL_BATCH	docs/current/CURRENT_GATE_MATRIX.tsv	Active source-registry validator candidate.
+scripts/validate_no_help_command_writes.py	VALIDATOR_OR_TEST	COMMIT_AS_LOGICAL_BATCH	docs/current/CURRENT_GATE_MATRIX.tsv	Safety validator candidate.
+tests/test_generate_po_dashboard_data_help_no_write.py	VALIDATOR_OR_TEST	COMMIT_AS_LOGICAL_BATCH	docs/current/CURRENT_GATE_MATRIX.tsv	No-write help safety test.
+tests/test_materialize_merchant_cabinet_offer_availability.py	VALIDATOR_OR_TEST	COMMIT_AS_LOGICAL_BATCH	docs/current/CURRENT_SOURCE_TRUTH_MAP.md	Offer availability test; preserve physical-stock distinction.
+tests/test_mvos_source_contract_registry_validator.py	VALIDATOR_OR_TEST	COMMIT_AS_LOGICAL_BATCH	docs/current/CURRENT_GATE_MATRIX.tsv	Registry validator test.
