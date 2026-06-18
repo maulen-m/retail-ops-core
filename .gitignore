@@ -52,6 +52,8 @@ Thumbs.db
 *.db
 db/*.db
 db/app.db
+db/app.db.backup*
+db/app_*.db
 
 # Logs
 *.log
@@ -65,6 +67,7 @@ runtime/state/waybill_telegram_allowed_users.txt
 runtime/state/waybill_telegram_control_bot.json
 runtime/api_ledger/kaspi_api_*.jsonl
 runtime/playwright/*session*.json
+runtime/customer_size_request_ledger/*.sqlite
 
 # Exports (regeneratable)
 exports/
