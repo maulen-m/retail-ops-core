@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-18T20:30:48+05:00",
+  "updated": "2026-06-18T20:34:48+05:00",
   "status": "EXECUTING",
   "current_phase": 3,
   "current_take": 2,
-  "note": "Owner approvals recorded; queue is ARMED with OA-PRICE03-LINE and OA-DARK01 dispatch-ready while SUIT, PRICE05, return QC, cash, and elapsed windows remain waiting.",
+  "note": "OA-PRICE03-LINE executed as scoring authority only; G-PRICE-03 remains RED with zero missing-floor rows but 45 under-floor units. OA-DARK01 is the only approved dispatch-ready queue action.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-18T20:34:48+05:00",
+      "text": "G-PRICE-03 RED refresh: LINE floor authority executed; missing-floor rows are 0, under-floor units are 45, OA-DARK01 remains dispatch-ready."
+    },
+    {
       "time": "2026-06-18T20:30:48+05:00",
       "text": "Resume: owner-action queue verified ARMED; OA-PRICE03-LINE and OA-DARK01 dispatch-ready; unresolved owner/fact/time items remain waiting."
     },
@@ -641,14 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T18:37:22+05:00",
       "text": "G-CASH-04 ARMED: redeployment guard report published; zero ungated redeployments, G-LIQ-02 pending and G-MET-01 armed keep redeployment blocked."
-    },
-    {
-      "time": "2026-06-18T18:31:29+05:00",
-      "text": "Resumed green-path execution after Telegram PDFs were received; daily-ops verify is OK paused with 0/10 LaunchAgents loaded."
-    },
-    {
-      "ts": "2026-06-18T18:28+05",
-      "text": "G-MET-04 ARMED: capital-hours by stage published; paid-supplier, returned, quarantine, return-QC, and stage-ledger gaps remain blockers"
     }
   ]
 };

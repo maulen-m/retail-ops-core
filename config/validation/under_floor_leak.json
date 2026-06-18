@@ -17,6 +17,14 @@
     "SUIT-31-TS": {
       "floor_sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
       "source": "OWNER_STOCK_APPROVAL_2026_06_14 compatibility_note and SUIT parent-child allocation evidence; validation alias only, no price-write authority"
+    },
+    "LINE-21-TS": {
+      "floor_sku_key": "CL_OC_MEN_LINE51_WHITE",
+      "source": "OWNER_APPROVAL_2026_06_18_OA_PRICE03_LINE compact LINE floor authority; G-PRICE-03 scoring alias only, no price-write or external-write authority"
+    },
+    "LINE-31-TS": {
+      "floor_sku_key": "CL_OC_MEN_LINE51_WHITE",
+      "source": "OWNER_APPROVAL_2026_06_18_OA_PRICE03_LINE compact LINE floor authority; G-PRICE-03 scoring alias only, no price-write or external-write authority"
     }
   },
   "strict_missing_floor_blocks_green": true,

@@ -28,7 +28,7 @@ Sales source:
 
 Compact child floor aliases are allowed only when declared in `config/validation/under_floor_leak.json`. Missing aliases are stoplines, not silent inheritance.
 
-The current declared aliases use only suit compatibility evidence from `config/owner_decisions/owner_stock_approval_2026_06_14.json`. LINE compact child rows are intentionally not aliased by this contract because existing owner COGS approvals were exact-row/DB-only and explicitly did not create SKU-wide inheritance or pricing authority.
+The declared suit aliases use compatibility evidence from `config/owner_decisions/owner_stock_approval_2026_06_14.json`. The declared compact LINE `TS` aliases use the 2026-06-18 owner-approved `OA-PRICE03-LINE` floor authority from the current owner-action queue and resolve only `LINE-21-TS` and `LINE-31-TS` to parent `CL_OC_MEN_LINE51_WHITE` for `G-PRICE-03` scoring. This contract does not create live price-write authority.
 
 ## Evidence
 

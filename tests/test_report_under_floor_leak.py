@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 import sqlite3
 import sys
@@ -149,3 +150,14 @@ def test_under_floor_report_green_when_no_leaks_and_full_floor_coverage(tmp_path
     assert report["under_floor_units"] == 0
     assert report["missing_floor_row_count"] == 0
     assert all(check["ok"] for check in report["checks"])
+
+
+def test_default_config_records_owner_approved_compact_beli_ts_aliases() -> None:
+    config = json.loads((ROOT / "config" / "validation" / "under_floor_leak.json").read_text(encoding="utf-8"))
+    aliases = config["floor_aliases"]
+
+    for sku_key in ("LINE-21-TS", "LINE-31-TS"):
+        alias = aliases[sku_key]
+        assert alias["floor_sku_key"] == "CL_OC_MEN_LINE51_WHITE"
+        assert "OWNER_APPROVAL_2026_06_18_OA_PRICE03_LINE" in alias["source"]
+        assert "no price-write or external-write authority" in alias["source"]
