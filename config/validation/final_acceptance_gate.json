@@ -1,0 +1,17 @@
+{
+  "contract_id": "FINAL_ACCEPTANCE_GATE_V1",
+  "gate_id": "G-ACC-01",
+  "gate_matrix_path": "docs/plan/green_path_2026-06/green_gates.csv",
+  "dashboard_path": "docs/plan/green_path_2026-06/dashboard/progress-data.js",
+  "scoreboard_path": "docs/plan/green_path_2026-06/green_path_run/scoreboard.csv",
+  "deferred_queue_path": "docs/plan/green_path_2026-06/green_path_run/DEFERRED_QUEUE.md",
+  "owner_signoff_path": "docs/plan/green_path_2026-06/green_path_run/OWNER_ACCEPTANCE_SIGNOFF.md",
+  "owner_signoff_marker": "G-ACC-01 OWNER SIGNOFF",
+  "post_eod_cutoff_local_time": "21:10",
+  "dashboard_is_authority": true,
+  "required_hard_status": "GREEN",
+  "allowed_advisory_statuses": [
+    "GREEN",
+    "WAIVED"
+  ]
+}

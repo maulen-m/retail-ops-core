@@ -1,0 +1,17 @@
+{
+  "contract_id": "RETURN_COMEBACK_RATE_V1",
+  "gate_id": "G-RET-03",
+  "db_path": "db/app.db",
+  "dashboard_path": "docs/plan/green_path_2026-06/dashboard/progress-data.js",
+  "scoreboard_path": "docs/plan/green_path_2026-06/green_path_run/scoreboard.csv",
+  "dependency_gate": "G-RET-02",
+  "maturity_days": 30,
+  "required_qc_telemetry_days": 30,
+  "pass_statuses": [
+    "PASS",
+    "PASSED",
+    "SELLABLE",
+    "ACCEPTED",
+    "OK"
+  ]
+}

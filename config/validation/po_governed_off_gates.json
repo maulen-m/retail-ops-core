@@ -1,0 +1,50 @@
+{
+  "contract_id": "PO_GOVERNED_OFF_V1",
+  "policy_id": "OD-009",
+  "mode": "governed_off",
+  "auto_po_restart_permitted": false,
+  "auto_draft_creation_allowed": false,
+  "manual_po_gate_mode": "advisory",
+  "proposal_artifacts_are_advisory_only": true,
+  "stop_buy_gates": [
+    {
+      "id": "frozen_cover_gt_180d",
+      "description": "Block or escalate replenishment when projected cover exceeds 180 days."
+    },
+    {
+      "id": "size_overstock",
+      "description": "Block or escalate replenishment when size-level surplus would deepen."
+    },
+    {
+      "id": "return_qc_telemetry",
+      "description": "Block restart until return QC telemetry is live and consumable."
+    },
+    {
+      "id": "ppch_v1_gate",
+      "description": "Block restart until PPCH v1 is published with confidence bands."
+    },
+    {
+      "id": "cash_truth_gate",
+      "description": "Block restart unless cash truth is green."
+    },
+    {
+      "id": "ads_crr_gate",
+      "description": "Block restart unless ads CRR and campaign disposition gates are green."
+    }
+  ],
+  "restart_requires": [
+    "cogs_green_30d",
+    "stock_green_30d",
+    "cash_green",
+    "fx_floor_vintage_green",
+    "priors_7of7_tests",
+    "forecast_backtest_pass_threshold_set_at_acceptance",
+    "owner_approval"
+  ],
+  "required_validators": [
+    "scripts/validate_po_money_gate.py",
+    "scripts/validate_po_contract.py",
+    "scripts/generate_po_proposals.py",
+    "scripts/validate_po_capital_protection.py"
+  ]
+}

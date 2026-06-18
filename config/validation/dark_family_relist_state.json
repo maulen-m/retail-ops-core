@@ -1,0 +1,29 @@
+{
+  "contract_id": "DARK_FAMILY_RELIST_STATE_V1",
+  "gate_id": "G-DARK-01",
+  "dashboard_path": "docs/plan/green_path_2026-06/dashboard/progress-data.js",
+  "scoreboard_path": "docs/plan/green_path_2026-06/green_path_run/scoreboard.csv",
+  "db_path": "db/app.db",
+  "repricer_sqlite_path": "~/Docs/Web_automation/data/repricer_items.sqlite",
+  "dependency_gates": [
+    "G-STOCK-03"
+  ],
+  "max_repricer_age_days": 1,
+  "families": [
+    {
+      "family_id": "RUSH_WHITE",
+      "sku_key": "CL_NEW-CLO_MEN_RUSH_WHITE",
+      "exclude_sizes": [
+        "L"
+      ],
+      "owner_decision_id": "OD-033"
+    },
+    {
+      "family_id": "T-SHIRT_BLACK",
+      "sku_key": "CL_NEW-CLO_MEN_T-SHIRT_BLACK",
+      "exclude_sizes": [],
+      "owner_decision_id": "OD-033",
+      "notes": "OD-033 explicitly includes XL=10 from current stock."
+    }
+  ]
+}

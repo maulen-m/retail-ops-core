@@ -1,0 +1,30 @@
+{
+  "schema_version": "owner_alias_decision.v1",
+  "decision_id": "OWNER_ROMBIK_KID30_ALIAS_2026_06_03",
+  "status": "OWNER_APPROVED",
+  "effective_at_almaty": "2026-06-03T10:09:14+05:00",
+  "canonical_stock_pool_id": "CL_NEW-CLO_KID_ROMBIK_BLACK_30",
+  "canonical_sku_key": "CL_NEW-CLO_KID_ROMBIK_BLACK",
+  "canonical_size": "30",
+  "physical_stock_pool_units": 93,
+  "historical_order_policy": "future_only_no_production_restatement_without_separate_approval",
+  "manual_stock_manifest_policy": "do_not_edit_approved_manifest_or_double_count_aliases",
+  "authorized_routes": [
+    {
+      "public_product_code": "135222379",
+      "public_height_label": "152",
+      "public_url": "https://kaspi.kz/shop/p/rashgard-5-v-1-chernyi-152-135222379/",
+      "stock_to_expose_per_store": 47
+    },
+    {
+      "public_product_code": "128541983",
+      "public_height_label": "158",
+      "public_url": "https://kaspi.kz/shop/p/rashgard-5-v-1-chernyi-158-128541983/",
+      "stock_to_expose_per_store": 46
+    }
+  ],
+  "explicitly_unchanged_product_codes": [
+    "143893497",
+    "147855005"
+  ]
+}

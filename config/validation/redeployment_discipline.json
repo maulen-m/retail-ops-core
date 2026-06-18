@@ -1,0 +1,26 @@
+{
+  "contract_id": "REDEPLOYMENT_DISCIPLINE_V1",
+  "gate_id": "G-CASH-04",
+  "db_path": "db/app.db",
+  "dashboard_path": "docs/plan/green_path_2026-06/dashboard/progress-data.js",
+  "scoreboard_path": "docs/plan/green_path_2026-06/green_path_run/scoreboard.csv",
+  "ledger_path": "config/validation/redeployment_ledger.csv",
+  "effective_at": "2026-06-13T00:00:00+05:00",
+  "liquidation_execution_gate": "G-LIQ-02",
+  "required_green_before_redeployment": [
+    "G-STOCK-03",
+    "G-STOCK-05",
+    "G-CASH-02",
+    "G-CASH-03",
+    "G-MET-01"
+  ],
+  "po_commitment_types": [
+    "PO_PAYMENT"
+  ],
+  "search_terms": [
+    "liquidation",
+    "tranche",
+    "markdown",
+    "redeploy"
+  ]
+}

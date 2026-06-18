@@ -1,0 +1,25 @@
+{
+  "schema_version": "under_floor_leak.v1",
+  "gate_id": "G-PRICE-03",
+  "db_path": "db/app.db",
+  "floor_csv_path": "../Web_automation/exports/pricelist_snapshots/min_price_floor_35pct_by_sku_v7.csv",
+  "floor_version": "v7",
+  "window_days": 7,
+  "max_sales_data_lag_days": 2,
+  "excluded_status_tokens": [
+    "CANCEL"
+  ],
+  "floor_aliases": {
+    "SUIT-31-LS": {
+      "floor_sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+      "source": "OWNER_STOCK_APPROVAL_2026_06_14 compatibility_note and SUIT parent-child allocation evidence; validation alias only, no price-write authority"
+    },
+    "SUIT-31-TS": {
+      "floor_sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+      "source": "OWNER_STOCK_APPROVAL_2026_06_14 compatibility_note and SUIT parent-child allocation evidence; validation alias only, no price-write authority"
+    }
+  },
+  "strict_missing_floor_blocks_green": true,
+  "strict_missing_price_blocks_green": true,
+  "no_external_writes_authorized": true
+}

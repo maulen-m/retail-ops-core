@@ -1,0 +1,25 @@
+{
+  "contract_id": "DARK_RELIST_RECOVERY_SLOPE_V1",
+  "gate_id": "G-DARK-02",
+  "dashboard_path": "docs/plan/green_path_2026-06/dashboard/progress-data.js",
+  "scoreboard_path": "docs/plan/green_path_2026-06/green_path_run/scoreboard.csv",
+  "db_path": "db/app.db",
+  "dependency_gates": [
+    "G-DARK-01"
+  ],
+  "families": [
+    {
+      "family_id": "RUSH_WHITE",
+      "sku_key": "CL_NEW-CLO_MEN_RUSH_WHITE"
+    },
+    {
+      "family_id": "T-SHIRT_BLACK",
+      "sku_key": "CL_NEW-CLO_MEN_T-SHIRT_BLACK"
+    }
+  ],
+  "baseline_start": "2026-06-01",
+  "maturity_days": 30,
+  "estimated_serviceable_flow_low_kzt_per_month": 198300,
+  "estimated_serviceable_flow_high_kzt_per_month": 254200,
+  "source_reference": "CN-054"
+}

@@ -1,0 +1,11 @@
+{
+  "contract_id": "SKU_CONTRIBUTION_DAILY_V1",
+  "gate_id": "G-MET-03",
+  "owner_decision_id": "OD-010",
+  "db_path": "db/app.db",
+  "max_latest_sales_lag_days": 2,
+  "require_expected_return_loss_source": true,
+  "require_handling_cost_source": true,
+  "known_input_formula": "profit_kzt - mapped_ads_cost_kzt",
+  "full_formula_target": "price - commission - delivery - ads_allocated - expected_return_loss - landed_cogs - handling"
+}

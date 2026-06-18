@@ -2,3 +2,10 @@ settings:
   max_age_hours: 25
   required_sources:
     - exchanger_emails
+  manual_cash_snapshot_fallback:
+    enabled: true
+    accepted_for_sources:
+      - exchanger_emails
+    snapshot_path: config/bank_accounts.yaml
+    history_path: config/bank_accounts_history.yaml
+    source_contains: Cash_Balances

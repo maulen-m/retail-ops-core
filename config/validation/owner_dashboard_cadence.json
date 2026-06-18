@@ -1,0 +1,219 @@
+{
+  "contract_id": "OWNER_DASHBOARD_CADENCE_V1",
+  "gate_id": "G-MET-02",
+  "scoreboard_path": "docs/plan/green_path_2026-06/green_path_run/scoreboard.csv",
+  "history_glob": "exports/validation/g_met02_owner_dashboard_cadence_*/owner_dashboard_cadence_report.json",
+  "required_history_days_for_green": 7,
+  "cadences": [
+    "daily",
+    "weekly",
+    "monthly"
+  ],
+  "items": [
+    {
+      "cadence": "daily",
+      "item_id": "automation_failures",
+      "label": "Daily automation failure state",
+      "source_type": "latest_json",
+      "path_glob": "exports/automation_control/*/*_verify_daily-ops/verify_report.json",
+      "source_date_fields": [
+        "status.generated_at",
+        "generated_at",
+        "as_of"
+      ],
+      "max_age_days": 2,
+      "allowed_statuses": [
+        "OK",
+        "GREEN",
+        "ARMED"
+      ],
+      "pass_when_ok_true": true
+    },
+    {
+      "cadence": "daily",
+      "item_id": "cash_confidence",
+      "label": "Cash confidence gates",
+      "source_type": "scoreboard_gate",
+      "gate_ids": [
+        "G-CASH-02",
+        "G-CASH-03"
+      ],
+      "allowed_statuses": [
+        "GREEN"
+      ]
+    },
+    {
+      "cadence": "daily",
+      "item_id": "sales_profit_coverage",
+      "label": "Sales and profit coverage",
+      "source_type": "scoreboard_gate",
+      "gate_ids": [
+        "G-ADS-02",
+        "G-COGS-04"
+      ],
+      "allowed_statuses": [
+        "GREEN"
+      ]
+    },
+    {
+      "cadence": "daily",
+      "item_id": "ads_crr",
+      "label": "Ads CRR disposition",
+      "source_type": "latest_json",
+      "path_glob": "exports/validation/g_ads_02_sales_profit_catchup_*/crr_disposition_after_catchup/ads_campaign_crr_report.json",
+      "source_date_fields": [
+        "as_of",
+        "generated_at"
+      ],
+      "max_age_days": 3,
+      "allowed_statuses": [
+        "OK",
+        "GREEN"
+      ],
+      "pass_when_ok_true": true,
+      "summary_fields": [
+        "summary.sales_profit_max_date",
+        "summary.external_actions_required_count",
+        "summary.all_campaigns_dispositioned"
+      ]
+    },
+    {
+      "cadence": "daily",
+      "item_id": "exception_exposure",
+      "label": "Exception exposure",
+      "source_type": "latest_json",
+      "path_glob": "exports/daily/*/exception_exposure_*/exception_exposure_metric.json",
+      "source_date_fields": [
+        "as_of",
+        "generated_at"
+      ],
+      "max_age_days": 2,
+      "allowed_statuses": [
+        "GREEN"
+      ],
+      "summary_fields": [
+        "open_exception_count",
+        "total_exposure_kzt"
+      ]
+    },
+    {
+      "cadence": "weekly",
+      "item_id": "frozen_capital",
+      "label": "Frozen capital and liquidation register",
+      "source_type": "latest_json",
+      "path_glob": "exports/validation/g_liq01_liquidation_register_*/liquidation_register_summary.json",
+      "source_date_fields": [
+        "as_of",
+        "generated_at",
+        "latest_snapshot_date"
+      ],
+      "max_age_days": 7,
+      "allowed_statuses": [
+        "GREEN"
+      ],
+      "summary_fields": [
+        "goods_basis_kzt_known_cogs",
+        "positive_stock_family_count"
+      ]
+    },
+    {
+      "cadence": "weekly",
+      "item_id": "release_velocity",
+      "label": "Liquidation release velocity",
+      "source_type": "latest_json",
+      "path_glob": "exports/validation/g_liq02_release_velocity_*/release_velocity_report.json",
+      "source_date_fields": [
+        "as_of",
+        "generated_at"
+      ],
+      "max_age_days": 7,
+      "allowed_statuses": [
+        "GREEN"
+      ]
+    },
+    {
+      "cadence": "weekly",
+      "item_id": "stock_confidence",
+      "label": "Stock confidence",
+      "source_type": "latest_json",
+      "path_glob": "exports/current/stock_truth_confidence/summary_latest.json",
+      "source_date_fields": [
+        "as_of_date",
+        "latest_snapshot_date"
+      ],
+      "max_age_days": 7,
+      "allowed_statuses": [
+        "OK",
+        "GREEN"
+      ],
+      "summary_fields": [
+        "score_rows",
+        "missing_score_rows",
+        "confidence_band_counts.GREEN"
+      ]
+    },
+    {
+      "cadence": "weekly",
+      "item_id": "comeback_return_qc",
+      "label": "Comeback and return QC",
+      "source_type": "scoreboard_gate",
+      "gate_ids": [
+        "G-RET-02",
+        "G-RET-03"
+      ],
+      "allowed_statuses": [
+        "GREEN"
+      ]
+    },
+    {
+      "cadence": "monthly",
+      "item_id": "ppch_v1",
+      "label": "PPCH v1 headline",
+      "source_type": "latest_json",
+      "path_glob": "exports/validation/g_met01_ppch_v1_*/ppch_v1_report.json",
+      "source_date_fields": [
+        "as_of",
+        "generated_at",
+        "denominator_snapshot_date"
+      ],
+      "max_age_days": 31,
+      "allowed_statuses": [
+        "GREEN",
+        "ARMED"
+      ],
+      "summary_fields": [
+        "headline_status",
+        "ppch_v1.mid_pct_30d",
+        "return_qc_event_count"
+      ]
+    },
+    {
+      "cadence": "monthly",
+      "item_id": "forecast_review",
+      "label": "Forecast review",
+      "source_type": "scoreboard_gate",
+      "gate_ids": [
+        "G-PO-02",
+        "G-PO-03"
+      ],
+      "allowed_statuses": [
+        "GREEN"
+      ]
+    },
+    {
+      "cadence": "monthly",
+      "item_id": "po_review",
+      "label": "PO governed review",
+      "source_type": "latest_json",
+      "path_glob": "exports/validation/po_governed_off/*/po_governed_off_report.json",
+      "source_date_fields": [
+        "as_of",
+        "generated_at"
+      ],
+      "max_age_days": 31,
+      "allowed_statuses": [
+        "GREEN"
+      ]
+    }
+  ]
+}

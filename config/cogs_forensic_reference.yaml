@@ -10,3 +10,16 @@ truth_sources:
       audit_cogs_realism:
         path: "../exports/validation/cogs_realism/2026-03-07/cogs_realism_report.json"
         status: "PASS"
+  db:
+    decision: "SUPERSEDED"
+    reason: "legacy_forensic_run_20260304_032257_has_no_delivered_rows_after_2026-02-24; post-forensic DB truth is governed by current COGS completeness and landed-cost realism reports"
+    applies_when:
+      requires_no_forensic_rows_in_window: true
+      window_start_after_forensic_max_sale_date: true
+    required_reports:
+      current_cogs_completeness:
+        path: "../exports/validation/cogs_completeness/2026-03-01_to_2026-06-14/cogs_completeness_report.json"
+        status: "PASS"
+      current_audit_cogs_realism:
+        path: "../exports/validation/cogs_realism/2026-06-14/cogs_realism_report.json"
+        status: "PASS"

@@ -18,13 +18,19 @@ stores:
     token_env: KASPI_TOKEN_11KZ
     channel: kaspi
     region: KZ
-    active: true
+    active: false
+    lifecycle_status: ARCHIVED
+    owner_decision_id: OD-027
+    archived_effective_date: "2026-06-18"
 
   MELVIS:
     token_env: KASPI_TOKEN_MELVIS
     channel: kaspi
     region: KZ
-    active: true
+    active: false
+    lifecycle_status: ARCHIVED
+    owner_decision_id: OD-027
+    archived_effective_date: "2026-06-18"
 
   STOREB:
     token_env: KASPI_TOKEN_STOREB

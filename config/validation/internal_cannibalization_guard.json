@@ -1,0 +1,44 @@
+{
+  "contract_id": "INTERNAL_CANNIBALIZATION_GUARD_V1",
+  "gate_id": "G-WA-01",
+  "owner_decision_id": "OD-011",
+  "evidence_ref": "EXT-L04",
+  "repricer_sqlite_path": "~/Docs/Web_automation/data/repricer_items.sqlite",
+  "lead_store_map_csv": "config/validation/liquidation_lead_store_map.csv",
+  "max_source_age_days": 7,
+  "managed_pricing_store_ids": {
+    "UNIVERSAL": 30000001,
+    "STORE-B": 30000002
+  },
+  "own_store_ids": {
+    "UNIVERSAL": 30000001,
+    "STORE-B": 30000002,
+    "11KZ": 30290083
+  },
+  "own_store_name_tokens": [
+    "Universal",
+    "STORE-B",
+    "ИП STORE-B",
+    "ИП М-GROUP",
+    "store-d",
+    "11KZ",
+    "ИП ANM",
+    "ANM"
+  ],
+  "active_map_statuses": [
+    "ACTIVE"
+  ],
+  "armed_when_no_active_lead_rows": true,
+  "required_lead_store_columns": [
+    "tranche_id",
+    "sku_key",
+    "size",
+    "lead_store",
+    "allowed_follower_stores",
+    "effective_from",
+    "source_artifact",
+    "status",
+    "owner_decision_id",
+    "notes"
+  ]
+}

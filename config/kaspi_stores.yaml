@@ -36,22 +36,28 @@ stores:
     token_env: "KASPI_TOKEN_11KZ"
     merchant_uid: "30290083"
     is_test_store: false
-    sync_enabled: true
+    sync_enabled: false
+    lifecycle_status: "ARCHIVED"
+    owner_decision_id: "OD-027"
+    archived_effective_date: "2026-06-18"
     priority: 3
     default_product_types:
       - CL
-    notes: "General clothing store"
+    notes: "Archived by OD-027; preserve identity/history, stop daily polling until owner reactivation."
 
   MELVIS:
     display_name: "Store-C"
     token_env: "KASPI_TOKEN_MELVIS"
     merchant_uid: "30362323"
     is_test_store: false
-    sync_enabled: true
+    sync_enabled: false
+    lifecycle_status: "ARCHIVED"
+    owner_decision_id: "OD-027"
+    archived_effective_date: "2026-06-18"
     priority: 4
     default_product_types:
       - CL
-    notes: "General clothing store"
+    notes: "Archived by OD-027; preserve identity/history, stop daily polling until owner reactivation."
 
   STOREB:
     display_name: "MGroup"

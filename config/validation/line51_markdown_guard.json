@@ -1,0 +1,16 @@
+{
+  "contract_id": "LINE51_MARKDOWN_GUARD_V1",
+  "gate_id": "G-LIQ-04",
+  "sku_key": "CL_OC_MEN_LINE51_WHITE",
+  "required_size_stock": {
+    "CL_OC_MEN_LINE51_WHITE_S": 82
+  },
+  "liquidation_register_dir": "exports/validation/g_liq01_liquidation_register_20260618_1220",
+  "lead_store_map_csv": "config/validation/liquidation_lead_store_map.csv",
+  "count_evidence_path": "docs/plan/green_path_2026-06/reconciliation/count_batch_2026-06-11_2200/count_batch_canonical_DRAFT.md",
+  "owner_decision_path": "config/owner_decisions/line51_ko_clearance_universal_storeb_2026_06_18.json",
+  "active_map_statuses": ["ACTIVE"],
+  "allowed_clearance_schema_version": "autonomous_business.owner_decision.line51_ko_clearance.v1",
+  "allowed_clearance_target_stores": ["UNIVERSAL", "STOREB"],
+  "allowed_clearance_sizes": ["S", "M", "L"]
+}

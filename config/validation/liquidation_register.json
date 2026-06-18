@@ -1,0 +1,47 @@
+{
+  "contract_id": "LIQUIDATION_REGISTER_V1",
+  "gate_id": "G-LIQ-01",
+  "owner_decision_ids": [
+    "OD-005",
+    "OD-011",
+    "OD-018"
+  ],
+  "evidence_refs": [
+    "EXT-L01",
+    "CN-029",
+    "CN-032",
+    "CN-035"
+  ],
+  "db_path": "db/app.db",
+  "max_basis_age_days": 2,
+  "delivered_statuses": [
+    "DELIVERED"
+  ],
+  "non_cancelled_excluded_status_tokens": [
+    "CANCEL"
+  ],
+  "zero_velocity_window_days": 30,
+  "size_misallocation_window_days": 90,
+  "slow_cover_days": 90,
+  "count_gated_sku_keys": [
+    "CL_OC_MEN_LINE51_WHITE"
+  ],
+  "canonical_tranche1_sku_keys": [
+    "CL_NC_MEN_RUSH-31_BLACK",
+    "CL_NC_MEN_SHORTS_BLACK",
+    "ELS_PRINTER_EPSON_L805_BLACK",
+    "CL_NEW-CLO_MEN_T-SHIRT_BLACK",
+    "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE",
+    "CL_NEW-CLO_MEN_S-NK31_BLACK",
+    "ELS_PRINTER_EPSON_L3250_BLACK",
+    "CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN",
+    "CL_NEW-CLO_MEN_TAICI_WHITE",
+    "CL_NEW-CLO_MEN_TAICI_BLACK",
+    "CL_NEW-CLO_MEN_BERSERK-SHIRT_GREY-BLK"
+  ],
+  "movement_watch_sku_keys": [
+    "CL_NEW-CLO_MEN_ROMBIK_BLACK",
+    "CL_OF_ARC_WM_LINE31_C-011_IVORY",
+    "CL_OF_ARC_WM_LINE31_B-C-011_IVORY_J-C-026_WHITE_L-C-023_STARRY-BLACK"
+  ]
+}

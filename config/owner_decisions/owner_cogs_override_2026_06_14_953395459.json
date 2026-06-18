@@ -1,0 +1,44 @@
+{
+  "schema_version": "owner_decision.v1",
+  "decision_id": "OWNER_COGS_OVERRIDE_2026_06_14_953395459",
+  "captured_at_local": "2026-06-14T13:10:33+05:00",
+  "scope": "green_path_phase2_exact_row_owner_cogs_override",
+  "source_chat_summary": "Owner authorized one exact production DB-only COGS override for order 953395459 / ACMEWEAR / LINE-31-LS_XL.",
+  "approval": {
+    "approval_id": "OWNER_COGS_OVERRIDE_2026_06_14_953395459",
+    "approval_type": "exact_row_owner_cogs_override",
+    "target": {
+      "order_id": "953395459",
+      "store_code": "ACMEWEAR",
+      "sku_key": "LINE-31-LS",
+      "sku_id": "LINE-31-LS_XL",
+      "expected_quantity": 1.0,
+      "expected_net_rev_kzt": 9215.0,
+      "unit_cogs_kzt": 6006.76,
+      "source_parent_pool": "CL_OC_MEN_LINE51_WHITE"
+    },
+    "exact_phrase": "I authorize a production DB-only exact-row owner COGS override for order 953395459 / ACMEWEAR / LINE-31-LS_XL, using LINE51 parent-unit landed COGS 6006.76 KZT from CL_OC_MEN_LINE51_WHITE. This approval is exact-row only; it does not create SKU-wide LINE-31-LS inheritance, does not claim ChildSum component economics, and authorizes only a backup-first env-gated fact_sales_owner_cogs_override apply through a reviewed script. It does not authorize workbook, Kaspi merchant, pricing, stock, Telegram, LaunchAgent, customer/operator-message, cash, PO, or external writes."
+  },
+  "authorized_write": {
+    "db_path": "db/app.db",
+    "table": "fact_sales_owner_cogs_override",
+    "required_env": "ENABLE_OWNER_APPROVED_LINE_CHILD_COGS_ROW_WRITE",
+    "script": "scripts/apply_owner_approved_beli_child_cogs_rows.py",
+    "apply_mode": "backup_first_env_gated"
+  },
+  "explicit_non_authorizations": [
+    "SKU-wide LINE-31-LS inheritance",
+    "ChildSum component economics",
+    "workbook writes",
+    "Kaspi merchant writes",
+    "pricing writes",
+    "stock writes",
+    "Telegram writes",
+    "LaunchAgent writes",
+    "customer messages",
+    "operator messages",
+    "cash writes",
+    "PO writes",
+    "external writes"
+  ]
+}

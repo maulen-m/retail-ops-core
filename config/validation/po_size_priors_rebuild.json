@@ -1,0 +1,22 @@
+{
+  "contract_id": "PO_SIZE_PRIORS_REBUILD_V1",
+  "gate_id": "G-PO-02",
+  "db_path": "db/app.db",
+  "dashboard_path": "docs/plan/green_path_2026-06/dashboard/progress-data.js",
+  "scoreboard_path": "docs/plan/green_path_2026-06/green_path_run/scoreboard.csv",
+  "po_dashboard_json": "exports/po_dashboard_data.json",
+  "dependency_gates": [
+    "G-COGS-04",
+    "G-STOCK-03",
+    "G-RET-02"
+  ],
+  "required_prior_levels": [
+    "OFFER",
+    "PRODUCT_TYPE",
+    "STYLE"
+  ],
+  "max_prior_age_days": 30,
+  "max_forecast_age_days": 30,
+  "max_mape_pct": 30.0,
+  "run_dashboard_invariants": true
+}

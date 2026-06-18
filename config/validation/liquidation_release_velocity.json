@@ -1,0 +1,33 @@
+{
+  "contract_id": "LIQUIDATION_RELEASE_VELOCITY_V1",
+  "gate_id": "G-LIQ-03",
+  "dashboard_path": "docs/plan/green_path_2026-06/dashboard/progress-data.js",
+  "scoreboard_path": "docs/plan/green_path_2026-06/green_path_run/scoreboard.csv",
+  "liquidation_register_summary": "exports/validation/g_liq01_liquidation_register_20260618_1220/liquidation_register_summary.json",
+  "liquidation_segment_map_csv": "exports/validation/g_liq01_liquidation_register_20260618_1220/liquidation_segment_map.csv",
+  "tranche_ledger_path": "config/validation/liquidation_tranche_ledger.csv",
+  "lead_store_map_csv": "config/validation/liquidation_lead_store_map.csv",
+  "liquidation_execution_gate": "G-LIQ-02",
+  "required_row_fields": [
+    "tranche_id",
+    "sku_key",
+    "tier",
+    "release_date",
+    "released_units",
+    "sold_units",
+    "floor_version",
+    "stock_confidence",
+    "rollback_price",
+    "owner_decision_id"
+  ],
+  "tier_dwell_days": {
+    "T1": 7,
+    "T2": 10,
+    "T3": 14
+  },
+  "min_sell_through_pct_for_escalation": 3.0,
+  "parked_tiers": [
+    "T4",
+    "T5"
+  ]
+}

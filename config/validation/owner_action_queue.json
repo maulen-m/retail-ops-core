@@ -1,0 +1,39 @@
+{
+  "contract_id": "OWNER_ACTION_QUEUE_V1",
+  "queue_json_path": "exports/validation/g_acc01_final_acceptance/20260618_192023_0500/owner_action_queue.json",
+  "queue_csv_path": "exports/validation/g_acc01_final_acceptance/20260618_192023_0500/owner_action_queue.csv",
+  "allowed_statuses": [
+    "WAITING_OWNER",
+    "WAITING_REAL_FACT",
+    "WAITING_OWNER_OR_SOURCE",
+    "WAITING_TIME",
+    "APPROVED",
+    "FACT_READY",
+    "TIME_READY",
+    "FORMALLY_DROPPED",
+    "EXECUTED",
+    "WAIVED"
+  ],
+  "waiting_statuses": [
+    "WAITING_OWNER",
+    "WAITING_REAL_FACT",
+    "WAITING_OWNER_OR_SOURCE",
+    "WAITING_TIME"
+  ],
+  "dispatch_ready_statuses": [
+    "APPROVED",
+    "FACT_READY",
+    "TIME_READY",
+    "FORMALLY_DROPPED",
+    "WAIVED"
+  ],
+  "required_action_fields": [
+    "action_id",
+    "gate_ids",
+    "kind",
+    "status",
+    "surface",
+    "artifact"
+  ],
+  "approval_forbidden_phrase": "does not authorize"
+}

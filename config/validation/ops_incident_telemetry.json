@@ -1,0 +1,33 @@
+{
+  "contract_id": "OPS_INCIDENT_TELEMETRY_V1",
+  "gate_id": "G-OPS-01",
+  "owner_decision_id": "OD-030",
+  "inefficiency_id": "INEF-17",
+  "telemetry_started_at": "2026-06-18T11:39:00+05:00",
+  "log_path": ".claude/ops_incident_telemetry.csv",
+  "placeholder_rate_kzt_per_hour": 5000,
+  "cost_basis_mark": "ASSUMED",
+  "minimum_collection_days_before_labor_ranking": 30,
+  "labor_ranking_allowed_before_maturity": false,
+  "required_columns": [
+    "incident_id",
+    "occurred_at",
+    "incident_class",
+    "source_surface",
+    "severity",
+    "resolution_status",
+    "minutes_spent",
+    "cost_rate_kzt_per_hour",
+    "cost_basis_mark",
+    "cost_kzt",
+    "owner_decision_id",
+    "gate_id",
+    "evidence_ref",
+    "operator_notes"
+  ],
+  "forbidden_content_policy": {
+    "no_customer_pii": true,
+    "no_tokens_or_secrets": true,
+    "no_message_contents": true
+  }
+}

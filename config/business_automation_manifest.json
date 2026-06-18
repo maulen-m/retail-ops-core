@@ -38,6 +38,7 @@
         "com.example.waybill-telegram-control",
         "com.example.kaspi-shipped-truth-sync",
         "com.example.operational-stock-daily-truth",
+        "com.example.line31-spend-vs-stock-guard",
         "com.example.kaspi-marketing-ads",
         "com.example.kaspi-marketing-hourly",
         "com.example.on-delivery-residuals",
@@ -65,6 +66,7 @@
         "com.example.waybill-telegram-control",
         "com.example.kaspi-shipped-truth-sync",
         "com.example.operational-stock-daily-truth",
+        "com.example.line31-spend-vs-stock-guard",
         "com.example.kaspi-marketing-ads",
         "com.example.kaspi-marketing-hourly",
         "com.example.on-delivery-residuals",
@@ -213,6 +215,13 @@
       "group": "6_post_delivery_truth_repairs",
       "purpose": "Operational stock daily truth",
       "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.line31-spend-vs-stock-guard",
+      "plist": "~/Library/LaunchAgents/com.example.line31-spend-vs-stock-guard.plist",
+      "group": "7_marketing_and_external_source_watchers",
+      "purpose": "LINE31 spend-vs-stock guard",
+      "risk": ["production_db_read_possible"]
     },
     {
       "label": "com.example.kaspi-marketing-ads",

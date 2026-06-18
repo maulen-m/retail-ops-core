@@ -1,0 +1,57 @@
+{
+  "contract_id": "CAPITAL_HOURS_STAGE_LEDGER_V1",
+  "gate_id": "G-MET-04",
+  "db_path": "db/app.db",
+  "period_days": 7,
+  "max_latest_daily_lag_days": 2,
+  "required_stages": [
+    "paid_supplier",
+    "inbound",
+    "on_hand",
+    "on_delivery",
+    "returned",
+    "quarantine",
+    "receivable"
+  ],
+  "return_qc_required_for_green": true,
+  "dedicated_stage_event_ledger_required_for_green": true,
+  "stage_sources": [
+    {
+      "stage": "inbound",
+      "source_table": "fact_cashflow_daily",
+      "open_column": "inventory_inbound_open",
+      "close_column": "inventory_inbound_close"
+    },
+    {
+      "stage": "on_hand",
+      "source_table": "fact_cashflow_daily",
+      "open_column": "inventory_on_hand_open",
+      "close_column": "inventory_on_hand_close"
+    },
+    {
+      "stage": "on_delivery",
+      "source_table": "fact_cashflow_daily",
+      "open_column": "inventory_on_delivery_open",
+      "close_column": "inventory_on_delivery_close"
+    },
+    {
+      "stage": "receivable",
+      "source_table": "fact_cashflow_daily",
+      "open_column": "receivables_open",
+      "close_column": "receivables_close"
+    }
+  ],
+  "stage_event_ledger_candidates": [
+    "fact_capital_stage_event",
+    "fact_capital_stage_hours"
+  ],
+  "source_tables_for_context": [
+    "fact_cashflow_daily",
+    "po_part",
+    "po_line",
+    "stock_ledger",
+    "order_status_event",
+    "return_qc_event",
+    "fact_cashflow_events"
+  ]
+}

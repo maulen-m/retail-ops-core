@@ -1,0 +1,172 @@
+{
+  "schema_version": "product_truth_canonicalization.v1",
+  "status": "active_read_only_planning_contract",
+  "created_at": "2026-05-28T23:00:00+05:00",
+  "contract_doc": "docs/contracts/PRODUCT_TRUTH_CANONICALIZATION_2026_05_28.md",
+  "owner_stock_override_doc": "docs/inventory/OWNER_STOCK_OVERRIDES_2026-05-28.md",
+  "owner_stock_override_csv": "docs/inventory/owner_stock_overrides_2026-05-28.csv",
+  "prior_packet": "exports/validation/product_truth_correction_wave_20260528_222244",
+  "product_identities": {
+    "RUSH31": {
+      "canonical_sku_key": "CL_NC_MEN_RUSH-31_BLACK",
+      "product_family": "RUSH31",
+      "identity_class": "INDEPENDENT_PRODUCT",
+      "forbidden_identity_classes": ["LINE61_CHILD", "LINE31"],
+      "kaspi_offer_id": "165486887",
+      "campaign_id": "2794142",
+      "product_sku": "21282790b",
+      "owner_stock_total": 290,
+      "owner_stock_by_size": {
+        "S": 60,
+        "M": 30,
+        "L": 50,
+        "XL": 70,
+        "2XL": 50,
+        "3XL": 30,
+        "4XL": 0
+      },
+      "planning_price_first_step_kzt": 9990,
+      "planning_price_test_steps_kzt": [8990, 7990],
+      "dry_run_bid_candidate_min_kzt": 100,
+      "inventory_authority": {
+        "canonical_owner_physical_stock_total": 290,
+        "pricelist_pp_stock_is_inventory_truth": false,
+        "pricelist_pp_stock_allowed_use": "PRICELIST_OR_OFFER_STATE_EVIDENCE_ONLY",
+        "pricelist_pp_stock_forbidden_use": "PHYSICAL_INVENTORY_TRUTH_OR_REORDER_QTY"
+      },
+      "stale_classification_treatment": "PRESERVE_AS_SUPERSEDED_EVIDENCE_NOT_CANONICAL_TRUTH"
+    },
+    "LINE31": {
+      "canonical_family": "LINE31",
+      "aliases": ["LINE31S"],
+      "forbidden_identity_classes": ["RUSH31"],
+      "stock_anchor_source": "~/Cowork/Projects/E-commerce/docs/inventory/products/LINE31_sales__STOCK_13.4.26.md",
+      "sales_source": "~/Cowork/Projects/E-commerce/docs/inventory/products/LINE31_sales__LINE31_sales.md",
+      "anchor_date": "2026-04-13",
+      "required_sell_price_kzt": 16990,
+      "po1a_arrived_quantities_csv": "~/Cowork/Projects/Sourcing-Research/docs/agent_handoffs/LINE31_PO1A_NON_OLIVE_ASTANA_SALES_ACTIVATION__2026-05-24/line31_po1a_non_olive_arrived_quantities.csv",
+      "po1a_handoff": "~/Cowork/Projects/Sourcing-Research/docs/agent_handoffs/LINE31_PO1A_NON_OLIVE_ASTANA_SALES_ACTIVATION__2026-05-24/00_HANDOFF.md",
+      "po1a_total_sets": 338,
+      "po1a_mapped_addback_sets": 279,
+      "po1a_physical_not_for_sale_reserve_sets": 59,
+      "po1a_quarantined_sets": 0,
+      "po1a_color_mapping": {
+        "Starry Black 3-piece Set": "CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK",
+        "Ivory / White / Starry Black Mixed Set": "CL_OF_ARC_WM_LINE31_B-C-011_IVORY_J-C-026_WHITE_L-C-023_STARRY-BLACK",
+        "Misty Blue 3-piece Set": "CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE",
+        "Ivory 3-piece Set": "CL_OF_ARC_WM_LINE31_C-011_IVORY"
+      },
+      "po1a_physical_not_for_sale_reserve_colors": [
+        "Bean Paste Pink 3-piece Set",
+        "Pomelo Pink 3-piece Set",
+        "Eggplant Purple 3-piece Set",
+        "Whale Blue 3-piece Set"
+      ],
+      "ignored_sellable_route_evidence": [
+        {
+          "color": "Whale Blue 3-piece Set",
+          "url": "https://kaspi.kz/shop/p/sportivnyi-kostjum-acmewear-of-line31-st-wb-l-sinii-l-162287320/",
+          "status": "NON_LIVE_INCORRECT_UNATTACHED_SINGLE_SIZE_OFFER",
+          "action": "IGNORE_FOR_SELLABLE_ROUTE_PROOF"
+        }
+      ],
+      "depletion_rule": {
+        "physical_warehouse_depletion": "subtract post-anchor shipped/sent rows by ship_date when SKU and size map",
+        "economic_final_sales_depletion": "subtract post-anchor completed rows by delivered/status-change truth when available; DB proxy remains YELLOW if WebUI status-change proof is absent",
+        "open_reserved_exposure": "track accepted/ready not-yet-shipped rows separately from physical warehouse depletion"
+      }
+    },
+    "LINE61": {
+      "canonical_sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+      "owner_override_by_size": {
+        "L": 151,
+        "XL": 100,
+        "2XL": 24,
+        "3XL": 25
+      }
+    },
+    "LINE51": {
+      "canonical_sku_key": "CL_OC_MEN_LINE51_WHITE",
+      "owner_override_by_size": {
+        "4XL": 0
+      }
+    },
+    "LINE52": {
+      "canonical_sku_key": "CL_OC_MEN_LINE52_BLACK",
+      "owner_stock_total": 298,
+      "owner_stock_by_size": {
+        "S": 118,
+        "M": 50,
+        "L": 80,
+        "XL": 0,
+        "2XL": 0,
+        "3XL": 50,
+        "4XL": 0
+      }
+    },
+    "ROMBIK_KID30_ALIAS": {
+      "decision_id": "OWNER_ROMBIK_KID30_ALIAS_2026_06_03",
+      "status": "OWNER_APPROVED",
+      "effective_at_almaty": "2026-06-03T10:09:14+05:00",
+      "canonical_stock_pool_id": "CL_NEW-CLO_KID_ROMBIK_BLACK_30",
+      "canonical_sku_key": "CL_NEW-CLO_KID_ROMBIK_BLACK",
+      "canonical_size": "30",
+      "physical_stock_pool_units": 93,
+      "stock_allocation_policy": "owner_approved_route_split_per_store",
+      "authorized_routes": {
+        "135222379": {
+          "public_height_label": "152",
+          "public_url": "https://kaspi.kz/shop/p/rashgard-5-v-1-chernyi-152-135222379/",
+          "stock_to_expose_per_store": 47
+        },
+        "128541983": {
+          "public_height_label": "158",
+          "public_url": "https://kaspi.kz/shop/p/rashgard-5-v-1-chernyi-158-128541983/",
+          "stock_to_expose_per_store": 46
+        }
+      },
+      "explicitly_unchanged_product_codes": ["143893497", "147855005"],
+      "historical_order_policy": "future_only_no_production_restatement_without_separate_approval",
+      "manual_stock_manifest_policy": "do_not_edit_approved_manifest_or_double_count_aliases"
+    }
+  },
+  "gift_bag_cogs": {
+    "applies_to_internal_channels": ["current_ACMEWEAR_Kaspi", "near_term_Instagram"],
+    "gift_bag_cost_cny_per_unit": 3,
+    "gift_bag_weight_kg_per_unit": 0.10,
+    "internal_cogs_formula": "garment_base_cost + allocated_delivery_cost + gift_bag_cost + gift_bag_delivery_weight_effect",
+    "kaspi_customer_copy_auto_include": false,
+    "instagram_copy_requires_owner_approval": true,
+    "review_only_export_surfaces_must_opt_in": true
+  },
+  "pricelist_stock_non_authority": {
+    "pp_columns_inventory_authority": false,
+    "applies_to_columns": ["PP1", "PP2", "PP3", "PP4", "PP5", "preorder", "stockCount"],
+    "allowed_use": "OFFER_AVAILABILITY_OR_PRIOR_PRICELIST_STATE_EVIDENCE_ONLY",
+    "forbidden_use": "PHYSICAL_INVENTORY_TRUTH_ECONOMIC_STOCK_TRUTH_REORDER_QTY_OR_OWNER_STOCK_OVERRIDE",
+    "physical_stock_truth_sources": [
+      "OWNER_PHYSICAL_OVERRIDE",
+      "SOURCE_STOCK_ANCHOR",
+      "ACCEPTED_INBOUND_EVENT",
+      "SHIPMENT_STATUS_DEPLETION_RULE"
+    ]
+  },
+  "trm_opportunity_detector": {
+    "source_packet": "exports/validation/product_truth_correction_wave_20260528_222244",
+    "marketing_aggregate_attribution_must_remain_separate_from_order_identity": true,
+    "routes": {
+      "Line61_TRM": {
+        "campaign_id": "2629982",
+        "current_rule": "HOLD_ENABLED_AND_MONITOR",
+        "cap_lift_rule": "NO_CAP_LIFT_WHILE_SPEND_FAR_BELOW_CAP",
+        "bid_test_rule": "FRESH_PREFLIGHT_AND_EXACT_OWNER_APPROVAL_REQUIRED"
+      },
+      "LINE51_TRM": {
+        "campaign_id": "2690256",
+        "current_rule": "DRY_RUN_REENABLE_CANDIDATE_ONLY",
+        "bid_candidate_min_kzt": 100,
+        "live_state_change_rule": "FRESH_STOCK_PRICELIST_PREFLIGHT_AND_EXACT_OWNER_APPROVAL_REQUIRED"
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+po_part_id	canonical_decision	production_authority	launch_readiness_scope	reason
+Beli_PO-1	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+Beli_PO-2	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+EPSON_PO-1	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+EPSON_PO-2	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+EPSON_PO-3	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+New-CLO_PO-001	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+New-CLO_PO-1	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+New-CLO_PO-2	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+New-CLO_PO-3	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+Line52_PO-1	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+Line52_PO-2	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+Line52_PO-3	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+Line52_PO-4	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+Line52_PO-5	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+Line52_PO-6	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+Line52_PO-7	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant
+Line52_PO-8	HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE	false	LINE31_GREEN_EXCEPT_CREATIVE	legacy historical part retained in DB; out of current inbound workbook scope and not LINE31 launch-relevant

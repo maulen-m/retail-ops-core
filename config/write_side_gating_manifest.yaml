@@ -80,13 +80,28 @@ scripts:
   - path: scripts/materialize_stock_ledger_sales_from_sales_fact_v2.py
     env_gate: ENABLE_STOCK_LEDGER_SALES_REPLAY_WRITE
     apply_flag: --apply
+  - path: scripts/materialize_manual_stock_count_anchors.py
+    env_gate: ENABLE_MANUAL_STOCK_COUNT_ANCHOR_WRITE
+    apply_flag: --apply
+  - path: scripts/clamp_negative_ledger.py
+    env_gate: ENABLE_NEGATIVE_LEDGER_CLAMP_WRITE
+    apply_flag: --apply
+  - path: scripts/apply_owner_confirmed_article_map_overrides.py
+    env_gate: ENABLE_OWNER_CONFIRMED_ARTICLE_MAP_WRITE
+    apply_flag: --apply
   - path: scripts/apply_rebuild_snapshot_production_safe.py
     env_gate: ENABLE_REBUILD_SNAPSHOT_PRODUCTION_APPLY
+    apply_flag: --apply
+  - path: scripts/apply_owner_approved_beli_child_cogs_rows.py
+    env_gate: ENABLE_OWNER_APPROVED_LINE_CHILD_COGS_ROW_WRITE
     apply_flag: --apply
   - path: scripts/materialize_order_status_events_from_kaspi_orders.py
     env_gate: ENABLE_ORDER_STATUS_EVENT_WRITE
     apply_flag: --apply
   - path: scripts/materialize_policy_source_freshness.py
+    env_gate: ENABLE_C3_POLICY_MATERIALIZATION_WRITE
+    apply_flag: --apply
+  - path: scripts/materialize_copied_temp_source_freshness_bridge.py
     env_gate: ENABLE_C3_POLICY_MATERIALIZATION_WRITE
     apply_flag: --apply
   - path: scripts/materialize_ads_campaign_product_daily.py
@@ -100,4 +115,28 @@ scripts:
     apply_flag: --apply
   - path: scripts/apply_header_only_source_gap_quarantine_production_safe.py
     env_gate: ENABLE_HEADER_ONLY_SOURCE_GAP_QUARANTINE_PRODUCTION_APPLY
+    apply_flag: --apply
+  - path: scripts/apply_workbook_anchor_date_drift_repair.py
+    env_gate: ENABLE_WORKBOOK_ANCHOR_DATE_DRIFT_REPAIR
+    apply_flag: --apply
+  - path: scripts/apply_po52_single_truth_payable_repair.py
+    env_gate: ENABLE_PO52_SINGLE_TRUTH_REPAIR_WRITE
+    apply_flag: --apply
+  - path: scripts/apply_956748585_freeze_cost_basis.py
+    env_gate: ENABLE_956748585_FREEZE_COST_BASIS_WRITE
+    apply_flag: --apply
+  - path: scripts/apply_sales_fact_v2_cogs_identity_repair.py
+    env_gate: ENABLE_SALES_FACT_V2_COGS_IDENTITY_REPAIR
+    apply_flag: --apply
+  - path: scripts/apply_fact_sales_derived_replay.py
+    env_gate: ENABLE_FACT_SALES_DERIVED_REPLAY_WRITE
+    apply_flag: --apply
+  - path: scripts/apply_returned_to_warehouse_flags.py
+    env_gate: ENABLE_RETURNED_TO_WAREHOUSE_FLAG_WRITE
+    apply_flag: --apply
+  - path: scripts/apply_return_qc_events.py
+    env_gate: ENABLE_RETURN_QC_EVENT_WRITE
+    apply_flag: --apply
+  - path: scripts/run_phase2_june15_production_apply.py
+    env_gate: ENABLE_PHASE2_JUNE15_PRODUCTION_APPLY
     apply_flag: --apply

@@ -1,0 +1,29 @@
+{
+  "decision_id": "OWNER_COGS_COST_BASIS_OVERRIDE_2026_06_14_956748585",
+  "recorded_at": "2026-06-14T14:09:57+05:00",
+  "scope": {
+    "order_id": "956748585",
+    "store_code": "ACMEWEAR",
+    "sku_key": "LINE-21-TS",
+    "sku_id": "LINE-21-TS_3XL"
+  },
+  "approved_unit_cogs_kzt": 6006.76,
+  "source_stock_pool": "CL_OC_MEN_LINE51_WHITE",
+  "source_description": "LINE51 parent-unit landed COGS",
+  "authorization": "production DB-only exact-row owner COGS/cost-basis override for the shipped-freeze on-delivery inventory move",
+  "limitations": [
+    "exact row only",
+    "does not create SKU-wide LINE-21-TS inheritance",
+    "does not claim ChildSum component economics",
+    "does not authorize workbook writes",
+    "does not authorize Kaspi merchant writes",
+    "does not authorize pricing writes",
+    "does not authorize stock writes",
+    "does not authorize Telegram writes",
+    "does not authorize LaunchAgent writes",
+    "does not authorize customer/operator-message writes",
+    "does not authorize cash or PO writes beyond the exact shipped-freeze inventory move"
+  ],
+  "approved_script": "scripts/apply_956748585_freeze_cost_basis.py",
+  "required_env_gate": "ENABLE_956748585_FREEZE_COST_BASIS_WRITE"
+}

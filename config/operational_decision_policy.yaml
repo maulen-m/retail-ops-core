@@ -20,6 +20,11 @@ store_scope:
   inactive_stores:
     - 11KZ
     - MELVIS
+  archived_stores:
+    - 11KZ
+    - MELVIS
+  archived_store_decision_id: OD-027
+  archived_store_action: archive_both_stop_daily_polling
   own_brand_store: ACMEWEAR
   generic_offer_stores:
     - UNIVERSAL

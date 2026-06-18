@@ -1,0 +1,57 @@
+{
+  "contract_id": "LIQUIDATION_TRANCHE1_EXECUTION_READINESS_V1",
+  "gate_id": "G-LIQ-02",
+  "dashboard_path": "docs/plan/green_path_2026-06/dashboard/progress-data.js",
+  "scoreboard_path": "docs/plan/green_path_2026-06/green_path_run/scoreboard.csv",
+  "register_summary_path": "exports/validation/g_liq01_liquidation_register_20260618_1220/liquidation_register_summary.json",
+  "segment_map_path": "exports/validation/g_liq01_liquidation_register_20260618_1220/liquidation_segment_map.csv",
+  "tranche_ledger_path": "config/validation/liquidation_tranche_ledger.csv",
+  "apply_readback_manifest_path": "config/validation/kaspi_pricelist_hash_manifest.csv",
+  "dependency_gates": [
+    "G-LIQ-01",
+    "G-PRICE-01",
+    "G-PRICE-02",
+    "G-WA-01"
+  ],
+  "price_stopline_gates": [
+    "G-PRICE-03",
+    "G-PRICE-05"
+  ],
+  "candidate_segments": [
+    "B_ZERO_VELOCITY",
+    "C_SLOW_HIGH_COVER",
+    "D_SIZE_MISALLOCATED"
+  ],
+  "require_prior_canonical_tranche1": true,
+  "required_candidate_fields": [
+    "tranche_id",
+    "sku_key",
+    "size",
+    "tier",
+    "planned_units",
+    "segment",
+    "floor_version",
+    "stock_confidence",
+    "owner_decision_id",
+    "source_artifact",
+    "status"
+  ],
+  "required_execution_fields": [
+    "tranche_id",
+    "sku_key",
+    "size",
+    "tier",
+    "release_date",
+    "released_units",
+    "sold_units",
+    "floor_version",
+    "stock_confidence",
+    "rollback_price",
+    "owner_decision_id",
+    "status"
+  ],
+  "tranche_id": "T1-20260618-READINESS",
+  "owner_decision_id": "OD-011",
+  "floor_version": "v7",
+  "default_tier": "T1"
+}

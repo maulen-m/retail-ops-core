@@ -1,0 +1,14 @@
+{
+  "contract_id": "PPCH_V1_METRIC_V1",
+  "gate_id": "G-MET-01",
+  "owner_decision_id": "OD-010",
+  "db_path": "db/app.db",
+  "denominator_basis": "capitalized_rows_basis",
+  "max_denominator_snapshot_age_days": 7,
+  "period": "month_to_latest_sales",
+  "formula": "720 * sum(net_contribution_kzt) / sum(capital_kzt_stage * hours_stage)",
+  "headline_policy": {
+    "green_requires_return_qc_event": true,
+    "interim_when_return_qc_missing": "v0.75"
+  }
+}

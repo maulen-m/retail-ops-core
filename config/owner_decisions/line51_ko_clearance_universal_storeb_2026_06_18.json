@@ -1,0 +1,114 @@
+{
+  "schema_version": "autonomous_business.owner_decision.line51_ko_clearance.v1",
+  "decision_id": "owner_line51_ko_clearance_universal_storeb_2026_06_18",
+  "created_at_almaty": "2026-06-18T16:14:49+05:00",
+  "owner_approval": {
+    "approved_by": "human_owner",
+    "approval_scope": "temporary fixed-price LINE51 lower-size clearance offers for Universal and STORE-B",
+    "temporary_override_only": true,
+    "superseded_by": "main orchestrator/refactor single-source-of-truth stock and offer mapping results when merged back",
+    "reason": "avoid out-of-stock/in-stock conflicts during parallel refactor while enabling day-to-day sell-off operations"
+  },
+  "source_family": {
+    "sku_key": "CL_OC_MEN_LINE51_WHITE",
+    "product_name": "LINE51 black-white 5-piece set",
+    "canonical_cogs_kzt": 4680,
+    "source_db": "~/Docs/Autonomous_business/db/app.db",
+    "inventory_snapshot_date_seen": "2026-06-17",
+    "stock_confidence_source_seen": "OWNER_APPROVED_TEMP_OCR_OVERRIDE"
+  },
+  "target_stores": [
+    {
+      "store_code": "UNIVERSAL",
+      "merchant_id": 30000001
+    },
+    {
+      "store_code": "STOREB",
+      "merchant_id": 30000002
+    }
+  ],
+  "strategy": {
+    "kaspi_flow": "existing public Kaspi card attach through seller cabinet UI",
+    "pricing": "fixed manual prices only",
+    "repricer_policy": "never enable dumping or automated min/current/max writes for these clearance rows",
+    "marketing_policy": "Universal internal marketing may be launched after offer creation with moderate bids and exact merchant_sku targeting",
+    "review_cadence_hours": 72,
+    "goal_days": 30,
+    "profit_floor_policy": "never below 20 percent profit on COGS after commission, VAT assumption, delivery, and ads allocation"
+  },
+  "economics_assumptions": {
+    "commission_rate": 0.125,
+    "vat_rate": 0.04,
+    "delivery_fee_kzt": 1507,
+    "min_profit_on_cogs_pct": 0.2,
+    "allocated_ads_per_unit_initial_kzt": 0,
+    "candidate_prices_kzt": [9990, 10990, 11990],
+    "initial_prices_by_size": {
+      "S": 9990,
+      "M": 10990,
+      "L": 11990
+    }
+  },
+  "target_variants": [
+    {
+      "size": "S",
+      "size_rus": "42",
+      "product_code": "132549028",
+      "variant_url": "https://kaspi.kz/shop/p/komplekt-0-beli-chernyi-belyi-s-132549028/",
+      "sku_id": "CL_OC_MEN_LINE51_WHITE_S",
+      "planned_merchant_sku_article": "CL_OC_MEN_LINE51_WHITE_KO_CLEAR_S_132549028",
+      "planned_price_kzt": 9990,
+      "per_store_visible_stock_cap_pp1": 5,
+      "per_store_visible_stock_pp2": 0
+    },
+    {
+      "size": "M",
+      "size_rus": "44",
+      "product_code": "132549029",
+      "variant_url": "https://kaspi.kz/shop/p/komplekt-1-beli-chernyi-belyi-m-132549029/",
+      "sku_id": "CL_OC_MEN_LINE51_WHITE_M",
+      "planned_merchant_sku_article": "CL_OC_MEN_LINE51_WHITE_KO_CLEAR_M_132549029",
+      "planned_price_kzt": 10990,
+      "per_store_visible_stock_cap_pp1": 7,
+      "per_store_visible_stock_pp2": 0
+    },
+    {
+      "size": "L",
+      "size_rus": "46",
+      "product_code": "132549030",
+      "variant_url": "https://kaspi.kz/shop/p/komplekt-2-beli-chernyi-belyi-l-132549030/",
+      "sku_id": "CL_OC_MEN_LINE51_WHITE_L",
+      "planned_merchant_sku_article": "CL_OC_MEN_LINE51_WHITE_KO_CLEAR_L_132549030",
+      "planned_price_kzt": 11990,
+      "per_store_visible_stock_cap_pp1": 10,
+      "per_store_visible_stock_pp2": 0
+    }
+  ],
+  "public_offer_snapshot_seen": {
+    "kaspi_title": "Комплект черный, белый",
+    "city_710000000": {
+      "132549028": {"offers": 0},
+      "132549029": {"offers": 0},
+      "132549030": {"offers": 1, "lowest_seen_price_kzt": 21990, "lowest_seen_merchant": "LUNAROX"}
+    },
+    "city_750000000": {
+      "132549028": {"offers": 0},
+      "132549029": {"offers": 0},
+      "132549030": {"offers": 1, "lowest_seen_price_kzt": 21990, "lowest_seen_merchant": "LUNAROX"}
+    }
+  },
+  "mapping_policy": {
+    "do_not_reuse_ambiguous_legacy_articles": true,
+    "legacy_articles_exist_for_same_public_codes": true,
+    "new_article_prefix": "CL_OC_MEN_LINE51_WHITE_KO_CLEAR",
+    "ab_db_mutation_status": "not_applied_by_this_decision_file",
+    "planned_mapping_source": "OWNER_APPROVED_LINE51_KO_CLEARANCE_20260618"
+  },
+  "stoplines": [
+    "Do not apply live marketplace writes if merchant store identity is not proven for both Universal and STORE-B.",
+    "Do not enable Repricer dumping for these rows.",
+    "Do not allow automated Repricer price writes for these rows.",
+    "Do not treat this override as permanent after the main refactor provides a reconciled single source of truth.",
+    "Do not launch paid marketing until exact merchant_sku targeting is visible and verified."
+  ]
+}
