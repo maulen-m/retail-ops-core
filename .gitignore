@@ -138,6 +138,15 @@ runs/agent6_c3_source_refresh/
 runs/tmux_orchestration/
 runs/tmux_orchestration_quarantine/
 
+# Local green-path/customer-chat evidence surfaces (may contain DB copies, live IDs, or session-derived context)
+.claude/TEMP_*.md
+.claude/orchestrator_runs/
+.claude/ops_incident_telemetry.csv
+docs/agent_handoffs/KASPI_CUSTOMER*
+docs/plans/
+expected_closeout_orders.json
+green_path_run/
+
 # Test artifacts
 .pytest_cache/
 .mypy_cache/
