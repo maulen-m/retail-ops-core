@@ -1379,6 +1379,189 @@ def test_translate_orders_creates_on_delivery_for_shipped_kaspi_delivery(tmp_pat
         conn.close()
 
 
+def test_translate_orders_order_id_allowlist_excludes_non_allowlisted_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executemany(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            [
+                ("SKU_ALLOWED", 1.0, 100.0, 0),
+                ("SKU_BLOCKED", 1.0, 200.0, 0),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, kaspi_status_detail, internal_status,
+                status_updated_at, actual_shipment_date, quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "ORD_ALLOWED",
+                    "STOREB",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED_BY_MERCHANT",
+                    "SHIPPED",
+                    "2026-02-08",
+                    "2026-02-08",
+                    1,
+                    10000,
+                    "SKU_ALLOWED",
+                    "SKU_ALLOWED_S",
+                ),
+                (
+                    "ORD_BLOCKED",
+                    "STOREB",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED_BY_MERCHANT",
+                    "SHIPPED",
+                    "2026-02-08",
+                    "2026-02-08",
+                    1,
+                    10000,
+                    "SKU_BLOCKED",
+                    "SKU_BLOCKED_S",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(
+        db_path,
+        since=date(2026, 2, 8),
+        until=date(2026, 2, 8),
+        apply=True,
+        run_id="test",
+        order_id_allowlist={"ORD_ALLOWED"},
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        allowed_count = conn.execute(
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id='ORD_ALLOWED'"
+        ).fetchone()[0]
+        blocked_count = conn.execute(
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id='ORD_BLOCKED'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert allowed_count == 2
+    assert blocked_count == 0
+
+
+def test_translate_orders_only_on_delivery_excludes_completed_rows_same_window(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executemany(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            [
+                ("SKU_SHIPPED_ONLY", 1.0, 100.0, 0),
+                ("SKU_DONE_ONLY", 1.0, 200.0, 0),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_status, kaspi_status_detail, internal_status,
+                status_updated_at, actual_shipment_date, quantity, unit_price_kzt, sku_key, sku_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "ORD_SHIPPED_ONLY",
+                    "STOREB",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED_BY_MERCHANT",
+                    "SHIPPED",
+                    "2026-02-08",
+                    "2026-02-08",
+                    1,
+                    10000,
+                    "SKU_SHIPPED_ONLY",
+                    "SKU_SHIPPED_ONLY_S",
+                ),
+                (
+                    "ORD_DONE_ONLY",
+                    "STOREB",
+                    "ARCHIVE",
+                    "COMPLETED",
+                    "COMPLETED",
+                    "2026-02-08",
+                    "2026-02-08",
+                    1,
+                    10000,
+                    "SKU_DONE_ONLY",
+                    "SKU_DONE_ONLY_S",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(
+        db_path,
+        since=date(2026, 2, 8),
+        until=date(2026, 2, 8),
+        apply=True,
+        run_id="test",
+        only_cashflow_status="ON_DELIVERY",
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        shipped_events = conn.execute(
+            """
+            SELECT event_type, account
+            FROM fact_cashflow_events
+            WHERE ref_id='ORD_SHIPPED_ONLY'
+            """
+        ).fetchall()
+        completed_count = conn.execute(
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id='ORD_DONE_ONLY'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert len(shipped_events) == 2
+    assert {row[0] for row in shipped_events} == {"INVENTORY_MOVE"}
+    assert {row[1] for row in shipped_events} == {
+        "INVENTORY_ON_HAND_COST",
+        "INVENTORY_ON_DELIVERY_COST",
+    }
+    assert completed_count == 0
+
+
+def test_translate_orders_rejects_empty_order_id_allowlist(tmp_path):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    with pytest.raises(RuntimeError, match="order_id_allowlist must not be empty"):
+        translate_orders(
+            db_path,
+            since=date(2026, 2, 8),
+            until=date(2026, 2, 8),
+            apply=False,
+            run_id="test",
+            order_id_allowlist=set(),
+        )
+
+
 def test_translate_orders_settles_returned_on_delivery_balance_without_cash(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     _init_db(db_path)

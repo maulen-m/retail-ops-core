@@ -14,7 +14,7 @@ from scripts.validate_cogs_realism_vs_forensic import (
 )
 
 
-def _seed_db(db_path: Path, *, cogs_kzt: float) -> None:
+def _seed_db(db_path: Path, *, cogs_kzt: float, sale_date: str = "2026-01-05") -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(
@@ -30,8 +30,8 @@ def _seed_db(db_path: Path, *, cogs_kzt: float) -> None:
             """
         )
         conn.execute(
-            "INSERT INTO view_sales_line_truth VALUES ('2026-01-05','ACMEWEAR','SKU_A',1,1000,?)",
-            (cogs_kzt,),
+            "INSERT INTO view_sales_line_truth VALUES (?,'ACMEWEAR','SKU_A',1,1000,?)",
+            (sale_date, cogs_kzt),
         )
         conn.commit()
     finally:
@@ -39,10 +39,14 @@ def _seed_db(db_path: Path, *, cogs_kzt: float) -> None:
 
 
 def _write_forensic_csv(path: Path, *, cogs_kzt: float) -> None:
+    _write_forensic_csv_with_date(path, cogs_kzt=cogs_kzt, sale_date="2026-01-05")
+
+
+def _write_forensic_csv_with_date(path: Path, *, cogs_kzt: float, sale_date: str) -> None:
     df = pd.DataFrame(
         [
             {
-                "transaction_date": "2026-01-05",
+                "transaction_date": sale_date,
                 "status_internal": "DELIVERED",
                 "is_delivered_truth_row": 1,
                 "mapped_sku_key": "SKU_A",
@@ -57,16 +61,18 @@ def _write_forensic_csv(path: Path, *, cogs_kzt: float) -> None:
 def _write_supersession_manifest(
     path: Path,
     *,
+    truth_source: str = "webui_archive",
     parity_status: str = "PASS",
     audit_status: str = "PASS",
     relative_paths: bool = False,
+    applies_when: dict[str, object] | None = None,
 ) -> None:
     parity_path = path.parent / "parity_summary.json"
     audit_path = path.parent / "audit_report.json"
     payload = {
         "version": 1,
         "truth_sources": {
-            "webui_archive": {
+            truth_source: {
                 "decision": "SUPERSEDED",
                 "reason": "legacy_forensic_stale",
                 "required_reports": {
@@ -82,6 +88,8 @@ def _write_supersession_manifest(
             }
         },
     }
+    if applies_when:
+        payload["truth_sources"][truth_source]["applies_when"] = applies_when
     parity_path.write_text(
         json.dumps({"status": parity_status}, ensure_ascii=False),
         encoding="utf-8",
@@ -332,3 +340,106 @@ def test_validate_cogs_realism_vs_forensic_supersession_resolves_relative_paths(
         output_dir=tmp_path / "out",
     )
     assert payload["status"] == "PASS"
+
+
+def test_validate_cogs_realism_vs_forensic_allows_bounded_db_post_forensic_supersession(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "app.db"
+    forensic = tmp_path / "forensic.csv"
+    manifest = tmp_path / "cogs_forensic_reference.json"
+    _seed_db(db, cogs_kzt=700.0, sale_date="2026-03-05")
+    _write_forensic_csv_with_date(forensic, cogs_kzt=500.0, sale_date="2026-02-24")
+    _write_supersession_manifest(
+        manifest,
+        truth_source="db",
+        parity_status="PASS",
+        audit_status="PASS",
+        applies_when={
+            "requires_no_forensic_rows_in_window": True,
+            "window_start_after_forensic_max_sale_date": True,
+        },
+    )
+
+    payload = validate_cogs_realism_vs_forensic(
+        start="2026-03-01",
+        end="2026-03-31",
+        strict=True,
+        db_path=db,
+        truth_source="db",
+        forensic_file=forensic,
+        forensic_reference_manifest=manifest,
+        max_month_gap_pct=0.05,
+        output_dir=tmp_path / "out",
+    )
+
+    assert payload["status"] == "PASS"
+    assert payload["forensic_comparison_status"] == "SUPERSEDED"
+    assert payload["forensic_rows_in_window"] == 0
+    assert payload["forensic_max_sale_date"] == "2026-02-24"
+
+
+def test_validate_cogs_realism_vs_forensic_db_supersession_does_not_mask_in_window_mismatch(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "app.db"
+    forensic = tmp_path / "forensic.csv"
+    manifest = tmp_path / "cogs_forensic_reference.json"
+    _seed_db(db, cogs_kzt=700.0, sale_date="2026-02-24")
+    _write_forensic_csv_with_date(forensic, cogs_kzt=500.0, sale_date="2026-02-24")
+    _write_supersession_manifest(
+        manifest,
+        truth_source="db",
+        parity_status="PASS",
+        audit_status="PASS",
+        applies_when={
+            "requires_no_forensic_rows_in_window": True,
+            "window_start_after_forensic_max_sale_date": True,
+        },
+    )
+
+    with pytest.raises(CogsRealismError):
+        validate_cogs_realism_vs_forensic(
+            start="2026-02-01",
+            end="2026-02-28",
+            strict=True,
+            db_path=db,
+            truth_source="db",
+            forensic_file=forensic,
+            forensic_reference_manifest=manifest,
+            max_month_gap_pct=0.05,
+            output_dir=tmp_path / "out",
+        )
+
+
+def test_validate_cogs_realism_vs_forensic_db_supersession_requires_window_after_coverage(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "app.db"
+    forensic = tmp_path / "forensic.csv"
+    manifest = tmp_path / "cogs_forensic_reference.json"
+    _seed_db(db, cogs_kzt=700.0, sale_date="2025-05-05")
+    _write_forensic_csv_with_date(forensic, cogs_kzt=500.0, sale_date="2026-02-24")
+    _write_supersession_manifest(
+        manifest,
+        truth_source="db",
+        parity_status="PASS",
+        audit_status="PASS",
+        applies_when={
+            "requires_no_forensic_rows_in_window": True,
+            "window_start_after_forensic_max_sale_date": True,
+        },
+    )
+
+    with pytest.raises(CogsRealismError):
+        validate_cogs_realism_vs_forensic(
+            start="2025-05-01",
+            end="2025-05-31",
+            strict=True,
+            db_path=db,
+            truth_source="db",
+            forensic_file=forensic,
+            forensic_reference_manifest=manifest,
+            max_month_gap_pct=0.05,
+            output_dir=tmp_path / "out",
+        )

@@ -86,7 +86,7 @@ def test_validate_ads_source_accepts_fresh_refresh_run_metadata_when_db_mtime_is
     conn.commit()
     conn.close()
 
-    old_epoch = time.time() - (72 * 3600)
+    old_epoch = 1773003600.0 - (72 * 3600)
     os.utime(ads_db, (old_epoch, old_epoch))
 
     report = validate_ads_source(

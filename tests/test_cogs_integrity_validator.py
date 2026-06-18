@@ -70,6 +70,77 @@ def test_validator_fails_on_unresolved_cogs_rows(tmp_path: Path) -> None:
     assert any("unresolved" in err.lower() for err in report["errors"])
 
 
+def test_validator_does_not_materialize_views_in_source_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    conn = sqlite3.connect(str(db_path))
+    _seed_sales_schema(conn)
+    conn.execute(
+        "INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt) VALUES ('SKU_OK', 50, 1.0, 0)"
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-1', '2026-02-08', 'SKU_OK', 'SKU_OK_XL', 'XL', 'ACMEWEAR', 1, 10000, 0, 0, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    report = validate_cogs_integrity(db_path=db_path, as_of="2026-02-08", days=7)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        view_count = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND name='view_sales_line_truth'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert report["ok"] is True
+    assert view_count == 0
+
+
+def test_validator_accepts_copied_temp_unit_cogs_evidence(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    evidence = tmp_path / "unit_cogs_evidence.csv"
+    conn = sqlite3.connect(str(db_path))
+    _seed_sales_schema(conn)
+    conn.execute("INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt) VALUES ('SKU_BAD', 50, NULL, 0)")
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-1', '2026-02-08', 'SKU_BAD', 'SKU_BAD_XL', 'XL', 'ACMEWEAR', 1, 10000, 0, 0, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+    ensure_sales_truth_views(conn)
+    conn.close()
+    pd.DataFrame(
+        [
+            {
+                "sku_key": "SKU_BAD",
+                "approved_unit_cogs_kzt": 5567.22,
+                "source_parent_sku": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+                "decision_basis": "copied-temp proof only",
+                "copied_temp_only": True,
+                "production_write_authorized": False,
+            }
+        ]
+    ).to_csv(evidence, index=False)
+
+    report = validate_cogs_integrity(
+        db_path=db_path,
+        as_of="2026-02-08",
+        days=7,
+        unit_cogs_evidence_csv=evidence,
+    )
+    assert report["ok"] is True
+    assert report["unresolved_rows"] == 0
+    assert report["unit_cogs_evidence_applied_rows"] == 1
+
+
 def test_validator_fails_when_dim_sku_weight_mismatch_exceeds_tolerance(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     conn = sqlite3.connect(str(db_path))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import openpyxl
@@ -29,14 +30,15 @@ def _make_workbook(path: Path, *, cargo_qty: int, actual_qty: int, ordered_qty: 
     wb.save(path)
 
 
-def _run(xlsx: Path) -> subprocess.CompletedProcess[str]:
+def _run(xlsx: Path, *extra_args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
-            "python3",
+            sys.executable,
             str(SCRIPT),
             "--xlsx",
             str(xlsx),
             "--json",
+            *extra_args,
         ],
         check=False,
         capture_output=True,
@@ -68,6 +70,27 @@ def _make_styled_workbook(path: Path, *, qty: int = 3980) -> None:
     ws_cargo["B18"] = "M"
     ws_cargo["C18"] = qty
     ws_cargo["F18"] = "PO-5.2"
+
+    wb.save(path)
+
+
+def _make_line61_accepted_shortage_workbook(path: Path) -> None:
+    wb = openpyxl.Workbook()
+
+    ws_inbounds = wb.active
+    ws_inbounds.title = "Inbounds_sheet"
+    ws_inbounds.append(["PO_part_id", "SKU_key", "Qty", "Actual_qty"])
+    ws_inbounds.append(["PO-4.0", "CL_NEW-CLO2_MEN_SUIT-61_BLACK", 115, 92])
+    ws_inbounds.append(["PO-4.0", "CL_OTHER_MEN_REFERENCE_BLACK", 1810, 1810])
+
+    ws_totals = wb.create_sheet("PO_part_id_Totals")
+    ws_totals.append(["PO_part_id", "Total Units"])
+    ws_totals.append(["PO-4.0", 1925])
+
+    ws_cargo = wb.create_sheet("Cargo_send_1.1.2026_PO-4.0")
+    ws_cargo.append(["PO_part_id", "SKU_key", "Qty"])
+    ws_cargo.append(["PO-4.0", "CL_NEW-CLO2_MEN_SUIT-61_BLACK", 115])
+    ws_cargo.append(["PO-4.0", "CL_OTHER_MEN_REFERENCE_BLACK", 1810])
 
     wb.save(path)
 
@@ -132,3 +155,45 @@ def test_exit_nonzero_on_contract_breach(tmp_path: Path) -> None:
     payload = json.loads(proc.stdout)
     assert payload["ok"] is False
     assert payload["mismatch_count"] >= 1
+
+
+def test_classifies_exact_line61_shortage_as_visible_production_safe_truth(tmp_path: Path) -> None:
+    xlsx = tmp_path / "line61_shortage.xlsx"
+    _make_line61_accepted_shortage_workbook(xlsx)
+
+    proc = _run(xlsx)
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+
+    assert payload["ok"] is True
+    assert payload["mismatch_count"] == 2
+    assert payload["unknown_mismatch_count"] == 0
+    assert payload["accepted_shortage_count"] == 2
+    assert payload["unknown_mismatches"] == []
+    assert payload["production_safe_accepted_shortage_applied"] is True
+
+    accepted = payload["accepted_shortages"]
+    assert {row["type"] for row in accepted} == {"cargo_vs_inbounds", "totals_vs_inbounds"}
+    assert {
+        row["classification_id"] for row in accepted
+    } == {"PO_ACCEPTED_REAL_SHORTAGE_LINE61_2026_05_OWNER_CONFIRMED"}
+    assert all(row["production_authority"] is True for row in accepted)
+    assert all(row["clears_inbound_sheet_consistency"] is True for row in accepted)
+    assert all(row["clears_po_money_gate"] is False for row in accepted)
+
+
+def test_copied_temp_allowance_passes_only_exact_line61_shortage(tmp_path: Path) -> None:
+    xlsx = tmp_path / "line61_shortage.xlsx"
+    _make_line61_accepted_shortage_workbook(xlsx)
+
+    proc = _run(xlsx, "--allow-accepted-shortages-for-copied-temp")
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+
+    assert payload["ok"] is True
+    assert payload["mismatch_count"] == 2
+    assert payload["unknown_mismatch_count"] == 0
+    assert payload["accepted_shortage_count"] == 2
+    assert payload["copied_temp_accepted_shortage_allowance_applied"] is True
+    assert payload["production_safe_accepted_shortage_applied"] is True
+    assert all(row["clears_po_money_gate"] is False for row in payload["accepted_shortages"])

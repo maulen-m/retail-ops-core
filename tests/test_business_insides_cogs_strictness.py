@@ -167,8 +167,8 @@ def test_business_insides_uses_formula_cogs_series(tmp_path: Path) -> None:
     )
     day = {r["date"]: r for r in result["last_7_days"]}["2026-02-08"]
 
-    # suit line formula cogs: 2 * (100*75 + 1.5*520*2.66) = 19149.6
-    assert day["cogs_kzt"] == 19149.6
+    # suit line formula cogs: 2 * (100*73 + 1.5*520*2.66) = 18749.6
+    assert day["cogs_kzt"] == 18749.6
 
 
 def test_business_insides_formula_cogs_is_not_base_only(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ def _create_workbook(path: Path, rows: list[dict[str, object]]) -> None:
         "Store_name",
         "SKU_ID",
         "SKU_ID_KSP",
+        "SKU_ID_KSP_v2",
         "Kaspi_name_core",
         "MY_SIZE",
         "Size_kaspi",
@@ -266,3 +267,97 @@ def test_import_map_ignores_placeholder_offer_values(tmp_path: Path, monkeypatch
     conn.close()
 
     assert row == (None, "Line51")
+
+
+def test_import_map_can_import_v2_aliases_with_sku_key_filter(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "app.db"
+    workbook = tmp_path / "crm.xlsx"
+    conn = sqlite3.connect(db_path)
+    _seed_schema(conn)
+    conn.execute("INSERT INTO dim_sku(sku_key) VALUES ('CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE')")
+    conn.execute(
+        """
+        INSERT INTO dim_sku_size(sku_id, sku_key, my_size)
+        VALUES ('CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_XL', 'CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE', 'XL')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    _create_workbook(
+        workbook,
+        [
+            {
+                "Store_name": "ACMEWEAR",
+                "SKU_ID": "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_XL",
+                "SKU_ID_KSP": "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_ST_XL",
+                "SKU_ID_KSP_v2": "OF_LINE31_ST_WB_XL",
+                "Kaspi_name_core": "Женский_3в1_ТЕМНО-СИНИЙ",
+                "MY_SIZE": "XL",
+                "Size_kaspi": "50",
+                "SKU_key": "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE",
+                "Kaspi_offer_name": "Женский 3в1 темно-синий XL",
+                "Model": "LINE31",
+                "Brand": "AcmeWear",
+            },
+            {
+                "Store_name": "ACMEWEAR",
+                "SKU_ID": "CL_OC_MEN_LINE51_WHITE_XL",
+                "SKU_ID_KSP": "CL_OC_MEN_LINE51_WHITE_134547486_48_(XL)",
+                "SKU_ID_KSP_v2": "OF_LINE51_WHITE_XL",
+                "Kaspi_name_core": "Line51",
+                "MY_SIZE": "XL",
+                "Size_kaspi": "48",
+                "SKU_key": "CL_OC_MEN_LINE51_WHITE",
+                "Kaspi_offer_name": "Line51 XL",
+                "Model": "Line51",
+                "Brand": "AcmeWear",
+            },
+        ],
+    )
+
+    monkeypatch.setattr(
+        "scripts.import_kaspi_article_map_from_crm._load_store_catalog",
+        lambda: {"ACMEWEAR": {"merchant_id": "m-acmewear"}},
+    )
+    monkeypatch.setenv("ENABLE_KASPI_WORKBOOK_MAP_SYNC", "1")
+
+    report = import_map(
+        db_path=db_path,
+        workbook=workbook,
+        sheet="M02_SKU_CATALOG_NC",
+        store_filter="ACMEWEAR",
+        apply_changes=True,
+        include_v2_aliases=True,
+        sku_key_filter="CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE",
+    )
+
+    assert report["inserted"] == 2
+    assert report["filtered_out"] == 1
+    assert report["candidate_count"] == 2
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        """
+        SELECT kaspi_article, sku_key, sku_id, kaspi_name_core
+        FROM dim_kaspi_article_map
+        WHERE store_code='ACMEWEAR'
+        ORDER BY kaspi_article
+        """
+    ).fetchall()
+    conn.close()
+
+    assert rows == [
+        (
+            "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_ST_XL",
+            "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE",
+            "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_XL",
+            "Женский_3в1_ТЕМНО-СИНИЙ",
+        ),
+        (
+            "OF_LINE31_ST_WB_XL",
+            "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE",
+            "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_XL",
+            "Женский_3в1_ТЕМНО-СИНИЙ",
+        ),
+    ]

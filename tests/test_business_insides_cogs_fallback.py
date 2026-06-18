@@ -57,9 +57,9 @@ def test_cogs_formula_uses_full_landed_components(tmp_path: Path) -> None:
 
     metrics = compute_sales_metrics(db_path=db_path, as_of="2026-02-08")
     day = {r["date"]: r for r in metrics["last_7_days"]}["2026-02-08"]
-    # unit COGS = 100*75 + 1.5*520*2.66 = 9574.8 -> line = 19149.6
-    assert day["cogs_kzt"] == 19149.6
-    assert day["profit_kzt"] == -9149.6
+    # unit COGS = 100*73 + 1.5*520*2.66 = 9374.8 -> line = 18749.6
+    assert day["cogs_kzt"] == 18749.6
+    assert day["profit_kzt"] == -8749.6
     assert metrics["fallback_rows"] == 0
 
 

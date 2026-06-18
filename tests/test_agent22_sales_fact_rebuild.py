@@ -141,6 +141,52 @@ def test_rebuild_prefers_entry_lines_and_falls_back_to_completed_headers(tmp_pat
     assert summary["rows_built_from_headers"] == 1
 
 
+def test_rebuild_uses_suffix_article_patch_and_assigned_size(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _create_sales_rebuild_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO dim_kaspi_article_map
+            (store_code, kaspi_article, kaspi_offer_name, sku_key, sku_id, active_flag)
+        VALUES ('UNIVERSAL', '_687453750', 'Леггинсы PRO COMBAT 2010 белый 2XL',
+                'CL_NEW-CLO_MEN_LEG_WHITE', '', 1)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, kaspi_offer_name, sku_key, sku_id, my_size,
+            quantity, unit_price_kzt, delivery_cost, status_updated_at, internal_status
+        ) VALUES (
+            'SUFFIX-1', 'UNIVERSAL', 'Леггинсы PRO COMBAT 2010 белый 2XL',
+            'CL_NEW-CLO_MEN_LEG_WHITE', 'CL_NEW-CLO_MEN_LEG_WHITE_2XL', '2XL',
+            1, 1500, 0, '2026-06-14T12:00:00', 'COMPLETED'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_order_entries_kaspi
+            (entry_id, order_id, store_code, offer_id, quantity, total_price_kzt)
+        VALUES ('entry-suffix-1', 'SUFFIX-1', 'UNIVERSAL', '132822924_687453750', 1, 1500)
+        """
+    )
+
+    rows, summary = build_sales_fact_v2_rows_from_entries(
+        conn,
+        as_of=date(2026, 6, 15),
+        start_date=date(2026, 6, 14),
+        strict=True,
+    )
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["sku_key"] == "CL_NEW-CLO_MEN_LEG_WHITE"
+    assert rows[0]["sku_id"] == "CL_NEW-CLO_MEN_LEG_WHITE_2XL"
+    assert rows[0]["my_size"] == "2XL"
+    assert summary["errors_count"] == 0
+
+
 def test_rebuild_delete_scope_stays_inside_requested_window(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     conn = _create_sales_rebuild_db(db_path)

@@ -1,3 +1,4 @@
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -5,6 +6,10 @@ from scripts.reconcile_on_delivery_settlement import (
     find_settlement_gaps,
     reconcile_on_delivery_settlement,
 )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _init_db(db_path: Path) -> None:
@@ -109,6 +114,65 @@ def test_reconcile_script_generates_settlement_events_idempotently(tmp_path: Pat
     assert second["inserted"] == 0
     assert count == 1
     assert float(balance or 0.0) == 0.0
+
+
+def test_production_settlement_apply_requires_prod_gate_and_backup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import scripts.reconcile_on_delivery_settlement as settlement_mod
+
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    _seed_gap(db_path)
+    monkeypatch.setattr(settlement_mod, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    monkeypatch.delenv("ENABLE_CASHFLOW_PROD_WRITE", raising=False)
+
+    try:
+        reconcile_on_delivery_settlement(
+            db_path=db_path,
+            since="2026-02-01",
+            until="2026-02-08",
+            apply=True,
+            run_id="PROD-BLOCKED",
+            expected_pre_sha256=_sha256(db_path),
+            backup_dir=tmp_path / "backups",
+        )
+    except RuntimeError as exc:
+        assert "ENABLE_CASHFLOW_PROD_WRITE=1" in str(exc)
+    else:
+        raise AssertionError("production settlement apply should require prod env gate")
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_PROD_WRITE", "1")
+    try:
+        reconcile_on_delivery_settlement(
+            db_path=db_path,
+            since="2026-02-01",
+            until="2026-02-08",
+            apply=True,
+            run_id="PROD-MISSING-SHA",
+            backup_dir=tmp_path / "backups",
+        )
+    except RuntimeError as exc:
+        assert "--expected-pre-sha256" in str(exc)
+    else:
+        raise AssertionError("production settlement apply should require expected SHA")
+
+    result = reconcile_on_delivery_settlement(
+        db_path=db_path,
+        since="2026-02-01",
+        until="2026-02-08",
+        apply=True,
+        run_id="PROD-OK",
+        expected_pre_sha256=_sha256(db_path),
+        backup_dir=tmp_path / "backups",
+    )
+
+    backup_path = Path(str(result["apply_metadata"]["backup_path"]))
+    assert result["inserted"] == 1
+    assert backup_path.exists()
+    assert result["apply_metadata"]["backup_integrity_check"] == "ok"
 
 
 def test_detects_gap_when_order_sku_id_drift_differs_from_cashflow_sku_id(tmp_path: Path) -> None:

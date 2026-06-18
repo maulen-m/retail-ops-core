@@ -145,6 +145,77 @@ def test_repair_refuses_non_recovered_entry_candidate(tmp_path):
     assert summary["status"] == "FAIL"
     assert summary["blocked_candidate_count"] == 1
     assert summary["allowed_recovered_entry_count"] == 0
+    assert summary["allowed_fact_order_entry_count"] == 0
+
+
+def test_repair_allows_fact_order_entry_candidate_only_with_explicit_flag(tmp_path, monkeypatch):
+    db_path = tmp_path / "cashflow.db"
+    _init_db(db_path, entry_id="API-ENTRY-1")
+    monkeypatch.setenv("ENABLE_D1_CASH_IN_REPAIR_WRITE", "1")
+
+    summary = repair_d1_cash_in_from_validator_evidence(
+        db_path=db_path,
+        as_of="2026-05-06",
+        output_root=tmp_path / "evidence",
+        run_id="api-entry-repair",
+        apply=True,
+        expected_missing_count=1,
+        allow_fact_order_entries=True,
+    )
+
+    assert summary["status"] == "PASS"
+    assert summary["allowed_recovered_entry_count"] == 0
+    assert summary["allowed_fact_order_entry_count"] == 1
+    assert summary["blocked_candidate_count"] == 0
+    assert summary["apply"]["inserted_event_rows"] == 1
+    assert summary["coverage_after"]["cash_in_missing_count"] == 0
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            """
+            SELECT event_type, ref_type, ref_id, source, run_id
+            FROM fact_cashflow_events
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("CASH_IN", "ORDER_ENTRY", "API-ENTRY-1", "ORDER_MODELLED", "api-entry-repair")
+
+
+def test_repair_allows_fact_order_entry_cash_in_even_when_sku_identity_is_blank(tmp_path, monkeypatch):
+    db_path = tmp_path / "cashflow.db"
+    _init_db(db_path, entry_id="API-BLANK-SKU")
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("DELETE FROM dim_kaspi_article_map")
+    monkeypatch.setenv("ENABLE_D1_CASH_IN_REPAIR_WRITE", "1")
+
+    summary = repair_d1_cash_in_from_validator_evidence(
+        db_path=db_path,
+        as_of="2026-05-06",
+        output_root=tmp_path / "blank_sku_evidence",
+        run_id="api-blank-sku-repair",
+        apply=True,
+        expected_missing_count=1,
+        allow_fact_order_entries=True,
+    )
+
+    assert summary["status"] == "PASS"
+    assert summary["allowed_fact_order_entry_count"] == 1
+    assert summary["blocked_candidate_count"] == 0
+    assert summary["coverage_after"]["cash_in_missing_count"] == 0
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            """
+            SELECT ref_id, sku_key, sku_id
+            FROM fact_cashflow_events
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("API-BLANK-SKU", "", "")
 
 
 def test_production_apply_requires_prod_gate_sha_and_backup(tmp_path, monkeypatch):

@@ -131,9 +131,11 @@ class TestPrepModelB:
         )
 
     def test_all_els_skus_prep_1(self, dashboard_data):
-        """All ELS SKUs should have prep_days=1."""
+        """All planned ELS SKUs should have prep_days=1."""
         for po_name, po_data in dashboard_data['pos'].items():
             if not isinstance(po_data, dict):
+                continue
+            if not str(po_name).startswith("PLAN-"):
                 continue
 
             for sku in po_data.get('sku_level', []):

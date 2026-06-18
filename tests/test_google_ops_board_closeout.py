@@ -121,6 +121,32 @@ def test_build_readiness_report_accepts_ready_toggle_and_valid_sizes(tmp_path: P
     assert report["invalid_size_count"] == 0
 
 
+def test_success_status_resets_run_control_ready_toggle_to_hold() -> None:
+    contract = load_ops_board_contract()
+    client = _FakeClient(
+        {
+            "Run_Control": [
+                contract.tabs["Run_Control"].headers,
+                ["2026-04-15", "READY", "adil", "", "", "", "", ""],
+            ]
+        }
+    )
+
+    closeout_mod._update_run_control_status(
+        client=client,
+        contract=contract,
+        target_date=closeout_mod.date(2026, 4, 15),
+        run_id="run-1",
+        status="OK",
+        hold_on_failure=False,
+    )
+
+    row = client.updated_rows[-1][2][0]["row"]
+    assert row["ready_for_closeout"] == "HOLD"
+    assert row["last_orchestrator_run_id"] == "run-1"
+    assert row["last_orchestrator_status"] == "OK"
+
+
 def test_closeout_main_dry_run_executes_steps_in_order(monkeypatch, tmp_path: Path):
     db_path = tmp_path / "app.db"
     _make_db(db_path)
@@ -1248,6 +1274,23 @@ def test_closeout_resume_fails_closed_on_checkpoint_mismatch(monkeypatch, tmp_pa
     assert report["failure_reason"] == "checkpoint_spreadsheet_id_mismatch"
     assert client.get_tab_values("Run_Control")[1][1] == "READY"
     assert client.get_tab_values("Run_Control")[1][-1] == "FAILED_CHECKPOINT"
+
+
+def test_closeout_main_loads_repo_dotenv_before_run(monkeypatch):
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        closeout_mod,
+        "load_dotenv",
+        lambda path, override=False: seen.update({"path": Path(path), "override": override}),
+    )
+    monkeypatch.setattr(closeout_mod, "_run_closeout", lambda _args: 0)
+
+    rc = closeout_mod.main([])
+
+    assert rc == 0
+    assert seen["path"] == closeout_mod.DEFAULT_DOTENV_PATH
+    assert seen["override"] is False
 
 
 def test_closeout_main_apply_acquires_internal_lock_when_not_preheld(monkeypatch):

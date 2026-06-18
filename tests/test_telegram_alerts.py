@@ -27,6 +27,14 @@ REQUIRES_DB = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def alert_conn(tmp_path):
+    """Temporary alert DB for tests that create or write fact_alert_log."""
+    with get_db(tmp_path / "alerts.db") as conn:
+        create_alert_log_table(conn)
+        yield conn
+
+
 class TestFormatReorderAlert:
     """Tests for alert message formatting."""
 
@@ -81,48 +89,37 @@ class TestFormatReorderAlert:
 class TestCheckCooldown:
     """Tests for cooldown checking."""
 
-    def test_check_cooldown_no_prior_alert(self):
+    def test_check_cooldown_no_prior_alert(self, alert_conn):
         """Returns True if no prior alert."""
-        with get_db() as conn:
-            create_alert_log_table(conn)
-
-            should_send, reason = check_cooldown(
-                conn, "NEW_SKU_NEVER_ALERTED", "TEST_STORE", hours=24
-            )
+        should_send, reason = check_cooldown(
+            alert_conn, "NEW_SKU_NEVER_ALERTED", "TEST_STORE", hours=24
+        )
 
         assert should_send is True
         assert reason is None
 
-    def test_check_cooldown_within_period(self):
+    def test_check_cooldown_within_period(self, alert_conn):
         """Returns False if alert sent within cooldown."""
-        with get_db() as conn:
-            create_alert_log_table(conn)
+        log_alert(
+            alert_conn, "RECENT_SKU", "TEST_STORE",
+            alert_type="REORDER",
+            channel="telegram",
+            message="test",
+            status="SENT",
+        )
 
-            # Log a recent alert
-            log_alert(
-                conn, "RECENT_SKU", "TEST_STORE",
-                alert_type="REORDER",
-                channel="telegram",
-                message="test",
-                status="SENT",
-            )
-
-            should_send, reason = check_cooldown(
-                conn, "RECENT_SKU", "TEST_STORE", hours=24
-            )
+        should_send, reason = check_cooldown(
+            alert_conn, "RECENT_SKU", "TEST_STORE", hours=24
+        )
 
         assert should_send is False
         assert "cooldown" in reason.lower()
 
-    def test_check_cooldown_expired(self):
+    def test_check_cooldown_expired(self, alert_conn):
         """Returns True if cooldown expired."""
-        with get_db() as conn:
-            create_alert_log_table(conn)
-
-            # Log an old alert (hack: set to very short cooldown)
-            should_send, reason = check_cooldown(
-                conn, "OLD_SKU_123", "TEST_STORE", hours=0  # 0 hour cooldown
-            )
+        should_send, reason = check_cooldown(
+            alert_conn, "OLD_SKU_123", "TEST_STORE", hours=0
+        )
 
         assert should_send is True
 
@@ -130,51 +127,44 @@ class TestCheckCooldown:
 class TestLogAlert:
     """Tests for alert logging."""
 
-    def test_log_alert_creates_record(self):
+    def test_log_alert_creates_record(self, alert_conn):
         """Logging creates a record in the database."""
-        with get_db() as conn:
-            create_alert_log_table(conn)
+        row_id = log_alert(
+            alert_conn, "LOG_TEST_SKU", "LOG_STORE",
+            alert_type="REORDER",
+            channel="telegram",
+            message="Test message",
+            status="SENT",
+            external_id="12345",
+        )
 
-            row_id = log_alert(
-                conn, "LOG_TEST_SKU", "LOG_STORE",
-                alert_type="REORDER",
-                channel="telegram",
-                message="Test message",
-                status="SENT",
-                external_id="12345",
-            )
-
-            # Verify record exists
-            cursor = conn.execute(
-                "SELECT sku_key, status, external_id FROM fact_alert_log WHERE id = ?",
-                (row_id,)
-            )
-            row = cursor.fetchone()
+        cursor = alert_conn.execute(
+            "SELECT sku_key, status, external_id FROM fact_alert_log WHERE id = ?",
+            (row_id,)
+        )
+        row = cursor.fetchone()
 
         assert row is not None
         assert row[0] == "LOG_TEST_SKU"
         assert row[1] == "SENT"
         assert row[2] == "12345"
 
-    def test_log_alert_suppressed(self):
+    def test_log_alert_suppressed(self, alert_conn):
         """Can log suppressed alerts."""
-        with get_db() as conn:
-            create_alert_log_table(conn)
+        row_id = log_alert(
+            alert_conn, "SUPPRESSED_SKU", "STORE",
+            alert_type="REORDER",
+            channel="telegram",
+            message="",
+            status="SUPPRESSED",
+            suppression_reason="Within 24h cooldown",
+        )
 
-            row_id = log_alert(
-                conn, "SUPPRESSED_SKU", "STORE",
-                alert_type="REORDER",
-                channel="telegram",
-                message="",
-                status="SUPPRESSED",
-                suppression_reason="Within 24h cooldown",
-            )
-
-            cursor = conn.execute(
-                "SELECT status, suppression_reason FROM fact_alert_log WHERE id = ?",
-                (row_id,)
-            )
-            row = cursor.fetchone()
+        cursor = alert_conn.execute(
+            "SELECT status, suppression_reason FROM fact_alert_log WHERE id = ?",
+            (row_id,)
+        )
+        row = cursor.fetchone()
 
         assert row[0] == "SUPPRESSED"
         assert "cooldown" in row[1].lower()

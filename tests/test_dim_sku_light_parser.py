@@ -94,3 +94,28 @@ def test_parser_emits_source_row_index_for_traceability(tmp_path: Path) -> None:
     rows, _ = parse_dim_sku_light(path, sheet_name="DIM_SKU_light_v7")
 
     assert rows["CL_OC_MEN_LINE52_BLACK"]["source_row_index"] == 4
+
+
+def test_parser_accepts_markdown_pipe_table_sheet(tmp_path: Path) -> None:
+    path = tmp_path / "dim_light_markdown.xlsx"
+    df = pd.DataFrame(
+        [
+            ["# DIM_SKU_light_v7"],
+            ["fallback planning anchor, not operational truth"],
+            ["| SKU_key | Type | Wt kg | CNY | Base_KZT | Freight | COGS | AvgPrc | D_final | Demand_basis | Active | Ads/day | Min_price_35pct | Notes |"],
+            ["| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | --- | --- |"],
+            ["| CL_OC_MEN_LINE52_BLACK | CL | 0.95 | 47 | 3666 | 1340 | 5006 | 9392 | 3 | FALLBACK_ANCHOR | True | 0 | ~7200 | current markdown-style v7 row |"],
+            ["| OF_SUIT-61_BLK_XL_50 | CL | 1.0 | 74 | 0 | 0 | 0 | 25990 | 1 | invalid prefix guard | True | 0 | 0 | helper row |"],
+            ["| CL_OC_MEN_LINE51_WHITE | CL | 1.20 | 62 | 0 | 0 | 0 | 12990 | 1 | FALLBACK_ANCHOR | True | 0 | 0 | active canonical row |"],
+        ]
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False, header=False)
+
+    rows, diagnostics = parse_dim_sku_light(path, sheet_name="DIM_SKU_light_v7")
+
+    assert rows["CL_OC_MEN_LINE52_BLACK"]["base_cost_cny"] == 47.0
+    assert rows["CL_OC_MEN_LINE52_BLACK"]["weight_kg"] == 0.95
+    assert rows["CL_OC_MEN_LINE52_BLACK"]["source_row_index"] == 5
+    assert "OF_SUIT-61_BLK_XL_50" not in rows
+    assert diagnostics["source_format"] == "markdown_pipe_table"

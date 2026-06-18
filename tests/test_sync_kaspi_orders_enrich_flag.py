@@ -20,7 +20,11 @@ class _FakeResult:
 class _FakeMultiResult:
     def __init__(self) -> None:
         self.errors: list[str] = []
-        self.store_results = {}
+        self.store_results = {
+            "UNIVERSAL": _FakeResult(),
+            "ACMEWEAR": _FakeResult(),
+            "STOREB": _FakeResult(),
+        }
         self.total_orders_fetched = 0
         self.total_orders_inserted = 0
         self.total_orders_updated = 0
@@ -63,7 +67,7 @@ def test_main_calls_enrichment_for_all_mode(monkeypatch) -> None:
     rc = mod.main()
     assert rc == 0
     assert len(calls) == 1
-    assert calls[0]["stores"] == ["UNIVERSAL", "ACMEWEAR", "11KZ", "MELVIS", "STOREB"]
+    assert calls[0]["stores"] == ["UNIVERSAL", "ACMEWEAR", "STOREB"]
     assert calls[0]["since"] == "2026-03-01"
     assert calls[0]["until"] == "2026-03-04"
     assert calls[0]["dry_run"] is False
@@ -91,7 +95,16 @@ def test_main_calls_enrichment_for_single_store_mode(monkeypatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
-        ["sync_kaspi_orders.py", "--store", "UNIVERSAL", "--since", "2026-03-01", "--enrich"],
+        [
+            "sync_kaspi_orders.py",
+            "--store",
+            "UNIVERSAL",
+            "--since",
+            "2026-03-01",
+            "--until",
+            "2026-03-04",
+            "--enrich",
+        ],
     )
 
     rc = mod.main()
@@ -99,4 +112,5 @@ def test_main_calls_enrichment_for_single_store_mode(monkeypatch) -> None:
     assert len(calls) == 1
     assert calls[0]["stores"] == ["UNIVERSAL"]
     assert calls[0]["since"] == "2026-03-01"
+    assert calls[0]["until"] == "2026-03-04"
     assert calls[0]["dry_run"] is False

@@ -8,9 +8,10 @@ def test_plan0_is_next_po_after_latest_real(monkeypatch) -> None:
     monkeypatch.setattr(
         dashboard,
         "resolve_last_real_po",
-        lambda: ("PO-5", 5, "2026-01-21"),
+        lambda *_args, **_kwargs: ("PO-5", 5, "2026-01-21"),
     )
-    monkeypatch.setattr(dashboard, "load_po_orders", lambda _po_id: None)
+    monkeypatch.setattr(dashboard, "load_po_orders", lambda _po_id, *_args, **_kwargs: None)
+    monkeypatch.setattr(dashboard, "load_active_part_orders_for_projection", lambda *_args, **_kwargs: {})
 
     def fake_generate_po_data(*_args, **_kwargs):
         return {

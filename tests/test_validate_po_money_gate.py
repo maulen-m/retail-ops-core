@@ -63,3 +63,39 @@ def test_run_po_money_gate_offer_linkage_blocks_when_strict(tmp_path: Path) -> N
     )
     assert report["ok"] is False
     assert "offer_linkage" in report["required_failed"]
+
+
+def test_run_po_money_gate_passes_copied_temp_contract_flags(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    (project_root / "scripts").mkdir(parents=True)
+    (project_root / "config" / "anchors").mkdir(parents=True)
+    workbook = project_root / "config" / "anchors" / "INBOUND_CALENDAR_LATEST.xlsx"
+    workbook.write_bytes(b"fake")
+    scope_contract = tmp_path / "po_scope.tsv"
+    unit_cogs = tmp_path / "unit_cogs.csv"
+    dashboard = tmp_path / "dashboard.json"
+    system_dashboard = tmp_path / "system_dashboard.json"
+    seen: list[list[str]] = []
+
+    def runner(cmd: list[str], cwd: Path) -> tuple[int, str, str]:
+        seen.append(cmd)
+        return 0, "", ""
+
+    report = run_po_money_gate(
+        project_root=project_root,
+        db_path=project_root / "db" / "app.db",
+        allow_accepted_shortages_for_copied_temp=True,
+        po_part_scope_contract=scope_contract,
+        unit_cogs_evidence_csv=unit_cogs,
+        single_truth_system_dashboard=system_dashboard,
+        single_truth_alignment_input=dashboard,
+        command_runner=runner,
+    )
+
+    assert report["ok"] is True
+    commands = [" ".join(cmd) for cmd in seen]
+    assert any("--allow-accepted-shortages-for-copied-temp" in cmd for cmd in commands)
+    assert any("--po-part-scope-contract" in cmd and str(scope_contract) in cmd for cmd in commands)
+    assert any("--unit-cogs-evidence-csv" in cmd and str(unit_cogs) in cmd for cmd in commands)
+    assert any("--dashboard" in cmd and str(system_dashboard) in cmd for cmd in commands)
+    assert any("--input" in cmd and str(dashboard) in cmd for cmd in commands)

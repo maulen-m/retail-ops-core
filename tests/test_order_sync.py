@@ -332,6 +332,24 @@ class TestOrderParsing:
         assert parsed['kaspi_status'] == 'KASPI_DELIVERY'
         assert parsed['internal_status'] == 'READY'
 
+    def test_parse_returned_order_marks_pickup_ready(self, engine):
+        """Final RETURNED lifecycle rows enter the returns pickup-ready queue."""
+        order = {
+            "id": "order-returned",
+            "attributes": {
+                "code": "444444",
+                "state": "ARCHIVE",
+                "status": "RETURNED",
+                "creationDate": int(datetime(2026, 6, 1, 10, 0).timestamp() * 1000),
+                "kaspiDelivery": {},
+            },
+        }
+
+        parsed = engine._parse_api_order(order, "ACMEWEAR")
+
+        assert parsed["internal_status"] == "RETURNED"
+        assert parsed["returned_to_warehouse"] == 1
+
     def test_parse_dates(self, engine, sample_api_orders):
         """Test date parsing."""
         order = sample_api_orders[0]

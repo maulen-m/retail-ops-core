@@ -8,6 +8,7 @@ from core.db.sales_truth_query_guard import (
     install_sales_truth_query_guard,
     remove_sales_truth_query_guard,
 )
+from core.sales.truth_views import ensure_sales_truth_views
 
 
 def test_runtime_guard_blocks_raw_sales_tables() -> None:
@@ -50,6 +51,46 @@ def test_runtime_guard_allows_published_truth_views() -> None:
 
     assert rows_line == [("1",)]
     assert rows_daily == [("2026-02-17",)]
+
+
+def test_runtime_guard_allows_generated_truth_view_internals() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE sales_fact_v2 (
+            order_id TEXT,
+            order_date TEXT,
+            store_code TEXT,
+            sku_key TEXT,
+            sku_id TEXT,
+            my_size TEXT,
+            quantity REAL,
+            net_rev REAL,
+            cogs REAL,
+            profit REAL,
+            status TEXT,
+            return_flag INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2 (
+            order_id, order_date, store_code, sku_key, sku_id, my_size,
+            quantity, net_rev, cogs, profit, status, return_flag
+        ) VALUES ('1', '2026-02-17', 'UNIVERSAL', 'SKU_A', 'SKU_A_L', 'L', 1, 1000, 400, 600, 'DELIVERED', 0)
+        """
+    )
+    ensure_sales_truth_views(conn)
+    install_sales_truth_query_guard(conn)
+
+    rows = conn.execute(
+        "SELECT order_id, sku_key FROM view_sales_line_truth"
+    ).fetchall()
+    assert rows == [("1", "SKU_A")]
+
+    with pytest.raises(sqlite3.DatabaseError):
+        conn.execute("SELECT order_id FROM sales_fact_v2").fetchall()
 
 
 def test_guard_can_be_removed() -> None:

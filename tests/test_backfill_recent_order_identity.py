@@ -57,6 +57,7 @@ def _write_reference_csv(path: Path) -> None:
         [
             {
                 "store_code": "UNIVERSAL",
+                "sku_id_ksp": "SKU_A",
                 "kaspi_offer_name": "Offer A",
                 "effective_sku_key": "SKU_A",
                 "effective_size": "XL",

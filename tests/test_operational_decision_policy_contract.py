@@ -28,6 +28,9 @@ def test_operational_decision_policy_is_fail_closed_and_current_scope() -> None:
     assert set(scope["all_kaspi_stores"]) == {"ACMEWEAR", "UNIVERSAL", "STOREB", "11KZ", "MELVIS"}
     assert set(scope["active_positive_stock_stores"]) == {"ACMEWEAR", "UNIVERSAL", "STOREB"}
     assert set(scope["inactive_stores"]) == {"11KZ", "MELVIS"}
+    assert set(scope["archived_stores"]) == {"11KZ", "MELVIS"}
+    assert scope["archived_store_decision_id"] == "OD-027"
+    assert scope["archived_store_action"] == "archive_both_stop_daily_polling"
 
     ads = policy["ads_truth"]
     assert set(ads["active_kaspi_internal_ads_stores"]) == {"ACMEWEAR", "STOREB"}

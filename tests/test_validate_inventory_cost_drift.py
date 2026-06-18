@@ -187,6 +187,43 @@ def test_drift_handles_missing_on_delivery_column_with_safe_fallback(
     assert rc == 0
 
 
+def test_drift_paid_truth_mode_validates_snapshot_on_hand_against_operator_lens(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    bank_path = tmp_path / "bank_accounts.yaml"
+    _seed_snapshot(db_path)
+    _seed_cashflow_row(
+        db_path=db_path,
+        on_hand=10.0,
+        inbound=20.0,
+        on_delivery=30.0,
+        inventory_cost_close=60.0,
+    )
+    bank_path.write_text(
+        """
+as_of: 2026-02-05 09:00:00 GMT+5
+stores:
+  ACMEWEAR:
+    accounts:
+      kaspi_gold:
+        balance_kzt: 1000
+""",
+        encoding="utf-8",
+    )
+
+    rc = validate_inventory_cost_drift.validate_drift(
+        db_path=db_path,
+        as_of=SNAPSHOT_DATE,
+        tolerance_pct=0.0,
+        tolerance_kzt=0.0,
+        mode="paid-truth",
+        bank_accounts_path=bank_path,
+    )
+
+    assert rc == 0
+
+
 def test_drift_default_compares_last_settled_day_not_latest_partial(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     conn = sqlite3.connect(str(db_path))

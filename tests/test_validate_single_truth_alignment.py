@@ -85,6 +85,68 @@ def test_validate_alignment_flags_snapshot_after_message_date(tmp_path: Path) ->
     assert any("baseline_snapshot_date" in err for err in errors)
 
 
+def test_validate_alignment_allows_current_replay_plan_baseline_after_message_date(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_po_db(db_path)
+    payload = {
+        "pos": {
+            "PLAN-0": {
+                "po_name": "PLAN-0",
+                "po_kind": "PLAN",
+                "po_message_date": "2026-02-25",
+                "generated_at": "2026-05-31",
+                "cutoff_date": "2026-05-31",
+                "sku_level": [
+                    {
+                        "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+                        "po_qty_total": 0,
+                        "baseline_snapshot_date": "2026-05-31",
+                    }
+                ],
+                "size_level": [],
+            }
+        }
+    }
+
+    errors = validate_alignment_payload(
+        payload, db_path=db_path, run_cashflow=False, run_drift=False
+    )
+    assert not any("baseline_snapshot_date" in err for err in errors)
+
+
+def test_validate_alignment_still_flags_true_future_plan_baseline_after_message_date(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_po_db(db_path)
+    payload = {
+        "pos": {
+            "PLAN-1": {
+                "po_name": "PLAN-1",
+                "po_kind": "PLAN",
+                "po_message_date": "2026-06-15",
+                "generated_at": "2026-06-01",
+                "cutoff_date": "2026-06-01",
+                "sku_level": [
+                    {
+                        "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+                        "po_qty_total": 350,
+                        "baseline_snapshot_date": "2026-06-16",
+                    }
+                ],
+                "size_level": [],
+            }
+        }
+    }
+
+    errors = validate_alignment_payload(
+        payload, db_path=db_path, run_cashflow=False, run_drift=False
+    )
+    assert any("baseline_snapshot_date" in err for err in errors)
+
+
 def test_validate_alignment_allows_real_archive_baseline_after_message_date(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     _seed_po_db(db_path)

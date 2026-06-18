@@ -669,22 +669,23 @@ def test_build_phase1_payload_groups_orders_into_board_tabs(tmp_path: Path):
     exceptions = payload["Exceptions"]
     run_control = payload["Run_Control"]
 
-    assert [row["_db_row_id"] for row in salesraw] == ["6", "1", "2", "3"]
-    assert [row["OrderID"] for row in salesraw] == ["0900", "1001", "1001", "1002"]
-    assert [row["STORE_NAME"] for row in salesraw] == ["Universal", "Universal", "Universal", "STORE-B"]
-    assert [row["Status"] for row in salesraw] == ["OVERDUE", "TODAY", "TODAY", "TODAY"]
-    assert salesraw[0]["MY_SIZE"] == "XL"
-    assert salesraw[0]["PROBABLE_SIZE"] == "XL"
-    assert salesraw[1]["PROBABLE_SIZE"] == "L"
-    assert salesraw[1]["_probable_size_source"] == "CUSTOMER"
-    assert salesraw[1]["Kaspi_name_core"] == "Nike_Tee_Black"
+    assert [row["_db_row_id"] for row in salesraw] == ["3", "6", "1", "2"]
+    assert [row["OrderID"] for row in salesraw] == ["1002", "0900", "1001", "1001"]
+    assert [row["STORE_NAME"] for row in salesraw] == ["STORE-B", "Universal", "Universal", "Universal"]
+    assert [row["Status"] for row in salesraw] == ["TODAY", "OVERDUE", "TODAY", "TODAY"]
+    salesraw_by_id = {row["_db_row_id"]: row for row in salesraw}
+    assert salesraw_by_id["6"]["MY_SIZE"] == "XL"
+    assert salesraw_by_id["6"]["PROBABLE_SIZE"] == "XL"
+    assert salesraw_by_id["1"]["PROBABLE_SIZE"] == "L"
+    assert salesraw_by_id["1"]["_probable_size_source"] == "CUSTOMER"
+    assert salesraw_by_id["1"]["Kaspi_name_core"] == "Nike_Tee_Black"
     assert "Phone" not in salesraw[0]
-    assert [row["order_id"] for row in orders] == ["0900", "1001", "1002"]
+    assert [row["order_id"] for row in orders] == ["1002", "0900", "1001"]
     order_1001 = next(row for row in orders if row["order_id"] == "1001")
     assert order_1001["offer_name"] == "Nike Tee Black +1 more"
     assert order_1001["quantity"] == 3
     assert [row["order_id"] for row in needs_size] == ["1001"]
-    assert [row["order_id"] for row in shipping] == ["0900", "1002"]
+    assert [row["order_id"] for row in shipping] == ["1002", "0900"]
     shipping_1002 = next(row for row in shipping if row["order_id"] == "1002")
     assert shipping_1002["waybill_ready"] == "yes"
     assert [row["order_id"] for row in shipped] == ["1003"]
@@ -767,7 +768,7 @@ def test_build_phase1_payload_drops_placeholder_shadow_rows_when_concrete_row_ex
 
     salesraw = payload["SalesRaw_Today"]
 
-    assert [row["_db_row_id"] for row in salesraw] == ["6", "1", "2", "3"]
+    assert [row["_db_row_id"] for row in salesraw] == ["3", "6", "1", "2"]
     assert all(row["KASPI_OFFER_NAME"] != "nan" for row in salesraw)
     assert all(row["Kaspi_name_core"] != "UNKNOWN" for row in salesraw)
 
@@ -1635,11 +1636,14 @@ def test_build_publish_plan_same_day_preserves_existing_rows_and_only_appends_ne
     assert plan["tab_actions"]["Needs_Size"]["append_rows"] == []
     assert plan["tab_actions"]["Needs_Size"]["final_rows"][0]["my_size"] == ""
     assert plan["tab_actions"]["Needs_Size"]["final_rows"][0]["note"] == ""
-    assert plan["tab_actions"]["Orders_Today"]["final_rows"][0]["status"] == "READY"
-    assert plan["tab_actions"]["Orders_Today"]["final_rows"][0]["exception_flag"] == ""
+    final_orders = plan["tab_actions"]["Orders_Today"]["final_rows"]
+    assert [row["order_id"] for row in final_orders] == ["1002", "1001"]
+    order_1001 = next(row for row in final_orders if row["order_id"] == "1001")
+    assert order_1001["status"] == "READY"
+    assert order_1001["exception_flag"] == ""
     assert plan["tab_actions"]["SalesRaw_Today"]["final_rows"][0]["MY_SIZE"] == "L"
     assert plan["tab_actions"]["SalesRaw_Today"]["final_rows"][0]["Quantity"] == 3
-    assert [row["order_id"] for row in plan["tab_actions"]["Orders_Today"]["final_rows"]] == ["1001", "1002"]
+    assert [row["order_id"] for row in plan["tab_actions"]["Orders_Today"]["final_rows"]] == ["1002", "1001"]
 
 
 def test_build_publish_plan_same_day_appends_new_salesraw_rows_only_at_bottom():
@@ -1729,6 +1733,62 @@ def test_build_publish_plan_same_day_appends_new_salesraw_rows_only_at_bottom():
 
     assert plan["tab_actions"]["SalesRaw_Today"]["append_rows"] == [fresh_payload["SalesRaw_Today"][0]]
     assert [row["OrderID"] for row in plan["tab_actions"]["SalesRaw_Today"]["final_rows"]] == ["1001", "0900"]
+
+
+def test_build_publish_plan_same_day_appends_new_salesraw_rows_in_store_order():
+    contract = load_ops_board_contract()
+    before_snapshot = {
+        "README": rows_to_matrix(
+            contract.tabs["README"].headers,
+            [{"field": "target_date", "value": "2026-04-15", "notes": "Operational date"}],
+        ),
+        "SalesRaw_Today": rows_to_matrix(contract.tabs["SalesRaw_Today"].headers, []),
+        "Run_Control": rows_to_matrix(
+            contract.tabs["Run_Control"].headers,
+            [{"target_date": "2026-04-15", "ready_for_closeout": "HOLD"}],
+        ),
+    }
+    fresh_payload = {
+        "README": [{"field": "target_date", "value": "2026-04-15", "notes": "Operational date"}],
+        "SalesRaw_Today": [
+            {
+                "Status": "TODAY",
+                "Date": "2026-04-15",
+                "STORE_NAME": "Universal",
+                "OrderID": "3001",
+                "Kaspi_name_core": "Universal_Set",
+                "_db_row_id": "3",
+            },
+            {
+                "Status": "TODAY",
+                "Date": "2026-04-15",
+                "STORE_NAME": "STORE-B",
+                "OrderID": "1001",
+                "Kaspi_name_core": "Mgroup_Set",
+                "_db_row_id": "1",
+            },
+            {
+                "Status": "TODAY",
+                "Date": "2026-04-15",
+                "STORE_NAME": "AcmeWear",
+                "OrderID": "2001",
+                "Kaspi_name_core": "AcmeWear_Set",
+                "_db_row_id": "2",
+            },
+        ],
+        "Run_Control": [{"target_date": "2026-04-15", "ready_for_closeout": "HOLD"}],
+    }
+
+    plan = build_publish_plan(
+        contract=contract,
+        before_snapshot=before_snapshot,
+        fresh_payload=fresh_payload,
+        target_date="2026-04-15",
+    )
+
+    append_rows = plan["tab_actions"]["SalesRaw_Today"]["append_rows"]
+    assert [row["STORE_NAME"] for row in append_rows] == ["STORE-B", "AcmeWear", "Universal"]
+    assert [row["OrderID"] for row in append_rows] == ["1001", "2001", "3001"]
 
 
 def test_build_publish_plan_uses_run_control_target_when_readme_is_empty():

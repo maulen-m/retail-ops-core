@@ -138,6 +138,56 @@ def test_validator_flags_dashboard_profit_leak_for_unresolved_sku(tmp_path: Path
     assert any("profit lock violated" in err for err in report["leak_errors"])
 
 
+def test_validator_accepts_nested_skipped_sku_cogs_lock(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_sales_db(db_path, include_unresolved=True)
+
+    business_insides_path = tmp_path / "BUSINESS_INSIDES_2026-02-08.md"
+    business_insides_path.write_text(
+        "- Unresolved COGS rows: `1`.\n- Unresolved SKU count: `1`.\n",
+        encoding="utf-8",
+    )
+
+    dashboard_path = tmp_path / "po_dashboard_data.json"
+    dashboard_path.write_text(
+        json.dumps(
+            {
+                "pos": {
+                    "PLAN-0": {
+                        "sku_level": [],
+                        "skipped_skus": [
+                            {
+                                "sku_key": "SKU_BAD",
+                                "reason": "NO_DEMAND_NO_ANCHOR",
+                                "cogs_unresolved_rows": 1,
+                                "profit_publishable": False,
+                                "profit_unit": None,
+                                "monthly_profit": None,
+                                "roic_pct": None,
+                                "profit_margin_pct": None,
+                            }
+                        ],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = validate_profit_publication_integrity(
+        db_path=db_path,
+        as_of="2026-02-08",
+        days=14,
+        business_insides_path=business_insides_path,
+        po_dashboard_path=dashboard_path,
+    )
+
+    assert report["ok"] is False
+    assert any("unresolved COGS rows present" in err for err in report["errors"])
+    assert not any("missing unresolved SKU rows" in err for err in report["errors"])
+    assert report["leak_errors"] == []
+
+
 def test_validator_passes_when_no_unresolved_rows_exist(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     _seed_sales_db(db_path, include_unresolved=False)
@@ -161,3 +211,35 @@ def test_validator_passes_when_no_unresolved_rows_exist(tmp_path: Path) -> None:
 
     assert report["ok"] is True
     assert report["errors"] == []
+
+
+def test_validator_does_not_materialize_views_in_source_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_sales_db(db_path, include_unresolved=False)
+
+    business_insides_path = tmp_path / "BUSINESS_INSIDES_2026-02-08.md"
+    business_insides_path.write_text(
+        "- Unresolved COGS rows: `0`.\n- Unresolved SKU count: `0`.\n",
+        encoding="utf-8",
+    )
+    dashboard_path = tmp_path / "po_dashboard_data.json"
+    dashboard_path.write_text(json.dumps({"sku_level": []}), encoding="utf-8")
+
+    report = validate_profit_publication_integrity(
+        db_path=db_path,
+        as_of="2026-02-08",
+        days=14,
+        business_insides_path=business_insides_path,
+        po_dashboard_path=dashboard_path,
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        view_count = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND name='view_sales_line_truth'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert report["ok"] is True
+    assert view_count == 0

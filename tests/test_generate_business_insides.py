@@ -1,3 +1,4 @@
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -5,6 +6,10 @@ import yaml
 
 from core.cashflow.paid_capital_truth import compute_paid_capital_truth
 from scripts.generate_business_insides import generate_business_insides
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _init_db(db_path: Path) -> None:
@@ -234,6 +239,34 @@ def test_business_insides_uses_sales_fact_v2_not_cashflow_daily_sales_accrued(tm
 
     assert result["performance"]["avg_7d_net_rev_kzt"] > 0
     assert result["performance"]["avg_7d_cogs_kzt"] < 999999
+
+
+def test_generate_business_insides_does_not_mutate_source_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    bank = tmp_path / "bank_accounts.yaml"
+    _init_db(db_path)
+    _write_bank_yaml(bank)
+    before = _sha256(db_path)
+
+    generate_business_insides(
+        db_path=db_path,
+        bank_accounts_path=bank,
+        as_of="2026-02-08",
+        output_dir=tmp_path / "business_insides",
+        archive_orders_globs=[],
+    )
+
+    assert _sha256(db_path) == before
+    with sqlite3.connect(str(db_path)) as conn:
+        view_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type='view'
+              AND name IN ('view_sales_line_truth', 'view_sales_daily_truth')
+            """
+        ).fetchone()[0]
+    assert view_count == 0
 
 
 def test_business_insides_last_7_days_no_false_zero_on_dates_with_delivered_rows(tmp_path: Path) -> None:

@@ -80,7 +80,7 @@ def _init_db(db_path: Path) -> None:
     conn.close()
 
 
-def _write_workbook(path: Path) -> None:
+def _write_workbook(path: Path, *, markdown_dim_sheet: bool = False) -> None:
     inbounds = pd.DataFrame(
         [
             {
@@ -136,21 +136,34 @@ def _write_workbook(path: Path) -> None:
             }
         ]
     )
-    dim_sheet = pd.DataFrame(
-        [
-            {
-                "SKU_key": "CL_OC_MEN_LINE52_BLACK",
-                "Type": "CL",
-                "Wt (kg)": 0.07,
-                "CNY": 0.19,
-                "AvgPrc": 0.2,
-            }
-        ]
-    )
+    if markdown_dim_sheet:
+        dim_sheet = pd.DataFrame(
+            [
+                ["# DIM_SKU_light_v7"],
+                ["## 2. SKU Master Data - v7 Fallback Anchors"],
+                ["| SKU_key | Type | Wt kg | CNY | Base_KZT | Freight | COGS | AvgPrc | D_final | Demand_basis | Active | Ads/day | Min_price_35pct | Notes |"],
+                ["| CL_OC_MEN_LINE52_BLACK | CL | 0.95 | 47 | 3666 | 1340 | 5006 | 9392 | 3 | FALLBACK_ANCHOR | True | 0 | ~7200 | current markdown-style v7 row |"],
+            ]
+        )
+    else:
+        dim_sheet = pd.DataFrame(
+            [
+                {
+                    "SKU_key": "CL_OC_MEN_LINE52_BLACK",
+                    "Type": "CL",
+                    "Wt (kg)": 0.07,
+                    "CNY": 0.19,
+                    "AvgPrc": 0.2,
+                }
+            ]
+        )
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         inbounds.to_excel(writer, sheet_name="Inbounds_sheet", index=False)
         part_totals.to_excel(writer, sheet_name="PO_part_id_Totals", index=False)
-        dim_sheet.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False)
+        if markdown_dim_sheet:
+            dim_sheet.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False, header=False)
+        else:
+            dim_sheet.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False)
 
 
 def test_po_parts_sync_does_not_overwrite_dim_sku_weight_from_embedded_sheet_by_default(
@@ -170,3 +183,24 @@ def test_po_parts_sync_does_not_overwrite_dim_sku_weight_from_embedded_sheet_by_
     ).fetchone()[0]
     conn.close()
     assert float(weight) == 0.95
+
+
+def test_po_parts_sync_accepts_markdown_dim_sku_light_v7_sheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _init_db(db_path)
+    _write_workbook(xlsx_path, markdown_dim_sheet=True)
+    monkeypatch.setenv("ENABLE_PO_PART_SYNC_WRITE", "1")
+
+    sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT weight_kg, avg_sell_price_kzt_used FROM dim_sku WHERE sku_key='CL_OC_MEN_LINE52_BLACK'"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert float(row[0]) == 0.95
+    assert float(row[1]) == 9392.0

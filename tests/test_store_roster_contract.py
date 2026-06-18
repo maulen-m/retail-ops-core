@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.stores.roster import load_active_store_codes
+from core.stores.roster import load_active_store_codes, load_sync_enabled_kaspi_store_codes
 
 
 AUTHORITY_DOC = Path("docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md")
@@ -17,7 +17,7 @@ STORE_MAP = {
 
 def _extract_authority_store_codes() -> set[str]:
     text = AUTHORITY_DOC.read_text(encoding="utf-8")
-    marker = "## Multi-Store Scale Roster"
+    marker = "## Active Daily Polling Roster"
     assert marker in text, "missing roster section in authority doc"
     section = text.split(marker, 1)[1]
     section = section.split("\n## ", 1)[0]
@@ -30,3 +30,11 @@ def test_store_roster_config_matches_authority_doc() -> None:
     config_codes = set(load_active_store_codes())
     authority_codes = _extract_authority_store_codes()
     assert config_codes == authority_codes
+
+
+def test_archived_store_identities_are_preserved_but_not_sync_enabled() -> None:
+    text = AUTHORITY_DOC.read_text(encoding="utf-8")
+    assert "## Archived Historical Store Identities" in text
+    assert "11KZ" in text
+    assert "Store-C" in text
+    assert set(load_sync_enabled_kaspi_store_codes()) == {"UNIVERSAL", "ACMEWEAR", "STOREB"}

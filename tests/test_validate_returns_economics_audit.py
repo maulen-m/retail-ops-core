@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,12 @@ def _init_db(path: Path) -> None:
     conn.close()
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def test_validate_returns_economics_pass_within_volatility(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     _init_db(db_path)
@@ -82,6 +89,23 @@ def test_validate_returns_economics_pass_within_volatility(tmp_path: Path) -> No
     )
     assert report["status"] == "PASS"
     assert report["stale_leaked_orders"] == 0
+
+
+def test_validate_returns_economics_does_not_mutate_source_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+    before = _sha256(db_path)
+
+    validate_returns_economics_audit(
+        db_path=db_path,
+        as_of=date(2026, 3, 4),
+        since=date(2026, 2, 1),
+        output_root=tmp_path / "out",
+        volatility_days=14,
+        strict=True,
+    )
+
+    assert _sha256(db_path) == before
 
 
 def test_validate_returns_economics_fails_stale_leak(tmp_path: Path) -> None:

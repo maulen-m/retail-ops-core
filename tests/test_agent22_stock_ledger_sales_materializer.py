@@ -217,6 +217,60 @@ def test_stock_ledger_sales_materializer_only_activates_qc_accepted_returns(
     )
 
 
+def test_stock_ledger_sales_materializer_skips_existing_sale_identity_when_return_date_shifts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _create_stock_materializer_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO stock_ledger (
+                event_date, event_type, sku_key, sku_id, my_size, store_code,
+                qty_change, running_balance, reference_id, reference_type, idempotency_key
+            ) VALUES ('2026-04-20', 'SALE', 'SKU_A', 'SKU_A_M', 'M', 'UNIVERSAL',
+                      -1, 4, 'RET-1', 'SALE', 'legacy-ret-1-sale')
+            """
+        )
+        conn.commit()
+
+    dry = run_materialization(
+        db_path=db_path,
+        start_date=date(2026, 4, 16),
+        end_date=date(2026, 5, 4),
+        output_root=tmp_path / "dry_existing_identity",
+        apply=False,
+    )
+
+    assert dry["candidate_count"] == 2
+    assert dry["insert_count"] == 1
+    assert dry["existing_event_identity_count"] == 1
+
+    monkeypatch.setenv("ENABLE_STOCK_LEDGER_SALES_REPLAY_WRITE", "1")
+    applied = run_materialization(
+        db_path=db_path,
+        start_date=date(2026, 4, 16),
+        end_date=date(2026, 5, 4),
+        output_root=tmp_path / "apply_existing_identity",
+        apply=True,
+    )
+
+    assert applied["rows_applied"] == 1
+    with sqlite3.connect(db_path) as conn:
+        duplicate_sale_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM stock_ledger
+            WHERE event_type='SALE'
+              AND reference_id='RET-1'
+              AND sku_id='SKU_A_M'
+            """
+        ).fetchone()[0]
+
+    assert duplicate_sale_count == 1
+
+
 def test_stock_ledger_sales_materializer_skips_cancelled_rows_without_stock_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

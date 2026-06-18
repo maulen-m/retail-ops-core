@@ -318,6 +318,38 @@ class TestParseSalesExcel:
         assert records[0]["sku_id"] == "CL_LINE52_BLACK_S"
         assert records[1]["store_code"] == "ACMEWEAR"
 
+    def test_parse_fills_blank_english_cells_from_russian_source_columns(self, tmp_path):
+        """Mixed CRM rows keep English formulas, but raw Russian cells can be the only populated source."""
+        data = {
+            "OrderID": [""],
+            "Date": [""],
+            "KASPI_OFFER_NAME": [""],
+            "SKU_ID": ["CL_LINE52_BLACK_M"],
+            "SKU_key": ["CL_LINE52_BLACK"],
+            "MY_SIZE": ["M"],
+            "Quantity": [""],
+            "Sell_price_kzt": [""],
+            "STORE_NAME": ["Universal"],
+            "№ заказа": ["ORD-R-FALLBACK"],
+            "Дата поступления заказа": [date(2026, 6, 15)],
+            "Название товара в Kaspi Магазине": ["Принт 5в1 черный M"],
+            "Количество": [1],
+            "Сумма": [15000],
+            "Стоимость доставки для продавца": [900],
+        }
+        xlsx_path = tmp_path / "mixed_blank_formula_cells.xlsx"
+        pd.DataFrame(data).to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+        records = parse_sales_excel(str(xlsx_path))
+
+        assert len(records) == 1
+        assert records[0]["order_id"] == "ORD-R-FALLBACK"
+        assert records[0]["order_date"] == date(2026, 6, 15)
+        assert records[0]["kaspi_offer_name"] == "Принт 5в1 черный M"
+        assert records[0]["quantity"] == 1
+        assert records[0]["sell_price_kzt"] == 15000
+        assert records[0]["delivery_fee"] == 900
+
     def test_parse_prefers_seller_delivery_fee(self, delivery_fee_excel):
         """Seller delivery fee should override legacy column when present."""
         records = parse_sales_excel(delivery_fee_excel)

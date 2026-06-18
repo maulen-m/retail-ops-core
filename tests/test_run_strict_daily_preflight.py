@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import time
@@ -9,6 +11,20 @@ import time
 import pytest
 
 from scripts.run_strict_daily_preflight import run_preflight
+
+
+def _seed_sqlite_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS sanity_check (id INTEGER PRIMARY KEY)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_preflight_proof_window_lock_blocks_before_db_or_workbook_access(
@@ -75,7 +91,7 @@ def test_preflight_fails_closed_when_workbook_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "app.db"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     monkeypatch.delenv("AB_CRM_WORKBOOK_PATH", raising=False)
 
     code, summary = run_preflight(
@@ -92,7 +108,7 @@ def test_preflight_uses_env_workbook_path_when_not_explicit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "app.db"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     missing_workbook = tmp_path / "missing.xlsx"
     monkeypatch.setenv("AB_CRM_WORKBOOK_PATH", str(missing_workbook))
 
@@ -111,7 +127,7 @@ def test_preflight_propagates_strict_validation_result(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
 
     def _fake_run(*_args, **_kwargs):
@@ -135,7 +151,7 @@ def test_preflight_emits_lineage_when_requested(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     lineage_path = tmp_path / "lineage.json"
 
@@ -167,7 +183,7 @@ def test_cli_emit_lineage_does_not_crash_from_script_entrypoint(tmp_path: Path) 
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
     lineage_path = tmp_path / "lineage.json"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -200,7 +216,7 @@ def test_preflight_fails_when_workbook_is_stale(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     stale_seconds = 72 * 3600
     old_ts = time.time() - stale_seconds
@@ -228,7 +244,7 @@ def test_preflight_sends_failure_alert_on_strict_failure(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     calls: list[tuple[str, str, str]] = []
 
@@ -260,7 +276,7 @@ def test_preflight_alert_failures_are_best_effort(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
 
     def _fake_run(*_args, **_kwargs):
@@ -288,7 +304,7 @@ def test_preflight_autogenerates_business_insides_when_missing(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
     (tmp_path / "config" / "business_insides" / "snapshots").mkdir(parents=True, exist_ok=True)
@@ -335,7 +351,7 @@ def test_preflight_fails_when_business_insides_generation_fails(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
     (tmp_path / "config" / "business_insides" / "snapshots").mkdir(parents=True, exist_ok=True)
@@ -366,7 +382,7 @@ def test_preflight_emits_drift_pack_after_strict_pass(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     calls: list[dict] = []
 
@@ -414,14 +430,17 @@ def test_preflight_passes_workbook_env_to_validate_params_subprocess(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     captured_env: dict[str, str] = {}
+    captured_db_path: Path | None = None
 
     def _fake_run(cmd, *args, **kwargs):
+        nonlocal captured_db_path
         cmd_str = " ".join(str(part) for part in cmd)
         if "validate_params.py" in cmd_str:
             captured_env.update(kwargs.get("env", {}))
+            captured_db_path = Path(cmd[cmd.index("--db") + 1])
             return subprocess.CompletedProcess(args=cmd, returncode=0)
         raise AssertionError(f"Unexpected command: {cmd_str}")
 
@@ -436,6 +455,48 @@ def test_preflight_passes_workbook_env_to_validate_params_subprocess(
 
     assert code == 0
     assert captured_env.get("AB_CRM_WORKBOOK_PATH") == str(workbook_path)
+    assert captured_db_path is not None
+    assert captured_db_path != db_path
+
+
+def test_preflight_keeps_source_db_stable_when_strict_validator_mutates_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    workbook_path = tmp_path / "crm.xlsx"
+    _seed_sqlite_db(db_path)
+    workbook_path.write_text("fixture", encoding="utf-8")
+    before_hash = _sha256(db_path)
+    captured_db_path: Path | None = None
+
+    def _fake_run(cmd, *args, **kwargs):
+        nonlocal captured_db_path
+        cmd_str = " ".join(str(part) for part in cmd)
+        if "validate_params.py" in cmd_str:
+            captured_db_path = Path(cmd[cmd.index("--db") + 1])
+            conn = sqlite3.connect(captured_db_path)
+            try:
+                conn.execute("CREATE VIEW validation_only_view AS SELECT 1 AS ok")
+                conn.commit()
+            finally:
+                conn.close()
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
+        raise AssertionError(f"Unexpected command: {cmd_str}")
+
+    monkeypatch.setattr("scripts.run_strict_daily_preflight.subprocess.run", _fake_run)
+
+    code, summary = run_preflight(
+        db_path=db_path,
+        workbook_path=workbook_path,
+        emit_lineage=False,
+        ensure_business_insides=False,
+    )
+
+    assert code == 0
+    assert "PASS" in summary
+    assert captured_db_path is not None
+    assert captured_db_path != db_path
+    assert _sha256(db_path) == before_hash
 
 
 def test_preflight_fails_when_workbook_mtime_is_future_beyond_skew(
@@ -443,7 +504,7 @@ def test_preflight_fails_when_workbook_mtime_is_future_beyond_skew(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     now = time.time()
     future_ts = now + 600
@@ -470,7 +531,7 @@ def test_preflight_allows_small_future_mtime_within_skew(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     now = time.time()
     future_ts = now + 30
@@ -497,7 +558,7 @@ def test_preflight_uses_36h_default_age_threshold(
 ) -> None:
     db_path = tmp_path / "app.db"
     workbook_path = tmp_path / "crm.xlsx"
-    db_path.write_text("", encoding="utf-8")
+    _seed_sqlite_db(db_path)
     workbook_path.write_text("fixture", encoding="utf-8")
     old_ts = time.time() - (40 * 3600)
     os.utime(workbook_path, (old_ts, old_ts))

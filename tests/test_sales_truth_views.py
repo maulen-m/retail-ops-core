@@ -502,8 +502,8 @@ def test_truth_view_cogs_uses_full_formula_not_partial_source_cogs(tmp_path: Pat
     ).fetchone()
     conn.close()
 
-    # cogs_unit = 100*75 + 1.5*520*2.66 = 9574.8; line = 19149.6
-    assert row[0] == 19149.6
+    # cogs_unit = 100*73 + 1.5*520*2.66 = 9374.8; line = 18749.6
+    assert row[0] == 18749.6
     assert row[1] == "formula_full"
     assert row[2] == 1.0
 
@@ -515,7 +515,7 @@ def test_truth_view_unresolved_when_base_or_weight_missing(tmp_path: Path) -> No
     conn.execute(
         """
         INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
-        VALUES ('SKU_BAD', 80, NULL, 2500)
+        VALUES ('SKU_BAD', 80, NULL, 0)
         """
     )
     conn.execute(
@@ -540,6 +540,95 @@ def test_truth_view_unresolved_when_base_or_weight_missing(tmp_path: Path) -> No
     assert row[0] is None
     assert row[1] is None
     assert row[2] == "unresolved"
+
+
+def test_truth_view_uses_dim_sku_fallback_when_formula_inputs_missing(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_STORED', 0, 0, 2500)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-STORED', '2026-02-08', 'SKU_STORED', 'SKU_STORED_M', 'M', 'ACMEWEAR', 2, 10000, 0, 0, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    row = conn.execute(
+        """
+        SELECT cogs_kzt, profit_kzt, cogs_source
+        FROM view_sales_line_truth
+        WHERE order_id='ORD-STORED'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row == (5000.0, 5000.0, "dim_sku_fallback")
+
+
+def test_truth_view_uses_routed_supplier_fx_for_formula_cogs(tmp_path: Path) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.execute(
+        """
+        CREATE TABLE dim_fx_rates (
+            effective_date TEXT PRIMARY KEY,
+            cny_kzt REAL,
+            usd_kzt REAL,
+            dlv_rate_usd_kg REAL,
+            usdt_kzt REAL,
+            usdt_cny REAL,
+            source TEXT,
+            provider TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO dim_fx_rates (
+            effective_date, cny_kzt, usd_kzt, dlv_rate_usd_kg,
+            usdt_kzt, usdt_cny, source, provider
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("2020-01-01", 80.0, 485.0, 2.66, 485.0, 6.73611111111111, "OWNER_ACTUAL", "FX_ROUTE"),
+    )
+    conn.execute(
+        """
+        INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt)
+        VALUES ('SKU_FX', 47, 0.95, 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity, net_rev, cogs, profit, status, return_flag)
+        VALUES ('ORD-FX', '2026-02-08', 'SKU_FX', 'SKU_FX_M', 'M', 'ACMEWEAR', 1, 10000, 0, 0, 'DELIVERED', 0)
+        """
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    row = conn.execute(
+        """
+        SELECT cogs_kzt, cogs_source
+        FROM view_sales_line_truth
+        WHERE order_id='ORD-FX'
+        """
+    ).fetchone()
+    conn.close()
+
+    expected = 47.0 * 72.0 + 0.95 * 485.0 * 2.66
+    assert abs(row[0] - round(expected, 2)) < 0.01
+    assert row[1] == "formula_full"
 
 
 def test_truth_view_preserves_source_columns_for_audit(tmp_path: Path) -> None:

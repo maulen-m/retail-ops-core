@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from scripts.validate_single_truth_system import validate_system
 
@@ -93,6 +94,8 @@ def _write_workbook(
     path: Path,
     paid_dlv_po41: str = "YES",
     po52_actual_dlv_days: object = 0,
+    live_money_headers: bool = False,
+    reference_base_header: bool = False,
 ) -> None:
     totals = pd.DataFrame(
         [
@@ -138,6 +141,15 @@ def _write_workbook(
             },
         ]
     )
+    if live_money_headers:
+        totals = totals.rename(
+            columns={
+                "To_pay_BASE_KZT": "To_pay_BASE_KZT (live)",
+                "To_pay_DLV_KZT": "To_pay_DLV_KZT (live)",
+            }
+        )
+    if reference_base_header:
+        totals = totals.rename(columns={"To_pay_BASE_KZT": "To_pay_BASE_KZT_reference"})
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         totals.to_excel(writer, sheet_name="PO_part_id_Totals", index=False)
 
@@ -209,3 +221,93 @@ def test_validate_system_parses_excel_serial_actual_dlv_pay_date(tmp_path: Path)
 
     errors = validate_system(db_path=db_path, workbook_path=xlsx, dashboard_path=dashboard)
     assert errors == []
+
+
+def test_validate_system_accepts_live_to_pay_display_headers(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx = tmp_path / "inbound.xlsx"
+    dashboard = tmp_path / "dashboard.json"
+    _seed_db(db_path)
+    _write_workbook(xlsx, live_money_headers=True)
+    _write_payload(dashboard)
+
+    errors = validate_system(db_path=db_path, workbook_path=xlsx, dashboard_path=dashboard)
+    assert errors == []
+
+
+def test_validate_system_accepts_explicit_historical_db_only_scope_contract(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx = tmp_path / "inbound.xlsx"
+    dashboard = tmp_path / "dashboard.json"
+    scope_contract = tmp_path / "po_part_current_scope_contract.tsv"
+    _seed_db(db_path)
+    _write_workbook(xlsx)
+    _write_payload(dashboard)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO po_part (
+            po_part_id, po_id, status, cargo_freight_id, actual_dlv_pay_date,
+            est_weight_kg, actual_weight_kg, total_bags,
+            paid_dlv_usd, paid_dlv_kzt, final_usd_per_kg, usd_kzt_rate, actual_dlv_days,
+            is_paid_base, is_paid_dlv, to_pay_base_kzt, to_pay_dlv_kzt, total_units
+        ) VALUES (
+            'Line52_PO-1', 'Line52_PO-1', 'RECEIVED', '', '',
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 260
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+    scope_contract.write_text(
+        "\t".join(["po_part_id", "canonical_decision", "production_authority"]) + "\n"
+        + "\t".join(
+            [
+                "Line52_PO-1",
+                "HISTORICAL_DB_ONLY_OUT_OF_CURRENT_WORKBOOK_SCOPE",
+                "false",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    strict_errors = validate_system(db_path=db_path, workbook_path=xlsx, dashboard_path=dashboard)
+    assert any("Line52_PO-1" in err for err in strict_errors)
+
+    errors = validate_system(
+        db_path=db_path,
+        workbook_path=xlsx,
+        dashboard_path=dashboard,
+        po_part_scope_contract=scope_contract,
+    )
+    assert errors == []
+
+
+def test_validate_system_fails_on_ambiguous_to_pay_display_headers(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx = tmp_path / "inbound.xlsx"
+    dashboard = tmp_path / "dashboard.json"
+    _seed_db(db_path)
+    _write_workbook(xlsx)
+    _write_payload(dashboard)
+
+    df = pd.read_excel(xlsx, sheet_name="PO_part_id_Totals", dtype=object)
+    df["To_pay_BASE_KZT (live)"] = df["To_pay_BASE_KZT"]
+    with pd.ExcelWriter(xlsx, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="PO_part_id_Totals", index=False)
+
+    with pytest.raises(RuntimeError, match="ambiguous columns.*To_pay_BASE_KZT"):
+        validate_system(db_path=db_path, workbook_path=xlsx, dashboard_path=dashboard)
+
+
+def test_validate_system_accepts_to_pay_base_kzt_reference_header(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx = tmp_path / "inbound.xlsx"
+    dashboard = tmp_path / "dashboard.json"
+    _seed_db(db_path)
+    _write_workbook(xlsx, reference_base_header=True)
+    _write_payload(dashboard)
+
+    assert validate_system(db_path=db_path, workbook_path=xlsx, dashboard_path=dashboard) == []

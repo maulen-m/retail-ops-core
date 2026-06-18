@@ -62,7 +62,7 @@ class TestParseInventoryExcel:
 class TestSaveSnapshot:
     """Tests for saving snapshot to DB."""
 
-    def test_save_snapshot_dry_run(self):
+    def test_save_snapshot_dry_run(self, tmp_path):
         """Dry run returns stats without saving."""
         filepath = "excel/Current_stock_6.12.2025_day_start_before_daily_sales_ship.xlsx"
         if not os.path.exists(filepath):
@@ -70,14 +70,14 @@ class TestSaveSnapshot:
 
         records = parse_inventory_excel(filepath)
 
-        with get_db() as conn:
+        with get_db(tmp_path / "inventory_snapshot.db") as conn:
             stats = save_snapshot(conn, records, "2099-01-01", dry_run=True)
 
         assert stats["size_records"] == len(records)
         assert stats["style_records"] > 0
         assert stats["total_units"] >= 0
 
-    def test_save_snapshot_idempotent(self):
+    def test_save_snapshot_idempotent(self, tmp_path):
         """Running twice with same date should be idempotent."""
         filepath = "excel/Current_stock_6.12.2025_day_start_before_daily_sales_ship.xlsx"
         if not os.path.exists(filepath):
@@ -86,7 +86,7 @@ class TestSaveSnapshot:
         records = parse_inventory_excel(filepath)
         test_date = "2099-12-31"
 
-        with get_db() as conn:
+        with get_db(tmp_path / "inventory_snapshot.db") as conn:
             # First run
             stats1 = save_snapshot(conn, records, test_date, dry_run=False)
 

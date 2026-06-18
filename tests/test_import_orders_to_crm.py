@@ -108,6 +108,36 @@ from scripts.import_orders_to_crm import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_crm_template_path(monkeypatch, tmp_path):
+    """Keep this module from falling back to the production CRM template."""
+    template = tmp_path / "default_crm_template.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+
+    headers = ["Date", "Phone", "№ заказа"]
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(row=1, column=idx, value=header)
+    ws.cell(row=2, column=1, value=date.today())
+    ws.cell(row=2, column=2, value=77770000000)
+    ws.cell(row=2, column=3, value=800000001)
+
+    table = Table(displayName="tb_SalesRaw", ref="A1:C2")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(table)
+    wb.save(template)
+    wb.close()
+
+    monkeypatch.setenv("CRM_CANONICAL_TEMPLATE_PATH", str(template))
+
+
 # ============================================================================
 # Test: find_active_orders_files
 # ============================================================================
@@ -1278,7 +1308,7 @@ def test_delete_crm_rows_xlwings_falls_back_to_openpyxl_on_mac_table_access_erro
     assert fake_app_box["app"].kill_called is False
 
 
-def test_excel_append_openpyxl_writes_numeric_order_id_and_phone(tmp_path):
+def test_excel_append_openpyxl_writes_numeric_order_id_and_phone(monkeypatch, tmp_path):
     workbook = tmp_path / "crm.xlsx"
 
     wb = openpyxl.Workbook()
@@ -1302,6 +1332,7 @@ def test_excel_append_openpyxl_writes_numeric_order_id_and_phone(tmp_path):
     ws.add_table(table)
     wb.save(workbook)
     wb.close()
+    monkeypatch.setenv("CRM_CANONICAL_TEMPLATE_PATH", str(workbook))
 
     from scripts.import_orders_to_crm import excel_append_openpyxl
 
@@ -1400,7 +1431,7 @@ def test_verify_appended_rows_integrity_accepts_canonical_template_style_upgrade
     )
 
 
-def test_excel_append_openpyxl_keeps_my_size_blank_on_append(tmp_path):
+def test_excel_append_openpyxl_keeps_my_size_blank_on_append(monkeypatch, tmp_path):
     workbook = tmp_path / "crm_my_size.xlsx"
 
     wb = openpyxl.Workbook()
@@ -1425,6 +1456,7 @@ def test_excel_append_openpyxl_keeps_my_size_blank_on_append(tmp_path):
     ws.add_table(table)
     wb.save(workbook)
     wb.close()
+    monkeypatch.setenv("CRM_CANONICAL_TEMPLATE_PATH", str(workbook))
 
     start_row, end_row = excel_append_openpyxl(
         out_wb=workbook,
@@ -1451,7 +1483,7 @@ def test_excel_append_openpyxl_keeps_my_size_blank_on_append(tmp_path):
     wb2.close()
 
 
-def test_excel_append_openpyxl_does_not_rewrite_kaspi_name_core(tmp_path):
+def test_excel_append_openpyxl_does_not_rewrite_kaspi_name_core(monkeypatch, tmp_path):
     workbook = tmp_path / "crm_kaspi_core.xlsx"
 
     wb = openpyxl.Workbook()
@@ -1477,6 +1509,7 @@ def test_excel_append_openpyxl_does_not_rewrite_kaspi_name_core(tmp_path):
     ws.add_table(table)
     wb.save(workbook)
     wb.close()
+    monkeypatch.setenv("CRM_CANONICAL_TEMPLATE_PATH", str(workbook))
 
     start_row, end_row = excel_append_openpyxl(
         out_wb=workbook,
@@ -2266,6 +2299,7 @@ def test_append_orders_with_fallback_repairs_xlwings_style_and_cf_drift(monkeypa
     ws.add_table(table)
     wb.save(workbook)
     wb.close()
+    monkeypatch.setenv("CRM_CANONICAL_TEMPLATE_PATH", str(workbook))
 
     def _fake_xlwings_append(*_args, **_kwargs):
         inner_wb = openpyxl.load_workbook(workbook)
@@ -5290,6 +5324,10 @@ def test_main_does_not_archive_when_candidate_promotion_fails(monkeypatch, tmp_p
     monkeypatch.setattr(
         "scripts.import_orders_to_crm._candidate_source_requires_template_normalization",
         lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "scripts.import_orders_to_crm._use_transactional_candidate_workbook",
+        lambda transactional: bool(transactional),
     )
     monkeypatch.setattr(
         "scripts.import_orders_to_crm._promote_candidate_workbook",

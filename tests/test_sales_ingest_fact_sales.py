@@ -139,3 +139,51 @@ def test_fact_sales_ingest_updates_existing_on_unique_key(tmp_path: Path) -> Non
     ).fetchone()
     conn.close()
     assert row[0] == "M"
+
+
+def test_fact_sales_ingest_respects_date_bounds(tmp_path: Path) -> None:
+    db_path = tmp_path / "fact_sales.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, product_type, cogs_kzt) VALUES (?, ?, ?, ?, ?)",
+        ("CL_LINE52_BLACK", 1.0, 0.5, "CL", 1000.0),
+    )
+    conn.execute(
+        "INSERT INTO dim_sku_size (sku_id, sku_key, my_size, size_order) VALUES (?, ?, ?, ?)",
+        ("CL_LINE52_BLACK_M", "CL_LINE52_BLACK", "M", 2),
+    )
+    conn.commit()
+    conn.close()
+
+    df = pd.DataFrame({
+        "OrderID": ["OLD-1", "NEW-1"],
+        "Date": [date(2026, 4, 15), date(2026, 6, 13)],
+        "KASPI_OFFER_NAME": ["Offer Old", "Offer New"],
+        "SKU_ID": ["CL_LINE52_BLACK_M", "CL_LINE52_BLACK_M"],
+        "SKU_key": ["CL_LINE52_BLACK", "CL_LINE52_BLACK"],
+        "MY_SIZE": ["M", "M"],
+        "Quantity": [1, 1],
+        "Sell_price_kzt": [15000.0, 15000.0],
+        "STORE_NAME": ["Universal", "Universal"],
+        "Return": [0, 0],
+    })
+    xlsx_path = tmp_path / "crm.xlsx"
+    df.to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+    stats = ingest_sales_to_fact_sales(
+        xlsx_path=str(xlsx_path),
+        db_path=db_path,
+        from_date="2026-06-01",
+        to_date="2026-06-30",
+    )
+
+    assert stats["inserted"] == 1
+    assert stats["min_date"] == "2026-06-13"
+    assert stats["max_date"] == "2026-06-13"
+
+    conn = sqlite3.connect(str(db_path))
+    orders = [row[0] for row in conn.execute("SELECT order_id FROM fact_sales ORDER BY order_id")]
+    conn.close()
+    assert orders == ["NEW-1"]

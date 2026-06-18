@@ -105,6 +105,7 @@ def _write_workbook(
     include_junk_part_rows: bool = False,
     po41_dlv_paid: str = "NO",
     include_line52_part: bool = False,
+    live_money_headers: bool = False,
 ) -> None:
     inbounds = pd.DataFrame(
         [
@@ -364,6 +365,13 @@ def _write_workbook(
         row.setdefault("USD_KZT_rate", 0.0)
         row.setdefault("Actual_DLV_days", 0)
     part_totals = pd.DataFrame(part_rows)
+    if live_money_headers:
+        part_totals = part_totals.rename(
+            columns={
+                "To_pay_BASE_KZT": "To_pay_BASE_KZT (live)",
+                "To_pay_DLV_KZT": "To_pay_DLV_KZT (live)",
+            }
+        )
     dim_sku_light = pd.DataFrame(
         [
             {"SKU_key": "CL_OF_ARC_LINE31_SET_DARK", "Type": "CL", "Wt (kg)": 0.9, "CNY": 110, "AvgPrc": 26990},
@@ -525,6 +533,83 @@ def test_sync_parses_yes_no_paid_flags(tmp_path: Path, monkeypatch: pytest.Monke
         assert float(row["to_pay_dlv_kzt"] or 0.0) == 0.0
     finally:
         conn.close()
+
+
+def test_sync_accepts_live_to_pay_display_headers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path, live_money_headers=True)
+    monkeypatch.setenv("ENABLE_PO_PART_SYNC_WRITE", "1")
+
+    sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT to_pay_base_kzt, to_pay_dlv_kzt FROM po_part WHERE po_part_id='PO-6.0'"
+        ).fetchone()
+        assert row is not None
+        assert float(row["to_pay_base_kzt"] or 0.0) == 1145025
+        assert float(row["to_pay_dlv_kzt"] or 0.0) == 460512
+    finally:
+        conn.close()
+
+
+def test_sync_accepts_to_pay_base_kzt_reference_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path)
+    monkeypatch.setenv("ENABLE_PO_PART_SYNC_WRITE", "1")
+
+    inbounds = pd.read_excel(xlsx_path, sheet_name="Inbounds_sheet", dtype=object)
+    parts = pd.read_excel(xlsx_path, sheet_name="PO_part_id_Totals", dtype=object)
+    dim = pd.read_excel(xlsx_path, sheet_name="DIM_SKU_light_v7", dtype=object)
+    parts = parts.rename(columns={"To_pay_BASE_KZT": "To_pay_BASE_KZT_reference"})
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+        inbounds.to_excel(writer, sheet_name="Inbounds_sheet", index=False)
+        parts.to_excel(writer, sheet_name="PO_part_id_Totals", index=False)
+        dim.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False)
+
+    sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT to_pay_base_kzt, to_pay_dlv_kzt FROM po_part WHERE po_part_id='PO-6.0'"
+        ).fetchone()
+        assert row is not None
+        assert float(row["to_pay_base_kzt"] or 0.0) == 1145025
+        assert float(row["to_pay_dlv_kzt"] or 0.0) == 460512
+    finally:
+        conn.close()
+
+
+def test_sync_fails_on_ambiguous_to_pay_display_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "app.db"
+    xlsx_path = tmp_path / "inbound.xlsx"
+    _create_test_db(db_path)
+    _write_workbook(xlsx_path)
+    monkeypatch.setenv("ENABLE_PO_PART_SYNC_WRITE", "1")
+
+    inbounds = pd.read_excel(xlsx_path, sheet_name="Inbounds_sheet", dtype=object)
+    parts = pd.read_excel(xlsx_path, sheet_name="PO_part_id_Totals", dtype=object)
+    dim = pd.read_excel(xlsx_path, sheet_name="DIM_SKU_light_v7", dtype=object)
+    parts["To_pay_DLV_KZT (live)"] = parts["To_pay_DLV_KZT"]
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+        inbounds.to_excel(writer, sheet_name="Inbounds_sheet", index=False)
+        parts.to_excel(writer, sheet_name="PO_part_id_Totals", index=False)
+        dim.to_excel(writer, sheet_name="DIM_SKU_light_v7", index=False)
+
+    with pytest.raises(RuntimeError, match="ambiguous columns.*To_pay_DLV_KZT"):
+        sync_po_parts_from_workbook(xlsx_path=xlsx_path, db_path=db_path, apply=True)
 
 
 def test_sync_backfills_po_header_weight_and_total_places_from_part_totals(

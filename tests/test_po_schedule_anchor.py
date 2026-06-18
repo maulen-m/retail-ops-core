@@ -122,8 +122,9 @@ def _base_template() -> dict:
 
 
 def _stub_runtime(monkeypatch) -> None:
-    monkeypatch.setattr(dashboard, "resolve_last_real_po", lambda: ("PO-5", 5, "2026-01-21"))
+    monkeypatch.setattr(dashboard, "resolve_last_real_po", lambda *_args, **_kwargs: ("PO-5", 5, "2026-01-21"))
     monkeypatch.setattr(dashboard, "load_po_orders", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(dashboard, "load_active_part_orders_for_projection", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(dashboard, "generate_po_data", lambda *_args, **_kwargs: _base_template())
     monkeypatch.setattr(
         dashboard,

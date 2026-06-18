@@ -15,10 +15,13 @@ def test_waybill_deadline_plist_schedule_is_expected() -> None:
     assert int(interval.get("Minute", -1)) == 30
 
 
-def test_waybill_deadline_plist_runs_merged_build_waybills_command() -> None:
+def test_waybill_deadline_plist_runs_closeout_scheduler() -> None:
     plist = _read_waybill_deadline_plist()
     args = plist.get("ProgramArguments", [])
-    assert args[:2] == ["/bin/bash", "~/Docs/Autonomous_business/excel_ui/run_merged_build_waybills.command"]
+    assert args[:2] == [
+        "~/Docs/Autonomous_business/.venv/bin/python",
+        "~/Docs/Autonomous_business/scripts/run_google_ops_board_closeout_scheduler.py",
+    ]
     assert plist.get("Label") == "com.example.kaspi-waybill-deadline"
     assert plist.get("WorkingDirectory") == "~/Docs/Autonomous_business"
 

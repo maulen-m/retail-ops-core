@@ -51,9 +51,12 @@ def _seed_minimal_green_sources(db_path: Path, *, as_of: str = "2026-05-03") -> 
         conn.execute(
             """
             INSERT INTO fact_order_entries_kaspi (
-                entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt
-            ) VALUES ('E1', 'O1', 'ACMEWEAR', 'OFFER_A', 1, 10000, 10000)
-            """
+                entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt,
+                total_price_kzt, updated_at
+            ) VALUES ('E1', 'O1', 'ACMEWEAR', 'OFFER_A', 1, 10000, 10000,
+                      ? || 'T10:00:00+05:00')
+            """,
+            (as_of,),
         )
         conn.execute(
             """
@@ -134,6 +137,40 @@ def test_source_freshness_fixture_blocks_stale_sources(tmp_path: Path) -> None:
     assert report.status == "RED"
     assert any(result["gate_name"] == "source_freshness" for result in report.validation_results)
     assert any(exc["reason"].startswith("SOURCE_STALE") for exc in report.exceptions)
+
+
+def test_source_freshness_uses_as_of_slice_when_later_snapshot_exists(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_minimal_green_sources(db_path, as_of="2026-05-03")
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO fact_inventory_snapshot_size (
+                snapshot_date, sku_id, sku_key, my_size, current_stock, inbound_stock
+            ) VALUES ('2026-05-04', 'SKU_A_M', 'SKU_A', 'M', 4, 0)
+            """
+        )
+        conn.commit()
+
+    report = run_operational_stock_daily_truth(
+        db_path=db_path,
+        as_of="2026-05-03",
+        output_root=tmp_path / "daily_truth",
+        run_id="fixture-as-of-slice",
+        allow_green_owner_output=True,
+    )
+
+    assert not any(exc["reason"] == "SOURCE_FUTURE_DATED" for exc in report.exceptions)
+    source_freshness = next(
+        result for result in report.validation_results if result["gate_name"] == "source_freshness"
+    )
+    assert source_freshness["status"] == "PASS"
+    inventory_manifest = next(
+        item for item in report.source_manifests if item["table"] == "fact_inventory_snapshot_size"
+    )
+    assert inventory_manifest["max_observed_date"] == "2026-05-03"
+    assert inventory_manifest["latest_table_date"] == "2026-05-04"
+    assert inventory_manifest["future_row_count"] == 1
 
 
 def test_report_lineage_fixture_contains_manifests_hashes_and_validation(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from scripts.run_webui_archive_source_refresh import (
     WebuiArchiveSourceRefreshError,
     run_webui_archive_source_refresh,
 )
+from scripts.webui_archive_truth_utils import build_status_ledger
 
 
 def _write_stores(path: Path) -> None:
@@ -97,6 +98,13 @@ def test_import_existing_builds_read_only_pack_and_merged_outputs(tmp_path: Path
 
     assert report["status"] == "PASS"
     assert report["effective_mode"] == "import-existing"
+    assert report["all_enabled_stores"] == ["ACMEWEAR", "UNIVERSAL"]
+    assert report["target_stores"] == ["ACMEWEAR", "UNIVERSAL"]
+    assert report["omitted_enabled_stores"] == []
+    assert report["planned_windows"] == [
+        {"window_since": "2026-01-01", "window_until": "2026-02-28"}
+    ]
+    assert report["expected_block_count"] == 2
     assert report["read_only"] is True
     assert report["production_db_modified"] is False
     assert Path(report["run_manifest_json"]).exists()
@@ -196,6 +204,35 @@ def test_import_existing_accepts_manual_download_folder_names(tmp_path: Path) ->
     )
 
     assert report["status"] == "PASS"
+    child_manifest = json.loads(Path(report["child_run_manifest_json"]).read_text(encoding="utf-8"))
+    assert child_manifest["anchor_written"] is False
+    assert child_manifest["requested_since"] == "2026-01-01"
+    assert child_manifest["requested_until"] == "2026-02-28"
+    for row in child_manifest["store_results"]:
+        assert row["window_since"] == "2026-01-01"
+        assert row["window_until"] == "2026-02-28"
+        assert row["window_provenance"] == "requested_cli_with_source_file_hash"
+        assert len(row["source_file_sha256"]) == 64
+        assert len(row["copied_file_sha256"]) == 64
+
+    source_manifest = json.loads((Path(report["pack_root"]) / "source_manifest.json").read_text(encoding="utf-8"))
+    for item in source_manifest["files"]:
+        assert item["window_since"] == "2026-01-01"
+        assert item["window_until"] == "2026-02-28"
+        assert item["window_provenance"] == "requested_cli_with_source_file_hash"
+        assert len(item["source_file_sha256"]) == 64
+
+    ledger_report = build_status_ledger(
+        pack_roots=[Path(report["pack_root"])],
+        run_id="manual_names_ledger",
+        output_root=tmp_path / "ledgers",
+    )
+    for item in ledger_report["manifest"]["pack_windows"]:
+        assert item["window_since"] == "2026-01-01"
+        assert item["window_until"] == "2026-02-28"
+        assert item["window_provenance"] == "requested_cli_with_source_file_hash"
+        assert len(item["source_file_sha256"]) == 64
+
     merged = pd.read_csv(Path(report["final_merged_csv"]), dtype=str)
     assert sorted(merged["store_code"].unique().tolist()) == ["ACMEWEAR", "UNIVERSAL"]
 
@@ -260,6 +297,11 @@ def test_live_headless_delegates_to_full_parse(tmp_path: Path, monkeypatch) -> N
     assert captured["headful"] is False
     assert captured["manual_login"] is False
     assert captured["store_codes"] == ["ACMEWEAR"]
+    assert captured["write_child_anchors"] is False
+    assert report["all_enabled_stores"] == ["ACMEWEAR", "UNIVERSAL"]
+    assert report["target_stores"] == ["ACMEWEAR"]
+    assert report["omitted_enabled_stores"] == ["UNIVERSAL"]
+    assert report["expected_block_count"] == 1
     assert Path(report["run_manifest_json"]).exists()
 
 

@@ -17,6 +17,7 @@ from core.config.business_params import (
     get_vat_rate,
     get_fx_rates,
     get_supplier_fx_rates,
+    get_supplier_fx_rates_from_conn,
     set_fx_rates,
     FXRates,
     DEFAULT_FX_RATES,
@@ -286,6 +287,42 @@ class TestGetSupplierFXRates:
             assert "OWNER_FALLBACK_73" in rates.source
         finally:
             db_path.unlink(missing_ok=True)
+
+    def test_connection_helper_matches_supplier_routing_policy(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute(
+                """
+                CREATE TABLE dim_fx_rates (
+                    effective_date TEXT PRIMARY KEY,
+                    cny_kzt REAL,
+                    usd_kzt REAL,
+                    dlv_rate_usd_kg REAL,
+                    usdt_kzt REAL,
+                    usdt_cny REAL,
+                    source TEXT,
+                    provider TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO dim_fx_rates (
+                    effective_date, cny_kzt, usd_kzt, dlv_rate_usd_kg,
+                    usdt_kzt, usdt_cny, source, provider
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("2026-06-13", 80.0, 485.0, 2.66, 485.0, 6.73611111111111, "OWNER_ACTUAL", "FX_ROUTE"),
+            )
+
+            rates = get_supplier_fx_rates_from_conn(conn, "2026-06-14")
+
+            assert rates.cny_kzt == pytest.approx(72.0)
+            assert rates.usd_kzt == 485.0
+            assert rates.dlv_rate_usd_kg == 2.66
+            assert rates.source.startswith("ROUTED_DIM_FX")
+        finally:
+            conn.close()
 
 
 class TestSetFXRates:

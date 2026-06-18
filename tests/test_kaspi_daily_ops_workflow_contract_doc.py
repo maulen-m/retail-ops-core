@@ -36,7 +36,8 @@ def test_daily_ops_workflow_contract_includes_prod_dry_run_checks() -> None:
 
 def test_daily_ops_workflow_contract_locks_multi_store_scale_roster() -> None:
     text = Path("docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md").read_text(encoding="utf-8")
-    assert "Multi-Store Scale Roster" in text
+    assert "Active Daily Polling Roster" in text
+    assert "Archived Historical Store Identities" in text
     assert "Universal" in text
     assert "AcmeWear" in text
     assert "11KZ" in text

@@ -13,6 +13,9 @@ from scripts.validate_status_ledger_continuity import (
 )
 
 
+_SHA = "a" * 64
+
+
 def _write_stores(path: Path) -> None:
     path.write_text(
         yaml.safe_dump({"stores": {"ACMEWEAR": {"enabled": True}}}),
@@ -47,7 +50,16 @@ def test_validate_status_ledger_continuity_pass(tmp_path: Path) -> None:
     _write_stores(stores)
     ledger = _write_ledger(
         tmp_path,
-        pack_windows=[{"store_code": "ACMEWEAR", "window_since": "2026-01-01", "window_until": "2026-01-31"}],
+        pack_windows=[
+            {
+                "store_code": "ACMEWEAR",
+                "window_since": "2026-01-01",
+                "window_until": "2026-01-31",
+                "source_file_sha256": _SHA,
+                "window_provenance": "source_path",
+                "source_file": "store_ACMEWEAR/ArchiveOrders_ACMEWEAR_2026-01-01_to_2026-01-31.xlsx",
+            }
+        ],
     )
 
     report = validate_status_ledger_continuity(
@@ -65,7 +77,16 @@ def test_validate_status_ledger_continuity_strict_fail_on_gap(tmp_path: Path) ->
     _write_stores(stores)
     ledger = _write_ledger(
         tmp_path,
-        pack_windows=[{"store_code": "ACMEWEAR", "window_since": "2026-01-10", "window_until": "2026-01-31"}],
+        pack_windows=[
+            {
+                "store_code": "ACMEWEAR",
+                "window_since": "2026-01-10",
+                "window_until": "2026-01-31",
+                "source_file_sha256": _SHA,
+                "window_provenance": "source_path",
+                "source_file": "store_ACMEWEAR/ArchiveOrders_ACMEWEAR_2026-01-10_to_2026-01-31.xlsx",
+            }
+        ],
     )
 
     with pytest.raises(StatusLedgerContinuityError):
@@ -76,3 +97,29 @@ def test_validate_status_ledger_continuity_strict_fail_on_gap(tmp_path: Path) ->
             stores_config=stores,
             strict=True,
         )
+
+
+def test_validate_status_ledger_continuity_strict_fail_on_hand_edited_window(tmp_path: Path) -> None:
+    stores = tmp_path / "stores.yaml"
+    _write_stores(stores)
+    ledger = _write_ledger(
+        tmp_path,
+        pack_windows=[
+            {
+                "store_code": "ACMEWEAR",
+                "window_since": "2026-01-01",
+                "window_until": "2026-01-31",
+                "source_file": "store_ACMEWEAR/ArchiveOrders.xlsx",
+            }
+        ],
+    )
+
+    with pytest.raises(StatusLedgerContinuityError) as exc:
+        validate_status_ledger_continuity(
+            ledger_root=ledger,
+            start="2026-01-01",
+            end="2026-01-31",
+            stores_config=stores,
+            strict=True,
+        )
+    assert "pack_window_provenance_error_count=2" in str(exc.value)
