@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-18T20:34:48+05:00",
-  "status": "EXECUTING",
+  "updated": "2026-06-18T20:49:26+05:00",
+  "status": "BLOCKED",
   "current_phase": 3,
   "current_take": 2,
-  "note": "OA-PRICE03-LINE executed as scoring authority only; G-PRICE-03 remains RED with zero missing-floor rows but 45 under-floor units. OA-DARK01 is the only approved dispatch-ready queue action.",
+  "note": "G-DARK-01 remains RED after no-write preflight: RUSH_WHITE S/M/3XL exact rows missing from ACTIVE/ARCHIVE; queue has 0 dispatch-ready items.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,14 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-18T20:49:26+05:00",
+      "text": "G-DARK-01 RED no-write: RUSH_WHITE S/M/3XL rows missing from ACTIVE/ARCHIVE; T-SHIRT_BLACK L archive candidates found; OA-DARK01 waits owner."
+    },
+    {
+      "time": "2026-06-18T20:40:07+05:00",
+      "text": "G-DARK-01 dispatch: fresh Kaspi ACTIVE/ARCHIVE preflight for exact RUSH_WHITE relist/off switch; no upload before safe dry-run proof."
+    },
+    {
       "time": "2026-06-18T20:34:48+05:00",
       "text": "G-PRICE-03 RED refresh: LINE floor authority executed; missing-floor rows are 0, under-floor units are 45, OA-DARK01 remains dispatch-ready."
     },
@@ -637,14 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T18:46:26+05:00",
       "text": "G-LIQ-03 ARMED: release-velocity discipline report published; 0 active tranche rows, 0 violations, G-LIQ-02 pending."
-    },
-    {
-      "time": "2026-06-18T18:42:02+05:00",
-      "text": "G-RET-03 ARMED: comeback-rate report published; 21 returned-to-warehouse orders, 0 mature eligible, 0 QC events, dependency G-RET-02 armed."
-    },
-    {
-      "time": "2026-06-18T18:37:22+05:00",
-      "text": "G-CASH-04 ARMED: redeployment guard report published; zero ungated redeployments, G-LIQ-02 pending and G-MET-01 armed keep redeployment blocked."
     }
   ]
 };
