@@ -1,0 +1,219 @@
+# OWNER_DECISIONS_RECORDED — machine-readable decision record
+# Status: RECORDED — owner session held 2026-06-12 22:34 → 2026-06-13 ~03:40 +05 (interactive, owner present).
+# Rules: append-only from now on; agents consume ONLY this file (never the pack prose);
+#        amendments = new entries with later timestamps, never edits; unanswered = DEFER + fallback.
+# Every `answer` is one of: RECOMMENDED | ALT-1 | ALT-2 | ALT-CUSTOM | DEFER
+# `params` carries the concrete values the answer requires (dates, caps, rates, paths).
+
+meta:
+  session_date: "2026-06-12 22:34 +05"
+  recorded_at: "2026-06-13 03:40 +05"
+  recorded_by: fable-5-main-orchestrator (session cb0f4768)
+  owner_present: true
+  pack_version: 2026-06-12
+  source_pack: OWNER_DECISION_PACK.md
+  fast_path_taken: mostly  # 26/30 RECOMMENDED as written; 4 ALT-CUSTOM (OD-002/004/024 data-drop variants, OD-008 scope constraint)
+
+decisions:
+  # ---- SECTION A — SAFETY (no DEFER allowed) ----
+  - id: OD-001
+    title: backup_clone_scope
+    answer: RECOMMENDED
+    params: { scope: full_per_pack }   # both repos + untracked, sqlite3 .backup online, workbooks, plists, configs, WA runtime, exports/logs; secrets local-only redacted manifest; restore test per class
+  - id: OD-022
+    title: repo_write_authorization_branch_policy
+    answer: RECOMMENDED
+    params: { branch_prefix: "greenpath/", merge_authority: orchestrator_only, db_writes: env_gated_apply_under_single_lease, history_rewrites: forbidden, first_write: program_contract_docs_into_repo }
+  - id: OD-023
+    title: freeze_window_hot_backup
+    answer: RECOMMENDED
+    params: { window_start: "launch-triggered: first <=60min of implementation run (owner chose earliest-possible 'tonight ~23:00' 2026-06-12; session overran past it — intent = immediately on launch)", window_max_minutes: 60, ingestion_stays_live: true, write_capable_jobs: paused_for_window, post_window_verify: order_count_recheck }
+  - id: OD-029
+    title: contact_policy_single_writer
+    answer: RECOMMENDED
+    params: { heartbeat: phase_boundary, stop_the_line_only_pings: true, deferred_queue: DEFERRED_QUEUE.md, write_orchestrators: 1, write_lease_per_repo: 1, all_other_agents: read_only }
+
+  # ---- SECTION B — DATA DROPS (validated in-session) ----
+  - id: OD-002
+    title: fresh_bank_snapshot
+    answer: ALT-CUSTOM   # owner-provided workbook column, validated live
+    params:
+      snapshot_artifact_path: "~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx :: sheet Cash_Balances :: column M"
+      snapshot_timestamp: "2026-06-13 01:01:26 +05"
+      accounts: { stores: [UNIVERSAL, 11KZ, STOREB, ACMEWEAR, MELVIS], plus: [Reserve], rows: 19 }
+      grand_total_kzt_eq: 3937364
+      grand_total_with_reserve_kzt_eq: 5437364
+      fx_basis: "binance_p2p actuals (USD/USDT@485, RUB@6); CNY working ref @72"
+      validated_in_session: true
+      cross_check: "all 5 anchor-batch stores present; 11KZ/MELVIS zero-balance consistent with archived status"
+      in_flight_adjustments:
+        - "SHR log missing receipts 19 (7,000 CNY 2026-06-01) + 20 (10,000 CNY 2026-06-06) — receipts verified on disk as PNGs; true SHR remaining = 44,101 CNY (not 61,101)"
+        - "PO-1B (Tracy) paid 12,000 CNY owner-confirmed (5,000 evidenced + 7,000 receipt-pending in capture repos); remaining ~17,621 CNY of 29,621 gross"
+        - "EXPECTED OUTFLOW: PO-1B remainder transfers via Binance starting 2026-06-13 — cash-divergence explanation must pre-register it"
+      fallback_artifact: "2026-06-01 snapshot (6,353,122 KZT-eq) + sheet column K/L (01.06.2026_09_06_51)"
+  - id: OD-004
+    title: count_protocol_precedence_line51_extension
+    answer: ALT-CUSTOM   # owner-extended precedence chain incl. two newer photo batches
+    params:
+      precedence_chain:
+        - "1) 2026-06-11 22:00 +05 after-daily-shipping batch (12 images, folder images/11.06.2026_22_00_00_after_daily_shipping): dot-separated digits = SUM = ADDITIONS (restored canceled/returned units, order IDs unrecoverable — import as governed re-entry events reason RESTORED_CANCEL_RETURN_NO_ORDER_LINK); number+right-arrow = FULL_SUPERSEDE for that size; empty size = NOT_CAPTURED, prior freshest snapshot stays authoritative"
+        - "2) 2026-06-04 14:00 pre-shipment photo batch (folder images/04.06.2026_14_00_23, transcription stock_count_04.06.2026_14_00.md): per-label replacement/addition merge rules; LINE51 S preserved-never-zeroed; anchor at pre-shipment time then subtract trusted 04.06+ movements"
+        - "3) 2026-06-04 'pre_shipments' approved count artifact (3,989u/66 rows)"
+        - "4) 2026-05-30..06-02 approved batch (1,833u/39 skus)"
+      import_after: "INBOUND booking (PO-1A 338 @2026-05-24, PO-1O 242 @2026-06-11, ARC-1 shortage correction 637/638-vs-795) — see amendments AMD-01"
+      line51_count: "06-04 photo batch M–3XL = 750u (M105 L190 XL216 2XL145 3XL94) + S FULL value from 06-11 batch image line51_additions_but-S-full.JPG → G-LIQ-04 fully openable after import"
+      ocr_protocol: "3 independent passes (2x Opus max-effort + 1 Codex) -> host cell-by-cell reconciliation -> canonical draft in reconciliation/count_batch_2026-06-11_2200/; discrepant cells listed, owner re-check only if a cell stays unresolved AND blocks"
+      tolerance_units_pct: pack_default
+      validated_in_session: true
+  - id: OD-024
+    title: offsite_backup_destination
+    answer: ALT-CUSTOM   # owner delegated choice to agent
+    params:
+      primary_local: "~/Backups/green_path/"
+      secondary_external: "/Volumes/Migration_Staging_Overflow/green_path_backups/ (Crucial X9 Pro 4TB USB, 161Gi free at choice time)"
+      write_test_passed: true   # both, dummy-file verified 2026-06-13
+      note: "TimeMachine partition itself write-protected; Migration_Staging_Overflow is shared with owner content_offload — capacity monitored at backup time"
+  - id: OD-031
+    title: telegram_credentials_confirmation
+    answer: RECOMMENDED
+    params: { live_test_message_received: true, tested_at: "2026-06-12 ~22:40 +05", message_id: 1819, owner_confirmed_receipt: true, second_pair_present: "TELEGRAM_BOT_TOKEN_WAYBILL/TELEGRAM_WAYBILL_CHAT_ID (waybill stream — available for routing)" }
+
+  # ---- SECTION C — POLICY DEFAULTS ----
+  - id: OD-003
+    title: v7_floor_ratification_path
+    answer: RECOMMENDED
+    params: { floor_change_review_threshold_pct: 5, sequence: "FX check (OD-013) -> v7 CSV -> repoint 3 consumers -> retire v6; >5% movers to acceptance wave-2" }
+  - id: OD-013
+    title: fx_landed_cost_policy
+    answer: RECOMMENDED   # REC-A variant
+    params: { fx_source: owner_actual_rates_binance_p2p_or_bank, cadence: weekly, entered_by: automation, digest_verification_line: weekly, landed_cost: invoice_plus_freight_at_receive_forward_only, historical: MISSING_never_backfabricated, cogs_authority: one_doc_replaces_3_line52_constants }
+  - id: OD-014
+    title: pnl_restatement_publication
+    answer: RECOMMENDED
+    params: { flag: RESTATED_2026-06, mode: full_internal_restatement }
+  - id: OD-015
+    title: first_supervised_applies
+    answer: RECOMMENDED
+    params: { eod_apply: pre_authorized, residual_apply: pre_authorized_scoped_120_orders_425015.24, cogs_backfill_apply: pre_authorized, diff_tolerance_pct: 2, conditions: "dry-run diff within ±2% of scoped set + backup current + alert path live (proven in-session); out-of-scope row -> STOP-THE-LINE" }
+  - id: OD-016
+    title: strict_gate_no_reclassification
+    answer: RECOMMENDED
+    params: { new_class_mid_program: lane_stops_parks_quantified_others_continue }
+  - id: OD-017
+    title: clamp_reenable_conditions
+    answer: RECOMMENDED
+    params: { clean_days_required: 7, per_day_magnitude_cap_units: 20, negatives_route: quarantine_not_clamp, disabled_through: phase_2 }
+  - id: OD-025
+    title: quarantine_disposition_defaults
+    answer: RECOMMENDED
+    params: { rule_table: per_pack_C7, line61_4xl: per_existing_owner_rule }
+  - id: OD-026
+    title: returns_qc_fail_handling
+    answer: RECOMMENDED
+    params: { defect_lot_cadence: monthly, qc_fail: loss_at_cogs_plus_photo_reason_defect_shelf }
+  - id: OD-032
+    title: below_floor_exception_path
+    answer: RECOMMENDED
+    params: { t4_t5_wave1: parked, exception_rows: pre_listed_in_tranche_file_only }
+  - id: OD-028
+    title: agent_ops_budget
+    answer: RECOMMENDED
+    params: { lane_wallclock_cap_hours: 4, retry_policy: retry_once_then_park, new_paid_api: forbidden_without_stop_the_line, cost_bearing_external_calls: forbidden_by_default }
+
+  # ---- SECTION D — BUSINESS JUDGMENT ----
+  - id: OD-008
+    title: line31_spend_guard
+    answer: RECOMMENDED   # with owner scope constraint — see scope_constraint
+    params:
+      paused_sizes: [2XL, M, S]
+      resume_condition: per_size_stock_confidence_green
+      day0_classification: reversible_external_ads_console_action_pre_authorized_RB-ADS
+      scope_constraint: "KASPI ads console ONLY. External Meta/Instagram ads are UNTOUCHABLE for ALL products — hard rule in every packet (owner 2026-06-13)."
+      expected_fast_resume: "physical LINE31 stock exists for paused sizes (PO-1A+PO-1O unbooked arrivals; see AMD-01) — resume expected quickly after inbound booking + count import"
+      accepted_2xl_orders: "the 4 'phantom-size' orders are almost certainly fulfillable from physical stock — fulfill, do not cancel"
+  - id: OD-020
+    title: line31_cap_value
+    answer: RECOMMENDED
+    params: { cap_kzt_per_day: 10000 }
+  - id: OD-019
+    title: campaign_kill_fix_thresholds
+    answer: RECOMMENDED
+    params: { kill_crr_pct_14d: 35, kill_requires_negative_contribution: true, fix_band_crr_pct: [20, 35], applies_to_all_campaigns_incl_2794142: true, scope: kaspi_only_per_OD-008_constraint }
+  - id: OD-005
+    title: liquidation_ladder_floors
+    answer: RECOMMENDED
+    params: { t1_depth_pct: [0, 5], t2_depth_pct: [10, 15], t3_depth_pct: [20, 30], dwell_days: [7, 10, 14], escalation_sell_through_lt_pct: 3, t4_t5: parked_wave1 }
+  - id: OD-011
+    title: tranche1_authorization
+    answer: RECOMMENDED
+    params: { family_count: 11, basis_goods_only_kzt: 1387464, requires_fresh_register_rerun: true, conditions: [t0_stock_confidence_per_family, floor_vintage_logging_live, full_row_provenance, one_lead_store_per_sku_size] }
+  - id: OD-018
+    title: tranche2plus_envelope
+    answer: RECOMMENDED
+    params: { cumulative_book_value_cap_kzt: 5000000, line51_excluded_from_cap: true, max_tier: T3, line51_own_tranche_after_count: true, auto_stop: [sell_through_lt_3pct_x2_tiers, any_floor_breach, any_stock_confidence_drop] }
+  - id: OD-033
+    title: dark_family_relists
+    answer: RECOMMENDED
+    params: { families: [RUSH_WHITE, T-SHIRT_BLACK], exclude_sizes: { RUSH_WHITE: [L] }, include_note: "T-SHIRT XL=10", scope: kaspi_listings_only, reorders: excluded_auto_po_territory }
+  - id: OD-027
+    title: store-c_store-d_disposition
+    answer: RECOMMENDED
+    params: { action: archive_both, stop_daily_polling: true, revisit_after: ppch_v1_first_publication }
+  - id: OD-009
+    title: auto_po_governed_off
+    answer: RECOMMENDED
+    params: { restart_requires: [cogs_green_30d, stock_green_30d, cash_green, fx_floor_vintage_green, priors_7of7_tests, forecast_backtest_pass_threshold_set_at_acceptance, owner_approval], stop_buy_gates_advisory_on_manual_pos: true }
+  - id: OD-010
+    title: metric_headline_adoption
+    answer: RECOMMENDED
+    params: { headline: ppch_v1_with_confidence, interim: v0_75_from_cogs_backfill, retire: v0_owner_facing_kept_diagnostic, dashboard: [ppch_v1_confidence, frozen_capital, release_velocity, cash_truth_confidence, exception_exposure] }
+  - id: OD-030
+    title: operator_labor_valuation
+    answer: RECOMMENDED
+    params: { placeholder_rate_kzt_per_hour: 5000, marked: ASSUMED, telemetry: mandatory_now, revisit: acceptance_with_30d_data }
+  - id: OD-006
+    title: returns_loop_policy
+    answer: RECOMMENDED
+    params: { qc_within_days_of_pickup: 7, qc_pass: governed_stock_reentry, qc_fail: per_OD-026 }
+
+# ---- SESSION AMENDMENTS (discovered/decided in-session 2026-06-12/13; consumed by packets) ----
+amendments:
+  - id: AMD-01
+    title: line31_inbound_work_list
+    detail: "INBOUND booking (G-STOCK-01) concrete list: PO-1A 338 sets arrived 2026-05-24 (S24 M131 L77 XL76 2XL30; per-color matrix in sweep evidence); PO-1O 242 sets arrived 2026-06-11 15:15 (S17 M90 L53 XL57 2XL25; Cardamom/Olive; freight 179,976.06 KZT paid); ARC-1 shortage correction (Inbounds_sheet booked ordered-qty 795 items, true received 637/638 — fix the book to received); existing apply-ready CSV exports/validation/product_truth_yellow_to_apply_ready_20260529_123827/line31_apply_ready_stock_split.csv (436 physical / 348 sellable @2026-05-29) is a primary input, still apply-pending; use docs/contracts/CROSS_REPO_BUSINESS_EVENT_BRIDGE_V1.md (PO1O_* event types) where applicable. Inbounds_sheet records NO arrivals after 2026-03-02 for any product — booking gap is LINE31-only per evidence, but PKT-STOCK re-verifies."
+  - id: AMD-02
+    title: meta_ig_ads_untouchable
+    detail: "HARD RULE (owner, OD-008): no agent touches external Meta/Instagram ads for ANY product, ever, in this program. Kaspi ads console is the only ads surface in scope."
+  - id: AMD-03
+    title: cross_channel_shared_warehouse
+    detail: "acmewear_direct_crm (~/Docs/acmewear_direct_crm) sells via countrywide + Astana-local external Instagram/Meta traffic FROM THE SAME physical warehouse. WS-STOCK gains: (a) read-only discovery of CRM outbound/shipment records; (b) standing requirement that CRM-channel decrements reach the stock ledger (else negative drift returns); physical counts remain channel-agnostic ground truth. Counts in the 06-11 batch already net out same-day shipping."
+  - id: AMD-04
+    title: additional_readonly_source_repos
+    detail: "~/Cowork/Projects/Sourcing-Research + ~/Cowork/Projects/E-commerce + ~/Docs/acmewear_direct_crm join as READ-ONLY evidence sources for cash/PO/stock lanes. Workbook ~/Documents/.../vibe_code_PO/Inbound_calendar_V10.002.xlsx is the inbound/cash manual source (read-only)."
+  - id: AMD-05
+    title: whale_blue_offers_owner_created
+    detail: "Owner created Whale Blue Kaspi offers 2026-06-12; in moderation 1–2 days. Storefront lane VERIFIES they go live + maps offer route; no creation needed. 50 sets physical."
+  - id: AMD-06
+    title: new_colors_go_live_schedule
+    detail: "Bean Paste/Pomelo/Eggplant (+Iris incoming via PO-1B): owner generates image assets in side creative repo; will appear under /Volumes/Migration_Staging_Overflow/content_offload/Product_offers/2026-05-07T21-40-31+0500_product_offers_overflow_symlink_offload/payload/Product_offers/LINE31/_final_color_bundles/mobile_app_color_addition/20260327_164212/LINE31_ST_MOBILE_COLOR_ADD_V1 (or parent dir). Owner sends them for ingestion ~5 days (~2026-06-18). Until then: gated, owner-triggered, NOT deferred-blocking."
+  - id: AMD-07
+    title: count_batch_2026-06-11_2200_ocr
+    detail: "12-image batch transcribed by 3 independent passes (Opus A, Opus B, Codex C) into reconciliation/count_batch_2026-06-11_2200/; host reconciles cell-by-cell into canonical draft for PKT-STOCK. Additions = restored canceled/returned units WITHOUT order linkage -> governed re-entry events reason RESTORED_CANCEL_RETURN_NO_ORDER_LINK. line51_additions_but-S-full.JPG supplies the missing LINE51 S as FULL value."
+  - id: AMD-08
+    title: po1b_pipeline_registration
+    detail: "PO-1B (Tracy): 507 sets final (S37 M206 L122 XL108 2XL34; SB172 Espresso121 IWS63 Iris39 WB38 MB30 BeanPaste22 Pomelo22), gross 29,621 CNY (=507×53 + 1000 branded bags 2,100 + 2000 hangtags 650). Paid 12,000 CNY owner-confirmed (5,000 evidenced; 7,000 receipt-pending). Remainder ~17,621 CNY transfers from 2026-06-13 via Binance — register expected cash outflow + future inbound booking on arrival. Rework-fee risk flagged by Tracy (barcodes printed, packing started ~06-08) — any new fee is an owner STOP-THE-LINE only if it blocks; otherwise log."
+  - id: AMD-09
+    title: telegram_waybill_pair
+    detail: "Second .env pair TELEGRAM_BOT_TOKEN_WAYBILL/TELEGRAM_WAYBILL_CHAT_ID exists — available for waybill-stream alert routing; main pair proven live (msg 1819)."
+  - id: AMD-10
+    title: freeze_window_slip
+    detail: "Owner chose 'tonight ~23:00 2026-06-12' (earliest); session overran past it. Faithful interpretation recorded in OD-023: freeze window = first ≤60 min of implementation launch, write-capable jobs paused, ingestion live, post-window order-count verify."
+
+deferred_queue_policy:
+  file: DEFERRED_QUEUE.md
+  fields: [item, lane, kzt_exposure, age_days, fallback_applied, resurfaces_at]
+  resurfaces_at_default: acceptance
+  - id: AMD-11
+    title: line31_guard_resolved_satisfied_by_structure
+    timestamp: "2026-06-13 04:2x +05"
+    detail: "Watcher evidence (kaspi_marketing.sqlite, mode=ro): Kaspi ads are CARD-level (one card per colorway; sizes are variants inside the card) — per-size ad pausing does not exist on the platform. The six LINE31 campaigns (2695637 StarryBlack, 2752402 MistyBlue, 2752405 IrisPurple, 2752406 IWB, 2856404 WhaleBlue, 2858476 Ivory) last reported 2026-05-27 with ZERO June spend rows — LINE31 ads are already off. Today's active spenders are men's funnels only: 2380614 Acmewear_16k = LINE51 black/white card (not LINE31), 2545773 + 2629982 LINE61, 2794142 = men's 3-in-1 long-sleeve black (SUIT-31-LS), NOT LINE31. Therefore OD-008/OD-020: SATISFIED-BY-STRUCTURE (no LINE31 ads target exists; cap vacuous). Phantom-size LINE31 orders = storefront traffic against a wrong book; physical stock exists for 2XL/M/S (AMD-01) -> the 4 accepted 2XL orders are FULFILLABLE, fulfill not cancel. Per-size protection rides on the stock-truth lane (Phase 2 first job). Standing G-LINE31-01 stays armed: any LINE31 campaign re-enabling before per-size stock confidence is green -> alert. Optional owner cabinet action kept on record: pause 2794142 (June CRR 82.8%, OD-019 kill band) ahead of formal ads-truth restore."

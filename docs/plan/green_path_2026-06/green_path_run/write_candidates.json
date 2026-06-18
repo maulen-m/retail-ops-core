@@ -1,0 +1,3869 @@
+[
+  {
+    "categories": [
+      "quarantine_triage"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --backup-dir, --classification, --expected-candidate-rows, --expected-pre-sha256, --expected-product-cashflow-delete-rows, --expected-sales-fact-product-profit-null-rows, --expected-stock-ledger-delete-rows",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_HEADER_ONLY_SOURCE_GAP_QUARANTINE_PRODUCTION_APPLY"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--backup-dir",
+        "--classification",
+        "--db",
+        "--expected-candidate-rows",
+        "--expected-pre-sha256",
+        "--expected-product-cashflow-delete-rows",
+        "--expected-sales-fact-product-profit-null-rows",
+        "--expected-stock-ledger-delete-rows",
+        "--output-root"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_header_only_source_gap_quarantine_production_safe.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --backup-dir, --classification, --expected-candidate-rows, --expected-pre-sha256, --expected-product-cashflow-delete-rows, --expected-sales-fact-product-profit-null-rows, --expected-stock-ledger-delete-rows",
+    "rollback_reference": "DB restore from pre-apply backup; remove quarantine/materialization rows by run/source id only if restoring is unavailable.",
+    "script": "scripts/apply_header_only_source_gap_quarantine_production_safe.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_HEADER_ONLY_SOURCE_GAP_QUARANTINE_PRODUCTION_APPLY",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 1,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_kaspi_pay_cash_anchor.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/apply_kaspi_pay_cash_anchor.sqlite --output-root /tmp/green_path_scratch/ready_out/dryrun_outputs/apply_kaspi_pay_cash_anchor --source-root /tmp/green_path_scratch/ready_out/dryrun_outputs/apply_kaspi_pay_cash_anchor/source_root --cutoff 2026-06-13 --run-id pkt_ready_dryrun_apply_kaspi_pay_cash_anchor",
+      "output_summary": "ERROR: Expected exactly stores ['11KZ', 'MELVIS', 'STOREB', 'ACMEWEAR', 'Universal']; missing=['11KZ', 'MELVIS', 'STOREB', 'ACMEWEAR', 'Universal']; extra=[]",
+      "sample_diff_rows_or_output_lines": [
+        "ERROR: Expected exactly stores ['11KZ', 'MELVIS', 'STOREB', 'ACMEWEAR', 'Universal']; missing=['11KZ', 'MELVIS', 'STOREB', 'ACMEWEAR', 'Universal']; extra=[]"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_ANCHOR_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--cutoff",
+        "--output-root",
+        "--run-id",
+        "--source-root"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_kaspi_pay_cash_anchor.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/apply_kaspi_pay_cash_anchor.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_ANCHOR_WRITE"
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --api-entries, --backup-dir, --expected-candidate-entry-rows, --expected-inserted-entry-rows, --expected-pre-sha256, --expected-quarantine-rows, --expected-safe-order-rows, --quarantine-rows, --safe-rows",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_STOREB_API_ORDER_ENTRY_PRODUCTION_APPLY"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--api-entries",
+        "--backup-dir",
+        "--db",
+        "--expected-candidate-entry-rows",
+        "--expected-inserted-entry-rows",
+        "--expected-pre-sha256",
+        "--expected-quarantine-rows",
+        "--expected-safe-order-rows",
+        "--output-root",
+        "--quarantine-rows",
+        "--safe-rows"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_storeb_api_order_entries_from_agent31_production_safe.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --api-entries, --backup-dir, --expected-candidate-entry-rows, --expected-inserted-entry-rows, --expected-pre-sha256, --expected-quarantine-rows, --expected-safe-order-rows, --quarantine-rows, --safe-rows",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/apply_storeb_api_order_entries_from_agent31_production_safe.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_STOREB_API_ORDER_ENTRY_PRODUCTION_APPLY",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "quarantine_triage"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --backup-dir, --candidates, --expected-candidate-rows, --expected-pre-sha256, --expected-product-cashflow-delete-rows, --expected-stock-ledger-delete-rows",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_STOREB_PRODUCT_IDENTITY_QUARANTINE_PRODUCTION_APPLY"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--backup-dir",
+        "--candidates",
+        "--db",
+        "--expected-candidate-rows",
+        "--expected-pre-sha256",
+        "--expected-product-cashflow-delete-rows",
+        "--expected-stock-ledger-delete-rows",
+        "--output-root"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_storeb_product_identity_quarantine_production_safe.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --backup-dir, --candidates, --expected-candidate-rows, --expected-pre-sha256, --expected-product-cashflow-delete-rows, --expected-stock-ledger-delete-rows",
+    "rollback_reference": "DB restore from pre-apply backup; remove quarantine/materialization rows by run/source id only if restoring is unavailable.",
+    "script": "scripts/apply_storeb_product_identity_quarantine_production_safe.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_STOREB_PRODUCT_IDENTITY_QUARANTINE_PRODUCTION_APPLY",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "cogs_backfill"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_owner_approved_beli_child_cogs_rows.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/apply_owner_approved_beli_child_cogs_rows.sqlite --output-root /tmp/green_path_scratch/ready_out/dryrun_outputs/apply_owner_approved_beli_child_cogs_rows",
+      "output_summary": "{\n  \"ok\": true,\n  \"apply_status\": \"DRY_RUN\",\n  \"report_path\": \"/private/tmp/green_path_scratch/ready_out/dryrun_outputs/apply_owner_approved_beli_child_cogs_rows/owner_approved_beli_child_cogs_rows_report.json\",\n  \"backup_path\": null,\n  \"unresolved_before\": 0,\n  \"unresolved_simulated_after\": 0,\n  \"unresolved_after\": 0\n}",
+      "sample_diff_rows_or_output_lines": [
+        "  \"apply_status\": \"DRY_RUN\",",
+        "  \"report_path\": \"/private/tmp/green_path_scratch/ready_out/dryrun_outputs/apply_owner_approved_beli_child_cogs_rows/owner_approved_beli_child_cogs_rows_report.json\",",
+        "  \"unresolved_before\": 0,",
+        "  \"unresolved_simulated_after\": 0,",
+        "  \"unresolved_after\": 0"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_OWNER_APPROVED_LINE_CHILD_COGS_ROW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--output-root"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_owner_approved_beli_child_cogs_rows.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/apply_owner_approved_beli_child_cogs_rows.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "CREATE TABLE",
+      "DRY_RUN",
+      "ENABLE_OWNER_APPROVED_LINE_CHILD_COGS_ROW_WRITE",
+      "INSERT INTO",
+      "UPDATE SET",
+      "commit("
+    ]
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_owner_confirmed_article_map_overrides.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/apply_owner_confirmed_article_map_overrides.sqlite --output-root /tmp/green_path_scratch/ready_out/dryrun_outputs/apply_owner_confirmed_article_map_overrides",
+      "output_summary": "      \"sku_id\": \"CL_NEW-CLO_MEN_LEG_WHITE_XL\",\n      \"sku_key\": \"CL_NEW-CLO_MEN_LEG_WHITE\",\n      \"source\": \"OWNER_CONFIRMED_2026_05_21_UNIVERSAL_132822924_328581041\",\n      \"store_code\": \"UNIVERSAL\",\n      \"updated_at\": \"2026-06-01 13:59:56\"\n    }\n  ],\n  \"changes\": [],\n  \"db_path\": \"/tmp/green_path_scratch/ready_out/dryrun_dbs/apply_owner_confirmed_article_map_overrides.sqlite\",\n  \"env_gate\": \"ENABLE_OWNER_CONFIRMED_ARTICLE_MAP_WRITE\",\n  \"generated_at\": \"2026-06-13T04:04:59\",\n  \"override_count\": 1,\n  \"rollback\": {\n    \"backup_path\": null,\n    \"restore_command\": null\n  },\n  \"summary_json\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/apply_owner_confirmed_article_map_overrides/owner_confirmed_article_map_overrides_summary.json\"\n}",
+      "sample_diff_rows_or_output_lines": [
+        "  \"after\": [",
+        "      \"updated_at\": \"2026-06-01 13:59:56\"",
+        "  \"apply_status\": \"DRY_RUN\",",
+        "  \"before\": [",
+        "      \"updated_at\": \"2026-06-01 13:59:56\"",
+        "  \"db_path\": \"/tmp/green_path_scratch/ready_out/dryrun_dbs/apply_owner_confirmed_article_map_overrides.sqlite\",",
+        "  \"override_count\": 1,",
+        "  \"summary_json\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/apply_owner_confirmed_article_map_overrides/owner_confirmed_article_map_overrides_summary.json\""
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_OWNER_CONFIRMED_ARTICLE_MAP_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_owner_confirmed_article_map_overrides.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/apply_owner_confirmed_article_map_overrides.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --backup-dir, --date, --expected-current-stock-total, --expected-existing-rows, --expected-inbound-stock-total, --expected-pre-sha256, --expected-rows-created, --mode, --store",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_REBUILD_SNAPSHOT_PRODUCTION_APPLY"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--backup-dir",
+        "--date",
+        "--db",
+        "--expected-current-stock-total",
+        "--expected-existing-rows",
+        "--expected-inbound-stock-total",
+        "--expected-pre-sha256",
+        "--expected-rows-created",
+        "--mode",
+        "--output-root",
+        "--store"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_rebuild_snapshot_production_safe.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --backup-dir, --date, --expected-current-stock-total, --expected-existing-rows, --expected-inbound-stock-total, --expected-pre-sha256, --expected-rows-created, --mode, --store",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/apply_rebuild_snapshot_production_safe.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [
+      "cogs_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_line31_compact_child_cogs_exception.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/apply_line31_compact_child_cogs_exception.sqlite --output /tmp/green_path_scratch/ready_out/dryrun_outputs/apply_line31_compact_child_cogs_exception/output.json",
+      "output_summary": "{\n  \"ok\": true,\n  \"applied\": false,\n  \"output\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/apply_line31_compact_child_cogs_exception/output.json\"\n}",
+      "sample_diff_rows_or_output_lines": [
+        "  \"output\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/apply_line31_compact_child_cogs_exception/output.json\""
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--output"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/apply_line31_compact_child_cogs_exception.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "has --apply/write surface but no explicit env gate token found",
+    "rollback_reference": "DB restore from pre-apply backup; remove quarantine/materialization rows by run/source id only if restoring is unavailable.",
+    "script": "scripts/apply_line31_compact_child_cogs_exception.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "UPDATE dim_sku",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "quarantine_triage"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of",
+        "--run-id"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/backfill_exception_queue_c3_metadata.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "has --apply/write surface but no explicit env gate token found",
+    "rollback_reference": "DB restore from pre-apply backup; remove quarantine/materialization rows by run/source id only if restoring is unavailable.",
+    "script": "scripts/backfill_exception_queue_c3_metadata.py",
+    "static_write_tokens_sample": [
+      "--apply"
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/backfill_order_entries_offer_id.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/backfill_order_entries_offer_id.sqlite",
+      "output_summary": "Order entries offer_id backfill summary\n  Candidates: 156\n  Updated: 156\n  Missing code: 0\n  Parse error: 0\n  Dry-run only (no DB writes).",
+      "sample_diff_rows_or_output_lines": [
+        "  Candidates: 156",
+        "  Updated: 156",
+        "  Parse error: 0",
+        "  Dry-run only (no DB writes)."
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_ORDER_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/backfill_order_entries_offer_id.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "Delete generated dry-run package files; any merchant upload/live price apply requires separate marketplace rollback/readback.",
+    "script": "scripts/backfill_order_entries_offer_id.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_ORDER_WRITE",
+      "UPDATE fact_order_entries_kaspi"
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --since, --until",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_ORDER_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--since",
+        "--until"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/backfill_orders_sku_from_sales_v2.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --since, --until",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/backfill_orders_sku_from_sales_v2.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_ORDER_WRITE",
+      "UPDATE fact_orders_kaspi"
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of, --reference-csv",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_DB_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of",
+        "--reference-csv"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/backfill_recent_order_identity.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --as-of, --reference-csv",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/backfill_recent_order_identity.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_DB_WRITE",
+      "UPDATE fact_orders_kaspi",
+      "commit(",
+      "executemany("
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "no DB override detected; dry-run could inspect or open live repo db/app.db",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/bootstrap_ledger.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "no DB override detected; dry-run could inspect or open live repo db/app.db",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/bootstrap_ledger.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/build_fact_sales_v16.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/build_fact_sales_v16.sqlite",
+      "output_summary": "Inserted: 21783\nMissing sku_key: 100\nReport: ~/Docs/Autonomous_business/exports/fact_sales_v16_mismatch_report.md",
+      "sample_diff_rows_or_output_lines": [
+        "Inserted: 21783"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/build_fact_sales_v16.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "has --apply/write surface but no explicit env gate token found",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/build_fact_sales_v16.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "INSERT OR REPLACE INTO",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 124,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/build_fact_sales_v16_from_api.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/build_fact_sales_v16_from_api.sqlite",
+      "output_summary": "timeout after 35s",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_FACT_SALES_V16_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/build_fact_sales_v16_from_api.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/build_fact_sales_v16_from_api.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_FACT_SALES_V16_WRITE",
+      "INSERT OR REPLACE INTO",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "ads_sync_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/build_kaspi_marketing_owner_workbook.py --app-db /tmp/green_path_scratch/ready_out/dryrun_dbs/build_kaspi_marketing_owner_workbook.sqlite",
+      "output_summary": "{'campaign_rows': 1147, 'product_rows': 936, 'bid_override_upserts': 51}",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--app-db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/build_kaspi_marketing_owner_workbook.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "write tokens found without --apply or --dry-run guard",
+    "rollback_reference": "DB restore from pre-apply backup for local materialization; external ad-system writes require separate owner rollback plan.",
+    "script": "scripts/build_kaspi_marketing_owner_workbook.py",
+    "static_write_tokens_sample": [
+      "CREATE TABLE",
+      "INSERT INTO",
+      "UPDATE SET",
+      "commit(",
+      "executemany("
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "no DB override detected; dry-run could inspect or open live repo db/app.db",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/build_manual_stock_20260604_pre_shipments_anchor.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "no DB override detected; dry-run could inspect or open live repo db/app.db",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/build_manual_stock_20260604_pre_shipments_anchor.py",
+    "static_write_tokens_sample": [
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import",
+      "price_floor_generation"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/build_offer_stock_mapper.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/build_offer_stock_mapper.sqlite --dry-run",
+      "output_summary": "Mapper table: fact_offer_stock_mapper_current\nStores: UNIVERSAL, STOREB\nRows: 1623\nUnresolved: 66\nAmbiguous: 51\nMethods:\n  article_map_article_size: 30\n  article_map_sku_id: 1473\n  offer_size_stats: 26\n  size_probability_offer: 22\n  size_probability_style: 6\n  unresolved: 66\nConfidence:\n  HIGH: 1546\n  LOW: 73\n  MEDIUM: 4\nDry run: True",
+      "sample_diff_rows_or_output_lines": [
+        "Dry run: True"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/build_offer_stock_mapper.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/build_offer_stock_mapper.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "CREATE TABLE",
+      "DELETE FROM",
+      "INSERT INTO",
+      "dry_run",
+      "executemany("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 3,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/check_on_delivery_residuals.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/check_on_delivery_residuals.sqlite --output-dir /tmp/green_path_scratch/ready_out/dryrun_outputs/check_on_delivery_residuals",
+      "output_summary": "report=/tmp/green_path_scratch/ready_out/dryrun_outputs/check_on_delivery_residuals/on_delivery_residuals_2026-06-13_20260613_040540.md\nresidual_count=120\nSTATUS=FAIL",
+      "sample_diff_rows_or_output_lines": [
+        "report=/tmp/green_path_scratch/ready_out/dryrun_outputs/check_on_delivery_residuals/on_delivery_residuals_2026-06-13_20260613_040540.md",
+        "residual_count=120"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/check_on_delivery_residuals.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/check_on_delivery_residuals.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE"
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --snapshot-date",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_NEGATIVE_LEDGER_CLAMP_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--snapshot-date"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/clamp_negative_ledger.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --snapshot-date",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/clamp_negative_ledger.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_NEGATIVE_LEDGER_CLAMP_WRITE"
+    ]
+  },
+  {
+    "categories": [
+      "end_of_day_apply"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "broad daily pipeline uses hardcoded repo DB paths in child steps",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/daily_pipeline_v2.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "broad daily pipeline uses hardcoded repo DB paths in child steps",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/daily_pipeline_v2.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/dedupe_cashflow_order_events.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/dedupe_cashflow_order_events.sqlite",
+      "output_summary": "Dedup reversal events added: 1\nDRY RUN: no changes written",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN: no changes written"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/dedupe_cashflow_order_events.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/dedupe_cashflow_order_events.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "INSERT INTO",
+      "commit(",
+      "executemany("
+    ]
+  },
+  {
+    "categories": [
+      "price_floor_generation"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --store",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--store"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/deploy_kaspi_pricelist.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --store",
+    "rollback_reference": "Delete generated dry-run package files; any merchant upload/live price apply requires separate marketplace rollback/readback.",
+    "script": "scripts/deploy_kaspi_pricelist.py",
+    "static_write_tokens_sample": [
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "fx_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/derive_fx_rates.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/derive_fx_rates.sqlite --dry-run",
+      "output_summary": "Derived FX rows:\n{'effective_date': '2025-12-13', 'usdt_kzt': 517.7385565893048, 'usdt_cny': 6.909174656662504, 'cny_kzt': 74.93493540361591, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts': {'p2p_orders': 2, 'exchanger_orders': 4}}\n{'effective_date': '2025-12-23', 'usdt_kzt': 509.64970402137743, 'usdt_cny': 6.872195439117932, 'cny_kzt': 74.16111903924441, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts': {'p2p_orders': 2, 'exchanger_orders': 4}}\n{'effective_date': '2026-01-09', 'usdt_kzt': 498.2419834241253, 'usdt_cny': 6.8167559823401405, 'cny_kzt': 73.09077583456092, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts': {'p2p_orders': 2, 'exchanger_orders': 3}}\n{'effective_date': '2026-01-21', 'usdt_kzt': 495.80872138331387, 'usdt_cny': 6.812453164384494, 'cny_kzt': 72.77976221185665, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts': {'p2p_orders': 6, 'exchanger_orders': 1}}\n{'effective_date': '2026-01-30', 'usdt_kzt': 501.89116210394315, 'usdt_cny': 6.827336655970505, 'cny_kzt': 73.51199851336456, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts': {'p2p_orders': 2, 'exchanger_orders': 2}}\n{'effective_date': '2026-01-31', 'usdt_kzt': 499.0054994306757, 'usdt_cny': 6.846586665338843, 'cny_kzt': 72.88383596411826, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts': {'p2p_orders': 1, 'exchanger_orders': 1}}\n{'effective_date': '2026-02-03', 'usdt_kzt': 501.00200400801606, 'usdt_cny': 6.821959266701397, 'cny_kzt': 73.43960648569868, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts': {'p2p_orders': 1, 'exchanger_orders': 1}}\n{'effective_date': '2026-02-06', 'usdt_kzt': 502.00803212851406, 'usdt_cny': 6.918705846216852, 'cny_kzt': 72.55808286791265, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts': {'p2p_orders': 1, 'exchanger_orders': 2}}",
+      "sample_diff_rows_or_output_lines": [
+        "{'effective_date': '2025-12-13', 'usdt_kzt': 517.7385565893048, 'usdt_cny': 6.909174656662504, 'cny_kzt': 74.93493540361591, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts'",
+        "{'effective_date': '2025-12-23', 'usdt_kzt': 509.64970402137743, 'usdt_cny': 6.872195439117932, 'cny_kzt': 74.16111903924441, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts",
+        "{'effective_date': '2026-01-09', 'usdt_kzt': 498.2419834241253, 'usdt_cny': 6.8167559823401405, 'cny_kzt': 73.09077583456092, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts",
+        "{'effective_date': '2026-01-21', 'usdt_kzt': 495.80872138331387, 'usdt_cny': 6.812453164384494, 'cny_kzt': 72.77976221185665, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts",
+        "{'effective_date': '2026-01-30', 'usdt_kzt': 501.89116210394315, 'usdt_cny': 6.827336655970505, 'cny_kzt': 73.51199851336456, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts",
+        "{'effective_date': '2026-01-31', 'usdt_kzt': 499.0054994306757, 'usdt_cny': 6.846586665338843, 'cny_kzt': 72.88383596411826, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts'",
+        "{'effective_date': '2026-02-03', 'usdt_kzt': 501.00200400801606, 'usdt_cny': 6.821959266701397, 'cny_kzt': 73.43960648569868, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts",
+        "{'effective_date': '2026-02-06', 'usdt_kzt': 502.00803212851406, 'usdt_cny': 6.918705846216852, 'cny_kzt': 72.55808286791265, 'usd_kzt': 514.0, 'dlv_rate_usd_kg': 2.66, 'provider': 'AUTO', 'source': 'Binance P2P + Exchanger emails', 'counts"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/derive_fx_rates.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/derive_fx_rates.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "CREATE TABLE",
+      "INSERT OR REPLACE INTO",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/detect_stockouts.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/detect_stockouts.sqlite --dry-run",
+      "output_summary": "=== Stockout Detection ===\nDatabase: /tmp/green_path_scratch/ready_out/dryrun_dbs/detect_stockouts.sqlite\nDry run: True\nSKUs checked: 0\nNew stockouts: 0\nContinued stockouts: 0\nResolved stockouts: 0\nStockout detection complete.",
+      "sample_diff_rows_or_output_lines": [
+        "Database: /tmp/green_path_scratch/ready_out/dryrun_dbs/detect_stockouts.sqlite",
+        "Dry run: True"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/detect_stockouts.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/detect_stockouts.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "INSERT INTO",
+      "UPDATE fact_stockout_events",
+      "Update existing",
+      "commit(",
+      "dry_run",
+      "update\n        d30"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/generate_bank_accounts_history_totals.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/generate_bank_accounts_history_totals.sqlite --dry-run --output /tmp/green_path_scratch/ready_out/dryrun_outputs/generate_bank_accounts_history_totals/output.json",
+      "output_summary": "Source: `~/Docs/Autonomous_business/config/bank_accounts_history.yaml`\nMode: compact\nOrder: newest to oldest\nKZT conversion rates: USDT_KZT=490.0 (binance_p2p 2026-02-10); USD_KZT=514.0 (dim_fx_rates 2026-02-06); RUB_KZT=6.6 (default hardcoded); CNY_KZT=72.55808286791265 (dim_fx_rates 2026-02-06)\n| as_of | source | TOTAL_KZT | TOTAL_USD | TOTAL_RUB | TOTAL_USDT | TOTAL_KZT_EQ | UNIVERSAL_KZT | UNIVERSAL_USDT | UNIVERSAL_USD | UNIVERSAL_RUB | 11KZ_KZT | 11KZ_USDT | STOREB_KZT | ACMEWEAR_KZT | MELVIS_KZT |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n| 2026-06-01 09:06:51 GMT+5 | manual snapshot (Cash_Balances) | 4,146,000 | 748 | 10,000 | 3,585 | 6,353,122 | 2,378,000 | 3,585 | 748 | 10,000 | 0 | 0 | 98,000 | 1,670,000 | 0 |\n| 2026-05-03 19:59:00 GMT+5 | manual snapshot (bank_accounts_manual_ingest_3.5.2026) | 5,957,000 | 0 | 10,000 | 3,526.19 | 7,750,833.1 | 4,029,000 | 3,526.19 | 0 | 10,000 | 0 | 0 | 41,000 | 1,887,000 | 0 |\n| 2026-04-15 19:44:00 GMT+5 | manual snapshot (Cash_Balances) | 6,834,000 | 0 | 10,000 | 1,616 | 7,691,840 | 6,760,000 | 1,616 | 0 | 10,000 | 0 | 0 | 44,000 | 30,000 | 0 |\n| 2026-03-02 14:41:00 GMT+5 | manual snapshot (Cash_Balances) | 315,780 | 7 | 10,000 | 160.362615 | 463,955.68135 | 301,780 | 160.362615 | 7 | 10,000 | 0 | 0 | 14,000 | 0 | 0 |\n| 2026-03-02 11:45:41 GMT+5 | manual snapshot | 1,141,000 | 1,500 | 10,000 | 160.362615 | 2,056,577.68135 | 887,000 | 160.362615 | 1,500 | 10,000 | 0 | 0 | 254,000 | 0 | 0 |\n| 2026-02-17 13:05:44 GMT+5 | manual snapshot | 4,263,000 | 100 | 10,000 | 160.362615 | 4,458,977.68135 | 3,497,000 | 160.362615 | 100 | 10,000 | 3,000 | 0 | 408,000 | 355,000 | 0 |\n| 2026-02-08 12:10:23 GMT+5 | manual snapshot | 1,804,091 | 100 | 10,000 | 160.362615 | 2,000,068.68135 | 903,091 | 160.362615 | 100 | 10,000 | 3,000 | 0 | 151,000 | 747,000 | 0 |\n| 2026-02-06 16:59:03 GMT+5 | manual snapshot + binance api autosync | 2,475,364 | 100 | 10,000 | 617.362615 | 2,895,271.68135 | 1,976,664 | 160.362615 | 100 | 10,000 | 3,000 | 457 | 13,000 | 482,000 | 700 |\n| 2026-02-05 18:19:13 GMT+5 | manual snapshot | 2,475,364 | 100 | 10,000 | 1,405.19 | 3,281,307.1 | 1,976,664 | 948.19 | 100 | 10,000 | 3,000 | 457 | 13,000 | 482,000 | 700 |\n| 2026-02-05 14:00:52 GMT+5 | manual snapshot | 2,475,364 | 100 | 10,000 | 1,405.19 | 3,281,307.1 | 1,976,664 | 948.19 | 100 | 10,000 | 3,000 | 457 | 13,000 | 482,000 | 700 |\n| 2026-01-28 14:11:00 GMT+5 | manual snapshot | 3,521,965 | 100 | 10,000 | 1,284.07 | 4,268,559.3 | 2,506,194 | 334.07 | 100 | 10,000 | 149,874 | 950 | 50,577 | 809,000 | 6,320 |\n| 2026-01-24 13:49:00 GMT+5 | manual snapshot | 2,191,408 | 100 | 10,000 | 1,284.07 | 2,938,002.3 | 1,376,247 | 334.07 | 100 | 10,000 | 149,874 | 950 | 83,747 | 581,540 | 0 |",
+      "sample_diff_rows_or_output_lines": [
+        "# Bank Accounts History Totals",
+        "Source: `~/Docs/Autonomous_business/config/bank_accounts_history.yaml`",
+        "| 2026-05-03 19:59:00 GMT+5 | manual snapshot (bank_accounts_manual_ingest_3.5.2026) | 5,957,000 | 0 | 10,000 | 3,526.19 | 7,750,833.1 | 4,029,000 | 3,526.19 | 0 | 10,000 | 0 | 0 | 41,000 | 1,887,000 | 0 |"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/generate_bank_accounts_history_totals.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/generate_bank_accounts_history_totals.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/generate_bank_snapshot.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/generate_bank_snapshot.sqlite --dry-run --output /tmp/green_path_scratch/ready_out/dryrun_outputs/generate_bank_snapshot/output.json",
+      "output_summary": "        balance_kzt: 70000\n      kaspi_pay:\n        balance_kzt: 28000\n  ACMEWEAR:\n    accounts:\n      kaspi_gold:\n        balance_kzt: 1637000\n      kaspi_pay:\n        balance_kzt: 33000\n      cash_kzt:\n        balance_kzt: 0\n  MELVIS:\n    accounts:\n      kaspi_gold:\n        balance_kzt: 0\n      kaspi_pay:\n        balance_kzt: 0\n04:05:42 | INFO | Latest effective snapshot: 2026-06-01 09:06:51 GMT+5",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN - would write to: /tmp/green_path_scratch/ready_out/dryrun_outputs/generate_bank_snapshot/output.json",
+        "## Cash balances by store/account (manual snapshot).",
+        "## Store codes mirror config/kaspi_pay_accounts.yaml.",
+        "## Amounts are raw balances in account currency.",
+        "    accounts:",
+        "    accounts:",
+        "    accounts:",
+        "    accounts:",
+        "    accounts:"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/generate_bank_snapshot.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/generate_bank_snapshot.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "price_floor_generation"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --store",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": [
+        "--store"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/generate_kaspi_pricelist_xml.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --store",
+    "rollback_reference": "Delete generated dry-run package files; any merchant upload/live price apply requires separate marketplace rollback/readback.",
+    "script": "scripts/generate_kaspi_pricelist_xml.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --amount-kzt, --start-date",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--amount-kzt",
+        "--start-date"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/generate_recurring_commitments.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --amount-kzt, --start-date",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/generate_recurring_commitments.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "INSERT INTO",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cash_balance_checks.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_cash_balance_checks.sqlite",
+      "output_summary": "Rows in CSV: 1\nNew events: 1 (existing skipped: 0)\nDRY RUN: no DB writes.",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN: no DB writes."
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cash_balance_checks.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/import_cash_balance_checks.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_balance_checks.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_cashflow_balance_checks.sqlite",
+      "output_summary": "(no output)",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_balance_checks.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/import_cashflow_balance_checks.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 2,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_commitments.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_cashflow_commitments.sqlite",
+      "output_summary": "usage: import_cashflow_commitments.py [-h] [--db DB] [--apply] [--replace]\n                                      csv_path\nimport_cashflow_commitments.py: error: the following arguments are required: csv_path",
+      "sample_diff_rows_or_output_lines": [
+        "import_cashflow_commitments.py: error: the following arguments are required: csv_path"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_commitments.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/import_cashflow_commitments.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "DELETE FROM",
+      "ENABLE_CASHFLOW_WRITE",
+      "INSERT INTO",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 2,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_events.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_cashflow_events.sqlite",
+      "output_summary": "usage: import_cashflow_events.py [-h] [--db DB] [--apply] [--run-id RUN_ID]\n                                 csv_path\nimport_cashflow_events.py: error: the following arguments are required: csv_path",
+      "sample_diff_rows_or_output_lines": [
+        "import_cashflow_events.py: error: the following arguments are required: csv_path"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_events.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/import_cashflow_events.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_opening_balances.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_cashflow_opening_balances.sqlite",
+      "output_summary": "Opening balance report: ~/Docs/Autonomous_business/exports/opening_balance_import_report.txt",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_opening_balances.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/import_cashflow_opening_balances.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_payouts.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_cashflow_payouts.sqlite",
+      "output_summary": "Payout import report: ~/Docs/Autonomous_business/exports/payout_import_report.txt",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_cashflow_payouts.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/import_cashflow_payouts.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "fx_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 1,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_exchanger_emails.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_exchanger_emails.sqlite --dry-run",
+      "output_summary": "Traceback (most recent call last):\n  File \"~/Docs/Autonomous_business/scripts/import_exchanger_emails.py\", line 172, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/import_exchanger_emails.py\", line 97, in main\n    messages = fetch_messages(\n               ^^^^^^^^^^^^^^^\n  File \"~/Docs/Autonomous_business/core/integrations/gmail_imap_client.py\", line 75, in fetch_messages\n    imap.login(username, app_password)\n  File \"/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/imaplib.py\", line 612, in login\n    raise self.error(dat[-1])\nimaplib.IMAP4.error: b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)'",
+      "sample_diff_rows_or_output_lines": [
+        "    raise self.error(dat[-1])",
+        "imaplib.IMAP4.error: b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)'"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_exchanger_emails.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/import_exchanger_emails.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_kaspi_pay_mt940.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_kaspi_pay_mt940.sqlite",
+      "output_summary": "Parsed events: 12784\nNew events: 0 (existing skipped: 12784)\nReport: ~/Docs/Autonomous_business/exports/mt940_backfill_report_2026-01-23.md\nRecon: ~/Docs/Autonomous_business/exports/mt940_cash_recon_2026-01-23.csv\nDRY RUN: no DB writes.",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN: no DB writes."
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_kaspi_pay_mt940.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/import_kaspi_pay_mt940.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 1,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_opex_protocol.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_opex_protocol.sqlite",
+      "output_summary": "Traceback (most recent call last):\n  File \"~/Docs/Autonomous_business/scripts/import_opex_protocol.py\", line 303, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/import_opex_protocol.py\", line 299, in main\n    return import_opex(args.csv, args.xlsx, args.db, args.apply, args.horizon_days, args.replace_existing)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/import_opex_protocol.py\", line 219, in import_opex\n    raise ValueError(\"Provide --csv or --xlsx\")\nValueError: Provide --csv or --xlsx",
+      "sample_diff_rows_or_output_lines": [
+        "    raise ValueError(\"Provide --csv or --xlsx\")",
+        "ValueError: Provide --csv or --xlsx"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_opex_protocol.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/import_opex_protocol.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "DELETE FROM",
+      "ENABLE_CASHFLOW_WRITE",
+      "INSERT INTO",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_po_arrivals_as_inventory_in.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_po_arrivals_as_inventory_in.sqlite",
+      "output_summary": "PO arrival inventory report: ~/Docs/Autonomous_business/exports/po_arrival_inventory_in_report.csv\nPO arrival summary: ~/Docs/Autonomous_business/exports/po_arrival_inventory_in_summary.txt",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_po_arrivals_as_inventory_in.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/import_po_arrivals_as_inventory_in.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cogs_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_sku_costs.py --dry-run",
+      "output_summary": "Loading from ~/Docs/Autonomous_business/excel/Inventory_Core_V15_FINAL.xlsx...\nLoaded 54 SKUs with valid cost data\nSample COGS calculations:\n                           sku_key  base_cost_cny  weight_kg    cogs_kzt\n         CL_NEW-CLO2_MEN_HUS_GREEN             47   0.950000 5005.500000\nCL_NEW-CLO2_MEN_SUIT-51_BLACK_GREY             47   0.950000 5005.500000\n     CL_NEW-CLO2_MEN_SUIT-61_BLACK             53   1.000000 5544.000000\n      CL_NEW-CLO_KIDS_KID-31_BLACK             25   0.445736 2578.488372\n       CL_NEW-CLO_KID_ROMBIK_BLACK             53   0.931060 5446.793940\n CL_NEW-CLO_MEN_BERSERK-RUSH_BLACK             11   0.147286 1065.672871\n CL_NEW-CLO_MEN_BERSERK-RUSH_WHITE             11   0.147286 1065.672871\nCL_NEW-CLO_MEN_BERSERK-SHIRT_BLACK             10   0.147286  987.672871\nCL_NEW-CLO_MEN_BERSERK-SHIRT_GREEN             10   0.147286  987.672871\n CL_NEW-CLO_MEN_BERSERK-SHIRT_GREY             10   0.147286  987.672871\n[DRY RUN] Would update these SKUs in dim_sku",
+      "sample_diff_rows_or_output_lines": [
+        "[DRY RUN] Would update these SKUs in dim_sku"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_sku_costs.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/import_sku_costs.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "INSERT INTO",
+      "UPDATE dim_sku",
+      "Update database",
+      "commit(",
+      "dry_run",
+      "update existing",
+      "update these"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild",
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_transfer_ledger_cashflow.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/import_transfer_ledger_cashflow.sqlite",
+      "output_summary": "Transfer ledger events added: 196\nDRY RUN: no changes written",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN: no changes written"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/import_transfer_ledger_cashflow.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/import_transfer_ledger_cashflow.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "commit(",
+      "executemany("
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 2,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/ingest_inventory_snapshot.py --dry-run",
+      "output_summary": "usage: ingest_inventory_snapshot.py [-h] [--date DATE] [--dry-run] [--quiet]\n                                    filepath\ningest_inventory_snapshot.py: error: the following arguments are required: filepath",
+      "sample_diff_rows_or_output_lines": [
+        "usage: ingest_inventory_snapshot.py [-h] [--date DATE] [--dry-run] [--quiet]",
+        "ingest_inventory_snapshot.py: error: the following arguments are required: filepath"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/ingest_inventory_snapshot.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/ingest_inventory_snapshot.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "CREATE TABLE",
+      "DELETE FROM",
+      "INSERT INTO",
+      "commit(",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "ads_sync_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "non-Python candidate; not run by Python dry-run harness",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/install_kaspi_marketing_scheduler.sh --help",
+    "recommendation": "NO",
+    "recommendation_reason": "write tokens found without --apply or --dry-run guard",
+    "rollback_reference": "DB restore from pre-apply backup for local materialization; external ad-system writes require separate owner rollback plan.",
+    "script": "scripts/install_kaspi_marketing_scheduler.sh",
+    "static_write_tokens_sample": [
+      "update launchd"
+    ]
+  },
+  {
+    "categories": [
+      "ads_sync_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 1,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/kaspi_marketing_scrape.py --app-db /tmp/green_path_scratch/ready_out/dryrun_dbs/kaspi_marketing_scrape.sqlite --output-root /tmp/green_path_scratch/ready_out/dryrun_outputs/kaspi_marketing_scrape",
+      "output_summary": "2026-06-13 04:06:02,141 - INFO - External_database restore actions: ['missing_in_snapshot:kaspi_marketing_scrape']",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--app-db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/kaspi_marketing_scrape.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "write tokens found without --apply or --dry-run guard",
+    "rollback_reference": "DB restore from pre-apply backup for local materialization; external ad-system writes require separate owner rollback plan.",
+    "script": "scripts/kaspi_marketing_scrape.py",
+    "static_write_tokens_sample": [
+      "CREATE TABLE",
+      "DROP TABLE",
+      "INSERT INTO",
+      "INSERT OR REPLACE INTO",
+      "commit(",
+      "executemany(",
+      "update\n            backup_dir"
+    ]
+  },
+  {
+    "categories": [
+      "fx_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --status",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": [
+        "--status"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/mark_exchanger_order_status.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --status",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/mark_exchanger_order_status.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "UPDATE exchanger_orders",
+      "commit(",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "ads_sync_backfill"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --end, --start",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--app-db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_C3_ADS_SOURCE_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": true,
+      "required_options": [
+        "--end",
+        "--output-root",
+        "--start"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_ads_campaign_product_daily.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --end, --start",
+    "rollback_reference": "DB restore from pre-apply backup for local materialization; external ad-system writes require separate owner rollback plan.",
+    "script": "scripts/materialize_ads_campaign_product_daily.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "--dry-run",
+      "ENABLE_C3_ADS_SOURCE_WRITE",
+      "INSERT OR REPLACE INTO",
+      "commit("
+    ]
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of, --bridge",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_C3_POLICY_MATERIALIZATION_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of",
+        "--bridge",
+        "--run-id"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_copied_temp_source_freshness_bridge.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --as-of, --bridge",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/materialize_copied_temp_source_freshness_bridge.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [
+      "quarantine_triage"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --classification",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_HEADER_ONLY_SOURCE_GAP_QUARANTINE_TEMP_APPLY"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--classification",
+        "--db",
+        "--output-root"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_header_only_source_gap_quarantine.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --classification",
+    "rollback_reference": "DB restore from pre-apply backup; remove quarantine/materialization rows by run/source id only if restoring is unavailable.",
+    "script": "scripts/materialize_header_only_source_gap_quarantine.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "CREATE TABLE",
+      "DELETE FROM",
+      "ENABLE_HEADER_ONLY_SOURCE_GAP_QUARANTINE_TEMP_APPLY",
+      "INSERT INTO",
+      "UPDATE SET",
+      "UPDATE sales_fact_v2",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --api-entries, --quarantine-rows, --safe-rows",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_STOREB_API_ORDER_ENTRY_TEMP_APPLY"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--api-entries",
+        "--db",
+        "--output-root",
+        "--quarantine-rows",
+        "--safe-rows"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_storeb_api_order_entries_from_agent31.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --api-entries, --quarantine-rows, --safe-rows",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/materialize_storeb_api_order_entries_from_agent31.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_STOREB_API_ORDER_ENTRY_TEMP_APPLY",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "quarantine_triage"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --candidates",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_STOREB_PRODUCT_IDENTITY_QUARANTINE_TEMP_APPLY"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--candidates",
+        "--db",
+        "--output-root"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_storeb_product_identity_quarantine.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --candidates",
+    "rollback_reference": "DB restore from pre-apply backup; remove quarantine/materialization rows by run/source id only if restoring is unavailable.",
+    "script": "scripts/materialize_storeb_product_identity_quarantine.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "CREATE TABLE",
+      "DELETE FROM",
+      "ENABLE_STOREB_PRODUCT_IDENTITY_QUARANTINE_TEMP_APPLY",
+      "INSERT INTO",
+      "UPDATE SET",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of, --source-csv",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_NEGATIVE_LEDGER_EXCEPTION_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of",
+        "--db",
+        "--output-root",
+        "--run-id",
+        "--source-csv"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_negative_ledger_exceptions.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --as-of, --source-csv",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/materialize_negative_ledger_exceptions.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_NEGATIVE_LEDGER_EXCEPTION_WRITE",
+      "INSERT INTO",
+      "UPDATE SET",
+      "commit("
+    ]
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_order_status_events_from_kaspi_orders.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/materialize_order_status_events_from_kaspi_orders.sqlite --run-id pkt_ready_dryrun_materialize_order_status_events_from_kaspi_orders",
+      "output_summary": "after_count=83802\napplied=False\nas_of=None\nas_of_filtered_count=0\nbackup_path=None\nbefore_count=83802\ncandidate_count=82993\ncandidate_count_after_as_of_filter=82993\ncandidate_count_before_as_of_filter=82993\ndb_path=/tmp/green_path_scratch/ready_out/dryrun_dbs/materialize_order_status_events_from_kaspi_orders.sqlite\ndeleted_count=0\ninserted_count=0\nrun_id=pkt_ready_dryrun_materialize_order_status_events_from_kaspi_orders\nskipped_counts={'fact_orders_kaspi': 2366}\nstage_counts={'ACCEPTED_PENDING_ASSEMBLY': 171, 'ASSEMBLED_PENDING_HANDOVER': 331, 'CANCELLED': 3954, 'CANCELLING': 13, 'COMPLETED': 27839, 'IN_DELIVERY': 633, 'NEW_APPROVED': 49262, 'RETURNED': 790}",
+      "sample_diff_rows_or_output_lines": [
+        "after_count=83802",
+        "as_of_filtered_count=0",
+        "before_count=83802",
+        "candidate_count=82993",
+        "candidate_count_after_as_of_filter=82993",
+        "candidate_count_before_as_of_filter=82993",
+        "db_path=/tmp/green_path_scratch/ready_out/dryrun_dbs/materialize_order_status_events_from_kaspi_orders.sqlite",
+        "deleted_count=0",
+        "inserted_count=0",
+        "run_id=pkt_ready_dryrun_materialize_order_status_events_from_kaspi_orders"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_ORDER_STATUS_EVENT_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--run-id"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_order_status_events_from_kaspi_orders.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/materialize_order_status_events_from_kaspi_orders.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_C3_POLICY_MATERIALIZATION_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of",
+        "--run-id"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_policy_source_freshness.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --as-of",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/materialize_policy_source_freshness.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import",
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --end-date, --start-date",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_STOCK_LEDGER_SALES_REPLAY_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--end-date",
+        "--start-date"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/materialize_stock_ledger_sales_from_sales_fact_v2.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --end-date, --start-date",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/materialize_stock_ledger_sales_from_sales_fact_v2.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "DRY_RUN",
+      "ENABLE_STOCK_LEDGER_SALES_REPLAY_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_013_ledger.py",
+      "output_summary": "  fact_input_audit: 11 columns, 189 rows\n======================================================================\nSTOCK LEDGER EVENT TYPES\n======================================================================\n  INITIAL    - Bootstrap/opening balance\n  SALE       - Stock decrease from customer order (qty_change < 0)\n  INBOUND    - Stock increase from PO arrival (qty_change > 0)\n  RETURN     - Stock increase from customer return (qty_change > 0)\n  ADJUSTMENT - Manual stock correction (+/-)\n  WRITE_OFF  - Stock decrease from damage/loss (qty_change < 0)\n======================================================================\nPO STATUS FLOW\n======================================================================\n  DRAFT \u2192 SENT \u2192 PREPARING \u2192 SHIPPED_SELLER \u2192 SHIPPED_CARGO\n  \u2192 IN_TRANSIT \u2192 ARRIVED_ALM \u2192 ARRIVED_AST \u2192 RECEIVED \u2192 CLOSED\n======================================================================\nMigration 013 complete!\n======================================================================",
+      "sample_diff_rows_or_output_lines": [
+        "  - Update trigger created",
+        "  - Update trigger created"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_013_ledger.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "write tokens found without --apply or --dry-run guard",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/migrate_013_ledger.py",
+    "static_write_tokens_sample": [
+      "CREATE TABLE",
+      "UPDATE ON",
+      "UPDATE po_header",
+      "UPDATE po_line",
+      "Update trigger",
+      "commit(",
+      "update trigger"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_018_cashflow_calendar.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/migrate_018_cashflow_calendar.sqlite",
+      "output_summary": "Migration complete: cashflow calendar tables ready.",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_018_cashflow_calendar.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "write tokens found without --apply or --dry-run guard",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/migrate_018_cashflow_calendar.py",
+    "static_write_tokens_sample": [
+      "CREATE TABLE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_021_fact_sales_v16.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/migrate_021_fact_sales_v16.sqlite",
+      "output_summary": "Migration 021 applied.",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_021_fact_sales_v16.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "write tokens found without --apply or --dry-run guard",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/migrate_021_fact_sales_v16.py",
+    "static_write_tokens_sample": [
+      "CREATE TABLE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_022_po_execution_tables.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/migrate_022_po_execution_tables.sqlite",
+      "output_summary": "DRY RUN: no changes applied. Use ENABLE_SCHEMA_WRITE=1 and --apply to run.",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN: no changes applied. Use ENABLE_SCHEMA_WRITE=1 and --apply to run."
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_SCHEMA_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_022_po_execution_tables.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/migrate_022_po_execution_tables.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_023_po_parts_schema.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/migrate_023_po_parts_schema.sqlite",
+      "output_summary": "DRY RUN: PO part schema already valid.",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN: PO part schema already valid."
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_SCHEMA_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_023_po_parts_schema.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/migrate_023_po_parts_schema.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_024_order_synced_at.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/migrate_024_order_synced_at.sqlite",
+      "output_summary": "DRY RUN: synced_at migration required:\n  - Missing column: fact_orders_kaspi.synced_at\nUse ENABLE_SCHEMA_WRITE=1 and --apply to run migration.",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN: synced_at migration required:"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_SCHEMA_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_024_order_synced_at.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/migrate_024_order_synced_at.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_025_dim_sku_weight_guard.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/migrate_025_dim_sku_weight_guard.sqlite",
+      "output_summary": "DRY RUN: dim_sku weight guard schema already valid.",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN: dim_sku weight guard schema already valid."
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_SCHEMA_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_025_dim_sku_weight_guard.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/migrate_025_dim_sku_weight_guard.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_028_operational_stock_truth_p0_schema.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/migrate_028_operational_stock_truth_p0_schema.sqlite",
+      "output_summary": "DRY RUN: operational stock P0 schema already valid.",
+      "sample_diff_rows_or_output_lines": [
+        "DRY RUN: operational stock P0 schema already valid."
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_SCHEMA_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/migrate_028_operational_stock_truth_p0_schema.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/migrate_028_operational_stock_truth_p0_schema.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "CREATE TABLE",
+      "ENABLE_SCHEMA_WRITE",
+      "commit(",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/normalize_ledger_store_code.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/normalize_ledger_store_code.sqlite",
+      "output_summary": "Pool store_code: UNIVERSAL\nRows to normalize: 0\nMode: DRY RUN",
+      "sample_diff_rows_or_output_lines": [
+        "Mode: DRY RUN"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/normalize_ledger_store_code.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "has --apply/write surface but no explicit env gate token found",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/normalize_ledger_store_code.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "UPDATE stock_ledger",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/rebuild_cashflow_calendar.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/rebuild_cashflow_calendar.sqlite",
+      "output_summary": "Cashflow rebuild summary\n  Range: 2024-01-08 \u2192 2026-06-12\n  System events generated: 0\n  legacy_receivables_ignored_count: 4921\n  ignored_amount_kzt: 128237429.86\n  Daily rows computed: 887\n  DRY RUN: no DB writes.",
+      "sample_diff_rows_or_output_lines": [
+        "  legacy_receivables_ignored_count: 4921",
+        "  DRY RUN: no DB writes."
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/rebuild_cashflow_calendar.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/rebuild_cashflow_calendar.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "DELETE FROM",
+      "ENABLE_CASHFLOW_WRITE",
+      "INSERT OR REPLACE INTO",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_SALES_FACT_V2_REBUILD_APPLY"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/rebuild_sales_fact_v2_from_kaspi_entries.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --as-of",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/rebuild_sales_fact_v2_from_kaspi_entries.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "DELETE FROM",
+      "DRY_RUN",
+      "ENABLE_SALES_FACT_V2_REBUILD_APPLY",
+      "INSERT INTO",
+      "UPDATE SET",
+      "commit(",
+      "executemany("
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --snapshot-date",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_STOCK_RECONCILE_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--snapshot-date"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/reconcile_ledger_to_snapshot.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --snapshot-date",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/reconcile_ledger_to_snapshot.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_STOCK_RECONCILE_WRITE",
+      "INSERT INTO",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/reconcile_on_delivery_settlement.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/reconcile_on_delivery_settlement.sqlite",
+      "output_summary": "candidates=120\ninserted=0\nDRY RUN",
+      "sample_diff_rows_or_output_lines": [
+        "candidates=120",
+        "inserted=0",
+        "DRY RUN"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/reconcile_on_delivery_settlement.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/reconcile_on_delivery_settlement.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_ORDER_ENTRY_RECOVERY_PROD_WRITE",
+        "ENABLE_ORDER_ENTRY_RECOVERY_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of",
+        "--output-root"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/recover_order_entries_from_evidence.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --as-of",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/recover_order_entries_from_evidence.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_ORDER_ENTRY_RECOVERY_PROD_WRITE",
+      "ENABLE_ORDER_ENTRY_RECOVERY_WRITE",
+      "commit(",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_D1_RESIDUE_REPAIR_PRODUCTION_WRITE",
+        "ENABLE_D1_RESIDUE_REPAIR_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/repair_d1_cashflow_residue_from_evidence.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --as-of",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/repair_d1_cashflow_residue_from_evidence.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_D1_RESIDUE_REPAIR_PRODUCTION_WRITE",
+      "ENABLE_D1_RESIDUE_REPAIR_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild",
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of",
+        "--output-root",
+        "--run-id"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/repair_sales_fact_v2_lifecycle_residual_from_status_evidence.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "has --apply/write surface but no explicit env gate token found",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/repair_sales_fact_v2_lifecycle_residual_from_status_evidence.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "UPDATE sales_fact_v2",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "no DB override detected; dry-run could inspect or open live repo db/app.db",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/replay_manual_stock_20260604_after_shipments_scenario.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "no DB override detected; dry-run could inspect or open live repo db/app.db",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/replay_manual_stock_20260604_after_shipments_scenario.py",
+    "static_write_tokens_sample": [
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "order_entries_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/repopulate_sales_fact_from_crm.py --db-path /tmp/green_path_scratch/ready_out/dryrun_dbs/repopulate_sales_fact_from_crm.sqlite --dry-run",
+      "output_summary": "[DRY RUN] Would delete 77 rows from sales_fact_v2\n[DRY RUN] Would insert 68 rows into sales_fact_v2\nDate window: 2026-05-02 to 2026-05-31\nRows in window before: 1436\nRows deleted (term match): 77\nRows inserted from CRM: 68",
+      "sample_diff_rows_or_output_lines": [
+        "[DRY RUN] Would delete 77 rows from sales_fact_v2",
+        "[DRY RUN] Would insert 68 rows into sales_fact_v2",
+        "Rows in window before: 1436",
+        "Rows deleted (term match): 77",
+        "Rows inserted from CRM: 68"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db-path"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/repopulate_sales_fact_from_crm.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/repopulate_sales_fact_from_crm.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "DELETE FROM",
+      "INSERT INTO",
+      "commit(",
+      "dry_run",
+      "executemany("
+    ]
+  },
+  {
+    "categories": [
+      "end_of_day_apply"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 124,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_daily_autopilot.py",
+      "output_summary": "timeout after 35s",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_daily_autopilot.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/run_daily_autopilot.py",
+    "static_write_tokens_sample": [
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "end_of_day_apply"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "broad daily pipeline uses hardcoded repo DB paths in child steps",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_daily_pipeline.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "broad daily pipeline uses hardcoded repo DB paths in child steps",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/run_daily_pipeline.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "UPDATE fact_orders_kaspi",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "end_of_day_apply"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "end-of-day dry-run would create a repo lock file and call hardcoded repo DB subcommands",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_end_of_day.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "end-of-day dry-run would create a repo lock file and call hardcoded repo DB subcommands",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/run_end_of_day.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "--dry-run",
+      "ENABLE_CASHFLOW_WRITE",
+      "Update Cashflow",
+      "Update PO",
+      "Update dashboard",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "fx_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "non-Python candidate; not run by Python dry-run harness",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_BANK_ACCOUNTS_WRITE"
+      ],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_exchange_imports.sh --help",
+    "recommendation": "NO",
+    "recommendation_reason": "non-Python candidate; not run by Python dry-run harness",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/run_exchange_imports.sh",
+    "static_write_tokens_sample": [
+      "--apply",
+      "--dry-run",
+      "ENABLE_BANK_ACCOUNTS_WRITE"
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import",
+      "price_floor_generation"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 1,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_offer_stock_price_sync.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/run_offer_stock_price_sync.sqlite --output-dir /tmp/green_path_scratch/ready_out/dryrun_outputs/run_offer_stock_price_sync",
+      "output_summary": "Traceback (most recent call last):\n  File \"~/Docs/Autonomous_business/scripts/run_offer_stock_price_sync.py\", line 344, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/run_offer_stock_price_sync.py\", line 322, in main\n    summary = run_offer_stock_price_sync(\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/run_offer_stock_price_sync.py\", line 167, in run_offer_stock_price_sync\n    raise RuntimeError(f\"Validation failed before pricelist sync: {error_text}\")\nRuntimeError: Validation failed before pricelist sync: UNIVERSAL: unresolved_rows=27 > max_unresolved=0; UNIVERSAL: confident_rate=0.927 < min_confident_rate=0.950; STOREB: unresolved_rows=39 > max_unresolved=0; STOREB: confident_rate=0.929 < min_confident_rate=0.950",
+      "sample_diff_rows_or_output_lines": [
+        "    raise RuntimeError(f\"Validation failed before pricelist sync: {error_text}\")",
+        "RuntimeError: Validation failed before pricelist sync: UNIVERSAL: unresolved_rows=27 > max_unresolved=0; UNIVERSAL: confident_rate=0.927 < min_confident_rate=0.950; STOREB: unresolved_rows=39 > max_unresolved=0; STOREB: confident_rate=0.929"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_offer_stock_price_sync.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/run_offer_stock_price_sync.py",
+    "static_write_tokens_sample": [
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 124,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_operational_stock_daily_truth.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/run_operational_stock_daily_truth.sqlite --output-root /tmp/green_path_scratch/ready_out/dryrun_outputs/run_operational_stock_daily_truth",
+      "output_summary": "timeout after 35s",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_OPERATIONAL_STOCK_DAILY_DB_WRITE"
+      ],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_operational_stock_daily_truth.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/run_operational_stock_daily_truth.py",
+    "static_write_tokens_sample": [
+      "ENABLE_OPERATIONAL_STOCK_DAILY_DB_WRITE"
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_stock_anchor_20pct.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/run_stock_anchor_20pct.sqlite --output-dir /tmp/green_path_scratch/ready_out/dryrun_outputs/run_stock_anchor_20pct",
+      "output_summary": "  \"exception_count\": 51,\n  \"exceptions_inserted\": 0,\n  \"generated_reduction_units\": 1792,\n  \"legacy_duplicate_groups\": 5382,\n  \"legacy_duplicate_rows\": 56972,\n  \"lineage_json\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/run_stock_anchor_20pct/BASELINE_20PCT_DECREASE_20260404_B6864B5C3108_lineage.json\",\n  \"offer_availability_rows_written\": 0,\n  \"owner_report\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/run_stock_anchor_20pct/BASELINE_20PCT_DECREASE_20260404_B6864B5C3108_owner_report.md\",\n  \"owner_stock_csv\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/run_stock_anchor_20pct/BASELINE_20PCT_DECREASE_20260404_B6864B5C3108_owner_stock_output.csv\",\n  \"raw_negative_rows\": 44,\n  \"snapshot_current_stock_total\": 7783,\n  \"snapshot_date\": \"2026-06-13\",\n  \"snapshot_inbound_stock_total\": 950,\n  \"snapshot_rows\": 238,\n  \"snapshot_rows_written\": 0,\n  \"target_reduction_units\": 1792,\n  \"trust_status\": \"PROVISIONAL_BLOCKED\"\n}",
+      "sample_diff_rows_or_output_lines": [
+        "  \"adjustment_events_inserted\": 0,",
+        "  \"anchor_events_inserted\": 0,",
+        "  \"exception_count\": 51,",
+        "  \"exceptions_inserted\": 0,",
+        "  \"lineage_json\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/run_stock_anchor_20pct/BASELINE_20PCT_DECREASE_20260404_B6864B5C3108_lineage.json\",",
+        "  \"owner_report\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/run_stock_anchor_20pct/BASELINE_20PCT_DECREASE_20260404_B6864B5C3108_owner_report.md\",",
+        "  \"owner_stock_csv\": \"/tmp/green_path_scratch/ready_out/dryrun_outputs/run_stock_anchor_20pct/BASELINE_20PCT_DECREASE_20260404_B6864B5C3108_owner_stock_output.csv\","
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_STOCK_ANCHOR_20PCT_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_stock_anchor_20pct.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/run_stock_anchor_20pct.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_STOCK_ANCHOR_20PCT_WRITE",
+      "commit(",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_write_canary.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/run_write_canary.sqlite --output-root /tmp/green_path_scratch/ready_out/dryrun_outputs/run_write_canary",
+      "output_summary": "write_canary_report_json=/private/tmp/green_path_scratch/ready_out/dryrun_outputs/run_write_canary/2026-06-13/write_canary_report.json\nwrite_canary_report_md=/private/tmp/green_path_scratch/ready_out/dryrun_outputs/run_write_canary/2026-06-13/write_canary_report.md\nstatus=PASS\nmode=db_only\napply_mode=dry-run\ninserted_rows=0",
+      "sample_diff_rows_or_output_lines": [
+        "write_canary_report_json=/private/tmp/green_path_scratch/ready_out/dryrun_outputs/run_write_canary/2026-06-13/write_canary_report.json",
+        "write_canary_report_md=/private/tmp/green_path_scratch/ready_out/dryrun_outputs/run_write_canary/2026-06-13/write_canary_report.md",
+        "apply_mode=dry-run",
+        "inserted_rows=0"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_PROD_DB_CANARY_WRITE",
+        "ENABLE_WRITE_CANARY_APPLY"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/run_write_canary.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/run_write_canary.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --as-of",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--as-of"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/seed_inventory_open_from_snapshot.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "required options need task-specific inputs: --as-of",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/seed_inventory_open_from_snapshot.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [
+      "ads_sync_backfill"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_ads_sidecar.py --app-db /tmp/green_path_scratch/ready_out/dryrun_dbs/sync_ads_sidecar.sqlite --report-path /tmp/green_path_scratch/ready_out/dryrun_outputs/sync_ads_sidecar/report.txt",
+      "output_summary": "{'rows_total': 221, 'rows_mapped': 209, 'rows_unmapped': 12, 'coverage_hint_rows': 38, 'mapping_coverage_pct': 94.57, 'days_total': 103, 'apply': False, 'ads_db': '~/Documents/useful tables/Main crm spreadsheets/main tables/External_database/Kaspi_marketing/db/kaspi_marketing.db'}",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--app-db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_ads_sidecar.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup for local materialization; external ad-system writes require separate owner rollback plan.",
+    "script": "scripts/sync_ads_sidecar.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "CREATE TABLE",
+      "DELETE FROM",
+      "ENABLE_CASHFLOW_WRITE",
+      "INSERT INTO",
+      "commit(",
+      "executemany("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_bank_manual_ingest_snapshot.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/sync_bank_manual_ingest_snapshot.sqlite",
+      "output_summary": "applied=False\nas_of=2026-05-03 19:59:00 GMT+5\nbalance_row_count=18\nhistory_appended=False\nhistory_path=~/Docs/Autonomous_business/config/bank_accounts_history.yaml\nmanual_path=~/Docs/Autonomous_business/config/bank_accounts_manual_ingest_3.5.2026.yaml\nsnapshot_path=~/Docs/Autonomous_business/config/bank_accounts.yaml\ntotal_kzt_equivalent=7750833.1\ntotals_by_currency={'KZT': 5957000.0, 'RUB': 10000.0, 'USD': 0.0, 'USDT': 3526.19}\ntotals_path=~/Docs/Autonomous_business/config/bank_accounts_history_totals.md",
+      "sample_diff_rows_or_output_lines": [
+        "balance_row_count=18",
+        "history_path=~/Docs/Autonomous_business/config/bank_accounts_history.yaml",
+        "manual_path=~/Docs/Autonomous_business/config/bank_accounts_manual_ingest_3.5.2026.yaml",
+        "snapshot_path=~/Docs/Autonomous_business/config/bank_accounts.yaml",
+        "totals_path=~/Docs/Autonomous_business/config/bank_accounts_history_totals.md"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_BANK_MANUAL_INGEST_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_bank_manual_ingest_snapshot.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/sync_bank_manual_ingest_snapshot.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_BANK_MANUAL_INGEST_WRITE"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_cash_balances_from_inbound_calendar.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/sync_cash_balances_from_inbound_calendar.sqlite",
+      "output_summary": "DRY-RUN cash balance sync\nas_of: 2026-06-13 01:01:26 GMT+5\nsnapshot_column: 13 (13.06.2026_01_01_26)\nrows: 18\nhistory_action: appended\nhistory_entries: 13\nhistory_output: ~/Docs/Autonomous_business/config/bank_accounts_history.yaml\nsnapshot_output: ~/Docs/Autonomous_business/config/bank_accounts.yaml\nhistory_totals_output: ~/Docs/Autonomous_business/config/bank_accounts_history_totals.md",
+      "sample_diff_rows_or_output_lines": [
+        "DRY-RUN cash balance sync",
+        "history_output: ~/Docs/Autonomous_business/config/bank_accounts_history.yaml",
+        "snapshot_output: ~/Docs/Autonomous_business/config/bank_accounts.yaml",
+        "history_totals_output: ~/Docs/Autonomous_business/config/bank_accounts_history_totals.md"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_CASH_BALANCE_SYNC_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_cash_balances_from_inbound_calendar.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/sync_cash_balances_from_inbound_calendar.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASH_BALANCE_SYNC_WRITE"
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_current_stock.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/sync_current_stock.sqlite",
+      "output_summary": "DRY-RUN stock sync summary\nsnapshot_date: 2026-03-02\nrows: 256\ntotal_current_stock: 12462\ntotal_inbound_stock: 0",
+      "sample_diff_rows_or_output_lines": [
+        "DRY-RUN stock sync summary"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_STOCK_SNAPSHOT_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_current_stock.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/sync_current_stock.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "DELETE FROM",
+      "ENABLE_STOCK_SNAPSHOT_WRITE",
+      "INSERT INTO",
+      "commit(",
+      "executemany("
+    ]
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_dim_sku_from_dim_sku_light.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/sync_dim_sku_from_dim_sku_light.sqlite",
+      "output_summary": "dim_sku light sync DRY-RUN: parsed=47 compared=34 missing_in_db=3 would_update=0\nupdates: weight=0 base=0 applied=0 large_weight_shift=0\nparser: header_row=97 valid=47 helper_filtered=0 invalid_sku_filtered=0 duplicates=0",
+      "sample_diff_rows_or_output_lines": [
+        "dim_sku light sync DRY-RUN: parsed=47 compared=34 missing_in_db=3 would_update=0",
+        "updates: weight=0 base=0 applied=0 large_weight_shift=0"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_DIM_SKU_SYNC_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_dim_sku_from_dim_sku_light.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/sync_dim_sku_from_dim_sku_light.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 1,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_opex_schedule.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/sync_opex_schedule.sqlite --output-dir /tmp/green_path_scratch/ready_out/dryrun_outputs/sync_opex_schedule",
+      "output_summary": "Traceback (most recent call last):\n  File \"~/Docs/Autonomous_business/scripts/sync_opex_schedule.py\", line 237, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/sync_opex_schedule.py\", line 219, in main\n    result = sync_opex_schedule(\n             ^^^^^^^^^^^^^^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/sync_opex_schedule.py\", line 128, in sync_opex_schedule\n    parsed = _parse_protocol_xlsx(xlsx_path, horizon_days)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/import_opex_protocol.py\", line 179, in _parse_protocol_xlsx\n    raise RuntimeError(\"No commitments generated from OPEX protocol XLSX\")\nRuntimeError: No commitments generated from OPEX protocol XLSX",
+      "sample_diff_rows_or_output_lines": [
+        "    raise RuntimeError(\"No commitments generated from OPEX protocol XLSX\")",
+        "RuntimeError: No commitments generated from OPEX protocol XLSX"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_opex_schedule.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/sync_opex_schedule.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "DELETE FROM",
+      "ENABLE_CASHFLOW_WRITE",
+      "INSERT INTO",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_po_arrivals_to_ledger.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/sync_po_arrivals_to_ledger.sqlite",
+      "output_summary": "Snapshot: 2026-06-13\nMode: DRY RUN\nLedger events inserted: 312\nUnits added: 11429",
+      "sample_diff_rows_or_output_lines": [
+        "Mode: DRY RUN",
+        "Ledger events inserted: 312"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_po_arrivals_to_ledger.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "has --apply/write surface but no explicit env gate token found",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/sync_po_arrivals_to_ledger.py",
+    "static_write_tokens_sample": [
+      "--apply"
+    ]
+  },
+  {
+    "categories": [],
+    "discovery_source": [
+      "manifest"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_po_parts_from_inbound_calendar.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/sync_po_parts_from_inbound_calendar.sqlite",
+      "output_summary": "PO part sync DRY-RUN: inbounds_valid=250 po_ids=8 po_parts=10",
+      "sample_diff_rows_or_output_lines": [
+        "PO part sync DRY-RUN: inbounds_valid=250 po_ids=8 po_parts=10"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_PO_PART_SYNC_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/sync_po_parts_from_inbound_calendar.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/sync_po_parts_from_inbound_calendar.py",
+    "static_write_tokens_sample": []
+  },
+  {
+    "categories": [
+      "cashflow_rebuild",
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 1,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/transfer_ledger_autopilot.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/transfer_ledger_autopilot.sqlite",
+      "output_summary": "[1/9] Importing exchanger emails...\nTraceback (most recent call last):\n  File \"~/Docs/Autonomous_business/scripts/transfer_ledger_autopilot.py\", line 596, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/transfer_ledger_autopilot.py\", line 502, in main\n    email_res = import_emails(args.db, mailbox, query, args.since_days, args.limit)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/transfer_ledger_autopilot.py\", line 129, in import_emails\n    messages = fetch_messages(\n               ^^^^^^^^^^^^^^^\n  File \"~/Docs/Autonomous_business/core/integrations/gmail_imap_client.py\", line 75, in fetch_messages\n    imap.login(username, app_password)\n  File \"/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/imaplib.py\", line 612, in login\n    raise self.error(dat[-1])\nimaplib.IMAP4.error: b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)'",
+      "sample_diff_rows_or_output_lines": [
+        "    raise self.error(dat[-1])",
+        "imaplib.IMAP4.error: b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)'"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/transfer_ledger_autopilot.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "write tokens found without --apply or --dry-run guard",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/transfer_ledger_autopilot.py",
+    "static_write_tokens_sample": [
+      "CREATE TABLE",
+      "INSERT OR REPLACE INTO"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 1,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/translate_orders_to_cashflow_events.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/translate_orders_to_cashflow_events.sqlite",
+      "output_summary": "Traceback (most recent call last):\n  File \"~/Docs/Autonomous_business/scripts/translate_orders_to_cashflow_events.py\", line 1713, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/translate_orders_to_cashflow_events.py\", line 1701, in main\n    return translate_orders(\n           ^^^^^^^^^^^^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/translate_orders_to_cashflow_events.py\", line 1604, in translate_orders\n    raise RuntimeError(\" \".join(messages))\nRuntimeError: Missing unit cost for 4 order lines (sample: 929183530:LINE-31-LS, 934547752:LINE-21-TS, 953395459:LINE-31-LS, 956748585:LINE-21-TS). Ensure dim_sku has base_cost_cny or cogs_kzt (or weight for calc_cogs).",
+      "sample_diff_rows_or_output_lines": [
+        "    raise RuntimeError(\" \".join(messages))",
+        "RuntimeError: Missing unit cost for 4 order lines (sample: 929183530:LINE-31-LS, 934547752:LINE-21-TS, 953395459:LINE-31-LS, 956748585:LINE-21-TS). Ensure dim_sku has base_cost_cny or cogs_kzt (or weight for calc_cogs)."
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/translate_orders_to_cashflow_events.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/translate_orders_to_cashflow_events.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild",
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/translate_transfer_ledger_to_cashflow.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/translate_transfer_ledger_to_cashflow.sqlite --output-root /tmp/green_path_scratch/ready_out/dryrun_outputs/translate_transfer_ledger_to_cashflow",
+      "output_summary": "transfer_translation_json=/private/tmp/green_path_scratch/ready_out/dryrun_outputs/translate_transfer_ledger_to_cashflow/2026-06-13/transfer_ledger_translation_report.json\ntransfer_translation_md=/private/tmp/green_path_scratch/ready_out/dryrun_outputs/translate_transfer_ledger_to_cashflow/2026-06-13/transfer_ledger_translation_report.md\nstatus=PASS",
+      "sample_diff_rows_or_output_lines": [
+        "transfer_translation_json=/private/tmp/green_path_scratch/ready_out/dryrun_outputs/translate_transfer_ledger_to_cashflow/2026-06-13/transfer_ledger_translation_report.json",
+        "transfer_translation_md=/private/tmp/green_path_scratch/ready_out/dryrun_outputs/translate_transfer_ledger_to_cashflow/2026-06-13/transfer_ledger_translation_report.md"
+      ],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/translate_transfer_ledger_to_cashflow.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/translate_transfer_ledger_to_cashflow.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "ENABLE_CASHFLOW_WRITE",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "cashflow_rebuild"
+    ],
+    "discovery_source": [
+      "manifest",
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 1,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/update_cashflow_dashboard.sqlite",
+      "output_summary": "~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py:2800: SyntaxWarning: invalid escape sequence '\\B'\n  </html>\"\"\"\n~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py:2800: SyntaxWarning: invalid escape sequence '\\d'\n  </html>\"\"\"\nTraceback (most recent call last):\n  File \"~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py\", line 3318, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py\", line 3062, in main\n    _ensure_daily_columns(conn)\nTypeError: _ensure_daily_columns() missing 1 required keyword-only argument: 'allow_schema_write'",
+      "sample_diff_rows_or_output_lines": [
+        "~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py:2800: SyntaxWarning: invalid escape sequence '\\B'",
+        "~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py:2800: SyntaxWarning: invalid escape sequence '\\d'",
+        "  File \"~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py\", line 3318, in <module>",
+        "  File \"~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py\", line 3062, in main",
+        "TypeError: _ensure_daily_columns() missing 1 required keyword-only argument: 'allow_schema_write'"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [
+        "ENABLE_CASHFLOW_WRITE"
+      ],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/update_cashflow_dashboard.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; for anchor rows, reverse by deterministic run_id/anchor_id and verify cashflow events remain separate.",
+    "script": "scripts/update_cashflow_dashboard.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "DELETE FROM",
+      "ENABLE_CASHFLOW_WRITE",
+      "INSERT OR REPLACE INTO",
+      "UPDATE REFRESH",
+      "UPDATE TODAY",
+      "Update cashflow",
+      "commit("
+    ]
+  },
+  {
+    "categories": [
+      "price_floor_generation"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": null,
+      "invocation_actually_run": null,
+      "output_summary": "required options need task-specific inputs: --price-kzt, --sku-key",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "skipped"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": true,
+      "env_gates": [],
+      "has_apply_flag": true,
+      "has_dry_run_flag": false,
+      "required_options": [
+        "--price-kzt",
+        "--sku-key"
+      ]
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/update_dim_sku_price.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "has --apply/write surface but no explicit env gate token found",
+    "rollback_reference": "Delete generated dry-run package files; any merchant upload/live price apply requires separate marketplace rollback/readback.",
+    "script": "scripts/update_dim_sku_price.py",
+    "static_write_tokens_sample": [
+      "--apply",
+      "UPDATE dim_sku",
+      "Update dim_sku",
+      "update dim_sku"
+    ]
+  },
+  {
+    "categories": [
+      "fx_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 2,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/upsert_fx_rates.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/upsert_fx_rates.sqlite --dry-run",
+      "output_summary": "usage: upsert_fx_rates.py [-h] [--db DB] [--effective-date EFFECTIVE_DATE]\n                          [--usdt-kzt USDT_KZT] [--usdt-cny USDT_CNY]\n                          [--cny-kzt CNY_KZT] [--usd-kzt USD_KZT]\n                          [--dlv-rate-usd-kg DLV_RATE_USD_KG]\n                          [--provider PROVIDER] [--source SOURCE] [--dry-run]\n                          [--show-latest] [--force] [--verbose]\nupsert_fx_rates.py: error: Missing required args: --usdt-kzt, --usdt-cny, --usd-kzt, --dlv-rate-usd-kg",
+      "sample_diff_rows_or_output_lines": [
+        "                          [--provider PROVIDER] [--source SOURCE] [--dry-run]",
+        "upsert_fx_rates.py: error: Missing required args: --usdt-kzt, --usdt-cny, --usd-kzt, --dlv-rate-usd-kg"
+      ],
+      "status": "failed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": true,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/upsert_fx_rates.py --help",
+    "recommendation": "NO",
+    "recommendation_reason": "dry-run command failed; inspect output summary",
+    "rollback_reference": "DB restore from pre-apply backup; dry-run has no DB rollback.",
+    "script": "scripts/upsert_fx_rates.py",
+    "static_write_tokens_sample": [
+      "--dry-run",
+      "CREATE TABLE",
+      "Create table",
+      "INSERT OR REPLACE INTO",
+      "dry_run"
+    ]
+  },
+  {
+    "categories": [
+      "ledger_stock_anchor_import"
+    ],
+    "discovery_source": [
+      "grep"
+    ],
+    "dry_run": {
+      "before_after_count_deltas": {},
+      "exit_code": 0,
+      "invocation_actually_run": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/green_path_scratch/ready_out/pycache XDG_CACHE_HOME=/tmp/green_path_scratch/ready_out/cache MPLCONFIGDIR=/tmp/green_path_scratch/ready_out/cache/mpl AB_DATA_DIR=/tmp/green_path_scratch/ab_data DATA_DIR=/tmp/green_path_scratch/ab_data DB_PATH=/tmp/green_path_scratch/restore_test.sqlite ~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/validate_operational_stock_schema.py --db /tmp/green_path_scratch/ready_out/dryrun_dbs/validate_operational_stock_schema.sqlite",
+      "output_summary": "OK: operational stock schema valid",
+      "sample_diff_rows_or_output_lines": [],
+      "status": "passed"
+    },
+    "env_flag_gates": {
+      "db_options": [
+        "--db"
+      ],
+      "default_dry_run_claimed": false,
+      "env_gates": [],
+      "has_apply_flag": false,
+      "has_dry_run_flag": false,
+      "required_options": []
+    },
+    "exact_command": "~/Docs/Autonomous_business/.venv/bin/python ~/Docs/Autonomous_business/scripts/validate_operational_stock_schema.py --help",
+    "recommendation": "GO",
+    "recommendation_reason": "dry-run completed without count changes on scratch DB copy",
+    "rollback_reference": "DB restore from pre-apply backup; stock-anchor batches must be superseded by later active anchor/batch before old rows are considered inert.",
+    "script": "scripts/validate_operational_stock_schema.py",
+    "static_write_tokens_sample": [
+      "dry_run"
+    ]
+  }
+]

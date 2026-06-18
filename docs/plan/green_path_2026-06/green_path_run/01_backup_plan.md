@@ -1,0 +1,32 @@
+# Phase -1 backup plan (20260613_034450)
+Dest primary: ~/Backups/green_path/20260613_034450 ; second copy: /Volumes/Migration_Staging_Overflow/green_path_backups/20260613_034450
+Scope: AB tar EXCL runtime/,exports/,.venv (≈5.5G incl .git); runtime/backups + runtime_logs + exports/validation separately (sized first); WA tar EXCL .venv (2.6G); sqlite3 .backup for LIVE DBs (app.db, kaspi_marketing, repricer_items, repricer_unified_truth, kaspi_snapshots/snapshot); workbooks vibe_code_PO; all com.adil/autonomous-business/webautomation plists; .env files -> secrets/ (chmod 700, manifest-redacted). exports/ bulk + runtime/tmp = EXCLUDED_BY_SIZE w/ listing. Restore tests: DB integrity_check on scratch copy + tar single-file restore + workbook sha256. Post-window: order-sync freshness validator.
+-	78	com.example.kaspi-marketing-ads
+-	1	com.example.kaspi-marketing-hourly
+-	1	com.example.kaspi-daily-ops-report
+-	1	com.webautomation.kaspi_hourly_snapshot
+-	0	com.webautomation.suit31_ls_8990_price_ladder
+-	0	com.example.kaspi-waybill-deadline
+-	1	com.example.single-truth-preflight
+-	78	com.example.external-database-backup
+-	0	com.example.google-ops-board-closeout-watch
+-	78	com.example.crm-db-sync
+-	3	com.example.on-delivery-residuals
+-	2	com.example.table-delta-backup
+-	0	com.example.google-ops-board-publish
+-	78	com.example.exchange-import
+-	1	com.example.operational-stock-daily-truth
+-	0	com.example.kaspi-shipped-truth-sync
+-	0	com.webautomation.line61_line51_checkpoints
+-	78	com.autonomous-business.end-of-day
+-	0	com.webautomation.rombik_repair_first_selective_checkpoint
+-	1	com.example.google-ops-board-prewindow-health
+-	0	com.example.kaspi-import-v2
+-	0	com.example.waybill-telegram-control
+-	0	com.webautomation.kaspi_marketing_watch
+-	0	com.example.google-ops-board-closeout-caffeinate
+-	0	com.example.google-ops-board-size-writeback
+-	78	com.example.gmail-pubsub
+-	0	com.webautomation.dashboard_sync
+-	0	com.webautomation.delivery_promise_watch
+-	78	com.example.gmail-watch-refresh

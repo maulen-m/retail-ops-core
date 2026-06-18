@@ -1,0 +1,11 @@
+# Owner-confirmed ground-truth cells for count batch 2026-06-11 22:00 +05
+# Authority: owner statement in the decision session (2026-06-13 ~04:0x +05).
+# These values override any OCR pass reading for the named cell.
+overrides:
+  - image: 3_in_1_kids_complete_stock_snapshot.JPG
+    product: 3-in-1 kids (CL_NEW-CLO_KIDS_KID-31_BLACK family scope per 04.06 naming)
+    size: "120/24"
+    units: 9
+    semantic: FULL_SUPERSEDE   # complete_stock_snapshot sheet
+    reason: "thumb occlusion in photo; owner read the physical sheet and approved value 9"
+    recorded_by: fable-5-main-orchestrator

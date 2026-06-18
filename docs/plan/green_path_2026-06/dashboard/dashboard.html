@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Green-Path · Live Progress</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%2334d399'/%3E%3C/svg%3E" />
+<!--
+  Green-Path live progress dashboard (LEAN tracker).
+  Renderer only — DO NOT EDIT to update progress. Edit the sibling progress-data.js.
+  Fully offline: no CDN, no web fonts, no network. Loads only ./progress-data.js.
+  Every number is derived from window.GP.gates. Auto-refreshes ~15s.
+-->
+<style>
+  :root{
+    --bg:#0a0e13; --bg2:#0d1219; --panel:#121925; --panel2:#0f1620;
+    --line:#1e2937; --line2:#273445;
+    --ink:#e7edf5; --ink2:#9fb0c3; --ink3:#6b7c91;
+    --green:#34d399; --armed:#38bdf8; --partial:#fbbf24; --red:#f87171;
+    --pending:#56657a; --waived:#2dd4bf; --off:#8aa0b6;
+    --accent:#34d399;
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 12px 30px -18px rgba(0,0,0,.8);
+    --radius:16px;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji",sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    font-family:var(--font); color:var(--ink); background:var(--bg);
+    background-image:
+      radial-gradient(1100px 600px at 80% -10%, rgba(52,211,153,.07), transparent 60%),
+      radial-gradient(900px 500px at -10% 0%, rgba(56,189,248,.06), transparent 55%);
+    -webkit-font-smoothing:antialiased; line-height:1.45; min-height:100vh;
+  }
+  .wrap{max-width:1000px; margin:0 auto; padding:28px 20px 60px}
+  .muted{color:var(--ink2)} .dim{color:var(--ink3)}
+  .mono{font-family:var(--mono)}
+
+  /* ---------- top bar ---------- */
+  .topbar{display:flex; align-items:baseline; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:18px}
+  .brand{display:flex; align-items:center; gap:11px; font-weight:700; letter-spacing:.2px; font-size:18px}
+  .brand .dotmark{width:11px;height:11px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px rgba(52,211,153,.15)}
+  .clockline{font-size:12.5px; display:flex; gap:12px; align-items:center; flex-wrap:wrap}
+  .stale{display:none; align-items:center; gap:6px; color:#0a0e13; background:var(--partial); font-weight:700;
+    padding:3px 9px; border-radius:999px; font-size:11.5px; letter-spacing:.3px}
+  .stale.show{display:inline-flex}
+
+  /* ---------- hero ---------- */
+  .hero{display:grid; grid-template-columns:auto 1fr; gap:26px; align-items:center;
+    background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--line);
+    border-radius:var(--radius); padding:24px 26px; box-shadow:var(--shadow); position:relative; overflow:hidden}
+  .ringwrap{position:relative; width:148px; height:148px; flex:none}
+  .ringwrap svg{width:148px; height:148px; transform:rotate(-90deg)}
+  .ring-bg{fill:none; stroke:#1b2535; stroke-width:11}
+  .ring-fg{fill:none; stroke:var(--green); stroke-width:11; stroke-linecap:round;
+    transition:stroke-dashoffset 1.1s cubic-bezier(.22,1,.36,1)}
+  .ringtext{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px}
+  .ringtext .pct{font-size:33px; font-weight:760; letter-spacing:-.5px; line-height:1}
+  .ringtext .pl{font-size:11px; text-transform:uppercase; letter-spacing:1.4px; color:var(--ink3)}
+  .herostats{min-width:0}
+  .pill{display:inline-flex; align-items:center; gap:8px; padding:5px 12px; border-radius:999px;
+    font-weight:700; font-size:12.5px; letter-spacing:.5px; text-transform:uppercase}
+  .pill .pdot{width:8px;height:8px;border-radius:50%;background:currentColor}
+  .pill.executing{color:#062b1d; background:var(--green)}
+  .pill.paused{color:#2a1d00; background:var(--partial)}
+  .pill.blocked{color:#2c0b0b; background:var(--red)}
+  .bignum{font-size:27px; font-weight:740; letter-spacing:-.3px; margin:13px 0 2px}
+  .bignum b{color:var(--green)}
+  .subrow{display:flex; gap:10px; flex-wrap:wrap; align-items:center; color:var(--ink2); font-size:13.5px; margin-top:4px}
+  .chip{display:inline-flex; align-items:center; gap:7px; background:#0c141e; border:1px solid var(--line);
+    border-radius:999px; padding:4px 11px; font-size:12.5px; color:var(--ink)}
+  .chip b{font-weight:700}
+  .note{margin-top:13px; color:var(--ink2); font-size:13px; border-left:2px solid var(--line2); padding-left:11px}
+
+  /* ---------- section ---------- */
+  .sec{margin-top:22px}
+  .seclabel{font-size:11.5px; text-transform:uppercase; letter-spacing:1.6px; color:var(--ink3); margin:0 4px 10px;
+    display:flex; justify-content:space-between; align-items:baseline; gap:10px}
+
+  /* ---------- takes ---------- */
+  .takes{display:grid; grid-template-columns:repeat(3,1fr); gap:12px}
+  .take{background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:13px 15px; position:relative; overflow:hidden}
+  .take .tlabel{font-weight:650; font-size:13.5px}
+  .take .tstate{font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-top:7px; color:var(--ink3)}
+  .take .tbar{height:5px; border-radius:999px; background:#0c141e; margin-top:11px; overflow:hidden}
+  .take .tbar span{display:block; height:100%; width:0; border-radius:999px; background:var(--pending); transition:width .9s ease}
+  .take.done{border-color:rgba(52,211,153,.35)} .take.done .tbar span{background:var(--green)}
+  .take.active{border-color:rgba(251,191,36,.5); box-shadow:0 0 0 1px rgba(251,191,36,.18), 0 0 28px -10px rgba(251,191,36,.4)}
+  .take.active .tbar span{background:var(--partial)} .take.active .tstate{color:var(--partial)}
+  .take.done .tstate{color:var(--green)}
+
+  /* ---------- phases ---------- */
+  .phases{display:flex; flex-direction:column; gap:9px}
+  .phase{display:grid; grid-template-columns:auto 1fr auto; gap:15px; align-items:center;
+    background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:13px 16px; transition:border-color .3s}
+  .phase.active{border-color:rgba(56,189,248,.45); background:linear-gradient(180deg,#111b27,#0f1620);
+    box-shadow:0 0 30px -14px rgba(56,189,248,.5)}
+  .pbadge{width:34px;height:34px;border-radius:11px; display:flex;align-items:center;justify-content:center;
+    font-weight:740; font-size:14px; flex:none; border:1.5px solid var(--line2); color:var(--ink2); background:#0c141e}
+  .phase.done .pbadge{color:#062b1d; background:var(--green); border-color:transparent}
+  .phase.active .pbadge{color:#04212e; background:var(--armed); border-color:transparent; animation:breathe 2.6s ease-in-out infinite}
+  .pmain{min-width:0}
+  .ptitle{font-weight:650; font-size:14.5px; display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+  .ptag{font-size:10px; text-transform:uppercase; letter-spacing:1px; padding:2px 7px; border-radius:6px; font-weight:700}
+  .ptag.done{color:var(--green); background:rgba(52,211,153,.12)}
+  .ptag.active{color:var(--armed); background:rgba(56,189,248,.14)}
+  .ptag.pending{color:var(--ink3); background:#0c141e}
+  .ppurpose{color:var(--ink2); font-size:12.5px; margin-top:3px}
+  .pbar{height:6px;border-radius:999px;background:#0c141e;margin-top:9px;overflow:hidden}
+  .pbar span{display:block;height:100%;width:0;border-radius:999px;background:var(--green);transition:width 1s cubic-bezier(.22,1,.36,1)}
+  .pcount{font-family:var(--mono); font-size:12.5px; color:var(--ink2); white-space:nowrap; align-self:center}
+
+  /* ---------- gate band ---------- */
+  .gateband{background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:16px 18px}
+  .gbhead{display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap}
+  .gbhead .big{font-size:17px; font-weight:700}
+  .gbhead .big b{color:var(--green)}
+  .gbhead .sub{color:var(--ink2); font-size:13px}
+  .segbar{display:flex; height:12px; border-radius:999px; overflow:hidden; margin-top:13px; background:#0c141e; gap:2px}
+  .segbar i{display:block; height:100%; width:0; transition:width 1s cubic-bezier(.22,1,.36,1)}
+  .segbar i.s-done{background:var(--green)} .segbar i.s-prog{background:var(--partial)}
+  .segbar i.s-red{background:var(--red)} .segbar i.s-pend{background:#33425a}
+  .seglegend{display:flex; gap:16px; flex-wrap:wrap; margin-top:11px; font-size:12px; color:var(--ink2)}
+  .seglegend span{display:inline-flex; align-items:center; gap:6px}
+  .sw{width:9px;height:9px;border-radius:3px; display:inline-block}
+
+  /* ---------- activity ---------- */
+  .feed{display:flex; flex-direction:column; gap:2px; background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:8px 4px}
+  .ev{display:grid; grid-template-columns:auto 1fr auto; gap:12px; align-items:baseline; padding:9px 14px; border-radius:9px}
+  .ev + .ev{border-top:1px solid var(--line)}
+  .ev .evdot{width:7px;height:7px;border-radius:50%;background:var(--armed);align-self:center;flex:none;opacity:.8}
+  .ev .evtext{font-size:13.2px; color:var(--ink)}
+  .ev .evtime{font-size:11.5px; color:var(--ink3); white-space:nowrap; font-family:var(--mono)}
+  .ev.fresh{animation:fadein .8s ease both}
+
+  /* ---------- footer ---------- */
+  .foot{margin-top:22px; display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; align-items:center;
+    color:var(--ink3); font-size:12px; border-top:1px solid var(--line); padding-top:16px}
+  .legend{display:flex; gap:14px; flex-wrap:wrap}
+  .legend span{display:inline-flex; align-items:center; gap:6px}
+  .foot code{font-family:var(--mono); color:var(--ink2)}
+
+  /* ---------- nodata ---------- */
+  .nodata{margin-top:40px; text-align:center; color:var(--ink2); background:var(--panel); border:1px dashed var(--line2);
+    border-radius:var(--radius); padding:46px 20px}
+  .nodata h2{color:var(--ink); font-weight:650; margin:0 0 8px}
+
+  /* ---------- celebration ---------- */
+  .celebrate{margin-top:18px; text-align:center; font-weight:740; font-size:16px; color:var(--green);
+    background:rgba(52,211,153,.1); border:1px solid rgba(52,211,153,.4); border-radius:13px; padding:16px}
+  #confetti{position:fixed; inset:0; pointer-events:none; z-index:50}
+
+  @keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(56,189,248,.0)}50%{box-shadow:0 0 0 5px rgba(56,189,248,.16)}}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(52,211,153,.0)}50%{box-shadow:0 0 0 6px rgba(52,211,153,.18)}}
+  @keyframes fadein{from{opacity:0; transform:translateY(-4px)}to{opacity:1; transform:none}}
+  .pill.executing{animation:pulse 2.4s ease-in-out infinite}
+
+  @media (max-width:640px){
+    .hero{grid-template-columns:1fr; justify-items:center; text-align:center}
+    .herostats{text-align:center}
+    .note{text-align:left}
+    .takes{grid-template-columns:1fr}
+    .phase{grid-template-columns:auto 1fr; }
+    .pcount{grid-column:2; justify-self:start; margin-top:2px}
+    .subrow,.gbhead,.seglegend,.legend{justify-content:center}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none !important; transition:none !important}
+  }
+</style>
+</head>
+<body>
+  <main class="wrap" id="app" aria-live="polite"></main>
+  <canvas id="confetti" aria-hidden="true"></canvas>
+
+  <!-- DATA: the single source the orchestrator edits. Loaded before the renderer. -->
+  <script src="progress-data.js"></script>
+
+  <!-- RENDERER: never edit to change progress. -->
+  <script>
+  (function(){
+    "use strict";
+    var REFRESH_MS = 15000;
+    var STALE_MS = 20*60*1000;
+    var FILE = location.protocol === "file:";
+    var DONE = {GREEN:1, WAIVED:1, OFF:1};
+    var COLOR = {GREEN:"var(--green)",ARMED:"var(--armed)",PARTIAL:"var(--partial)",RED:"var(--red)",
+                 PENDING:"var(--pending)",WAIVED:"var(--waived)",OFF:"var(--off)"};
+
+    function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
+    function clamp(n){return Math.max(0,Math.min(100,n));}
+    function pdate(s){var t=new Date(s).getTime(); return isNaN(t)?null:t;}
+    function relTime(s){
+      var t=pdate(s); if(t==null) return "";
+      var d=Date.now()-t; if(d<0) return "just now";
+      var m=Math.floor(d/60000);
+      if(m<1) return "just now";
+      if(m<60) return m+"m ago";
+      var h=Math.floor(m/60); if(h<24) return h+"h "+(m%60)+"m ago";
+      var dd=Math.floor(h/24); return dd+"d "+(h%24)+"h ago";
+    }
+    function phaseName(id){return id===-1?"−1":String(id);}
+
+    var lastFreshTs = null;   // newest activity ts we have already shown (for fade-in)
+    var celebrated = false;
+
+    function render(GP){
+      var app=document.getElementById("app");
+      if(!GP || !GP.gates || !GP.gates.length){
+        app.innerHTML='<div class="nodata"><h2>Waiting for progress data…</h2>'+
+          '<div class="muted">Could not read <code>window.GP</code> from progress-data.js. '+
+          'Check the file is valid JS (one <code>window.GP = { … };</code> object).</div></div>';
+        return;
+      }
+      var g=GP.gates, total=g.length;
+      var c={GREEN:0,ARMED:0,PARTIAL:0,RED:0,PENDING:0,WAIVED:0,OFF:0};
+      var hardTotal=0, hardDone=0;
+      for(var i=0;i<g.length;i++){
+        var st=g[i].status||"PENDING"; if(c[st]==null)c[st]=0; c[st]++;
+        if(g[i].type==="HARD"){hardTotal++; if(DONE[st])hardDone++;}
+      }
+      var doneN=c.GREEN+c.WAIVED+c.OFF;
+      var progN=c.ARMED+c.PARTIAL;
+      var pendN=c.PENDING;
+      var redN=c.RED;
+      var hardRemain=hardTotal-hardDone;
+      var advN=total-hardTotal;
+      var pct=Math.round(doneN/total*100);
+      var phasesDone=(GP.phases||[]).filter(function(p){return p.status==="done";}).length;
+      var phasesTot=(GP.phases||[]).length;
+
+      // per-phase done/total
+      var byPhase={};
+      for(var j=0;j<g.length;j++){var ph=g[j].phase; if(!byPhase[ph])byPhase[ph]=[0,0];
+        byPhase[ph][1]++; if(DONE[g[j].status])byPhase[ph][0]++;}
+
+      var statusClass=(GP.status||"PAUSED").toLowerCase();
+      var circ=2*Math.PI*52;
+
+      // ---- takes ----
+      var takesHtml=(GP.takes||[]).map(function(t){
+        var w=t.status==="done"?100:(t.status==="active"?55:0);
+        return '<div class="take '+esc(t.status)+'"><div class="tlabel">'+esc(t.label)+'</div>'+
+          '<div class="tstate">'+esc(t.status)+'</div>'+
+          '<div class="tbar"><span data-w="'+w+'"></span></div></div>';
+      }).join("");
+
+      // ---- phases ----
+      var phasesHtml=(GP.phases||[]).map(function(p){
+        var d=byPhase[p.id]||[0,0]; var w=d[1]?Math.round(d[0]/d[1]*100):0;
+        var glyph=p.status==="done"?"✓":phaseName(p.id);
+        return '<div class="phase '+esc(p.status)+'">'+
+          '<div class="pbadge">'+glyph+'</div>'+
+          '<div class="pmain">'+
+            '<div class="ptitle">'+esc(p.title)+' <span class="ptag '+esc(p.status)+'">'+esc(p.status)+'</span></div>'+
+            '<div class="ppurpose">'+esc(p.purpose)+'</div>'+
+            '<div class="pbar"><span data-w="'+w+'"></span></div>'+
+          '</div>'+
+          '<div class="pcount">'+d[0]+'/'+d[1]+'</div>'+
+        '</div>';
+      }).join("");
+
+      // ---- segmented gate bar ----
+      function segw(n){return (n/total*100);}
+      var segHtml='<div class="segbar">'+
+        '<i class="s-done" data-w="'+segw(doneN)+'"></i>'+
+        '<i class="s-prog" data-w="'+segw(progN)+'"></i>'+
+        (redN?'<i class="s-red" data-w="'+segw(redN)+'"></i>':'')+
+        '<i class="s-pend" data-w="'+segw(pendN)+'"></i>'+
+      '</div>';
+
+      // ---- activity ----
+      var newestTs=(GP.activity&&GP.activity[0])?GP.activity[0].ts:null;
+      var feedHtml=(GP.activity||[]).map(function(e,idx){
+        var fresh=(idx===0 && newestTs!==lastFreshTs)?" fresh":"";
+        return '<div class="ev'+fresh+'"><span class="evdot"></span>'+
+          '<span class="evtext">'+esc(e.text)+'</span>'+
+          '<span class="evtime" title="'+esc(e.ts)+'">'+esc(relTime(e.ts)||e.ts)+'</span></div>';
+      }).join("");
+      lastFreshTs=newestTs;
+
+      var complete=(doneN===total) && ((GP.phases||[]).some(function(p){return p.id===5&&p.status==="done";}));
+
+      app.innerHTML=
+        '<div class="topbar">'+
+          '<div class="brand"><span class="dotmark"></span> Green-Path · Live Progress</div>'+
+          '<div class="clockline">'+
+            '<span class="stale" id="staleBadge">⚠ STALE</span>'+
+            '<span class="dim">updated <span id="agoTxt">'+esc(relTime(GP.updated))+'</span></span>'+
+            '<span class="muted mono" id="clockTxt"></span>'+
+          '</div>'+
+        '</div>'+
+
+        '<section class="hero">'+
+          '<div class="ringwrap">'+
+            '<svg viewBox="0 0 120 120">'+
+              '<circle class="ring-bg" cx="60" cy="60" r="52"></circle>'+
+              '<circle class="ring-fg" id="ringFg" cx="60" cy="60" r="52" '+
+                 'stroke-dasharray="'+circ.toFixed(1)+'" stroke-dashoffset="'+circ.toFixed(1)+'"></circle>'+
+            '</svg>'+
+            '<div class="ringtext"><div class="pct">'+pct+'%</div><div class="pl">gates green</div></div>'+
+          '</div>'+
+          '<div class="herostats">'+
+            '<span class="pill '+statusClass+'"><span class="pdot"></span>'+esc(GP.status||"")+'</span>'+
+            '<div class="bignum"><b>'+doneN+'</b> / '+total+' gates green</div>'+
+            '<div class="subrow">'+
+              '<span class="chip">Phase <b>'+phaseName(GP.current_phase)+'</b></span>'+
+              '<span class="chip">Take <b>'+esc(GP.current_take)+'</b></span>'+
+              '<span class="chip"><b>'+phasesDone+'</b>/'+phasesTot+' phases complete</span>'+
+              '<span class="chip"><b>'+hardRemain+'</b> HARD remaining</span>'+
+            '</div>'+
+            (GP.note?'<div class="note">'+esc(GP.note)+'</div>':'')+
+          '</div>'+
+        '</section>'+
+
+        (complete?'<div class="celebrate">🎉 100% GREEN — all gates done. Acceptance reached.</div>':'')+
+
+        '<section class="sec"><div class="seclabel"><span>Takes</span><span class="dim">3-day compression</span></div>'+
+          '<div class="takes">'+takesHtml+'</div></section>'+
+
+        '<section class="sec"><div class="seclabel"><span>Phases</span><span class="dim">'+phasesDone+' of '+phasesTot+' complete</span></div>'+
+          '<div class="phases">'+phasesHtml+'</div></section>'+
+
+        '<section class="sec"><div class="seclabel"><span>Gates</span></div>'+
+          '<div class="gateband">'+
+            '<div class="gbhead"><div class="big"><b>'+doneN+'</b> / '+total+' green</div>'+
+              '<div class="sub">'+hardRemain+' HARD remaining · '+advN+' advisory'+(redN?' · '+redN+' red':'')+'</div></div>'+
+            segHtml+
+            '<div class="seglegend">'+
+              '<span><i class="sw" style="background:var(--green)"></i> done '+doneN+'</span>'+
+              '<span><i class="sw" style="background:var(--partial)"></i> in&nbsp;progress '+progN+'</span>'+
+              (redN?'<span><i class="sw" style="background:var(--red)"></i> red '+redN+'</span>':'')+
+              '<span><i class="sw" style="background:#33425a"></i> pending '+pendN+'</span>'+
+            '</div>'+
+          '</div></section>'+
+
+        '<section class="sec"><div class="seclabel"><span>Activity</span><span class="dim">newest first</span></div>'+
+          '<div class="feed">'+(feedHtml||'<div class="ev"><span class="evdot"></span><span class="evtext dim">No activity yet.</span><span></span></div>')+'</div></section>'+
+
+        '<footer class="foot">'+
+          '<div class="legend">'+
+            ['GREEN','ARMED','PARTIAL','RED','PENDING','WAIVED','OFF'].map(function(k){
+              return '<span><i class="sw" style="background:'+COLOR[k]+'"></i>'+k+'</span>';}).join('')+
+          '</div>'+
+          '<div>Data: <code>progress-data.js</code> · edit it to update — auto-refreshes ~'+(REFRESH_MS/1000)+'s'+(FILE?'':' (live)')+'</div>'+
+        '</footer>';
+
+      // animate bars + ring from empty -> value on this paint
+      requestAnimationFrame(function(){
+        var fg=document.getElementById("ringFg");
+        if(fg) fg.setAttribute("stroke-dashoffset",(circ*(1-clamp(pct)/100)).toFixed(1));
+        var bars=document.querySelectorAll("[data-w]");
+        for(var k=0;k<bars.length;k++){bars[k].style.width=clamp(parseFloat(bars[k].getAttribute("data-w")))+"%";}
+      });
+
+      tick(GP);
+      if(complete && !celebrated){celebrated=true; confetti();}
+    }
+
+    // light per-second updater: clock, "updated ago", stale badge (no full re-render)
+    function tick(GP){
+      var clk=document.getElementById("clockTxt");
+      if(clk){var n=new Date(); clk.textContent=n.toLocaleTimeString();}
+      var ago=document.getElementById("agoTxt");
+      if(ago && GP) ago.textContent=relTime(GP.updated)||"—";
+      var sb=document.getElementById("staleBadge");
+      if(sb && GP){
+        var t=pdate(GP.updated);
+        var stale=(GP.status==="EXECUTING") && t!=null && (Date.now()-t>STALE_MS);
+        sb.classList.toggle("show",!!stale);
+      }
+    }
+
+    // ---- confetti (gated on reduced-motion) ----
+    function confetti(){
+      if(window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches) return;
+      var cv=document.getElementById("confetti"); if(!cv) return;
+      var ctx=cv.getContext("2d"); cv.width=innerWidth; cv.height=innerHeight;
+      var cols=["#34d399","#38bdf8","#fbbf24","#2dd4bf","#a7f3d0"];
+      var P=[]; for(var i=0;i<140;i++){P.push({x:Math.random()*cv.width,y:-20-Math.random()*cv.height,
+        r:3+Math.random()*4,vy:2+Math.random()*3.5,vx:-1.5+Math.random()*3,c:cols[i%cols.length],a:Math.random()*6});}
+      var t0=Date.now();
+      (function loop(){
+        ctx.clearRect(0,0,cv.width,cv.height);
+        for(var i=0;i<P.length;i++){var p=P[i]; p.y+=p.vy; p.x+=p.vx; p.a+=.1;
+          ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.a); ctx.fillStyle=p.c;
+          ctx.fillRect(-p.r,-p.r,p.r*2,p.r*2); ctx.restore();}
+        if(Date.now()-t0<3500) requestAnimationFrame(loop); else ctx.clearRect(0,0,cv.width,cv.height);
+      })();
+    }
+
+    // ---- refresh control ----
+    function doReload(){ try{sessionStorage.setItem("gp_scroll",String(window.scrollY||window.pageYOffset||0));}catch(e){} location.reload(); }
+    function hotReload(){
+      var s=document.createElement("script"); s.src="progress-data.js?ts="+Date.now();
+      s.onload=function(){ try{render(window.GP);}catch(e){} s.parentNode&&s.parentNode.removeChild(s); };
+      s.onerror=function(){ s.parentNode&&s.parentNode.removeChild(s); };
+      document.body.appendChild(s);
+    }
+    function refresh(){ FILE?doReload():hotReload(); }
+
+    // boot
+    function boot(){
+      try{ render(window.GP); }catch(e){
+        document.getElementById("app").innerHTML='<div class="nodata"><h2>Render error</h2><div class="muted">'+esc(e&&e.message)+'</div></div>';
+      }
+      // restore scroll after a file:// reload
+      try{var sy=sessionStorage.getItem("gp_scroll"); if(sy){window.scrollTo(0,parseFloat(sy)); sessionStorage.removeItem("gp_scroll");}}catch(e){}
+      setInterval(function(){ tick(window.GP); },1000);
+      setInterval(function(){ if(document.visibilityState==="visible") refresh(); }, REFRESH_MS);
+      window.addEventListener("keydown",function(e){ if((e.key==="r"||e.key==="R")&&!e.metaKey&&!e.ctrlKey){ e.preventDefault(); refresh(); }});
+      window.addEventListener("resize",function(){var cv=document.getElementById("confetti"); if(cv){cv.width=innerWidth;cv.height=innerHeight;}});
+    }
+    if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",boot); else boot();
+  })();
+  </script>
+</body>
+</html>
