@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-18T19:44:02+05:00",
-  "status": "BLOCKED",
-  "current_phase": 5,
-  "current_take": 3,
-  "note": "Owner-action queue validator, recorder, and multi-agent starter pack are ready; remaining blockers still require approvals/facts/time.",
+  "updated": "2026-06-18T20:30:48+05:00",
+  "status": "EXECUTING",
+  "current_phase": 3,
+  "current_take": 2,
+  "note": "Owner approvals recorded; queue is ARMED with OA-PRICE03-LINE and OA-DARK01 dispatch-ready while SUIT, PRICE05, return QC, cash, and elapsed windows remain waiting.",
   "takes": [
     {
       "id": 1,
@@ -566,6 +566,10 @@ window.GP = {
     }
   ],
   "activity": [
+    {
+      "time": "2026-06-18T20:30:48+05:00",
+      "text": "Resume: owner-action queue verified ARMED; OA-PRICE03-LINE and OA-DARK01 dispatch-ready; unresolved owner/fact/time items remain waiting."
+    },
     {
       "time": "2026-06-18T19:44:02+05:00",
       "text": "Owner-action validator + recorder + starter pack published and mirrored; queue is ARMED but dispatch-blocked."
