@@ -13,6 +13,29 @@ in `Master_Inventory_Rules_v9.md` first, then here and in code/tests.
 
 **Source of truth:** `inventory/Master_Inventory_Rules_v9.md`
 
+### 1.1 Canonical date vocabulary lock
+
+Sales and inventory rebuilds must keep warehouse movement dates separate from final
+sales economics dates:
+
+- `order_intake_date` is the customer order/creation date. WebUI source column:
+  `Дата поступления заказа`; API source fields: `createdAt` / `creationDate`.
+  It is demand/intake evidence only.
+- `ship_date` is courier handoff, waybill, Telegram PDF shipped-workflow, or actual
+  shipped workflow date. It is the date basis for warehouse on-hand depletion only.
+- `sale_date`, `transaction_date`, and `delivered_at` are the WebUI
+  `Дата изменения статуса` date for `Выдан` / delivered / completed rows. These
+  are the date basis for COGS, cash, PnL, sales economics, and final-sales stock.
+- `cancel_date` is the status-change date for cancelled rows. It is never a
+  positive sale.
+- `return_date` is the status-change date for returned rows. Returned units do not
+  become active sellable stock unless a separate return-QC/source rule accepts them.
+
+Do not collapse warehouse stock and final-sales/economic stock into one number.
+`PHYSICAL_WAREHOUSE_STOCK_ESTIMATE` deducts shipped/sent orders by `ship_date`.
+`ECONOMIC_FINAL_SALES_STOCK` deducts completed/bought-out sales by `sale_date`.
+`order_intake_date` must not be used as final sale truth.
+
 ---
 
 ## 2. Fact_Sales (V16)
@@ -22,7 +45,7 @@ in `Master_Inventory_Rules_v9.md` first, then here and in code/tests.
 
 | Col | Header | Type | Notes |
 |---:|---|---|---|
-| A | Date | Data | Order date |
+| A | Date | Data | `sale_date` / `transaction_date`: WebUI status-change date for delivered/completed rows after the strict cutover; never order intake for stock, COGS, cash, or PnL |
 | B | OrderID | Data | Kaspi order ID |
 | C | Kaspi_Offer_name | Data | Listing title |
 | D | SKU_key | Data | Style-level SKU |
@@ -84,6 +107,14 @@ Required behavior:
 - `dim_kaspi_article_map.kaspi_name_core` stores the operator-facing bundle core, such as `3в1_Черный_Футболка_+Сумка`, never the generic `Спортивный_костюм_ACMEWEAR`.
 - Articles currently archived or no-stock on Kaspi must remain mapped for historical and overdue order parsing; article-map `active_flag=1` means "identity mapping is active", not "offer has sellable stock".
 - Campaign attribution for child-bundle orders before campaign creation time remains blocked unless direct click/campaign evidence exists.
+
+Child-bundle COGS boundary:
+- Compact child bundles must not be made "resolved" by inventing fake `dim_sku.base_cost_cny` or `dim_sku.weight_kg` values on the compact child SKU.
+- When approved component-level economics exist, copied-temp ChildSum proof may calculate unit COGS as `sum(component_base_cost_cny) * CNY_KZT + sum(component_weight_kg) * USD_KZT * DLV`.
+- ChildSum proof requires explicit component rows for the child bundle, positive component cost and weight, `copied_temp_only=true`, and `production_write_authorized=false`.
+- Parent aggregate economics, such as a full LINE61 parent cost/weight, are not enough to split a child bundle into top, shorts, and leggings by inference.
+- Exact owner-approved production exceptions may resolve only the named sales rows through `fact_sales_owner_cogs_override`; this is row-level authority, not SKU-wide child-bundle economics.
+- Missing component-level economics remain unresolved/YELLOW until a later owner-approved source route or production DB contract is reviewed.
 
 ---
 

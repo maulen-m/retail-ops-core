@@ -180,6 +180,7 @@ Implementation reference:
 Validation hooks:
 - `scripts/validate_on_delivery_freeze.py`
 - `scripts/validate_single_truth_system.py`
+- `scripts/validate_inventory_cost_drift.py` defaults to the paid-truth operator lens for the production DB: latest stock snapshot on-hand valuation must match `paid_capital_truth.inventory_on_hand_paid_kzt`; paid inbound obligations stay on the `po_part` paid/unpaid route rather than being inferred from `fact_inventory_snapshot_size.inbound_stock`.
 - `scripts/validate_params.py --strict` (includes both checks)
 
 ---

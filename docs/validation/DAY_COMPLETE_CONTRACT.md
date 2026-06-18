@@ -22,6 +22,12 @@ Status rule (either):
 - OR `kaspi_status` in {`KASPI_DELIVERY`, `DELIVERY`, `COMPLETED`, `ARCHIVE`,
   `Ожидает передачи курьеру`, `Доставляется`, `Завершен`}
 
+Owner-QA `2026-05-17` eligibility exclusions:
+- Rows with `internal_status=CANCELLED` and `kaspi_status=ARCHIVE` are not size-complete debt.
+- Rows with `internal_status=RETURNED` and `kaspi_status=ARCHIVE` are not size-complete debt.
+- Rows with blank `sku_id` and blank/null placeholder offer text, including literal `nan`,
+  are missing-line-item exceptions rather than employee size-entry failures.
+
 ### Size requirement (must be present)
 For each eligible order, at least one of these must be non-empty:
 - `assigned_size`
@@ -29,11 +35,18 @@ For each eligible order, at least one of these must be non-empty:
 
 If both are empty, the order is a violation.
 
+Owner-QA `2026-05-17` manual classification:
+- Order `861147900` may satisfy the size-complete gate only when its offer text exactly
+  matches `Комплект Antec RASH-921 Рашгард 5 в 1 черный 46, 48`.
+- This exception is exact-order/exact-text only and must not become a general offer-text
+  size inference rule.
+
 ## Validator output (required)
 The validator must report:
 - `cutoff_date`
 - `eligible_orders` count
 - `violations` count
+- owner-QA exception counts when present
 - List of violating orders: `order_id`, `sku_id`, `store_code`, `planned_shipment_date`, `internal_status`, `kaspi_status`
 
 ## Provisional mode (operational rule)

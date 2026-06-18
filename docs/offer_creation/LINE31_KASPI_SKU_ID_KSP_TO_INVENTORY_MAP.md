@@ -123,10 +123,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_ST_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_ST_WB_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_S` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_ST_S` |
 | `OF_LINE31_ST_WB_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_M` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_ST_M` |
 | `OF_LINE31_ST_WB_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_L` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_ST_L` |
 | `OF_LINE31_ST_WB_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_XL` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_ST_XL` |
@@ -233,10 +234,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_TRM_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_TRM_WB_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_S` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_TRM_S` |
 | `OF_LINE31_TRM_WB_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_M` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_TRM_M` |
 | `OF_LINE31_TRM_WB_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_L` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_TRM_L` |
 | `OF_LINE31_TRM_WB_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_XL` | `CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE_TRM_XL` |

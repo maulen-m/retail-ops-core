@@ -1,124 +1,91 @@
-# FAST_PO_BEFORE_CNY_2026Q1
-Last updated: 2026-01-03
+# FX Rates Mechanism V1
 
-## 1) Objective (Non-negotiable)
-We must generate a supplier-ready PO ASAP (CNY supplier cutoff pressure) while keeping:
-- DB as the ONLY system of record (“truth”)
-- Excel as UI input only (manual/ops convenience), never a dependency that can break the system
-- Capital protection gates intact (ROIC gates, validation, audit)
+Status: active authority for Autonomous_business FX and supplier landed COGS.
 
-## 2) Current Reality (as of 2026-01-03)
-- End-of-day pipeline passes Steps 0–6.
-- Audit now passes with effective-dated demand overrides applied.
-- EOD fails at Step 7 due to ImportError:
-  `cannot import name 'send_run_success_alert' from core.alerts.error_alerts`
+Scope:
+- Kaspi-only operating repo.
+- FX inputs, cadence, fallback behavior, and landed-cost policy for COGS, cash, PO, inventory valuation, and future pricing-floor ratification.
 
-Operational constraint:
-- Shipping workflow requires MY_SIZE filled because clothing size determines SKU_ID.
-- Today’s human-in-the-loop sizing still uses SALES_KSP_CRM_V3.xlsx.
-- WhatsApp API automation is blocked by Meta business verification.
+Decision source:
+- `OWNER_DECISIONS_RECORDED.yaml` OD-013.
+- Owner-ratified source: owner actual Binance P2P or bank rates.
+- Cadence: weekly entry by automation, with a verification line in the weekly owner digest.
 
-## 3) Time-Boxed Demand Override Policy (Line52 / Line51)
-We will keep overrides until March 1, then revert to data.
+## 1. Data Authority
 
-Policy:
-- LINE52 daily demand override: D = 50
-- LINE51 daily demand override: D = 12
-- Effective window: [2026-01-01, 2026-03-01)
-  - Meaning: applies through 2026-02-28
-  - On 2026-03-01, system automatically reverts to model/data
+The canonical FX table is `dim_fx_rates` in `db/app.db`.
 
-Implementation requirements:
-- Overrides stored in DB (effective-dated)
-- Idempotent seed/upsert script
-- Audit gate:
-  - Fails fast if required overrides are missing
-  - Prints exact command to seed them
-- Dashboard output must show override notes (e.g., `D_OVERRIDE=50`) so it’s never “silent”
+Required effective-dated columns:
 
-## 4) Deadline Logic (why this is urgent)
-Inputs:
-- Supplier prep time estimate: ~20 days
-- Supplier shutdown/cutoff: 2026-01-26 (ops constraint)
+| Column | Meaning |
+|---|---|
+| `effective_date` | First date the row is valid for. |
+| `usdt_kzt` | Actual KZT per USDT from owner funding path. |
+| `usdt_cny` | Actual CNY per USDT from owner funding path. |
+| `cny_kzt` | Stored convenience value; must match `usdt_kzt / usdt_cny` unless a forced exception is documented. |
+| `usd_kzt` | USD/KZT for freight legs. |
+| `dlv_rate_usd_kg` | Freight USD per kg. |
+| `provider` | Source class, for example `OWNER_ACTUAL`. |
+| `source` | Specific evidence/provenance label. |
+| `updated_at` | Row write timestamp. |
 
-Implication:
-- PO must be finalized and sent to supplier by ~2026-01-06 (latest safe date).
+`scripts/upsert_fx_rates.py` is the governed writer. It is dry-run by default, and production apply requires `ENABLE_FX_RATES_WRITE=1`, `--apply`, and `--backup-dir`.
 
-This is a capital-protection issue:
-delays force either stockouts (lost profit) or rushed over-ordering (capital burn).
+## 2. Supplier Landed-COGS Resolution
 
-## 5) Plan — Track A: Make EOD GREEN (fastest ROI)
-A1) Fix Step 7 alerts import (must not block pipeline)
-- Restore `send_run_success_alert` (and any paired failure alert) in `core.alerts.error_alerts`
-- Add env-guarded behavior:
-  - If Telegram env missing → log + skip safely
-- Add regression tests:
-  - Import does not fail
-  - Function is callable without Telegram configured
+Supplier landed COGS uses one runtime authority path:
 
-A2) Keep validation strict
-- `validate_params.py --strict` must PASS
-- FX must be seeded and not future-only
-- Overrides must be active (Line52/Line51 visible in validation output)
+- `core.config.business_params.get_supplier_fx_rates(...)` when resolving from a DB path.
+- `core.config.business_params.get_supplier_fx_rates_from_conn(...)` when resolving from an existing SQLite connection.
 
-A3) Run end-of-day green loop
-- `python scripts/run_end_of_day.py --verbose`
-- Capture outputs used for PO decision + operational dashboards
+Precedence:
 
-A4) Produce supplier-ready PO export
-Outputs (minimum):
-- CSV export with SKU_ID, MY_SIZE, qty, cost, weight
-- Summary file with:
-  - Total units
-  - Total COGS (KZT)
-  - Total weight (kg)
-  - Top 10 spend SKUs
-  - Explicit mention that LINE52/LINE51 are overridden (and until when)
+1. Routed supplier FX from `dim_fx_rates`: `CNY_KZT = usdt_kzt / usdt_cny`.
+2. Owner-approved fallback `CNY_KZT = 73` only when routed supplier FX is unavailable.
 
-## 6) Plan — Track B: Close the Sizing Bottleneck (stop bleeding time)
-Problem (today):
-- MY_SIZE assignment requires manual customer chat + manual entry into Excel.
-- Excel files can be lost/corrupted; workflow becomes fragile.
-- Pipeline depends on “a person did the spreadsheet correctly”.
+`usd_kzt` and `dlv_rate_usd_kg` come from the same effective-dated row when present; otherwise they fall back to the runtime defaults in `DEFAULT_FX_RATES`.
 
-Goal:
-- Keep “manual input” possible, but move the write target to DB (not Excel).
+Legacy `75` and `78` values are not active supplier landed-cost truth. They may remain only as backwards-compatible defaults, seed/bootstrap compatibility, archived estimates, or explicitly labeled legacy fallbacks.
 
-B1) Interim solution (this week):
-- Provide a DB-first “Sizing Queue” tool:
-  - Lists orders missing MY_SIZE
-  - Operator inputs HEIGHT/WEIGHT and/or MY_SIZE
-  - System stores in DB
-  - Optional export back to Excel for convenience (never required)
+## 3. Landed-Cost Policy
 
-B2) WhatsApp API solution (once verified):
-- Automated message to request HEIGHT/WEIGHT
-- Webhook/ingestion stores customer params into DB
-- Size engine assigns MY_SIZE automatically
-- Excel CRM becomes optional/legacy
+Forward policy:
 
-Target date to remove Excel dependency for sizing:
-- “DB-first manual sizing tool” live: 2026-01-10
-- “WhatsApp API automated capture” live (depends on verification): target 2026-02-10
-- “Excel CRM not required for pipeline”: target 2026-03-01
+- Populate landed cost at receive time from invoice plus freight.
+- Use routed supplier FX for the CNY leg.
+- Use `usd_kzt` and `dlv_rate_usd_kg` for freight.
+- Preserve row-level provenance for source, effective date, and fallback class.
 
-## 7) Guardrails (do not relax)
-- ROIC gate thresholds remain unchanged:
-  - ≥20% ORDER_FULL
-  - 10–20% ORDER_WITH_FLAG
-  - <10% REVIEW_REQUIRED
-- Size mix floor/cap stays enforced for clothing
-- New SKU capital limit remains enforced (20% cap)
+Historical policy:
 
-## 8) Definition of Done (for this sprint)
-- EOD pipeline completes successfully with `--verbose` (no Step 7 crash)
-- Demand overrides active and audited until 2026-03-01
-- PO export produced + supplier-ready summary generated
-- No Excel file is required as “truth”; DB is authoritative
+- Do not back-fabricate missing landed costs.
+- Historical rows without sufficient source inputs remain `MISSING`, `unresolved`, or an explicit approved override/quarantine path.
+- Owner-approved exact-row overrides must remain exact-row scoped and visible in their source labels.
 
-## 9) Operator Checklist (single source of boring truth)
-1) Seed FX (if needed) and seed overrides
-2) `python scripts/validate_params.py --strict`
-3) `python scripts/run_end_of_day.py --verbose`
-4) Review exports: confirm LINE52 D=50 and LINE51 D=12 appear with override note
-5) Send PO to supplier with attached CSV + summary
+## 4. Consumer Contract
+
+Formula consumers must not maintain private supplier-FX constants for active landed COGS.
+
+Allowed patterns:
+
+- Use `get_supplier_fx_rates(...)` or `get_supplier_fx_rates_from_conn(...)`.
+- Use `resolve_landed_cogs(...)` for row-level COGS calculation when base cost and weight are available.
+- Preserve compatibility constants only when they are labeled as legacy defaults or non-supplier planning fallbacks.
+
+Forbidden patterns:
+
+- Treating `DEFAULT_FX_RATES["cny_kzt"]` as active supplier landed-cost truth.
+- Promoting archived `75` or `78` estimates without a legacy label.
+- Changing pricing-floor values inside the FX lane. `PKT-PRICE` owns floor ratification and price uploads.
+
+## 5. Validation Surface
+
+Minimum closeout checks for this authority:
+
+- `scripts/upsert_fx_rates.py --show-latest`
+- `python3 scripts/validate_policy_source_freshness.py`
+- `python3 scripts/audit_cogs_realism.py --as-of <YYYY-MM-DD> --days 30`
+- Focused tests for supplier-FX helper and active COGS consumers.
+- Grep evidence that active landed-COGS consumers route through the authority helper or an explicitly documented compatibility fallback.
+
+`scripts/lint_docs.sh` remains part of repo doc verification, but the current green-path program has a known baseline false positive on canonical evidence numbers. Do not rewrite evidence numbers to satisfy the linter.

@@ -49,7 +49,8 @@ Do not publish best-effort green states for:
 ## Current Owner Truth Baseline
 
 - Active Kaspi stores with positive stock on sale: `ACMEWEAR`, `UNIVERSAL`, `STOREB`.
-- Inactive stores: `11KZ`, `MELVIS`.
+- Inactive/archived stores: `11KZ`, `MELVIS` under OD-027.
+- Archived stores preserve historical identity and credentials-by-env-name, but daily sync/waybill polling must exclude them until the owner explicitly reactivates a store.
 - Active Kaspi internal ads stores requiring coverage: `ACMEWEAR`, `STOREB`.
 - STOREB marketing can currently be accessed through the Universal marketing cabinet store switcher.
 - Meta/Facebook funnel evidence applies to the `ACMEWEAR` Kaspi store. `STOREB` marketing is Kaspi-internal marketing evidence, not Meta/Facebook evidence.

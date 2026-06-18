@@ -35,6 +35,29 @@ Set feasibility beats total component quantity.
 Capital gates beat growth excitement.
 ```
 
+### 2.1 Governed-off auto-PO state
+
+Auto-PO is deliberately OFF under owner decision OD-009 until restart criteria are
+green and the owner gives a new explicit restart approval. The OFF state is a
+valid governed state only when all of the following are true:
+
+- production `fact_po_draft`, `fact_po_draft_lines`, and `fact_po_execution`
+  contain zero rows;
+- no installed LaunchAgent references `run_auto_po.py` or an auto-PO label;
+- the stop-buy advisory gates are machine-readable:
+  `frozen_cover_gt_180d`, `size_overstock`, `return_qc_telemetry`,
+  `ppch_v1_gate`, `cash_truth_gate`, and `ads_crr_gate`;
+- restart criteria are machine-readable and include COGS truth for 30 days,
+  stock truth for 30 days, cash truth, FX/floor vintage, size-prior seven-test
+  proof, forecast backtest threshold set at acceptance, and explicit owner
+  approval;
+- proposal and capital-protection artifacts may be generated for audit, but
+  they remain advisory-only and must not create PO drafts.
+
+The machine-readable gate config is
+`config/validation/po_governed_off_gates.json`. The validation/report surface is
+`scripts/report_po_governed_off.py`.
+
 ---
 
 ## 3. Required input tables / structures

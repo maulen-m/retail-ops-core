@@ -41,15 +41,21 @@ This contract is fail-closed: workflow regressions must surface as test failures
   - mutation requires both `ENABLE_BUSINESS_AUTOMATION_CONTROL=1` and `--apply`
   - evidence root: `exports/automation_control/`
 
-## Multi-Store Scale Roster
+## Active Daily Polling Roster
 - Universal
 - AcmeWear
-- 11KZ
-- Store-C
 - STORE-B
 
-All daily import/waybill logic must preserve this roster. Any store mapping change requires
-updating this contract and corresponding tests before merge.
+Daily import/waybill polling must use this active roster.
+
+## Archived Historical Store Identities
+- 11KZ
+- Store-C
+
+These stores are archived by OD-027. Store identities, token env names, merchant IDs,
+and historical rows stay preserved, but daily polling is stopped until the owner explicitly
+reactivates a store. Any store mapping or lifecycle change requires updating this contract
+and corresponding tests before merge.
 
 ## Same-Day Cutoff Contract
 - Google Ops Board same-day operational selection is store-aware and DB-first.

@@ -1,0 +1,951 @@
+{
+  "schema_version": "mvos_source_contract_registry.v1",
+  "registry_id": "ACTIVE_MVOS_SOURCE_CONTRACT_REGISTRY_20260518_AGENT909_CONTRACT_CLOSURE",
+  "created_at": "2026-05-17T22:20:00+05:00",
+  "authority_order": [
+    "repo_safety_rules",
+    "owner_april23_stock_anchor_correction_20260525",
+    "codecaptain_20260525_132205_april23_reanchor_plan_review",
+    "owner_qa_priority_20260518_retained_blockers",
+    "owner_qa_priority_20260517",
+    "owner_answers_20260518T182714_ALMT",
+    "codecaptain_20260518_212326_agent908_contract_review",
+    "codecaptain_20260517_220628_non_conflicting_parts",
+    "agent874_source_contract_evidence"
+  ],
+  "owner_qa_overlay_path": "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/OWNER_QA_PRIORITY_20260518_RETAINED_BLOCKERS.md",
+  "source_packet_root": "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554",
+  "not_authorized": [
+    "production_db_write",
+    "workbook_write",
+    "scheduler_launchagent_cron_change",
+    "source_pointer_write",
+    "web_automation_mutation",
+    "kaspi_api_webui_write_beyond_read_only_fetching",
+    "ad_platform_write",
+    "bid_budget_change",
+    "bank_cash_movement",
+    "supplier_payment",
+    "po_commitment",
+    "stock_change",
+    "price_change",
+    "owner_publication_send",
+    "external_write",
+    "production_apply"
+  ],
+  "contracts": [
+    {
+      "contract_id": "APRIL23_STOCK_ANCHOR_OWNER_APPROVED_FOR_REANCHOR_COPIED_TEMP_20260525",
+      "domain": "physical_stock_anchor",
+      "scope": "april23_reanchor_copied_temp",
+      "scope_profile": "APRIL23_STOCK_REANCHOR_REVIEW_ONLY",
+      "status": "active_copied_temp_contract",
+      "active": true,
+      "supersedes": [
+        "MAY25_DB_ANCHOR_ESTIMATE_FOR_THIS_REANCHOR_LANE_ONLY"
+      ],
+      "superseded_by": null,
+      "accepted_by": "owner_april23_stock_anchor_correction_20260525_and_codecaptain_20260525_132205",
+      "accepted_at": "2026-05-25T14:43:00+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "owner_approved_physical_stock_anchor_for_copied_temp_reanchor",
+      "source_route": {
+        "anchor_workbook": "~/Docs/Oracle/Autonomous_business/2026-04-23/092937_TASK-000_decision-grade-stock-anchor-selection-rebuild-v2-with-db-tail/answer copy/stock_anchor_selection_and_rebuild_v2_2026-04-23.xlsx",
+        "anchor_workbook_sha256": "2474f3834784dc1c8368fd919a81800124e59eccba34fde15129c4d70e937ca2",
+        "anchor_sheet": "Current_Stock_Rebuild",
+        "anchor_qty_column": "estimated_current_stock",
+        "anchor_as_of_date": "2026-04-23",
+        "anchor_boundary_semantics": "2026-04-23_EOD_PLUS_05_ASSUMED_UNLESS_SOURCE_PROVES_OTHERWISE",
+        "replay_start_exclusive": "2026-04-23",
+        "replay_start": "2026-04-24T00:00:00+05:00",
+        "replay_end": "2026-05-25T23:59:59+05:00",
+        "row_risk_flags_preserved": true,
+        "blocked_rows_remain_blocking": true,
+        "offer_availability_is_not_physical_stock": true
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/APRIL23_STOCK_ANCHOR_OWNER_APPROVED_FOR_REANCHOR_COPIED_TEMP_20260525.md",
+        "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-25_april23_stock_reanchor_copied_temp/PLAN.md",
+        "~/Docs/Autonomous_business/docs/parallel_runs/2026-05-25_april23_stock_reanchor_copied_temp/VALIDATOR_MATRIX.md",
+        "~/Docs/Oracle/Autonomous_business/2026-05-25/125117_TASK-000_CaptainRequestEvaluation_april23_stock_reanchor_execution_plan/Answer/Code Captain_25.05.2026_13_22_05.md"
+      ],
+      "required_validators": [
+        "validate_april23_anchor_workbook_contract.py --strict --json",
+        "validate_april23_anchor_uniqueness.py --strict --json",
+        "validate_april23_anchor_risk_flags.py --strict --json",
+        "validate_post_anchor_source_window.py --start 2026-04-24 --end 2026-05-25 --strict --json",
+        "validate_order_sku_size_identity_coverage.py --start 2026-04-24 --end 2026-05-25 --strict --json",
+        "validate_depletion_lifecycle_resolution.py --start 2026-04-24 --end 2026-05-25 --strict --json",
+        "validate_reanchor_output_workbook_contract.py --strict --json",
+        "validate_reanchor_totals_reconciliation.py --strict --json"
+      ],
+      "retained_blockers": [
+        "blocked_anchor_rows_must_remain_visible",
+        "low_confidence_anchor_rows_must_remain_visible",
+        "negative_replay_contradictions_must_remain_visible",
+        "missing_cogs_must_not_be_zeroed",
+        "source_window_gaps_must_block_green_until_resolved_or_retained"
+      ],
+      "stoplines": [
+        "do_not_use_composed_anchor_qty_as_final_current_stock",
+        "do_not_treat_may25_db_anchor_estimate_as_authority_for_this_lane",
+        "do_not_hide_workbook_internal_risk_flags",
+        "do_not_silently_clamp_negative_rows",
+        "do_not_deduct_rows_without_sku_size_identity",
+        "do_not_infer_lifecycle_truth_from_crm_text_alone",
+        "do_not_add_returns_back_without_return_qc_evidence",
+        "do_not_use_offer_availability_as_physical_stock",
+        "do_not_use_copied_temp_proof_as_production_authority"
+      ]
+    },
+    {
+      "contract_id": "ADS_DIRECTAPI_STOREB_UNIVERSAL_SWITCHER_ACMEWEAR_CURRENT_20260517",
+      "domain": "ads_source_truth",
+      "scope": "copied_temp_mvos_proof",
+      "status": "active_repair_required",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260517",
+      "accepted_at": "2026-05-17",
+      "proof_use_allowed": false,
+      "production_use_allowed": false,
+      "contract_type": "source_refresh_required",
+      "source_route": {
+        "storeb_access_identity": "UNIVERSAL_SWITCHER_FOR_STOREB",
+        "acmewear_required": true,
+        "date_until": "2026-05-17",
+        "read_only_fetching_allowed": true,
+        "chrome_or_playwright_read_only_fallback_allowed": true
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent868_ads_directapi_meta_scope_addition/directapi_inventory/directapi_coverage_inventory.json",
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent868_ads_directapi_meta_scope_addition/source_contract/materialization_recommendation.json"
+      ],
+      "required_validators": [
+        "validate_ads_sidecar_readiness.py --as-of 2026-05-17 --readiness-mode live --strict",
+        "validate_ads_offer_universe_coverage.py --start 2026-05-05 --end 2026-05-17 --strict",
+        "validate_ads_spend_reality.py --start 2026-05-05 --end 2026-05-17 --strict"
+      ],
+      "stoplines": [
+        "do_not_zero_missing_spend",
+        "do_not_write_ad_platform",
+        "do_not_mutate_web_automation"
+      ]
+    },
+    {
+      "contract_id": "META_FACEBOOK_FETCH_MAY13_17_20260517",
+      "domain": "meta_facebook_source_truth",
+      "scope": "copied_temp_mvos_proof",
+      "status": "active_repair_required",
+      "active": true,
+      "supersedes": [
+        "META_FACEBOOK_OUT_OF_CURRENT_MVOS_SCOPE_NO_META_PUBLICATION_CLAIMS"
+      ],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260517",
+      "accepted_at": "2026-05-17",
+      "proof_use_allowed": false,
+      "production_use_allowed": false,
+      "contract_type": "source_refresh_required",
+      "source_route": {
+        "date_start": "2026-05-13",
+        "date_end": "2026-05-17",
+        "read_only_fetching_allowed": true
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent868_ads_directapi_meta_scope_addition/meta_scope/meta_scope_inventory_and_contract.json"
+      ],
+      "required_validators": [
+        "validate_policy_source_freshness.py --as-of 2026-05-17 --strict --json"
+      ],
+      "stoplines": [
+        "do_not_write_meta_or_ad_platform",
+        "do_not_infer_zero_spend_from_missing_packet"
+      ]
+    },
+    {
+      "contract_id": "PAYMENT_ROOT_NO_NEW_PAYMENT_COPIED_TEMP_20260517",
+      "domain": "payment_evidence_root",
+      "scope": "copied_temp_mvos_proof",
+      "status": "superseded_by_may18_owner_no_new_payment_bridge",
+      "active": false,
+      "supersedes": [],
+      "superseded_by": "PAYMENT_ROOT_NO_NEW_PAYMENT_COPIED_TEMP_20260518",
+      "accepted_by": "agent869_plus_owner_wave_approval",
+      "accepted_at": "2026-05-17",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "contract_type": "no_new_payment_contract",
+      "source_route": {
+        "fresh_window_artifact_count": 0,
+        "cash_movement_authorized": false
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent869_payment_evidence_contract/NO_NEW_PAYMENT_CONTRACT_COPIED_TEMP_20260517.md"
+      ],
+      "required_validators": [
+        "validate_cashflow_invariants.py",
+        "validate_order_cashflow_coverage.py --as-of 2026-05-17 --strict --json"
+      ],
+      "stoplines": [
+        "manual_balance_is_not_payment_root_evidence",
+        "no_cash_movement_authority"
+      ]
+    },
+    {
+      "contract_id": "API_CANCELLING_NON_DELIVERED_EXPOSURE_FOR_COPIED_TEMP_ONLY_NO_WEBUI_STATUS_CHANGE_AT",
+      "domain": "lifecycle_cancellation",
+      "scope": "copied_temp_mvos_proof",
+      "status": "owner_accepted_copied_temp_only",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260517",
+      "accepted_at": "2026-05-17",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "contract_type": "api_lifecycle_exposure",
+      "source_route": {
+        "row_count": 5,
+        "status": "KASPI_DELIVERY/CANCELLING",
+        "webui_status_change_at_allowed": false,
+        "manual_webui_upgrade_allowed_later": true
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent870_lifecycle_cancellation_contract/api_lifecycle_sanitized_evidence.csv",
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent870_lifecycle_cancellation_contract/draft_api_cancellation_lifecycle_contract.md"
+      ],
+      "required_validators": [
+        "lifecycle/status validation on copied DB",
+        "validate_policy_source_freshness.py --as-of 2026-05-17 --strict --json"
+      ],
+      "stoplines": [
+        "do_not_create_webui_status_change_at",
+        "do_not_mark_webui_cancelled",
+        "do_not_add_active_stock_back_while_returnedToWarehouse_false",
+        "do_not_recognize_delivered_cash_in"
+      ]
+    },
+    {
+      "contract_id": "STATUS_LEDGER_SCOPE_STOREB_ACMEWEAR_UNIVERSAL_WITH_WINDOW_PROVENANCE_20260517",
+      "domain": "status_ledger_continuity",
+      "scope": "copied_temp_mvos_proof",
+      "status": "owner_accepted_scoped_three_store_current_scope",
+      "active": true,
+      "supersedes": [
+        "MVOS_STATUS_LEDGER_SCOPE_STOREB_ACMEWEAR_UNIVERSAL_FOR_COPIED_TEMP_ONLY"
+      ],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260518_retained_blockers",
+      "accepted_at": "2026-05-18T18:27:14+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "contract_type": "scoped_status_ledger_with_manifest_window_provenance",
+      "source_route": {
+        "included_stores": [
+          "STOREB",
+          "ACMEWEAR",
+          "UNIVERSAL"
+        ],
+        "omitted_stores_disclosed": [
+          "11KZ",
+          "MELVIS"
+        ],
+        "omitted_store_reason": "11KZ and MELVIS are fully inactive until the human owner explicitly declares them active again",
+        "window_since": "2026-05-05",
+        "window_until": "2026-05-17",
+        "manifest_windows_required": true
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent871_status_ledger_scope_provenance/MVOS_STATUS_LEDGER_SCOPE_STOREB_ACMEWEAR_UNIVERSAL_FOR_COPIED_TEMP_ONLY.md",
+        "~/Docs/Autonomous_business/imports/webui_archive_manual/17.05.2026_18_26_58"
+      ],
+      "required_validators": [
+        "validate_status_ledger_continuity.py --start 2026-05-05 --end 2026-05-17 --strict"
+      ],
+      "stoplines": [
+        "do_not_hand_edit_window_provenance",
+        "do_not_hide_11KZ_MELVIS_omission",
+        "do_not_claim_full_five_store_green",
+        "do_not_reactivate_11KZ_or_MELVIS_without_owner_declaration"
+      ]
+    },
+    {
+      "contract_id": "DAY_COMPLETE_OWNER_QA_ELIGIBILITY_AND_BACKFILL_20260517",
+      "domain": "day_complete",
+      "scope": "copied_temp_mvos_proof",
+      "status": "owner_accepted_code_contract_required",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260517",
+      "accepted_at": "2026-05-17",
+      "proof_use_allowed": false,
+      "production_use_allowed": false,
+      "contract_type": "validator_contract_update_required",
+      "source_route": {
+        "exclude_status_pairs": [
+          "CANCELLED/ARCHIVE",
+          "RETURNED/ARCHIVE"
+        ],
+        "missing_line_item_exception": "blank_sku_or_nan_offer",
+        "manual_offer_text_classification": {
+          "order_id": "861147900",
+          "offer_text": "Комплект Antec RASH-921 Рашгард 5 в 1 черный 46, 48"
+        }
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent872_po_day_complete_scope/21_day_complete_violations_classified.csv",
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent872_po_day_complete_scope/41_scoped_retained_blocker_contract_draft.md"
+      ],
+      "required_validators": [
+        "validate_day_complete.py --cutoff-date 2026-05-17"
+      ],
+      "stoplines": [
+        "do_not_hide_true_size_entry_failures",
+        "do_not_claim_production_day_complete_without_validator_pass"
+      ]
+    },
+    {
+      "contract_id": "PO_NIKE_SHIRT_RETAINED_BLOCKER_AFTER_DAY_COMPLETE_20260517",
+      "domain": "po_dashboard",
+      "scope": "copied_temp_mvos_proof",
+      "status": "retained_blocker_pending_day_complete_repair",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "agent872_agent874",
+      "accepted_at": "2026-05-17",
+      "proof_use_allowed": false,
+      "production_use_allowed": false,
+      "contract_type": "retained_blocker",
+      "source_route": {
+        "sku_key": "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+        "current_failure": "sum(d_size)=9.5726 vs d_sku=10.0000"
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent872_po_day_complete_scope/30_po_nike_shirt_extract.json",
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent872_po_day_complete_scope/31_po_nike_shirt_contract_analysis.json"
+      ],
+      "required_validators": [
+        "validate_po_dashboard_invariants.py"
+      ],
+      "stoplines": [
+        "do_not_commit_po",
+        "do_not_hide_po_dashboard_failure"
+      ]
+    },
+    {
+      "contract_id": "OWNER_APPROVED_PARENT_UNIT_COGS_FOR_COPIED_TEMP_ONLY_20260517",
+      "domain": "cogs_completeness",
+      "scope": "copied_temp_mvos_proof",
+      "status": "accepted_copied_temp_only",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "owner_and_codecaptain",
+      "accepted_at": "2026-05-17",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "contract_type": "parent_unit_cogs_tactical",
+      "source_route": {
+        "LINE-31-TS": "6006.76",
+        "SUIT-21-TS": "5567.22",
+        "SUIT-31-LS": "5567.22",
+        "SUIT-31-TS": "5567.22",
+        "cancelled_order_912293165_included": true
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/exports/validation/mvos_post_codecaptain_source_contract_addition_wave/20260517_210554/agent873_cogs_childsum_route/copied_temp_parent_unit_cogs_contract.csv"
+      ],
+      "required_validators": [
+        "validate_cogs_completeness_by_month.py --start 2026-05-01 --end 2026-05-17 --strict"
+      ],
+      "stoplines": [
+        "do_not_claim_childsum_component_economics",
+        "do_not_claim_production_cogs_truth"
+      ]
+    },
+    {
+      "contract_id": "BOUNDARY_FREEZE_REBASELINE_APPROVAL_20260518T182714_ALMT",
+      "domain": "proof_boundary_control",
+      "scope": "orchestrator_rebaseline_proof_window",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "owner_approved_freeze_rebaseline_permission_only",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260518_retained_blockers",
+      "accepted_at": "2026-05-18T18:27:14+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "boundary_rebaseline_permission",
+      "source_route": {
+        "freeze_permission_granted": true,
+        "requires_live_quiet_verification": true,
+        "business_automation_write_authority": false,
+        "workbook_write_authority": false
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/OWNER_QA_PRIORITY_20260518_RETAINED_BLOCKERS.md"
+      ],
+      "required_validators": [
+        "scripts/check_no_db_tracked.sh",
+        "sqlite3 -readonly db/app.db 'PRAGMA integrity_check;'",
+        "protected DB/workbook SHA/stat resampled after freeze"
+      ],
+      "retained_blockers": [
+        "proof_window_must_verify_quiet_state_before_rebaseline"
+      ],
+      "stoplines": [
+        "do_not_treat_owner_freeze_answer_as_actual_quiet_state",
+        "do_not_claim_current_boundary_until_resampled",
+        "do_not_mutate_production_db_or_workbook"
+      ]
+    },
+    {
+      "contract_id": "PAYMENT_ROOT_NO_NEW_PAYMENT_COPIED_TEMP_20260518",
+      "domain": "payment_evidence_root",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "accepted_copied_temp_only",
+      "active": true,
+      "supersedes": [
+        "PAYMENT_ROOT_NO_NEW_PAYMENT_COPIED_TEMP_20260517"
+      ],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260518_retained_blockers",
+      "accepted_at": "2026-05-18T18:27:14+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "no_new_payment_contract",
+      "source_route": {
+        "as_of": "2026-05-18",
+        "fresh_window_artifact_count": 0,
+        "owner_confirmed_no_new_payment_evidence": true,
+        "cash_movement_authorized": false
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/OWNER_QA_PRIORITY_20260518_RETAINED_BLOCKERS.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos-10-out-of-10-contract-execution/agent5_cashflow_bank_closeout.md"
+      ],
+      "required_validators": [
+        "validate_cashflow_invariants.py",
+        "validate_order_cashflow_coverage.py --as-of 2026-05-18 --strict --json",
+        "validate_policy_source_freshness.py --as-of 2026-05-18 --strict --json"
+      ],
+      "retained_blockers": [
+        "payment_bridge_is_copied_temp_only",
+        "no_cash_movement_authority"
+      ],
+      "stoplines": [
+        "manual_balance_is_not_payment_root_evidence",
+        "no_cash_movement_authority",
+        "do_not_claim_production_payment_truth",
+        "do_not_publish_owner_output_from_bridge_only"
+      ]
+    },
+    {
+      "contract_id": "BANK_MANUAL_CASH_BALANCES_RESERVE_COPIED_TEMP_20260518",
+      "domain": "bank_manual_ingest",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "accepted_copied_temp_only",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260518_retained_blockers",
+      "accepted_at": "2026-05-18T18:27:14+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "manual_cash_balance_source_route",
+      "source_route": {
+        "workbook": "~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx",
+        "sheet": "Cash_Balances",
+        "use_latest_snapshot": true,
+        "reserve_buffer_kzt": 1500000,
+        "reserve_is_spendable_operating_cash": false
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/OWNER_QA_PRIORITY_20260518_RETAINED_BLOCKERS.md",
+        "~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos-10-out-of-10-contract-execution/agent5_cashflow_bank_closeout.md"
+      ],
+      "required_validators": [
+        "validate_policy_source_freshness.py --as-of 2026-05-18 --strict --json",
+        "validate_cashflow_invariants.py"
+      ],
+      "retained_blockers": [
+        "manual_cash_balances_are_copied_temp_only_until_authorized_materialization",
+        "reserve_is_non_spendable_buffer"
+      ],
+      "stoplines": [
+        "do_not_count_reserve_as_spendable_cash",
+        "do_not_mutate_workbook",
+        "do_not_move_cash",
+        "do_not_claim_production_bank_config_current_without_apply_authority"
+      ]
+    },
+    {
+      "contract_id": "STOREB_LINE52_POSITIVE_SPEND_MAPPING_11120372B_11942309B_20260518",
+      "domain": "ads_mapping_decision",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "accepted_copied_temp_only",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260518_retained_blockers",
+      "accepted_at": "2026-05-18T18:27:14+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "owner_confirmed_ads_product_code_mapping",
+      "source_route": {
+        "mappings": {
+          "11120372b": "CL_OC_MEN_LINE52_BLACK",
+          "11942309b": "CL_OC_MEN_LINE52_BLACK"
+        },
+        "positive_spend_kzt": {
+          "11120372b": 10370.14,
+          "11942309b": 8734.82
+        },
+        "total_positive_spend_kzt": 19104.96
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/OWNER_QA_PRIORITY_20260518_RETAINED_BLOCKERS.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos-10-out-of-10-contract-execution/agent4_ads_truth_closeout.md"
+      ],
+      "required_validators": [
+        "validate_ads_sidecar_readiness.py --as-of 2026-05-17 --readiness-mode live --strict",
+        "validate_ads_offer_universe_coverage.py --start 2026-05-05 --end 2026-05-17 --strict",
+        "validate_ads_spend_reality.py --start 2026-05-05 --end 2026-05-17 --strict"
+      ],
+      "retained_blockers": [
+        "mapping_is_copied_temp_only",
+        "source_freshness_still_required_for_ads_publication"
+      ],
+      "stoplines": [
+        "do_not_zero_missing_spend",
+        "do_not_write_ad_platform",
+        "do_not_claim_production_mapping_authority",
+        "do_not_publish_ads_profit_from_stale_ads_tables"
+      ]
+    },
+    {
+      "contract_id": "PO4_LINE61_ACTUAL_RECEIVED_SHORTAGE_OWNER_CONFIRMED_20260518",
+      "domain": "po_inbound_actual_received",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "superseded_by_shortage_contract_v1",
+      "active": false,
+      "supersedes": [],
+      "superseded_by": "PO_LINE61_REAL_SHORTAGE_COPIED_TEMP_V1",
+      "accepted_by": "owner_qa_priority_20260518_retained_blockers",
+      "accepted_at": "2026-05-18T18:27:14+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "owner_confirmed_po_shortage_fact",
+      "source_route": {
+        "po_id": "PO-4.0",
+        "product": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+        "ordered_cargo_units": 115,
+        "actual_received_units": 92,
+        "short_units": 23,
+        "shortage_by_size": {
+          "XL": 7,
+          "2XL": 5,
+          "3XL": 6,
+          "4XL": 5
+        }
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/OWNER_QA_PRIORITY_20260518_RETAINED_BLOCKERS.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos-10-out-of-10-contract-execution/agent6_po_stock_exception_closeout.md"
+      ],
+      "required_validators": [
+        "validate_po_money_gate.py --as-of 2026-05-18 --json",
+        "validate_po_dashboard_invariants.py"
+      ],
+      "retained_blockers": [
+        "po_shortage_fact_is_copied_temp_only_until_authorized_materialization",
+        "stock_snapshot_refresh_still_required"
+      ],
+      "stoplines": [
+        "do_not_treat_23_units_as_received_stock",
+        "do_not_commit_po",
+        "do_not_mutate_stock",
+        "do_not_claim_production_po_green_until_validators_pass"
+      ]
+    },
+    {
+      "contract_id": "ORDER_ENTRY_NON_API_LOCAL_EVIDENCE_COPIED_TEMP_V1",
+      "domain": "order_entry_non_api_local_evidence",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "active_copied_temp_contract",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "codecaptain_20260518_212326_agent908_contract_review",
+      "accepted_at": "2026-05-18T21:23:26+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "non_api_order_entry_local_evidence_copied_temp_materialization",
+      "source_route": {
+        "as_of": "2026-05-18",
+        "included_stores": [
+          "STOREB",
+          "ACMEWEAR",
+          "UNIVERSAL"
+        ],
+        "source_priority": [
+          "api_raw_order_entries",
+          "saved_webui_archive_2026-05-17_18-26-58",
+          "saved_webui_archive_2026-05-17_09-54-42",
+          "accepted_current_crm_workbook_sha_0dd9da0233fd30607b6f858db2ea7532bc9ec954021f5e9c195814a41d128313"
+        ],
+        "identity_bearing_rows_allowed": 162,
+        "identity_bearing_rows_by_store": {
+          "STOREB": 47,
+          "ACMEWEAR": 26,
+          "UNIVERSAL": 89
+        },
+        "header_only_quarantine_rows": 15,
+        "header_only_quarantine_store": "STOREB",
+        "updated_at": "2026-05-18T12:00:00+05:00",
+        "row_level_provenance_required": true
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/ORDER_ENTRY_NON_API_LOCAL_EVIDENCE_COPIED_TEMP_V1.md",
+        "~/Docs/Autonomous_business/imports/webui_archive_manual/17.05.2026_18_26_58",
+        "~/Docs/Autonomous_business/imports/webui_archive_manual/17.05.2026_09_54_42",
+        "~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos_option1_next_repair_wave/agent905_order_entry_source_hierarchy_repair_closeout.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos_option1_next_repair_wave/agent908_combined_synthesis_proof_evidence/order_entries_freshness/2026-05-18/validate_order_entries_freshness.json"
+      ],
+      "required_validators": [
+        "validate_order_entries_freshness.py --as-of 2026-05-18 --lookback-days 14 --stores STOREB,ACMEWEAR,UNIVERSAL --strict",
+        "validate_policy_gate_results.py --strict --json"
+      ],
+      "retained_blockers": [
+        "ORDER_ENTRY_HEADER_ONLY_SOURCE_GAP_QUARANTINED=15",
+        "no_production_order_entry_apply_authority"
+      ],
+      "stoplines": [
+        "do_not_insert_header_only_rows",
+        "do_not_infer_product_identity_from_names_only",
+        "do_not_use_for_production_apply",
+        "do_not_hide_quarantines",
+        "do_not_claim_copied_temp_green_without_validator_pass"
+      ]
+    },
+    {
+      "contract_id": "PO_LINE61_REAL_SHORTAGE_COPIED_TEMP_V1",
+      "classification_id": "PO_ACCEPTED_REAL_SHORTAGE_LINE61_2026_05_OWNER_CONFIRMED",
+      "domain": "po_inbound_actual_received",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "active_copied_temp_contract",
+      "active": true,
+      "supersedes": [
+        "PO4_LINE61_ACTUAL_RECEIVED_SHORTAGE_OWNER_CONFIRMED_20260518"
+      ],
+      "superseded_by": null,
+      "accepted_by": "codecaptain_20260518_212326_agent908_contract_review_plus_owner_qa_priority_20260518_retained_blockers",
+      "accepted_at": "2026-05-18T21:23:26+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "line61_real_shortage_copied_temp_validator_contract",
+      "source_route": {
+        "po_id": "PO-4.0",
+        "product": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+        "ordered_cargo_units": 115,
+        "actual_received_units": 92,
+        "short_units": 23,
+        "shortage_by_size": {
+          "XL": 7,
+          "2XL": 5,
+          "3XL": 6,
+          "4XL": 5
+        },
+        "part_total_actual_received_basis": 1902,
+        "part_total_ordered_cargo_basis": 1925,
+        "part_total_delta": 23,
+        "separate_quantities_required": [
+          "ordered_cargo",
+          "actual_received",
+          "shortage",
+          "current_sellable_stock",
+          "inbound",
+          "reserved_or_blocked"
+        ]
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/PO_LINE61_REAL_SHORTAGE_COPIED_TEMP_V1.md",
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/OWNER_QA_PRIORITY_20260518_RETAINED_BLOCKERS.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos_option1_next_repair_wave/agent906_stock_po_shortage_repair_closeout.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos_option1_next_repair_wave/agent908_combined_synthesis_proof_evidence/commands/po_money_gate.stdout"
+      ],
+      "required_validators": [
+        "validate_po_money_gate.py --as-of 2026-05-18 --json",
+        "validate_po_dashboard_invariants.py"
+      ],
+      "retained_blockers": [
+        "stock_snapshot_refresh_still_required",
+        "po_money_gate_may_remain_yellow_until_validator_contract_and_stock_truth_clear",
+        "nine_high_stock_exceptions_remain_visible"
+      ],
+      "stoplines": [
+        "do_not_treat_23_units_as_received_stock",
+        "do_not_mutate_workbook",
+        "do_not_commit_po",
+        "do_not_mutate_stock",
+        "do_not_use_stock_simulation_as_source_freshness",
+        "do_not_claim_production_po_green_from_copied_temp_reasoning"
+      ]
+    },
+    {
+      "contract_id": "SOURCE_FRESHNESS_BRIDGE_COPIED_TEMP_V1",
+      "domain": "source_freshness_bridge",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "active_copied_temp_contract",
+      "active": true,
+      "supersedes": [
+        "COPIED_TEMP_SOURCE_FRESHNESS_BRIDGE_ONLY"
+      ],
+      "superseded_by": null,
+      "accepted_by": "codecaptain_20260518_212326_agent908_contract_review_plus_owner_qa_priority_20260518_retained_blockers",
+      "accepted_at": "2026-05-18T21:23:26+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "accepted_source_packet_freshness_bridge_copied_temp_only",
+      "source_route": {
+        "as_of": "2026-05-18",
+        "accepted_packets_only": true,
+        "required_row_fields": [
+          "source_id",
+          "source_packet_path",
+          "source_packet_sha",
+          "captured_at",
+          "as_of",
+          "status",
+          "blocks_publication",
+          "proof_scope",
+          "production_authority"
+        ],
+        "proof_scope": "copied_temp",
+        "production_authority": false,
+        "missing_ads_spend_is_zero": false
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/SOURCE_FRESHNESS_BRIDGE_COPIED_TEMP_V1.md",
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/OWNER_QA_PRIORITY_20260518_RETAINED_BLOCKERS.md",
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/COPIED_TEMP_SOURCE_FRESHNESS_BRIDGE_CONTRACT.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos_option1_next_repair_wave/agent907_cashflow_source_freshness_integration_closeout.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos_option1_next_repair_wave/agent908_combined_synthesis_proof_evidence/SOURCE_FRESHNESS_MATRIX.tsv",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos_option1_next_repair_wave/agent908_combined_synthesis_proof_evidence/commands/policy_source_freshness.stdout"
+      ],
+      "required_validators": [
+        "validate_policy_source_freshness.py --as-of 2026-05-18 --strict --json",
+        "validate_policy_gate_results.py --strict --json"
+      ],
+      "retained_blockers": [
+        "unaccepted_source_truth_rows_remain_blockers",
+        "missing_may18_ads_spend_must_not_be_zeroed",
+        "copied_temp_bridge_blocks_publication_until_production_contract"
+      ],
+      "stoplines": [
+        "do_not_bridge_unaccepted_packets",
+        "do_not_claim_production_source_freshness",
+        "do_not_set_production_authority_true",
+        "do_not_zero_missing_may18_ads_spend",
+        "do_not_hide_src_ab_db_operational_truth_or_stock_or_ads_blockers_without_validator_pass"
+      ]
+    },
+    {
+      "contract_id": "AB_OPERATIONAL_TRUTH_TABLE_SPLIT_V1",
+      "domain": "operational_truth_split",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "active_copied_temp_contract",
+      "active": true,
+      "accepted_by": "agent9122_green_plus_codecaptain_agent9167_review_route",
+      "accepted_at": "2026-05-19",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "table_aware_operational_truth_source_split",
+      "source_route": {
+        "parent_source_id": "src_ab_db_operational_truth",
+        "parent_required_for_publication": false,
+        "child_sources_required_for_publication": [
+          "src_ab_db_order_entry_truth",
+          "src_ab_db_cashflow_truth",
+          "src_ab_db_stock_truth",
+          "src_ab_db_sales_truth",
+          "src_ab_db_order_status_truth",
+          "src_ab_db_ads_truth"
+        ],
+        "child_rows_own_publication_authority": true,
+        "proof_scope": "copied_temp",
+        "production_authority": false
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/AB_OPERATIONAL_TRUTH_TABLE_SPLIT_V1.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos_agent912_operational_source_refresh_c3_split/agent9122_c3_source_contract_split_closeout.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos_agent912_operational_source_refresh_c3_split/agent9122_c3_source_contract_split_evidence/SOURCE_FRESHNESS_CHILD_MATRIX.tsv",
+        "~/Docs/Oracle/Autonomous_business/2026-05-19/134551_TASK-000_mvos-agent9167-yellow-copied-temp-rerun-codecaptain/Answer/Code Captain_19.05.2026_16_48_33.md"
+      ],
+      "required_validators": [
+        "python3 scripts/validate_mvos_source_contract_registry.py --json",
+        "ENABLE_POLICY_REGISTRY_WRITE=1 python3 scripts/promote_operational_decision_policy.py --db <copied_db> --apply --backup-dir <evidence>/backups --actor agent9178 --json",
+        "ENABLE_C3_POLICY_MATERIALIZATION_WRITE=1 python3 scripts/materialize_c3_policy_state.py --db <copied_db> --as-of 2026-05-18 --run-id agent9178_c3_baseline --apply --backup-dir <evidence>/backups --json",
+        "python3 scripts/validate_policy_source_freshness.py --db <copied_db> --as-of 2026-05-18 --strict --json",
+        "python3 scripts/validate_policy_gate_results.py --db <copied_db> --strict --json"
+      ],
+      "retained_blockers": [
+        "src_ab_db_stock_truth_remains_blocking_without_physical_stock_source",
+        "src_ab_db_sales_truth_remains_blocking_until_strict_sales_identity_rebuild_passes",
+        "src_ab_db_ads_truth_or_ads_scope_remains_blocking_if_storeb_retained_spend_affects_claimed_scope",
+        "src_ab_db_operational_truth_is_rollup_only_not_publication_authority"
+      ],
+      "stoplines": [
+        "do_not_use_parent_rollup_to_clear_child_sources",
+        "do_not_green_physical_stock_from_offer_availability",
+        "do_not_set_production_use_allowed_true",
+        "do_not_set_owner_publication_authority_true",
+        "do_not_hide_retained_blockers"
+      ]
+    },
+    {
+      "contract_id": "EXCEPTION_QUEUE_9_HIGH_STOCK_RETAINED_BLOCKERS_20260518",
+      "domain": "exception_queue_retained_blockers",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "accepted_retained_blocker_visibility",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "owner_qa_priority_20260518_retained_blockers",
+      "accepted_at": "2026-05-18T18:27:14+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "retained_blocker_visibility_contract",
+      "source_route": {
+        "open_high_stock_exception_count": 9,
+        "must_remain_visible": true,
+        "hide_or_auto_clear_allowed": false
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/OWNER_QA_PRIORITY_20260518_RETAINED_BLOCKERS.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-18_mvos-10-out-of-10-contract-execution/agent6_po_stock_exception_closeout.md"
+      ],
+      "required_validators": [
+        "validate_exception_queue_db.py --strict --json",
+        "validate_retained_blocker_board.py --strict"
+      ],
+      "retained_blockers": [
+        "nine_open_high_stock_exceptions_must_remain_visible"
+      ],
+      "stoplines": [
+        "do_not_hide_high_stock_exceptions",
+        "do_not_auto_clear_without_warehouse_or_source_proof",
+        "do_not_claim_no_retained_blockers"
+      ]
+    },
+    {
+      "contract_id": "ORDER_ENTRY_NO_REAL_ENTRY_QUARANTINE_COPIED_TEMP_V1",
+      "domain": "order_entry_no_real_entry_quarantine",
+      "scope": "copied_temp_mvos_proof",
+      "scope_profile": "MVOS_SCOPE_ACTIVE_BUSINESS_THREE_STORE",
+      "status": "active_copied_temp_contract_draft",
+      "active": true,
+      "supersedes": [],
+      "superseded_by": null,
+      "accepted_by": "owner_approved_nonproduction_mvos_blocker_closure_envelope",
+      "accepted_at": "2026-05-22T00:00:00+05:00",
+      "proof_use_allowed": true,
+      "production_use_allowed": false,
+      "owner_publication_authority": false,
+      "contract_type": "accepted_no_real_entry_quarantine",
+      "source_route": {
+        "target_source": "fact_orders_kaspi",
+        "as_of": "2026-05-18",
+        "start_date": "2026-05-05",
+        "stores": [
+          "STOREB",
+          "ACMEWEAR",
+          "UNIVERSAL"
+        ],
+        "entry_required_only": true,
+        "accepted_rows": [
+          {
+            "order_id": "922898360",
+            "store_code": "UNIVERSAL",
+            "classification": "RETAINED_ORDER_ENTRY_QUARANTINE"
+          },
+          {
+            "order_id": "923528055",
+            "store_code": "UNIVERSAL",
+            "classification": "RETAINED_ORDER_ENTRY_QUARANTINE"
+          }
+        ],
+        "proof_scope": "copied_temp",
+        "production_authority": false,
+        "synthetic_entry_authority": false
+      },
+      "evidence_paths": [
+        "~/Docs/Autonomous_business/docs/contracts/mvos_source_contracts/ORDER_ENTRY_NO_REAL_ENTRY_QUARANTINE_COPIED_TEMP_V1.md",
+        "~/Docs/Autonomous_business_agent_handoffs/2026-05-22_mvos_phase5_order_entry_no_entry_quarantine/agent14_order_entry_no_entry_quarantine_evidence/contracts/accepted_no_entry_quarantine.csv"
+      ],
+      "required_validators": [
+        "python3 scripts/recover_order_entries_from_evidence.py --db <copied_db> --target-source fact_orders_kaspi --start-date 2026-05-05 --as-of 2026-05-18 --stores STOREB,ACMEWEAR,UNIVERSAL --entry-required-only --accepted-no-entry-quarantine-csv <accepted_csv> --recovery-ts 2026-05-18T23:59:59+05:00 --apply --strict",
+        "python3 scripts/validate_order_entries_freshness.py --db <copied_db> --as-of 2026-05-18 --lookback-days 14 --stores STOREB,ACMEWEAR,UNIVERSAL --strict"
+      ],
+      "retained_blockers": [
+        "922898360_universal_no_real_item_entry_evidence_retained",
+        "923528055_universal_no_real_item_entry_evidence_retained",
+        "production_source_truth_and_owner_publication_remain_blocked_until_review"
+      ],
+      "stoplines": [
+        "do_not_insert_synthetic_item_entries",
+        "do_not_treat_header_context_as_product_truth",
+        "do_not_use_this_contract_on_production_db",
+        "do_not_claim_owner_publication_green_from_retained_quarantine",
+        "do_not_hide_retained_no_entry_rows"
+      ]
+    }
+  ],
+  "retained_blocker_board": {
+    "proof_label_if_any_blocker_remains": "YELLOW_RETAINED_BLOCKER_BOARD_PROOF",
+    "green_label_allowed_only_if": [
+      "all required validators pass",
+      "no retained blocker remains",
+      "no missing source data is inferred",
+      "no production authority is claimed"
+    ],
+    "current_expected_blockers_before_repair": [
+      "ads_directapi_current_packet",
+      "meta_facebook_may13_17_packet",
+      "status_ledger_window_provenance",
+      "day_complete_contract_backfill",
+      "po_nike_shirt_dashboard_mismatch",
+      "order_entry_non_api_local_evidence_contract",
+      "po_line61_real_shortage_contract",
+      "source_freshness_bridge_contract"
+    ]
+  }
+}

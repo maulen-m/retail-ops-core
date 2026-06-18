@@ -74,5 +74,10 @@ Main generated reports:
 Transfer-ledger correctness gate:
 - `python3 scripts/validate_transfer_ledger.py --strict`
 
+End-of-day freshness gate:
+- `python3 scripts/validate_transfer_ledger_sync_freshness.py`
+- The exchanger email sync remains the preferred source for supplier-payment event detail.
+- If exchanger email sync is stale but the owner-updated `Cash_Balances` snapshot in `config/bank_accounts.yaml` is fresh and source-matched in `config/bank_accounts_history.yaml`, the EOD gate may pass with a `WARN` instead of pretending the exchanger email source is fresh. This keeps current cash truth usable while receipt/email evidence is delayed.
+
 PO allocation (many-to-many) stays available via:
 - `python3 scripts/transfer_ledger_cli.py allocate-po ...`

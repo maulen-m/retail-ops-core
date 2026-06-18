@@ -16,6 +16,10 @@ Rules:
 - Keep this repo Kaspi-only; future-channel language remains in the E-commerce source doc.
 - If formulas or parameters change, update the E-commerce source doc first, then update
   any local consumer parser or compatibility anchor below.
+- Repo-local approved physical warehouse count manifests may override older local
+  stock anchors only for the exact covered SKU-size or shared stock-pool rows.
+  Absent sizes must not be inferred as zero, and quarantine returns/cancellations
+  remain excluded unless separately counted and approved.
 
 ## Compatibility Anchors
 

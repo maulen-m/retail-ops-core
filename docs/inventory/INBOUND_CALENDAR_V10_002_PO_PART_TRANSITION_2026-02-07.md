@@ -26,6 +26,19 @@ Capture split inbound truth from `Inbound_calendar_V10.002.xlsx` into DB tables 
 - `Est. Weight (kg)`, `Total Bags`
 - `is_paid_BASE`, `is_paid_DLV`, `To_pay_BASE_KZT`, `To_pay_DLV_KZT`
 
+#### May 2026 Workbook Display Labels
+
+Owner-maintained workbook format edits may add display suffixes to live money
+columns without changing their canonical meaning. The parser must read these
+headers as the canonical fields:
+
+- `To_pay_BASE_KZT (live)` -> `To_pay_BASE_KZT`
+- `To_pay_DLV_KZT (live)` -> `To_pay_DLV_KZT`
+
+If both an exact canonical header and a display-suffixed alias are present for
+the same field, validation must fail closed until the duplicate mapping is
+resolved. Do not infer or ignore missing payment fields.
+
 ### `DIM_SKU_light_v5` (used when present)
 - `SKU_key`, `AvgPrc` (stored to `dim_sku.avg_sell_price_kzt_used`)
 

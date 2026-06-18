@@ -19,6 +19,8 @@ Google Ops Board operational contract (employee sizing surface):
 - `PROBABLE_SIZE` is DB-computed only; Google Sheets does not own business formulas.
 - `Status` is operational and limited to `TODAY` / `OVERDUE` using waybill carry-forward truth, not simple row age.
 - Same-day publishes refresh system-owned fields in place while preserving employee-entered `MY_SIZE`.
+- Before the explicit `18:57` fallback, automation must not fill `MY_SIZE` defaults while the employee is manually sizing orders.
+- The first daily Google Ops Board append/publish must order visible shipment rows by store name A-Z in addition to the normal deterministic row order.
 - `SalesRaw_Today` is protected except for `MY_SIZE`; `Run_Control` is protected except for operator input cells.
 - workbook identity sync runs before the first live board publish of the day and re-runs only when the workbook fingerprint changes.
 - Google Sheets remains UI only; mapping, probable size, naming, and closeout logic stay in Python/DB.
