@@ -84,13 +84,29 @@ def test_waybill_telegram_config_loads_project_dotenv_fallback(monkeypatch, tmp_
     (tmp_path / ".env").write_text(
         "TELEGRAM_BOT_TOKEN=generic-file-token\n"
         "TELEGRAM_BOT_TOKEN_WAYBILL=waybill-file-token\n"
-        "TELEGRAM_WAYBILL_CHAT_ID=-5102810505\n",
+        "TELEGRAM_WAYBILL_CHAT_ID=-12345\n",
         encoding="utf-8",
     )
 
     config = get_waybill_telegram_config()
 
-    assert config == {"token": "waybill-file-token", "chat_id": "-5102810505"}
+    assert config == {"token": "waybill-file-token", "chat_id": "-12345"}
+
+
+def test_waybill_telegram_config_prefers_dedicated_dotenv_over_generic_env(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "generic-launchd-token")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN_WAYBILL", raising=False)
+    monkeypatch.delenv("TELEGRAM_WAYBILL_CHAT_ID", raising=False)
+    monkeypatch.setattr(telegram_bot_mod, "PROJECT_ROOT", tmp_path)
+    (tmp_path / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN_WAYBILL=waybill-file-token\n"
+        "TELEGRAM_WAYBILL_CHAT_ID=-12345\n",
+        encoding="utf-8",
+    )
+
+    config = get_waybill_telegram_config()
+
+    assert config == {"token": "waybill-file-token", "chat_id": "-12345"}
 
 
 def test_telegram_request_errors_redact_bot_token(monkeypatch):
@@ -103,7 +119,7 @@ def test_telegram_request_errors_redact_bot_token(monkeypatch):
 
     result = telegram_bot_mod.send_message(
         token="secret-token",
-        chat_id="-5102810505",
+        chat_id="-12345",
         text="test",
     )
 
@@ -132,7 +148,7 @@ def test_telegram_document_rate_limit_exposes_retry_after(monkeypatch, tmp_path:
 
     result = telegram_bot_mod.send_document(
         token="secret-token",
-        chat_id="-5102810505",
+        chat_id="-12345",
         document_path=pdf_path,
     )
 

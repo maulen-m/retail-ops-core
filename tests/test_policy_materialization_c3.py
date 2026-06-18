@@ -126,17 +126,21 @@ def _write_web_automation_kaspi_marketing_packet(
     omit_top_level_keys: tuple[str, ...] = (),
     missing_storeb_coverage: bool = False,
     coverage_date: str = "2026-05-04",
+    as_of: str = "2026-05-04",
+    packet_stores: tuple[str, ...] = ("ACMEWEAR", "STOREB"),
+    required_stores: tuple[str, ...] = ("ACMEWEAR", "STOREB"),
     sqlite_hash_mismatch: bool = False,
     sqlite_path_missing: bool = False,
 ) -> Path:
     run_root = source_root / WEB_AUTOMATION_KASPI_MARKETING_PACKET_RELATIVE.parent
-    source_root_acmewear = run_root / "source_roots" / "acmewear"
-    source_root_storeb = run_root / "source_roots" / "storeb"
-    source_root_acmewear.mkdir(parents=True, exist_ok=True)
-    source_root_storeb.mkdir(parents=True, exist_ok=True)
+    source_roots_by_store = {
+        store: run_root / "source_roots" / store.lower() for store in packet_stores
+    }
+    for root in source_roots_by_store.values():
+        root.mkdir(parents=True, exist_ok=True)
 
     sqlite_entries: list[dict[str, object]] = []
-    for store, root in (("ACMEWEAR", source_root_acmewear), ("STOREB", source_root_storeb)):
+    for store, root in source_roots_by_store.items():
         sqlite_path = root / "kaspi_marketing.sqlite"
         _write_tiny_sqlite(sqlite_path)
         sqlite_entries.append(
@@ -153,13 +157,15 @@ def _write_web_automation_kaspi_marketing_packet(
         )
     if sqlite_hash_mismatch:
         sqlite_entries[0]["sha256"] = "0" * 64
-    if sqlite_path_missing:
-        sqlite_entries[1]["path"] = str(source_root_storeb / "missing_kaspi_marketing.sqlite")
+    if sqlite_path_missing and len(sqlite_entries) > 1:
+        sqlite_entries[1]["path"] = str(
+            source_roots_by_store[packet_stores[1]] / "missing_kaspi_marketing.sqlite"
+        )
 
     evidence_summaries: list[dict[str, object]] = []
     closeouts: list[dict[str, object]] = []
     no_write_checks: list[dict[str, object]] = []
-    for store, root in (("ACMEWEAR", source_root_acmewear), ("STOREB", source_root_storeb)):
+    for store, root in source_roots_by_store.items():
         summary_path = root / "source_evidence_summary.json"
         _write_json_fixture(
             summary_path,
@@ -212,32 +218,38 @@ def _write_web_automation_kaspi_marketing_packet(
             }
         )
 
-    store_coverage = {
-        "ACMEWEAR": {
+    date_flag = f"date_coverage_through_{as_of.replace('-', '_')}"
+    store_coverage = {}
+    if "ACMEWEAR" in packet_stores:
+        store_coverage["ACMEWEAR"] = {
             "gate": "GREEN",
             "business_store_code": "ACMEWEAR",
             "latest_covered_date": coverage_date,
-            "date_coverage_through_2026_05_04": coverage_date >= "2026-05-04",
+            date_flag: coverage_date >= as_of,
             "write_safety_from_summary": _zero_write_safety(),
-        },
-        "STOREB": {
+        }
+    if "STOREB" in packet_stores:
+        store_coverage["STOREB"] = {
             "gate": "GREEN",
             "business_store_code": "STOREB",
             "latest_covered_date": coverage_date,
-            "date_coverage_through_2026_05_04": coverage_date >= "2026-05-04",
+            date_flag: coverage_date >= as_of,
             "write_safety_from_closeouts": _zero_write_safety(),
-        },
-    }
+        }
     if missing_storeb_coverage:
         store_coverage.pop("STOREB")
 
+    source_roots = [
+        {"role": store.lower(), "path": str(root), "exists": True}
+        for store, root in source_roots_by_store.items()
+    ]
     packet: dict[str, object] = {
         "schema_version": "kaspi_marketing_source_freshness_packet.v1",
         "packet_name": "kaspi_marketing_source_freshness_packet",
         "generated_by": "WA_AGENT_38",
         "generated_at": "2026-05-05T13:58:33+05:00",
         "gate": gate,
-        "as_of": "2026-05-04",
+        "as_of": as_of,
         "source_policy_key": WEB_AUTOMATION_KASPI_MARKETING_SOURCE_ID,
         "ab_can_clear_src_web_automation_kaspi_marketing_directapi": True,
         "external_write_operations": 0,
@@ -248,16 +260,13 @@ def _write_web_automation_kaspi_marketing_packet(
         "agent38_live_external_operations": 0,
         "agent38_live_browser_operations": 0,
         "agent38_autonomous_business_writes": 0,
-        "required_inputs": [str(source_root_acmewear), str(source_root_storeb)],
-        "source_roots": [
-            {"role": "acmewear", "path": str(source_root_acmewear), "exists": True},
-            {"role": "storeb", "path": str(source_root_storeb), "exists": True},
-        ],
+        "required_inputs": [str(root) for root in source_roots_by_store.values()],
+        "source_roots": source_roots,
         "strict_requirements": {
-            "stores_required": ["ACMEWEAR", "STOREB"],
-            "stores_covered": ["ACMEWEAR"] if missing_storeb_coverage else ["ACMEWEAR", "STOREB"],
+            "stores_required": list(required_stores),
+            "stores_covered": ["ACMEWEAR"] if missing_storeb_coverage else list(packet_stores),
             "date_coverage_through": coverage_date,
-            "date_coverage_through_2026_05_04": coverage_date >= "2026-05-04",
+            date_flag: coverage_date >= as_of,
             "all_referenced_files_exist": True,
             "all_recorded_hashes_match_at_generation": True,
             "all_source_evidence_summaries_json_valid": True,
@@ -692,11 +701,13 @@ def _materialize_and_get_web_automation_kaspi_marketing_source(
     db_path: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    as_of: str = "2026-05-04",
 ) -> sqlite3.Row:
     monkeypatch.setenv(C3_MATERIALIZATION_ENV_GATE, "1")
     materialize_source_freshness_results(
         db_path=db_path,
-        as_of="2026-05-04",
+        as_of=as_of,
         run_id="pytest-web-automation-kaspi-marketing-packet",
         apply=True,
         backup_dir=tmp_path / "backups",
@@ -1293,6 +1304,68 @@ def test_web_automation_kaspi_marketing_strict_green_packet_clears_directapi_sou
     assert evidence["ab_can_clear_src_web_automation_kaspi_marketing_directapi"] is True
     assert evidence["stores_covered"] == ["STOREB", "ACMEWEAR"]
     assert evidence["issues"] == []
+
+
+def test_web_automation_kaspi_marketing_current_scope_does_not_require_inactive_storeb(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _promoted_db(tmp_path, monkeypatch)
+    source_root = tmp_path / "Web_automation"
+    _write_web_automation_kaspi_marketing_packet(
+        source_root,
+        as_of="2026-06-16",
+        coverage_date="2026-06-16",
+        packet_stores=("ACMEWEAR",),
+        required_stores=("ACMEWEAR",),
+    )
+    _point_web_automation_kaspi_marketing_source_to_root(db_path, source_root)
+
+    row = _materialize_and_get_web_automation_kaspi_marketing_source(
+        db_path,
+        tmp_path,
+        monkeypatch,
+        as_of="2026-06-16",
+    )
+    evidence = json.loads(row["evidence_json"])
+
+    assert row["freshness_status"] == "FRESH"
+    assert row["blocks_publication"] == 0
+    assert row["max_observed_at"].startswith("2026-06-16T23:59:59")
+    assert evidence["stores_required"] == ["ACMEWEAR"]
+    assert evidence["stores_covered"] == ["ACMEWEAR"]
+    assert "STORE_COVERAGE_MISSING:STOREB" not in evidence["issues"]
+    assert evidence["issues"] == []
+
+
+def test_web_automation_kaspi_marketing_stop_day_still_requires_active_storeb(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _promoted_db(tmp_path, monkeypatch)
+    source_root = tmp_path / "Web_automation"
+    _write_web_automation_kaspi_marketing_packet(
+        source_root,
+        as_of="2026-05-20",
+        coverage_date="2026-05-20",
+        packet_stores=("ACMEWEAR",),
+        required_stores=("ACMEWEAR",),
+    )
+    _point_web_automation_kaspi_marketing_source_to_root(db_path, source_root)
+
+    row = _materialize_and_get_web_automation_kaspi_marketing_source(
+        db_path,
+        tmp_path,
+        monkeypatch,
+        as_of="2026-05-20",
+    )
+    evidence = json.loads(row["evidence_json"])
+
+    assert row["freshness_status"] == "BLOCKED"
+    assert row["blocks_publication"] == 1
+    assert evidence["stores_required"] == ["STOREB", "ACMEWEAR"]
+    assert "STORES_REQUIRED_MISMATCH" in evidence["issues"]
+    assert "STORE_COVERAGE_MISSING:STOREB" in evidence["issues"]
 
 
 def test_web_automation_kaspi_marketing_missing_packet_fails_closed(

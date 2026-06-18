@@ -1643,6 +1643,9 @@ def test_workflow_readiness_packet_requires_open_chat_no_type_when_packet_exists
     resident_button_path = tmp_path / "resident" / "manifest.json"
     send_path = tmp_path / "send" / "manifest.json"
     open_chat_packet_path = tmp_path / "open_chat" / "manifest.json"
+    open_chat_approval_path = (
+        tmp_path / "open_chat" / "REQUIRED_EXACT_OPEN_CHAT_NO_TYPE_APPROVAL_PHRASE.txt"
+    )
     open_chat_result_path = tmp_path / "open_chat_result" / "open_chat_no_type_result_validation.json"
     _write_json_fixture(
         resident_button_path,
@@ -1695,6 +1698,7 @@ def test_workflow_readiness_packet_requires_open_chat_no_type_when_packet_exists
             "blocker": "open_chat_no_type_result_not_accepted",
             "packet_gate": "GREEN_OPEN_CHAT_NO_TYPE_CANARY_PACKET_READY_NO_SEND",
             "result_gate": "YELLOW_OPEN_CHAT_NO_TYPE_CANARY_RESULT_MISSING",
+            "approval_phrase_file": str(open_chat_approval_path.resolve()),
         }
     ]
     assert open_chat_stage["allowed_now"] is False
@@ -1936,6 +1940,71 @@ def test_owner_dashboard_handles_missing_approval_phrase_file(tmp_path, capsys):
     assert rc == 0
     assert manifest["approval_phrase_included"] is False
     assert "No approval phrase file was available" in markdown
+
+
+def test_owner_dashboard_keeps_current_blocker_phrase_over_live_send_fallback(
+    tmp_path, capsys
+):
+    workflow_dir = tmp_path / "workflow"
+    open_chat_dir = tmp_path / "open_chat"
+    live_send_dir = tmp_path / "live_send"
+    open_chat_phrase_path = open_chat_dir / "REQUIRED_EXACT_OPEN_CHAT_NO_TYPE_APPROVAL_PHRASE.txt"
+    live_send_phrase_path = live_send_dir / "REQUIRED_EXACT_LIVE_SEND_CANARY_APPROVAL_PHRASE.txt"
+    open_chat_phrase = "I approve OPEN_CHAT_NO_TYPE current blocker phrase."
+    live_send_phrase = "I approve LIVE_SEND fallback phrase that must not override current blocker."
+    _write_json_fixture(
+        workflow_dir / "manifest.json",
+        {
+            "gate": "YELLOW_CUSTOMER_SIZE_WORKFLOW_READY_WITH_RETAINED_BLOCKERS_NO_EXTERNAL_WRITE",
+            "ledger_summary": {},
+            "blockers_count": 1,
+        },
+    )
+    _write_json_fixture(
+        workflow_dir / "workflow_stages.json",
+        [
+            {
+                "sequence": 40,
+                "stage": "open_chat_no_type_side_effect_canary",
+                "gate": "YELLOW_OPEN_CHAT_NO_TYPE_CANARY_RESULT_MISSING",
+                "current_count": 1,
+                "next_action": "run_or_validate_exact_one_order_open_chat_no_type_canary_before_live_send",
+            }
+        ],
+    )
+    _write_json_fixture(
+        workflow_dir / "retained_blockers.json",
+        [
+            {
+                "stage": "open_chat_no_type_side_effect_canary",
+                "blocker": "open_chat_no_type_result_not_accepted",
+                "approval_phrase_file": str(open_chat_phrase_path),
+            }
+        ],
+    )
+    open_chat_phrase_path.parent.mkdir(parents=True)
+    live_send_phrase_path.parent.mkdir(parents=True)
+    open_chat_phrase_path.write_text(open_chat_phrase + "\n", encoding="utf-8")
+    live_send_phrase_path.write_text(live_send_phrase + "\n", encoding="utf-8")
+
+    rc = owner_dashboard_main(
+        [
+            "--workflow-dir",
+            str(workflow_dir),
+            "--live-send-approval-dir",
+            str(live_send_dir),
+            "--output-dir",
+            str(tmp_path / "dashboard"),
+        ]
+    )
+    manifest = json.loads((tmp_path / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
+    markdown = (tmp_path / "dashboard" / "owner_dashboard.md").read_text(encoding="utf-8")
+
+    assert rc == 0
+    assert manifest["approval_phrase_included"] is True
+    assert manifest["approval_phrase_source"] == str(open_chat_phrase_path)
+    assert open_chat_phrase in markdown
+    assert live_send_phrase not in markdown
 
 
 def test_automation_options_matrix_ranks_safe_paths_from_workflow_evidence(tmp_path, capsys):

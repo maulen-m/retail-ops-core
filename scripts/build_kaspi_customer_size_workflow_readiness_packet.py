@@ -83,6 +83,12 @@ def _path_str(path: Path | None) -> str:
     return str(path) if path else ""
 
 
+def _open_chat_approval_phrase_path(open_chat_packet_path: Path | None) -> Path | None:
+    if not open_chat_packet_path:
+        return None
+    return open_chat_packet_path.resolve().parent / "REQUIRED_EXACT_OPEN_CHAT_NO_TYPE_APPROVAL_PHRASE.txt"
+
+
 def build_stages(
     *,
     ledger_summary: dict[str, Any],
@@ -488,6 +494,9 @@ def main(argv: list[str] | None = None) -> int:
                 "blocker": "open_chat_no_type_result_not_accepted",
                 "packet_gate": _gate(open_chat_packet),
                 "result_gate": _gate(open_chat_result),
+                "approval_phrase_file": _path_str(
+                    _open_chat_approval_phrase_path(open_chat_packet_path)
+                ),
             }
         )
 
