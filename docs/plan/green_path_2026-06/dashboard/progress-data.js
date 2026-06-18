@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-18T20:49:26+05:00",
+  "updated": "2026-06-18T21:12:37+05:00",
   "status": "BLOCKED",
   "current_phase": 3,
   "current_take": 2,
-  "note": "G-DARK-01 remains RED after no-write preflight: RUSH_WHITE S/M/3XL exact rows missing from ACTIVE/ARCHIVE; queue has 0 dispatch-ready items.",
+  "note": "Resume rebaseline: latest post-G-DARK queue evidence has 0 dispatch-ready items; blocked on owner choices, real facts, or elapsed windows.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-18T21:12:37+05:00",
+      "text": "Resume rebaseline: post-G-DARK owner-action queue remains ARMED but has 0 dispatch-ready items; status stays BLOCKED."
+    },
+    {
       "time": "2026-06-18T20:49:26+05:00",
       "text": "G-DARK-01 RED no-write: RUSH_WHITE S/M/3XL rows missing from ACTIVE/ARCHIVE; T-SHIRT_BLACK L archive candidates found; OA-DARK01 waits owner."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T18:52:56+05:00",
       "text": "G-PO-02 ARMED: PO size-prior report published; dashboard invariants pass but return QC and stale/high-error forecasts block GREEN."
-    },
-    {
-      "time": "2026-06-18T18:46:26+05:00",
-      "text": "G-LIQ-03 ARMED: release-velocity discipline report published; 0 active tranche rows, 0 violations, G-LIQ-02 pending."
     }
   ]
 };
