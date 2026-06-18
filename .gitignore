@@ -87,6 +87,8 @@ excel_ui/ActiveOrders/on_delivery/
 excel_ui/ActiveOrders/on_delivery/**/*.xlsx
 excel_ui/ActiveOrders/*.xlsx
 imports/webui_archive_manual/
+green_path_run/line31_prechange_export_*.json
+docs/plan/green_path_2026-06/green_path_run/line31_prechange_export_*.json
 
 # Backups
 backups/
