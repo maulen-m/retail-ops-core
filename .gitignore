@@ -54,6 +54,10 @@ db/*.db
 db/app.db
 db/app.db.backup*
 db/app_*.db
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
 
 # Logs
 *.log
@@ -67,7 +71,9 @@ runtime/state/waybill_telegram_allowed_users.txt
 runtime/state/waybill_telegram_control_bot.json
 runtime/api_ledger/kaspi_api_*.jsonl
 runtime/playwright/*session*.json
+runtime/playwright/*profile*/
 runtime/customer_size_request_ledger/*.sqlite
+runtime/automation_control/
 
 # Exports (regeneratable)
 exports/
@@ -80,6 +86,7 @@ Oracle_listings/generated/
 excel_ui/ActiveOrders/on_delivery/
 excel_ui/ActiveOrders/on_delivery/**/*.xlsx
 excel_ui/ActiveOrders/*.xlsx
+imports/webui_archive_manual/
 
 # Backups
 backups/
