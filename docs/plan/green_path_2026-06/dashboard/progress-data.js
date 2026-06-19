@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T21:45:08+05:00",
+  "updated": "2026-06-19T21:52:36+05:00",
   "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Final acceptance rechecked after hard-blocker refresh: counts still GREEN 51, ARMED 15, PARTIAL 2, RED 3; owner facts/policy/strategy/signoff remain.",
+  "note": "Resume obstacle check found no safe local dispatch: queue has 0 ready actions; return QC facts, elapsed/cadence evidence, policy/strategy gates, and owner signoff remain.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T21:52:36+05:00",
+      "text": "Resume obstacle check: owner-action queue ARMED with 0 dispatch-ready actions; OA-RET02 and OA-TIMEWINDOWS still wait on real facts/evidence."
+    },
+    {
       "time": "2026-06-19T21:45:08+05:00",
       "text": "G-ACC-01 RED after G-DARK-01/G-WA-02 refresh: counts unchanged; owner signoff and gate blockers remain."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T19:47:08+05:00",
       "text": "G-ACC-01 RED refresh: counts unchanged GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61 after metric refreshes."
-    },
-    {
-      "time": "2026-06-19T19:45:43+05:00",
-      "text": "G-MET-02 ARMED refresh: daily cadence 5/5 green; weekly/monthly wait on release velocity, returns, PPCH, PO, and 7-day history."
     }
   ]
 };
