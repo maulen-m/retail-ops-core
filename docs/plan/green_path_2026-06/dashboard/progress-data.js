@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T12:23:30+05:00",
+  "updated": "2026-06-19T12:29:00+05:00",
   "status": "EXECUTING",
-  "current_phase": 3,
-  "current_take": 2,
-  "note": "G-SCHED-02 cash/PO source packet validated no-write; gate remains PARTIAL until reviewed cash sync/EOD validation clears the cash blockers.",
+  "current_phase": 5,
+  "current_take": 3,
+  "note": "G-ACC-01 refreshed after cash-source cleanup; final acceptance remains RED with hard blockers and elapsed/owner signoff requirements explicit.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T12:29:00+05:00",
+      "text": "G-ACC-01 RED refresh: final matrix now has hard green 47/61; blockers are scheduler/cash, elapsed windows, price/relist, WA/liquidation/PO/metrics, and signoff."
+    },
+    {
       "time": "2026-06-19T12:23:30+05:00",
       "text": "G-SCHED-02 PARTIAL no-write source packet: Cash_Balances 2026-06-19 11:44:56 and PO/ARC receipt folders validated; queue now waits only RET02 facts and elapsed windows."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T19:06:25+05:00",
       "text": "G-MET-02 refreshed: cadence blockers are now ARMED evidence, not missing reports."
-    },
-    {
-      "time": "2026-06-18T19:05:44+05:00",
-      "text": "G-LIQ-03 refreshed: release velocity now reflects G-LIQ-02=ARMED; active tranche rows remain 0."
     }
   ]
 };
