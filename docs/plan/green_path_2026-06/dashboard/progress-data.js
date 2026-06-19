@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T19:38:07+05:00",
+  "updated": "2026-06-19T19:42:31+05:00",
   "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Guarded sales_fact_v2 freshness refresh applied to production DB; G-PRICE-03 remains RED on true under-floor units, and final acceptance remains RED.",
+  "note": "Metrics freshness refreshed after guarded sales_fact_v2 repair; G-MET-03 remains ARMED on missing return-loss and handling-cost sources.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T19:42:31+05:00",
+      "text": "G-MET-03 ARMED refresh: latest sales date 2026-06-19 lag 0; contribution rows 12; waits on return-loss and handling-cost sources."
+    },
+    {
       "time": "2026-06-19T19:38:07+05:00",
       "text": "G-ACC-01 RED refresh: counts unchanged GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61; acceptance waits 21:10 and owner signoff."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T19:44:02+05:00",
       "text": "Owner-action validator + recorder + starter pack published and mirrored; queue is ARMED but dispatch-blocked."
-    },
-    {
-      "time": "2026-06-18T19:35:37+05:00",
-      "text": "Owner-action queue published: 7 approval/fact/time items tied to remaining RED/ARMED/PARTIAL gates."
     }
   ]
 };
