@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T21:37:50+05:00",
+  "updated": "2026-06-19T21:45:08+05:00",
   "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Final acceptance rechecked after advisory refresh: counts unchanged at GREEN 51, ARMED 15, PARTIAL 2, RED 3; owner facts/policy/strategy/signoff remain.",
+  "note": "Final acceptance rechecked after hard-blocker refresh: counts still GREEN 51, ARMED 15, PARTIAL 2, RED 3; owner facts/policy/strategy/signoff remain.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,14 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T21:45:08+05:00",
+      "text": "G-ACC-01 RED after G-DARK-01/G-WA-02 refresh: counts unchanged; owner signoff and gate blockers remain."
+    },
+    {
+      "time": "2026-06-19T21:42:30+05:00",
+      "text": "G-DARK-01/G-WA-02 refresh: fresh hash guard and dark relist preflight/mapping evidence; no upload, relist, offer creation, or external write."
+    },
+    {
       "time": "2026-06-19T21:37:50+05:00",
       "text": "G-ACC-01 RED after advisory refresh: hard green 48/61, advisory 3/10, owner signoff missing; blocker map remains ARMED."
     },
@@ -637,14 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T19:45:43+05:00",
       "text": "G-MET-02 ARMED refresh: daily cadence 5/5 green; weekly/monthly wait on release velocity, returns, PPCH, PO, and 7-day history."
-    },
-    {
-      "time": "2026-06-19T19:44:12+05:00",
-      "text": "G-MET-01 ARMED refresh: PPCH v1 month-to-date now uses sales through 2026-06-19; waits on real return QC evidence."
-    },
-    {
-      "time": "2026-06-19T19:42:31+05:00",
-      "text": "G-MET-03 ARMED refresh: latest sales date 2026-06-19 lag 0; contribution rows 12; waits on return-loss and handling-cost sources."
     }
   ]
 };
