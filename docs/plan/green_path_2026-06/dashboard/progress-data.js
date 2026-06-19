@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T21:30:57+05:00",
+  "updated": "2026-06-19T21:37:50+05:00",
   "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Final acceptance refreshed after LIQ/CASH cleanup: elapsed waits are cleared, but owner facts, policy, strategy, and signoff gates still block GREEN.",
+  "note": "Final acceptance rechecked after advisory refresh: counts unchanged at GREEN 51, ARMED 15, PARTIAL 2, RED 3; owner facts/policy/strategy/signoff remain.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,14 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T21:37:50+05:00",
+      "text": "G-ACC-01 RED after advisory refresh: hard green 48/61, advisory 3/10, owner signoff missing; blocker map remains ARMED."
+    },
+    {
+      "time": "2026-06-19T21:35:44+05:00",
+      "text": "Advisory refresh: G-RET-03, G-DARK-02, G-PO-02, G-PO-03, G-LIQ-03, G-MET-02, and G-OPS-01 remain ARMED; no external write."
+    },
+    {
       "time": "2026-06-19T21:30:57+05:00",
       "text": "G-ACC-01 RED refresh: counts GREEN 51, ARMED 15, PARTIAL 2, RED 3; elapsed waits cleared, remaining blockers are owner facts, policy, strategy, and signoff."
     },
@@ -637,14 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T19:42:31+05:00",
       "text": "G-MET-03 ARMED refresh: latest sales date 2026-06-19 lag 0; contribution rows 12; waits on return-loss and handling-cost sources."
-    },
-    {
-      "time": "2026-06-19T19:38:07+05:00",
-      "text": "G-ACC-01 RED refresh: counts unchanged GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61; acceptance waits 21:10 and owner signoff."
-    },
-    {
-      "time": "2026-06-19T19:38:07+05:00",
-      "text": "G-PRICE-03 RED refresh: sales_fact_v2 now fresh to 2026-06-19 after guarded DB apply; under-floor units 57, gap 92508 KZT; no price/external write."
     }
   ]
 };
