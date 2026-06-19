@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-18T21:12:37+05:00",
-  "status": "BLOCKED",
+  "updated": "2026-06-19T12:07:00+05:00",
+  "status": "EXECUTING",
   "current_phase": 3,
   "current_take": 2,
-  "note": "Resume rebaseline: latest post-G-DARK queue evidence has 0 dispatch-ready items; blocked on owner choices, real facts, or elapsed windows.",
+  "note": "Resume: owner decisions recorded; G-PRICE-05 parked no-write and promoted GREEN; continuing with G-DARK-01 no-write mapping resolution.",
   "takes": [
     {
       "id": 1,
@@ -415,7 +415,7 @@ window.GP = {
       "phase": 3,
       "group": "pricing",
       "type": "HARD",
-      "status": "RED"
+      "status": "GREEN"
     },
     {
       "id": "G-WA-01",
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T12:07:00+05:00",
+      "text": "G-PRICE-05 GREEN no-write: owner parked the 321-row Repricer backlog; formal_drop_approved validator passed with API set calls 0/0."
+    },
+    {
       "time": "2026-06-18T21:12:37+05:00",
       "text": "Resume rebaseline: post-G-DARK owner-action queue remains ARMED but has 0 dispatch-ready items; status stays BLOCKED."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T18:58:17+05:00",
       "text": "G-PO-03 ARMED: forecast accuracy loop report published; old WMAPE/MAPE/signed-bias evidence blocks GREEN."
-    },
-    {
-      "time": "2026-06-18T18:52:56+05:00",
-      "text": "G-PO-02 ARMED: PO size-prior report published; dashboard invariants pass but return QC and stale/high-error forecasts block GREEN."
     }
   ]
 };
