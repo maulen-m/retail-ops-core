@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T19:48:59+05:00",
+  "updated": "2026-06-19T19:57:48+05:00",
   "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
-  "note": "G-MET-04 flipped RED on fresh evidence because fact_cashflow_daily is stale at 2026-06-16; inspecting guarded calendar rebuild next.",
+  "note": "G-MET-04 stale-cashflow blocker repaired; final acceptance remains RED before 21:10 and until owner signoff exists.",
   "takes": [
     {
       "id": 1,
@@ -534,7 +534,7 @@ window.GP = {
       "phase": 4,
       "group": "metrics",
       "type": "ADV",
-      "status": "RED"
+      "status": "ARMED"
     },
     {
       "id": "G-OPS-01",
@@ -566,6 +566,18 @@ window.GP = {
     }
   ],
   "activity": [
+    {
+      "time": "2026-06-19T19:57:48+05:00",
+      "text": "G-ACC-01 RED refresh: counts GREEN 50, ARMED 16, PARTIAL 2, RED 3 after G-MET-04 repair; waits 21:10 and owner signoff."
+    },
+    {
+      "time": "2026-06-19T19:55:52+05:00",
+      "text": "G-MET-04 ARMED repair: cashflow daily rows refreshed through 2026-06-19 with guarded DB apply; strict params, integrity, and DB guard passed."
+    },
+    {
+      "time": "2026-06-19T19:53:01+05:00",
+      "text": "EXECUTING G-MET-04 repair: starting guarded cashflow calendar copied-DB proof for 2026-06-17..2026-06-19; no production write yet."
+    },
     {
       "time": "2026-06-19T19:48:59+05:00",
       "text": "G-MET-04 RED refresh: fact_cashflow_daily latest date 2026-06-16, lag 3 > max 2; next is guarded calendar rebuild proof."
@@ -633,18 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T12:14:30+05:00",
       "text": "G-DARK-01 RED no-write: RUSH_WHITE S is mapping drift, M needs platform-row restore/creation review, 3XL needs product-title/family review."
-    },
-    {
-      "time": "2026-06-19T12:07:00+05:00",
-      "text": "G-PRICE-05 GREEN no-write: owner parked the 321-row Repricer backlog; formal_drop_approved validator passed with API set calls 0/0."
-    },
-    {
-      "time": "2026-06-18T21:12:37+05:00",
-      "text": "Resume rebaseline: post-G-DARK owner-action queue remains ARMED but has 0 dispatch-ready items; status stays BLOCKED."
-    },
-    {
-      "time": "2026-06-18T20:49:26+05:00",
-      "text": "G-DARK-01 RED no-write: RUSH_WHITE S/M/3XL rows missing from ACTIVE/ARCHIVE; T-SHIRT_BLACK L archive candidates found; OA-DARK01 waits owner."
     }
   ]
 };
