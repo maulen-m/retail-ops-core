@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T19:57:48+05:00",
+  "updated": "2026-06-19T20:02:46+05:00",
   "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
-  "note": "G-MET-04 stale-cashflow blocker repaired; final acceptance remains RED before 21:10 and until owner signoff exists.",
+  "note": "G-SCHED-02 EOD dry-run now fails only the governed conservative cash floor; base cash is above base floor.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T20:02:46+05:00",
+      "text": "G-SCHED-02 PARTIAL refresh: EOD dry-run passes except cashflow PO preflight; base cash ok, conservative min cash 3668632.39 < floor 4234749.84."
+    },
+    {
       "time": "2026-06-19T19:57:48+05:00",
       "text": "G-ACC-01 RED refresh: counts GREEN 50, ARMED 16, PARTIAL 2, RED 3 after G-MET-04 repair; waits 21:10 and owner signoff."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T12:23:30+05:00",
       "text": "G-SCHED-02 PARTIAL no-write source packet: Cash_Balances 2026-06-19 11:44:56 and PO/ARC receipt folders validated; queue now waits only RET02 facts and elapsed windows."
-    },
-    {
-      "time": "2026-06-19T12:14:30+05:00",
-      "text": "G-DARK-01 RED no-write: RUSH_WHITE S is mapping drift, M needs platform-row restore/creation review, 3XL needs product-title/family review."
     }
   ]
 };
