@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T12:29:00+05:00",
-  "status": "EXECUTING",
+  "updated": "2026-06-19T12:31:00+05:00",
+  "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "G-ACC-01 refreshed after cash-source cleanup; final acceptance remains RED with hard blockers and elapsed/owner signoff requirements explicit.",
+  "note": "Blocked with no dispatch-ready queue items: remaining stoplines require real return QC facts, elapsed windows, or separately approved live write/strategy decisions.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T12:31:00+05:00",
+      "text": "BLOCKED: no dispatch-ready queue items remain; daily ops are paused 0/10 with protected DB/workbook holders clear."
+    },
+    {
       "time": "2026-06-19T12:29:00+05:00",
       "text": "G-ACC-01 RED refresh: final matrix now has hard green 47/61; blockers are scheduler/cash, elapsed windows, price/relist, WA/liquidation/PO/metrics, and signoff."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T19:10:35+05:00",
       "text": "G-DARK-01 RED: RUSH_WHITE S/M/3XL missing buyable offers while excluded L is buyable."
-    },
-    {
-      "time": "2026-06-18T19:06:25+05:00",
-      "text": "G-MET-02 refreshed: cadence blockers are now ARMED evidence, not missing reports."
     }
   ]
 };
