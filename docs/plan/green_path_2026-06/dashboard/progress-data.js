@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T19:45:43+05:00",
+  "updated": "2026-06-19T19:47:08+05:00",
   "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Owner dashboard cadence refreshed; daily cadence is green, while weekly/monthly remain ARMED on return, liquidation, PPCH, PO, and elapsed-history blockers.",
+  "note": "Final acceptance refreshed after metric updates; counts unchanged and acceptance remains RED before 21:10 and owner signoff.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T19:47:08+05:00",
+      "text": "G-ACC-01 RED refresh: counts unchanged GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61 after metric refreshes."
+    },
+    {
       "time": "2026-06-19T19:45:43+05:00",
       "text": "G-MET-02 ARMED refresh: daily cadence 5/5 green; weekly/monthly wait on release velocity, returns, PPCH, PO, and 7-day history."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T20:40:07+05:00",
       "text": "G-DARK-01 dispatch: fresh Kaspi ACTIVE/ARCHIVE preflight for exact RUSH_WHITE relist/off switch; no upload before safe dry-run proof."
-    },
-    {
-      "time": "2026-06-18T20:34:48+05:00",
-      "text": "G-PRICE-03 RED refresh: LINE floor authority executed; missing-floor rows are 0, under-floor units are 45, OA-DARK01 remains dispatch-ready."
     }
   ]
 };
