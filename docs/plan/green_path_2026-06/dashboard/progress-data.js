@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T21:21:33+05:00",
+  "updated": "2026-06-19T21:26:32+05:00",
   "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "G-SCHED-01 revalidation is ARMED/PARTIAL_RETAINED: scheduler contract clean, but daily ops are paused and nonzero scheduler exits remain.",
+  "note": "Downstream WA/LIQ/CASH blockers refreshed no-write: G-PRICE-05 is parked/GREEN, but G-WA-01, G-LIQ-02, G-LIQ-03, and G-CASH-04 remain ARMED; final acceptance stays BLOCKED.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T21:26:32+05:00",
+      "text": "G-WA/G-LIQ/G-CASH refresh: G-PRICE-05 is no longer a LIQ blocker; G-WA-01, G-LIQ-02, G-LIQ-03, and G-CASH-04 remain ARMED with no external write."
+    },
+    {
       "time": "2026-06-19T21:21:33+05:00",
       "text": "G-SCHED-01 PARTIAL retained: scheduler contract clean, daily ops paused 0/10, heartbeat FAIL with 5 paused-window misses, and 10 loaded labels have nonzero exits."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T19:30:11+05:00",
       "text": "EXECUTING resume: continuing sales_fact_v2 freshness and G-PRICE-03 proof work; no live price changes; daily ops stay paused 0/10."
-    },
-    {
-      "time": "2026-06-19T19:22:42+05:00",
-      "text": "BLOCKED: no promotable local lane remains before new owner facts/strategy approvals or elapsed windows; daily ops stay paused 0/10."
     }
   ]
 };
