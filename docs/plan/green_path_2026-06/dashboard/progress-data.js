@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T20:02:46+05:00",
-  "status": "EXECUTING",
+  "updated": "2026-06-19T20:05:54+05:00",
+  "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "G-SCHED-02 EOD dry-run now fails only the governed conservative cash floor; base cash is above base floor.",
+  "note": "Blocked after safe local repairs: remaining gates need elapsed evidence, real return QC facts, owner strategy decisions, cash-floor resolution, or signoff.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T20:05:54+05:00",
+      "text": "BLOCKED checkpoint: no dispatch-ready queue items; daily ops paused 0/10; next safe proof waits elapsed alert/acceptance windows or owner facts/strategy decisions."
+    },
+    {
       "time": "2026-06-19T20:02:46+05:00",
       "text": "G-SCHED-02 PARTIAL refresh: EOD dry-run passes except cashflow PO preflight; base cash ok, conservative min cash 3668632.39 < floor 4234749.84."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T12:29:00+05:00",
       "text": "G-ACC-01 RED refresh: final matrix now has hard green 47/61; blockers are scheduler/cash, elapsed windows, price/relist, WA/liquidation/PO/metrics, and signoff."
-    },
-    {
-      "time": "2026-06-19T12:23:30+05:00",
-      "text": "G-SCHED-02 PARTIAL no-write source packet: Cash_Balances 2026-06-19 11:44:56 and PO/ARC receipt folders validated; queue now waits only RET02 facts and elapsed windows."
     }
   ]
 };
