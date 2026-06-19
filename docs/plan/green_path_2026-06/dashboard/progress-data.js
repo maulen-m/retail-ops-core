@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T20:27:44+05:00",
+  "updated": "2026-06-19T21:13:18+05:00",
   "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "G-ALERT-02 zero-skip reporter is published and ARMED; June 19 scheduled evidence and the 21:10 cutoff are still missing.",
+  "note": "G-ALERT-02 is GREEN; final acceptance is RED with 48/61 hard gates green and remaining scheduler/cash/returns/pricing/relist/metrics blockers.",
   "takes": [
     {
       "id": 1,
@@ -170,7 +170,7 @@ window.GP = {
       "phase": 1,
       "group": "alerting",
       "type": "HARD",
-      "status": "ARMED"
+      "status": "GREEN"
     },
     {
       "id": "G-ORD-01",
@@ -567,6 +567,14 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T21:13:18+05:00",
+      "text": "G-ACC-01 RED refresh: counts GREEN 51, ARMED 15, PARTIAL 2, RED 3; hard green 48/61; alert elapsed window cleared, owner signoff and gate blockers remain."
+    },
+    {
+      "time": "2026-06-19T21:12:29+05:00",
+      "text": "G-ALERT-02 GREEN: 2026-06-13..2026-06-19 scheduled evidence is present for both alert jobs, skipped_alert_total=0, missing_evidence_count=0."
+    },
+    {
       "time": "2026-06-19T20:27:44+05:00",
       "text": "G-ALERT-02 ARMED: zero skipped-alert regressions found, but June 19 scheduled evidence for both jobs and the 21:10 cutoff are still missing."
     },
@@ -637,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T19:18:37+05:00",
       "text": "G-ACC-01 RED refresh: counts unchanged at GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61 after G-SCHED-02 evidence refresh."
-    },
-    {
-      "time": "2026-06-19T19:17:31+05:00",
-      "text": "G-SCHED-02 PARTIAL refresh: cash config synced, on-delivery freeze PASS, residuals 0, strict params PASS; EOD still blocked by conservative cash PO floor."
     }
   ]
 };
