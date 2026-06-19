@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T20:05:54+05:00",
+  "updated": "2026-06-19T20:18:30+05:00",
   "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Blocked after safe local repairs: remaining gates need elapsed evidence, real return QC facts, owner strategy decisions, cash-floor resolution, or signoff.",
+  "note": "Remaining-blocker map is published. No dispatch-ready local work remains without owner facts, elapsed-window evidence, cash-floor resolution, or new strategy decisions.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T20:18:30+05:00",
+      "text": "BLOCKED triage complete: remaining-blocker report ARMED with owner strategy 5, real facts 7, elapsed/cadence waits, and conservative cash-floor blocker."
+    },
+    {
       "time": "2026-06-19T20:05:54+05:00",
       "text": "BLOCKED checkpoint: no dispatch-ready queue items; daily ops paused 0/10; next safe proof waits elapsed alert/acceptance windows or owner facts/strategy decisions."
     },
@@ -637,14 +641,6 @@ window.GP = {
     {
       "time": "2026-06-19T16:28:00+05:00",
       "text": "PAUSED daily shipping: daily ops resumed 10/10; 2026-06-19 Google Ops Board published 18 rows; closeout watcher waits for 18 manual sizes plus READY before Telegram waybill send."
-    },
-    {
-      "time": "2026-06-19T12:31:00+05:00",
-      "text": "BLOCKED: no dispatch-ready queue items remain; daily ops are paused 0/10 with protected DB/workbook holders clear."
-    },
-    {
-      "time": "2026-06-19T12:29:00+05:00",
-      "text": "G-ACC-01 RED refresh: final matrix now has hard green 47/61; blockers are scheduler/cash, elapsed windows, price/relist, WA/liquidation/PO/metrics, and signoff."
     }
   ]
 };
