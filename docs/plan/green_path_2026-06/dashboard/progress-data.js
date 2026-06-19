@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T12:07:00+05:00",
+  "updated": "2026-06-19T12:14:30+05:00",
   "status": "EXECUTING",
   "current_phase": 3,
   "current_take": 2,
-  "note": "Resume: owner decisions recorded; G-PRICE-05 parked no-write and promoted GREEN; continuing with G-DARK-01 no-write mapping resolution.",
+  "note": "G-DARK-01 no-write mapping resolution complete; RED remains until an approved write lane repairs RUSH_WHITE mapping/catalog state.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T12:14:30+05:00",
+      "text": "G-DARK-01 RED no-write: RUSH_WHITE S is mapping drift, M needs platform-row restore/creation review, 3XL needs product-title/family review."
+    },
+    {
       "time": "2026-06-19T12:07:00+05:00",
       "text": "G-PRICE-05 GREEN no-write: owner parked the 321-row Repricer backlog; formal_drop_approved validator passed with API set calls 0/0."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T19:05:02+05:00",
       "text": "G-LIQ-02 ARMED: prior-canonical tranche-1 readiness row file published; execution still blocked by WA/price stoplines."
-    },
-    {
-      "time": "2026-06-18T18:58:17+05:00",
-      "text": "G-PO-03 ARMED: forecast accuracy loop report published; old WMAPE/MAPE/signed-bias evidence blocks GREEN."
     }
   ]
 };
