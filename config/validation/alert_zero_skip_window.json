@@ -1,0 +1,31 @@
+{
+  "contract_id": "ALERT_ZERO_SKIP_WINDOW_V1",
+  "gate_id": "G-ALERT-02",
+  "repair_start_date": "2026-06-13",
+  "required_days": 7,
+  "post_eod_cutoff_local_time": "21:10",
+  "skipped_alert_patterns": [
+    "Telegram alert skipped"
+  ],
+  "jobs": [
+    {
+      "job_id": "single_truth_preflight",
+      "log_path": "logs/single_truth_preflight_stdout.log",
+      "scheduled_hour": 21,
+      "scheduled_minute": 0,
+      "date_patterns": [
+        "lineage_(?P<date>\\d{8})_(?P<time>\\d{6})\\.json",
+        "as_of=(?P<date>\\d{4}-\\d{2}-\\d{2})"
+      ]
+    },
+    {
+      "job_id": "on_delivery_residuals",
+      "log_path": "logs/on_delivery_residuals_stdout.log",
+      "scheduled_hour": 21,
+      "scheduled_minute": 5,
+      "date_patterns": [
+        "on_delivery_residuals_(?P<date>\\d{4}-\\d{2}-\\d{2})_(?P<time>\\d{8}_\\d{6})\\.md"
+      ]
+    }
+  ]
+}

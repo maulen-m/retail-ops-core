@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T20:18:30+05:00",
+  "updated": "2026-06-19T20:27:44+05:00",
   "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Remaining-blocker map is published. No dispatch-ready local work remains without owner facts, elapsed-window evidence, cash-floor resolution, or new strategy decisions.",
+  "note": "G-ALERT-02 zero-skip reporter is published and ARMED; June 19 scheduled evidence and the 21:10 cutoff are still missing.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,14 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T20:27:44+05:00",
+      "text": "G-ALERT-02 ARMED: zero skipped-alert regressions found, but June 19 scheduled evidence for both jobs and the 21:10 cutoff are still missing."
+    },
+    {
+      "time": "2026-06-19T20:24:31+05:00",
+      "text": "EXECUTING G-ALERT-02 proof lane: adding read-only zero-skip window reporter and tests; no scheduler, Telegram, DB, marketplace, Google, or external write."
+    },
+    {
       "time": "2026-06-19T20:18:30+05:00",
       "text": "BLOCKED triage complete: remaining-blocker report ARMED with owner strategy 5, real facts 7, elapsed/cadence waits, and conservative cash-floor blocker."
     },
@@ -633,14 +641,6 @@ window.GP = {
     {
       "time": "2026-06-19T19:17:31+05:00",
       "text": "G-SCHED-02 PARTIAL refresh: cash config synced, on-delivery freeze PASS, residuals 0, strict params PASS; EOD still blocked by conservative cash PO floor."
-    },
-    {
-      "time": "2026-06-19T19:06:25+05:00",
-      "text": "EXECUTING resume: 2026-06-19 Telegram delivery confirmed 13/13; daily ops paused 0/10 for green-path blocker refresh."
-    },
-    {
-      "time": "2026-06-19T16:28:00+05:00",
-      "text": "PAUSED daily shipping: daily ops resumed 10/10; 2026-06-19 Google Ops Board published 18 rows; closeout watcher waits for 18 manual sizes plus READY before Telegram waybill send."
     }
   ]
 };
