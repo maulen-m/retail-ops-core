@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T19:47:08+05:00",
+  "updated": "2026-06-19T19:48:59+05:00",
   "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Final acceptance refreshed after metric updates; counts unchanged and acceptance remains RED before 21:10 and owner signoff.",
+  "note": "G-MET-04 flipped RED on fresh evidence because fact_cashflow_daily is stale at 2026-06-16; inspecting guarded calendar rebuild next.",
   "takes": [
     {
       "id": 1,
@@ -534,7 +534,7 @@ window.GP = {
       "phase": 4,
       "group": "metrics",
       "type": "ADV",
-      "status": "ARMED"
+      "status": "RED"
     },
     {
       "id": "G-OPS-01",
@@ -566,6 +566,10 @@ window.GP = {
     }
   ],
   "activity": [
+    {
+      "time": "2026-06-19T19:48:59+05:00",
+      "text": "G-MET-04 RED refresh: fact_cashflow_daily latest date 2026-06-16, lag 3 > max 2; next is guarded calendar rebuild proof."
+    },
     {
       "time": "2026-06-19T19:47:08+05:00",
       "text": "G-ACC-01 RED refresh: counts unchanged GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61 after metric refreshes."
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T20:49:26+05:00",
       "text": "G-DARK-01 RED no-write: RUSH_WHITE S/M/3XL rows missing from ACTIVE/ARCHIVE; T-SHIRT_BLACK L archive candidates found; OA-DARK01 waits owner."
-    },
-    {
-      "time": "2026-06-18T20:40:07+05:00",
-      "text": "G-DARK-01 dispatch: fresh Kaspi ACTIVE/ARCHIVE preflight for exact RUSH_WHITE relist/off switch; no upload before safe dry-run proof."
     }
   ]
 };
