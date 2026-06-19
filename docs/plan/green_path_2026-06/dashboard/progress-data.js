@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T21:26:32+05:00",
+  "updated": "2026-06-19T21:30:57+05:00",
   "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Downstream WA/LIQ/CASH blockers refreshed no-write: G-PRICE-05 is parked/GREEN, but G-WA-01, G-LIQ-02, G-LIQ-03, and G-CASH-04 remain ARMED; final acceptance stays BLOCKED.",
+  "note": "Final acceptance refreshed after LIQ/CASH cleanup: elapsed waits are cleared, but owner facts, policy, strategy, and signoff gates still block GREEN.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T21:30:57+05:00",
+      "text": "G-ACC-01 RED refresh: counts GREEN 51, ARMED 15, PARTIAL 2, RED 3; elapsed waits cleared, remaining blockers are owner facts, policy, strategy, and signoff."
+    },
+    {
       "time": "2026-06-19T21:26:32+05:00",
       "text": "G-WA/G-LIQ/G-CASH refresh: G-PRICE-05 is no longer a LIQ blocker; G-WA-01, G-LIQ-02, G-LIQ-03, and G-CASH-04 remain ARMED with no external write."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T19:38:07+05:00",
       "text": "G-PRICE-03 RED refresh: sales_fact_v2 now fresh to 2026-06-19 after guarded DB apply; under-floor units 57, gap 92508 KZT; no price/external write."
-    },
-    {
-      "time": "2026-06-19T19:30:11+05:00",
-      "text": "EXECUTING resume: continuing sales_fact_v2 freshness and G-PRICE-03 proof work; no live price changes; daily ops stay paused 0/10."
     }
   ]
 };

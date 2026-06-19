@@ -130,12 +130,27 @@ def _category_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _recommended_next_steps(*, queue: dict[str, Any], acceptance: dict[str, Any], daily_ops: dict[str, Any]) -> list[str]:
-    steps = [
-        "After 21:10 Asia/Almaty and after scheduled alert logs exist, rerun final acceptance and alert elapsed-window validation read-only.",
-        "Keep returned goods quarantined until real staff QC facts are provided; then use the existing return-QC writer with backup/env/readback gates.",
+    acceptance_blockers = [str(item) for item in acceptance.get("acceptance_blockers") or []]
+    hard_blockers = [str(item) for item in acceptance.get("hard_gate_blockers") or []]
+    elapsed_wait_open = any("post_eod_acceptance_window" in item for item in acceptance_blockers) or any(
+        item.startswith("G-ALERT-02=") for item in hard_blockers
+    )
+    steps = []
+    if elapsed_wait_open:
+        steps.append(
+            "After 21:10 Asia/Almaty and after scheduled alert logs exist, rerun final acceptance and alert elapsed-window validation read-only."
+        )
+    else:
+        steps.append(
+            "Elapsed alert/acceptance waits are cleared; focus on the remaining owner facts, policy, strategy, and signoff gates."
+        )
+    steps.extend(
+        [
+            "Keep returned goods quarantined until real staff QC facts are provided; then use the existing return-QC writer with backup/env/readback gates.",
         "Keep G-PRICE-03 and G-DARK-01 no-write unless owner gives a new exact strategy decision or external-write approval for the listed scope.",
         "Resolve G-SCHED-02 only by a governed cash-floor policy decision, real cash change, or a validated source correction; do not bypass the floor silently.",
-    ]
+        ]
+    )
     if int(queue.get("dispatch_ready_count") or 0) > 0:
         steps.insert(0, "Dispatch the owner-action queue items that are currently APPROVED and still pass fresh preflight.")
     if str(daily_ops.get("scope") or "") == "daily-ops":

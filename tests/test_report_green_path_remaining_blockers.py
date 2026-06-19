@@ -74,9 +74,44 @@ def test_remaining_blockers_classifies_owner_time_and_cash(tmp_path: Path) -> No
     assert report["category_counts"]["real_owner_fact_required"] == 2
     assert report["cashflow_po_preflight"]["conservative_min_cash_kzt"] == 3668632.39
     assert report["owner_queue"]["dispatch_ready_count"] == 0
+    assert report["recommended_next_steps"][0].startswith("After 21:10")
     assert report["production_db_written"] is False
     assert Path(report["json_path"]).exists()
     assert Path(report["md_path"]).exists()
+
+
+def test_remaining_blockers_does_not_recommend_elapsed_wait_after_clearance(tmp_path: Path) -> None:
+    acceptance = _write_json(
+        tmp_path / "acceptance.json",
+        {
+            "status_counts": {"GREEN": 51, "ARMED": 15, "PARTIAL": 2, "RED": 3},
+            "acceptance_blockers": ["missing owner signoff artifact"],
+            "hard_gate_blockers": [
+                "G-SCHED-01=PARTIAL (scheduler)",
+                "G-PRICE-03=RED (pricing)",
+                "G-RET-02=ARMED (returns)",
+            ],
+            "advisory_decisions_required": [],
+            "owner_signoff_present": False,
+        },
+    )
+    queue = _write_json(tmp_path / "queue.json", {"dispatch_ready_count": 0, "waiting_actions": []})
+    daily_ops = _write_json(tmp_path / "daily_ops.json", {"ok": True, "scope": "daily-ops", "loaded_count": 0})
+    heartbeat = _write_json(tmp_path / "heartbeat.json", {"status": "FAIL", "errors": ["paused heartbeat missing"]})
+    eod = tmp_path / "eod.txt"
+    eod.write_text("status: FAIL\n", encoding="utf-8")
+
+    report = build_remaining_blockers_report(
+        acceptance_report=acceptance,
+        owner_queue_report=queue,
+        eod_transcript=eod,
+        daily_ops_verify=daily_ops,
+        scheduler_heartbeat_report=heartbeat,
+        output_root=tmp_path / "out",
+    )
+
+    assert report["recommended_next_steps"][0].startswith("Elapsed alert/acceptance waits are cleared")
+    assert "After 21:10" not in "\n".join(report["recommended_next_steps"])
 
 
 def test_remaining_blockers_can_be_ready_when_no_waits(tmp_path: Path) -> None:
