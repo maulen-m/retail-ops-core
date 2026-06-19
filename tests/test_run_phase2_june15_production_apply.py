@@ -26,6 +26,9 @@ def test_build_step_specs_orders_guarded_production_sequence(tmp_path: Path) -> 
     assert steps[2].env == {"ENABLE_CASHFLOW_WRITE": "1", "ENABLE_CASHFLOW_PROD_WRITE": "1"}
     assert "--expected-pre-sha256" in steps[2].command
     assert runner.PRE_SHA_TOKEN in steps[2].command
+    assert steps[5].needs_pre_sha is True
+    assert "--expected-pre-sha256" in steps[5].command
+    assert runner.PRE_SHA_TOKEN in steps[5].command
     assert steps[6].env == {"ENABLE_FACT_SALES_DERIVED_REPLAY_WRITE": "1"}
     validate_params = next(step for step in steps if step.name == "validate_params_strict")
     assert "--db" in validate_params.command

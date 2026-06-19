@@ -190,6 +190,8 @@ def build_step_specs(
                 start_date,
                 "--strict",
                 "--apply",
+                "--expected-pre-sha256",
+                PRE_SHA_TOKEN,
                 "--output-root",
                 run_root / "sales_fact_v2_prod_apply",
                 "--backup-root",
@@ -197,6 +199,7 @@ def build_step_specs(
             ),
             output_path=str(run_root / "sales_fact_v2_prod_apply_stdout.txt"),
             env={"ENABLE_SALES_FACT_V2_REBUILD_APPLY": "1"},
+            needs_pre_sha=True,
         ),
         StepSpec(
             name="apply_fact_sales_derived_replay",

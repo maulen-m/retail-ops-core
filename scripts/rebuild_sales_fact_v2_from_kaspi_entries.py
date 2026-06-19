@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -53,6 +54,14 @@ def _backup_db(db_path: Path, backup_root: Path) -> Path:
         dst.close()
         src.close()
     return backup_path
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _parse_date(value: Any) -> str | None:
@@ -869,6 +878,7 @@ def run_rebuild(
     apply: bool,
     start_date: date | None,
     backup_root: Path,
+    expected_pre_sha256: str | None = None,
 ) -> dict[str, Any]:
     if not db_path.exists():
         raise RebuildError(f"db not found: {db_path}")
@@ -881,6 +891,7 @@ def run_rebuild(
 
     conn = sqlite3.connect(str(db_path))
     try:
+        pre_sha256 = _sha256_file(db_path)
         rows, summary = build_sales_fact_v2_rows_from_entries(
             conn,
             as_of=as_of,
@@ -908,6 +919,9 @@ def run_rebuild(
             "errors_sample": summary["errors_sample"],
             "skipped_open": summary["skipped_open"],
             "apply_status": "DRY_RUN",
+            "expected_pre_sha256": expected_pre_sha256,
+            "pre_sha256": pre_sha256,
+            "post_sha256": pre_sha256,
             "rows_applied": 0,
             "rows_deleted": 0,
             "backup_path": None,
@@ -945,14 +959,22 @@ def run_rebuild(
         if apply:
             if str(os.environ.get("ENABLE_SALES_FACT_V2_REBUILD_APPLY") or "").strip() != "1":
                 raise RebuildError("ENABLE_SALES_FACT_V2_REBUILD_APPLY=1 is required for --apply")
+            if db_path.resolve() == DEFAULT_DB.resolve() and not expected_pre_sha256:
+                raise RebuildError("--expected-pre-sha256 is required for production sales_fact_v2 rebuild apply")
+            if expected_pre_sha256 and pre_sha256 != expected_pre_sha256:
+                raise RebuildError(
+                    f"pre-SHA mismatch: observed={pre_sha256} expected={expected_pre_sha256}"
+                )
             backup = _backup_db(db_path, backup_root)
             rows_deleted = _delete_by_keys(conn, plan["rows_delete_keys"])
             rows_applied = _upsert(conn, plan["rows_insert"] + plan["rows_update"])
             conn.commit()
+            post_sha256 = _sha256_file(db_path)
             payload["apply_status"] = "APPLIED"
             payload["rows_applied"] = rows_applied
             payload["rows_deleted"] = rows_deleted
             payload["backup_path"] = str(backup)
+            payload["post_sha256"] = post_sha256
 
         summary_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     finally:
@@ -972,6 +994,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-date", default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--backup-root", type=Path, default=DEFAULT_BACKUP_ROOT)
+    parser.add_argument("--expected-pre-sha256", default=None)
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--apply", action="store_true")
     return parser
@@ -987,6 +1010,7 @@ def main() -> int:
         backup_root=args.backup_root,
         strict=bool(args.strict),
         apply=bool(args.apply),
+        expected_pre_sha256=args.expected_pre_sha256,
     )
     print(f"rebuild_plan_json={report['plan_json']}")
     print(f"rebuild_plan_md={report['plan_md']}")

@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T19:22:42+05:00",
-  "status": "BLOCKED",
+  "updated": "2026-06-19T19:38:07+05:00",
+  "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Blocked after safe refresh: G-SCHED-02 is improved but still PARTIAL on the conservative cash PO floor; final acceptance remains RED with owner-fact, strategy, and elapsed-window blockers.",
+  "note": "Guarded sales_fact_v2 freshness refresh applied to production DB; G-PRICE-03 remains RED on true under-floor units, and final acceptance remains RED.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,18 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T19:38:07+05:00",
+      "text": "G-ACC-01 RED refresh: counts unchanged GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61; acceptance waits 21:10 and owner signoff."
+    },
+    {
+      "time": "2026-06-19T19:38:07+05:00",
+      "text": "G-PRICE-03 RED refresh: sales_fact_v2 now fresh to 2026-06-19 after guarded DB apply; under-floor units 57, gap 92508 KZT; no price/external write."
+    },
+    {
+      "time": "2026-06-19T19:30:11+05:00",
+      "text": "EXECUTING resume: continuing sales_fact_v2 freshness and G-PRICE-03 proof work; no live price changes; daily ops stay paused 0/10."
+    },
+    {
       "time": "2026-06-19T19:22:42+05:00",
       "text": "BLOCKED: no promotable local lane remains before new owner facts/strategy approvals or elapsed windows; daily ops stay paused 0/10."
     },
@@ -633,34 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T19:35:37+05:00",
       "text": "Owner-action queue published: 7 approval/fact/time items tied to remaining RED/ARMED/PARTIAL gates."
-    },
-    {
-      "time": "2026-06-18T19:35:37+05:00",
-      "text": "G-DARK-01 rechecked with fresh 19:30 Repricer source; RED mismatch unchanged."
-    },
-    {
-      "time": "2026-06-18T19:30:56+05:00",
-      "text": "BLOCKED: next-owner-actions packet written; remaining blockers require exact approvals, real QC/cash facts, or elapsed time."
-    },
-    {
-      "time": "2026-06-18T19:27:50+05:00",
-      "text": "G-SCHED-02 PARTIAL refresh: 15 settlement rows applied with backup; validate_params PASS; cash freshness/floor still block EOD."
-    },
-    {
-      "time": "2026-06-18T19:26:20+05:00",
-      "text": "G-SCHED-02 apply dispatch: 15 on-delivery settlement rows, backup-first env-gated DB-only repair."
-    },
-    {
-      "time": "2026-06-18T19:23:37+05:00",
-      "text": "Triage dispatch: classify remaining acceptance blockers and probe only safe local/read-only lanes."
-    },
-    {
-      "time": "2026-06-18T19:21:27+05:00",
-      "text": "G-ACC-01 RED: final acceptance matrix published; hard/advisory blockers and owner signoff requirements are explicit."
-    },
-    {
-      "time": "2026-06-18T19:13:18+05:00",
-      "text": "G-DARK-02 ARMED: baseline published; recovery slope waits on G-DARK-01 and 30 mature post-relist days."
     }
   ]
 };

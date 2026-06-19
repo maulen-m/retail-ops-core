@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -12,6 +13,14 @@ from scripts.rebuild_sales_fact_v2_from_kaspi_entries import (
     build_sales_fact_v2_rows_from_entries,
     run_rebuild,
 )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _create_sales_rebuild_db(path: Path) -> sqlite3.Connection:
@@ -227,6 +236,39 @@ def test_rebuild_delete_scope_stays_inside_requested_window(tmp_path: Path) -> N
 
     assert plan["delete_count"] == 0
     assert plan["rows_delete_keys"] == []
+
+
+def test_rebuild_apply_checks_expected_pre_sha_before_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "app.db"
+    conn = _create_sales_rebuild_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, kaspi_offer_name, sku_key, sku_id, my_size,
+            quantity, unit_price_kzt, delivery_cost, status_updated_at, internal_status
+        ) VALUES ('HEADER-SHA', 'UNIVERSAL', 'Header fallback', 'SKU_HEADER', 'SKU_HEADER_M', 'M',
+                  1, 15000, 0, '2026-04-21T12:00:00', 'COMPLETED')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    pre_sha = _sha256(db_path)
+    monkeypatch.setenv("ENABLE_SALES_FACT_V2_REBUILD_APPLY", "1")
+    with pytest.raises(RebuildError, match="pre-SHA mismatch"):
+        run_rebuild(
+            db_path=db_path,
+            as_of=date(2026, 5, 4),
+            start_date=date(2026, 4, 16),
+            output_root=tmp_path / "out",
+            backup_root=tmp_path / "backups",
+            strict=True,
+            apply=True,
+            expected_pre_sha256="0" * 64,
+        )
+
+    assert _sha256(db_path) == pre_sha
+    assert not (tmp_path / "backups").exists()
 
 
 def test_strict_rebuild_skips_identityless_duplicate_archive_header(tmp_path: Path) -> None:
