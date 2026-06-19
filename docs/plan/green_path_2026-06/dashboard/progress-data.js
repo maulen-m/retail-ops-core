@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T12:14:30+05:00",
+  "updated": "2026-06-19T12:23:30+05:00",
   "status": "EXECUTING",
   "current_phase": 3,
   "current_take": 2,
-  "note": "G-DARK-01 no-write mapping resolution complete; RED remains until an approved write lane repairs RUSH_WHITE mapping/catalog state.",
+  "note": "G-SCHED-02 cash/PO source packet validated no-write; gate remains PARTIAL until reviewed cash sync/EOD validation clears the cash blockers.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T12:23:30+05:00",
+      "text": "G-SCHED-02 PARTIAL no-write source packet: Cash_Balances 2026-06-19 11:44:56 and PO/ARC receipt folders validated; queue now waits only RET02 facts and elapsed windows."
+    },
+    {
       "time": "2026-06-19T12:14:30+05:00",
       "text": "G-DARK-01 RED no-write: RUSH_WHITE S is mapping drift, M needs platform-row restore/creation review, 3XL needs product-title/family review."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T19:05:44+05:00",
       "text": "G-LIQ-03 refreshed: release velocity now reflects G-LIQ-02=ARMED; active tranche rows remain 0."
-    },
-    {
-      "time": "2026-06-18T19:05:02+05:00",
-      "text": "G-LIQ-02 ARMED: prior-canonical tranche-1 readiness row file published; execution still blocked by WA/price stoplines."
     }
   ]
 };
