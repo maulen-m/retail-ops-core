@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T19:18:37+05:00",
-  "status": "EXECUTING",
+  "updated": "2026-06-19T19:22:42+05:00",
+  "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Final acceptance refreshed after the G-SCHED-02 repair. Counts remain GREEN=50, ARMED=16, PARTIAL=2, RED=3; hard green remains 47/61 with cash-floor and other strategy/fact/time blockers still open.",
+  "note": "Blocked after safe refresh: G-SCHED-02 is improved but still PARTIAL on the conservative cash PO floor; final acceptance remains RED with owner-fact, strategy, and elapsed-window blockers.",
   "takes": [
     {
       "id": 1,
@@ -566,6 +566,10 @@ window.GP = {
     }
   ],
   "activity": [
+    {
+      "time": "2026-06-19T19:22:42+05:00",
+      "text": "BLOCKED: no promotable local lane remains before new owner facts/strategy approvals or elapsed windows; daily ops stay paused 0/10."
+    },
     {
       "time": "2026-06-19T19:18:37+05:00",
       "text": "G-ACC-01 RED refresh: counts unchanged at GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61 after G-SCHED-02 evidence refresh."
