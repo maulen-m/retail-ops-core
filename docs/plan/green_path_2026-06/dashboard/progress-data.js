@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T21:13:18+05:00",
+  "updated": "2026-06-19T21:21:33+05:00",
   "status": "BLOCKED",
   "current_phase": 5,
   "current_take": 3,
-  "note": "G-ALERT-02 is GREEN; final acceptance is RED with 48/61 hard gates green and remaining scheduler/cash/returns/pricing/relist/metrics blockers.",
+  "note": "G-SCHED-01 revalidation is ARMED/PARTIAL_RETAINED: scheduler contract clean, but daily ops are paused and nonzero scheduler exits remain.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T21:21:33+05:00",
+      "text": "G-SCHED-01 PARTIAL retained: scheduler contract clean, daily ops paused 0/10, heartbeat FAIL with 5 paused-window misses, and 10 loaded labels have nonzero exits."
+    },
+    {
       "time": "2026-06-19T21:13:18+05:00",
       "text": "G-ACC-01 RED refresh: counts GREEN 51, ARMED 15, PARTIAL 2, RED 3; hard green 48/61; alert elapsed window cleared, owner signoff and gate blockers remain."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-19T19:22:42+05:00",
       "text": "BLOCKED: no promotable local lane remains before new owner facts/strategy approvals or elapsed windows; daily ops stay paused 0/10."
-    },
-    {
-      "time": "2026-06-19T19:18:37+05:00",
-      "text": "G-ACC-01 RED refresh: counts unchanged at GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61 after G-SCHED-02 evidence refresh."
     }
   ]
 };
