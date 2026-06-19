@@ -60,9 +60,9 @@ and corresponding tests before merge.
 ## Same-Day Cutoff Contract
 - Google Ops Board same-day operational selection is store-aware and DB-first.
 - Current cutoffs:
-  - `AcmeWear`: include same-day pending orders created at or before `16:01`
+  - `AcmeWear`: include same-day pending orders created at or before `17:00`
   - all remaining stores: include same-day pending orders created at or before `16:00`
-- The `17:02` import exists for DB freshness and next-day visibility; it must not expand same-day Google Ops Board eligibility after the store cutoff.
+- The `17:02` import exists for DB freshness, AcmeWear 17:00 late-window visibility, and next-day visibility; it must not expand same-day Google Ops Board eligibility after each store cutoff.
 - `excel_ui/run_full_import.command` must publish the Google Ops Board whenever export + DB sync + ActiveOrders enrichment are green, even if CRM Step 2 later turns the overall import workflow red.
 
 ## Workflow-Critical Components (Do Not Drift)

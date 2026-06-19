@@ -7,6 +7,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - `db/app.db` remains the canonical truth.
 - Google Sheets is the employee ops UI only.
 - Excel CRM is no longer the daily employee intermediary.
+- `HEIGHT` and `WEIGHT` are employee-entered customer parameters on the daily board.
 - `MY_SIZE` is employee-entered observed size only.
 - `PROBABLE_SIZE` is computed in Python/DB only and published as a value, never as a Google Sheets formula.
 
@@ -30,7 +31,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 
 ## Canonical Tabs and Ownership
 - Primary editable surface: `SalesRaw_Today`
-- Employee-editable column: `SalesRaw_Today.MY_SIZE`
+- Employee-editable columns: `SalesRaw_Today.HEIGHT`, `SalesRaw_Today.WEIGHT`, and `SalesRaw_Today.MY_SIZE`
 - Explicit closeout control surface: `Run_Control`
 - `Run_Control.ready_for_closeout` accepts only `HOLD` or `READY`
 - Workbook tab order must start with:
@@ -131,7 +132,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - A same-day publish must not remove or restructure already-published live rows.
 - A same-day publish may append only truly new rows.
 - A same-day publish must append truly new rows only at the bottom of the current live block.
-- A same-day publish may refresh system-owned fields in place while preserving employee-entered `MY_SIZE`.
+- A same-day publish may refresh system-owned fields in place while preserving employee-entered `HEIGHT`, `WEIGHT`, and `MY_SIZE`.
 - Publish cycles write source snapshots to `exports/google_ops_board/source_snapshots/<YYYY-MM-DD>/source_snapshot.json`.
 - Non-refresh publish slots must use the current source snapshot/fingerprint and fail closed when the ActiveOrders source is stale instead of silently refreshing live API data outside the morning refresh slot.
 - If a generated publish payload is identical to live tab rows, the publisher must report the no-op and skip unnecessary tab rewrites.
@@ -147,7 +148,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - employee-facing values: `OVERDUE` or `TODAY`
   - do not mark rows overdue just because `planned_shipment_date < target_date`
 - Same-day operational selection is store-aware:
-  - `AcmeWear` rows stay eligible through `16:01`
+  - `AcmeWear` rows stay eligible through `17:00`
   - all remaining stores stay eligible through `16:00`
   - the store-aware cutoff applies to same-day pending rows and prior-day pending carry-forward rows
 - `SalesRaw_Today.Status` drives sheet formatting:
@@ -155,7 +156,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - amber fill when `MY_SIZE` is blank
   - green fill when `MY_SIZE` is filled
 - `SalesRaw_Today` and `Run_Control` are managed protected sheets:
-  - `SalesRaw_Today`: only `MY_SIZE` stays editable for operators
+  - `SalesRaw_Today`: only `HEIGHT`, `WEIGHT`, and `MY_SIZE` stay editable for operators
   - `Run_Control`: only `ready_for_closeout` stays editable for operators
   - `Run_Control` system fields such as `ready_set_by`, `ready_set_at`, `notes`, `last_verified_ready_at`, `last_orchestrator_run_id`, and `last_orchestrator_status` are protected in the UI but preserved by publisher upsert logic so automation can write them
 - `SalesRaw_Today` row order is operator-first:

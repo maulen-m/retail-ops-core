@@ -11,9 +11,14 @@ from dateutil import parser as dtp
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 _CUTOFF_HOUR_ENV = "KASPI_PLANNED_CUTOFF_HOUR"
 _CUTOFF_MINUTE_ENV = "KASPI_PLANNED_CUTOFF_MINUTE"
+_DEFAULT_CUTOFF_HOUR = 15
+_DEFAULT_CUTOFF_MINUTE = 1
 _ISO_LIKE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[ T].*)?$")
 _STORE_CUTOFF_HOUR_ENV_PREFIX = "KASPI_PLANNED_CUTOFF_HOUR_"
 _STORE_CUTOFF_MINUTE_ENV_PREFIX = "KASPI_PLANNED_CUTOFF_MINUTE_"
+_DEFAULT_STORE_CUTOFFS = {
+    "ACMEWEAR": (17, 0),
+}
 _STORE_ALIASES = {
     "UNIVERSAL": "UNIVERSAL",
     "30000001PP1": "UNIVERSAL",
@@ -47,19 +52,28 @@ def _normalize_store_code(store_code: Optional[str]) -> Optional[str]:
 def _get_cutoff_time(store_code: Optional[str] = None) -> time:
     """Return cutoff time for planned date (local Kaspi rule)."""
     normalized_store = _normalize_store_code(store_code)
-    default_hour = _safe_int(os.environ.get(_CUTOFF_HOUR_ENV, "15"), 15)
-    default_minute = _safe_int(os.environ.get(_CUTOFF_MINUTE_ENV, "1"), 1)
+    default_hour_text = os.environ.get(_CUTOFF_HOUR_ENV)
+    default_minute_text = os.environ.get(_CUTOFF_MINUTE_ENV)
+    default_hour = _safe_int(default_hour_text, _DEFAULT_CUTOFF_HOUR)
+    default_minute = _safe_int(default_minute_text, _DEFAULT_CUTOFF_MINUTE)
 
     hour = default_hour
     minute = default_minute
     if normalized_store:
+        store_default_hour = default_hour
+        store_default_minute = default_minute
+        if default_hour_text is None and default_minute_text is None:
+            store_default_hour, store_default_minute = _DEFAULT_STORE_CUTOFFS.get(
+                normalized_store,
+                (default_hour, default_minute),
+            )
         hour = _safe_int(
-            os.environ.get(f"{_STORE_CUTOFF_HOUR_ENV_PREFIX}{normalized_store}", default_hour),
-            default_hour,
+            os.environ.get(f"{_STORE_CUTOFF_HOUR_ENV_PREFIX}{normalized_store}", store_default_hour),
+            store_default_hour,
         )
         minute = _safe_int(
-            os.environ.get(f"{_STORE_CUTOFF_MINUTE_ENV_PREFIX}{normalized_store}", default_minute),
-            default_minute,
+            os.environ.get(f"{_STORE_CUTOFF_MINUTE_ENV_PREFIX}{normalized_store}", store_default_minute),
+            store_default_minute,
         )
 
     # Clamp to valid ranges to avoid ValueError.

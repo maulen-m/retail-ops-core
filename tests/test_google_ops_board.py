@@ -319,7 +319,7 @@ def test_default_google_ops_board_contract_loads_expected_tabs():
 
     assert contract.spreadsheet_id == "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg"
     assert contract.same_day_cutoff_default == "16:00"
-    assert contract.same_day_cutoff_by_store == {"ACMEWEAR": "16:01"}
+    assert contract.same_day_cutoff_by_store == {"ACMEWEAR": "17:00"}
     assert list(contract.tabs) == [
         "SalesRaw_Today",
         "Run_Control",
@@ -333,7 +333,12 @@ def test_default_google_ops_board_contract_loads_expected_tabs():
     ]
     assert contract.closeout_write_env_gate == "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT"
     assert contract.tabs["SalesRaw_Today"].key_column == "_db_row_id"
-    assert contract.tabs["SalesRaw_Today"].editable_columns == ["MY_SIZE"]
+    assert contract.tabs["SalesRaw_Today"].editable_columns == ["HEIGHT", "WEIGHT", "MY_SIZE"]
+    assert contract.tabs["SalesRaw_Today"].ui["protected_sheet"]["unprotected_columns"] == [
+        "HEIGHT",
+        "WEIGHT",
+        "MY_SIZE",
+    ]
     assert contract.tabs["SalesRaw_Today"].headers == [
         "Status",
         "Date",
@@ -426,6 +431,13 @@ def test_build_tab_ui_requests_for_salesraw_sets_filter_hide_and_visual_grouping
     protected = add_protection_requests[0]["addProtectedRange"]["protectedRange"]
     assert protected["range"] == {"sheetId": 123}
     assert protected["unprotectedRanges"] == [
+        {
+            "sheetId": 123,
+            "startRowIndex": 1,
+            "endRowIndex": 2000,
+            "startColumnIndex": 3,
+            "endColumnIndex": 5,
+        },
         {
             "sheetId": 123,
             "startRowIndex": 1,
@@ -796,7 +808,7 @@ def test_build_phase1_payload_respects_store_specific_same_day_cutoffs(tmp_path:
                     "1006",
                     "ACMEWEAR",
                     "2026-04-15",
-                    "2026-04-15T16:01:00",
+                    "2026-04-15T17:00:00",
                     "KASPI_DELIVERY",
                     "ACCEPTED",
                     "AcmeWear Cutoff Edge",
@@ -820,7 +832,7 @@ def test_build_phase1_payload_respects_store_specific_same_day_cutoffs(tmp_path:
                     "",
                     None,
                     None,
-                    "2026-04-15T16:01:00",
+                    "2026-04-15T17:00:00",
                 ),
                 (
                     10,
@@ -858,7 +870,7 @@ def test_build_phase1_payload_respects_store_specific_same_day_cutoffs(tmp_path:
                     "1008",
                     "ACMEWEAR",
                     "2026-04-15",
-                    "2026-04-15T16:02:00",
+                    "2026-04-15T17:01:00",
                     "KASPI_DELIVERY",
                     "ACCEPTED",
                     "AcmeWear After Cutoff",
@@ -882,7 +894,7 @@ def test_build_phase1_payload_respects_store_specific_same_day_cutoffs(tmp_path:
                     "",
                     None,
                     None,
-                    "2026-04-15T16:02:00",
+                    "2026-04-15T17:01:00",
                 ),
             ],
         )
@@ -929,7 +941,7 @@ def test_build_phase1_payload_carries_forward_pending_previous_day_rows_within_s
                     "0910",
                     "ACMEWEAR",
                     "2026-04-14",
-                    "2026-04-14T16:01:00",
+                    "2026-04-14T17:00:00",
                     "KASPI_DELIVERY",
                     "ACCEPTED",
                     "AcmeWear Cutoff Carry",
@@ -953,14 +965,14 @@ def test_build_phase1_payload_carries_forward_pending_previous_day_rows_within_s
                     "+77000000030",
                     170,
                     70,
-                    "2026-04-14T16:01:00",
+                    "2026-04-14T17:00:00",
                 ),
                 (
                     31,
                     "0911",
                     "ACMEWEAR",
                     "2026-04-14",
-                    "2026-04-14T16:02:00",
+                    "2026-04-14T17:01:00",
                     "KASPI_DELIVERY",
                     "ACCEPTED",
                     "AcmeWear After Cutoff",
@@ -984,7 +996,7 @@ def test_build_phase1_payload_carries_forward_pending_previous_day_rows_within_s
                     "+77000000031",
                     170,
                     70,
-                    "2026-04-14T16:02:00",
+                    "2026-04-14T17:01:00",
                 ),
             ],
         )
@@ -1413,8 +1425,8 @@ def test_build_publish_plan_same_day_preserves_existing_rows_and_only_appends_ne
                     "Status": "TODAY",
                     "Date": "2026-04-15",
                     "STORE_NAME": "UNIVERSAL",
-                    "HEIGHT": "176",
-                    "WEIGHT": "78",
+                    "HEIGHT": "181",
+                    "WEIGHT": "83",
                     "Quantity": 1,
                     "Kaspi_name_core": "Nike_Tee_Black",
                     "OrderID": "1001",
@@ -1641,8 +1653,11 @@ def test_build_publish_plan_same_day_preserves_existing_rows_and_only_appends_ne
     order_1001 = next(row for row in final_orders if row["order_id"] == "1001")
     assert order_1001["status"] == "READY"
     assert order_1001["exception_flag"] == ""
-    assert plan["tab_actions"]["SalesRaw_Today"]["final_rows"][0]["MY_SIZE"] == "L"
-    assert plan["tab_actions"]["SalesRaw_Today"]["final_rows"][0]["Quantity"] == 3
+    final_salesraw_1001 = plan["tab_actions"]["SalesRaw_Today"]["final_rows"][0]
+    assert final_salesraw_1001["HEIGHT"] == "181"
+    assert final_salesraw_1001["WEIGHT"] == "83"
+    assert final_salesraw_1001["MY_SIZE"] == "L"
+    assert final_salesraw_1001["Quantity"] == 3
     assert [row["order_id"] for row in plan["tab_actions"]["Orders_Today"]["final_rows"]] == ["1002", "1001"]
 
 

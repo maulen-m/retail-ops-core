@@ -12,12 +12,12 @@ Authoritative schedule/source-of-truth for automation timing:
 |------|----------|------------|
 | 11:00 | First order import | Automated (launchd) |
 | 11:00-15:00 | Order processing, waybill generation | Manual |
-| 15:00-15:01 | Final same-day check | Manual |
-| 15:01 | SLA cutoff (same-day orders) | - |
+| 15:00-15:01 | Final same-day check for default-cutoff stores | Manual |
+| 15:01 | Legacy/global fallback cutoff for default-cutoff stores | - |
 | 15:02 | Second order import | Automated (launchd) |
 | 15:02-16:00 | Next-day order prep | Manual |
 | 16:01 | Third order import | Automated (launchd) |
-| 16:01-17:00 | Post-cutoff / next-day order prep | Manual |
+| 16:01-17:00 | AcmeWear late same-day window + next-day order prep | Manual |
 | 17:02 | Fourth order import (`post-cutoff DB freshness`) | Automated (launchd) |
 | 17:00-18:00 | Package preparation | Manual |
 | 18:00-18:30 | Courier handover + deadline check | Manual |
@@ -74,7 +74,7 @@ Current production path is Google Ops Board closeout with Telegram-primary bundl
 
 ### 5. SLA Cutoff Check (15:00-15:01)
 
-**CRITICAL:** Orders created before `15:01:00` must ship same day.
+**CRITICAL:** Orders created before the store's cutoff must ship same day. The current Google Ops Board contract keeps `AcmeWear` same-day eligible through `17:00`; the remaining active stores stay on the `16:00` board cutoff.
 
 Check for late orders:
 - Any order with `planned_delivery_date` = today
@@ -95,8 +95,8 @@ Third automated import captures:
 ### 6.2 Post-Cutoff DB Freshness Import (17:02)
 
 Fourth automated import captures:
-- post-cutoff orders for DB freshness and next-day visibility
-- while keeping `AcmeWear` on the current `16:01` same-day cutoff contract
+- late-window orders for DB freshness and Google Ops Board visibility
+- while keeping `AcmeWear` on the current `17:00` same-day cutoff contract
 - and keeping the remaining stores on the current `16:00` same-day cutoff contract
 
 ### 6.3 Shipped-Truth DB Refresh (post-closeout, 19:15, 09:30)
@@ -123,11 +123,11 @@ See [PACKAGING_RULES.md](PACKAGING_RULES.md) for:
 
 | Order Received | Ship By | Status |
 |----------------|---------|--------|
-| Before 15:01:00 | Same day | On-time |
-| 15:01:00 exactly | Next day | On-time |
-| After 15:01:00 | Next day | On-time |
+| AcmeWear through 17:00 | Same day | On-time |
+| Other active stores through 16:00 | Same day | On-time |
+| Orders after the store cutoff | Next day | On-time |
 
-**Note:** `15:01:00` is the exact handover cutoff boundary. Orders at `15:00:59` are same-day; orders at `15:01:00` move to next day.
+**Note:** The Google Ops Board same-day selection is store-aware and DB-first; see `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md` for the authoritative current cutoff table.
 
 ## Error Handling
 

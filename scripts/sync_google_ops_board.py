@@ -794,7 +794,7 @@ def build_phase1_payload(
         {
             "key": "editable_columns",
             "value": (
-                "SalesRaw_Today.MY_SIZE | "
+                "SalesRaw_Today.HEIGHT,WEIGHT,MY_SIZE | "
                 "Orders_Today.exception_flag | Needs_Size.my_size,size_status,assigned_to,note | "
                 "Shipping_Queue.package_qty,shipping_status | Exceptions.exception_note,owner,resolved | "
                 "Shipped_Today.whatsapp_batch,whatsapp_sent_at"

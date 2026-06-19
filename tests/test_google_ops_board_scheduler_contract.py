@@ -31,6 +31,8 @@ def test_google_ops_board_publish_plist_contract() -> None:
     ]
     assert env.get("ENABLE_GOOGLE_OPS_BOARD_WRITE") == "1"
     assert env.get("ENABLE_KASPI_WORKBOOK_MAP_SYNC") == "1"
+    assert env.get("KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR") == "17"
+    assert env.get("KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR") == "0"
     assert env.get("AB_GOOGLE_SERVICE_ACCOUNT_JSON") == "~/Docs/Business/S/ab-ops-board-sync-key.json"
     assert env.get("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID") == "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg"
     assert plist.get("StandardOutPath") == (
@@ -244,7 +246,7 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "11:00 - Google Ops Board quiet publish" in script
     assert "13:45 - Google Ops Board prewindow health + identity sync" in script
     assert "14:01 to 17:11 every 10 minutes - Google Ops Board publish backstop (fails closed if ActiveOrders is stale for target date)" in script
-    assert "17:02 - Import (post-cutoff DB freshness / next-day visibility)" in script
+    assert "17:02 - Import (AcmeWear 17:00 late-window DB freshness / next-day visibility)" in script
     assert "17:15, 17:30, 17:45, 18:00, 18:15 - Google Ops Board size writeback" in script
     assert "18:20 - Google Ops Board closeout caffeinate keep-awake guard" in script
     assert "every 15s between 11:00 and 19:04 (script-gated, 60s READY debounce; 18:57 probable-size auto-fill)" in script

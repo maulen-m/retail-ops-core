@@ -10,11 +10,13 @@ service_account_env_vars:
   - GOOGLE_APPLICATION_CREDENTIALS
 same_day_cutoff_default: "16:00"
 same_day_cutoff_by_store:
-  ACMEWEAR: "16:01"
+  ACMEWEAR: "17:00"
 tabs:
   SalesRaw_Today:
     key_column: _db_row_id
     editable_columns:
+      - HEIGHT
+      - WEIGHT
       - MY_SIZE
     headers:
       - Status
@@ -39,6 +41,8 @@ tabs:
       protected_sheet:
         warning_only: false
         unprotected_columns:
+          - HEIGHT
+          - WEIGHT
           - MY_SIZE
       hidden_columns:
         - _db_row_id

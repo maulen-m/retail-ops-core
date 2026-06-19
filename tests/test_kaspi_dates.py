@@ -15,6 +15,8 @@ def test_planned_date_from_order_rolls_to_next_day_at_150100_when_planned_timest
 ) -> None:
     monkeypatch.delenv("KASPI_PLANNED_CUTOFF_HOUR", raising=False)
     monkeypatch.delenv("KASPI_PLANNED_CUTOFF_MINUTE", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR", raising=False)
 
     order = {
         "attributes": {
@@ -31,6 +33,8 @@ def test_planned_date_from_order_keeps_same_day_before_150100_when_planned_times
 ) -> None:
     monkeypatch.delenv("KASPI_PLANNED_CUTOFF_HOUR", raising=False)
     monkeypatch.delenv("KASPI_PLANNED_CUTOFF_MINUTE", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR", raising=False)
 
     order = {
         "attributes": {
@@ -40,6 +44,42 @@ def test_planned_date_from_order_keeps_same_day_before_150100_when_planned_times
     }
 
     assert kaspi_dates.planned_date_from_order(order) == date(2026, 3, 14)
+
+
+def test_planned_date_from_order_uses_acmewear_1700_default_when_planned_timestamp_missing(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_HOUR", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_MINUTE", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR", raising=False)
+
+    order = {
+        "attributes": {
+            "creationDate": _ms("2026-03-14T16:59:59"),
+            "kaspiDelivery": {},
+        }
+    }
+
+    assert kaspi_dates.planned_date_from_order(order, store_code="ACMEWEAR") == date(2026, 3, 14)
+
+
+def test_planned_date_from_order_rolls_acmewear_next_day_at_170000_when_planned_timestamp_missing(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_HOUR", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_MINUTE", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR", raising=False)
+    monkeypatch.delenv("KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR", raising=False)
+
+    order = {
+        "attributes": {
+            "creationDate": _ms("2026-03-14T17:00:00"),
+            "kaspiDelivery": {},
+        }
+    }
+
+    assert kaspi_dates.planned_date_from_order(order, store_code="ACMEWEAR") == date(2026, 3, 15)
 
 
 def test_planned_date_from_order_honors_store_specific_cutoff_when_planned_timestamp_missing(

@@ -15,13 +15,14 @@ Business automation pause/resume authority: `docs/ops/BUSINESS_AUTOMATION_CONTRO
 
 Google Ops Board operational contract (employee sizing surface):
 - `SalesRaw_Today` is the primary editable daily table.
+- `HEIGHT` and `WEIGHT` are employee-entered customer parameters and must be preserved across same-day republishes.
 - `MY_SIZE` is employee-entered observed size only.
 - `PROBABLE_SIZE` is DB-computed only; Google Sheets does not own business formulas.
 - `Status` is operational and limited to `TODAY` / `OVERDUE` using waybill carry-forward truth, not simple row age.
-- Same-day publishes refresh system-owned fields in place while preserving employee-entered `MY_SIZE`.
+- Same-day publishes refresh system-owned fields in place while preserving employee-entered `HEIGHT`, `WEIGHT`, and `MY_SIZE`.
 - Before the explicit `18:57` fallback, automation must not fill `MY_SIZE` defaults while the employee is manually sizing orders.
 - The first daily Google Ops Board append/publish must order visible shipment rows by store name A-Z in addition to the normal deterministic row order.
-- `SalesRaw_Today` is protected except for `MY_SIZE`; `Run_Control` is protected except for operator input cells.
+- `SalesRaw_Today` is protected except for `HEIGHT`, `WEIGHT`, and `MY_SIZE`; `Run_Control` is protected except for operator input cells.
 - workbook identity sync runs before the first live board publish of the day and re-runs only when the workbook fingerprint changes.
 - Google Sheets remains UI only; mapping, probable size, naming, and closeout logic stay in Python/DB.
 Promotion minimum merge standard authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.
@@ -32,7 +33,7 @@ Current daily scheduler contract (GMT+5):
   - DB-only path; no Excel CRM import, no Google Sheet publish, no Telegram/WhatsApp send
   - refreshes recent `KASPI_DELIVERY` + `ARCHIVE` order states so `fact_orders_kaspi.actual_shipment_date` / `courier_transmission_date` do not stay stale after evening closeout
 - same-day Google Ops Board cutoff is currently store-aware:
-  - `AcmeWear` stays same-day through `16:01`
+  - `AcmeWear` stays same-day through `17:00`
   - all remaining stores stay same-day through `16:00`
 - Google Ops Board pre-window health gate: `13:45`
   - runs DB preflight, workbook identity sync, Google board contract check, Kaspi store-context validation, and WhatsApp smoke
