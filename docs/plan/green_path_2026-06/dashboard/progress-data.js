@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T12:31:00+05:00",
-  "status": "BLOCKED",
+  "updated": "2026-06-19T19:18:37+05:00",
+  "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Blocked with no dispatch-ready queue items: remaining stoplines require real return QC facts, elapsed windows, or separately approved live write/strategy decisions.",
+  "note": "Final acceptance refreshed after the G-SCHED-02 repair. Counts remain GREEN=50, ARMED=16, PARTIAL=2, RED=3; hard green remains 47/61 with cash-floor and other strategy/fact/time blockers still open.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,22 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T19:18:37+05:00",
+      "text": "G-ACC-01 RED refresh: counts unchanged at GREEN 50, ARMED 16, PARTIAL 2, RED 3; hard green 47/61 after G-SCHED-02 evidence refresh."
+    },
+    {
+      "time": "2026-06-19T19:17:31+05:00",
+      "text": "G-SCHED-02 PARTIAL refresh: cash config synced, on-delivery freeze PASS, residuals 0, strict params PASS; EOD still blocked by conservative cash PO floor."
+    },
+    {
+      "time": "2026-06-19T19:06:25+05:00",
+      "text": "EXECUTING resume: 2026-06-19 Telegram delivery confirmed 13/13; daily ops paused 0/10 for green-path blocker refresh."
+    },
+    {
+      "time": "2026-06-19T16:28:00+05:00",
+      "text": "PAUSED daily shipping: daily ops resumed 10/10; 2026-06-19 Google Ops Board published 18 rows; closeout watcher waits for 18 manual sizes plus READY before Telegram waybill send."
+    },
+    {
       "time": "2026-06-19T12:31:00+05:00",
       "text": "BLOCKED: no dispatch-ready queue items remain; daily ops are paused 0/10 with protected DB/workbook holders clear."
     },
@@ -641,10 +657,6 @@ window.GP = {
     {
       "time": "2026-06-18T19:13:18+05:00",
       "text": "G-DARK-02 ARMED: baseline published; recovery slope waits on G-DARK-01 and 30 mature post-relist days."
-    },
-    {
-      "time": "2026-06-18T19:10:35+05:00",
-      "text": "G-DARK-01 RED: RUSH_WHITE S/M/3XL missing buyable offers while excluded L is buyable."
     }
   ]
 };
