@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T19:42:31+05:00",
+  "updated": "2026-06-19T19:44:12+05:00",
   "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Metrics freshness refreshed after guarded sales_fact_v2 repair; G-MET-03 remains ARMED on missing return-loss and handling-cost sources.",
+  "note": "Sales-dependent metrics refreshed after guarded sales_fact_v2 repair; G-MET-01/G-MET-03 remain ARMED on missing real return/handling inputs.",
   "takes": [
     {
       "id": 1,
@@ -567,6 +567,10 @@ window.GP = {
   ],
   "activity": [
     {
+      "time": "2026-06-19T19:44:12+05:00",
+      "text": "G-MET-01 ARMED refresh: PPCH v1 month-to-date now uses sales through 2026-06-19; waits on real return QC evidence."
+    },
+    {
       "time": "2026-06-19T19:42:31+05:00",
       "text": "G-MET-03 ARMED refresh: latest sales date 2026-06-19 lag 0; contribution rows 12; waits on return-loss and handling-cost sources."
     },
@@ -641,10 +645,6 @@ window.GP = {
     {
       "time": "2026-06-18T20:30:48+05:00",
       "text": "Resume: owner-action queue verified ARMED; OA-PRICE03-LINE and OA-DARK01 dispatch-ready; unresolved owner/fact/time items remain waiting."
-    },
-    {
-      "time": "2026-06-18T19:44:02+05:00",
-      "text": "Owner-action validator + recorder + starter pack published and mirrored; queue is ARMED but dispatch-blocked."
     }
   ]
 };
