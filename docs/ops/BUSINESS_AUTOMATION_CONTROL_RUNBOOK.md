@@ -100,6 +100,34 @@ python3 scripts/manage_business_automation.py verify \
   --output-json exports/automation_control/verify_running_latest.json
 ```
 
+Fast daily shipping helper:
+
+```bash
+ENABLE_BUSINESS_AUTOMATION_CONTROL=1 \
+python3 scripts/run_daily_shipping_enablement.py \
+  --target-date today \
+  --output-json exports/automation_control/daily_shipping_enable_latest.json \
+  enable --apply
+```
+
+This helper intentionally limits the enable step to status, dry-run resume,
+apply resume, and running verification. It does not run CRM import, Google board
+publish, or Telegram delivery validation as part of the resume itself.
+
+After the all-store 17:00 Asia/Almaty shipping cutoff has passed, run the
+post-cutoff validation separately:
+
+```bash
+python3 scripts/run_daily_shipping_enablement.py \
+  --target-date today \
+  --output-json exports/automation_control/daily_shipping_validate_latest.json \
+  validate
+```
+
+Before the cutoff, `validate` exits as `DEFER_UNTIL_POST_CUTOFF` unless
+`--wait-until-cutoff` is supplied. This keeps the daily resume path fast while
+still preserving the strict API/CRM/DB/Google-board proof required for shipping.
+
 ## Main-Goal Integration
 
 The full business-system goal is not just green reports. The repo must operate as a

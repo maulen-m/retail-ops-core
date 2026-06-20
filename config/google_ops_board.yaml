@@ -8,9 +8,8 @@ service_account_env_vars:
   - AB_GOOGLE_SERVICE_ACCOUNT_JSON
   - AB_GOOGLE_SERVICE_ACCOUNT_KEY_JSON
   - GOOGLE_APPLICATION_CREDENTIALS
-same_day_cutoff_default: "16:00"
-same_day_cutoff_by_store:
-  ACMEWEAR: "17:00"
+same_day_cutoff_default: "17:00"
+same_day_cutoff_by_store: {}
 tabs:
   SalesRaw_Today:
     key_column: _db_row_id

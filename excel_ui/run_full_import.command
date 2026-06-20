@@ -78,6 +78,35 @@ print(retryable_topup)
 PY
 }
 
+run_existing_crm_fast_gate() {
+    local snapshot_path="${1:-}"
+    local health_path="${2:-}"
+    local target_date
+    target_date=$(date +%Y-%m-%d)
+    if [ -z "${snapshot_path}" ] || [ ! -f "${snapshot_path}" ]; then
+        echo "FAST_GATE_SKIP: ActiveOrders snapshot is missing."
+        return 2
+    fi
+    if [ -z "${health_path}" ]; then
+        echo "FAST_GATE_SKIP: health output path is missing."
+        return 2
+    fi
+    python3 scripts/report_import_status.py \
+        --date "${target_date}" \
+        --since-days "${LOOKBACK_DAYS}" \
+        --json-out "${health_path}"
+    if [ $? -ne 0 ]; then
+        echo "FAST_GATE_MISS: import health report failed; falling back to CRM writer."
+        return 1
+    fi
+    python3 scripts/evaluate_import_run_result.py \
+        --step2-rc 0 \
+        --health-json "${health_path}" \
+        --activeorders-file "${snapshot_path}" \
+        --crm-file "excel_ui/SALES_KSP_CRM_V3.xlsx" \
+        --target-date "${target_date}"
+}
+
 run_activeorders_identity_enrichment() {
     local label="${1:-Step 1c: Enriching DB order identities from ActiveOrders export...}"
     local export_path="excel_ui/ActiveOrders/ActiveOrders.xlsx"
@@ -452,57 +481,87 @@ fi
 STEP2_TIMEOUT_SEC="${CRM_IMPORT_TIMEOUT_SEC:-600}"
 XLWINGS_OPEN_TIMEOUT_SEC="${CRM_XLWINGS_OPEN_TIMEOUT_SEC:-25}"
 XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-240}"
+STEP2_FAST_EXISTING_GATE="${KASPI_IMPORT_FAST_EXISTING_CRM_GATE:-1}"
 SUMMARY_PATH="logs/import_orders_to_crm_latest.json"
 rm -f "${SUMMARY_PATH}" 2>/dev/null || true
 # This command intentionally skips existing-row status updates for unattended runs.
 STEP2_NO_UPDATE=1
-echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
-echo "xlwings open timeout: ${XLWINGS_OPEN_TIMEOUT_SEC}s"
-echo "xlwings append timeout: ${XLWINGS_APPEND_TIMEOUT_SEC}s"
-PYTHONUNBUFFERED=1 \
-CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \
-CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
-python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
-    python3 -u scripts/import_orders_to_crm.py \
-        --verbose \
-        --no-update \
-        --strict-excel \
-        --kaspi-core-override \
-        ${IMPORT_DATE_FLAGS} \
-        ${REFRESH_DELIVERY_FLAGS} \
-        ${FIXED_BACKFILL_FLAGS} \
-        --no-gdrive-sync
-STEP2_RC=$?
 STEP2_WARN_MSG=""
 STEP2_STATUS=""
 STEP2_RETRYABLE_TOPUP=0
 STEP2_SKIP_DOWNSTREAM=0
-SUMMARY_FIELDS=$(read_import_summary_fields "${SUMMARY_PATH}")
-if [ -n "${SUMMARY_FIELDS}" ]; then
-    STEP2_STATUS=$(printf '%s\n' "${SUMMARY_FIELDS}" | sed -n '1p')
-    STEP2_RETRYABLE_TOPUP=$(printf '%s\n' "${SUMMARY_FIELDS}" | sed -n '2p')
-fi
-if [ ${STEP2_RC} -ne 0 ]; then
-    echo "WARNING: CRM import reported errors (see above)."
-    if [ "${STEP2_STATUS}" = "preflight_blocked" ]; then
-        STEP2_WARN_MSG="CRM import blocked by CRM workbook conflict. Fix: close SALES_KSP_CRM_V3.xlsx in Excel, then re-run."
-    elif [ "${STEP2_STATUS}" = "append_verification_failed" ]; then
-        STEP2_WARN_MSG="CRM import append verification failed. Fix: inspect import_orders_to_crm.py --verbose before rerun."
-    elif [ ${STEP2_RC} -eq 124 ]; then
-        STEP2_WARN_MSG="CRM import timed out after ${STEP2_TIMEOUT_SEC}s. Fix: close Excel and re-run."
+STEP2_SKIP_IMPORT=0
+STEP2_FAST_HEALTH_JSON=""
+STEP2_RC=0
+if [ "${STEP2_FAST_EXISTING_GATE}" = "1" ]; then
+    echo ""
+    echo "Step 2 fast existing-CRM gate..."
+    echo "----------------------------------------"
+    STEP2_FAST_HEALTH_JSON=$(mktemp -t kaspi_import_fast_existing_health)
+    if run_existing_crm_fast_gate "${ACTIVEORDERS_SNAPSHOT}" "${STEP2_FAST_HEALTH_JSON}"; then
+        STEP2_SKIP_IMPORT=1
+        STEP2_STATUS="fast_existing_crm_gate"
+        echo "FAST_GATE_OK: ActiveOrders snapshot is already present in CRM with live API health green; skipping Excel CRM writer."
     else
-        STEP2_WARN_MSG="CRM import errors. Fix: open CRM and re-run import_orders_to_crm.py --verbose."
+        echo "FAST_GATE_MISS: existing CRM parity was not proven; running guarded Excel CRM writer."
+        rm -f "${STEP2_FAST_HEALTH_JSON}" 2>/dev/null || true
+        STEP2_FAST_HEALTH_JSON=""
     fi
-    if [ "${STEP2_RETRYABLE_TOPUP}" != "1" ]; then
-        STEP2_SKIP_DOWNSTREAM=1
-        HARD_FAIL=1
-        HARD_FAIL_REASONS+=("CRM import failed before a retryable append state (${STEP2_STATUS:-unknown}).")
+else
+    echo "FAST_GATE_SKIP: KASPI_IMPORT_FAST_EXISTING_CRM_GATE is disabled; running guarded Excel CRM writer."
+fi
+
+if [ "${STEP2_SKIP_IMPORT}" = "1" ]; then
+    echo "Step 2 timeout: skipped by fast existing-CRM gate"
+    echo "xlwings open timeout: skipped"
+    echo "xlwings append timeout: skipped"
+else
+    echo "Step 2 timeout: ${STEP2_TIMEOUT_SEC}s"
+    echo "xlwings open timeout: ${XLWINGS_OPEN_TIMEOUT_SEC}s"
+    echo "xlwings append timeout: ${XLWINGS_APPEND_TIMEOUT_SEC}s"
+    PYTHONUNBUFFERED=1 \
+    CRM_XLWINGS_APPEND_TIMEOUT_SEC="${XLWINGS_APPEND_TIMEOUT_SEC}" \
+    CRM_XLWINGS_OPEN_TIMEOUT_SEC="${XLWINGS_OPEN_TIMEOUT_SEC}" \
+    python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \
+        python3 -u scripts/import_orders_to_crm.py \
+            --verbose \
+            --no-update \
+            --strict-excel \
+            --kaspi-core-override \
+            ${IMPORT_DATE_FLAGS} \
+            ${REFRESH_DELIVERY_FLAGS} \
+            ${FIXED_BACKFILL_FLAGS} \
+            --no-gdrive-sync
+    STEP2_RC=$?
+    SUMMARY_FIELDS=$(read_import_summary_fields "${SUMMARY_PATH}")
+    if [ -n "${SUMMARY_FIELDS}" ]; then
+        STEP2_STATUS=$(printf '%s\n' "${SUMMARY_FIELDS}" | sed -n '1p')
+        STEP2_RETRYABLE_TOPUP=$(printf '%s\n' "${SUMMARY_FIELDS}" | sed -n '2p')
+    fi
+    if [ ${STEP2_RC} -ne 0 ]; then
+        echo "WARNING: CRM import reported errors (see above)."
+        if [ "${STEP2_STATUS}" = "preflight_blocked" ]; then
+            STEP2_WARN_MSG="CRM import blocked by CRM workbook conflict. Fix: close SALES_KSP_CRM_V3.xlsx in Excel, then re-run."
+        elif [ "${STEP2_STATUS}" = "append_verification_failed" ]; then
+            STEP2_WARN_MSG="CRM import append verification failed. Fix: inspect import_orders_to_crm.py --verbose before rerun."
+        elif [ ${STEP2_RC} -eq 124 ]; then
+            STEP2_WARN_MSG="CRM import timed out after ${STEP2_TIMEOUT_SEC}s. Fix: close Excel and re-run."
+        else
+            STEP2_WARN_MSG="CRM import errors. Fix: open CRM and re-run import_orders_to_crm.py --verbose."
+        fi
+        if [ "${STEP2_RETRYABLE_TOPUP}" != "1" ]; then
+            STEP2_SKIP_DOWNSTREAM=1
+            HARD_FAIL=1
+            HARD_FAIL_REASONS+=("CRM import failed before a retryable append state (${STEP2_STATUS:-unknown}).")
+        fi
     fi
 fi
 
 # Determine if import produced any changes (used to skip expensive retry steps)
 IMPORT_NOOP=0
-if [ -f "${SUMMARY_PATH}" ]; then
+if [ "${STEP2_SKIP_IMPORT}" = "1" ]; then
+    IMPORT_NOOP=1
+elif [ -f "${SUMMARY_PATH}" ]; then
     IMPORT_NOOP=$(python - <<'PY'
 import json
 from pathlib import Path
@@ -768,7 +827,7 @@ else
         HARD_FAIL_REASONS+=("Strict success gate failed (Step2 failure or API/CRM mismatch).")
     fi
 fi
-rm -f "${HEALTH_JSON}" "${ACTIVEORDERS_SNAPSHOT}" 2>/dev/null || true
+rm -f "${HEALTH_JSON}" "${ACTIVEORDERS_SNAPSHOT}" "${STEP2_FAST_HEALTH_JSON}" 2>/dev/null || true
 
 # Step 3: Publish Google Ops Board
 echo ""

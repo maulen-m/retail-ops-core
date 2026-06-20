@@ -11,13 +11,11 @@ Authoritative schedule/source-of-truth for automation timing:
 | Time | Activity | Automation |
 |------|----------|------------|
 | 11:00 | First order import | Automated (launchd) |
-| 11:00-15:00 | Order processing, waybill generation | Manual |
-| 15:00-15:01 | Final same-day check for default-cutoff stores | Manual |
-| 15:01 | Legacy/global fallback cutoff for default-cutoff stores | - |
+| 11:00-17:00 | Order processing, sizing, waybill preparation | Manual |
+| 17:00 | Same-day cutoff for every active Kaspi store | - |
 | 15:02 | Second order import | Automated (launchd) |
-| 15:02-16:00 | Next-day order prep | Manual |
+| 15:02-17:00 | Late-window same-day sizing + next-day order prep | Manual |
 | 16:01 | Third order import | Automated (launchd) |
-| 16:01-17:00 | AcmeWear late same-day window + next-day order prep | Manual |
 | 17:02 | Fourth order import (`post-cutoff DB freshness`) | Automated (launchd) |
 | 17:00-18:00 | Package preparation | Manual |
 | 18:00-18:30 | Courier handover + deadline check | Manual |
@@ -72,9 +70,9 @@ Current production path is Google Ops Board closeout with Telegram-primary bundl
 2. SPECIAL_multi_qty
 3. NORMAL_singles
 
-### 5. SLA Cutoff Check (15:00-15:01)
+### 5. SLA Cutoff Check (17:00)
 
-**CRITICAL:** Orders created before the store's cutoff must ship same day. The current Google Ops Board contract keeps `AcmeWear` same-day eligible through `17:00`; the remaining active stores stay on the `16:00` board cutoff.
+**CRITICAL:** Orders created at or before `17:00` for every active Kaspi store must ship same day.
 
 Check for late orders:
 - Any order with `planned_delivery_date` = today
@@ -83,8 +81,8 @@ Check for late orders:
 ### 6. Afternoon Import (15:02)
 
 Second automated import captures:
-- Orders created at or after `15:01:00`
-- These are for next-day shipping
+- mid-day orders for same-day sizing through the `17:00` cutoff
+- later orders for next-day visibility
 
 ### 6.1 Late Catch-Up Import (16:01)
 
@@ -96,8 +94,7 @@ Third automated import captures:
 
 Fourth automated import captures:
 - late-window orders for DB freshness and Google Ops Board visibility
-- while keeping `AcmeWear` on the current `17:00` same-day cutoff contract
-- and keeping the remaining stores on the current `16:00` same-day cutoff contract
+- while keeping every active store on the current `17:00` same-day cutoff contract
 
 ### 6.3 Shipped-Truth DB Refresh (post-closeout, 19:15, 09:30)
 
@@ -123,9 +120,8 @@ See [PACKAGING_RULES.md](PACKAGING_RULES.md) for:
 
 | Order Received | Ship By | Status |
 |----------------|---------|--------|
-| AcmeWear through 17:00 | Same day | On-time |
-| Other active stores through 16:00 | Same day | On-time |
-| Orders after the store cutoff | Next day | On-time |
+| Every active store through 17:00 | Same day | On-time |
+| Orders after 17:00 | Next day | On-time |
 
 **Note:** The Google Ops Board same-day selection is store-aware and DB-first; see `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md` for the authoritative current cutoff table.
 

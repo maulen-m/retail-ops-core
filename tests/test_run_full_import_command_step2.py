@@ -66,6 +66,34 @@ def test_step2_timeout_defaults_fail_faster_without_being_aggressive():
     assert 'XLWINGS_APPEND_TIMEOUT_SEC="${CRM_XLWINGS_APPEND_TIMEOUT_SEC:-240}"' in step2_block
 
 
+def test_step2_has_fast_existing_crm_gate_before_excel_writer():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    step2_block = _extract_step2_block(text)
+
+    assert "run_existing_crm_fast_gate()" in text
+    assert 'STEP2_FAST_EXISTING_GATE="${KASPI_IMPORT_FAST_EXISTING_CRM_GATE:-1}"' in step2_block
+    assert "Step 2 fast existing-CRM gate..." in step2_block
+    assert "scripts/report_import_status.py" in text
+    assert "scripts/evaluate_import_run_result.py" in text
+    assert "--step2-rc 0" in text
+    assert "FAST_GATE_OK: ActiveOrders snapshot is already present in CRM with live API health green; skipping Excel CRM writer." in step2_block
+    assert "FAST_GATE_MISS: existing CRM parity was not proven; running guarded Excel CRM writer." in step2_block
+    assert text.index("Step 2 fast existing-CRM gate...") < text.index('python3 scripts/run_with_timeout.py --timeout "${STEP2_TIMEOUT_SEC}" -- \\')
+
+
+def test_step2_fast_gate_marks_import_noop_and_keeps_final_gate_cleanup():
+    script_path = Path("excel_ui/run_full_import.command")
+    text = script_path.read_text(encoding="utf-8")
+    step2_block = _extract_step2_block(text)
+
+    assert "STEP2_SKIP_IMPORT=0" in step2_block
+    assert 'if [ "${STEP2_SKIP_IMPORT}" = "1" ]; then' in text
+    assert "IMPORT_NOOP=1" in text
+    assert "Step 2 timeout: skipped by fast existing-CRM gate" in text
+    assert 'rm -f "${HEALTH_JSON}" "${ACTIVEORDERS_SNAPSHOT}" "${STEP2_FAST_HEALTH_JSON}"' in text
+
+
 def test_late_arrival_topup_uses_transactional_strict_xlwings_mode():
     script_path = Path("excel_ui/run_full_import.command")
     text = script_path.read_text(encoding="utf-8")
@@ -196,7 +224,8 @@ def test_successful_topup_clears_initial_step2_failure_before_final_gate():
     assert 'if [ ${TOPUP_STEP2_RC} -ne 0 ]; then' in text
     assert "STEP2_RC=${TOPUP_STEP2_RC}" in text
     assert "STEP2_RC=0" in text
-    assert text.index("STEP2_RC=0") > text.index("TOPUP_STEP2_RC=$?")
+    topup_start = text.index("TOPUP_STEP2_RC=$?")
+    assert text.index("STEP2_RC=0", topup_start) > topup_start
 
 
 def test_late_arrival_topup_final_flag_does_not_accidentally_continue_into_shell_assignments():

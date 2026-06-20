@@ -58,11 +58,9 @@ reactivates a store. Any store mapping or lifecycle change requires updating thi
 and corresponding tests before merge.
 
 ## Same-Day Cutoff Contract
-- Google Ops Board same-day operational selection is store-aware and DB-first.
-- Current cutoffs:
-  - `AcmeWear`: include same-day pending orders created at or before `17:00`
-  - all remaining stores: include same-day pending orders created at or before `16:00`
-- The `17:02` import exists for DB freshness, AcmeWear 17:00 late-window visibility, and next-day visibility; it must not expand same-day Google Ops Board eligibility after each store cutoff.
+- Google Ops Board same-day operational selection is DB-first and keeps store-aware machinery available.
+- Current cutoff: every active Kaspi store includes same-day pending orders created at or before `17:00`.
+- The `17:02` import exists for DB freshness, all-store 17:00 late-window visibility, and next-day visibility; it must not expand same-day Google Ops Board eligibility after the 17:00 cutoff.
 - `excel_ui/run_full_import.command` must publish the Google Ops Board whenever export + DB sync + ActiveOrders enrichment are green, even if CRM Step 2 later turns the overall import workflow red.
 
 ## Workflow-Critical Components (Do Not Drift)
@@ -125,6 +123,7 @@ and corresponding tests before merge.
   - `catch-up`: `report_waybill_status.py --since-days 3 --include-overdue`
 - keep scheduler timings in sync with this contract and launchd plists
 - keep business automation pause/resume centralized through `scripts/manage_business_automation.py`; do not manually rediscover or hand-run one-off `launchctl bootout/bootstrap` sequences for routine proof windows or daily-ops restoration
+- daily shipping restoration may use `scripts/run_daily_shipping_enablement.py enable --apply` for the fast LaunchAgent resume and `scripts/run_daily_shipping_enablement.py validate` for the separate post-17:00 API/CRM/DB/Google-board proof
 - keep frozen proof windows explicit: `verify --scope daily-ops --expect paused` must be green before boundary-sensitive proof work starts
 - keep daily operations restoration explicit: `verify --scope daily-ops --expect running` must be green before claiming order import, Google Ops Board, closeout watcher, Telegram control, and shipped-truth automation are live again
 - keep daily report contract fail-closed:

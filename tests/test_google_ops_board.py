@@ -318,8 +318,8 @@ def test_default_google_ops_board_contract_loads_expected_tabs():
     contract = load_ops_board_contract()
 
     assert contract.spreadsheet_id == "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg"
-    assert contract.same_day_cutoff_default == "16:00"
-    assert contract.same_day_cutoff_by_store == {"ACMEWEAR": "17:00"}
+    assert contract.same_day_cutoff_default == "17:00"
+    assert contract.same_day_cutoff_by_store == {}
     assert list(contract.tabs) == [
         "SalesRaw_Today",
         "Run_Control",
@@ -785,7 +785,7 @@ def test_build_phase1_payload_drops_placeholder_shadow_rows_when_concrete_row_ex
     assert all(row["Kaspi_name_core"] != "UNKNOWN" for row in salesraw)
 
 
-def test_build_phase1_payload_respects_store_specific_same_day_cutoffs(tmp_path: Path):
+def test_build_phase1_payload_respects_all_store_1700_same_day_cutoff(tmp_path: Path):
     db_path = tmp_path / "app.db"
     _make_orders_db(db_path)
 
@@ -842,7 +842,7 @@ def test_build_phase1_payload_respects_store_specific_same_day_cutoffs(tmp_path:
                     "2026-04-15T16:45:00",
                     "KASPI_DELIVERY",
                     "ACCEPTED",
-                    "Universal Too Late",
+                    "Universal Cutoff Window",
                     "SKU-1",
                     "SKU-1-LINE-D",
                     None,
@@ -914,7 +914,7 @@ def test_build_phase1_payload_respects_store_specific_same_day_cutoffs(tmp_path:
     order_ids = [row["OrderID"] for row in payload["SalesRaw_Today"]]
 
     assert "1006" in order_ids
-    assert "1007" not in order_ids
+    assert "1007" in order_ids
     assert "1008" not in order_ids
 
 

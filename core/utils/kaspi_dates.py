@@ -11,14 +11,12 @@ from dateutil import parser as dtp
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 _CUTOFF_HOUR_ENV = "KASPI_PLANNED_CUTOFF_HOUR"
 _CUTOFF_MINUTE_ENV = "KASPI_PLANNED_CUTOFF_MINUTE"
-_DEFAULT_CUTOFF_HOUR = 15
-_DEFAULT_CUTOFF_MINUTE = 1
+_DEFAULT_CUTOFF_HOUR = 17
+_DEFAULT_CUTOFF_MINUTE = 0
 _ISO_LIKE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[ T].*)?$")
 _STORE_CUTOFF_HOUR_ENV_PREFIX = "KASPI_PLANNED_CUTOFF_HOUR_"
 _STORE_CUTOFF_MINUTE_ENV_PREFIX = "KASPI_PLANNED_CUTOFF_MINUTE_"
-_DEFAULT_STORE_CUTOFFS = {
-    "ACMEWEAR": (17, 0),
-}
+_DEFAULT_STORE_CUTOFFS = {}
 _STORE_ALIASES = {
     "UNIVERSAL": "UNIVERSAL",
     "30000001PP1": "UNIVERSAL",
@@ -171,7 +169,7 @@ def planned_date_from_order(order: dict, store_code: Optional[str] = None) -> Op
         hour=cutoff.hour, minute=cutoff.minute, second=0, microsecond=0
     )
     base_date = created_dt.date()
-    if created_dt >= cutoff_dt:
+    if created_dt > cutoff_dt:
         base_date = base_date + timedelta(days=1)
 
     return base_date

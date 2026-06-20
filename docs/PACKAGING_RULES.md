@@ -124,7 +124,7 @@ Orders with "Требуется подписание = Да":
 
 ### Same-Day Orders
 
-Orders received before 16:00 cutoff:
+Orders received at or before the 17:00 cutoff:
 - Prioritize for immediate packing
 - Mark as "СРОЧНО" if close to deadline
 

@@ -147,10 +147,9 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - includes prior-day pending assembly rows that were created inside that store's same-day cutoff window
   - employee-facing values: `OVERDUE` or `TODAY`
   - do not mark rows overdue just because `planned_shipment_date < target_date`
-- Same-day operational selection is store-aware:
-  - `AcmeWear` rows stay eligible through `17:00`
-  - all remaining stores stay eligible through `16:00`
-  - the store-aware cutoff applies to same-day pending rows and prior-day pending carry-forward rows
+- Same-day operational selection is DB-first and store-aware:
+  - every active Kaspi store stays eligible through `17:00`
+  - the cutoff applies to same-day pending rows and prior-day pending carry-forward rows
 - `SalesRaw_Today.Status` drives sheet formatting:
   - red fill when `Status = OVERDUE`
   - amber fill when `MY_SIZE` is blank
@@ -160,8 +159,8 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - `Run_Control`: only `ready_for_closeout` stays editable for operators
   - `Run_Control` system fields such as `ready_set_by`, `ready_set_at`, `notes`, `last_verified_ready_at`, `last_orchestrator_run_id`, and `last_orchestrator_status` are protected in the UI but preserved by publisher upsert logic so automation can write them
 - `SalesRaw_Today` row order is operator-first:
-  - sort by `OrderID`
-  - then by display `STORE_NAME`
+  - sort by display `STORE_NAME` A-Z
+  - then by `OrderID`
   - then by `Kaspi_name_core`
 - `SalesRaw_Today.STORE_NAME` drives store grouping color:
   - `AcmeWear` = yellow

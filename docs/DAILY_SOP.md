@@ -32,9 +32,7 @@ Current daily scheduler contract (GMT+5):
 - shipped-truth DB sync jobs: `09:30` and `19:15`
   - DB-only path; no Excel CRM import, no Google Sheet publish, no Telegram/WhatsApp send
   - refreshes recent `KASPI_DELIVERY` + `ARCHIVE` order states so `fact_orders_kaspi.actual_shipment_date` / `courier_transmission_date` do not stay stale after evening closeout
-- same-day Google Ops Board cutoff is currently store-aware:
-  - `AcmeWear` stays same-day through `17:00`
-  - all remaining stores stay same-day through `16:00`
+- same-day Google Ops Board cutoff is currently `17:00` for every active Kaspi store.
 - Google Ops Board pre-window health gate: `13:45`
   - runs DB preflight, workbook identity sync, Google board contract check, Kaspi store-context validation, and WhatsApp smoke
   - blocks later automated publish / closeout if red
@@ -87,6 +85,10 @@ Canonical business automation pause/resume:
 - frozen proof windows must pass `python3 scripts/manage_business_automation.py verify --scope daily-ops --expect paused`
 - restored daily order processing must pass `python3 scripts/manage_business_automation.py verify --scope daily-ops --expect running`
 - evidence is written under `exports/automation_control/`
+- for daily shipping, prefer the split helper:
+  - enable fast: `ENABLE_BUSINESS_AUTOMATION_CONTROL=1 python3 scripts/run_daily_shipping_enablement.py enable --apply`
+  - validate separately after the 17:00 all-store cutoff: `python3 scripts/run_daily_shipping_enablement.py validate`
+  - before cutoff, validation should defer instead of doing premature full-proof work
 
 Daily ops orchestrator profile contract:
 - `today-fast` for strict current-day checks
