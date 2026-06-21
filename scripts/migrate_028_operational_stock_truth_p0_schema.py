@@ -198,6 +198,8 @@ def migrate(db_path: Path) -> None:
                 store_code TEXT NOT NULL,
                 channel_code TEXT DEFAULT 'KSP',
                 kaspi_offer_name TEXT,
+                kaspi_article TEXT,
+                line_identity_key TEXT NOT NULL DEFAULT '',
                 sku_key TEXT,
                 sku_id TEXT,
                 my_size TEXT,
@@ -214,7 +216,7 @@ def migrate(db_path: Path) -> None:
                 source_file TEXT,
                 imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(order_id, sku_id, store_code)
+                UNIQUE(order_id, store_code, line_identity_key, sku_id)
             );
 
             CREATE TABLE IF NOT EXISTS fact_order_entries_kaspi (

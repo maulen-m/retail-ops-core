@@ -40,7 +40,10 @@ Do not collapse warehouse stock and final-sales/economic stock into one number.
 
 ## 2. Fact_Sales (V16)
 
-**Grain:** Order line (OrderID × SKU_ID × Store)  
+**Grain:** Order/public-offer line (OrderID x public offer identity x SKU_ID x Store).
+`SKU_ID` is the internal mapped product/size identity, not the unique line key.
+Separate Kaspi public offers/articles in the same order must remain separate rows
+even when they map to the same internal SKU family.  
 **Purpose:** Transaction-level economics for inventory math
 
 | Col | Header | Type | Notes |

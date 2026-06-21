@@ -38,6 +38,8 @@ def migrate():
 
             -- Order details
             kaspi_offer_name TEXT,
+            kaspi_article TEXT,
+            line_identity_key TEXT NOT NULL DEFAULT '',
             sku_key TEXT,
             sku_id TEXT,
             my_size TEXT,
@@ -92,8 +94,8 @@ def migrate():
             imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
 
-            -- Dedup key: handles multi-line orders correctly
-            UNIQUE(order_id, sku_id, store_code)
+            -- Dedup key: public-offer line grain, not internal SKU family grain.
+            UNIQUE(order_id, store_code, line_identity_key, sku_id)
         )
     """)
 

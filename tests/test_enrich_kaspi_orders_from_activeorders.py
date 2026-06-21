@@ -13,6 +13,7 @@ from scripts.enrich_kaspi_orders_from_activeorders import (
     _load_article_identity_map,
     plan_activeorders_enrichment,
 )
+from scripts.migrate_030_fact_orders_kaspi_line_grain import migrate as migrate_line_grain
 
 
 def _make_db(db_path: Path) -> sqlite3.Connection:
@@ -26,6 +27,8 @@ def _make_db(db_path: Path) -> sqlite3.Connection:
             store_code TEXT,
             channel_code TEXT,
             kaspi_offer_name TEXT,
+            kaspi_article TEXT,
+            line_identity_key TEXT NOT NULL DEFAULT '',
             sku_key TEXT,
             sku_id TEXT,
             my_size TEXT,
@@ -69,7 +72,7 @@ def _make_db(db_path: Path) -> sqlite3.Connection:
             customer_last_name TEXT,
             customer_phone TEXT,
             updated_at TEXT,
-            UNIQUE(order_id, sku_id, store_code)
+            UNIQUE(order_id, store_code, line_identity_key, sku_id)
         );
         CREATE TABLE dim_sku (
             sku_key TEXT PRIMARY KEY,
@@ -107,6 +110,81 @@ def _make_db(db_path: Path) -> sqlite3.Connection:
         """
     )
     return conn
+
+
+def test_line_grain_migration_replaces_order_sku_store_unique_key(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE fact_orders_kaspi (
+                id INTEGER PRIMARY KEY,
+                order_id TEXT,
+                store_code TEXT,
+                kaspi_offer_name TEXT,
+                sku_key TEXT,
+                sku_id TEXT,
+                quantity INTEGER,
+                planned_shipment_date TEXT,
+                UNIQUE(order_id, sku_id, store_code)
+            );
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, kaspi_offer_name, sku_key, sku_id, quantity, planned_shipment_date
+            ) VALUES (
+                1, '968633399', 'UNIVERSAL',
+                'Рашгард 30350528_119809069_555942169 черный 48',
+                'CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK',
+                'CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL',
+                1,
+                '2026-06-21'
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrate_line_grain(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, kaspi_offer_name, kaspi_article, line_identity_key,
+                sku_key, sku_id, quantity, planned_shipment_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "968633399",
+                "UNIVERSAL",
+                "Спортивный костюм 18107200_643074 черный XL",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_110261375",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_110261375",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL",
+                1,
+                "2026-06-21",
+            ),
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM fact_orders_kaspi WHERE order_id='968633399'"
+        ).fetchone()[0]
+        indexes = conn.execute("PRAGMA index_list(fact_orders_kaspi)").fetchall()
+        unique_column_sets = {
+            tuple(info[2] for info in conn.execute(f"PRAGMA index_info({index[1]})").fetchall())
+            for index in indexes
+            if int(index[2] or 0) == 1
+        }
+    finally:
+        conn.close()
+
+    assert count == 2
+    assert ("order_id", "store_code", "line_identity_key", "sku_id") in unique_column_sets
+    assert ("order_id", "sku_id", "store_code") not in unique_column_sets
 
 
 def test_filter_parsed_orders_keeps_ready_rows_up_to_target():
@@ -487,25 +565,24 @@ def test_insert_from_template_copies_order_level_fields_but_leaves_manual_size_b
     )
 
 
-def test_insert_from_template_upserts_existing_order_sku_row_instead_of_failing(tmp_path: Path):
+def test_insert_from_template_upserts_existing_public_offer_line_instead_of_failing(tmp_path: Path):
     db_path = tmp_path / "app.db"
     conn = _make_db(db_path)
     try:
         conn.execute(
-            "CREATE UNIQUE INDEX ux_fact_orders_kaspi_order_sku_store ON fact_orders_kaspi(order_id, sku_id, store_code)"
-        )
-        conn.execute(
             """
             INSERT INTO fact_orders_kaspi (
-                order_id, store_code, channel_code, kaspi_offer_name, sku_key, sku_id,
+                order_id, store_code, channel_code, kaspi_offer_name, kaspi_article, line_identity_key, sku_key, sku_id,
                 quantity, unit_price_kzt, planned_shipment_date, internal_status, source, source_file
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "2002",
                 "UNIVERSAL",
                 "KSP",
-                "",
+                "Offer C",
+                "ARTICLE-C",
+                "ARTICLE-C",
                 "",
                 "SKU-C_XL",
                 1,
@@ -525,6 +602,7 @@ def test_insert_from_template_upserts_existing_order_sku_row_instead_of_failing(
                         "store_code": "UNIVERSAL",
                         "planned_shipment_date": "2026-04-19",
                         "kaspi_offer_name": "Offer C",
+                        "kaspi_article": "ARTICLE-C",
                         "sku_key": "SKU-C",
                         "sku_id": "SKU-C_XL",
                         "quantity": 2,
@@ -543,7 +621,7 @@ def test_insert_from_template_upserts_existing_order_sku_row_instead_of_failing(
         conn.commit()
         rows = conn.execute(
             """
-            SELECT order_id, store_code, kaspi_offer_name, sku_key, sku_id, quantity, unit_price_kzt, source_file
+            SELECT order_id, store_code, kaspi_offer_name, kaspi_article, line_identity_key, sku_key, sku_id, quantity, unit_price_kzt, source_file
             FROM fact_orders_kaspi
             WHERE order_id = '2002'
             ORDER BY id
@@ -558,9 +636,90 @@ def test_insert_from_template_upserts_existing_order_sku_row_instead_of_failing(
         "2002",
         "UNIVERSAL",
         "Offer C",
+        "ARTICLE-C",
+        "ARTICLE-C",
         "SKU-C",
         "SKU-C_XL",
         2,
         1800,
         "excel_ui/ActiveOrders/ActiveOrders.xlsx",
     )
+
+
+def test_insert_from_template_keeps_distinct_public_offers_with_same_internal_sku(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    conn = _make_db(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                order_id, store_code, channel_code, kaspi_offer_name, kaspi_article, line_identity_key,
+                sku_key, sku_id, assigned_size, quantity, unit_price_kzt, planned_shipment_date,
+                internal_status, source, source_file
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "968633399",
+                "UNIVERSAL",
+                "KSP",
+                "Рашгард 30350528_119809069_555942169 черный 48",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_134083700",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_134083700",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+                "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL",
+                "XL",
+                1,
+                3294,
+                "2026-06-21",
+                "ACCEPTED",
+                "API",
+                "thin_api_row.json",
+            ),
+        )
+        inserted = _insert_from_template(
+            conn,
+            [
+                {
+                    "order": {
+                        "order_id": "968633399",
+                        "store_code": "UNIVERSAL",
+                        "planned_shipment_date": "2026-06-21",
+                        "kaspi_offer_name": "Спортивный костюм 18107200_643074 черный XL",
+                        "kaspi_article": "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_110261375",
+                        "sku_key": "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+                        "sku_id": "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL",
+                        "quantity": 1,
+                        "unit_price_kzt": 4990,
+                    },
+                    "template": {
+                        "store_code": "UNIVERSAL",
+                        "channel_code": "KSP",
+                        "kaspi_status": "KASPI_DELIVERY",
+                        "internal_status": "ACCEPTED",
+                        "assigned_size": "XL",
+                    },
+                }
+            ],
+            source_file="excel_ui/ActiveOrders/ActiveOrders.xlsx",
+        )
+        conn.commit()
+        rows = conn.execute(
+            """
+            SELECT kaspi_offer_name, kaspi_article, line_identity_key, sku_id, assigned_size
+            FROM fact_orders_kaspi
+            WHERE order_id = '968633399'
+            ORDER BY id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert inserted == 1
+    assert len(rows) == 2
+    assert [row["kaspi_article"] for row in rows] == [
+        "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_134083700",
+        "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_110261375",
+    ]
+    assert {row["sku_id"] for row in rows} == {"CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL"}
+    assert rows[0]["assigned_size"] == "XL"
+    assert rows[1]["assigned_size"] is None

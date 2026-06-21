@@ -1309,6 +1309,112 @@ def test_build_phase1_payload_prefers_declared_offer_size_for_acmewear_variants(
     assert row_1005["_probable_size_source"] == "DECLARED_ORDER"
 
 
+def test_build_phase1_payload_keeps_same_sku_public_offer_lines_separate(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executemany(
+            """
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, planned_shipment_date, kaspi_status, internal_status,
+                kaspi_offer_name, sku_key, sku_id, my_size, assigned_size, quantity,
+                waybill_url, waybill_downloaded, actual_shipment_date, courier_transmission_date,
+                kaspi_status_detail, signature_required, delivery_mode, planned_delivery_date, payment_mode, returned_to_warehouse,
+                customer_first_name, customer_last_name, customer_phone,
+                customer_height_cm, customer_weight_kg, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    20,
+                    "968633399",
+                    "UNIVERSAL",
+                    "2026-04-15",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED",
+                    "Рашгард 30350528_119809069_555942169 черный 48",
+                    "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+                    "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL",
+                    None,
+                    None,
+                    1,
+                    None,
+                    0,
+                    None,
+                    None,
+                    "ACCEPTED_BY_MERCHANT",
+                    0,
+                    "DELIVERY",
+                    None,
+                    "PREPAID",
+                    0,
+                    "Ali",
+                    "One",
+                    "",
+                    176,
+                    78,
+                    "2026-04-15T10:00:00",
+                    "2026-04-15T10:00:00",
+                ),
+                (
+                    21,
+                    "968633399",
+                    "UNIVERSAL",
+                    "2026-04-15",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED",
+                    "Спортивный костюм 18107200_643074 черный XL",
+                    "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+                    "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL",
+                    None,
+                    None,
+                    1,
+                    None,
+                    0,
+                    None,
+                    None,
+                    "ACCEPTED_BY_MERCHANT",
+                    0,
+                    "DELIVERY",
+                    None,
+                    "PREPAID",
+                    0,
+                    "Ali",
+                    "One",
+                    "",
+                    176,
+                    78,
+                    "2026-04-15T10:01:00",
+                    "2026-04-15T10:01:00",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    contract = load_ops_board_contract()
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=contract,
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:35:00+05:00",
+    )
+
+    rows = [row for row in payload["SalesRaw_Today"] if row["OrderID"] == "968633399"]
+
+    assert len(rows) == 2
+    assert {row["_db_row_id"] for row in rows} == {"20", "21"}
+    assert {row["KASPI_OFFER_NAME"] for row in rows} == {
+        "Рашгард 30350528_119809069_555942169 черный 48",
+        "Спортивный костюм 18107200_643074 черный XL",
+    }
+    assert {row["SKU_key"] for row in rows} == {"CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK"}
+
+
 def test_build_size_writeback_plan_only_emits_changed_non_empty_sizes():
     sheet_rows = [
         {"_db_row_id": "1", "MY_SIZE": "L"},

@@ -27,6 +27,8 @@ DEFAULT_EXPORT_PATH = data_path("excel_ui", "ActiveOrders", "ActiveOrders.xlsx")
 DEFAULT_BACKUP_ROOT = data_path("runtime", "backups")
 DEFAULT_OUTPUT_ROOT = data_path("exports", "google_ops_board")
 WRITE_ENV_GATE = "ENABLE_KASPI_ACTIVEORDERS_DB_WRITE"
+LINE_GRAIN_CONFLICT_COLUMNS = ("order_id", "store_code", "line_identity_key", "sku_id")
+LEGACY_CONFLICT_COLUMNS = ("order_id", "sku_id", "store_code")
 
 
 def _require_apply_gate(apply: bool) -> None:
@@ -62,6 +64,43 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except Exception:
         return default
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _index_columns(conn: sqlite3.Connection, index_name: str) -> tuple[str, ...]:
+    rows = conn.execute(f"PRAGMA index_info({index_name})").fetchall()
+    return tuple(str(row[2]) for row in rows)
+
+
+def _has_unique_index(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]) -> bool:
+    for row in conn.execute(f"PRAGMA index_list({table})").fetchall():
+        if int(row[2] or 0) != 1:
+            continue
+        if _index_columns(conn, str(row[1])) == columns:
+            return True
+    return False
+
+
+def _line_identity_key(order: dict[str, Any]) -> str:
+    return (
+        _clean(order.get("kaspi_article"))
+        or _clean(order.get("line_identity_key"))
+        or _clean(order.get("kaspi_offer_name"))
+        or _clean(order.get("sku_id"))
+    )
+
+
+def _public_line_identity_candidates(row: dict[str, Any]) -> set[str]:
+    sku_id = _clean(row.get("sku_id"))
+    values = [
+        _clean(row.get("kaspi_article")),
+        _clean(row.get("line_identity_key")),
+        _clean(row.get("kaspi_offer_name")),
+    ]
+    return {value for value in values if value and value != sku_id}
 
 
 def _product_type_from_order(order: dict[str, Any]) -> str:
@@ -254,7 +293,8 @@ def _identity_sort_key(order: dict[str, Any]) -> tuple[str, str]:
     return (_clean(order.get("sku_id")), _clean(order.get("kaspi_offer_name")))
 
 
-def _candidate_match_score(candidate: dict[str, Any], order: dict[str, Any]) -> tuple[int, int, int]:
+def _candidate_match_score(candidate: dict[str, Any], order: dict[str, Any]) -> tuple[int, int, int, int]:
+    line_match = int(bool(_public_line_identity_candidates(candidate) & _public_line_identity_candidates(order)))
     candidate_sku = _clean(candidate.get("sku_id"))
     order_sku = _clean(order.get("sku_id"))
     candidate_offer = _clean(candidate.get("kaspi_offer_name"))
@@ -262,7 +302,7 @@ def _candidate_match_score(candidate: dict[str, Any], order: dict[str, Any]) -> 
     sku_match = int(bool(order_sku) and candidate_sku == order_sku)
     offer_match = int(bool(order_offer) and candidate_offer == order_offer)
     blank_identity = int(not candidate_sku and not candidate_offer)
-    return (-sku_match, -offer_match, -blank_identity)
+    return (-line_match, -sku_match, -offer_match, -blank_identity)
 
 
 def _build_output_path(output_json: Path | None, target_date: date) -> Path:
@@ -313,6 +353,9 @@ def _load_candidate_rows(conn: sqlite3.Connection, orders: list[dict[str, Any]],
     order_ids = sorted({_clean(order.get("order_id")) for order in orders if _clean(order.get("order_id"))})
     if not order_ids:
         return []
+    columns = _table_columns(conn, "fact_orders_kaspi")
+    kaspi_article_expr = "kaspi_article" if "kaspi_article" in columns else "'' AS kaspi_article"
+    line_identity_expr = "line_identity_key" if "line_identity_key" in columns else "'' AS line_identity_key"
     placeholders = ",".join("?" for _ in order_ids)
     start_date = (target_date - timedelta(days=max(lookback_days - 1, 0))).isoformat()
     sql = f"""
@@ -322,6 +365,8 @@ def _load_candidate_rows(conn: sqlite3.Connection, orders: list[dict[str, Any]],
             store_code,
             channel_code,
             kaspi_offer_name,
+            {kaspi_article_expr},
+            {line_identity_expr},
             sku_key,
             sku_id,
             my_size,
@@ -383,10 +428,14 @@ def _match_group_updates(
     for order in sorted(parsed_group, key=_identity_sort_key):
         matched_idx = None
         for idx, candidate in enumerate(sorted(remaining_candidates, key=lambda row: (_candidate_match_score(row, order), int(row["id"])))):
+            candidate_public_lines = _public_line_identity_candidates(candidate)
+            order_public_lines = _public_line_identity_candidates(order)
+            line_match = bool(candidate_public_lines & order_public_lines)
+            line_conflict = bool(candidate_public_lines and order_public_lines and not line_match)
             sku_match = _clean(candidate.get("sku_id")) == _clean(order.get("sku_id")) and _clean(order.get("sku_id"))
             offer_match = _clean(candidate.get("kaspi_offer_name")) == _clean(order.get("kaspi_offer_name")) and _clean(order.get("kaspi_offer_name"))
             blank_identity = not _clean(candidate.get("sku_id")) and not _clean(candidate.get("kaspi_offer_name"))
-            if sku_match or offer_match or blank_identity:
+            if line_match or (not line_conflict and (sku_match or offer_match or blank_identity)):
                 matched_idx = remaining_candidates.index(candidate)
                 break
         if matched_idx is not None:
@@ -481,32 +530,40 @@ def _ensure_dim_sku_size(conn: sqlite3.Connection, sku_id: str, sku_key: str, si
 
 def _apply_updates(conn: sqlite3.Connection, updates: list[dict[str, Any]], source_file: str) -> int:
     applied = 0
+    columns = _table_columns(conn, "fact_orders_kaspi")
     for update in updates:
         order = update["order"]
         candidate = update["candidate"]
+        assignments: list[tuple[str, Any]] = [
+            ("kaspi_offer_name", _clean(order.get("kaspi_offer_name")) or candidate.get("kaspi_offer_name")),
+            ("sku_key", _clean(order.get("sku_key")) or candidate.get("sku_key")),
+            ("sku_id", _clean(order.get("sku_id")) or candidate.get("sku_id")),
+            ("quantity", _safe_int(order.get("quantity"), default=_safe_int(candidate.get("quantity"), 1))),
+            (
+                "unit_price_kzt",
+                order.get("unit_price_kzt")
+                if order.get("unit_price_kzt") not in ("", None)
+                else candidate.get("unit_price_kzt"),
+            ),
+            ("planned_shipment_date", _clean(order.get("planned_shipment_date")) or candidate.get("planned_shipment_date")),
+            ("source_file", source_file),
+        ]
+        if "kaspi_article" in columns:
+            assignments.append(("kaspi_article", _clean(order.get("kaspi_article")) or candidate.get("kaspi_article")))
+        if "line_identity_key" in columns:
+            assignments.append(("line_identity_key", _line_identity_key(order) or candidate.get("line_identity_key") or ""))
+        assignments = [(column, value) for column, value in assignments if column in columns]
+        set_sql = ",\n                ".join(f"{column} = ?" for column, _value in assignments)
+        values = [value for _column, value in assignments]
+        if "updated_at" in columns:
+            set_sql += ",\n                updated_at = CURRENT_TIMESTAMP"
         conn.execute(
-            """
+            f"""
             UPDATE fact_orders_kaspi
-            SET kaspi_offer_name = ?,
-                sku_key = ?,
-                sku_id = ?,
-                quantity = ?,
-                unit_price_kzt = COALESCE(?, unit_price_kzt),
-                planned_shipment_date = COALESCE(?, planned_shipment_date),
-                source_file = ?,
-                updated_at = CURRENT_TIMESTAMP
+            SET {set_sql}
             WHERE id = ?
             """,
-            (
-                _clean(order.get("kaspi_offer_name")) or candidate.get("kaspi_offer_name"),
-                _clean(order.get("sku_key")) or candidate.get("sku_key"),
-                _clean(order.get("sku_id")) or candidate.get("sku_id"),
-                _safe_int(order.get("quantity"), default=_safe_int(candidate.get("quantity"), 1)),
-                order.get("unit_price_kzt"),
-                _clean(order.get("planned_shipment_date")) or candidate.get("planned_shipment_date"),
-                source_file,
-                int(candidate["id"]),
-            ),
+            (*values, int(candidate["id"])),
         )
         applied += 1
     return applied
@@ -514,117 +571,175 @@ def _apply_updates(conn: sqlite3.Connection, updates: list[dict[str, Any]], sour
 
 def _insert_from_template(conn: sqlite3.Connection, inserts: list[dict[str, Any]], source_file: str) -> int:
     applied = 0
+    columns = _table_columns(conn, "fact_orders_kaspi")
+    if "line_identity_key" in columns:
+        if not _has_unique_index(conn, "fact_orders_kaspi", LINE_GRAIN_CONFLICT_COLUMNS):
+            raise RuntimeError(
+                "fact_orders_kaspi has line_identity_key but is missing the line-grain unique key; "
+                "run scripts/migrate_030_fact_orders_kaspi_line_grain.py"
+            )
+        conflict_columns = LINE_GRAIN_CONFLICT_COLUMNS
+    elif _has_unique_index(conn, "fact_orders_kaspi", LEGACY_CONFLICT_COLUMNS):
+        conflict_columns = LEGACY_CONFLICT_COLUMNS
+    else:
+        conflict_columns = ()
+
+    preferred_columns = [
+        "order_id",
+        "store_code",
+        "channel_code",
+        "kaspi_offer_name",
+        "kaspi_article",
+        "line_identity_key",
+        "sku_key",
+        "sku_id",
+        "my_size",
+        "quantity",
+        "unit_price_kzt",
+        "created_at",
+        "planned_shipment_date",
+        "actual_shipment_date",
+        "kaspi_status",
+        "internal_status",
+        "status_updated_at",
+        "waybill_url",
+        "waybill_number",
+        "waybill_downloaded",
+        "source",
+        "source_file",
+        "assigned_size",
+        "size_source",
+        "size_confidence",
+        "customer_height_cm",
+        "customer_weight_kg",
+        "kaspi_status_detail",
+        "planned_delivery_date",
+        "courier_transmission_planning_date",
+        "courier_transmission_date",
+        "delivery_mode",
+        "payment_mode",
+        "signature_required",
+        "credit_term",
+        "pre_order",
+        "approved_by_bank_date",
+        "reservation_date",
+        "delivery_cost",
+        "delivery_cost_for_seller",
+        "delivery_address",
+        "is_imei_required",
+        "express",
+        "returned_to_warehouse",
+        "category",
+        "customer_first_name",
+        "customer_last_name",
+        "customer_phone",
+    ]
     for item in inserts:
         order = item["order"]
         template = dict(item.get("template") or {})
-        conn.execute(
-            """
-            INSERT INTO fact_orders_kaspi (
-                order_id,
-                store_code,
-                channel_code,
-                kaspi_offer_name,
-                sku_key,
-                sku_id,
-                my_size,
-                quantity,
-                unit_price_kzt,
-                created_at,
-                planned_shipment_date,
-                actual_shipment_date,
-                kaspi_status,
-                internal_status,
-                status_updated_at,
-                waybill_url,
-                waybill_number,
-                waybill_downloaded,
-                source,
-                source_file,
-                assigned_size,
-                size_source,
-                size_confidence,
-                customer_height_cm,
-                customer_weight_kg,
-                kaspi_status_detail,
-                planned_delivery_date,
-                courier_transmission_planning_date,
-                courier_transmission_date,
-                delivery_mode,
-                payment_mode,
-                signature_required,
-                credit_term,
-                pre_order,
-                approved_by_bank_date,
-                reservation_date,
-                delivery_cost,
-                delivery_cost_for_seller,
-                delivery_address,
-                is_imei_required,
-                express,
-                returned_to_warehouse,
-                category,
-                customer_first_name,
-                customer_last_name,
-                customer_phone
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(order_id, sku_id, store_code) DO UPDATE SET
-                channel_code = COALESCE(NULLIF(excluded.channel_code, ''), fact_orders_kaspi.channel_code),
-                kaspi_offer_name = COALESCE(NULLIF(excluded.kaspi_offer_name, ''), fact_orders_kaspi.kaspi_offer_name),
-                sku_key = COALESCE(NULLIF(excluded.sku_key, ''), fact_orders_kaspi.sku_key),
-                quantity = COALESCE(excluded.quantity, fact_orders_kaspi.quantity),
-                unit_price_kzt = COALESCE(excluded.unit_price_kzt, fact_orders_kaspi.unit_price_kzt),
-                planned_shipment_date = COALESCE(NULLIF(excluded.planned_shipment_date, ''), fact_orders_kaspi.planned_shipment_date),
-                source_file = COALESCE(NULLIF(excluded.source_file, ''), fact_orders_kaspi.source_file),
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                _clean(order.get("order_id")),
-                _clean(order.get("store_code")) or _clean(template.get("store_code")),
-                _clean(template.get("channel_code")) or "KSP",
-                _clean(order.get("kaspi_offer_name")),
-                _clean(order.get("sku_key")),
-                _clean(order.get("sku_id")),
-                _clean(template.get("my_size")) or None,
-                _safe_int(order.get("quantity"), default=1),
-                order.get("unit_price_kzt") if order.get("unit_price_kzt") not in ("", None) else template.get("unit_price_kzt"),
-                _clean(order.get("created_at")) or template.get("created_at"),
-                _clean(order.get("planned_shipment_date")) or template.get("planned_shipment_date"),
-                template.get("actual_shipment_date"),
-                _clean(template.get("kaspi_status")) or "KASPI_DELIVERY",
-                _clean(template.get("internal_status")) or "ACCEPTED",
-                template.get("status_updated_at"),
-                template.get("waybill_url"),
-                template.get("waybill_number"),
-                _safe_int(template.get("waybill_downloaded"), default=0),
-                _clean(template.get("source")) or "ACTIVEORDERS_ENRICH",
-                source_file,
-                template.get("assigned_size"),
-                template.get("size_source"),
-                template.get("size_confidence"),
-                template.get("customer_height_cm"),
-                template.get("customer_weight_kg"),
-                template.get("kaspi_status_detail"),
-                template.get("planned_delivery_date"),
-                template.get("courier_transmission_planning_date"),
-                template.get("courier_transmission_date"),
-                template.get("delivery_mode"),
-                template.get("payment_mode"),
-                template.get("signature_required"),
-                template.get("credit_term"),
-                template.get("pre_order"),
-                template.get("approved_by_bank_date"),
-                template.get("reservation_date"),
-                template.get("delivery_cost"),
-                template.get("delivery_cost_for_seller"),
-                template.get("delivery_address"),
-                template.get("is_imei_required"),
-                template.get("express"),
-                template.get("returned_to_warehouse"),
-                template.get("category"),
-                template.get("customer_first_name"),
-                template.get("customer_last_name"),
-                template.get("customer_phone"),
+        row_data = {
+            "order_id": _clean(order.get("order_id")),
+            "store_code": _clean(order.get("store_code")) or _clean(template.get("store_code")),
+            "channel_code": _clean(template.get("channel_code")) or "KSP",
+            "kaspi_offer_name": _clean(order.get("kaspi_offer_name")),
+            "kaspi_article": _clean(order.get("kaspi_article")) or _clean(template.get("kaspi_article")),
+            "line_identity_key": _line_identity_key(order) or _clean(template.get("line_identity_key")),
+            "sku_key": _clean(order.get("sku_key")),
+            "sku_id": _clean(order.get("sku_id")),
+            "my_size": None,
+            "quantity": _safe_int(order.get("quantity"), default=1),
+            "unit_price_kzt": (
+                order.get("unit_price_kzt")
+                if order.get("unit_price_kzt") not in ("", None)
+                else template.get("unit_price_kzt")
             ),
+            "created_at": _clean(order.get("created_at")) or template.get("created_at"),
+            "planned_shipment_date": _clean(order.get("planned_shipment_date")) or template.get("planned_shipment_date"),
+            "actual_shipment_date": template.get("actual_shipment_date"),
+            "kaspi_status": _clean(template.get("kaspi_status")) or "KASPI_DELIVERY",
+            "internal_status": _clean(template.get("internal_status")) or "ACCEPTED",
+            "status_updated_at": template.get("status_updated_at"),
+            "waybill_url": template.get("waybill_url"),
+            "waybill_number": template.get("waybill_number"),
+            "waybill_downloaded": _safe_int(template.get("waybill_downloaded"), default=0),
+            "source": _clean(template.get("source")) or "ACTIVEORDERS_ENRICH",
+            "source_file": source_file,
+            "assigned_size": None,
+            "size_source": None,
+            "size_confidence": None,
+            "customer_height_cm": template.get("customer_height_cm"),
+            "customer_weight_kg": template.get("customer_weight_kg"),
+            "kaspi_status_detail": template.get("kaspi_status_detail"),
+            "planned_delivery_date": template.get("planned_delivery_date"),
+            "courier_transmission_planning_date": template.get("courier_transmission_planning_date"),
+            "courier_transmission_date": template.get("courier_transmission_date"),
+            "delivery_mode": template.get("delivery_mode"),
+            "payment_mode": template.get("payment_mode"),
+            "signature_required": template.get("signature_required"),
+            "credit_term": template.get("credit_term"),
+            "pre_order": template.get("pre_order"),
+            "approved_by_bank_date": template.get("approved_by_bank_date"),
+            "reservation_date": template.get("reservation_date"),
+            "delivery_cost": template.get("delivery_cost"),
+            "delivery_cost_for_seller": template.get("delivery_cost_for_seller"),
+            "delivery_address": template.get("delivery_address"),
+            "is_imei_required": template.get("is_imei_required"),
+            "express": template.get("express"),
+            "returned_to_warehouse": template.get("returned_to_warehouse"),
+            "category": template.get("category"),
+            "customer_first_name": template.get("customer_first_name"),
+            "customer_last_name": template.get("customer_last_name"),
+            "customer_phone": template.get("customer_phone"),
+        }
+        insert_columns = [column for column in preferred_columns if column in columns]
+        placeholders = ", ".join("?" for _column in insert_columns)
+        insert_sql = ", ".join(insert_columns)
+        values = [row_data.get(column) for column in insert_columns]
+        conflict_sql = ""
+        if conflict_columns:
+            conflict_target = ", ".join(conflict_columns)
+            update_assignments: list[str] = []
+            if "channel_code" in insert_columns:
+                update_assignments.append(
+                    "channel_code = COALESCE(NULLIF(excluded.channel_code, ''), fact_orders_kaspi.channel_code)"
+                )
+            if "kaspi_offer_name" in insert_columns:
+                update_assignments.append(
+                    "kaspi_offer_name = COALESCE(NULLIF(excluded.kaspi_offer_name, ''), fact_orders_kaspi.kaspi_offer_name)"
+                )
+            if "sku_key" in insert_columns:
+                update_assignments.append("sku_key = COALESCE(NULLIF(excluded.sku_key, ''), fact_orders_kaspi.sku_key)")
+            if "quantity" in insert_columns:
+                update_assignments.append("quantity = COALESCE(excluded.quantity, fact_orders_kaspi.quantity)")
+            if "unit_price_kzt" in insert_columns:
+                update_assignments.append(
+                    "unit_price_kzt = COALESCE(excluded.unit_price_kzt, fact_orders_kaspi.unit_price_kzt)"
+                )
+            if "planned_shipment_date" in insert_columns:
+                update_assignments.append(
+                    "planned_shipment_date = COALESCE(NULLIF(excluded.planned_shipment_date, ''), fact_orders_kaspi.planned_shipment_date)"
+                )
+            if "source_file" in insert_columns:
+                update_assignments.append(
+                    "source_file = COALESCE(NULLIF(excluded.source_file, ''), fact_orders_kaspi.source_file)"
+                )
+            if "kaspi_article" in insert_columns:
+                update_assignments.append(
+                    "kaspi_article = COALESCE(NULLIF(excluded.kaspi_article, ''), fact_orders_kaspi.kaspi_article)"
+                )
+            if "line_identity_key" in insert_columns:
+                update_assignments.append(
+                    "line_identity_key = COALESCE(NULLIF(excluded.line_identity_key, ''), fact_orders_kaspi.line_identity_key)"
+                )
+            if "updated_at" in columns:
+                update_assignments.append("updated_at = CURRENT_TIMESTAMP")
+            conflict_sql = (
+                f" ON CONFLICT({conflict_target}) DO UPDATE SET "
+                + ", ".join(update_assignments)
+            )
+        conn.execute(
+            f"INSERT INTO fact_orders_kaspi ({insert_sql}) VALUES ({placeholders}){conflict_sql}",
+            values,
         )
         applied += 1
     return applied

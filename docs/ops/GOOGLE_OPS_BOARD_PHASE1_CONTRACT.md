@@ -86,6 +86,11 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - installer: `scripts/install_scheduler.sh`
 
 ## Non-Negotiable Runtime Rules
+- `SalesRaw_Today` row grain is the shipment/order line, keyed by
+  `fact_orders_kaspi.id` after DB import/enrichment. Import and board publish must
+  not collapse rows by `OrderID + SKU_ID + Store`: separate Kaspi public
+  offers/articles in one order remain separate board rows even when they resolve
+  to the same internal SKU family.
 - Same-day `SalesRaw_Today` publishes use `upsert-preserve` semantics.
 - Same-day `Run_Control` publishes also use `upsert-preserve` semantics.
 - Health profiles are explicit and write separate daily artifacts:
