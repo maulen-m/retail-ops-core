@@ -60,6 +60,8 @@ and corresponding tests before merge.
 ## Same-Day Cutoff Contract
 - Google Ops Board same-day operational selection is DB-first and keeps store-aware machinery available.
 - Current cutoff: every active Kaspi store includes same-day pending orders created at or before `17:00`.
+- Owner-approved PP1 late-window rule: Universal (`30000001_PP1`) and STORE-B (`30000002_PP1`) PP1 warehouse orders share the same all-store `17:00` Asia/Almaty cutoff; they must not fall back to any legacy `16:00` cutoff.
+- Google Ops Board, waybill download, bundle build, and closeout validation paths must normalize `30000001_PP1` to `UNIVERSAL` and `30000002_PP1` to `STOREB` before store comparisons, grouping, or manifest matching.
 - The `17:02` import exists for DB freshness, all-store 17:00 late-window visibility, and next-day visibility; it must not expand same-day Google Ops Board eligibility after the 17:00 cutoff.
 - `excel_ui/run_full_import.command` must publish the Google Ops Board whenever export + DB sync + ActiveOrders enrichment are green, even if CRM Step 2 later turns the overall import workflow red.
 

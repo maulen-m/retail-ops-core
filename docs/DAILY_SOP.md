@@ -33,6 +33,7 @@ Current daily scheduler contract (GMT+5):
   - DB-only path; no Excel CRM import, no Google Sheet publish, no Telegram/WhatsApp send
   - refreshes recent `KASPI_DELIVERY` + `ARCHIVE` order states so `fact_orders_kaspi.actual_shipment_date` / `courier_transmission_date` do not stay stale after evening closeout
 - same-day Google Ops Board cutoff is currently `17:00` for every active Kaspi store.
+- owner-approved PP1 late-window rule: Universal (`30000001_PP1`) and STORE-B (`30000002_PP1`) PP1 warehouse orders received at or before `17:00` Asia/Almaty are same-day eligible; no active PP1 store uses a `16:00` same-day cutoff.
 - Google Ops Board pre-window health gate: `13:45`
   - runs DB preflight, workbook identity sync, Google board contract check, Kaspi store-context validation, and WhatsApp smoke
   - blocks later automated publish / closeout if red

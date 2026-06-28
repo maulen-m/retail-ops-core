@@ -154,6 +154,8 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - do not mark rows overdue just because `planned_shipment_date < target_date`
 - Same-day operational selection is DB-first and store-aware:
   - every active Kaspi store stays eligible through `17:00`
+  - Universal PP1 (`30000001_PP1`) and STORE-B PP1 (`30000002_PP1`) orders received at or before `17:00` Asia/Almaty are same-day eligible
+  - board, waybill, bundle, and closeout paths must normalize PP1 warehouse codes to canonical store codes before sorting, grouping, or manifest comparison
   - the cutoff applies to same-day pending rows and prior-day pending carry-forward rows
 - `SalesRaw_Today.Status` drives sheet formatting:
   - red fill when `Status = OVERDUE`

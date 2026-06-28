@@ -210,6 +210,9 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "every 10 minutes" in doc
     assert "immediate after successful import" in doc
     assert "source refresh + publish" in doc
+    assert "30000001_PP1" in doc
+    assert "30000002_PP1" in doc
+    assert "normalize PP1 warehouse codes to canonical store codes" in doc
     assert "export_api_orders -> validate_activeorders_columns -> sync_kaspi_orders -> enrich_kaspi_orders_from_activeorders -> publish" in doc
     assert "stale for the target date" in doc
     assert "17:15" in doc

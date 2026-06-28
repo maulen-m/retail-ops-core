@@ -48,6 +48,15 @@ PENDING_BOARD_STAGES = {
     StageCode.ACCEPTED_PENDING_ASSEMBLY,
     StageCode.ASSEMBLED_PENDING_HANDOVER,
 }
+WAREHOUSE_STORE_TO_API = {
+    "30137883_PP1": "ACMEWEAR",
+    "30000001_PP1": "UNIVERSAL",
+    "30290083_PP1": "11KZ",
+    "30000002_PP1": "STOREB",
+    "30362323_PP1": "MELVIS",
+    "PP1": "ACMEWEAR",
+    "PP2": "ACMEWEAR",
+}
 
 
 def _require_apply_gate(apply: bool, env_name: str) -> None:
@@ -73,8 +82,12 @@ def _clean_str(value: Any) -> str:
 
 
 def _normalize_store_key(value: Any) -> str:
-    store = _clean_str(value).upper()
+    store = _clean_str(value).upper().replace(" ", "")
+    if store in WAREHOUSE_STORE_TO_API:
+        return WAREHOUSE_STORE_TO_API[store]
     if store == "STORE-B":
+        return "STOREB"
+    if store == "STORE_B":
         return "STOREB"
     return store
 

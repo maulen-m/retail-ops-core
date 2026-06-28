@@ -18,6 +18,15 @@ SAFE_KASPI_NAME_CORE_SOURCES = frozenset(
         "forced_core",
     }
 )
+WAREHOUSE_STORE_TO_API = {
+    "30137883_PP1": "ACMEWEAR",
+    "30000001_PP1": "UNIVERSAL",
+    "30290083_PP1": "11KZ",
+    "30000002_PP1": "STOREB",
+    "30362323_PP1": "MELVIS",
+    "PP1": "ACMEWEAR",
+    "PP2": "ACMEWEAR",
+}
 
 
 @dataclass(frozen=True)
@@ -53,8 +62,12 @@ def clean_str(value: Any) -> str:
 
 
 def normalize_store_key(value: Any) -> str:
-    store = clean_str(value).upper()
+    store = clean_str(value).upper().replace(" ", "")
+    if store in WAREHOUSE_STORE_TO_API:
+        return WAREHOUSE_STORE_TO_API[store]
     if store == "STORE-B":
+        return "STOREB"
+    if store == "STORE_B":
         return "STOREB"
     return store
 

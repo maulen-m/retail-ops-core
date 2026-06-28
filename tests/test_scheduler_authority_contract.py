@@ -19,6 +19,9 @@ def test_daily_sop_lists_current_import_and_waybill_schedule_pair() -> None:
     assert "17:02" in sop
     assert "18:30" in sop
     assert "19:15" in sop
+    assert "30000001_PP1" in sop
+    assert "30000002_PP1" in sop
+    assert "no active PP1 store uses a `16:00` same-day cutoff" in sop
 
 
 def test_scheduler_incident_doc_marks_current_contract_as_superseding_1605() -> None:

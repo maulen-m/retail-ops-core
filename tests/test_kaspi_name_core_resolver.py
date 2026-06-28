@@ -4,6 +4,7 @@ from core.utils.kaspi_name_core_resolver import (
     KaspiNameCoreMaps,
     SAFE_KASPI_NAME_CORE_SOURCES,
     load_active_kaspi_name_core_maps,
+    normalize_store_key,
     resolve_kaspi_name_core,
 )
 
@@ -186,6 +187,61 @@ def test_resolve_kaspi_name_core_uses_sku_family_mapping(tmp_path):
     assert resolution.source == "sku_family"
     assert resolution.safe is True
     assert resolution.source in SAFE_KASPI_NAME_CORE_SOURCES
+
+
+def test_resolve_kaspi_name_core_normalizes_pp1_warehouse_store_offer(tmp_path):
+    conn = _connect_article_map_db(tmp_path)
+    try:
+        _insert_article_map(
+            conn,
+            store_code="UNIVERSAL",
+            offer_name="Universal PP1 Offer",
+            sku_key="SKU-UNIVERSAL-PP1",
+            kaspi_name_core="Universal_PP1_Core",
+            updated_at="2026-06-28 10:30:56",
+        )
+        _insert_article_map(
+            conn,
+            store_code="STOREB",
+            offer_name="STORE-B PP1 Offer",
+            sku_key="SKU-STOREB-PP1",
+            kaspi_name_core="MGroup_PP1_Core",
+            updated_at="2026-06-28 10:31:56",
+        )
+        conn.commit()
+
+        maps = load_active_kaspi_name_core_maps(
+            conn,
+            store_offer_pairs={
+                ("30000001_PP1", "Universal PP1 Offer"),
+                ("30000002_PP1", "STORE-B PP1 Offer"),
+            },
+        )
+    finally:
+        conn.close()
+
+    assert normalize_store_key("30000001_PP1") == "UNIVERSAL"
+    assert normalize_store_key("30000002_PP1") == "STOREB"
+
+    universal = resolve_kaspi_name_core(
+        store_code="30000001_PP1",
+        kaspi_offer_name="Universal PP1 Offer",
+        sku_key="",
+        maps=maps,
+        allow_unsafe_fallback=False,
+    )
+    storeb = resolve_kaspi_name_core(
+        store_code="30000002_PP1",
+        kaspi_offer_name="STORE-B PP1 Offer",
+        sku_key="",
+        maps=maps,
+        allow_unsafe_fallback=False,
+    )
+
+    assert universal.core == "Universal_PP1_Core"
+    assert universal.source == "store_offer"
+    assert storeb.core == "MGroup_PP1_Core"
+    assert storeb.source == "store_offer"
 
 
 def test_resolve_kaspi_name_core_uses_compact_exact_sku_mapping(tmp_path):

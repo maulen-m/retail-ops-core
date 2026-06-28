@@ -25,6 +25,10 @@ def test_daily_ops_workflow_contract_doc_exists_and_maps_critical_paths() -> Non
     assert "copy-only from visible valid `PROBABLE_SIZE`" in text
     assert "runtime/api_ledger/kaspi_api_<YYYY-MM-DD>.jsonl" in text
     assert "pass the default daily ledger to child processes" in text
+    assert "30000001_PP1" in text
+    assert "30000002_PP1" in text
+    assert "legacy `16:00` cutoff" in text
+    assert "normalize `30000001_PP1` to `UNIVERSAL`" in text
 
 
 def test_daily_ops_workflow_contract_includes_prod_dry_run_checks() -> None:
