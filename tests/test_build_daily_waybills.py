@@ -1382,6 +1382,85 @@ def test_main_uses_db_sized_orders_when_crm_workbook_is_unreadable(
     assert manifest["send_order_ids"] == ["1001"]
 
 
+def test_main_db_first_build_does_not_open_crm_workbook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "Today"
+    waybill_dir = tmp_path / "waybills"
+    waybill_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = waybill_dir / "KASPI_SHOP-1001.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%db-first-no-crm-open\n")
+    crm_path = tmp_path / "CRM.xlsx"
+    crm_path.write_bytes(b"PK\x03\x04truncated")
+
+    db_order = OrderItem(
+        order_id="1001",
+        store_name="Universal",
+        kaspi_name_core="Nike_Футболка_черная",
+        my_size="M",
+        sku_key="NIKE_TEE_BLACK",
+        sku_id="NIKE_TEE_BLACK_M",
+        quantity=1,
+        kaspi_offer_name="Nike футболка черная M",
+        planned_date=date(2026, 3, 10),
+    )
+
+    monkeypatch.setattr(build_daily_waybills_module, "ensure_pdf_merger", lambda: None)
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_crm_dataframe",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("DB-first build must not load CRM workbook")),
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "get_crm_missing_info",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("DB-first build must not read CRM diagnostics")),
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "resolve_db_path",
+        lambda *args, **kwargs: tmp_path / "app.db",
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_selection_cache",
+        lambda *args, **kwargs: {"Universal": {"1001"}},
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "read_db_orders",
+        lambda *args, **kwargs: [db_order],
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "read_crm_orders",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("DB-first build must not fall back to CRM")),
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_all_waybills",
+        lambda *args, **kwargs: {"1001": pdf_path},
+    )
+
+    stats = build_daily_waybills_main(
+        crm_path=crm_path,
+        db_path=tmp_path / "app.db",
+        waybill_dir=waybill_dir,
+        output_dir=output_dir,
+        target_date=date(2026, 3, 10),
+        lookback_days=0,
+        output_layout="per-store-and-merged",
+        dry_run=False,
+    )
+
+    assert stats["orders_read"] == 1
+    assert stats["delivery_groups"] == 1
+    manifest_path = output_dir / "MERGED" / "SEND" / "10.03.26_MERGED_qnt1" / "send_batch_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["send_order_ids"] == ["1001"]
+
+
 def test_read_db_orders_prefers_article_map_core_over_offer_text(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     conn = sqlite3.connect(db_path)

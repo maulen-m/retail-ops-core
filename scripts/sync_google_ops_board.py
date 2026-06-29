@@ -182,6 +182,46 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
+def _row_value(row: Any, key: str, default: Any = "") -> Any:
+    if hasattr(row, "keys"):
+        try:
+            if key in row.keys():
+                return row[key]
+        except Exception:
+            pass
+    if hasattr(row, "get"):
+        try:
+            return row.get(key, default)
+        except Exception:
+            return default
+    return default
+
+
+def _truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    text = _clean_str(value).casefold()
+    return text in {"1", "true", "yes", "y", "да"}
+
+
+def _format_express_delivery_status(row: Any) -> str:
+    if _truthy_flag(_row_value(row, "express")):
+        return "EXPRESS"
+    delivery_mode = _clean_str(_row_value(row, "delivery_mode")).upper()
+    kaspi_status = _clean_str(_row_value(row, "kaspi_status")).upper()
+    if "SELF" in delivery_mode or kaspi_status == "PICKUP":
+        return "SELF_PICKUP"
+    if "PICKUP" in delivery_mode:
+        return "PICKUP"
+    if delivery_mode:
+        return "STANDARD"
+    return ""
+
+
 def _is_shipped(rows: list[sqlite3.Row]) -> bool:
     shipped_statuses = {"SHIPPED", "COMPLETED"}
     for row in rows:
@@ -266,9 +306,21 @@ def _build_salesraw_line_key(row: sqlite3.Row) -> str:
     return f"{order_id}|{planned_date}|{sku_token}|{offer_name}|{quantity}"
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def _optional_fk_column(columns: set[str], column_name: str, *, default_sql: str = "''") -> str:
+    if column_name in columns:
+        return f"fk.{column_name}"
+    return f"{default_sql} AS {column_name}"
+
+
 def _load_db_rows(conn: sqlite3.Connection, *, start: date, target: date) -> list[sqlite3.Row]:
+    fact_columns = _table_columns(conn, "fact_orders_kaspi")
+    express_expr = _optional_fk_column(fact_columns, "express", default_sql="0")
     return conn.execute(
-        """
+        f"""
         SELECT fk.id, fk.order_id, fk.store_code, fk.planned_shipment_date, fk.created_at,
                fk.kaspi_status, fk.internal_status,
                fk.kaspi_offer_name, fk.sku_key, fk.sku_id, fk.my_size, fk.assigned_size, fk.quantity,
@@ -276,6 +328,7 @@ def _load_db_rows(conn: sqlite3.Connection, *, start: date, target: date) -> lis
                fk.customer_first_name, fk.customer_last_name, fk.customer_phone,
                fk.customer_height_cm, fk.customer_weight_kg, fk.updated_at,
                fk.kaspi_status_detail, fk.signature_required, fk.delivery_mode,
+               {express_expr},
                fk.returned_to_warehouse, fk.planned_delivery_date, fk.payment_mode,
                COALESCE(ds.product_type, '') AS product_type
         FROM fact_orders_kaspi fk
@@ -552,6 +605,7 @@ def _build_salesraw_row(
         "_line_key": _build_salesraw_line_key(row),
         "_probable_size_source": probable_source,
         "_probable_size_confidence": probable_confidence,
+        "ExpressDeliveryStatus": _format_express_delivery_status(row),
     }
 
 
@@ -869,6 +923,17 @@ def _invalid_layout_tabs(layout_report: dict[str, Any]) -> set[str]:
     return invalid
 
 
+def _is_trailing_header_extension(expected_headers: list[str], observed_row: list[Any] | None) -> bool:
+    observed = [str(cell or "").strip() for cell in (observed_row or [])]
+    while observed and not observed[-1]:
+        observed.pop()
+    return bool(
+        observed
+        and len(observed) < len(expected_headers)
+        and observed == expected_headers[: len(observed)]
+    )
+
+
 def _append_only_tab_rows(tab_contract, fresh_rows: list[dict[str, Any]], existing_rows: list[dict[str, Any]]) -> dict[str, Any]:
     existing_keys = {
         _clean_str(row.get(tab_contract.key_column)): row
@@ -1048,6 +1113,15 @@ def main(argv: list[str] | None = None) -> int:
         force_rewrite_operational_tabs=args.force_rewrite_operational_tabs,
     )
     invalid_tabs = _invalid_layout_tabs(layout_report)
+    layout_header_update_tabs = {
+        tab_name
+        for tab_name in list(invalid_tabs)
+        if _is_trailing_header_extension(
+            contract.tabs[tab_name].headers,
+            header_rows.get(tab_name),
+        )
+    }
+    invalid_tabs -= layout_header_update_tabs
     if invalid_tabs:
         for tab_name, rows in payload.items():
             if tab_name not in invalid_tabs:
@@ -1064,6 +1138,7 @@ def main(argv: list[str] | None = None) -> int:
         if invalid_tabs == set(contract.tabs):
             publish_plan["same_day_preserve"] = False
         publish_plan["layout_repair_rewrite"] = True
+    publish_plan["layout_header_update_tabs"] = sorted(layout_header_update_tabs)
 
     tab_counts: dict[str, dict[str, int]] = {}
     planned_write_operations = 0
@@ -1071,7 +1146,13 @@ def main(argv: list[str] | None = None) -> int:
         write_rows = len(action["final_rows"])
         if action["mode"] == "rewrite" and action["existing_rows"] == action["final_rows"] and tab_name not in invalid_tabs:
             write_rows = 0
-        operation_count = len(action.get("update_rows") or []) + len(action.get("append_rows") or []) + write_rows
+        header_update = tab_name in layout_header_update_tabs
+        operation_count = (
+            len(action.get("update_rows") or [])
+            + len(action.get("append_rows") or [])
+            + write_rows
+            + (1 if header_update else 0)
+        )
         planned_write_operations += operation_count
         tab_counts[tab_name] = {
             "fresh_rows": len(action["fresh_rows"]),
@@ -1079,6 +1160,7 @@ def main(argv: list[str] | None = None) -> int:
             "update_rows": len(action.get("update_rows") or []),
             "append_rows": len(action["append_rows"]),
             "write_rows": len(action["final_rows"]),
+            "header_update": header_update,
             "write_operations": operation_count,
         }
 
@@ -1097,6 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
         "force_rewrite_operational_tabs": bool(args.force_rewrite_operational_tabs),
         "layout_repair_rewrite": bool(publish_plan.get("layout_repair_rewrite")),
         "layout_repair_tabs": sorted(invalid_tabs),
+        "layout_header_update_tabs": sorted(layout_header_update_tabs),
         "created_tabs": created_tabs,
         "tab_counts": tab_counts,
         "planned_write_operations": planned_write_operations,
@@ -1114,6 +1197,13 @@ def main(argv: list[str] | None = None) -> int:
             report["rollover_archive_path"] = str(archive_path)
         skipped_noop_tabs: list[str] = []
         for tab_name, action in publish_plan["tab_actions"].items():
+            if tab_name in layout_header_update_tabs:
+                headers = contract.tabs[tab_name].headers
+                client.update_tab_rows(
+                    tab_name,
+                    headers,
+                    [{"sheet_row": 1, "row": {header: header for header in headers}}],
+                )
             if action["mode"] == "upsert_preserve":
                 client.update_tab_rows(tab_name, contract.tabs[tab_name].headers, action["update_rows"])
                 client.append_tab_rows(tab_name, contract.tabs[tab_name].headers, action["append_rows"])

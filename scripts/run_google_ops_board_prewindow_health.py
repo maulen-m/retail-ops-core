@@ -74,16 +74,19 @@ HEALTH_PROFILE_CHOICES = [
 ]
 HEALTH_PROFILE_CHECKS: dict[str, dict[str, bool]] = {
     HEALTH_PROFILE_FULL: {
+        "identity_sync": True,
         "store_context": True,
         "telegram_delivery_config": True,
         "whatsapp_smoke": True,
     },
     HEALTH_PROFILE_PUBLISH: {
+        "identity_sync": True,
         "store_context": False,
         "telegram_delivery_config": False,
         "whatsapp_smoke": False,
     },
     HEALTH_PROFILE_CLOSEOUT: {
+        "identity_sync": False,
         "store_context": True,
         "telegram_delivery_config": True,
         "whatsapp_smoke": True,
@@ -427,12 +430,21 @@ def ensure_prewindow_health(
     report_path = resolve_prewindow_health_report_path(target_date, output_root, profile=resolved_profile)
     previous_report = load_json_file(report_path)
     workbook = Path(workbook_path or _resolve_workbook_path()).expanduser()
-    fingerprint = build_workbook_fingerprint(workbook)
+    if profile_checks["identity_sync"]:
+        fingerprint = build_workbook_fingerprint(workbook)
+    else:
+        fingerprint = {
+            "path": str(workbook),
+            "skipped": True,
+            "reason": f"profile={resolved_profile} excludes identity_sync",
+        }
 
     contract = load_ops_board_contract(contract_path)
     client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, service_account_json)
     previous_identity_sync = (((previous_report.get("checks") or {}).get("identity_sync")) or {}) if previous_report else {}
     reuse_identity_sync = bool(
+        profile_checks["identity_sync"]
+        and
         not force
         and previous_report
         and str(previous_report.get("target_date") or "") == target_date.isoformat()
@@ -460,7 +472,12 @@ def ensure_prewindow_health(
         "errors": db_errors,
     }
 
-    if report["checks"]["db_preflight"]["ok"]:
+    if not profile_checks["identity_sync"]:
+        report["checks"]["identity_sync"] = _profile_skipped_report(
+            profile=resolved_profile,
+            check_name="identity_sync",
+        )
+    elif report["checks"]["db_preflight"]["ok"]:
         try:
             if reuse_identity_sync:
                 report["checks"]["identity_sync"] = dict(previous_identity_sync)

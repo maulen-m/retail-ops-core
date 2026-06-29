@@ -16,7 +16,9 @@ from core.integrations.google_ops_board import (
     validate_contract_layout,
 )
 from scripts.sync_google_ops_board import (
+    _format_express_delivery_status,
     _invalid_layout_tabs,
+    _is_trailing_header_extension,
     build_phase1_payload,
     build_publish_plan,
     write_rollover_archive,
@@ -356,6 +358,7 @@ def test_default_google_ops_board_contract_loads_expected_tabs():
         "_line_key",
         "_probable_size_source",
         "_probable_size_confidence",
+        "ExpressDeliveryStatus",
     ]
     assert contract.tabs["Run_Control"].editable_columns == [
         "ready_for_closeout",
@@ -372,7 +375,17 @@ def test_default_google_ops_board_contract_loads_expected_tabs():
         "_probable_size_source",
         "_probable_size_confidence",
     ]
+    assert "ExpressDeliveryStatus" not in contract.tabs["SalesRaw_Today"].editable_columns
+    assert "ExpressDeliveryStatus" not in contract.tabs["SalesRaw_Today"].ui["hidden_columns"]
     assert contract.tabs["Needs_Size"].editable_columns == ["my_size", "size_status", "assigned_to", "note"]
+
+
+def test_format_express_delivery_status_values() -> None:
+    assert _format_express_delivery_status({"express": 1, "delivery_mode": "DELIVERY_LOCAL"}) == "EXPRESS"
+    assert _format_express_delivery_status({"kaspi_status": "PICKUP", "delivery_mode": "DELIVERY_PICKUP"}) == "SELF_PICKUP"
+    assert _format_express_delivery_status({"delivery_mode": "DELIVERY_PICKUP"}) == "PICKUP"
+    assert _format_express_delivery_status({"delivery_mode": "DELIVERY_REGIONAL_TODOOR"}) == "STANDARD"
+    assert _format_express_delivery_status({"delivery_mode": ""}) == ""
 
 
 def test_build_tab_ui_requests_for_salesraw_sets_filter_hide_and_visual_grouping_without_size_dropdown():
@@ -552,6 +565,28 @@ def test_validate_contract_layout_tolerates_blank_spacer_column():
     assert report["tabs"]["SalesRaw_Today"]["ignored_blank_header_columns"] == [8]
 
 
+def test_validate_contract_layout_flags_missing_trailing_contract_column():
+    contract = load_ops_board_contract()
+    live_headers = {
+        tab_name: tab_contract.headers
+        for tab_name, tab_contract in contract.tabs.items()
+    }
+    live_headers["SalesRaw_Today"] = contract.tabs["SalesRaw_Today"].headers[:-1]
+
+    report = validate_contract_layout(
+        contract=contract,
+        sheet_names=list(live_headers),
+        header_rows=live_headers,
+    )
+
+    assert report["ok"] is False
+    assert report["tabs"]["SalesRaw_Today"]["header_ok"] is False
+    assert _is_trailing_header_extension(
+        contract.tabs["SalesRaw_Today"].headers,
+        live_headers["SalesRaw_Today"],
+    ) is True
+
+
 def test_extract_rows_from_matrix_maps_rows_with_blank_spacer_header_column():
     headers = ["Status", "Kaspi_name_core", "OrderID", "MY_SIZE", "PROBABLE_SIZE"]
     matrix = [
@@ -595,6 +630,25 @@ def test_extract_rows_with_positions_maps_rows_with_blank_spacer_header_column()
     ]
 
 
+def test_extract_rows_from_matrix_maps_rows_with_trailing_contract_header_added():
+    headers = ["Status", "MY_SIZE", "ExpressDeliveryStatus"]
+    matrix = [
+        ["Status", "MY_SIZE"],
+        ["TODAY", "L"],
+    ]
+
+    rows = extract_rows_from_matrix(headers, matrix)
+    rows_with_positions = extract_rows_with_positions_from_matrix(headers, matrix)
+
+    assert rows == [{"Status": "TODAY", "MY_SIZE": "L", "ExpressDeliveryStatus": ""}]
+    assert rows_with_positions == [
+        {
+            "sheet_row": 2,
+            "row": {"Status": "TODAY", "MY_SIZE": "L", "ExpressDeliveryStatus": ""},
+        }
+    ]
+
+
 def test_invalid_layout_tabs_returns_only_broken_tabs():
     invalid = _invalid_layout_tabs(
         {
@@ -608,6 +662,14 @@ def test_invalid_layout_tabs_returns_only_broken_tabs():
     )
 
     assert invalid == {"SalesRaw_Today"}
+
+
+def test_trailing_header_extension_detects_additive_salesraw_column():
+    contract = load_ops_board_contract()
+    headers = contract.tabs["SalesRaw_Today"].headers
+
+    assert _is_trailing_header_extension(headers, headers[:-1]) is True
+    assert _is_trailing_header_extension(headers, headers[:-2] + [headers[-1]]) is False
 
 
 def test_merge_rows_preserves_editable_columns_by_order_id():
@@ -691,6 +753,7 @@ def test_build_phase1_payload_groups_orders_into_board_tabs(tmp_path: Path):
     assert salesraw_by_id["1"]["PROBABLE_SIZE"] == "L"
     assert salesraw_by_id["1"]["_probable_size_source"] == "CUSTOMER"
     assert salesraw_by_id["1"]["Kaspi_name_core"] == "Nike_Tee_Black"
+    assert {row["ExpressDeliveryStatus"] for row in salesraw} == {"STANDARD"}
     assert "Phone" not in salesraw[0]
     assert [row["order_id"] for row in orders] == ["1002", "0900", "1001"]
     order_1001 = next(row for row in orders if row["order_id"] == "1001")
@@ -1864,6 +1927,83 @@ def test_build_publish_plan_same_day_preserves_existing_rows_and_only_appends_ne
     assert final_salesraw_1001["MY_SIZE"] == "L"
     assert final_salesraw_1001["Quantity"] == 3
     assert [row["order_id"] for row in plan["tab_actions"]["Orders_Today"]["final_rows"]] == ["1002", "1001"]
+
+
+def test_build_publish_plan_preserves_operator_fields_from_sheet_before_trailing_column_exists():
+    contract = load_ops_board_contract()
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+    old_sales_headers = sales_headers[:-1]
+    before_snapshot = {
+        "README": rows_to_matrix(
+            contract.tabs["README"].headers,
+            [{"field": "target_date", "value": "2026-04-15", "notes": "Operational date"}],
+        ),
+        "SalesRaw_Today": rows_to_matrix(
+            old_sales_headers,
+            [
+                {
+                    "Status": "TODAY",
+                    "Date": "2026-04-15",
+                    "STORE_NAME": "Universal",
+                    "HEIGHT": "181",
+                    "WEIGHT": "83",
+                    "Quantity": 1,
+                    "Kaspi_name_core": "Nike_Tee_Black",
+                    "OrderID": "1001",
+                    "MY_SIZE": "L",
+                    "PROBABLE_SIZE": "XL",
+                    "KASPI_OFFER_NAME": "Nike Tee Black",
+                    "SKU_key": "SKU-1",
+                    "_db_row_id": "1",
+                    "_line_key": "1001|1",
+                    "_probable_size_source": "CUSTOMER",
+                    "_probable_size_confidence": "HIGH",
+                }
+            ],
+        ),
+        "Run_Control": rows_to_matrix(
+            contract.tabs["Run_Control"].headers,
+            [{"target_date": "2026-04-15", "ready_for_closeout": "HOLD"}],
+        ),
+    }
+    fresh_payload = {
+        "README": [{"field": "target_date", "value": "2026-04-15", "notes": "Operational date"}],
+        "SalesRaw_Today": [
+            {
+                "Status": "TODAY",
+                "Date": "2026-04-15",
+                "STORE_NAME": "Universal",
+                "HEIGHT": "",
+                "WEIGHT": "",
+                "Quantity": 1,
+                "Kaspi_name_core": "Nike_Tee_Black",
+                "OrderID": "1001",
+                "MY_SIZE": "",
+                "PROBABLE_SIZE": "XL",
+                "KASPI_OFFER_NAME": "Nike Tee Black",
+                "SKU_key": "SKU-1",
+                "_db_row_id": "1",
+                "_line_key": "1001|1",
+                "_probable_size_source": "CUSTOMER",
+                "_probable_size_confidence": "HIGH",
+                "ExpressDeliveryStatus": "EXPRESS",
+            }
+        ],
+        "Run_Control": [{"target_date": "2026-04-15", "ready_for_closeout": "HOLD"}],
+    }
+
+    plan = build_publish_plan(
+        contract=contract,
+        before_snapshot=before_snapshot,
+        fresh_payload=fresh_payload,
+        target_date="2026-04-15",
+    )
+
+    final_row = plan["tab_actions"]["SalesRaw_Today"]["final_rows"][0]
+    assert final_row["HEIGHT"] == "181"
+    assert final_row["WEIGHT"] == "83"
+    assert final_row["MY_SIZE"] == "L"
+    assert final_row["ExpressDeliveryStatus"] == "EXPRESS"
 
 
 def test_build_publish_plan_same_day_appends_new_salesraw_rows_only_at_bottom():

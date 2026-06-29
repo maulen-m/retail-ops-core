@@ -39,6 +39,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - `Run_Control`
 - `SalesRaw_Today` is a UI-only CRM-like slice, not a workbook formula surface.
 - `SalesRaw_Today` omits `Phone`; Kaspi no longer provides reliable phone values in the current daily path.
+- `SalesRaw_Today.ExpressDeliveryStatus` is a system-owned visible delivery label from DB/API facts. Current values are `EXPRESS`, `SELF_PICKUP`, `PICKUP`, `STANDARD`, or blank.
 - Helper columns are hidden and system-owned.
 - Other tabs (`Orders_Today`, `Needs_Size`, `Shipping_Queue`, `Exceptions`, `Shipped_Today`) are derived support views only.
 
@@ -114,7 +115,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
       - workbook has zero rows with `Плановая дата передачи курьеру == target date`
   - `closeout`:
     - DB preflight
-    - identity sync
+    - identity sync skipped by design; closeout must not depend on the local CRM workbook
     - Google board layout
     - active store token / merchant UID context
     - Telegram delivery config
@@ -234,7 +235,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - final size writeback
   - DB-first shipping
   - DB-first waybill download
-  - bundle build
+  - DB-first bundle build; CRM workbook rows are a legacy fallback only when DB-sized orders are unavailable
   - Telegram-primary delivery with WhatsApp fallback only when Telegram sends zero PDFs
 - Every closeout run writes a dedicated evidence folder under:
   - `exports/google_ops_board/workflow_runs/<YYYY-MM-DD>/<run_id>/`

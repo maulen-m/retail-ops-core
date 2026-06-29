@@ -1,4 +1,4 @@
-version: 2
+version: 3
 sync_mode: db_first_google_sheets_phase2_salesraw
 spreadsheet_id: 1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg
 write_env_gate: ENABLE_GOOGLE_OPS_BOARD_WRITE
@@ -34,6 +34,7 @@ tabs:
       - _line_key
       - _probable_size_source
       - _probable_size_confidence
+      - ExpressDeliveryStatus
     ui:
       frozen_row_count: 1
       min_row_count: 2000

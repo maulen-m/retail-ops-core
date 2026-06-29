@@ -437,9 +437,18 @@ def rows_to_matrix(headers: list[str], rows: list[dict[str, Any]]) -> list[list[
 def _resolve_header_mapping(
     expected_headers: list[str],
     observed_row: list[Any],
+    *,
+    allow_trailing_missing: bool = False,
 ) -> tuple[bool, list[int], list[int]]:
     observed = [str(cell or "").strip() for cell in observed_row]
     if observed[: len(expected_headers)] == expected_headers:
+        return True, list(range(len(expected_headers))), []
+    if (
+        allow_trailing_missing
+        and observed
+        and len(observed) < len(expected_headers)
+        and observed == expected_headers[: len(observed)]
+    ):
         return True, list(range(len(expected_headers))), []
 
     nonblank_headers = [(idx, value) for idx, value in enumerate(observed) if value]
@@ -453,7 +462,11 @@ def _resolve_header_mapping(
 def extract_rows_from_matrix(headers: list[str], matrix: list[list[Any]] | None) -> list[dict[str, Any]]:
     if not matrix:
         return []
-    has_header, header_indices, _blank_columns = _resolve_header_mapping(headers, matrix[0])
+    has_header, header_indices, _blank_columns = _resolve_header_mapping(
+        headers,
+        matrix[0],
+        allow_trailing_missing=True,
+    )
     data_rows = matrix[1:] if has_header else matrix
     rows: list[dict[str, Any]] = []
     for values in data_rows:
@@ -473,7 +486,11 @@ def extract_rows_with_positions_from_matrix(
 ) -> list[dict[str, Any]]:
     if not matrix:
         return []
-    has_header, header_indices, _blank_columns = _resolve_header_mapping(headers, matrix[0])
+    has_header, header_indices, _blank_columns = _resolve_header_mapping(
+        headers,
+        matrix[0],
+        allow_trailing_missing=True,
+    )
     start_index = 1 if has_header else 0
     rows: list[dict[str, Any]] = []
     for sheet_row, values in enumerate(matrix[start_index:], start=start_index + 1):

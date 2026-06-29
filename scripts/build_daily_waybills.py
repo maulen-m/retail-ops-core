@@ -2421,10 +2421,9 @@ def main(
         'whatsapp_multi_line': 0,
     }
 
-    crm_df = load_crm_dataframe(crm_path, sheet_name)
-
     # Read orders from the current CRM batch only.
     resolved_db_path = resolve_db_path(db_path)
+    crm_df: Optional[pd.DataFrame] = None
     orders: list[OrderItem] = []
     db_orders: list[OrderItem] = []
     api_order_ids: set[str] = set()
@@ -2505,6 +2504,7 @@ def main(
             logger.info("Using DB-first size decisions for order selection")
 
     if not orders:
+        crm_df = load_crm_dataframe(crm_path, sheet_name)
         orders = read_crm_orders(
             crm_path,
             sheet_name,
@@ -2544,7 +2544,7 @@ def main(
         missing_report_rows: list[dict] = []
         missing_crm_ids: set[str] = set()
         missing_size_ids: set[str] = set()
-        if db_orders or api_order_ids:
+        if (db_orders or api_order_ids) and crm_df is not None:
             base_ids = api_order_ids or {o.order_id for o in db_orders}
             missing_crm_ids, missing_size_ids = get_crm_missing_info(
                 crm_path,
@@ -2567,6 +2567,10 @@ def main(
                     'order_id': oid,
                     'reason': 'NO_FINAL_SIZE',
                 })
+        elif db_orders or api_order_ids:
+            logger.info(
+                "Skipping CRM missing diagnostics; DB-first waybill build has no CRM workbook dependency."
+            )
         missing_rows = collect_missing_rows(missing, missing_report_rows)
 
         # Group by store
