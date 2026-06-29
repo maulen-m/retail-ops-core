@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from zipfile import BadZipFile
 
 from openpyxl import Workbook
 
@@ -387,3 +388,85 @@ def test_ensure_prewindow_health_closeout_profile_warns_on_whatsapp_when_telegra
     assert report["checks"]["whatsapp_smoke"]["ok"] is False
     assert report["checks"]["whatsapp_smoke"]["blocking"] is False
     assert report["checks"]["whatsapp_smoke"]["warning_only"] is True
+
+
+def test_closeout_profile_reuses_same_day_identity_artifact_on_workbook_zip_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract = load_ops_board_contract()
+    workbook = tmp_path / "crm.xlsx"
+    _write_workbook(workbook)
+    db_path = tmp_path / "app.db"
+    db_path.write_bytes(b"sqlite")
+    calls = {"import": 0}
+
+    monkeypatch.setenv("ENABLE_KASPI_WORKBOOK_MAP_SYNC", "1")
+    monkeypatch.setattr(health_mod, "validate_local_db", lambda _path: [])
+    monkeypatch.setattr(
+        health_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: _FakeClient(contract),
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "import_map",
+        lambda **_kwargs: calls.__setitem__("import", calls["import"] + 1) or {"status": "APPLIED"},
+    )
+    monkeypatch.setattr(health_mod, "rebuild_identity_map", lambda **_kwargs: {"status": "APPLIED"})
+    monkeypatch.setattr(
+        health_mod,
+        "_build_store_context_report",
+        lambda _stores: {"ok": True, "stores": [], "failure_count": 0, "failures": []},
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "_build_telegram_delivery_config_report",
+        lambda: {"ok": True, "token_configured": True, "chat_id_configured": True},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "_run_whatsapp_smoke_check",
+        lambda *, verbose: {"ok": False, "issues": [{"code": "qr_visible"}]},
+    )
+    monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
+
+    first = health_mod.ensure_prewindow_health(
+        target_date=health_mod.date(2026, 6, 29),
+        db_path=db_path,
+        contract_path=health_mod.DEFAULT_CONTRACT_PATH,
+        service_account_json=tmp_path / "svc.json",
+        spreadsheet_id="sheet-id",
+        output_root=tmp_path / "health",
+        workbook_path=workbook,
+        stores_config_path=health_mod.DEFAULT_KASPI_STORES_CONFIG,
+        apply=True,
+        reason="prewindow",
+        profile=health_mod.HEALTH_PROFILE_FULL,
+    )
+
+    def _raise_bad_zip(**_kwargs):
+        raise BadZipFile("File is not a zip file")
+
+    monkeypatch.setattr(health_mod, "import_map", _raise_bad_zip)
+    second = health_mod.ensure_prewindow_health(
+        target_date=health_mod.date(2026, 6, 29),
+        db_path=db_path,
+        contract_path=health_mod.DEFAULT_CONTRACT_PATH,
+        service_account_json=tmp_path / "svc.json",
+        spreadsheet_id="sheet-id",
+        output_root=tmp_path / "health",
+        workbook_path=workbook,
+        stores_config_path=health_mod.DEFAULT_KASPI_STORES_CONFIG,
+        apply=True,
+        reason="closeout",
+        profile=health_mod.HEALTH_PROFILE_CLOSEOUT,
+    )
+
+    assert first["checks"]["identity_sync"]["ok"] is True
+    assert second["ok"] is True
+    assert second["identity_sync_reused"] is True
+    assert second["identity_sync_reused_reason"] == "same_day_identity_sync_artifact_after_workbook_read_failure"
+    assert second["checks"]["identity_sync"]["reused_from_profile"] == health_mod.HEALTH_PROFILE_FULL
+    assert second["checks"]["identity_sync"]["current_workbook_error"] == "File is not a zip file"

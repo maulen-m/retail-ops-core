@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile
 
 import yaml
 from dotenv import load_dotenv
@@ -139,6 +140,48 @@ def _profile_skipped_report(*, profile: str, check_name: str) -> dict[str, Any]:
         "skipped": True,
         "reason": f"profile={profile} excludes {check_name}",
     }
+
+
+def _is_workbook_read_failure(exc: Exception) -> bool:
+    detail = str(exc).strip().lower()
+    return isinstance(exc, BadZipFile) or any(
+        marker in detail
+        for marker in (
+            "file is not a zip file",
+            "not a zipfile",
+            "excel file format cannot be determined",
+        )
+    )
+
+
+def _load_same_day_successful_identity_sync(
+    *,
+    target_date: date,
+    output_root: Path,
+    current_report_path: Path,
+    require_apply: bool,
+) -> dict[str, Any] | None:
+    for profile in (HEALTH_PROFILE_FULL, HEALTH_PROFILE_PUBLISH, HEALTH_PROFILE_CLOSEOUT):
+        report_path = resolve_prewindow_health_report_path(target_date, output_root, profile=profile)
+        if report_path == current_report_path:
+            continue
+        payload = load_json_file(report_path)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("target_date") or "") != target_date.isoformat():
+            continue
+        if require_apply and str(payload.get("mode") or "") != "apply":
+            continue
+        identity_sync = ((payload.get("checks") or {}).get("identity_sync")) or {}
+        if not identity_sync.get("ok"):
+            continue
+        reused_identity = dict(identity_sync)
+        reused_identity["reused"] = True
+        reused_identity["reused_from_profile"] = profile
+        reused_identity["reused_from_report_path"] = str(report_path)
+        reused_identity["reuse_reason"] = "same_day_identity_sync_artifact_after_workbook_read_failure"
+        return reused_identity
+    return None
 
 
 def _build_google_layout_report(*, client: GoogleOpsBoardClient, contract) -> dict[str, Any]:
@@ -431,10 +474,25 @@ def ensure_prewindow_health(
                     apply=apply,
                 )
         except Exception as exc:
-            report["checks"]["identity_sync"] = {
-                "ok": False,
-                "error": str(exc),
-            }
+            same_day_identity_sync = None
+            if resolved_profile == HEALTH_PROFILE_CLOSEOUT and _is_workbook_read_failure(exc):
+                same_day_identity_sync = _load_same_day_successful_identity_sync(
+                    target_date=target_date,
+                    output_root=Path(output_root).expanduser(),
+                    current_report_path=report_path,
+                    require_apply=apply,
+                )
+            if same_day_identity_sync:
+                same_day_identity_sync["current_workbook_error"] = str(exc)
+                same_day_identity_sync["current_workbook_fingerprint"] = fingerprint
+                report["checks"]["identity_sync"] = same_day_identity_sync
+                report["identity_sync_reused"] = True
+                report["identity_sync_reused_reason"] = same_day_identity_sync["reuse_reason"]
+            else:
+                report["checks"]["identity_sync"] = {
+                    "ok": False,
+                    "error": str(exc),
+                }
     else:
         report["checks"]["identity_sync"] = {"ok": False, "error": "skipped: db_preflight failed"}
 

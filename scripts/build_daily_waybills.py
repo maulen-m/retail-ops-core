@@ -934,6 +934,11 @@ def enrich_orders_with_crm(
     """Use CRM rows to enrich grouping fields (Kaspi_name_core, MY_SIZE, qty)."""
     if not db_orders:
         return []
+    if crm_df is None:
+        logger.warning(
+            "CRM workbook unavailable; using DB-first order rows without CRM enrichment."
+        )
+        return db_orders
 
     order_ids = {o.order_id for o in db_orders}
     crm_orders = read_crm_orders(
@@ -989,7 +994,14 @@ def get_crm_missing_info(
 
     df = crm_df
     if df is None:
-        df = pd.read_excel(crm_path, sheet_name=sheet_name)
+        try:
+            df = pd.read_excel(crm_path, sheet_name=sheet_name)
+        except Exception as exc:
+            logger.warning(
+                "CRM workbook unavailable; skipping CRM missing-size diagnostics "
+                f"for DB-first waybill build: {exc}"
+            )
+            return set(), set()
     df, _ = select_operational_crm_rows(
         df,
         target_date=target_date,

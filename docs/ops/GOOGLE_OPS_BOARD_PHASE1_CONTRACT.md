@@ -127,6 +127,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - Automatic identity sync is keyed by workbook fingerprint:
   - workbook catalog import + CRM history rebuild must run before the first live publish of a day
   - same-day later checks may reuse the last green identity sync only when the workbook fingerprint is unchanged
+  - closeout may reuse a same-day green identity-sync artifact from another health profile if the current workbook is unreadable/truncated, because closeout is DB + Google-board truth and must not mutate or restore the workbook during the shipping send path
   - runtime checks still rerun on each health evaluation even when identity sync is reused
 - Same-day derived support tabs rewrite from fresh DB truth on each publish:
   - `Orders_Today`
