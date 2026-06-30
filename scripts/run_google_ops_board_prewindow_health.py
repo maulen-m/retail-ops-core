@@ -424,9 +424,10 @@ def ensure_prewindow_health(
     _load_repo_dotenv()
     ledger_env = os.environ
     ensure_kaspi_api_call_ledger_env(ledger_env, target_date=target_date, project_root=PROJECT_ROOT)
-    _require_apply_gate(apply)
     resolved_profile = _resolve_health_profile(profile)
     profile_checks = HEALTH_PROFILE_CHECKS[resolved_profile]
+    if profile_checks["identity_sync"]:
+        _require_apply_gate(apply)
     report_path = resolve_prewindow_health_report_path(target_date, output_root, profile=resolved_profile)
     previous_report = load_json_file(report_path)
     workbook = Path(workbook_path or _resolve_workbook_path()).expanduser()

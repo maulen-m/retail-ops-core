@@ -223,6 +223,66 @@ def test_closeout_profile_skips_workbook_identity_sync(monkeypatch, tmp_path: Pa
     assert report["checks"]["identity_sync"]["reason"] == "profile=closeout excludes identity_sync"
 
 
+def test_closeout_profile_apply_does_not_require_workbook_sync_gate(monkeypatch, tmp_path: Path) -> None:
+    contract = load_ops_board_contract()
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_bytes(b"not-an-xlsx")
+    db_path = tmp_path / "app.db"
+    db_path.write_bytes(b"sqlite")
+
+    monkeypatch.delenv("ENABLE_KASPI_WORKBOOK_MAP_SYNC", raising=False)
+    monkeypatch.setattr(health_mod, "validate_local_db", lambda _path: [])
+    monkeypatch.setattr(
+        health_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: _FakeClient(contract),
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "import_map",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("closeout must not import CRM maps")),
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "rebuild_identity_map",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("closeout must not rebuild CRM identity")),
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "_build_store_context_report",
+        lambda _stores: {"ok": True, "stores": [], "failure_count": 0, "failures": []},
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "_build_telegram_delivery_config_report",
+        lambda: {"ok": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "_run_whatsapp_smoke_check",
+        lambda *, verbose: {"ok": True, "issues": [], "active_chat_title": "Заказы"},
+    )
+    monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
+
+    report = health_mod.ensure_prewindow_health(
+        target_date=health_mod.date(2026, 6, 30),
+        db_path=db_path,
+        contract_path=health_mod.DEFAULT_CONTRACT_PATH,
+        service_account_json=tmp_path / "svc.json",
+        spreadsheet_id="sheet-id",
+        output_root=tmp_path / "health",
+        workbook_path=workbook,
+        stores_config_path=health_mod.DEFAULT_KASPI_STORES_CONFIG,
+        apply=True,
+        reason="closeout-apply-test",
+        profile=health_mod.HEALTH_PROFILE_CLOSEOUT,
+    )
+
+    assert report["ok"] is True
+    assert report["checks"]["identity_sync"]["ok"] is True
+    assert report["checks"]["identity_sync"]["skipped"] is True
+
+
 def test_run_whatsapp_smoke_check_uses_temp_launch_mode(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
