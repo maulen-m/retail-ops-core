@@ -105,7 +105,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
     - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/prewindow_health.json`
   - `publish`:
     - DB preflight
-    - identity sync
+    - identity sync skipped by design; routine board publish must not depend on the local CRM workbook
     - Google board layout
     - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/publish_health.json`
     - must stay browser-silent; do not open WhatsApp during routine publish backstop
@@ -125,11 +125,10 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - Full closeout health is mandatory before closeout external actions; Telegram config and store context block closeout, while WhatsApp smoke is report-visible but does not block Telegram-primary closeout.
 - The early closeout watcher must not run closeout health directly. It only detects stable READY / `18:57` auto-readiness and launches `scripts/run_google_ops_board_closeout_scheduler.py --resume`.
 - `scripts/run_google_ops_board_closeout.py` owns the single closeout health profile immediately before external closeout actions. This avoids duplicate watcher-side health/API/browser churn while keeping the irreversible action gated.
-- Automatic identity sync is keyed by workbook fingerprint:
-  - workbook catalog import + CRM history rebuild must run before the first live publish of a day
-  - same-day later checks may reuse the last green identity sync only when the workbook fingerprint is unchanged
-  - closeout may reuse a same-day green identity-sync artifact from another health profile if the current workbook is unreadable/truncated, because closeout is DB + Google-board truth and must not mutate or restore the workbook during the shipping send path
-  - runtime checks still rerun on each health evaluation even when identity sync is reused
+- Automatic identity sync is limited to the `full` health profile and keyed by workbook fingerprint.
+- Routine `publish` and `closeout` profiles skip workbook identity sync because daily board and shipping truth are DB + Google-board based.
+- Same-day `full` checks may reuse the last green identity sync only when the workbook fingerprint is unchanged.
+- Runtime checks still rerun on each health evaluation even when identity sync is reused.
 - Same-day derived support tabs rewrite from fresh DB truth on each publish:
   - `Orders_Today`
   - `Needs_Size`

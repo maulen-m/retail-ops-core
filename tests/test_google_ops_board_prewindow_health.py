@@ -346,7 +346,7 @@ def test_ensure_prewindow_health_loads_repo_dotenv(monkeypatch, tmp_path: Path) 
 def test_ensure_prewindow_health_publish_profile_skips_whatsapp_and_store_context(monkeypatch, tmp_path: Path) -> None:
     contract = load_ops_board_contract()
     workbook = tmp_path / "crm.xlsx"
-    _write_workbook(workbook)
+    workbook.write_bytes(b"PK\x03\x04truncated")
     db_path = tmp_path / "app.db"
     db_path.write_bytes(b"sqlite")
 
@@ -357,8 +357,16 @@ def test_ensure_prewindow_health_publish_profile_skips_whatsapp_and_store_contex
         "from_service_account_file",
         lambda *_args, **_kwargs: _FakeClient(contract),
     )
-    monkeypatch.setattr(health_mod, "import_map", lambda **_kwargs: {"status": "APPLIED"})
-    monkeypatch.setattr(health_mod, "rebuild_identity_map", lambda **_kwargs: {"status": "APPLIED"})
+    monkeypatch.setattr(
+        health_mod,
+        "import_map",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("publish must not import CRM maps")),
+    )
+    monkeypatch.setattr(
+        health_mod,
+        "rebuild_identity_map",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("publish must not rebuild CRM identity")),
+    )
     monkeypatch.setattr(
         health_mod,
         "_build_store_context_report",
@@ -388,6 +396,9 @@ def test_ensure_prewindow_health_publish_profile_skips_whatsapp_and_store_contex
     assert report["ok"] is True
     assert report["profile"] == health_mod.HEALTH_PROFILE_PUBLISH
     assert report["report_path"].endswith("publish_health.json")
+    assert report["identity_sync_reused"] is False
+    assert report["checks"]["identity_sync"]["skipped"] is True
+    assert report["checks"]["identity_sync"]["reason"] == "profile=publish excludes identity_sync"
     assert report["checks"]["store_context"]["skipped"] is True
     assert report["checks"]["whatsapp_smoke"]["skipped"] is True
 

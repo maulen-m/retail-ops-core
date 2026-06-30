@@ -80,7 +80,7 @@ HEALTH_PROFILE_CHECKS: dict[str, dict[str, bool]] = {
         "whatsapp_smoke": True,
     },
     HEALTH_PROFILE_PUBLISH: {
-        "identity_sync": True,
+        "identity_sync": False,
         "store_context": False,
         "telegram_delivery_config": False,
         "whatsapp_smoke": False,
