@@ -20,6 +20,7 @@ Google Ops Board operational contract (employee sizing surface):
 - `PROBABLE_SIZE` is DB-computed only; Google Sheets does not own business formulas.
 - `Status` is operational and limited to `TODAY` / `OVERDUE` using waybill carry-forward truth, not simple row age.
 - Same-day publishes refresh system-owned fields in place while preserving employee-entered `HEIGHT`, `WEIGHT`, and `MY_SIZE`.
+- Same-day publishes preserve only rows still present in DB-selected shipping truth; cancelled/archived rows that drop out of fresh truth must be removed from the live board.
 - Before the explicit `18:57` fallback, automation must not fill `MY_SIZE` defaults while the employee is manually sizing orders.
 - The first daily Google Ops Board append/publish must order visible shipment rows by store name A-Z in addition to the normal deterministic row order.
 - `SalesRaw_Today` is protected except for `HEIGHT`, `WEIGHT`, and `MY_SIZE`; `Run_Control` is protected except for operator input cells.
@@ -44,7 +45,7 @@ Current daily scheduler contract (GMT+5):
     - `sync_kaspi_orders`
     - `enrich_kaspi_orders_from_activeorders`
     - Google Ops Board publish
-  - publish runs use the quiet `publish` health profile: DB preflight + identity sync + Google board contract only
+  - publish runs use the quiet `publish` health profile: DB preflight + Google board contract only; identity sync is skipped by design
   - publish backstop must stay browser-silent; it does not open WhatsApp
   - publish fails closed when `excel_ui/ActiveOrders/ActiveOrders.xlsx` is stale for the target date
 - Google Ops Board size writeback jobs: `17:15`, `17:30`, `17:45`, `18:00`, `18:15`
@@ -90,6 +91,7 @@ Canonical business automation pause/resume:
   - enable fast: `ENABLE_BUSINESS_AUTOMATION_CONTROL=1 python3 scripts/run_daily_shipping_enablement.py enable --apply`
   - validate separately after the 17:00 all-store cutoff: `python3 scripts/run_daily_shipping_enablement.py validate`
   - before cutoff, validation should defer instead of doing premature full-proof work
+  - the post-cutoff green gate is DB-first closeout health plus Google Ops Board validate-only; it must not depend on the local CRM workbook
 
 Daily ops orchestrator profile contract:
 - `today-fast` for strict current-day checks

@@ -17,7 +17,13 @@ from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.waybill_delivery_completion import delivery_completion_state  # noqa: E402
+
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "daily_shipping_enablement"
+DEFAULT_GOOGLE_SERVICE_ACCOUNT_JSON = Path("~/Docs/Business/S/ab-ops-board-sync-key.json")
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 CONTROL_ENV_GATE = "ENABLE_BUSINESS_AUTOMATION_CONTROL"
 DEFAULT_CUTOFF_HOUR = 17
@@ -220,37 +226,46 @@ def run_enable(args: argparse.Namespace, *, runner: Runner = default_runner) -> 
     return 0 if ok else 1
 
 
-def validation_commands(run_dir: Path, *, target_date: date, lookback_days: int) -> list[tuple[str, list[str]]]:
-    import_status = run_dir / "import_status_postcutoff.json"
+def _service_account_args(service_account_json: Path | None) -> list[str]:
+    if service_account_json is None:
+        return []
+    text = str(Path(service_account_json).expanduser())
+    return ["--service-account-json", text] if text else []
+
+
+def resolve_validation_service_account(explicit_path: Path | None) -> Path | None:
+    if explicit_path is not None:
+        return Path(explicit_path).expanduser()
+    if DEFAULT_GOOGLE_SERVICE_ACCOUNT_JSON.exists():
+        return DEFAULT_GOOGLE_SERVICE_ACCOUNT_JSON
+    return None
+
+
+def validation_commands(
+    run_dir: Path,
+    *,
+    target_date: date,
+    lookback_days: int,
+    service_account_json: Path | None = None,
+) -> list[tuple[str, list[str]]]:
+    service_account_args = _service_account_args(service_account_json)
     return [
         (
-            "import_status_postcutoff",
+            "closeout_health_postcutoff",
             [
                 python_cmd(),
-                str(PROJECT_ROOT / "scripts" / "report_import_status.py"),
-                "--date",
-                target_date.isoformat(),
-                "--since-days",
-                str(lookback_days),
-                "--json-out",
-                str(import_status),
-            ],
-        ),
-        (
-            "evaluate_import_postcutoff",
-            [
-                python_cmd(),
-                str(PROJECT_ROOT / "scripts" / "evaluate_import_run_result.py"),
-                "--step2-rc",
-                "0",
-                "--health-json",
-                str(import_status),
-                "--activeorders-file",
-                str(PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "ActiveOrders.xlsx"),
-                "--crm-file",
-                str(PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"),
+                str(PROJECT_ROOT / "scripts" / "run_google_ops_board_prewindow_health.py"),
                 "--target-date",
                 target_date.isoformat(),
+                "--profile",
+                "closeout",
+                "--reason",
+                "daily-shipping-postcutoff-validate",
+                "--output-root",
+                str(run_dir / "health"),
+                "--json-out",
+                str(run_dir / "closeout_health_postcutoff.json"),
+                *service_account_args,
             ],
         ),
         (
@@ -265,6 +280,7 @@ def validation_commands(run_dir: Path, *, target_date: date, lookback_days: int)
                 "--validate-only",
                 "--output-json",
                 str(run_dir / "google_ops_board_validate_postcutoff.json"),
+                *service_account_args,
             ],
         ),
     ]
@@ -276,15 +292,22 @@ def build_no_send_no_autofill_report(*, target_date: date, run_dir: Path) -> dic
     today_send_dirs = []
     if send_root.exists():
         today_send_dirs = sorted(str(path) for path in send_root.iterdir() if path.is_dir() and path.name.startswith(today_prefix))
+    delivery_completion: dict[str, Any] = {}
+    if today_send_dirs:
+        delivery_completion = delivery_completion_state(
+            today_folder=PROJECT_ROOT / "excel_ui" / "Kaspi_orders" / "Today",
+            target_date=target_date,
+        )
     auto_root = PROJECT_ROOT / "exports" / "google_ops_board" / "auto_probable_fill" / target_date.isoformat()
     auto_files = sorted(str(path) for path in auto_root.rglob("*") if path.is_file()) if auto_root.exists() else []
     report = {
         "target_date": target_date.isoformat(),
         "today_send_batch_dir_count": len(today_send_dirs),
         "today_send_batch_dirs": today_send_dirs,
+        "telegram_delivery_completion": delivery_completion,
         "auto_probable_fill_file_count": len(auto_files),
         "auto_probable_fill_files": auto_files,
-        "premature_telegram_send_detected": bool(today_send_dirs),
+        "premature_telegram_send_detected": bool(today_send_dirs) and not bool(delivery_completion.get("completed")),
         "premature_auto_fill_detected": bool(auto_files),
     }
     write_json(run_dir / "no_send_no_autofill_postcutoff.json", report)
@@ -328,9 +351,15 @@ def run_validate(args: argparse.Namespace, *, runner: Runner = default_runner) -
     run_dir = build_run_dir(args.output_root, target_date=target_date, action="validate")
     run_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
+    service_account_json = resolve_validation_service_account(args.service_account_json)
     results = [
         run_command(label=label, command=command, run_dir=run_dir, runner=runner, env=env)
-        for label, command in validation_commands(run_dir, target_date=target_date, lookback_days=args.lookback_days)
+        for label, command in validation_commands(
+            run_dir,
+            target_date=target_date,
+            lookback_days=args.lookback_days,
+            service_account_json=service_account_json,
+        )
     ]
     no_send = build_no_send_no_autofill_report(target_date=target_date, run_dir=run_dir)
     ok = all(result.returncode == 0 for result in results)
@@ -369,6 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser("validate", help="Run post-cutoff read-only shipping validation.")
     validate_parser.add_argument("--wait-until-cutoff", action="store_true")
     validate_parser.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS)
+    validate_parser.add_argument("--service-account-json", type=Path, default=None)
     return parser
 
 

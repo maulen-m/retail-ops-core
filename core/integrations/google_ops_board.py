@@ -641,6 +641,7 @@ class GoogleOpsBoardClient:
         self._request("POST", url, json={})
 
     def write_tab_rows(self, tab_name: str, headers: list[str], rows: list[dict[str, Any]]) -> None:
+        self.clear_tab(tab_name)
         encoded_range = quote(f"{tab_name}!A1")
         url = (
             f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values/{encoded_range}"

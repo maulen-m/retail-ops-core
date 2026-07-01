@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from core.integrations.google_ops_board import (
+    GoogleOpsBoardClient,
     build_tab_reorder_requests,
     build_tab_ui_requests,
     extract_rows_from_matrix,
@@ -1929,6 +1930,112 @@ def test_build_publish_plan_same_day_preserves_existing_rows_and_only_appends_ne
     assert [row["order_id"] for row in plan["tab_actions"]["Orders_Today"]["final_rows"]] == ["1002", "1001"]
 
 
+def test_build_publish_plan_same_day_drops_stale_salesraw_rows_with_preserved_editables():
+    contract = load_ops_board_contract()
+    before_snapshot = {
+        "README": rows_to_matrix(
+            contract.tabs["README"].headers,
+            [{"field": "target_date", "value": "2026-04-15", "notes": "Operational date"}],
+        ),
+        "SalesRaw_Today": rows_to_matrix(
+            contract.tabs["SalesRaw_Today"].headers,
+            [
+                {
+                    "Status": "TODAY",
+                    "Date": "2026-04-15",
+                    "STORE_NAME": "Universal",
+                    "HEIGHT": "170",
+                    "WEIGHT": "70",
+                    "OrderID": "STALE",
+                    "MY_SIZE": "M",
+                    "_db_row_id": "9",
+                },
+                {
+                    "Status": "TODAY",
+                    "Date": "2026-04-15",
+                    "STORE_NAME": "AcmeWear",
+                    "HEIGHT": "181",
+                    "WEIGHT": "83",
+                    "Quantity": 1,
+                    "Kaspi_name_core": "AcmeWear_Set",
+                    "OrderID": "1001",
+                    "MY_SIZE": "L",
+                    "PROBABLE_SIZE": "XL",
+                    "KASPI_OFFER_NAME": "AcmeWear Set",
+                    "SKU_key": "SKU-1",
+                    "_db_row_id": "1",
+                    "_line_key": "1001|1",
+                    "_probable_size_source": "CUSTOMER",
+                    "_probable_size_confidence": "HIGH",
+                },
+            ],
+        ),
+        "Run_Control": rows_to_matrix(
+            contract.tabs["Run_Control"].headers,
+            [{"target_date": "2026-04-15", "ready_for_closeout": "HOLD"}],
+        ),
+    }
+    fresh_payload = {
+        "README": [{"field": "target_date", "value": "2026-04-15", "notes": "Operational date"}],
+        "SalesRaw_Today": [
+            {
+                "Status": "TODAY",
+                "Date": "2026-04-15",
+                "STORE_NAME": "AcmeWear",
+                "HEIGHT": "",
+                "WEIGHT": "",
+                "Quantity": 2,
+                "Kaspi_name_core": "AcmeWear_Set",
+                "OrderID": "1001",
+                "MY_SIZE": "",
+                "PROBABLE_SIZE": "XL",
+                "KASPI_OFFER_NAME": "AcmeWear Set",
+                "SKU_key": "SKU-1",
+                "_db_row_id": "1",
+                "_line_key": "1001|1",
+                "_probable_size_source": "CUSTOMER",
+                "_probable_size_confidence": "HIGH",
+            },
+            {
+                "Status": "TODAY",
+                "Date": "2026-04-15",
+                "STORE_NAME": "Universal",
+                "HEIGHT": "",
+                "WEIGHT": "",
+                "Quantity": 1,
+                "Kaspi_name_core": "Universal_Set",
+                "OrderID": "1002",
+                "MY_SIZE": "",
+                "PROBABLE_SIZE": "L",
+                "KASPI_OFFER_NAME": "Universal Set",
+                "SKU_key": "SKU-2",
+                "_db_row_id": "2",
+                "_line_key": "1002|1",
+                "_probable_size_source": "PRODUCT_TYPE",
+                "_probable_size_confidence": "LOW",
+            },
+        ],
+        "Run_Control": [{"target_date": "2026-04-15", "ready_for_closeout": "HOLD"}],
+    }
+
+    plan = build_publish_plan(
+        contract=contract,
+        before_snapshot=before_snapshot,
+        fresh_payload=fresh_payload,
+        target_date="2026-04-15",
+    )
+
+    action = plan["tab_actions"]["SalesRaw_Today"]
+    assert action["mode"] == "rewrite_preserve"
+    assert action["append_rows"] == []
+    assert action["update_rows"] == []
+    assert [row["_db_row_id"] for row in action["final_rows"]] == ["1", "2"]
+    assert action["final_rows"][0]["HEIGHT"] == "181"
+    assert action["final_rows"][0]["WEIGHT"] == "83"
+    assert action["final_rows"][0]["MY_SIZE"] == "L"
+    assert action["final_rows"][0]["Quantity"] == 2
+
+
 def test_build_publish_plan_preserves_operator_fields_from_sheet_before_trailing_column_exists():
     contract = load_ops_board_contract()
     sales_headers = contract.tabs["SalesRaw_Today"].headers
@@ -2004,6 +2111,32 @@ def test_build_publish_plan_preserves_operator_fields_from_sheet_before_trailing
     assert final_row["WEIGHT"] == "83"
     assert final_row["MY_SIZE"] == "L"
     assert final_row["ExpressDeliveryStatus"] == "EXPRESS"
+
+
+def test_google_ops_board_full_tab_write_clears_existing_values_first():
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {}
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            return FakeResponse()
+
+    session = FakeSession()
+    client = GoogleOpsBoardClient("sheet-id", session)
+
+    client.write_tab_rows("SalesRaw_Today", ["col"], [{"col": "value"}])
+
+    assert [call[0] for call in session.calls] == ["POST", "PUT"]
+    assert session.calls[0][1].endswith("/values/SalesRaw_Today%21A%3AZZ:clear")
+    assert session.calls[1][1].endswith("/values/SalesRaw_Today%21A1?valueInputOption=RAW")
 
 
 def test_build_publish_plan_same_day_appends_new_salesraw_rows_only_at_bottom():

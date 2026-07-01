@@ -125,7 +125,10 @@ and corresponding tests before merge.
   - `catch-up`: `report_waybill_status.py --since-days 3 --include-overdue`
 - keep scheduler timings in sync with this contract and launchd plists
 - keep business automation pause/resume centralized through `scripts/manage_business_automation.py`; do not manually rediscover or hand-run one-off `launchctl bootout/bootstrap` sequences for routine proof windows or daily-ops restoration
-- daily shipping restoration may use `scripts/run_daily_shipping_enablement.py enable --apply` for the fast LaunchAgent resume and `scripts/run_daily_shipping_enablement.py validate` for the separate post-17:00 API/CRM/DB/Google-board proof
+- daily shipping restoration may use `scripts/run_daily_shipping_enablement.py enable --apply`
+  for the fast LaunchAgent resume and `scripts/run_daily_shipping_enablement.py validate`
+  for the separate post-17:00 DB-first closeout-health + Google-board validate-only
+  proof; routine shipping green must not depend on the local CRM workbook
 - keep frozen proof windows explicit: `verify --scope daily-ops --expect paused` must be green before boundary-sensitive proof work starts
 - keep daily operations restoration explicit: `verify --scope daily-ops --expect running` must be green before claiming order import, Google Ops Board, closeout watcher, Telegram control, and shipped-truth automation are live again
 - keep daily report contract fail-closed:

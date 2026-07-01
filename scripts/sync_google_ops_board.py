@@ -964,40 +964,67 @@ def _upsert_preserve_tab_rows(
     existing_rows_with_positions: list[dict[str, Any]],
 ) -> dict[str, Any]:
     existing_by_key: dict[str, dict[str, Any]] = {}
-    final_rows = [dict(entry["row"]) for entry in existing_rows_with_positions]
-    final_index_by_key: dict[str, int] = {}
-    for idx, entry in enumerate(existing_rows_with_positions):
+    fresh_keys = {
+        _clean_str(row.get(tab_contract.key_column))
+        for row in fresh_rows
+        if _clean_str(row.get(tab_contract.key_column))
+    }
+    stale_existing_rows: list[dict[str, Any]] = []
+    duplicate_existing_rows: list[dict[str, Any]] = []
+    for entry in existing_rows_with_positions:
         key = _clean_str(entry["row"].get(tab_contract.key_column))
-        if not key or key in existing_by_key:
+        if not key or key not in fresh_keys:
+            stale_existing_rows.append(entry)
+            continue
+        if key in existing_by_key:
+            duplicate_existing_rows.append(entry)
             continue
         existing_by_key[key] = entry
-        final_index_by_key[key] = idx
 
     update_rows: list[dict[str, Any]] = []
     append_rows: list[dict[str, Any]] = []
+    final_rows: list[dict[str, Any]] = []
+    seen_fresh_keys: set[str] = set()
+    rewrite_required = bool(stale_existing_rows or duplicate_existing_rows)
+    fresh_by_key = {
+        _clean_str(row.get(tab_contract.key_column)): row
+        for row in fresh_rows
+        if _clean_str(row.get(tab_contract.key_column))
+    }
+    for entry in existing_rows_with_positions:
+        key = _clean_str(entry["row"].get(tab_contract.key_column))
+        fresh = fresh_by_key.get(key)
+        if not key or fresh is None or key in seen_fresh_keys:
+            continue
+        merged = merge_rows_preserving_editables(
+            tab_contract=tab_contract,
+            fresh_rows=[fresh],
+            existing_rows=[entry["row"]],
+        )[0]
+        if not rewrite_required and merged != entry["row"]:
+            update_rows.append({"sheet_row": int(entry["sheet_row"]), "row": merged})
+        final_rows.append(merged)
+        seen_fresh_keys.add(key)
+
     for fresh in fresh_rows:
         key = _clean_str(fresh.get(tab_contract.key_column))
-        if key and key in existing_by_key:
-            existing_entry = existing_by_key[key]
-            merged = merge_rows_preserving_editables(
-                tab_contract=tab_contract,
-                fresh_rows=[fresh],
-                existing_rows=[existing_entry["row"]],
-            )[0]
-            if merged != existing_entry["row"]:
-                update_rows.append({"sheet_row": int(existing_entry["sheet_row"]), "row": merged})
-            final_rows[final_index_by_key[key]] = merged
+        if key and key in seen_fresh_keys:
             continue
         append_rows.append(fresh)
         final_rows.append(fresh)
 
+    if rewrite_required:
+        update_rows = []
+        append_rows = []
+
     return {
-        "mode": "upsert_preserve",
+        "mode": "rewrite_preserve" if rewrite_required else "upsert_preserve",
         "existing_rows": [dict(entry["row"]) for entry in existing_rows_with_positions],
         "fresh_rows": fresh_rows,
         "update_rows": update_rows,
         "append_rows": append_rows,
         "final_rows": final_rows,
+        "removed_rows": [dict(entry["row"]) for entry in stale_existing_rows + duplicate_existing_rows],
     }
 
 
@@ -1147,19 +1174,26 @@ def main(argv: list[str] | None = None) -> int:
         if action["mode"] == "rewrite" and action["existing_rows"] == action["final_rows"] and tab_name not in invalid_tabs:
             write_rows = 0
         header_update = tab_name in layout_header_update_tabs
+        clear_before_write = (
+            action["mode"] in {"rewrite", "rewrite_preserve"}
+            and action["existing_rows"] != action["final_rows"]
+        )
         operation_count = (
             len(action.get("update_rows") or [])
             + len(action.get("append_rows") or [])
             + write_rows
+            + (1 if clear_before_write else 0)
             + (1 if header_update else 0)
         )
         planned_write_operations += operation_count
         tab_counts[tab_name] = {
             "fresh_rows": len(action["fresh_rows"]),
             "existing_rows": len(action["existing_rows"]),
+            "removed_rows": len(action.get("removed_rows") or []),
             "update_rows": len(action.get("update_rows") or []),
             "append_rows": len(action["append_rows"]),
             "write_rows": len(action["final_rows"]),
+            "clear_before_write": clear_before_write,
             "header_update": header_update,
             "write_operations": operation_count,
         }

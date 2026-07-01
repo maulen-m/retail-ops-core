@@ -122,8 +122,99 @@ def test_validation_commands_are_read_only_post_cutoff_checks(tmp_path: Path) ->
     commands = enablement.validation_commands(tmp_path, target_date=date(2026, 6, 20), lookback_days=5)
     joined = "\n".join(" ".join(command) for _label, command in commands)
 
-    assert "report_import_status.py" in joined
-    assert "evaluate_import_run_result.py" in joined
+    assert "run_google_ops_board_prewindow_health.py" in joined
+    assert "--profile closeout" in joined
     assert "sync_google_ops_board.py" in joined
     assert "--validate-only" in joined
+    assert "report_import_status.py" not in joined
+    assert "evaluate_import_run_result.py" not in joined
+    assert "SALES_KSP_CRM_V3.xlsx" not in joined
     assert "--apply" not in joined
+
+
+def test_validation_commands_pass_service_account_when_provided(tmp_path: Path) -> None:
+    service_account = tmp_path / "service-account.json"
+    commands = enablement.validation_commands(
+        tmp_path,
+        target_date=date(2026, 6, 20),
+        lookback_days=5,
+        service_account_json=service_account,
+    )
+    joined = "\n".join(" ".join(command) for _label, command in commands)
+
+    assert joined.count("--service-account-json") == 2
+    assert str(service_account) in joined
+
+
+def test_postcutoff_no_send_report_allows_confirmed_telegram_delivery(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(enablement, "PROJECT_ROOT", tmp_path)
+    send_dir = (
+        tmp_path
+        / "excel_ui"
+        / "Kaspi_orders"
+        / "Today"
+        / "MERGED"
+        / "SEND"
+        / "20.06.26_MERGED_qnt5"
+    )
+    send_dir.mkdir(parents=True)
+    seen: dict[str, object] = {}
+
+    def fake_delivery_completion_state(**kwargs):
+        seen.update(kwargs)
+        return {
+            "completed": True,
+            "status": "TELEGRAM_CONFIRMED",
+            "channel": "telegram",
+            "manifest_count": 3,
+            "confirmed_count": 3,
+            "pending_count": 0,
+        }
+
+    monkeypatch.setattr(enablement, "delivery_completion_state", fake_delivery_completion_state)
+
+    report = enablement.build_no_send_no_autofill_report(
+        target_date=date(2026, 6, 20),
+        run_dir=tmp_path / "run",
+    )
+
+    assert report["today_send_batch_dir_count"] == 1
+    assert report["premature_telegram_send_detected"] is False
+    assert report["telegram_delivery_completion"]["status"] == "TELEGRAM_CONFIRMED"
+    assert seen["target_date"] == date(2026, 6, 20)
+
+
+def test_postcutoff_no_send_report_blocks_unconfirmed_send_batch(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(enablement, "PROJECT_ROOT", tmp_path)
+    send_dir = (
+        tmp_path
+        / "excel_ui"
+        / "Kaspi_orders"
+        / "Today"
+        / "MERGED"
+        / "SEND"
+        / "20.06.26_MERGED_qnt5"
+    )
+    send_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        enablement,
+        "delivery_completion_state",
+        lambda **_kwargs: {
+            "completed": False,
+            "status": "TELEGRAM_LEDGER_INCOMPLETE",
+            "channel": "telegram",
+            "manifest_count": 3,
+            "confirmed_count": 2,
+            "pending_count": 1,
+        },
+    )
+
+    report = enablement.build_no_send_no_autofill_report(
+        target_date=date(2026, 6, 20),
+        run_dir=tmp_path / "run",
+    )
+
+    assert report["today_send_batch_dir_count"] == 1
+    assert report["premature_telegram_send_detected"] is True
+    assert report["telegram_delivery_completion"]["pending_count"] == 1

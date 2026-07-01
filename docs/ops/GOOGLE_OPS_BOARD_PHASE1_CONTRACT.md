@@ -92,7 +92,10 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   not collapse rows by `OrderID + SKU_ID + Store`: separate Kaspi public
   offers/articles in one order remain separate board rows even when they resolve
   to the same internal SKU family.
-- Same-day `SalesRaw_Today` publishes use `upsert-preserve` semantics.
+- Same-day `SalesRaw_Today` publishes use preserve semantics for rows still
+  present in the fresh DB payload. Stale or duplicate live rows that are no
+  longer present in DB-selected shipping truth must be removed by a
+  preserve-aware rewrite.
 - Same-day `Run_Control` publishes also use `upsert-preserve` semantics.
 - Health profiles are explicit and write separate daily artifacts:
   - `full`:
@@ -135,8 +138,12 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - `Shipping_Queue`
   - `Exceptions`
   - `Shipped_Today`
-- A same-day publish must not remove or restructure already-published live rows.
-- A same-day publish may append only truly new rows.
+- A same-day publish must not remove or restructure fresh live rows that are
+  still present in DB-selected shipping truth.
+- A same-day publish must remove stale live rows that are no longer present in
+  DB-selected shipping truth, including rows that became cancelled or archived
+  after an earlier publish.
+- A same-day publish may append only truly new fresh rows.
 - A same-day publish must append truly new rows only at the bottom of the current live block.
 - A same-day publish may refresh system-owned fields in place while preserving employee-entered `HEIGHT`, `WEIGHT`, and `MY_SIZE`.
 - Publish cycles write source snapshots to `exports/google_ops_board/source_snapshots/<YYYY-MM-DD>/source_snapshot.json`.

@@ -126,7 +126,9 @@ python3 scripts/run_daily_shipping_enablement.py \
 
 Before the cutoff, `validate` exits as `DEFER_UNTIL_POST_CUTOFF` unless
 `--wait-until-cutoff` is supplied. This keeps the daily resume path fast while
-still preserving the strict API/CRM/DB/Google-board proof required for shipping.
+preserving the DB-first closeout health profile and Google Ops Board
+validate-only proof required for shipping. The routine shipping green gate does
+not depend on the local CRM workbook.
 
 ## Main-Goal Integration
 
