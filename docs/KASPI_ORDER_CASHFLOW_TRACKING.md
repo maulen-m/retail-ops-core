@@ -185,12 +185,24 @@ Validation hooks:
 
 ---
 
-## 13) OPEX + Business Insides Single Truth (2026-02-08)
+## 13) OPEX + Business Insides Single Truth (2026-02-08; updated 2026-07-02)
 
 OPEX commitments are now managed by canonical repo artifacts and synchronized into DB:
 - `config/opex/opex_schedule.yaml`
 - `config/opex/opex_commitments.csv`
-- sync entrypoint: `scripts/sync_opex_schedule.py`
+- current Stage-B sync entrypoint: `scripts/apply_opex_owner_input_schedule.py`
+- legacy January-protocol sync entrypoint: `scripts/sync_opex_schedule.py`
+
+For commitments dated on or after `2026-07-02`, the upstream source is the owner-input
+workbook `exports/opex_owner_input/2026-07-02/OPEX_and_Loans_OWNER_INPUT_MINIMAL_20260702.xlsx`,
+normalized by `core/cashflow/opex_owner_input.py` / `scripts/normalize_opex_owner_input.py` and
+governed by `config/owner_decisions/opex_loans_floor_refresh_2026_07_02.json`. The prior
+`OPEX_protocol_26.01.2026.xlsx` is retired as the source for new OPEX commitments from this
+boundary forward; it remains historical context only.
+
+Stage-B OPEX DB writes are date-scoped replacements: delete and reinsert
+`fact_cashflow_commitments` rows where `commit_type='OPEX'` and `commit_date >= '2026-07-02'`.
+Rows before `2026-07-02` are preserved for historical owner PnL.
 
 Business-insides snapshots are generated from paid-capital truth + delivered sales truth:
 - generator: `scripts/generate_business_insides.py`

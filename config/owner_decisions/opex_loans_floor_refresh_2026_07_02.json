@@ -1,0 +1,82 @@
+{
+  "schema_version": "owner_decision.v1",
+  "decision_id": "OPEX_LOANS_FLOOR_REFRESH_2026_07_02",
+  "captured_at_local": "2026-07-02",
+  "scope": "cashflow_opex_loans_floor_refresh",
+  "source_chat_summary": "Owner approved Stage-B adoption of the 2026-07-02 OPEX/loan owner workbook with specific edits and approved the conservative cash-floor multiplier change from 1.5 to 1.15.",
+  "source_intake_file": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md",
+  "source_workbook": "exports/opex_owner_input/2026-07-02/OPEX_and_Loans_OWNER_INPUT_MINIMAL_20260702.xlsx",
+  "normalizer_entrypoint": "scripts/normalize_opex_owner_input.py",
+  "normalizer_core": "core/cashflow/opex_owner_input.py",
+  "as_of": "2026-07-02",
+  "approvals": [
+    {
+      "approval_id": "OPEX_OWNER_WORKBOOK_STAGE_B_20260702",
+      "approval_type": "source_adoption",
+      "decision": "Use the 2026-07-02 owner-input workbook and Stage-A normalizer output as the upstream OPEX/loan source, with the owner edits recorded in this decision."
+    },
+    {
+      "approval_id": "KASPIGOLD_KZ_V2_80K_20260702",
+      "approval_type": "loan_variant_selection",
+      "decision": "Adopt Variant V2: KaspiGOLD_KZ / GOLD_store-d included at 80,000 KZT per month."
+    },
+    {
+      "approval_id": "GYM_MEMBERSHIPS_30K_20260702",
+      "approval_type": "owner_amount_override",
+      "decision": "Use Gym_memberships at 30,000 KZT per month, the confirmed source value and new cost effective June, not the Stage-A owner-column 90,000 KZT value."
+    },
+    {
+      "approval_id": "GOLD_ACMEWEAR_INTERIM_126693_20260702",
+      "approval_type": "owner_interim_amount",
+      "decision": "Use GOLD_Acmewear / KaspiGOLD_OF at 126,693 KZT per month as an interim value. Commitment rows must carry provenance flag OWNER_INTERIM_REVISIT_20260703; owner will supply the precise schedule around 2026-07-03 and this does not block Stage B."
+    },
+    {
+      "approval_id": "KASPIGOLD_UNI_ADDITIONS_SCHEDULE_20260702",
+      "approval_type": "dated_schedule_override",
+      "decision": "KaspiGOLD_Uni uses the dated declining ADDITIONS schedule instead of the flat 170,000 KZT row; first unpaid cashflow date is 2026-07-21 for 166,000 KZT."
+    },
+    {
+      "approval_id": "INTERNET_DAY_27_AND_EXCLUSIONS_20260702",
+      "approval_type": "precedence_confirmation",
+      "decision": "Internet pay-day 27 is confirmed. LLM_6 and LLM_7 remain excluded because CLOSED wins over include=YES. employee_1 and MELVIS(tax) remain excluded."
+    },
+    {
+      "approval_id": "BCC_5M_UNIVERSAL_DAY9_20260702",
+      "approval_type": "dated_schedule_confirmation",
+      "decision": "BCC 5M account is Universal. Pay-day 9 drives cashflow. Keep the 2026-04-11 screenshot evidence date and 2026-04-04 owner-stated context date distinct."
+    },
+    {
+      "approval_id": "CASH_FLOOR_CONS_MULT_1_15_20260702",
+      "approval_type": "floor_policy",
+      "decision": "Set config/cashflow_scenarios.yaml cash_floor_cons_mult to 1.15. Leave cash_floor_base_mult at 1.0 and cash_floor_abs_kzt at 500000."
+    }
+  ],
+  "expected_stage_b_monthly_opex_kzt": 2610967.0,
+  "policy_parameters": {
+    "cash_floor_base_mult": 1.0,
+    "cash_floor_cons_mult": 1.15,
+    "cash_floor_abs_kzt": 500000
+  },
+  "stage_b_write_shape": {
+    "commitment_table": "fact_cashflow_commitments",
+    "commit_type": "OPEX",
+    "replace_boundary": "commit_date >= '2026-07-02'",
+    "history_preserved": "commit_date < '2026-07-02'"
+  },
+  "explicit_non_authorizations": [
+    "Kaspi merchant writes",
+    "Repricer writes",
+    "pricing writes",
+    "relist writes",
+    "Google writes",
+    "Telegram sends",
+    "workbook edits",
+    "LaunchAgent or plist edits",
+    "cash movement",
+    "PO or purchase authorization",
+    "base multiplier change",
+    "absolute cash-floor change"
+  ],
+  "applied_by_lane": "PKT-CASHFLOOR-APPLY -- Stage B governed OPEX/loan + floor-policy apply",
+  "runtime_evidence_root": "exports/validation/g_cashfloor_apply_20260702"
+}

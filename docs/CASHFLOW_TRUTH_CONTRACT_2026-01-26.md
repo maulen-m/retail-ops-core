@@ -205,7 +205,8 @@ Recommendation (capital-protective):
 
 BASE floor: 1.0× monthly OPEX
 
-CONSERVATIVE floor: 1.5× monthly OPEX
+CONSERVATIVE floor: 1.15× monthly OPEX, effective 2026-07-02 by
+`config/owner_decisions/opex_loans_floor_refresh_2026_07_02.json`.
 
 plus absolute minimum cash (e.g., 500k KZT)
 

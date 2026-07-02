@@ -5,6 +5,9 @@ scripts:
   - path: scripts/sync_opex_schedule.py
     env_gate: ENABLE_CASHFLOW_WRITE
     apply_flag: --apply
+  - path: scripts/apply_opex_owner_input_schedule.py
+    env_gate: ENABLE_CASHFLOW_WRITE
+    apply_flag: --apply
   - path: scripts/reconcile_on_delivery_settlement.py
     env_gate: ENABLE_CASHFLOW_WRITE
     apply_flag: --apply
