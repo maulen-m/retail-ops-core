@@ -82,6 +82,36 @@ BY_SKU_COLUMNS = [
     "stores",
 ]
 
+STRATEGIC_BRAND_PRICING_CLASS = "STRATEGIC_BRAND_PRICING"
+EXCLUDE_FROM_LEAK_SCORING = "EXCLUDE_FROM_LEAK_SCORING"
+ENFORCE_FLOOR = "ENFORCE_FLOOR"
+
+STRATEGIC_EXCLUDED_COLUMNS = [
+    "exception_id",
+    "exception_class",
+    "exception_action",
+    "decision_ref",
+    "decision_record",
+    "exception_match",
+    "exception_eval_status",
+    "order_date",
+    "order_id",
+    "store_code",
+    "sku_key",
+    "sku_id",
+    "my_size",
+    "quantity",
+    "sell_price_kzt",
+    "floor_sku_key",
+    "floor_min_price_kzt",
+    "floor_source",
+    "floor_resolution_source",
+    "gap_per_unit_kzt",
+    "gap_total_kzt",
+    "status",
+    "kaspi_offer_name",
+]
+
 
 def _now_almaty() -> str:
     return datetime.now(ALMATY_TZ).replace(microsecond=0).isoformat()
@@ -160,6 +190,26 @@ def _status_is_non_cancelled(status: str, excluded_tokens: list[str]) -> bool:
     return not any(token in clean for token in excluded_tokens)
 
 
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _clean_upper(value: Any) -> str:
+    return _clean_text(value).upper()
+
+
+def _as_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        return []
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
@@ -215,6 +265,129 @@ def _alias_for(config: dict[str, Any], sku_key: str) -> tuple[str, str]:
         source = str(raw.get("source") or "alias").strip()
         return target or sku_key, f"alias:{source}"
     return sku_key, "exact"
+
+
+def _entry_match_detail(row: dict[str, Any], entry: dict[str, Any]) -> str | None:
+    store_code = _clean_upper(row.get("store_code"))
+    entry_store = _clean_upper(entry.get("store_code"))
+    if not entry_store or entry_store == "*" or store_code != entry_store:
+        return None
+
+    sku_key = _clean_text(row.get("sku_key"))
+    sku_id = _clean_text(row.get("sku_id"))
+    offer_name = _clean_text(row.get("kaspi_offer_name"))
+
+    sku_keys = set(_as_text_list(entry.get("sku_keys")))
+    if sku_key in sku_keys:
+        return f"sku_key:{sku_key}"
+
+    for prefix in _as_text_list(entry.get("sku_key_prefixes")):
+        if sku_key.startswith(prefix):
+            return f"sku_key_prefix:{prefix}"
+
+    sku_ids = set(_as_text_list(entry.get("sku_ids")))
+    if sku_id in sku_ids:
+        return f"sku_id:{sku_id}"
+
+    for prefix in _as_text_list(entry.get("sku_id_prefixes")):
+        if sku_id.startswith(prefix):
+            return f"sku_id_prefix:{prefix}"
+
+    offer_name_upper = offer_name.upper()
+    for token in _as_text_list(entry.get("kaspi_offer_name_contains")):
+        if token.upper() in offer_name_upper:
+            return f"kaspi_offer_name_contains:{token}"
+
+    return None
+
+
+def _entry_has_row_scope(entry: dict[str, Any]) -> bool:
+    return any(
+        _as_text_list(entry.get(key))
+        for key in (
+            "sku_keys",
+            "sku_key_prefixes",
+            "sku_ids",
+            "sku_id_prefixes",
+            "kaspi_offer_name_contains",
+        )
+    )
+
+
+def _load_scoring_exception_authority(config: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    authority = config.get("scoring_exception_authority")
+    if authority is None:
+        return [], []
+    if not isinstance(authority, dict):
+        return [], [{"entry": "scoring_exception_authority", "error": "must_be_object"}]
+
+    entries_raw = authority.get("entries") or []
+    if not isinstance(entries_raw, list):
+        return [], [{"entry": "scoring_exception_authority.entries", "error": "must_be_array"}]
+
+    entries: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for idx, raw in enumerate(entries_raw):
+        label = f"entries[{idx}]"
+        if not isinstance(raw, dict):
+            errors.append({"entry": label, "error": "must_be_object"})
+            continue
+        entry = dict(raw)
+        entry_errors: list[dict[str, Any]] = []
+        entry_id = _clean_text(entry.get("id"))
+        action = _clean_upper(entry.get("action"))
+        class_name = _clean_upper(entry.get("class"))
+        decision_ref = _clean_text(entry.get("decision_ref"))
+        decision_record = _clean_text(entry.get("decision_record"))
+        store_code = _clean_text(entry.get("store_code"))
+
+        if not entry_id:
+            entry_errors.append({"entry": label, "error": "missing_id"})
+        if class_name != STRATEGIC_BRAND_PRICING_CLASS:
+            entry_errors.append({"entry": entry_id or label, "error": f"unsupported_class:{class_name or '<missing>'}"})
+        if action not in {EXCLUDE_FROM_LEAK_SCORING, ENFORCE_FLOOR}:
+            entry_errors.append({"entry": entry_id or label, "error": f"unsupported_action:{action or '<missing>'}"})
+        if not store_code or store_code == "*":
+            entry_errors.append({"entry": entry_id or label, "error": "store_code_required_no_wildcard"})
+        if not decision_ref:
+            entry_errors.append({"entry": entry_id or label, "error": "decision_ref_required"})
+        if not decision_record:
+            entry_errors.append({"entry": entry_id or label, "error": "decision_record_required"})
+        if not _entry_has_row_scope(entry):
+            entry_errors.append({"entry": entry_id or label, "error": "row_scope_required"})
+
+        if entry_errors:
+            errors.extend(entry_errors)
+        else:
+            entry["id"] = entry_id
+            entry["class"] = class_name
+            entry["action"] = action
+            entry["decision_ref"] = decision_ref
+            entry["decision_record"] = decision_record
+            entry["store_code"] = store_code
+            entries.append(entry)
+
+    return entries, errors
+
+
+def _scoring_exception_for_row(
+    row: dict[str, Any],
+    entries: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str]:
+    for entry in entries:
+        if entry.get("action") != ENFORCE_FLOOR:
+            continue
+        match = _entry_match_detail(row, entry)
+        if match:
+            return None, f"carve_out:{entry['id']}:{match}"
+
+    for entry in entries:
+        if entry.get("action") != EXCLUDE_FROM_LEAK_SCORING:
+            continue
+        match = _entry_match_detail(row, entry)
+        if match:
+            return entry, match
+    return None, ""
 
 
 def _load_sales_rows(conn: sqlite3.Connection, start_date: date, as_of_date: date) -> list[dict[str, Any]]:
@@ -281,6 +454,9 @@ def _render_md(report: dict[str, Any]) -> str:
         f"- under-floor rows: {report['under_floor_row_count']}",
         f"- under-floor units: {report['under_floor_units']}",
         f"- under-floor gap KZT: {report['under_floor_gap_kzt']}",
+        f"- strategic brand pricing excluded rows: {report['strategic_brand_pricing_excluded_row_count']}",
+        f"- strategic brand pricing excluded units: {report['strategic_brand_pricing_excluded_units']}",
+        f"- strategic brand pricing excluded gap KZT: {report['strategic_brand_pricing_excluded_gap_kzt']}",
         f"- missing floor rows: {report['missing_floor_row_count']}",
         f"- missing price rows: {report['missing_price_row_count']}",
         f"- latest sales date: {report['latest_sales_date']}",
@@ -292,6 +468,17 @@ def _render_md(report: dict[str, Any]) -> str:
     for check in report["checks"]:
         mark = "PASS" if check["ok"] else "FAIL"
         lines.append(f"- {mark} {check['check']}: {check['details']}")
+    lines.extend(
+        [
+            "",
+            "## Strategic Brand Pricing Excluded Rows",
+            "",
+            f"- rows: {report['strategic_brand_pricing_excluded_row_count']}",
+            f"- units: {report['strategic_brand_pricing_excluded_units']}",
+            f"- under-floor gap excluded from leak count KZT: {report['strategic_brand_pricing_excluded_gap_kzt']}",
+            f"- CSV: `{report['artifacts'].get('strategic_brand_pricing_excluded_csv', '')}`",
+        ]
+    )
     lines.extend(
         [
             "",
@@ -321,8 +508,20 @@ def build_under_floor_leak_report(
     max_sales_lag_days = int(config.get("max_sales_data_lag_days") or 2)
     strict_missing_floor = bool(config.get("strict_missing_floor_blocks_green", True))
     strict_missing_price = bool(config.get("strict_missing_price_blocks_green", True))
+    scoring_exception_entries, scoring_exception_errors = _load_scoring_exception_authority(config)
 
     checks: list[dict[str, Any]] = []
+    if "scoring_exception_authority" in config:
+        exclude_count = sum(1 for entry in scoring_exception_entries if entry.get("action") == EXCLUDE_FROM_LEAK_SCORING)
+        enforce_count = sum(1 for entry in scoring_exception_entries if entry.get("action") == ENFORCE_FLOOR)
+        checks.append(
+            _check(
+                not scoring_exception_errors,
+                "scoring_exception_authority_config_valid",
+                f"entries={len(scoring_exception_entries)} exclude={exclude_count} enforce={enforce_count} errors={len(scoring_exception_errors)}",
+                errors=scoring_exception_errors,
+            )
+        )
     floor_rows: dict[str, dict[str, Any]] = {}
     floor_fieldnames: list[str] = []
     floor_errors: list[dict[str, Any]] = []
@@ -367,6 +566,7 @@ def build_under_floor_leak_report(
 
     non_cancelled_rows: list[dict[str, Any]] = []
     under_floor_rows: list[dict[str, Any]] = []
+    strategic_excluded_rows: list[dict[str, Any]] = []
     missing_floor_rows: list[dict[str, Any]] = []
     missing_price_rows: list[dict[str, Any]] = []
     by_sku: dict[tuple[str, str], dict[str, Any]] = {}
@@ -405,6 +605,48 @@ def build_under_floor_leak_report(
         if sell_price is not None:
             current_min = bucket["min_sell_price_kzt"]
             bucket["min_sell_price_kzt"] = sell_price if current_min is None else min(float(current_min), sell_price)
+
+        scoring_exception, exception_match = _scoring_exception_for_row(row, scoring_exception_entries)
+        if scoring_exception is not None:
+            floor_min = float(floor["floor_min_price_kzt"]) if floor else None
+            gap_per_unit = max(0.0, floor_min - sell_price) if floor_min is not None and sell_price is not None else None
+            gap_total = gap_per_unit * quantity if gap_per_unit is not None else None
+            if floor is None:
+                exception_eval_status = "missing_floor_excluded"
+            elif sell_price is None:
+                exception_eval_status = "missing_price_excluded"
+            elif gap_per_unit and gap_per_unit > 0:
+                exception_eval_status = "under_floor_excluded"
+            else:
+                exception_eval_status = "not_under_floor_excluded"
+            strategic_excluded_rows.append(
+                {
+                    "exception_id": scoring_exception.get("id", ""),
+                    "exception_class": scoring_exception.get("class", ""),
+                    "exception_action": scoring_exception.get("action", ""),
+                    "decision_ref": scoring_exception.get("decision_ref", ""),
+                    "decision_record": scoring_exception.get("decision_record", ""),
+                    "exception_match": exception_match,
+                    "exception_eval_status": exception_eval_status,
+                    "order_date": row.get("order_date", ""),
+                    "order_id": row.get("order_id", ""),
+                    "store_code": row.get("store_code", ""),
+                    "sku_key": sku_key,
+                    "sku_id": row.get("sku_id", ""),
+                    "my_size": row.get("my_size", ""),
+                    "quantity": quantity,
+                    "sell_price_kzt": _fmt_money(sell_price),
+                    "floor_sku_key": floor_sku_key,
+                    "floor_min_price_kzt": _fmt_money(floor_min),
+                    "floor_source": floor.get("floor_source", "") if floor else "",
+                    "floor_resolution_source": floor_resolution_source,
+                    "gap_per_unit_kzt": _fmt_money(gap_per_unit),
+                    "gap_total_kzt": _fmt_money(gap_total),
+                    "status": status,
+                    "kaspi_offer_name": row.get("kaspi_offer_name", ""),
+                }
+            )
+            continue
 
         if floor is None:
             bucket["missing_floor_rows"] += 1
@@ -492,13 +734,24 @@ def build_under_floor_leak_report(
         )
     by_sku_rows.sort(key=lambda row: (-int(row["under_floor_units"]), -int(row["missing_floor_rows"]), str(row["sku_key"])))
     under_floor_rows.sort(key=lambda row: (str(row["order_date"]), str(row["store_code"]), str(row["sku_key"]), str(row["order_id"])))
+    strategic_excluded_rows.sort(
+        key=lambda row: (
+            str(row["exception_id"]),
+            str(row["order_date"]),
+            str(row["store_code"]),
+            str(row["sku_key"]),
+            str(row["order_id"]),
+        )
+    )
     missing_floor_rows.sort(key=lambda row: (str(row["order_date"]), str(row["store_code"]), str(row["sku_key"]), str(row["order_id"])))
     missing_price_rows.sort(key=lambda row: (str(row["order_date"]), str(row["store_code"]), str(row["sku_key"]), str(row["order_id"])))
 
     under_floor_units = sum(_as_int(row["quantity"]) for row in under_floor_rows)
+    strategic_excluded_units = sum(_as_int(row["quantity"]) for row in strategic_excluded_rows)
     missing_floor_units = sum(_as_int(row["quantity"]) for row in missing_floor_rows)
     missing_price_units = sum(_as_int(row["quantity"]) for row in missing_price_rows)
     gap_total = sum(float(row["gap_total_kzt"] or 0) for row in under_floor_rows)
+    strategic_excluded_gap_total = sum(float(row["gap_total_kzt"] or 0) for row in strategic_excluded_rows)
     non_cancelled_units = sum(max(0, _as_int(row.get("quantity"))) for row in non_cancelled_rows)
 
     checks.append(
@@ -528,10 +781,12 @@ def build_under_floor_leak_report(
     output_dir = output_root.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     under_floor_csv = output_dir / "under_floor_sales.csv"
+    strategic_excluded_csv = output_dir / "strategic_brand_pricing_excluded_rows.csv"
     missing_floor_csv = output_dir / "missing_floor_sales.csv"
     missing_price_csv = output_dir / "missing_price_sales.csv"
     by_sku_csv = output_dir / "under_floor_by_sku.csv"
     _write_csv(under_floor_csv, UNDER_FLOOR_COLUMNS, under_floor_rows)
+    _write_csv(strategic_excluded_csv, STRATEGIC_EXCLUDED_COLUMNS, strategic_excluded_rows)
     _write_csv(missing_floor_csv, MISSING_FLOOR_COLUMNS, missing_floor_rows)
     _write_csv(missing_price_csv, MISSING_PRICE_COLUMNS, missing_price_rows)
     _write_csv(by_sku_csv, BY_SKU_COLUMNS, by_sku_rows)
@@ -553,6 +808,8 @@ def build_under_floor_leak_report(
         "floor_rows_loaded": len(floor_rows),
         "floor_errors": floor_errors,
         "floor_alias_count": len(config.get("floor_aliases") or {}),
+        "scoring_exception_authority_entry_count": len(scoring_exception_entries),
+        "scoring_exception_authority_errors": scoring_exception_errors,
         "window_days": window_days,
         "window_start": start_date.isoformat(),
         "window_end": as_of_date.isoformat(),
@@ -565,6 +822,10 @@ def build_under_floor_leak_report(
         "under_floor_row_count": len(under_floor_rows),
         "under_floor_units": under_floor_units,
         "under_floor_gap_kzt": _fmt_money(gap_total),
+        "strategic_brand_pricing_excluded_rows": strategic_excluded_rows,
+        "strategic_brand_pricing_excluded_row_count": len(strategic_excluded_rows),
+        "strategic_brand_pricing_excluded_units": strategic_excluded_units,
+        "strategic_brand_pricing_excluded_gap_kzt": _fmt_money(strategic_excluded_gap_total),
         "missing_floor_row_count": len(missing_floor_rows),
         "missing_floor_units": missing_floor_units,
         "missing_price_row_count": len(missing_price_rows),
@@ -572,6 +833,7 @@ def build_under_floor_leak_report(
         "checks": checks,
         "artifacts": {
             "under_floor_sales_csv": str(under_floor_csv),
+            "strategic_brand_pricing_excluded_csv": str(strategic_excluded_csv),
             "missing_floor_sales_csv": str(missing_floor_csv),
             "missing_price_sales_csv": str(missing_price_csv),
             "under_floor_by_sku_csv": str(by_sku_csv),
@@ -609,6 +871,7 @@ def main() -> int:
         print(f"Gate: {report['gate']}")
         print(f"ok: {report['ok']}")
         print(f"under_floor_units: {report['under_floor_units']}")
+        print(f"strategic_brand_pricing_excluded_units: {report['strategic_brand_pricing_excluded_units']}")
         print(f"missing_floor_rows: {report['missing_floor_row_count']}")
         print(f"Report: {report['json_path']}")
     if args.strict and report["gate"] != "GREEN":

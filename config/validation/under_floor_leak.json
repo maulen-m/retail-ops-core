@@ -27,6 +27,92 @@
       "source": "OWNER_APPROVAL_2026_06_18_OA_PRICE03_LINE compact LINE floor authority; G-PRICE-03 scoring alias only, no price-write or external-write authority"
     }
   },
+  "scoring_exception_authority": {
+    "schema_version": "under_floor_leak.scoring_exception_authority.v1",
+    "entries": [
+      {
+        "id": "OD2_B_20260702_ACMEWEAR_LINE31_CURRENT",
+        "class": "STRATEGIC_BRAND_PRICING",
+        "action": "EXCLUDE_FROM_LEAK_SCORING",
+        "store_code": "ACMEWEAR",
+        "sku_keys": [
+          "CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN",
+          "CL_OF_ARC_WM_LINE31_B-C-011_IVORY_J-C-026_WHITE_L-C-023_STARRY-BLACK",
+          "CL_OF_ARC_WM_LINE31_C-008_ESPRESSO",
+          "CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE",
+          "CL_OF_ARC_WM_LINE31_C-011_IVORY",
+          "CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE",
+          "CL_OF_ARC_WM_LINE31_C-023_STARRY-BLACK",
+          "CL_OF_ARC_WM_LINE31_C-025_WHALE-BLUE"
+        ],
+        "decision_ref": "OD2-B 2026-07-02",
+        "decision_record": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md#OD2-B",
+        "reason": "ACMEWEAR LINE31 current sales rows are owner-brand strategic pricing rows; G-PRICE-03 scoring exception only, no price-write authority"
+      },
+      {
+        "id": "OD2_B_20260702_ACMEWEAR_LINE61_PARENT_CURRENT",
+        "class": "STRATEGIC_BRAND_PRICING",
+        "action": "EXCLUDE_FROM_LEAK_SCORING",
+        "store_code": "ACMEWEAR",
+        "sku_keys": [
+          "CL_NEW-CLO2_MEN_SUIT-61_BLACK"
+        ],
+        "decision_ref": "OD2-B 2026-07-02",
+        "decision_record": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md#OD2-B",
+        "reason": "ACMEWEAR LINE61 parent current sales rows are owner-brand strategic pricing rows; G-PRICE-03 scoring exception only, no price-write authority"
+      },
+      {
+        "id": "OD2_B_20260702_ACMEWEAR_LINE61_SUBBUNDLE_TS_CURRENT",
+        "class": "STRATEGIC_BRAND_PRICING",
+        "action": "EXCLUDE_FROM_LEAK_SCORING",
+        "store_code": "ACMEWEAR",
+        "sku_keys": [
+          "SUIT-31-TS"
+        ],
+        "decision_ref": "OD2-B 2026-07-02",
+        "decision_record": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md#OD2-B",
+        "reason": "ACMEWEAR LINE61 current sub-bundle child except LS31-BLK/SUIT-31-LS; scoring exception only, no price-write authority"
+      },
+      {
+        "id": "OD2_B_20260702_ACMEWEAR_LINE51_PARENT_CURRENT",
+        "class": "STRATEGIC_BRAND_PRICING",
+        "action": "EXCLUDE_FROM_LEAK_SCORING",
+        "store_code": "ACMEWEAR",
+        "sku_keys": [
+          "CL_OC_MEN_LINE51_WHITE"
+        ],
+        "decision_ref": "OD2-B 2026-07-02",
+        "decision_record": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md#OD2-B",
+        "reason": "ACMEWEAR LINE51 parent current sales rows are owner-brand strategic pricing rows; G-PRICE-03 scoring exception only, no price-write authority"
+      },
+      {
+        "id": "OD2_B_20260702_ACMEWEAR_LINE51_SUBBUNDLE_TS_CURRENT",
+        "class": "STRATEGIC_BRAND_PRICING",
+        "action": "EXCLUDE_FROM_LEAK_SCORING",
+        "store_code": "ACMEWEAR",
+        "sku_keys": [
+          "LINE-21-TS",
+          "LINE-31-TS"
+        ],
+        "decision_ref": "OD2-B 2026-07-02",
+        "decision_record": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md#OD2-B",
+        "reason": "ACMEWEAR LINE51 current sub-bundle child rows are owner-brand strategic pricing rows; G-PRICE-03 scoring exception only, no price-write authority"
+      },
+      {
+        "id": "OD2_B_20260702_ACMEWEAR_LS31_BLK_CARVEOUT_CURRENT",
+        "class": "STRATEGIC_BRAND_PRICING",
+        "action": "ENFORCE_FLOOR",
+        "store_code": "ACMEWEAR",
+        "sku_keys": [
+          "SUIT-31-LS",
+          "LS31-BLK"
+        ],
+        "decision_ref": "OD2-B 2026-07-02",
+        "decision_record": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md#OD2-B",
+        "reason": "Owner carve-out: LINE61 LS31-BLK/RUSH 3-in-1 current concrete row key SUIT-31-LS stays under normal floor enforcement"
+      }
+    ]
+  },
   "strict_missing_floor_blocks_green": true,
   "strict_missing_price_blocks_green": true,
   "no_external_writes_authorized": true
