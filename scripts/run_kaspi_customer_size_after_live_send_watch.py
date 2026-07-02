@@ -126,6 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-date", default=date.today().isoformat())
     parser.add_argument("--lookback-days", type=int, default=3)
     parser.add_argument("--resident-session-reuse-manifest", type=Path)
+    parser.add_argument("--resident-heartbeat-manifest", type=Path)
+    parser.add_argument("--resident-button-manifest", type=Path)
+    parser.add_argument("--open-chat-no-type-packet-manifest", type=Path)
+    parser.add_argument("--open-chat-no-type-result-validation-json", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--wait-seconds", type=float, default=0.0)
     parser.add_argument("--poll-seconds", type=float, default=2.0)
@@ -240,6 +244,21 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if args.resident_session_reuse_manifest:
         post_args.extend(["--resident-session-reuse-manifest", str(args.resident_session_reuse_manifest.resolve())])
+    if args.resident_heartbeat_manifest:
+        post_args.extend(["--resident-heartbeat-manifest", str(args.resident_heartbeat_manifest.resolve())])
+    if args.resident_button_manifest:
+        post_args.extend(["--resident-button-manifest", str(args.resident_button_manifest.resolve())])
+    if args.open_chat_no_type_packet_manifest:
+        post_args.extend(
+            ["--open-chat-no-type-packet-manifest", str(args.open_chat_no_type_packet_manifest.resolve())]
+        )
+    if args.open_chat_no_type_result_validation_json:
+        post_args.extend(
+            [
+                "--open-chat-no-type-result-validation-json",
+                str(args.open_chat_no_type_result_validation_json.resolve()),
+            ]
+        )
     for value in args.reply_poll_window_minutes or []:
         post_args.extend(["--reply-poll-window-minutes", str(value)])
     post_rc = post_canary_sequence_main(post_args)

@@ -5090,6 +5090,8 @@ def test_after_live_send_watch_runs_post_canary_after_valid_ui_helper_result(tmp
             "2",
             "--reply-poll-window-minutes",
             "10,30",
+            *_missing_resident_heartbeat_args(tmp_path),
+            *_missing_open_chat_args(tmp_path),
             "--wait-seconds",
             "0",
             "--output-dir",
