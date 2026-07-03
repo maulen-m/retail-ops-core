@@ -1,0 +1,92 @@
+{
+  "decision_id": "OD-FORBID-KASPI-OFFER-CARD-NIKE-LONGSLEEVE-2026-07-03",
+  "decided_at": "2026-07-03T13:57:57+05:00",
+  "title": "Forbid Kaspi Nike black long-sleeve offer-card family from any sellable surface",
+  "forbidden_to_enable": true,
+  "scope": {
+    "type": "all_stores",
+    "named_stores": [
+      "UNIVERSAL",
+      "STORE-B"
+    ],
+    "future_stores": true,
+    "description": "Applies to UNIVERSAL, STORE-B, and any future store controlled by this operating system."
+  },
+  "kaspi_card_slug": "sportivnyi-kostjum-18107200-643074",
+  "kaspi_family": "18107200-643074",
+  "forbidden_product_codes": [
+    "110261375",
+    "120980444",
+    "120980449",
+    "132848895",
+    "152381039",
+    "157715221"
+  ],
+  "forbidden_url_fragments": [
+    "sportivnyi-kostjum-18107200-643074"
+  ],
+  "public_card_evidence": [
+    {
+      "url": "https://kaspi.kz/shop/p/sportivnyi-kostjum-18107200-643074-chernyi-46-120980444/",
+      "product_code": "120980444",
+      "attribute": "Комплектация=лонгслив"
+    }
+  ],
+  "reason": "This Kaspi card family is a Nike black long sleeve, not the Nike black t-shirt or sleeveless version we sell. Public card evidence says Комплектация=лонгслив. It was mistakenly mapped into the sales identity CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK and must not be treated as sellable.",
+  "history": [
+    {
+      "date": "2026-06-21",
+      "event": "Prior live-removal incident documented the wrong-offer long-sleeve family and blocked future existing-card uploads.",
+      "path": "~/Docs/Web_automation/Docs/offer_ops/incidents/2026-06-21_universal_nike_black_longsleeve_wrong_offer.md"
+    },
+    {
+      "date": "2026-07-03",
+      "decided_at": "2026-07-03T13:57:57+05:00",
+      "event": "Owner manually removed this offer-card family from live Kaspi sale after a second occurrence."
+    }
+  ],
+  "attribution_note": {
+    "table": "dim_kaspi_article_map",
+    "map_ids": [
+      3542,
+      3543,
+      3544,
+      3545
+    ],
+    "store": "UNIVERSAL",
+    "sku_key": "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+    "kaspi_articles": [
+      "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_L_120980444",
+      "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_110261375",
+      "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_3XL_157715221",
+      "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_XL_120980449"
+    ],
+    "source": "crm_historical_patch",
+    "active_flag_policy": "Rows remain active_flag=1 solely for historical order/sales attribution because 9 sales_fact_v2 rows reference these offer names.",
+    "sellability_policy": "These mapping rows must never be treated as a sellable or enable surface and must never be extended with new rows for this Kaspi card family."
+  },
+  "reactivation_policy": {
+    "status": "forbidden_until_new_explicit_owner_decision",
+    "override_requires": "Only a new explicit owner decision file in config/owner_decisions/ may override this registry. The override must name this decision_id, kaspi_family, exact product codes, exact store scope, and intended sellable surface.",
+    "default_without_override": "Do not enable, sell, reactivate, upload, patch, onboard, or extend this Kaspi card family."
+  },
+  "enforcement_pointers": {
+    "web_automation": {
+      "denylist_surface": "Kaspi offer upload, existing-card upload, and pricelist safe-active-patch preflight",
+      "denylist_required_for_product_codes": [
+        "110261375",
+        "120980444",
+        "120980449",
+        "132848895",
+        "152381039",
+        "157715221"
+      ],
+      "denylist_required_for_url_fragments": [
+        "sportivnyi-kostjum-18107200-643074"
+      ],
+      "contract": "$HOME/Docs/Web_automation/Docs/offer_ops/PRICELIST_SAFE_ACTIVE_PATCH_CONTRACT.md",
+      "incident": "~/Docs/Web_automation/Docs/offer_ops/incidents/2026-06-21_universal_nike_black_longsleeve_wrong_offer.md"
+    },
+    "autonomous_business": "Preserve the historical attribution mapping only; do not use these rows as sellable, enable, upload, patch, or new-row onboarding authority."
+  }
+}
