@@ -181,6 +181,28 @@ def test_open_no_type_validator_rejects_send_or_typing_routes(tmp_path):
     assert "typing_send_text_route_observed" in validation["checks"]["unsafe_false_fields_true_or_missing"]
 
 
+def test_open_no_type_validator_preserves_red_resident_gate_and_unsafe_blockers(tmp_path):
+    packet_dir = _packet_dir(tmp_path)
+    _write_json(
+        packet_dir / "open_chat_no_type_result_redacted.json",
+        _result(
+            gate="RED_KASPI_CUSTOMER_CHAT_OPEN_CHAT_NO_TYPE_UNSAFE_NO_ACTION",
+            chat_opened=False,
+            merchant_account_match_proven=False,
+            order_search_performed=False,
+            browser_session_preserved=False,
+            unsafe_blockers=["send_typing_or_start_chat_route_observed"],
+        ),
+    )
+    _closeout(packet_dir)
+
+    validation = validate(_args(packet_dir))
+
+    assert validation["gate"] == "RED_OPEN_CHAT_NO_TYPE_RESULT_RED"
+    assert "result_gate_red:RED_KASPI_CUSTOMER_CHAT_OPEN_CHAT_NO_TYPE_UNSAFE_NO_ACTION" in validation["blockers"]
+    assert "resident_unsafe_blocker:send_typing_or_start_chat_route_observed" in validation["blockers"]
+
+
 def test_open_no_type_validator_rejects_phone_like_text(tmp_path):
     packet_dir = _packet_dir(tmp_path)
     _write_json(

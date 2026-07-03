@@ -8,4 +8,5 @@ refund_reserve_rate: 0.1
 refund_reserve_days: 14
 cash_floor_abs_kzt: 500000
 cash_floor_base_mult: 1.0
-cash_floor_cons_mult: 1.5
+# Owner decision: config/owner_decisions/opex_loans_floor_refresh_2026_07_02.json
+cash_floor_cons_mult: 1.15

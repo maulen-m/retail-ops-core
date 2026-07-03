@@ -54,6 +54,21 @@ TERMINAL_STATUSES = {
     "RETURN",
 }
 
+STORE_ALIASES = {
+    "STORE-B": "STOREB",
+    "M GROUP": "STOREB",
+    "ONLY FIT": "ACMEWEAR",
+    "ONLY-FIT": "ACMEWEAR",
+}
+
+CANONICAL_STORE_WAREHOUSE = {
+    "UNIVERSAL": "30000001_PP1",
+    "ACMEWEAR": "30137883_PP1",
+    "11KZ": "30290083_PP1",
+    "MELVIS": "30362323_PP1",
+    "STOREB": "30000002_PP1",
+}
+
 
 class ExportError(RuntimeError):
     """Raised when source contracts are violated."""
@@ -71,17 +86,54 @@ def _parse_date(value: Any) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        try:
+            return date.fromisoformat(text[:10]).isoformat()
+        except ValueError:
+            pass
     parsed = pd.to_datetime(text, dayfirst=True, errors="coerce")
     if parsed is None or pd.isna(parsed):
         return None
     return parsed.date().isoformat()
 
 
+def _format_date_for_ocean_drop(iso_date: str) -> str:
+    return date.fromisoformat(iso_date).strftime("%d.%m.%Y")
+
+
 def _normalize_store(value: Any) -> str:
     raw = str(value or "").strip().upper()
     if not raw:
         return "UNKNOWN"
+    if raw in STORE_ALIASES:
+        return STORE_ALIASES[raw]
+    spaced = " ".join(raw.replace("-", " ").split())
+    if spaced in STORE_ALIASES:
+        return STORE_ALIASES[spaced]
     return WAREHOUSE_STORE_MAP.get(raw, raw)
+
+
+def _row_store_for_status_overlay(row: pd.Series, fallback: str | None = None) -> str:
+    for column in (
+        "Склад передачи КД",
+        "warehouse_code",
+        "mapping_source_store_code",
+        "Оформил",
+        "store_code",
+    ):
+        if column not in row.index:
+            continue
+        store = _normalize_store(row.get(column))
+        if store and store != "UNKNOWN":
+            return store
+    return _normalize_store(fallback)
+
+
+def _first_existing(columns: pd.Index, candidates: tuple[str, ...]) -> str | None:
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
 
 
 def _load_frame(path: Path) -> pd.DataFrame:
@@ -126,14 +178,17 @@ def _extract_store_from_path(path: Path) -> str | None:
         return parent[6:].upper()
     stem = path.stem.upper()
     if stem.startswith("ARCHIVEORDERS_"):
-        return stem.replace("ARCHIVEORDERS_", "").strip()
+        store = stem.replace("ARCHIVEORDERS_", "").strip()
+        if "ALL_STORES" in store or store.startswith("WEBUI_MERGED"):
+            return None
+        return store
     return None
 
 
 def _build_ui_status_map(
     ui_sources: list[Path],
-) -> tuple[dict[tuple[str, str], tuple[str, str, str]], list[dict[str, Any]]]:
-    status_map: dict[tuple[str, str], tuple[str, str, str]] = {}
+) -> tuple[dict[tuple[str, str], tuple[str, str, str, str]], list[dict[str, Any]]]:
+    status_map: dict[tuple[str, str], tuple[str, str, str, str]] = {}
     manifest_rows: list[dict[str, Any]] = []
 
     for source in ui_sources:
@@ -143,31 +198,38 @@ def _build_ui_status_map(
 
         for file_path in files:
             frame = _load_frame(file_path)
-            if "№ заказа" not in frame.columns or "Статус" not in frame.columns:
-                continue
-            if "Дата изменения статуса" not in frame.columns:
+            order_col = _first_existing(frame.columns, ("№ заказа", "order_id"))
+            status_col = _first_existing(frame.columns, ("Статус", "status_raw", "status_internal"))
+            status_date_col = _first_existing(frame.columns, ("Дата изменения статуса", "status_change_at"))
+            if order_col is None or status_col is None or status_date_col is None:
                 continue
 
             store_fallback = _extract_store_from_path(file_path)
             row_count = int(len(frame))
             seen = 0
             for _, row in frame.iterrows():
-                order_id = str(row.get("№ заказа") or "").strip()
+                order_id = str(row.get(order_col) or "").strip()
                 if not order_id:
                     continue
-                status = str(row.get("Статус") or "").strip().upper()
+                status = str(row.get(status_col) or "").strip().upper()
                 if status not in TERMINAL_STATUSES:
                     continue
-                status_raw = str(row.get("Дата изменения статуса") or "").strip()
+                status_raw = str(row.get(status_date_col) or "").strip()
                 status_iso = _parse_date(status_raw)
                 if status_iso is None:
                     continue
-                store_val = row.get("Склад передачи КД") if "Склад передачи КД" in frame.columns else store_fallback
-                store_code = _normalize_store(store_val or store_fallback)
+                store_code = _row_store_for_status_overlay(row, store_fallback)
+                if store_code == "UNKNOWN":
+                    continue
                 key = (store_code, order_id)
                 prev = status_map.get(key)
                 if prev is None or status_iso > prev[1]:
-                    status_map[key] = (status_raw, status_iso, str(row.get("Статус") or "").strip())
+                    status_map[key] = (
+                        status_raw,
+                        status_iso,
+                        str(row.get(status_col) or "").strip(),
+                        store_code,
+                    )
                 seen += 1
 
             manifest_rows.append(
@@ -184,8 +246,8 @@ def _build_ui_status_map(
 
 def _overlay_status_dates(
     base_df: pd.DataFrame,
-    status_map: dict[tuple[str, str], tuple[str, str, str]],
-) -> tuple[pd.DataFrame, int, int]:
+    status_map: dict[tuple[str, str], tuple[str, str, str, str]],
+) -> tuple[pd.DataFrame, int, int, int]:
     merged = base_df.copy()
     if "Дата изменения статуса" not in merged.columns:
         merged["Дата изменения статуса"] = ""
@@ -194,19 +256,20 @@ def _overlay_status_dates(
 
     filled = 0
     status_updates = 0
-    stores = merged["Склад передачи КД"].map(_normalize_store)
+    warehouse_backfills = 0
     order_ids = merged["№ заказа"].astype(str).str.strip()
 
     for idx, order_id in order_ids.items():
-        key = (stores.iloc[idx], order_id)
+        store_code = _row_store_for_status_overlay(merged.loc[idx])
+        key = (store_code, order_id)
         override = status_map.get(key)
         if override is None:
             continue
         current = str(merged.at[idx, "Дата изменения статуса"] or "").strip()
         current_iso = _parse_date(current)
-        override_raw, override_iso, override_status = override
+        override_raw, override_iso, override_status, override_store = override
         if current_iso is None or override_iso > current_iso:
-            merged.at[idx, "Дата изменения статуса"] = override_raw
+            merged.at[idx, "Дата изменения статуса"] = _format_date_for_ocean_drop(override_iso)
             filled += 1
         if override_status:
             current_status = str(merged.at[idx, "Статус"] or "").strip().upper()
@@ -214,8 +277,13 @@ def _overlay_status_dates(
             if current_status != new_status.upper():
                 merged.at[idx, "Статус"] = new_status
                 status_updates += 1
+        if not str(merged.at[idx, "Склад передачи КД"] or "").strip():
+            canonical_warehouse = CANONICAL_STORE_WAREHOUSE.get(override_store)
+            if canonical_warehouse:
+                merged.at[idx, "Склад передачи КД"] = canonical_warehouse
+                warehouse_backfills += 1
 
-    return merged, filled, status_updates
+    return merged, filled, status_updates, warehouse_backfills
 
 
 def _schema() -> dict[str, Any]:
@@ -263,14 +331,14 @@ def export_sales_archive_statusdate_mapped(
     if missing:
         raise ExportError(f"ocean-drop source missing required columns: {', '.join(missing)}")
 
-    status_map: dict[tuple[str, str], tuple[str, str, str]] = {}
+    status_map: dict[tuple[str, str], tuple[str, str, str, str]] = {}
     ui_manifest_rows: list[dict[str, Any]] = []
     if ui_sources:
         status_map, ui_manifest_rows = _build_ui_status_map(ui_sources)
     elif strict:
         raise ExportError("strict export requires at least one UI source for status-date enrichment")
 
-    merged_df, ui_filled_count, ui_status_updates = _overlay_status_dates(base_df, status_map)
+    merged_df, ui_filled_count, ui_status_updates, ui_warehouse_backfills = _overlay_status_dates(base_df, status_map)
 
     out_dir = output_root.resolve() / f"{since.isoformat()}_to_{until.isoformat()}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -295,7 +363,7 @@ def export_sales_archive_statusdate_mapped(
         raise ExportError("snapshot has 0 rows inside requested date range")
 
     override_keys = {
-        (str(_normalize_store(row.get("Склад передачи КД"))), str(row.get("№ заказа") or "").strip())
+        (str(_row_store_for_status_overlay(row)), str(row.get("№ заказа") or "").strip())
         for _, row in merged_df.iterrows()
         if str(row.get("Дата изменения статуса") or "").strip() and str(row.get("№ заказа") or "").strip()
     }
@@ -373,6 +441,7 @@ def export_sales_archive_statusdate_mapped(
         "ui_status_map_keys": int(len(status_map)),
         "ui_status_dates_filled": int(ui_filled_count),
         "ui_status_values_updated": int(ui_status_updates),
+        "ui_blank_warehouses_backfilled": int(ui_warehouse_backfills),
         "snapshot_meta": snapshot_meta,
         "output": {
             "csv": str(output_csv.resolve()),

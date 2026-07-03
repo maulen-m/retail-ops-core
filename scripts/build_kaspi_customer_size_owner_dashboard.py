@@ -321,6 +321,10 @@ def main(argv: list[str] | None = None) -> int:
     live_send_phrase_path, live_send_phrase = _load_live_send_approval_phrase(
         args.live_send_approval_dir.resolve() if args.live_send_approval_dir else None
     )
+    if str(manifest.get("gate") or "").startswith("RED_"):
+        approval_phrase_path = ""
+        approval_phrase = ""
+        live_send_phrase = ""
     if live_send_phrase and not approval_phrase:
         approval_phrase_path = live_send_phrase_path
         approval_phrase = live_send_phrase

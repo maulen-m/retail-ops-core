@@ -29,6 +29,9 @@ RESIDENT_BUTTON_GATE = "GREEN_KASPI_CUSTOMER_CHAT_MESSAGE_BUTTON_PROVEN_NO_SEND"
 RESIDENT_HEARTBEAT_GREEN_GATE = "GREEN_KASPI_CUSTOMER_CHAT_RESIDENT_NO_SEND_CONTROLLER_READY"
 OPEN_CHAT_PACKET_GREEN_GATE = "GREEN_OPEN_CHAT_NO_TYPE_CANARY_PACKET_READY_NO_SEND"
 OPEN_CHAT_RESULT_ACCEPTED_GATE = "GREEN_OPEN_CHAT_NO_TYPE_CANARY_RESULT_ACCEPTED_NO_SEND"
+OPEN_CHAT_UNSAFE_WORKFLOW_GATE = (
+    "RED_CUSTOMER_SIZE_WORKFLOW_UNSAFE_OPEN_CHAT_RESULT_NO_EXTERNAL_WRITE"
+)
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -416,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
     no_send_proof_green = live_ui_green or resident_button_green
     open_chat_gate_required = bool(open_chat_packet)
     open_chat_accepted = _gate(open_chat_result) == OPEN_CHAT_RESULT_ACCEPTED_GATE
+    open_chat_result_red = _gate(open_chat_result).startswith("RED_")
     resident_heartbeat_gate = _gate(resident_heartbeat)
     resident_heartbeat_blocks_browser_action = (
         bool(resident_heartbeat)
@@ -488,19 +492,27 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
     if open_chat_gate_required and not open_chat_accepted:
-        blockers.append(
-            {
-                "stage": "open_chat_no_type_side_effect_canary",
-                "blocker": "open_chat_no_type_result_not_accepted",
-                "packet_gate": _gate(open_chat_packet),
-                "result_gate": _gate(open_chat_result),
-                "approval_phrase_file": _path_str(
-                    _open_chat_approval_phrase_path(open_chat_packet_path)
-                ),
-            }
-        )
+        blocker = {
+            "stage": "open_chat_no_type_side_effect_canary",
+            "blocker": (
+                "open_chat_no_type_result_unsafe"
+                if open_chat_result_red
+                else "open_chat_no_type_result_not_accepted"
+            ),
+            "packet_gate": _gate(open_chat_packet),
+            "result_gate": _gate(open_chat_result),
+            "approval_phrase_file": _path_str(
+                _open_chat_approval_phrase_path(open_chat_packet_path)
+            ),
+        }
+        if open_chat_result and open_chat_result_red:
+            blocker["result_blockers"] = list(open_chat_result.get("blockers") or [])
+        blockers.append(blocker)
 
     gate = (
+        OPEN_CHAT_UNSAFE_WORKFLOW_GATE
+        if open_chat_result_red
+        else
         "GREEN_CUSTOMER_SIZE_WORKFLOW_READY_FOR_OWNER_SEND_APPROVAL"
         if not blockers and _green(send)
         else "YELLOW_CUSTOMER_SIZE_WORKFLOW_READY_WITH_RETAINED_BLOCKERS_NO_EXTERNAL_WRITE"

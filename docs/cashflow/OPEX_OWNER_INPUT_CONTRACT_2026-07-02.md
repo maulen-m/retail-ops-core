@@ -3,6 +3,21 @@
 Purpose: define the Stage-B OPEX/loan source contract for cashflow commitments from
 `2026-07-02` forward.
 
+## Status
+
+P1(a) owner approval released the Stage-B hold on `2026-07-03`: apply the normalized
+2026-07-02 owner workbook truth, set `cash_floor_cons_mult` to `1.15`, and accept
+`G-SCHED-02` remaining RED until cash improves. No preflight override is authorized.
+
+Stage-B governed apply ran on `2026-07-03` under
+`exports/validation/g_cashfloor_stageb_20260703/`: future OPEX rows at or after
+`2026-07-02` were replaced from the owner-approved writer output, generated config
+was refreshed, and `validate_cashflow_invariants.py` passed. The supervised EOD run
+remains held because live post-apply preflight did not reproduce the owner packet's
+expected `min_cash < floor` state; current preflight reports the conservative floor
+passing from live cashflow history, so EOD behavior under the expected RED state is
+not proven by this run.
+
 ## Authority
 
 - Owner decision record: `config/owner_decisions/opex_loans_floor_refresh_2026_07_02.json`

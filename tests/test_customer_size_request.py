@@ -113,6 +113,12 @@ from scripts.run_kaspi_customer_size_request_scheduler_preflight import main as 
 from scripts.build_kaspi_customer_size_early_send_priority_packet import (
     main as early_send_priority_packet_main,
 )
+from scripts.build_kaspi_customer_size_manual_assist_packet import (
+    main as manual_assist_packet_main,
+)
+from scripts.record_kaspi_customer_size_manual_action_outcome import (
+    main as manual_action_outcome_main,
+)
 from scripts.validate_kaspi_customer_chat_live_canary_result import (
     main as validate_canary_result_main,
 )
@@ -1706,6 +1712,80 @@ def test_workflow_readiness_packet_requires_open_chat_no_type_when_packet_exists
     assert manifest["customer_send_allowed"] is False
 
 
+def test_workflow_readiness_packet_red_stops_on_unsafe_open_chat_result(
+    tmp_path, capsys
+):
+    db_path = tmp_path / "orders.db"
+    ledger_path = tmp_path / "ledger.sqlite"
+    out_dir = tmp_path / "workflow"
+    _make_orders_db(db_path)
+    candidates = load_missing_size_candidates(
+        db_path,
+        target_date=date(2026, 6, 15),
+        lookback_days=2,
+        stores=["ACMEWEAR"],
+    )
+    upsert_request_ledger_plan(
+        ledger_path,
+        build_request_ledger_plan(candidates, template=DEFAULT_REQUEST_TEMPLATE),
+    )
+    resident_button_path = tmp_path / "resident" / "manifest.json"
+    send_path = tmp_path / "send" / "manifest.json"
+    open_chat_packet_path = tmp_path / "open_chat" / "manifest.json"
+    open_chat_result_path = tmp_path / "open_chat_result" / "open_chat_no_type_result_validation.json"
+    _write_json_fixture(
+        resident_button_path,
+        {"gate": "GREEN_KASPI_CUSTOMER_CHAT_MESSAGE_BUTTON_PROVEN_NO_SEND"},
+    )
+    _write_json_fixture(send_path, {"gate": "GREEN_LIVE_SEND_CANARY_APPROVAL_PACKET_READY_NO_SEND"})
+    _write_json_fixture(
+        open_chat_packet_path,
+        {"gate": "GREEN_OPEN_CHAT_NO_TYPE_CANARY_PACKET_READY_NO_SEND"},
+    )
+    _write_json_fixture(
+        open_chat_result_path,
+        {
+            "gate": "RED_OPEN_CHAT_NO_TYPE_RESULT_RED",
+            "blockers": [
+                "resident_unsafe_blocker:send_typing_or_start_chat_route_observed",
+                "result_gate_red:RED_KASPI_CUSTOMER_CHAT_OPEN_CHAT_NO_TYPE_UNSAFE_NO_ACTION",
+            ],
+        },
+    )
+
+    rc = workflow_readiness_packet_main(
+        [
+            "--db",
+            str(db_path),
+            "--ledger-db",
+            str(ledger_path),
+            "--resident-button-manifest",
+            str(resident_button_path),
+            "--live-send-approval-manifest",
+            str(send_path),
+            *_missing_resident_heartbeat_args(tmp_path),
+            "--open-chat-no-type-packet-manifest",
+            str(open_chat_packet_path),
+            "--open-chat-no-type-result-validation-json",
+            str(open_chat_result_path),
+            "--output-dir",
+            str(out_dir),
+        ]
+    )
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    blockers = json.loads((out_dir / "retained_blockers.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert manifest["gate"] == "RED_CUSTOMER_SIZE_WORKFLOW_UNSAFE_OPEN_CHAT_RESULT_NO_EXTERNAL_WRITE"
+    assert blockers[0]["blocker"] == "open_chat_no_type_result_unsafe"
+    assert blockers[0]["result_gate"] == "RED_OPEN_CHAT_NO_TYPE_RESULT_RED"
+    assert (
+        "resident_unsafe_blocker:send_typing_or_start_chat_route_observed"
+        in blockers[0]["result_blockers"]
+    )
+    assert manifest["customer_send_allowed"] is False
+
+
 def test_workflow_readiness_packet_prioritizes_login_heartbeat_before_open_chat(
     tmp_path, capsys
 ):
@@ -2005,6 +2085,61 @@ def test_owner_dashboard_keeps_current_blocker_phrase_over_live_send_fallback(
     assert manifest["approval_phrase_source"] == str(open_chat_phrase_path)
     assert open_chat_phrase in markdown
     assert live_send_phrase not in markdown
+
+
+def test_owner_dashboard_suppresses_approval_phrase_when_workflow_gate_is_red(
+    tmp_path, capsys
+):
+    workflow_dir = tmp_path / "workflow"
+    open_chat_dir = tmp_path / "open_chat"
+    live_send_dir = tmp_path / "live_send"
+    open_chat_phrase_path = open_chat_dir / "REQUIRED_EXACT_OPEN_CHAT_NO_TYPE_APPROVAL_PHRASE.txt"
+    live_send_phrase_path = live_send_dir / "REQUIRED_EXACT_LIVE_SEND_CANARY_APPROVAL_PHRASE.txt"
+    open_chat_phrase = "I approve OPEN_CHAT_NO_TYPE but should not be shown for RED."
+    live_send_phrase = "I approve LIVE_SEND but should not be shown for RED."
+    _write_json_fixture(
+        workflow_dir / "manifest.json",
+        {
+            "gate": "RED_CUSTOMER_SIZE_WORKFLOW_UNSAFE_OPEN_CHAT_RESULT_NO_EXTERNAL_WRITE",
+            "ledger_summary": {},
+            "blockers_count": 1,
+        },
+    )
+    _write_json_fixture(workflow_dir / "workflow_stages.json", [])
+    _write_json_fixture(
+        workflow_dir / "retained_blockers.json",
+        [
+            {
+                "stage": "open_chat_no_type_side_effect_canary",
+                "blocker": "open_chat_no_type_result_unsafe",
+                "approval_phrase_file": str(open_chat_phrase_path),
+            }
+        ],
+    )
+    open_chat_phrase_path.parent.mkdir(parents=True)
+    live_send_phrase_path.parent.mkdir(parents=True)
+    open_chat_phrase_path.write_text(open_chat_phrase + "\n", encoding="utf-8")
+    live_send_phrase_path.write_text(live_send_phrase + "\n", encoding="utf-8")
+
+    rc = owner_dashboard_main(
+        [
+            "--workflow-dir",
+            str(workflow_dir),
+            "--live-send-approval-dir",
+            str(live_send_dir),
+            "--output-dir",
+            str(tmp_path / "dashboard"),
+        ]
+    )
+    manifest = json.loads((tmp_path / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
+    markdown = (tmp_path / "dashboard" / "owner_dashboard.md").read_text(encoding="utf-8")
+
+    assert rc == 0
+    assert manifest["approval_phrase_included"] is False
+    assert manifest["approval_phrase_source"] == ""
+    assert open_chat_phrase not in markdown
+    assert live_send_phrase not in markdown
+    assert "No approval phrase file was available" in markdown
 
 
 def test_automation_options_matrix_ranks_safe_paths_from_workflow_evidence(tmp_path, capsys):
@@ -2311,6 +2446,8 @@ def test_no_send_green_followup_blocks_when_live_ui_validation_not_green(tmp_pat
             str(db_path),
             "--ledger-db",
             str(ledger_path),
+            *_missing_resident_heartbeat_args(tmp_path),
+            *_missing_open_chat_args(tmp_path),
             "--output-root",
             str(output_root),
         ]
@@ -2395,6 +2532,8 @@ def test_no_send_green_followup_generates_owner_approval_after_manual_green_proo
             str(db_path),
             "--ledger-db",
             str(ledger_path),
+            *_missing_resident_heartbeat_args(tmp_path),
+            *_missing_open_chat_args(tmp_path),
             "--output-root",
             str(output_root),
         ]
@@ -3691,6 +3830,108 @@ def test_cadence_readiness_packet_requires_open_chat_no_type_before_send_lane(
     assert send_slot["allowed_now"] is False
 
 
+def test_cadence_readiness_packet_red_stops_on_unsafe_open_chat_result(
+    tmp_path, capsys
+):
+    db_path = tmp_path / "orders.db"
+    ledger_path = tmp_path / "ledger.sqlite"
+    patch_dir = tmp_path / "patch"
+    out_dir = tmp_path / "cadence"
+    live_ui_validation = tmp_path / "live_ui_validation.json"
+    open_chat_packet = tmp_path / "open_chat_packet" / "manifest.json"
+    open_chat_result = tmp_path / "open_chat_result" / "open_chat_no_type_result_validation.json"
+    _make_orders_db(db_path)
+    candidates = load_missing_size_candidates(
+        db_path,
+        target_date=date(2026, 6, 15),
+        lookback_days=2,
+        stores=["ACMEWEAR"],
+    )
+    request_plan = build_request_ledger_plan(candidates, template=DEFAULT_REQUEST_TEMPLATE)
+    upsert_request_ledger_plan(ledger_path, request_plan)
+    assert (
+        google_board_patch_packet_main(
+            [
+                "--db",
+                str(db_path),
+                "--ledger-db",
+                str(ledger_path),
+                "--target-date",
+                "2026-06-15",
+                "--lookback-days",
+                "2",
+                "--output-dir",
+                str(patch_dir),
+            ]
+        )
+        == 0
+    )
+    live_ui_validation.write_text(
+        json.dumps(
+            {"gate": "GREEN_LIVE_UI_NO_SEND_CANARY_RESULT_ACCEPTED"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    open_chat_packet.parent.mkdir(parents=True, exist_ok=True)
+    open_chat_packet.write_text(
+        json.dumps(
+            {"gate": "GREEN_OPEN_CHAT_NO_TYPE_CANARY_PACKET_READY_NO_SEND"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    open_chat_result.parent.mkdir(parents=True, exist_ok=True)
+    open_chat_result.write_text(
+        json.dumps(
+            {
+                "gate": "RED_OPEN_CHAT_NO_TYPE_RESULT_RED",
+                "blockers": ["resident_unsafe_blocker:send_typing_or_start_chat_route_observed"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    rc = cadence_readiness_packet_main(
+        [
+            "--db",
+            str(db_path),
+            "--ledger-db",
+            str(ledger_path),
+            "--target-date",
+            "2026-06-15",
+            "--live-ui-validation-json",
+            str(live_ui_validation),
+            "--open-chat-no-type-packet-manifest",
+            str(open_chat_packet),
+            "--open-chat-no-type-result-validation-json",
+            str(open_chat_result),
+            "--google-board-patch-manifest",
+            str(patch_dir / "manifest.json"),
+            "--output-dir",
+            str(out_dir),
+        ]
+    )
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    blockers = json.loads((out_dir / "retained_blockers.json").read_text(encoding="utf-8"))
+    slots = json.loads((out_dir / "cadence_slots_no_apply.json").read_text(encoding="utf-8"))
+    open_chat_slot = next(
+        slot for slot in slots if slot["stage"] == "open_chat_no_type_side_effect_canary"
+    )
+    send_slot = next(slot for slot in slots if slot["stage"] == "customer_size_request_send_lane")
+
+    assert rc == 0
+    assert manifest["gate"] == "RED_CUSTOMER_SIZE_CADENCE_UNSAFE_OPEN_CHAT_RESULT_NO_APPLY"
+    assert blockers[0]["blocker"] == "open_chat_no_type_result_unsafe"
+    assert blockers[0]["gate"] == "RED_OPEN_CHAT_NO_TYPE_RESULT_RED"
+    assert open_chat_slot["status"] == "UNSAFE_OPEN_CHAT_RESULT"
+    assert open_chat_slot["allowed_now"] is False
+    assert send_slot["status"] == "BLOCKED_OPEN_CHAT_NO_TYPE_RESULT_NOT_ACCEPTED"
+    assert send_slot["allowed_now"] is False
+
+
 def test_cadence_readiness_packet_goes_green_when_no_send_proof_and_patch_are_clean(
     tmp_path, capsys
 ):
@@ -4411,6 +4652,166 @@ def test_reply_polling_handoff_builds_redacted_targets_for_request_sent_rows(tmp
     assert "рост 175 вес 75" not in all_text
 
 
+def test_manual_assist_packet_builds_redacted_owner_queue_no_live_action(tmp_path, capsys):
+    db_path = tmp_path / "orders.db"
+    ledger_path = tmp_path / "ledger.sqlite"
+    out_dir = tmp_path / "manual_assist"
+    _make_orders_db(db_path)
+    candidates = load_missing_size_candidates(
+        db_path,
+        target_date=date(2026, 6, 15),
+        lookback_days=2,
+        stores=["ACMEWEAR"],
+    )
+    upsert_request_ledger_plan(
+        ledger_path,
+        build_request_ledger_plan(candidates, template=DEFAULT_REQUEST_TEMPLATE),
+    )
+
+    rc = manual_assist_packet_main(
+        [
+            "--db",
+            str(db_path),
+            "--ledger-db",
+            str(ledger_path),
+            "--target-date",
+            "2026-06-15",
+            "--lookback-days",
+            "2",
+            "--store",
+            "ACMEWEAR",
+            "--as-of",
+            "2026-06-15T12:00:00",
+            "--output-dir",
+            str(out_dir),
+        ]
+    )
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    targets = json.loads((out_dir / "manual_assist_targets_redacted.json").read_text(encoding="utf-8"))
+    queue_text = (out_dir / "manual_assist_queue.md").read_text(encoding="utf-8")
+    all_text = "\n".join(path.read_text(encoding="utf-8") for path in out_dir.glob("*"))
+
+    assert rc == 0
+    assert manifest["gate"] == "GREEN_MANUAL_ASSIST_QUEUE_READY_NO_LIVE_ACTION"
+    assert manifest["manual_assist_target_count"] == 1
+    assert manifest["customer_send_performed_by_automation"] is False
+    assert manifest["kaspi_chat_write_performed_by_automation"] is False
+    assert manifest["browser_action_performed"] is False
+    assert manifest["app_db_unchanged"] is True
+    assert manifest["ledger_db_unchanged"] is True
+    assert targets[0]["suggested_action"] == "OWNER_MANUAL_KASPI_SIZE_REQUEST"
+    assert targets[0]["expected_merchant_account_id"] == "30137883"
+    assert "--outcome sent_manual" in targets[0]["manual_outcome_command"]
+    assert "automation must not open chat" in queue_text.lower()
+    assert "938710785" not in all_text
+
+
+def test_manual_action_outcome_records_manual_sent_and_becomes_reply_pollable(
+    tmp_path, capsys
+):
+    db_path = tmp_path / "orders.db"
+    ledger_path = tmp_path / "ledger.sqlite"
+    outcome_dir = tmp_path / "manual_outcome"
+    reply_dir = tmp_path / "reply_poll_manual"
+    _make_orders_db(db_path)
+    candidates = load_missing_size_candidates(
+        db_path,
+        target_date=date(2026, 6, 15),
+        lookback_days=2,
+        stores=["ACMEWEAR"],
+    )
+    request_plan = build_request_ledger_plan(candidates, template=DEFAULT_REQUEST_TEMPLATE)
+    upsert_request_ledger_plan(ledger_path, request_plan)
+
+    rc = manual_action_outcome_main(
+        [
+            "--ledger-db",
+            str(ledger_path),
+            "--order-ref",
+            request_plan[0]["order_ref"],
+            "--template-hash",
+            request_plan[0]["template_hash"],
+            "--outcome",
+            "sent_manual",
+            "--operator-confirmed-manual-action",
+            "--confirm-no-auto-type",
+            "--confirm-no-raw-export",
+            "--output-dir",
+            str(outcome_dir),
+        ]
+    )
+    manifest = json.loads((outcome_dir / "manifest.json").read_text(encoding="utf-8"))
+    snapshot = export_customer_size_ledger_snapshot(ledger_path)
+    summary = summarize_customer_size_ledger(snapshot)
+    actions = build_customer_size_next_actions(snapshot)
+
+    assert rc == 0
+    assert manifest["gate"] == "GREEN_MANUAL_SEND_OUTCOME_RECORDED_NO_EXTERNAL_WRITE"
+    assert manifest["customer_send_performed_by_automation"] is False
+    assert manifest["kaspi_chat_write_performed_by_automation"] is False
+    assert snapshot[0]["status"] == "REQUEST_SENT_MANUAL_CONFIRMED"
+    assert snapshot[0]["request_sent_at"]
+    assert summary["reply_poll_pending_count"] == 1
+    assert actions[0]["suggested_action"] == "POLL_FOR_CUSTOMER_REPLY"
+
+    rc = reply_polling_handoff_main(
+        [
+            "--db",
+            str(db_path),
+            "--ledger-db",
+            str(ledger_path),
+            "--output-dir",
+            str(reply_dir),
+        ]
+    )
+    poll_manifest = json.loads((reply_dir / "manifest.json").read_text(encoding="utf-8"))
+    targets = json.loads((reply_dir / "reply_poll_targets_redacted.json").read_text(encoding="utf-8"))
+    all_text = "\n".join(path.read_text(encoding="utf-8") for path in reply_dir.glob("*"))
+
+    assert rc == 0
+    assert poll_manifest["gate"] == "GREEN_REPLY_POLLING_HANDOFF_READY_NO_EXTERNAL_WRITE"
+    assert poll_manifest["poll_target_count"] == 1
+    assert targets[0]["status"] == "REQUEST_SENT_MANUAL_CONFIRMED"
+    assert targets[0]["expected_merchant_account_id"] == "30137883"
+    assert "938710785" not in all_text
+
+
+def test_manual_action_outcome_requires_confirmation_for_sent_manual(tmp_path, capsys):
+    db_path = tmp_path / "orders.db"
+    ledger_path = tmp_path / "ledger.sqlite"
+    out_dir = tmp_path / "manual_outcome_blocked"
+    _make_orders_db(db_path)
+    candidates = load_missing_size_candidates(
+        db_path,
+        target_date=date(2026, 6, 15),
+        lookback_days=2,
+        stores=["ACMEWEAR"],
+    )
+    request_plan = build_request_ledger_plan(candidates, template=DEFAULT_REQUEST_TEMPLATE)
+    upsert_request_ledger_plan(ledger_path, request_plan)
+
+    rc = manual_action_outcome_main(
+        [
+            "--ledger-db",
+            str(ledger_path),
+            "--order-ref",
+            request_plan[0]["order_ref"],
+            "--template-hash",
+            request_plan[0]["template_hash"],
+            "--outcome",
+            "sent_manual",
+            "--output-dir",
+            str(out_dir),
+        ]
+    )
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    snapshot = export_customer_size_ledger_snapshot(ledger_path)
+
+    assert rc == 0
+    assert manifest["gate"] == "YELLOW_MANUAL_SEND_OUTCOME_BLOCKED_CONFIRMATION_REQUIRED_NO_WRITE"
+    assert snapshot[0]["status"] == "SEND_PLANNED_NO_SEND"
+
+
 def test_reply_polling_handoff_stays_yellow_without_request_sent_rows(tmp_path, capsys):
     db_path = tmp_path / "orders.db"
     ledger_path = tmp_path / "ledger.sqlite"
@@ -4819,6 +5220,8 @@ def test_post_canary_sequence_builds_reply_polling_and_board_packets_after_green
             "2",
             "--reply-poll-window-minutes",
             "10,30",
+            *_missing_resident_heartbeat_args(tmp_path),
+            *_missing_open_chat_args(tmp_path),
             "--output-dir",
             str(output_dir),
         ]

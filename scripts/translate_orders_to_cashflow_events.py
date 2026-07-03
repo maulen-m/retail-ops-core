@@ -784,6 +784,7 @@ def _build_stagecode_d1_events(
     entries_by_order: dict[tuple[str, str], list[dict]],
     sales_fact_fallback: dict[tuple[str, str], list[dict]],
     fact_order_fallback: dict[tuple[str, str], list[dict]],
+    order_id_filter: set[str] | None = None,
 ) -> tuple[list[dict], Counter]:
     stage_events = _stage_events_by_order(conn, since, until)
     cash_rows = _load_existing_cash_rows(conn)
@@ -791,6 +792,8 @@ def _build_stagecode_d1_events(
     counts: Counter = Counter()
 
     for (order_id, store_code), stage_meta in stage_events.items():
+        if order_id_filter is not None and order_id not in order_id_filter:
+            continue
         lines = (
             entries_by_order.get((order_id, store_code))
             or sales_fact_fallback.get((order_id, store_code))
@@ -1192,6 +1195,7 @@ def translate_orders(
                 entries_by_order=entries_by_order,
                 sales_fact_fallback=sales_fact_fallback,
                 fact_order_fallback=fact_order_fallback,
+                order_id_filter=order_id_filter,
             )
         events.extend(stagecode_events)
         for event in stagecode_events:

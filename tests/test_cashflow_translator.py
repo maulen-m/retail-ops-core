@@ -1457,6 +1457,81 @@ def test_translate_orders_order_id_allowlist_excludes_non_allowlisted_rows(tmp_p
     assert blocked_count == 0
 
 
+def test_translate_orders_order_id_allowlist_filters_stagecode_d1_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executemany(
+            "INSERT INTO dim_sku (sku_key, weight_kg, cogs_kzt, base_cost_cny) VALUES (?, ?, ?, ?)",
+            [
+                ("SKU_STAGE_ALLOWED", 1.0, 100.0, 0),
+                ("SKU_STAGE_BLOCKED", 1.0, 100.0, 0),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO order_status_event (
+                store_code, order_id, stage_code, event_ts, source, idempotency_key
+            ) VALUES (?, ?, 'COMPLETED', '2026-02-08T10:00:00+05:00', 'fixture', ?)
+            """,
+            [
+                ("STOREB", "ORD_STAGE_ALLOWED", "ose-stage-allowed"),
+                ("STOREB", "ORD_STAGE_BLOCKED", "ose-stage-blocked"),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO fact_order_entries_kaspi (
+                entry_id, order_id, store_code, offer_id, quantity,
+                unit_price_kzt, total_price_kzt, raw_json
+            ) VALUES (?, ?, 'STOREB', ?, 1, 10000, 10000, ?)
+            """,
+            [
+                (
+                    "ENTRY_STAGE_ALLOWED",
+                    "ORD_STAGE_ALLOWED",
+                    "OFFER_ALLOWED",
+                    '{"attributes":{"sku_key":"SKU_STAGE_ALLOWED","sku_id":"SKU_STAGE_ALLOWED_S"}}',
+                ),
+                (
+                    "ENTRY_STAGE_BLOCKED",
+                    "ORD_STAGE_BLOCKED",
+                    "OFFER_BLOCKED",
+                    '{"attributes":{"sku_key":"SKU_STAGE_BLOCKED","sku_id":"SKU_STAGE_BLOCKED_S"}}',
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    translate_orders(
+        db_path,
+        since=date(2026, 2, 8),
+        until=date(2026, 2, 8),
+        apply=True,
+        run_id="test",
+        order_id_allowlist={"ORD_STAGE_ALLOWED"},
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        allowed_count = conn.execute(
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id='ENTRY_STAGE_ALLOWED'"
+        ).fetchone()[0]
+        blocked_count = conn.execute(
+            "SELECT COUNT(*) FROM fact_cashflow_events WHERE ref_id='ENTRY_STAGE_BLOCKED'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert allowed_count == 1
+    assert blocked_count == 0
+
+
 def test_translate_orders_only_on_delivery_excludes_completed_rows_same_window(
     tmp_path,
     monkeypatch,

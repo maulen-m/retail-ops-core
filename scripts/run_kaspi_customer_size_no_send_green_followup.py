@@ -68,6 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chrome-reconnect-manifest", type=Path)
     parser.add_argument("--google-board-patch-manifest", type=Path)
     parser.add_argument("--cadence-manifest", type=Path)
+    parser.add_argument("--resident-heartbeat-manifest", type=Path)
+    parser.add_argument("--resident-button-manifest", type=Path)
+    parser.add_argument("--open-chat-no-type-packet-manifest", type=Path)
+    parser.add_argument("--open-chat-no-type-result-validation-json", type=Path)
     return parser
 
 
@@ -169,6 +173,21 @@ def main(argv: list[str] | None = None) -> int:
         workflow_args.extend(["--db", str(args.db)])
     if args.ledger_db:
         workflow_args.extend(["--ledger-db", str(args.ledger_db)])
+    if args.resident_heartbeat_manifest:
+        workflow_args.extend(["--resident-heartbeat-manifest", str(args.resident_heartbeat_manifest)])
+    if args.resident_button_manifest:
+        workflow_args.extend(["--resident-button-manifest", str(args.resident_button_manifest)])
+    if args.open_chat_no_type_packet_manifest:
+        workflow_args.extend(
+            ["--open-chat-no-type-packet-manifest", str(args.open_chat_no_type_packet_manifest)]
+        )
+    if args.open_chat_no_type_result_validation_json:
+        workflow_args.extend(
+            [
+                "--open-chat-no-type-result-validation-json",
+                str(args.open_chat_no_type_result_validation_json),
+            ]
+        )
     if chrome_manifest:
         workflow_args.extend(["--chrome-reconnect-manifest", str(chrome_manifest)])
     if patch_manifest:

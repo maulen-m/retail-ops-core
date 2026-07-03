@@ -40,6 +40,9 @@ DEFAULT_LEDGER_DB = (
 DEFAULT_REPLY_POLL_WINDOWS_MINUTES = (10, 30, 60, 120)
 OPEN_CHAT_PACKET_GREEN_GATE = "GREEN_OPEN_CHAT_NO_TYPE_CANARY_PACKET_READY_NO_SEND"
 OPEN_CHAT_RESULT_ACCEPTED_GATE = "GREEN_OPEN_CHAT_NO_TYPE_CANARY_RESULT_ACCEPTED_NO_SEND"
+OPEN_CHAT_UNSAFE_CADENCE_GATE = (
+    "RED_CUSTOMER_SIZE_CADENCE_UNSAFE_OPEN_CHAT_RESULT_NO_APPLY"
+)
 
 
 def _parse_date(value: str | None) -> date:
@@ -141,6 +144,7 @@ def build_cadence_slots(
     open_chat_packet_gate = str((open_chat_packet or {}).get("gate") or "MISSING")
     open_chat_result_gate = str((open_chat_result_validation or {}).get("gate") or "MISSING")
     open_chat_ready = open_chat_result_gate == OPEN_CHAT_RESULT_ACCEPTED_GATE
+    open_chat_unsafe = open_chat_result_gate.startswith("RED_")
     patch_gate = str((patch_manifest or {}).get("gate") or "MISSING")
 
     slots: list[dict[str, Any]] = [
@@ -174,6 +178,8 @@ def build_cadence_slots(
             "status": (
                 "ACCEPTED_NO_SEND"
                 if open_chat_ready
+                else "UNSAFE_OPEN_CHAT_RESULT"
+                if open_chat_unsafe
                 else "WAITING_ON_OPEN_CHAT_NO_TYPE_RESULT"
                 if open_chat_packet
                 else "PACKET_MISSING"
@@ -384,12 +390,17 @@ def main(argv: list[str] | None = None) -> int:
     if not open_chat_result_validation:
         blockers.append({"blocker": "open_chat_no_type_result_validation_missing"})
     elif open_chat_result_validation.get("gate") != OPEN_CHAT_RESULT_ACCEPTED_GATE:
-        blockers.append(
-            {
-                "blocker": "open_chat_no_type_result_not_accepted",
-                "gate": open_chat_result_validation.get("gate"),
-            }
-        )
+        blocker = {
+            "blocker": (
+                "open_chat_no_type_result_unsafe"
+                if str(open_chat_result_validation.get("gate") or "").startswith("RED_")
+                else "open_chat_no_type_result_not_accepted"
+            ),
+            "gate": open_chat_result_validation.get("gate"),
+        }
+        if str(open_chat_result_validation.get("gate") or "").startswith("RED_"):
+            blocker["result_blockers"] = list(open_chat_result_validation.get("blockers") or [])
+        blockers.append(blocker)
     if patch_manifest and _manifest_count(patch_manifest, "blockers_count"):
         blockers.append(
             {
@@ -402,6 +413,9 @@ def main(argv: list[str] | None = None) -> int:
     db_sha_after = _safe_sha(db_path)
     ledger_sha_after = _safe_sha(ledger_path)
     gate = (
+        OPEN_CHAT_UNSAFE_CADENCE_GATE
+        if str((open_chat_result_validation or {}).get("gate") or "").startswith("RED_")
+        else
         "YELLOW_CUSTOMER_SIZE_CADENCE_READY_WITH_RETAINED_BLOCKERS_NO_APPLY"
         if blockers
         else "GREEN_CUSTOMER_SIZE_CADENCE_PACKET_READY_NO_APPLY"

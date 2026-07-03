@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import hashlib
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -80,6 +81,22 @@ DAILY_REQUIRED_COLUMNS = {
     "profit_accrual_kzt",
     "run_id",
 }
+ANCHOR_TIMESTAMP_RE = re.compile(
+    r"(?P<day>\d{2})\.(?P<month>\d{2})\.(?P<year>\d{4})_"
+    r"(?P<hour>\d{2})_(?P<minute>\d{2})_(?P<second>\d{2})"
+)
+
+
+@dataclass(frozen=True)
+class ActualCashAnchor:
+    anchor_date: date
+    operating_cash_kzt: float
+    row_count: int
+    run_id: str | None = None
+    created_at: str | None = None
+    anchor_ts: datetime | None = None
+    reserve_kzt: float | None = None
+    grand_total_with_reserve_kzt: float | None = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -188,6 +205,252 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 def _get_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _parse_anchor_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    match = ANCHOR_TIMESTAMP_RE.search(str(value))
+    if not match:
+        return None
+    parts = {key: int(raw) for key, raw in match.groupdict().items()}
+    return datetime(
+        parts["year"],
+        parts["month"],
+        parts["day"],
+        parts["hour"],
+        parts["minute"],
+        parts["second"],
+    )
+
+
+def _parse_event_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _parse_note_amount(notes: str | None, key: str) -> float | None:
+    if not notes:
+        return None
+    match = re.search(rf"{re.escape(key)}\s*=\s*([0-9]+(?:\.[0-9]+)?)", str(notes))
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+def load_latest_actual_cash_anchor(
+    conn: sqlite3.Connection,
+    *,
+    on_or_before: date | None = None,
+) -> ActualCashAnchor | None:
+    if not _table_exists(conn, "cashflow_cash_anchor"):
+        return None
+    cols = _get_columns(conn, "cashflow_cash_anchor")
+    if "anchor_date" not in cols or "anchor_closing_balance_kzt" not in cols:
+        return None
+
+    trust_col = "trust_class" if "trust_class" in cols else "anchor_kind" if "anchor_kind" in cols else None
+    status_col = (
+        "reconciliation_status"
+        if "reconciliation_status" in cols
+        else "status"
+        if "status" in cols
+        else None
+    )
+    if not trust_col or not status_col:
+        return None
+
+    run_col = "created_by_run_id" if "created_by_run_id" in cols else "NULL"
+    created_col = "created_at" if "created_at" in cols else "NULL"
+    source_col = "source_store_dir" if "source_store_dir" in cols else "NULL"
+    notes_col = "notes_redacted" if "notes_redacted" in cols else "NULL"
+    params: list[object] = ["ACTUAL_ANCHOR", "RECONCILED"]
+    date_filter = ""
+    if on_or_before is not None:
+        date_filter = "AND anchor_date <= ?"
+        params.append(on_or_before.isoformat())
+
+    row = conn.execute(
+        f"""
+        SELECT
+            anchor_date,
+            {run_col} AS run_id,
+            COUNT(*) AS row_count,
+            ROUND(SUM(anchor_closing_balance_kzt), 2) AS operating_cash_kzt,
+            MAX({created_col}) AS created_at,
+            MAX({source_col}) AS source_store_dir,
+            MAX({notes_col}) AS notes_redacted
+        FROM cashflow_cash_anchor
+        WHERE {trust_col} = ?
+          AND {status_col} = ?
+          {date_filter}
+        GROUP BY anchor_date, run_id
+        HAVING row_count > 0
+        ORDER BY anchor_date DESC, created_at DESC, run_id DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    if row is None:
+        return None
+
+    notes = row["notes_redacted"]
+    return ActualCashAnchor(
+        anchor_date=date.fromisoformat(str(row["anchor_date"])[:10]),
+        operating_cash_kzt=float(row["operating_cash_kzt"] or 0.0),
+        row_count=int(row["row_count"] or 0),
+        run_id=row["run_id"],
+        created_at=row["created_at"],
+        anchor_ts=_parse_anchor_timestamp(row["source_store_dir"]),
+        reserve_kzt=_parse_note_amount(notes, "reserve_kzt"),
+        grand_total_with_reserve_kzt=_parse_note_amount(notes, "grand_total_with_reserve_kzt"),
+    )
+
+
+def _event_day(event: dict) -> date:
+    return date.fromisoformat(_normalize_date(event.get("event_date"))[:10])
+
+
+def _cash_event_applies_after_anchor(event: dict, anchor: ActualCashAnchor | None) -> bool:
+    if anchor is None or not _is_cash_account(event.get("account")):
+        return True
+
+    event_date = _event_day(event)
+    if event_date < anchor.anchor_date:
+        return True
+    if event_date > anchor.anchor_date:
+        return True
+    if anchor.anchor_ts is None:
+        return False
+
+    event_ts = _parse_event_timestamp(event.get("event_ts"))
+    return bool(event_ts and event_ts > anchor.anchor_ts)
+
+
+def _effective_events_for_cash_anchor(
+    events: list[dict],
+    anchor: ActualCashAnchor | None,
+) -> list[dict]:
+    if anchor is None:
+        return events
+    return [event for event in events if _cash_event_applies_after_anchor(event, anchor)]
+
+
+def _is_modelled_cash_in(event: dict) -> bool:
+    return (
+        str(event.get("event_type") or "").upper() == "CASH_IN"
+        and float(event.get("amount_kzt") or 0.0) > 0
+        and "MODEL" in str(event.get("source") or "").upper()
+    )
+
+
+def _cash_delta_after_anchor_before_start(
+    conn: sqlite3.Connection,
+    anchor: ActualCashAnchor,
+    start_date: date,
+) -> float:
+    if start_date <= anchor.anchor_date:
+        return 0.0
+    events = _fetch_manual_events(conn, anchor.anchor_date, start_date - timedelta(days=1))
+    return round(
+        sum(
+            float(event.get("amount_kzt") or 0.0)
+            for event in events
+            if _is_cash_account(event.get("account"))
+            and _cash_event_applies_after_anchor(event, anchor)
+        ),
+        2,
+    )
+
+
+def _apply_cash_anchor_opening_state(
+    conn: sqlite3.Connection,
+    start_date: date,
+    opening_state: dict[str, float] | None,
+    anchor: ActualCashAnchor | None,
+) -> dict[str, float] | None:
+    if anchor is None or start_date < anchor.anchor_date:
+        return opening_state
+    state = dict(opening_state or {})
+    state["cash_open"] = round(
+        anchor.operating_cash_kzt + _cash_delta_after_anchor_before_start(conn, anchor, start_date),
+        2,
+    )
+    return state
+
+
+def rebase_daily_history_to_cash_anchor(
+    conn: sqlite3.Connection,
+    history_rows: list[dict],
+    anchor: ActualCashAnchor | None = None,
+) -> tuple[list[dict], dict[str, object]]:
+    if not history_rows:
+        return history_rows, {"anchor_date": None}
+
+    first_date = date.fromisoformat(str(history_rows[0]["date"])[:10])
+    last_date = date.fromisoformat(str(history_rows[-1]["date"])[:10])
+    anchor = anchor or load_latest_actual_cash_anchor(conn, on_or_before=last_date)
+    if anchor is None or last_date < anchor.anchor_date:
+        return history_rows, {"anchor_date": None}
+
+    events = _fetch_manual_events(conn, anchor.anchor_date, last_date)
+    cash_delta_by_date: dict[str, float] = {}
+    modelled_cash_in_kzt = 0.0
+    for event in events:
+        if not _is_cash_account(event.get("account")):
+            continue
+        if not _cash_event_applies_after_anchor(event, anchor):
+            continue
+        day_key = _event_day(event).isoformat()
+        amount = float(event.get("amount_kzt") or 0.0)
+        cash_delta_by_date[day_key] = cash_delta_by_date.get(day_key, 0.0) + amount
+        if _is_modelled_cash_in(event):
+            modelled_cash_in_kzt += amount
+
+    cash_close = round(anchor.operating_cash_kzt, 2)
+    if first_date > anchor.anchor_date:
+        for day_key, amount in cash_delta_by_date.items():
+            if anchor.anchor_date < date.fromisoformat(day_key) < first_date:
+                cash_close += amount
+
+    rebased_rows: list[dict] = []
+    touched = 0
+    for row in history_rows:
+        updated = dict(row)
+        row_date = date.fromisoformat(str(updated["date"])[:10])
+        if row_date >= anchor.anchor_date:
+            cash_open = cash_close
+            cash_flow = round(cash_delta_by_date.get(row_date.isoformat(), 0.0), 2)
+            cash_close = round(cash_open + cash_flow, 2)
+            updated["cash_open"] = round(cash_open, 2)
+            updated["cash_flow_kzt"] = cash_flow
+            updated["cash_close"] = cash_close
+            if "capital_close" in updated:
+                receivables_close = float(updated.get("receivables_close") or 0.0)
+                inventory_close = float(updated.get("inventory_cost_close") or 0.0)
+                updated["capital_close"] = round(cash_close + receivables_close + inventory_close, 2)
+            touched += 1
+        rebased_rows.append(updated)
+
+    return rebased_rows, {
+        "anchor_date": anchor.anchor_date.isoformat(),
+        "anchor_opening_cash_kzt": round(anchor.operating_cash_kzt, 2),
+        "anchor_row_count": anchor.row_count,
+        "anchor_run_id": anchor.run_id,
+        "modelled_cash_in_after_anchor": modelled_cash_in_kzt > 0,
+        "modelled_cash_in_after_anchor_kzt": round(modelled_cash_in_kzt, 2),
+        "rebased_history_rows": touched,
+    }
 
 
 def _missing_daily_columns(conn: sqlite3.Connection) -> list[str]:
@@ -458,9 +721,11 @@ def _fetch_manual_events(
 ) -> list[dict]:
     if not _table_exists(conn, "fact_cashflow_events"):
         return []
+    cols = _get_columns(conn, "fact_cashflow_events")
+    event_ts_select = "event_ts" if "event_ts" in cols else "NULL AS event_ts"
     rows = conn.execute(
-        """
-        SELECT event_date, event_type, account, amount_kzt, store_code, sku_key, sku_id,
+        f"""
+        SELECT event_date, {event_ts_select}, event_type, account, amount_kzt, store_code, sku_key, sku_id,
                ref_type, ref_id, notes, source, run_id, event_hash
         FROM fact_cashflow_events
         WHERE event_date BETWEEN ? AND ?
@@ -504,6 +769,7 @@ def compute_daily_rows(
     end_date: date,
     run_id: Optional[str] = None,
     opening_state: dict[str, float] | None = None,
+    cash_anchor: ActualCashAnchor | None = None,
 ) -> list[dict]:
     events_by_date: dict[str, list[dict]] = {}
     for event in events:
@@ -520,7 +786,9 @@ def compute_daily_rows(
 
     for day in _date_range(start_date, end_date):
         day_key = day.isoformat()
-        day_events = events_by_date.get(day_key, [])
+        if cash_anchor is not None and day == cash_anchor.anchor_date:
+            cash_open = round(cash_anchor.operating_cash_kzt, 2)
+        day_events = _effective_events_for_cash_anchor(events_by_date.get(day_key, []), cash_anchor)
         cash_flow = sum(
             e.get("amount_kzt", 0.0)
             for e in day_events
@@ -672,6 +940,7 @@ def rebuild_cashflow_calendar(
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
     rebuild_cashflow_calendar.last_apply_metadata = {}
+    rebuild_cashflow_calendar.last_cash_anchor = None
     apply_metadata: dict[str, object] = {}
     if apply:
         apply_metadata = _prepare_cashflow_rebuild_apply_guard(
@@ -751,13 +1020,17 @@ def rebuild_cashflow_calendar(
                     ),
                 )
 
+        cash_anchor = load_latest_actual_cash_anchor(conn, on_or_before=end_date)
+        rebuild_cashflow_calendar.last_cash_anchor = cash_anchor
         opening_state = _load_opening_state(conn, start_date)
+        opening_state = _apply_cash_anchor_opening_state(conn, start_date, opening_state, cash_anchor)
         daily_rows = compute_daily_rows(
             all_events,
             start_date,
             end_date,
             run_id=run_id,
             opening_state=opening_state,
+            cash_anchor=cash_anchor,
         )
 
         if apply:
@@ -899,6 +1172,11 @@ def main() -> int:
     print(f"  legacy_receivables_ignored_count: {ignored_count}")
     print(f"  ignored_amount_kzt: {ignored_amount:.2f}")
     print(f"  Daily rows computed: {len(daily_rows)}")
+    cash_anchor = getattr(rebuild_cashflow_calendar, "last_cash_anchor", None)
+    if cash_anchor is not None:
+        print(f"  Cash anchor rebase date: {cash_anchor.anchor_date.isoformat()}")
+        print(f"  Cash anchor operating opening KZT: {cash_anchor.operating_cash_kzt:.2f}")
+        print(f"  Cash anchor rows: {cash_anchor.row_count}")
     if args.apply:
         print("  APPLY: wrote SYSTEM events + daily table.")
         metadata = getattr(rebuild_cashflow_calendar, "last_apply_metadata", {})

@@ -9,6 +9,7 @@ DEST="${VOLUME}/green_path_backups/"
 LOG_DIR="${ROOT}/runtime_logs"
 LOG_FILE="${LOG_DIR}/green_path_offsite.log"
 LABEL="com.example.green-path-offsite-backup"
+RSYNC_BIN="/usr/bin/rsync"
 
 timestamp_utc() {
   date -u "+%Y-%m-%dT%H:%M:%SZ"
@@ -24,6 +25,10 @@ append_status() {
 send_failure_alert() {
   local reason="$1"
   local python_bin="${ROOT}/.venv/bin/python"
+
+  if [[ "${GREEN_PATH_OFFSITE_SUPPRESS_ALERTS:-0}" == "1" ]]; then
+    return 0
+  fi
 
   if [[ ! -x "$python_bin" ]]; then
     python_bin="python3"
@@ -67,13 +72,36 @@ if [[ "$mkdir_rc" -ne 0 ]]; then
   exit "$mkdir_rc"
 fi
 
-/usr/bin/rsync -a "$SRC" "$DEST"
-rsync_rc=$?
-if [[ "$rsync_rc" -ne 0 ]]; then
-  append_status "FAIL" "reason=rsync_failed rc=${rsync_rc} src=${SRC} dest=${DEST}"
-  send_failure_alert "rsync_failed rc=${rsync_rc} src=${SRC} dest=${DEST}"
-  exit "$rsync_rc"
+cycle_count=0
+failure_count=0
+last_rsync_rc=0
+
+while IFS= read -r -d '' cycle_dir; do
+  cycle_name="$(basename "$cycle_dir")"
+  if [[ ! "$cycle_name" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
+    continue
+  fi
+
+  cycle_count=$((cycle_count + 1))
+  "$RSYNC_BIN" -aO --no-links "$cycle_dir/" "${DEST}${cycle_name}/"
+  rsync_rc=$?
+  if [[ "$rsync_rc" -ne 0 ]]; then
+    failure_count=$((failure_count + 1))
+    last_rsync_rc="$rsync_rc"
+    append_status "FAIL" "reason=rsync_failed rc=${rsync_rc} cycle=${cycle_name} src=${cycle_dir} dest=${DEST}${cycle_name}/"
+  fi
+done < <(find "$SRC" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]' -print0)
+
+if [[ "$cycle_count" -eq 0 ]]; then
+  append_status "SKIP" "reason=no_real_cycle_dirs src=${SRC}"
+  exit 0
 fi
 
-append_status "OK" "src=${SRC} dest=${DEST}"
+if [[ "$failure_count" -ne 0 ]]; then
+  append_status "FAIL" "reason=rsync_failed failures=${failure_count} last_rc=${last_rsync_rc} src=${SRC} dest=${DEST}"
+  send_failure_alert "rsync_failed failures=${failure_count} last_rc=${last_rsync_rc} src=${SRC} dest=${DEST}"
+  exit "$last_rsync_rc"
+fi
+
+append_status "OK" "cycles=${cycle_count} src=${SRC} dest=${DEST}"
 exit 0

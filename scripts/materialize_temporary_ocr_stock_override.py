@@ -49,14 +49,31 @@ STORE_CODE = "UNIVERSAL"
 JUNE11_BATCH_ID = "ASTANA_WAREHOUSE_OCR_2026_06_11_AFTER_DAILY_SHIPPING"
 JUNE11_EVENT_TS = "2026-06-11T22:00:00+05:00"
 JUNE11_EVENT_DATE = "2026-06-11"
+BLACK_TSHIRT_OOS_BATCH_ID = "OWNER_BLACK_TSHIRT_WAREHOUSE_OOS_2026_06_28"
+BLACK_TSHIRT_OOS_EVENT_TS = "2026-06-28T23:45:00+05:00"
+BLACK_TSHIRT_OOS_EVENT_DATE = "2026-06-28"
 SNAPSHOT_SOURCE_DOC = (
     PROJECT_ROOT
     / "docs/plan/green_path_2026-06/reconciliation/"
     "count_batch_2026-06-11_2200/count_batch_canonical_DRAFT.md"
 )
 OWNER_DECISION_DOC = PROJECT_ROOT / "docs/plan/green_path_2026-06/OWNER_DECISIONS_RECORDED.yaml"
+BLACK_TSHIRT_OOS_OWNER_EVENT_DOC = (
+    PROJECT_ROOT
+    / "docs/plan/green_path_2026-06/runtime_owner_stock_events/20260628_black_tshirt_oos.md"
+)
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports/validation/temporary_ocr_stock_override"
 CURRENT_DIR = PROJECT_ROOT / "exports/current/temporary_ocr_stock_override"
+RECOVERED_RETURNS_ROOT = Path(
+    os.environ.get(
+        "RECOVERED_RETURNS_ROOT",
+        str(
+            Path.home()
+            / "Downloads/Stock_ingestion_from_warehouse_counting/"
+            "warehouse_stock_count_manual_results/returns_recovered"
+        ),
+    )
+)
 TEMPORARY_UNTIL = (
     "temporary_until_main_orchestrator_refactor_returns_conflict_free_single_source_of_truth"
 )
@@ -164,6 +181,7 @@ class Plan:
     parked_rows: list[dict[str, Any]] = field(default_factory=list)
     owner_hold_rows: list[dict[str, Any]] = field(default_factory=list)
     existing_rows: list[dict[str, Any]] = field(default_factory=list)
+    source_trace_rows: list[dict[str, Any]] = field(default_factory=list)
     report_rows: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -513,6 +531,244 @@ def _source_rows_from_june11_consensus() -> list[SourceRow]:
     return rows
 
 
+def _source_rows_from_owner_black_tshirt_oos() -> list[SourceRow]:
+    rows: list[SourceRow] = []
+    for idx, size in enumerate(["S", "M", "L", "XL", "2XL", "3XL"], start=1):
+        sku_id = _make_sku_id("CL_NEW-CLO_MEN_T-SHIRT_BLACK", size)
+        rows.append(
+            SourceRow(
+                row_id=f"OWNER-BLACK-TSHIRT-OOS-{idx:03d}",
+                batch_id=BLACK_TSHIRT_OOS_BATCH_ID,
+                event_ts=BLACK_TSHIRT_OOS_EVENT_TS,
+                event_date=BLACK_TSHIRT_OOS_EVENT_DATE,
+                boundary_inclusive=True,
+                semantic="FULL_SUPERSEDE",
+                sku_key="CL_NEW-CLO_MEN_T-SHIRT_BLACK",
+                my_size=size,
+                sku_id=sku_id,
+                stock_pool_id=sku_id,
+                applies_to_sku_ids=(sku_id,),
+                quantity=0,
+                source_image="owner_chat_no_image",
+                source_doc=str(BLACK_TSHIRT_OOS_OWNER_EVENT_DOC),
+                mode="OWNER_CONFIRMED_WAREHOUSE_OOS_FULL_SUPERSEDE",
+                confidence="OWNER_CONFIRMED",
+                notes=(
+                    "owner confirmed black T-shirt warehouse stock is out of stock; "
+                    "supersedes stale positive stock and blocks aggressive lowering"
+                ),
+            )
+        )
+    return rows
+
+
+def _recovered_image(root: Path, timestamp_folder: str, filename: str) -> Path:
+    return root / "images" / timestamp_folder / filename
+
+
+def _recovered_return_entry(
+    *,
+    timestamp_folder: str,
+    filename: str,
+    product_label: str,
+    size: str,
+    quantity: int,
+    confidence: str,
+    sku_key: str = "",
+    raw_expression: str = "",
+    notes: str = "",
+) -> dict[str, Any]:
+    event_date = timestamp_folder.split("_", 1)[0].replace(".", "-")
+    day, month, year = event_date.split("-")
+    iso_date = f"{year}-{month}-{day}"
+    event_ts = f"{iso_date}T11:40:00+05:00"
+    normalized_size = _normalize_size(size)
+    row_id = (
+        "RECOVERED-RETURNS-"
+        f"{iso_date.replace('-', '')}-{Path(filename).stem.upper().replace('-', '_')}-"
+        f"{product_label.upper().replace(' ', '_').replace('/', '_')}-{normalized_size}"
+    )
+    return {
+        "row_id": row_id,
+        "batch_id": f"ASTANA_RETURNS_RECOVERED_READY_TO_SELL_{iso_date.replace('-', '_')}",
+        "event_ts": event_ts,
+        "event_date": iso_date,
+        "timestamp_folder": timestamp_folder,
+        "source_image": str(_recovered_image(RECOVERED_RETURNS_ROOT, timestamp_folder, filename)),
+        "source_doc": str(RECOVERED_RETURNS_ROOT / "readme.md"),
+        "product_label": product_label,
+        "sku_key": sku_key,
+        "my_size": normalized_size,
+        "quantity": int(quantity),
+        "source_semantic": "ADDITION",
+        "source_mode": "RECOVERED_RETURN_READY_TO_SELL_ADDITION",
+        "raw_expression": raw_expression or str(quantity),
+        "confidence": confidence,
+        "status": "mapped" if sku_key and quantity > 0 else "trace_only_zero" if sku_key else "parked_mapping_pending",
+        "notes": notes,
+    }
+
+
+def _recovered_return_trace_rows() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    add = rows.append
+
+    # 2026-06-17 recovered ready-to-sell returns.
+    folder = "17.06.2026_11_40_01"
+    add(_recovered_return_entry(timestamp_folder=folder, filename="Kids_3_in_1.jpg", product_label="kids31 black", sku_key="CL_NEW-CLO_KIDS_KID-31_BLACK", size="150/30", quantity=1, raw_expression="1", confidence="HIGH"))
+    for size, quantity, expression in [
+        ("S", 1, "1"),
+        ("M", 0, ""),
+        ("L", 0, ""),
+        ("XL", 1, "1"),
+        ("2XL", 1, "1"),
+        ("3XL", 1, "1"),
+        ("4XL", 0, ""),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="ROMBIK_men.jpg", product_label="rombik men black", sku_key="CL_NEW-CLO_MEN_ROMBIK_BLACK", size=size, quantity=quantity, raw_expression=expression, confidence="HIGH", notes="visible blank size rows are zero"))
+    for color_label, size, quantity in [
+        ("LINE31 starry black", "M", 1),
+        ("LINE31 IWS mixed color", "M", 1),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="LINE31.jpg", product_label=color_label, size=size, quantity=quantity, raw_expression=str(quantity), confidence="MED", notes="parked: LINE31 color/store mapping not in Universal/STORE-B scope"))
+    for size, quantity, expression, confidence in [
+        ("S", 1, "1", "HIGH"),
+        ("M", 0, "", "HIGH"),
+        ("L", 0, "", "HIGH"),
+        ("XL", 9, "2+1+1+1+1+1+1+1", "MED"),
+        ("2XL", 8, "3+1+1+1+1+1", "MED"),
+        ("3XL", 9, "6+1+1+1", "MED"),
+        ("4XL", 3, "1+1+1", "HIGH"),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="line51.jpg", product_label="line51 white", sku_key="CL_OC_MEN_LINE51_WHITE", size=size, quantity=quantity, raw_expression=expression, confidence=confidence, notes="visible blank size rows are zero"))
+    for size, quantity, expression in [
+        ("M", 0, "0"),
+        ("L", 2, "1+1"),
+        ("XL", 5, "1+1+1+1+1"),
+        ("2XL", 6, "1+1+1+1+1+1"),
+        ("3XL", 4, "1+1+1+1"),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="Line61.jpg", product_label="line61 black", sku_key="CL_NEW-CLO2_MEN_SUIT-61_BLACK", size=size, quantity=quantity, raw_expression=expression, confidence="HIGH", notes="visible blank size rows are zero"))
+    for size, quantity, expression in [
+        ("S", 0, ""),
+        ("M", 1, "1"),
+        ("L", 0, ""),
+        ("XL", 6, "4+1+1"),
+        ("2XL", 5, "3+1+1"),
+        ("3XL", 7, "4+1+1+1"),
+        ("4XL", 2, "1+1"),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="line52.jpg", product_label="line52 black", sku_key="CL_OC_MEN_LINE52_BLACK", size=size, quantity=quantity, raw_expression=expression, confidence="HIGH", notes="visible blank size rows are zero"))
+
+    # 2026-06-24 recovered ready-to-sell returns.
+    folder = "24.06.2026_11_40_18"
+    for product_label, sku_key, size, quantity, expression, filename in [
+        ("rombik men black", "CL_NEW-CLO_MEN_ROMBIK_BLACK", "XL", 2, "1+1", "rombik_men_and_kids.JPG"),
+        ("rombik men black", "CL_NEW-CLO_MEN_ROMBIK_BLACK", "2XL", 1, "1", "rombik_men_and_kids.JPG"),
+        ("rombik men black", "CL_NEW-CLO_MEN_ROMBIK_BLACK", "S", 1, "1", "rombik_men_and_kids.JPG"),
+        ("rombik kids black", "CL_NEW-CLO_KID_ROMBIK_BLACK", "140/28", 1, "1", "rombik_men_and_kids.JPG"),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename=filename, product_label=product_label, sku_key=sku_key, size=size, quantity=quantity, raw_expression=expression, confidence="HIGH"))
+    for product_label, size, quantity, expression in [
+        ("LINE31 espresso color", "M", 2, "2"),
+        ("LINE31 starry black color", "XL", 1, "1"),
+        ("LINE31 IWS mixed color", "XL", 1, "1"),
+        ("LINE31 starry black color", "M", 1, "1"),
+        ("LINE31 IWS mixed color", "M", 1, "1"),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="LINE31.JPG", product_label=product_label, size=size, quantity=quantity, raw_expression=expression, confidence="HIGH", notes="parked: LINE31 color/store mapping not in Universal/STORE-B scope"))
+    for size, quantity in [("XL", 1), ("2XL", 1), ("4XL", 1)]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="beli_ts_21.JPG", product_label="beli21 ts white", sku_key="LINE-21-TS", size=size, quantity=quantity, raw_expression=str(quantity), confidence="MED", notes="mapped from filename beli_ts_21"))
+    add(_recovered_return_entry(timestamp_folder=folder, filename="blk_ts21.JPG", product_label="beli21 ts black", sku_key="LINE-21-TS", size="3XL", quantity=1, raw_expression="1", confidence="MED", notes="mapped from filename blk_ts21"))
+    for size, quantity, expression in [
+        ("L", 1, "1"),
+        ("XL", 4, "3+1"),
+        ("3XL", 4, "1+1+1+1"),
+        ("2XL", 4, "1+2+1"),
+        ("4XL", 3, "1+2"),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="line51.JPG", product_label="line51 white", sku_key="CL_OC_MEN_LINE51_WHITE", size=size, quantity=quantity, raw_expression=expression, confidence="HIGH"))
+    for size, quantity, expression in [
+        ("L", 4, "2+1+1"),
+        ("XL", 9, "2+2+2+1+1+1"),
+        ("3XL", 8, "2+1+1+2+2"),
+        ("4XL", 4, "2+2"),
+        ("2XL", 7, "1+1+5"),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="Line61.JPG", product_label="line61 black", sku_key="CL_NEW-CLO2_MEN_SUIT-61_BLACK", size=size, quantity=quantity, raw_expression=expression, confidence="HIGH"))
+    for size, quantity, expression in [
+        ("M", 1, "1"),
+        ("L", 5, "5"),
+        ("XL", 10, "6+4"),
+        ("3XL", 8, "3+3+1+1"),
+        ("4XL", 4, "1+1+2"),
+        ("2XL", 3, "1+1+1"),
+    ]:
+        add(_recovered_return_entry(timestamp_folder=folder, filename="line52.JPG", product_label="line52 black", sku_key="CL_OC_MEN_LINE52_BLACK", size=size, quantity=quantity, raw_expression=expression, confidence="HIGH"))
+
+    return rows
+
+
+def _source_rows_from_recovered_returns() -> tuple[list[SourceRow], list[dict[str, Any]], list[dict[str, Any]]]:
+    source_rows: list[SourceRow] = []
+    parked_rows: list[dict[str, Any]] = []
+    trace_rows = _recovered_return_trace_rows()
+    for entry in trace_rows:
+        if not entry["sku_key"]:
+            parked_rows.append(
+                {
+                    "batch_id": entry["batch_id"],
+                    "source_image": entry["source_image"],
+                    "family_guess": entry["product_label"],
+                    "reason": entry["notes"] or "mapping pending",
+                    "mode": entry["source_mode"],
+                    "rows": f"{entry['my_size']}={entry['quantity']}",
+                }
+            )
+            continue
+        if int(entry["quantity"]) <= 0:
+            continue
+        sku_id = _make_sku_id(str(entry["sku_key"]), str(entry["my_size"]))
+        stock_pool_id = sku_id
+        applies_to_sku_ids: tuple[str, ...] = (sku_id,)
+        if entry["sku_key"] == "CL_NEW-CLO_MEN_ROMBIK_BLACK" and entry["my_size"] == "S":
+            stock_pool_id = "SHARED_ROMBIK_BLACK_S_MEN_KIDS"
+            applies_to_sku_ids = (
+                "CL_NEW-CLO_MEN_ROMBIK_BLACK_S",
+                "CL_NEW-CLO_KID_ROMBIK_BLACK_S",
+            )
+        source_rows.append(
+            SourceRow(
+                row_id=str(entry["row_id"]),
+                batch_id=str(entry["batch_id"]),
+                event_ts=str(entry["event_ts"]),
+                event_date=str(entry["event_date"]),
+                boundary_inclusive=True,
+                semantic="ADDITION",
+                sku_key=str(entry["sku_key"]),
+                my_size=str(entry["my_size"]),
+                sku_id=sku_id,
+                stock_pool_id=stock_pool_id,
+                applies_to_sku_ids=applies_to_sku_ids,
+                quantity=int(entry["quantity"]),
+                source_image=str(entry["source_image"]),
+                source_doc=str(entry["source_doc"]),
+                mode=str(entry["source_mode"]),
+                confidence=str(entry["confidence"]),
+                notes="; ".join(
+                    part
+                    for part in [
+                        "recovered return ready-to-sell",
+                        f"raw={entry['raw_expression']}",
+                        str(entry.get("notes") or ""),
+                    ]
+                    if part
+                ),
+            )
+        )
+    return source_rows, trace_rows, parked_rows
+
+
 def _load_active_sku_rows(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
     rows = conn.execute(
         """
@@ -606,12 +862,20 @@ def _validate_source_row(row: SourceRow, active_skus: dict[str, sqlite3.Row]) ->
 
 
 def build_plan(conn: sqlite3.Connection, *, snapshot_date: date) -> Plan:
-    source_rows = _source_rows_from_approved_manifests() + _source_rows_from_june11_consensus()
+    recovered_rows, recovered_trace_rows, recovered_parked_rows = _source_rows_from_recovered_returns()
+    source_rows = (
+        _source_rows_from_approved_manifests()
+        + _source_rows_from_june11_consensus()
+        + recovered_rows
+        + _source_rows_from_owner_black_tshirt_oos()
+    )
     source_rows.sort(key=lambda row: (row.event_ts, row.batch_id, row.row_id))
 
     plan = Plan()
     plan.parked_rows.extend(PARKED_JUNE11_ROWS)
+    plan.parked_rows.extend(recovered_parked_rows)
     plan.owner_hold_rows.extend(OWNER_CONFLICT_HOLD_ROWS)
+    plan.source_trace_rows.extend(recovered_trace_rows)
     active_skus = _load_active_sku_rows(conn)
     existing_keys = _existing_idempotency_keys(conn, [_idempotency_key(row) for row in source_rows])
     planned: list[EventCandidate] = []
@@ -1015,12 +1279,14 @@ up-to-date single source of truth.
 - Blocked rows: {summary['blocked_rows']}
 - Parked mapping rows: {summary['parked_rows']}
 - Owner conflict holds: {summary.get('owner_hold_rows', 0)}
+- Recovered-return trace rows: {summary.get('recovered_return_trace_rows', 0)}
 - Snapshot rows rebuilt: {summary.get('snapshot_rows_rebuilt', 0)}
 
 ## Stable Activation Report
 
 - CSV: {CURRENT_DIR / 'temporary_stock_decision_latest.csv'}
 - JSON: {CURRENT_DIR / 'temporary_stock_decision_latest.json'}
+- Recovered-return trace CSV: {CURRENT_DIR / 'recovered_return_trace_rows_latest.csv'}
 - Summary: {CURRENT_DIR / 'summary_latest.json'}
 
 Activation agents should treat positive `temporary_current_stock` rows as
@@ -1033,6 +1299,7 @@ refactor authority explicitly supersedes this temporary report.
 - Blocked rows: {output_root / 'blocked_rows.csv'}
 - Parked rows: {output_root / 'parked_rows.csv'}
 - Owner conflict holds: {output_root / 'owner_hold_rows.csv'}
+- Recovered-return trace rows: {output_root / 'recovered_return_trace_rows.csv'}
 - Activation report: {output_root / 'temporary_stock_decision.csv'}
 - Summary JSON: {output_root / 'summary.json'}
 - Backup: {summary.get('backup_path') or ''}
@@ -1054,6 +1321,7 @@ def write_outputs(plan: Plan, output_root: Path, summary: dict[str, Any]) -> Non
     _write_csv(output_root / "parked_rows.csv", plan.parked_rows)
     _write_csv(output_root / "owner_hold_rows.csv", plan.owner_hold_rows)
     _write_csv(output_root / "existing_rows.csv", plan.existing_rows)
+    _write_csv(output_root / "recovered_return_trace_rows.csv", plan.source_trace_rows)
     _write_csv(output_root / "temporary_stock_decision.csv", plan.report_rows)
     _write_json(output_root / "temporary_stock_decision.json", plan.report_rows)
     _write_json(output_root / "summary.json", summary)
@@ -1062,6 +1330,7 @@ def write_outputs(plan: Plan, output_root: Path, summary: dict[str, Any]) -> Non
     CURRENT_DIR.mkdir(parents=True, exist_ok=True)
     _write_csv(CURRENT_DIR / "temporary_stock_decision_latest.csv", plan.report_rows)
     _write_json(CURRENT_DIR / "temporary_stock_decision_latest.json", plan.report_rows)
+    _write_csv(CURRENT_DIR / "recovered_return_trace_rows_latest.csv", plan.source_trace_rows)
     _write_json(CURRENT_DIR / "summary_latest.json", summary)
     (CURRENT_DIR / "README.md").write_text(
         """# Temporary OCR Stock Override - Current Activation Report
@@ -1169,11 +1438,15 @@ def main() -> int:
         "blocked_rows": len(plan.blocked_rows),
         "parked_rows": len(plan.parked_rows),
         "owner_hold_rows": len(plan.owner_hold_rows),
+        "recovered_return_trace_rows": len(plan.source_trace_rows),
         "activation_report_rows": len(plan.report_rows),
         "snapshot_rows_rebuilt": snapshot_rows_rebuilt,
         "temporary_override_until": TEMPORARY_UNTIL,
         "supersession_policy": SUPERSESSION_POLICY,
-        "owner_approval": "approved_in_chat_2026-06-16_for_temporary_operational_override",
+        "owner_approval": (
+            "approved_in_chat_2026-06-16_for_temporary_operational_override;"
+            "owner_chat_2026-06-28_black_tshirt_oos"
+        ),
         "stable_activation_report_csv": str(CURRENT_DIR / "temporary_stock_decision_latest.csv"),
         "stable_activation_report_json": str(CURRENT_DIR / "temporary_stock_decision_latest.json"),
     }

@@ -1,6 +1,6 @@
 # LINE31 Active Goal Completion Audit
 
-Generated: 2026-06-18T20:59:33+05:00
+Generated: 2026-07-03T00:13:27+05:00
 
 Gate: `INCOMPLETE`
 Complete: `false`
@@ -19,7 +19,7 @@ Evidence root: `~/Docs/Autonomous_business/exports/validation/line31_current_non
 | --- | --- | --- | --- |
 | Non-creative LINE31 launch readiness remains green | `ACHIEVED` | `validate_line31_launch_readiness --allow-pending-creative => GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH` |  |
 | Option 2 unrelated-failure repair first is repaired/quarantined | `ACHIEVED` | `~/Docs/Autonomous_business/exports/validation/line31_green_except_creative_round3_strict_unrelated_repair_20260601/final_synthesis/FINAL_GREEN_EXCEPT_CREATIVE_MATRIX.json` |  |
-| Owner objective source freshness is green | `PENDING` | `~/Docs/Autonomous_business/exports/validation/line31_green_except_creative_owner_clarified_current_20260601_130108/CURRENT_OWNER_CLARIFICATION_FACTS.json via YELLOW_SOURCE_WEAK` | Cash_Balances latest timestamp mismatch: 2026-06-13 01:01:26 GMT+5 != 2026-06-01 09:06:51 GMT+5; SHR paid base total does not match owner facts; SHR remaining payable does not match owner facts |
+| Owner objective source freshness is green | `PENDING` | `~/Docs/Autonomous_business/exports/validation/line31_green_except_creative_owner_clarified_current_20260601_130108/CURRENT_OWNER_CLARIFICATION_FACTS.json via YELLOW_SOURCE_WEAK` | Cash_Balances latest timestamp mismatch: 2026-07-02 19:55:38 GMT+5 != 2026-06-01 09:06:51 GMT+5; SHR paid base total does not match owner facts; SHR remaining payable does not match owner facts |
 | Current cash and SHR timing use latest owner workbook truth | `PENDING` | `~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx via YELLOW_SOURCE_WEAK` | cash timestamp or SHR #18 7000 CNY paid-with-receipt-pending fact is missing |
 | Protected cash reserve is exactly 800000 KZT | `PENDING` | `~/Docs/Autonomous_business/exports/validation/line31_green_except_creative_owner_clarified_current_20260601_130108/CURRENT_OWNER_CLARIFICATION_FACTS.json via YELLOW_SOURCE_WEAK` | protected reserve is not exactly 800000 KZT in source freshness proof |
 | Current LINE31 stock uses April leftovers plus PO1-A arrival rebuild | `PENDING` | `~/Docs/Autonomous_business/exports/validation/product_truth_yellow_to_apply_ready_20260529_123827 via YELLOW_SOURCE_WEAK` | LINE31 stock rebuild basis or expected physical/sellable totals are missing |

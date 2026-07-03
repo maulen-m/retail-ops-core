@@ -109,6 +109,16 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 
 3) **Daily calendar**
    - Rebuild `fact_cashflow_daily` deterministically from events.
+   - If `cashflow_cash_anchor` contains a reconciled `ACTUAL_ANCHOR`, the latest
+     anchor date is a cash re-base point: the opening operating cash for that date
+     is the sum of that anchor set's `anchor_closing_balance_kzt` rows. Non-operating
+     reserve context recorded in anchor notes stays excluded from operating cash.
+   - Cash events dated before the anchor, and same-day events that cannot prove they
+     occurred after the anchor timestamp, must not be replayed into the post-anchor
+     opening. Only cash events after the anchor timestamp/date may move the curve.
+   - Forecast/preflight reports must disclose the anchor date, anchored operating
+     opening, and whether modelled inflows are present after the anchor so ACTUAL
+     cash and MODELLED movement remain visible.
    - Export `exports/cashflow_calendar.csv` and `exports/cashflow_dashboard.html`.
 
 4) **Recon if statements exist**

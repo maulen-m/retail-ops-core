@@ -1,7 +1,11 @@
 from scripts.materialize_temporary_ocr_stock_override import (
+    BLACK_TSHIRT_OOS_EVENT_DATE,
+    BLACK_TSHIRT_OOS_EVENT_TS,
     OWNER_CONFLICT_HOLD_ROWS,
     PARKED_JUNE11_ROWS,
     _apply_owner_conflict_holds,
+    _source_rows_from_owner_black_tshirt_oos,
+    _source_rows_from_recovered_returns,
     _source_rows_from_june11_consensus,
 )
 
@@ -65,3 +69,78 @@ def test_rombik_s_uses_shared_pool_aliases():
         "CL_NEW-CLO_MEN_ROMBIK_BLACK_S",
         "CL_NEW-CLO_KID_ROMBIK_BLACK_S",
     )
+
+
+def test_recovered_returns_line52_totals_and_zero_trace_rows():
+    rows, trace_rows, parked_rows = _source_rows_from_recovered_returns()
+    line52 = [row for row in rows if row.sku_key == "CL_OC_MEN_LINE52_BLACK"]
+    totals = {}
+    for row in line52:
+        totals[row.my_size] = totals.get(row.my_size, 0) + row.quantity
+
+    assert totals == {
+        "M": 2,
+        "L": 5,
+        "XL": 16,
+        "2XL": 8,
+        "3XL": 15,
+        "4XL": 6,
+    }
+    assert any(
+        row["product_label"] == "line52 black"
+        and row["my_size"] == "S"
+        and row["quantity"] == 0
+        and row["status"] == "trace_only_zero"
+        for row in trace_rows
+    )
+    assert all("LINE31" in row["family_guess"] for row in parked_rows)
+
+
+def test_recovered_returns_cover_every_source_image():
+    _, trace_rows, _ = _source_rows_from_recovered_returns()
+    image_names = {row["source_image"].rsplit("/", 1)[-1] for row in trace_rows}
+
+    assert image_names == {
+        "Kids_3_in_1.jpg",
+        "ROMBIK_men.jpg",
+        "Line61.jpg",
+        "LINE31.jpg",
+        "line51.jpg",
+        "line52.jpg",
+        "rombik_men_and_kids.JPG",
+        "beli_ts_21.JPG",
+        "blk_ts21.JPG",
+        "LINE31.JPG",
+        "line51.JPG",
+        "Line61.JPG",
+        "line52.JPG",
+    }
+
+
+def test_recovered_returns_rombik_s_uses_shared_pool_aliases():
+    rows, _, _ = _source_rows_from_recovered_returns()
+    shared = [
+        row for row in rows
+        if row.stock_pool_id == "SHARED_ROMBIK_BLACK_S_MEN_KIDS"
+        and row.batch_id.startswith("ASTANA_RETURNS_RECOVERED_READY_TO_SELL")
+    ]
+
+    assert len(shared) == 2
+    assert sum(row.quantity for row in shared) == 2
+    assert shared[0].applies_to_sku_ids == (
+        "CL_NEW-CLO_MEN_ROMBIK_BLACK_S",
+        "CL_NEW-CLO_KID_ROMBIK_BLACK_S",
+    )
+
+
+def test_owner_black_tshirt_oos_rows_full_supersede_active_sizes_to_zero():
+    rows = _source_rows_from_owner_black_tshirt_oos()
+
+    assert [row.my_size for row in rows] == ["S", "M", "L", "XL", "2XL", "3XL"]
+    assert {row.sku_key for row in rows} == {"CL_NEW-CLO_MEN_T-SHIRT_BLACK"}
+    assert {row.semantic for row in rows} == {"FULL_SUPERSEDE"}
+    assert {row.quantity for row in rows} == {0}
+    assert {row.event_ts for row in rows} == {BLACK_TSHIRT_OOS_EVENT_TS}
+    assert {row.event_date for row in rows} == {BLACK_TSHIRT_OOS_EVENT_DATE}
+    assert {row.confidence for row in rows} == {"OWNER_CONFIRMED"}
+    assert all("20260628_black_tshirt_oos.md" in row.source_doc for row in rows)

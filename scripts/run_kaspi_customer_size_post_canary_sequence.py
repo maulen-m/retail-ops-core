@@ -242,6 +242,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-date", default=date.today().isoformat())
     parser.add_argument("--lookback-days", type=int, default=3)
     parser.add_argument("--resident-session-reuse-manifest", type=Path)
+    parser.add_argument("--resident-heartbeat-manifest", type=Path)
+    parser.add_argument("--resident-button-manifest", type=Path)
+    parser.add_argument("--open-chat-no-type-packet-manifest", type=Path)
+    parser.add_argument("--open-chat-no-type-result-validation-json", type=Path)
     parser.add_argument(
         "--live-send-execution-preflight-manifest",
         type=Path,
@@ -441,24 +445,40 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     readiness_dir = output_dir / "06_workflow_readiness"
+    readiness_args = [
+        "--db",
+        str(db_path),
+        "--ledger-db",
+        str(ledger_path),
+        "--live-send-approval-manifest",
+        str(_approval_manifest_path(approval_dir)),
+        "--reply-polling-preflight-manifest",
+        str(reply_preflight_dir / "manifest.json"),
+        "--google-board-patch-manifest",
+        str(patch_dir / "manifest.json"),
+        "--output-dir",
+        str(readiness_dir),
+    ]
+    if args.resident_heartbeat_manifest:
+        readiness_args.extend(["--resident-heartbeat-manifest", str(args.resident_heartbeat_manifest)])
+    if args.resident_button_manifest:
+        readiness_args.extend(["--resident-button-manifest", str(args.resident_button_manifest)])
+    if args.open_chat_no_type_packet_manifest:
+        readiness_args.extend(
+            ["--open-chat-no-type-packet-manifest", str(args.open_chat_no_type_packet_manifest)]
+        )
+    if args.open_chat_no_type_result_validation_json:
+        readiness_args.extend(
+            [
+                "--open-chat-no-type-result-validation-json",
+                str(args.open_chat_no_type_result_validation_json),
+            ]
+        )
     stages.append(
         _run_stage(
             "workflow_readiness",
             workflow_readiness_packet_main,
-            [
-                "--db",
-                str(db_path),
-                "--ledger-db",
-                str(ledger_path),
-                "--live-send-approval-manifest",
-                str(_approval_manifest_path(approval_dir)),
-                "--reply-polling-preflight-manifest",
-                str(reply_preflight_dir / "manifest.json"),
-                "--google-board-patch-manifest",
-                str(patch_dir / "manifest.json"),
-                "--output-dir",
-                str(readiness_dir),
-            ],
+            readiness_args,
             readiness_dir / "manifest.json",
         )
     )

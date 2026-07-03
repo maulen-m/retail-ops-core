@@ -32,7 +32,7 @@ DEFAULT_LEDGER_DB = (
     / "customer_size_request_ledger"
     / "no_send_customer_size_request_ledger.sqlite"
 )
-POLLABLE_STATUSES = {"REQUEST_SENT", "POLLING"}
+POLLABLE_STATUSES = {"REQUEST_SENT", "REQUEST_SENT_MANUAL_CONFIRMED", "POLLING"}
 
 
 def _write_json(path: Path, payload: Any) -> None:

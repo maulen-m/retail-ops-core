@@ -7,6 +7,7 @@ KZT conversion rates: USDT_KZT=485.0 (dim_fx_rates 2026-06-13); USD_KZT=485.0 (d
 
 | as_of | source | TOTAL_KZT | TOTAL_USD | TOTAL_RUB | TOTAL_USDT | TOTAL_KZT_EQ | UNIVERSAL_KZT | UNIVERSAL_USDT | UNIVERSAL_USD | UNIVERSAL_RUB | 11KZ_KZT | 11KZ_USDT | STOREB_KZT | ACMEWEAR_KZT | MELVIS_KZT |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2026-07-02 19:55:38 GMT+5 | manual snapshot (Cash_Balances) | 2,098,000 | 387 | 10,000 | 501 | 2,594,680 | 763,000 | 501 | 387 | 10,000 | 0 | 0 | 89,000 | 1,246,000 | 0 |
 | 2026-06-19 11:44:56 GMT+5 | manual snapshot (Cash_Balances) | 1,073,995 | 387 | 10,000 | 501 | 1,570,675 | 1,003,995 | 501 | 387 | 10,000 | 0 | 0 | 10,000 | 60,000 | 0 |
 | 2026-06-13 01:01:26 GMT+5 | manual snapshot (Cash_Balances) | 2,169,679 | 387 | 10,000 | 3,134 | 3,943,364 | 762,112 | 3,134 | 387 | 10,000 | 0 | 0 | 189,644 | 1,217,923 | 0 |
 | 2026-06-01 09:06:51 GMT+5 | manual snapshot (Cash_Balances) | 4,146,000 | 748 | 10,000 | 3,585 | 6,313,505 | 2,378,000 | 3,585 | 748 | 10,000 | 0 | 0 | 98,000 | 1,670,000 | 0 |

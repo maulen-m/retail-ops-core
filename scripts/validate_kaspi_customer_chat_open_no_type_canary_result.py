@@ -165,11 +165,22 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         return validation
 
     result = _read_json(result_path)
-    validation["checks"]["result_gate"] = result.get("gate")
+    result_gate = str(result.get("gate") or "")
+    validation["checks"]["result_gate"] = result_gate
     validation["checks"]["closeout_has_green_gate"] = _closeout_has_gate(
         closeout_path,
         RESULT_GREEN_GATE,
     )
+    resident_unsafe_blockers = [
+        str(value)
+        for value in (result.get("unsafe_blockers") or [])
+        if str(value or "").strip()
+    ]
+    if resident_unsafe_blockers:
+        validation["checks"]["resident_unsafe_blockers"] = resident_unsafe_blockers
+        validation["blockers"].extend(
+            f"resident_unsafe_blocker:{blocker}" for blocker in resident_unsafe_blockers
+        )
     required_true = [
         "merchant_account_match_proven",
         "order_search_performed",
@@ -208,7 +219,10 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     if validation["checks"]["load_more_messages_route_observed"]:
         validation["warnings"].append("load_more_messages_route_observed")
 
-    if result.get("gate") != RESULT_GREEN_GATE:
+    if result_gate.startswith("RED_"):
+        validation["gate"] = "RED_OPEN_CHAT_NO_TYPE_RESULT_RED"
+        validation["blockers"].append(f"result_gate_red:{result_gate}")
+    elif result_gate != RESULT_GREEN_GATE:
         validation["gate"] = "YELLOW_OPEN_CHAT_NO_TYPE_RESULT_NOT_GREEN"
         validation["blockers"].append("result_not_green")
     if result.get("selected_order_ref") != packet.get("selected_order_ref"):
@@ -236,6 +250,11 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     if not closeout_path.exists() or not validation["checks"]["closeout_has_green_gate"]:
         validation["gate"] = "YELLOW_OPEN_CHAT_NO_TYPE_CLOSEOUT_MISSING_GREEN_GATE"
         validation["blockers"].append("closeout_missing_green_gate")
+
+    if any(str(blocker).startswith("result_gate_red:") for blocker in validation["blockers"]):
+        validation["gate"] = "RED_OPEN_CHAT_NO_TYPE_RESULT_RED"
+    if any(str(blocker).startswith("resident_unsafe_blocker:") for blocker in validation["blockers"]):
+        validation["gate"] = "RED_OPEN_CHAT_NO_TYPE_RESULT_RED"
 
     validation["accepted"] = not validation["blockers"]
     if validation["accepted"]:

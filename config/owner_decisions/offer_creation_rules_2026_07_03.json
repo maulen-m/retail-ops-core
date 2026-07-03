@@ -1,0 +1,83 @@
+{
+  "decision_id": "OD-OFFER-CREATION-RULES-P7-2026-07-03",
+  "decided_at": "2026-07-03T15:05:00+05:00",
+  "title": "Owner offer-creation rules: stock <= 15 no-create and ACMEWEAR brand mandatory",
+  "owner_answer_verbatim": "if we have stock <=15 units on that size - then no need to create it, but if we do create it we need to always specify our brand name ACMEWEAR - so that later all of our created uploaded own offers are able to become exclusive under our own seller rights and no one else can compete with us on price on those product offers. That's mandatory..",
+  "source_context": {
+    "approval_addendum": "OWNER_APPROVALS P7",
+    "recorded_date": "2026-07-03",
+    "lane": "PKT-DARK-CLOSE"
+  },
+  "scope": {
+    "type": "all_stores",
+    "named_stores": [
+      "UNIVERSAL",
+      "STORE-B"
+    ],
+    "future_stores": true,
+    "description": "Applies to all own-created/uploaded offers on any store controlled by this operating system."
+  },
+  "rules": [
+    {
+      "rule_id": "R1_STOCK_LE_15_NO_CREATE",
+      "threshold": 15,
+      "unit": "size-level stock units",
+      "semantics": "size-level stock balance <= 15 \u2192 do not create a new offer for that size",
+      "mandatory": true,
+      "outcome": "NO_CREATE"
+    },
+    {
+      "rule_id": "R2_ACMEWEAR_BRAND_MANDATORY",
+      "brand": "ACMEWEAR",
+      "semantics": "every own-created/uploaded offer must specify brand ACMEWEAR",
+      "mandatory": true,
+      "purpose": "seller-rights exclusivity"
+    }
+  ],
+  "applied_decisions": [
+    {
+      "case": "RUSH_WHITE_M_149066056",
+      "sku_family": "RUSH_WHITE",
+      "size": "M",
+      "public_variant_code": "149066056",
+      "applied_rule_id": "R1_STOCK_LE_15_NO_CREATE",
+      "stock_balance_at_decision": 14,
+      "threshold": 15,
+      "outcome": "NO_CREATE",
+      "measured_from": "stock_ledger sum 2026-07-03",
+      "note": "Dark-lane RUSH_WHITE size M closed as no-create because the size-level stock balance is <= 15."
+    }
+  ],
+  "open_items": [
+    {
+      "item_id": "RUSH_WHITE_3XL_family",
+      "status": "BLOCKED_NEEDS_SOURCE",
+      "note": "Dark-lane remainder requires source-backed family review before any create/no-create decision."
+    },
+    {
+      "item_id": "T_SHIRT_BLACK_L",
+      "status": "OPEN_RECHECK_AFTER_PHYSICAL_COUNT",
+      "recheck_after": "2026-07-10",
+      "note": "Re-check after the 2026-07-10 physical count."
+    }
+  ],
+  "enforcement_pointers": [
+    {
+      "repo": "~/Docs/Web_automation",
+      "surface": "kaspi_offer_ui_upload.py validate path",
+      "follow_up_lane_required": true,
+      "note": "Reference only in this lane. A follow-up Web_automation lane must consume this registry before offer creation/upload validation is considered complete."
+    },
+    {
+      "repo": "~/Docs/Web_automation",
+      "surface": "kaspi-offer-creation flows",
+      "follow_up_lane_required": true,
+      "note": "Reference only in this lane. Own-created/uploaded offer payloads and cards must specify brand ACMEWEAR."
+    }
+  ],
+  "reactivation_policy": {
+    "status": "active_until_new_explicit_owner_decision",
+    "override_requires": "Only a new explicit owner decision file in config/owner_decisions/ may override this registry. The override must name this decision_id, exact rule_id, exact store scope, affected case if applicable, and intended exception.",
+    "default_without_override": "Do not create a new offer for a size-level stock balance <= 15. Do not create or upload any own offer without brand ACMEWEAR."
+  }
+}

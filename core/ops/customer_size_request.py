@@ -52,10 +52,35 @@ LEDGER_STATUS_RANK = {
     "REPLY_OBSERVED": 30,
     "REPLY_OBSERVED_NO_SIZE_SIGNAL": 35,
     "REQUEST_SENT": 40,
+    "REQUEST_SENT_MANUAL_CONFIRMED": 41,
     "UNKNOWN_SEND_OUTCOME": 42,
     "SEND_IN_PROGRESS": 43,
     "POLLING": 45,
     "SEND_PLANNED_NO_SEND": 50,
+    "MANUAL_SKIPPED": 60,
+    "MANUAL_NOT_FOUND": 61,
+    "MANUAL_WRONG_MERCHANT": 62,
+    "MANUAL_UNSAFE": 63,
+    "MANUAL_ALREADY_SIZE_PRESENT": 64,
+}
+AFTER_SEND_OR_REPLY_STATUSES = {
+    "REQUEST_SENT",
+    "REQUEST_SENT_MANUAL_CONFIRMED",
+    "POLLING",
+    "REPLY_OBSERVED",
+    "REPLY_OBSERVED_NO_SIZE_SIGNAL",
+    "CLASSIFICATION_READY",
+    "SIZE_CONFIRMED",
+    "UNKNOWN_SEND_OUTCOME",
+    "SEND_IN_PROGRESS",
+}
+MANUAL_OUTCOME_TO_STATUS = {
+    "sent_manual": "REQUEST_SENT_MANUAL_CONFIRMED",
+    "skipped": "MANUAL_SKIPPED",
+    "not_found": "MANUAL_NOT_FOUND",
+    "wrong_merchant": "MANUAL_WRONG_MERCHANT",
+    "unsafe": "MANUAL_UNSAFE",
+    "already_size_present": "MANUAL_ALREADY_SIZE_PRESENT",
 }
 
 
@@ -738,10 +763,16 @@ def upsert_request_ledger_plan(
                             WHEN 'REPLY_OBSERVED' THEN 30
                             WHEN 'REPLY_OBSERVED_NO_SIZE_SIGNAL' THEN 35
                             WHEN 'REQUEST_SENT' THEN 40
+                            WHEN 'REQUEST_SENT_MANUAL_CONFIRMED' THEN 41
                             WHEN 'UNKNOWN_SEND_OUTCOME' THEN 42
                             WHEN 'SEND_IN_PROGRESS' THEN 43
                             WHEN 'POLLING' THEN 45
                             WHEN 'SEND_PLANNED_NO_SEND' THEN 50
+                            WHEN 'MANUAL_SKIPPED' THEN 60
+                            WHEN 'MANUAL_NOT_FOUND' THEN 61
+                            WHEN 'MANUAL_WRONG_MERCHANT' THEN 62
+                            WHEN 'MANUAL_UNSAFE' THEN 63
+                            WHEN 'MANUAL_ALREADY_SIZE_PRESENT' THEN 64
                             ELSE 999
                         END,
                         updated_at DESC,
@@ -785,9 +816,10 @@ def upsert_request_ledger_plan(
                     sku_id = excluded.sku_id,
                     status = CASE
                         WHEN customer_size_request_ledger.status IN (
-                            'REQUEST_SENT', 'POLLING', 'REPLY_OBSERVED',
-                            'CLASSIFICATION_READY', 'SIZE_CONFIRMED',
-                            'UNKNOWN_SEND_OUTCOME', 'SEND_IN_PROGRESS'
+                            'REQUEST_SENT', 'REQUEST_SENT_MANUAL_CONFIRMED',
+                            'POLLING', 'REPLY_OBSERVED', 'CLASSIFICATION_READY',
+                            'SIZE_CONFIRMED', 'UNKNOWN_SEND_OUTCOME',
+                            'SEND_IN_PROGRESS'
                         )
                         THEN customer_size_request_ledger.status
                         ELSE excluded.status
@@ -1091,6 +1123,142 @@ def record_live_send_canary_acceptance(
     return stats, schedule
 
 
+def record_manual_size_request_action(
+    ledger_path: Path,
+    *,
+    order_ref: str,
+    template_hash: str,
+    outcome: str,
+    operator_confirmed_manual_action: bool = False,
+    confirm_no_auto_type: bool = False,
+    confirm_no_raw_export: bool = False,
+    now: datetime | None = None,
+) -> tuple[dict[str, int], dict[str, Any]]:
+    """Record an owner/operator manual outcome in the local ledger only."""
+    now = now or datetime.now()
+    normalized_outcome = str(outcome or "").strip().lower()
+    target_status = MANUAL_OUTCOME_TO_STATUS.get(normalized_outcome)
+    stats = {
+        "input_outcomes": 1,
+        "matched": 0,
+        "unmatched": 0,
+        "updated": 0,
+        "blocked_invalid_outcome": 0,
+        "blocked_missing_confirmation": 0,
+        "already_after_send_or_reply": 0,
+    }
+    record: dict[str, Any] = {
+        "order_ref": str(order_ref or "").strip(),
+        "template_hash": str(template_hash or "").strip(),
+        "outcome": normalized_outcome,
+        "target_status": target_status,
+        "auto_send_performed": False,
+        "manual_owner_reported_send": normalized_outcome == "sent_manual",
+        "customer_send_allowed": False,
+        "kaspi_chat_write_allowed": False,
+        "google_board_write_allowed": False,
+        "db_write_allowed": False,
+        "raw_order_id_exported": False,
+        "raw_reply_text_exported": False,
+        "raw_customer_text_exported": False,
+        "raw_phone_exported": False,
+        "raw_session_material_exported": False,
+    }
+    if not target_status:
+        stats["blocked_invalid_outcome"] = 1
+        record["blocker"] = "invalid_manual_outcome"
+        return stats, record
+    if normalized_outcome == "sent_manual" and not (
+        operator_confirmed_manual_action and confirm_no_auto_type and confirm_no_raw_export
+    ):
+        stats["blocked_missing_confirmation"] = 1
+        record["blocker"] = "sent_manual_requires_explicit_confirmations"
+        return stats, record
+    if not record["order_ref"] or not record["template_hash"]:
+        stats["unmatched"] = 1
+        record["blocker"] = "missing_order_ref_or_template_hash"
+        return stats, record
+
+    with _connect_ledger_db(ledger_path) as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM customer_size_request_ledger
+            WHERE order_ref = ?
+              AND template_hash = ?
+            ORDER BY
+                CASE status
+                    WHEN 'SIZE_CONFIRMED' THEN 10
+                    WHEN 'CLASSIFICATION_READY' THEN 20
+                    WHEN 'REPLY_OBSERVED' THEN 30
+                    WHEN 'REPLY_OBSERVED_NO_SIZE_SIGNAL' THEN 35
+                    WHEN 'REQUEST_SENT' THEN 40
+                    WHEN 'REQUEST_SENT_MANUAL_CONFIRMED' THEN 41
+                    WHEN 'UNKNOWN_SEND_OUTCOME' THEN 42
+                    WHEN 'SEND_IN_PROGRESS' THEN 43
+                    WHEN 'POLLING' THEN 45
+                    WHEN 'SEND_PLANNED_NO_SEND' THEN 50
+                    ELSE 999
+                END,
+                updated_at DESC,
+                ledger_key
+            LIMIT 1
+            """,
+            (record["order_ref"], record["template_hash"]),
+        ).fetchone()
+        if row is None:
+            stats["unmatched"] = 1
+            record["blocker"] = "ledger_row_not_found"
+            return stats, record
+
+        stats["matched"] = 1
+        prior_status = str(row["status"] or "").strip().upper()
+        record.update(
+            {
+                "ledger_key": row["ledger_key"],
+                "db_row_id": row["db_row_id"],
+                "store_code": row["store_code"],
+                "sku_key": row["sku_key"],
+                "sku_id": row["sku_id"],
+                "prior_status": prior_status,
+            }
+        )
+        if prior_status in AFTER_SEND_OR_REPLY_STATUSES and prior_status != "SEND_PLANNED_NO_SEND":
+            stats["already_after_send_or_reply"] = 1
+            record["status_after"] = prior_status
+            record["blocker"] = "already_after_send_or_reply"
+            return stats, record
+
+        request_sent_at_expr = "COALESCE(request_sent_at, ?)" if normalized_outcome == "sent_manual" else "request_sent_at"
+        params: list[Any] = [target_status]
+        if normalized_outcome == "sent_manual":
+            params.append(now.isoformat(timespec="seconds"))
+        params.extend(
+            [
+                now.isoformat(timespec="seconds"),
+                row["ledger_key"],
+            ]
+        )
+        conn.execute(
+            f"""
+            UPDATE customer_size_request_ledger
+            SET status = ?,
+                request_sent_at = {request_sent_at_expr},
+                send_allowed = 0,
+                raw_order_id_exported = 0,
+                raw_reply_text_exported = 0,
+                updated_at = ?
+            WHERE ledger_key = ?
+            """,
+            params,
+        )
+        conn.commit()
+        stats["updated"] = 1
+        record["status_after"] = target_status
+        record["recorded_at"] = now.isoformat(timespec="seconds")
+    return stats, record
+
+
 def export_customer_size_ledger_snapshot(ledger_path: Path) -> list[dict[str, Any]]:
     with _connect_ledger_db(ledger_path) as conn:
         rows = conn.execute(
@@ -1151,7 +1319,7 @@ def build_customer_size_next_actions(
         elif status == "REPLY_OBSERVED_NO_SIZE_SIGNAL":
             action = "MANUAL_REVIEW_REPLY_NO_SIZE_SIGNAL"
             priority = 30
-        elif status in {"REQUEST_SENT", "POLLING"}:
+        elif status in {"REQUEST_SENT", "REQUEST_SENT_MANUAL_CONFIRMED", "POLLING"}:
             action = "POLL_FOR_CUSTOMER_REPLY"
             priority = 40
         elif status == "SEND_PLANNED_NO_SEND":

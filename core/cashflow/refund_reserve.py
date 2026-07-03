@@ -49,8 +49,10 @@ def compute_refund_reserve_series(
 def apply_refund_reserve(
     rows: list[dict],
     reserve_series: dict[str, dict[str, float]],
+    reset_dates: set[str] | None = None,
 ) -> list[dict]:
     """Apply reserve deltas to cashflow rows (conservative scenario)."""
+    reset_dates = reset_dates or set()
     out: list[dict] = []
     cash_open = None
     for row in rows:
@@ -61,8 +63,10 @@ def apply_refund_reserve(
         reserve = reserve_series.get(day_key, {}).get("reserve_kzt", 0.0)
         delta = reserve_series.get(day_key, {}).get("delta_kzt", 0.0)
 
-        if cash_open is None:
+        if cash_open is None or day_key in reset_dates:
             cash_open = float(row.get("cash_open") or 0.0)
+            if day_key in reset_dates:
+                delta = reserve
         cash_flow = float(row.get("cash_flow_kzt") or 0.0) - float(delta)
         cash_close = cash_open + cash_flow
 

@@ -1,10 +1,10 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-06-19T21:52:36+05:00",
-  "status": "BLOCKED",
+  "updated": "2026-07-03 16:56 +05",
+  "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
-  "note": "Resume obstacle check found no safe local dispatch: queue has 0 ready actions; return QC facts, elapsed/cadence evidence, policy/strategy gates, and owner signoff remain.",
+  "note": "NIGHT CLOSED 01:28: honest acceptance 39 GREEN / 17 ARMED / 4 PARTIAL / 11 RED (hard 37/61) - drift de-fictionalized + 8 gates re-greened in one day. Committed: 6 AB + 4 WA curated commits. Morning cron 09:07: lifecycle-evidence finish (391 rows), owner panel (floor policy, KO_CLEAR COGS, GOLD_OF schedule, generic floor-fix, CRM bridge, fresh count, tranche-1). Daily-ops guard 14:17.",
   "takes": [
     {
       "id": 1,
@@ -128,7 +128,7 @@ window.GP = {
       "phase": 1,
       "group": "scheduler",
       "type": "HARD",
-      "status": "PARTIAL"
+      "status": "ARMED"
     },
     {
       "id": "G-SCHED-02",
@@ -142,21 +142,21 @@ window.GP = {
       "phase": 1,
       "group": "scheduler",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "RED"
     },
     {
       "id": "G-SCHED-04",
       "phase": 2,
       "group": "scheduler",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "RED"
     },
     {
       "id": "G-SCHED-05",
       "phase": 2,
       "group": "scheduler",
       "type": "ADV",
-      "status": "GREEN"
+      "status": "RED"
     },
     {
       "id": "G-ALERT-01",
@@ -205,7 +205,7 @@ window.GP = {
       "phase": 2,
       "group": "profit_cogs",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "PARTIAL"
     },
     {
       "id": "G-COGS-02",
@@ -219,21 +219,21 @@ window.GP = {
       "phase": 2,
       "group": "profit_cogs",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "PARTIAL"
     },
     {
       "id": "G-COGS-04",
       "phase": 2,
       "group": "profit_cogs",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "PARTIAL"
     },
     {
       "id": "G-FX-01",
       "phase": 2,
       "group": "fx_cogs",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "RED"
     },
     {
       "id": "G-FX-02",
@@ -254,7 +254,7 @@ window.GP = {
       "phase": 2,
       "group": "cash",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "ARMED"
     },
     {
       "id": "G-CASH-03",
@@ -289,7 +289,7 @@ window.GP = {
       "phase": 2,
       "group": "stock",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "RED"
     },
     {
       "id": "G-STOCK-04",
@@ -303,7 +303,7 @@ window.GP = {
       "phase": 2,
       "group": "stock",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "RED"
     },
     {
       "id": "G-RET-01",
@@ -331,7 +331,7 @@ window.GP = {
       "phase": 2,
       "group": "ads",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "RED"
     },
     {
       "id": "G-ADS-02",
@@ -450,7 +450,7 @@ window.GP = {
       "phase": 3,
       "group": "liquidation",
       "type": "HARD",
-      "status": "GREEN"
+      "status": "RED"
     },
     {
       "id": "G-LIQ-02",
@@ -566,6 +566,82 @@ window.GP = {
     }
   ],
   "activity": [
+    {
+      "ts": "2026-07-03 16:56",
+      "text": "OVERRIDE WINDOW CLOSED ON TIME: ops 10/10 at 16:54:50 (import slot 17:02 safe; koclear stopped clean - zero writes, re-runs tonight). Window scorecard: Stage-B OPEX+1.15x APPLIED; fake-PASS floor artifact caught -> anchor-rebase fix PROVEN on copy (honest 2.32M < 3.50M floor, production apply tonight pre-EOD); parity mapper fix LANDED (+171 rows, 170 backfills); P7 rules encoded (M=14 NO-CREATE, ACMEWEAR-brand mandatory); marketing source complete 06-19..07-03; price lift executed both stores but REVERTED by ladder-job full-state cadence -> durable floor-clamp packet staged for tonight."
+    },
+    {
+      "ts": "2026-07-03 15:52",
+      "text": "CATCH OF THE DAY: cashfloor Stage-B landed (2,610,967 OPEX + 1.15x, invariants PASS) but its preflight PASS (min-cash 5.97M) is an ARTIFACT - forecast opens from replayed close 6.25M instead of the anchored actual 2.59M operating (morning's past-dated D1 inflows inflated the replay). Lane honestly stopped pre-EOD; PKT-ANCHOR-REBASE fix dispatched, production re-base tonight BEFORE EOD. Also: DARK-CLOSE rules encoded (M=14 NO-CREATE + ACMEWEAR-brand mandatory, 4 tests green); marketing source COMPLETE 06-19..07-03 (owner login restored) - ads refresh tonight."
+    },
+    {
+      "ts": "2026-07-03 15:25",
+      "text": "OWNER PANEL P1-P8 ALL ANSWERED + WINDOW OVERRIDE (ops paused until 17:00). Recorded: P1a truth+ACCEPT_RED_UNTIL_CASH; P2a KO_CLEAR inheritance; P3 keep interim; P4a exact-row lift; P5a one-off decrement; P6 count JULY 10; P7 two new standing rules (stock<=15 no-create -> RUSH_WHITE M=14 NO-CREATE; ACMEWEAR brand mandatory on own offers). 5 lanes dispatched: CASHFLOOR-B -> KOCLEAR+BRIDGE (DB chain), PARITY-PATCH (gated), DARK-CLOSE, MKT-REMAINDER -> PRICE03-LIFT (gated). Hard ops-resume guard 16:47."
+    },
+    {
+      "ts": "2026-07-03 14:20",
+      "text": "14:17 GUARD: daily ops RESUMED 10/10 before the 15:00 window (governed controller, evidence 20260703_141812); AB lease released. Parity lane returned: 6 boundary residuals = code non-conformance to the archive truth contract (status-month), mapper patch staged, apply queued tonight 20:00+. Parallel session (owner emergency 13:57) hardening forbidden Nike long-sleeve cards - file-only, no conflict."
+    },
+    {
+      "time": "2026-07-03T10:12+05",
+      "text": "DRIFT-REPAIR CHAIN CLOSED: stage-2 applied (382 status + 386 SALE events, all 391 completions proven) + D1 390 cash-in rows (1 negative-economics micro-order parked, -10.44; allowlist tool defect fixed w/ tests). Integration error-classes CLEARED (268 = accepted controls + 1 exception); daily-truth exceptions 662->270; 25 held negative balances now prove the fresh-count need (P6). Parity semantics micro-lane running. Remaining movement = owner panel answers."
+    },
+    {
+      "time": "2026-07-03T09:35+05",
+      "text": "MORNING: overnight clean (offsite job exit 0 at 05:30!); lifecycle evidence PROVEN - all 391 rows genuinely completed per Kaspi archive (0 canceled/unproven), stage-2 apply RUNNING detached (kill-proof nohup pattern; projects integration 658->268 + D1 follow-up); marketing fetch hit expired cabinet login -> owner P8; owner panel open (8 items)."
+    },
+    {
+      "time": "2026-07-03T01:28+05",
+      "text": "NIGHT CLOSE: scorer repointed to TRUE state (stale mirror synced): 39G/17A/4P/11R hard 37/61. Waves 3-4: PRICE03 mechanism live, pytest honest-green (G-REPO-01), dark ROW_IS_S proven (OFF upload cancelled, maps fixed both sides), archive parity 12->6, ads semantics applied (737->658), lifecycle 391 blocked-honest (evidence lane resumes 09:07), 10 curated commits. Owner panel queued."
+    },
+    {
+      "time": "2026-07-03T00:52+05",
+      "text": "Night wave 3 landed: pytest real-failure FIXED (3998 pass; 1 concurrency artifact re-checks at quiet moment); archive parity 12->6 (boundary semantics only); dark S identity PROVEN + WA map fixed + 4 curated WA commits (OD2-H done); AB 2-row map SQL staged behind DB slot; stock lifecycle repair (391 rows, 4.05M gross) RUNNING."
+    },
+    {
+      "time": "2026-07-02T23:42+05",
+      "text": "NIGHT CONTINUES (owner asked why pause - resumed): BCK-R GREEN (fresh cycle + rehydrated workbook captured + offsite mirrored 3/3 + script fixed) -> G-BCK-04 GREEN, R1 complete. Running: PRICE03 mechanism, stock 737-findings triage, dark S-vs-L identity, clean pytest, archive UI export. Owner questions (floor/COGS/GOLD_OF) still open."
+    },
+    {
+      "time": "2026-07-02T22:52+05",
+      "text": "CHAIN CLOSEOUT integrated: entries applied (G-ORD-02 GREEN), CRR dispositioned (G-ADS-02 GREEN), post-21:10 zero-skip (G-ALERT-02 GREEN); COGS 248->1 owner-fact row (LINE51 KO_CLEAR 2XL); insides placed; sales/cashflow chains current; honest holds: stock integration 737 findings, ads canonical external source stale, parity blocked on stale March archive UI export, pytest 14 fails (sandbox-suspect), floor curve bottoms 2.46M Aug-21. CRM repair attempt-2 still running."
+    },
+    {
+      "time": "2026-07-02T22:02+05",
+      "text": "CASHFLOOR lane: re-anchor APPLIED (owner 19:55 snapshot; operating 2.59M + reserve 1.5M) -> G-CASH-01 GREEN, G-CASH-02 ARMED; OPEX apply + 1.15 multiplier WITHHELD honestly - rehearsal shows 60d forecast min-cash 2.03M below any floor (stale inflows suspected); re-decide post chain-resume. CHAIN-RESUME dispatched (entries apply + full truth chain + strict + EOD). CRM lane resumed with DB-reconciliation gate (lost-row 979982690 confirmed real)."
+    },
+    {
+      "time": "2026-07-02T21:45+05",
+      "text": "ENTRIES REFETCH GREEN (ACCEPTED): 354/354 order-store pairs recovered from Kaspi API, 0 errors; copied-DB proof passes strict, ORD-02 coverage 100% - production apply staged behind cashfloor-lane serialization. DARK stage-1 ACCEPTED but upload HELD: L-token platform row may semantically be the S variant (mapping conflict) - identity resolution first. CRM repair dispatched (owner approved). Chain-resume packet staged."
+    },
+    {
+      "time": "2026-07-02T20:35+05",
+      "text": "SESSION #2 COMPLETE (all 8 answered) + KEY WORKBOOK RESTORED from iCloud (Cash_Balances readable again): tranche-1 GO w/ data-driven entry depths 15-30% (T3 cap, floors/envelope unchanged); QC facts 07-18..07-30; waivers approved; write window now 20:00-15:00; WA curated commit approved. Staged: cash-floor apply (+re-anchor step0), price03 exception encoding, dark01 stage-1 (OCR verify+dry-run), liq-t1 stage-1 (register+depth analysis) - dispatch after standing-refresh returns."
+    },
+    {
+      "time": "2026-07-02T20:15+05",
+      "text": "BACKUP STOP-THE-LINE root-caused: Documents vibe_code_PO workbook tree (869 files incl. Inbound_calendar/Cash_Balances) is iCloud-EVICTED (dataless, provider wedged) - explains G-CASH-02 not-a-zip + G-SCHED-04 parse errors + rsync 23. OWNER ACTION NEEDED: hydrate iCloud from GUI/reboot. Fresh cycle otherwise complete (~10GB, DBs integrity ok); BCK-R resumed for offsite + gap annotation; PKT-STANDING-REFRESH running in parallel."
+    },
+    {
+      "time": "2026-07-02T19:16+05",
+      "text": "R1 WINDOW OPEN: closeout TELEGRAM_CONFIRMED 27/27 (batch 02.07.26_MERGED_qnt38); daily ops paused 0/10 verified via governed controller; AB lease taken; PKT-BCK-R dispatched (fresh full backup + restore tests + offsite exit-23 repair)."
+    },
+    {
+      "time": "2026-07-02T18:55+05",
+      "text": "OWNER SESSION #2 part 1 recorded (inline answers): floor V2 + cons multiplier 1.5->1.15 (expected honest PASS ~3.50M floor vs 3.67M cash) + 7 workbook confirms (Gym=30k, GOLD_Acmewear=126,693 interim, schedule tomorrow); PRICE-03 (a) + ACMEWEAR-brand price-protection policy (LS31-BLK exception); DARK-01 write lane APPROVED w/ OCR stock-verification condition. Tranche-1/QC/waivers/WA-tree pending part 2. Closeout watcher re-armed (37 sizes pending at 18:30, employee mid-flow); PKT-CASHFLOOR-APPLY staged."
+    },
+    {
+      "time": "2026-07-02T17:36+05",
+      "text": "PKT-REBASE returned (ACCEPT_WITH_FOLLOWUP): honest 71-gate re-score applied - 24 regressions from 06-19 (freshness/truth drift + missing view fact_orders_kaspi__pre_line_grain_migration + 34 new residuals + offsite rsync 23). G-SCHED-02 kept PARTIAL (sandbox measurement invalid). Scoreboard+dashboard synced; repair list feeds PKT-STANDING-REFRESH."
+    },
+    {
+      "time": "2026-07-02T17:05+05",
+      "text": "PKT-OPEX-NORM returned Gate GREEN (ACCEPTED): workbook normalized no-write, 3 floor variants cons 4.46-4.61M all above min-cash 3.67M, 8 owner questions staged for Session #2; new normalizer+tests untracked-only, DB untouched by lane."
+    },
+    {
+      "time": "2026-07-02T16:36+05",
+      "text": "RESUMED after owner OPEX/loan workbook handoff: PKT-REBASE (read-only 71-gate re-score) + PKT-OPEX-NORM (floor proposal) dispatched to Codex x-high; floor trace shows conservative floor rises ~4.47-4.62M under new obligations - owner policy choice queued for Session #2."
+    },
     {
       "time": "2026-06-19T21:52:36+05:00",
       "text": "Resume obstacle check: owner-action queue ARMED with 0 dispatch-ready actions; OA-RET02 and OA-TIMEWINDOWS still wait on real facts/evidence."

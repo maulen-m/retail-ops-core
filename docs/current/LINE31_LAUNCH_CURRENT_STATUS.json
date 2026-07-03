@@ -5,7 +5,7 @@
   "current_drop_validator_command": "python3 scripts/validate_line31_current_final_creative_drop.py --json",
   "deploy_liveqa_sequence_execute_command": "python3 scripts/run_line31_deploy_liveqa_readiness_sequence.py --approval-text-file /absolute/path/to/exact_deploy_liveqa_approval.txt --execute-approved-deploy-liveqa --json",
   "deploy_liveqa_sequence_plan_command": "python3 scripts/run_line31_deploy_liveqa_readiness_sequence.py --json",
-  "generated_at": "2026-06-18T20:59:46+05:00",
+  "generated_at": "2026-07-03T00:13:43+05:00",
   "internal_kaspi_policy": "KEEP_INTERNAL_KASPI_LINE31_CAMPAIGNS_ON_UNTIL_SEPARATE_OWNER_APPROVAL",
   "latest_customer_journey_traceability_audit": {
     "audit_command": "python3 scripts/build_line31_customer_journey_traceability_audit.py --json",

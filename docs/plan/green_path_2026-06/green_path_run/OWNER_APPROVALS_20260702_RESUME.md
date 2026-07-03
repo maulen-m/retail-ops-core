@@ -148,3 +148,25 @@ backup-first, dry-run/diff, env gates, readback, and orchestrator review. No oth
 DB write, workbook write, Google Sheet edit, Telegram send, Kaspi merchant/UI/API write,
 Repricer write, price upload, stock write, LaunchAgent change, customer/operator-message write,
 cash movement, PO, purchase, or external write is authorized by this intake.
+
+---
+
+## ADDENDUM 2026-07-03 15:10 +05 — OWNER MORNING PANEL P1–P8 ANSWERED ("All answered, let's go!")
+
+Owner annotated OWNER_MORNING_PANEL_20260703.md inline (`*A:`) and confirmed in chat. Verbatim:
+
+- **P1 floor policy** — `*A:(a) .` → Apply corrected OPEX truth; approved 1.15× multiplier stands; G-SCHED-02 stays HONEST RED until tranche proceeds/collections lift min-cash above 3,502,612. Policy code: ACCEPT_RED_UNTIL_CASH. [INTERP: option (a) as written in panel; EOD-under-honest-fail behavior to be verified tonight and reported — no silent override.]
+- **P2 KO_CLEAR COGS** — `*A:(a).` → Parent-COGS inheritance LINE51_WHITE → CL_OC_MEN_LINE51_WHITE_KO_CLEAR_2XL authorized (order 972820718, 9,063 KZT).
+- **P3 GOLD_Acmewear** — `*A: keep interim` → 126,693 KZT/mo stays with OWNER_INTERIM_REVISIT flag; no schedule integration lane.
+- **P4 generic floor-fix** — `*A: (a) approve exact-row lane.` → Live price-lift to v7 floor for leaking generic UNIVERSAL/STOREB rows (53u at last reading, fresh dry-run re-derives); LS31-BLK carve-out NOT lifted; staged dry-run → orchestrator row review → upload w/ rollback + readback.
+- **P5 CRM bridge (AMD-03)** — `*A:(a) confirm + one-off decrement now, bridge proposal to follow` → 3 direct-CRM buyouts (65,980 KZT) confirmed; governed one-off stock_ledger decrement tonight; standing bridge = design proposal only.
+- **P6 fresh count** — `*A:(c) date: 10.7.2026 jule 10th.` → Physical count 2026-07-10 (tranche-candidate families + RUSH/T-SHIRT, OD-004 photo protocol). Count anchors → G-STOCK-03/04/05; tranche-1 stage-1 dispatch 07-10/11 per OD2-D GO.
+- **P7 RUSH_WHITE M** — `*A: if we have stock <=15 units on that size - then no need to create it, but if we do create it  we need to always specify our brand name ACMEWEAR - so that later all of our created uploaded own offers are able to become exclusive under our own seller rights and no one else can compete with us on price on those product offers. That's mandatory..` → TWO STANDING RULES: (R1) size stock ≤15 → no offer creation for that size; (R2) MANDATORY: every own-created/uploaded offer specifies brand ACMEWEAR (seller-rights exclusivity path). Applied: RUSH_WHITE M stock_ledger balance = 14 ≤ 15 → M offer NO-CREATE; dark-lane M question CLOSED.
+- **P8 marketing login** — owner DELETED the P8 section while annotating (file 86→78 lines); no text answer. [INTERP: treated as likely-logged-in; verification = dispatch marketing remainder fetch 06-19→07-03 now; if marketing_login_failed recurs → one-line re-ask. Recorded honestly as deletion, not as an explicit confirmation.]
+- **Section-2 NEW DIRECTIVE (size truth)** — appended by owner to the dark-offer FYI bullet, verbatim: `due to the platform difference of size specifications, there are multiple inconsistencies in what the customer sees and what we actually see in our system as final ordered size. That's why we always ask height and weight parameters of each customer personally. And in CRM, Google board sheet always specify the final allocated size or additionally height weight parameters if we have enough time. So for probable size, size probability should be calculated via our historical order sendings data inference. So that if we always send size L to the product offer that actually shows size S, that means it's probably size L, and has to be properly updated from time to time in the probable size column in our Google boardsheet and within the system upstream as well.` → Recorded as owner directive PROBABLE-SIZE-INFERENCE: backlog analytics/design lane (historical order-sendings inference → Google board probable-size column + upstream), not gate-blocking. ACMEWEAR-store row 349 stays as-is and folds into this lane.
+
+Execution schedule per approved post-panel plan: read-only prep now (15:00–20:00 ops window); write lanes tonight 20:08+ serialized; count intake 07-10.
+
+### ADDENDUM 2026-07-03 15:12 +05 — OWNER WINDOW OVERRIDE
+Verbatim (chat): `we have time to work with order processing automations paused until 17pm today - override`
+→ Daily-ops (order-processing automations) may be paused NOW until 17:00 today; write lanes authorized in this window. Hard commitment: daily-ops resumed 10/10 BEFORE 17:00 (guard cron armed); DB-writing lanes must complete or stop at a step boundary by ~16:50. Remaining lanes roll to the 20:08 night window as planned.

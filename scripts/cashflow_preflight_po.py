@@ -21,6 +21,10 @@ from core.cashflow.payout_model import load_payout_model
 from core.cashflow.refund_reserve import compute_refund_reserve_series, apply_refund_reserve
 from core.db.queries import get_cutoff_date_almaty
 from scripts.update_cashflow_dashboard import _build_forecast_rows, Commitment
+from scripts.rebuild_cashflow_calendar import (
+    load_latest_actual_cash_anchor,
+    rebase_daily_history_to_cash_anchor,
+)
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 EXPORT_PATH = PROJECT_ROOT / "exports" / "cashflow_preflight_report.txt"
@@ -36,6 +40,11 @@ class PreflightResult:
     scenario: str
     horizon_days: int
     reason: str | None = None
+    anchor_date: str | None = None
+    anchor_opening_cash: float | None = None
+    modelled_inflows_after_anchor: bool = False
+    modelled_cash_in_after_anchor: float = 0.0
+    forecast_modelled_inflows: bool = False
 
 
 @dataclass
@@ -163,6 +172,8 @@ def evaluate_preflight(
                 reason="fact_cashflow_daily is empty",
             )
 
+        cash_anchor = load_latest_actual_cash_anchor(conn, on_or_before=cutoff)
+        history, anchor_meta = rebase_daily_history_to_cash_anchor(conn, history, cash_anchor)
         last_date = date.fromisoformat(history[-1]["date"])
         forecast_start = last_date + timedelta(days=1)
         forecast_end = forecast_start + timedelta(days=horizon_days - 1)
@@ -171,10 +182,12 @@ def evaluate_preflight(
             scenario,
         )
         forecast_rows = _build_forecast_rows(history, commitments, horizon_days, payout_lag, "preflight", scenario=scenario)
+        forecast_modelled_inflows = any(float(row.get("payouts_received_kzt") or 0.0) > 0 for row in forecast_rows)
         all_rows = history + forecast_rows
         if apply_reserve and refund_rate > 0:
             reserve_series = compute_refund_reserve_series(all_rows, refund_rate, refund_days)
-            all_rows = apply_refund_reserve(all_rows, reserve_series)
+            reset_dates = {cash_anchor.anchor_date.isoformat()} if cash_anchor is not None else set()
+            all_rows = apply_refund_reserve(all_rows, reserve_series, reset_dates=reset_dates)
 
     rows_for_min = [
         r
@@ -195,6 +208,11 @@ def evaluate_preflight(
         scenario=scenario,
         horizon_days=horizon_days,
         reason=reason,
+        anchor_date=anchor_meta.get("anchor_date"),
+        anchor_opening_cash=anchor_meta.get("anchor_opening_cash_kzt"),
+        modelled_inflows_after_anchor=bool(anchor_meta.get("modelled_cash_in_after_anchor")) or forecast_modelled_inflows,
+        modelled_cash_in_after_anchor=float(anchor_meta.get("modelled_cash_in_after_anchor_kzt") or 0.0),
+        forecast_modelled_inflows=forecast_modelled_inflows,
     )
 
 
@@ -205,6 +223,7 @@ def main() -> int:
     parser.add_argument("--min-cash", type=float, default=0.0, help="Minimum acceptable cash close")
     parser.add_argument("--override", action="store_true", help="Allow failure with explicit reason")
     parser.add_argument("--reason", type=str, default=None, help="Override reason for failing preflight")
+    parser.add_argument("--output", type=Path, default=EXPORT_PATH, help="Path for the preflight report")
     args = parser.parse_args()
 
     cutoff = get_cutoff_date_almaty()
@@ -241,9 +260,19 @@ def main() -> int:
         conservative=cons_result,
         horizon_days=args.days,
     )
+    anchor_opening = summary.conservative.anchor_opening_cash
 
     lines = [
         f"horizon_days: {summary.horizon_days}",
+        f"cash_anchor_date: {summary.conservative.anchor_date or 'NONE'}",
+        (
+            f"cash_anchor_opening_kzt: {anchor_opening:.2f}"
+            if anchor_opening is not None
+            else "cash_anchor_opening_kzt: NONE"
+        ),
+        f"modelled_inflows_after_anchor: {'YES' if summary.conservative.modelled_inflows_after_anchor else 'NO'}",
+        f"modelled_cash_in_events_after_anchor_kzt: {summary.conservative.modelled_cash_in_after_anchor:.2f}",
+        f"forecast_modelled_inflows: {'YES' if summary.conservative.forecast_modelled_inflows else 'NO'}",
         f"opex_monthly_kzt: {opex_monthly:.2f}",
         f"base_floor_kzt: {base_floor:.2f}",
         f"base_min_cash_kzt: {summary.base.min_cash:.2f}",
@@ -264,13 +293,13 @@ def main() -> int:
                 return 2
             lines.append(f"override: {args.reason}")
         else:
-            EXPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            EXPORT_PATH.write_text("\n".join(lines) + "\n")
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text("\n".join(lines) + "\n")
             print("\n".join(lines))
             return 1
 
-    EXPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    EXPORT_PATH.write_text("\n".join(lines) + "\n")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     return 0
 
