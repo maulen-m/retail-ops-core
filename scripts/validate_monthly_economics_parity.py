@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from calendar import monthrange
+from collections import Counter
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
@@ -24,6 +25,49 @@ DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_MAPPED_ROOT = PROJECT_ROOT / "exports" / "sales_archive_statusdate_mapped"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "economics_parity"
 DEFAULT_STATUSDATE_CUTOVER = "2026-02-27"
+PROJECTION_SURFACE_TABLE = "monthly_sales_economics_statusdate_projection"
+PROJECTION_EXCEPTION_TABLE = "monthly_sales_economics_statusdate_projection_exceptions"
+
+PROJECTION_COLUMNS = [
+    "order_id",
+    "sale_date",
+    "sale_month",
+    "store_code",
+    "sku_key",
+    "sku_id",
+    "my_size",
+    "units",
+    "net_rev_kzt",
+    "cogs_kzt",
+    "profit_kzt",
+    "cogs_source",
+    "source_table",
+    "db_source_sale_dates",
+    "db_match_status",
+    "match_key_kind",
+    "archive_units",
+    "archive_net_rev_kzt",
+    "archive_line_rows",
+    "archive_transaction_date_source",
+    "archive_mapped_sku_key",
+    "archive_mapped_sku_id",
+    "archive_mapped_size",
+    "db_line_reuse_count",
+    "statusdate_projection_source",
+]
+
+PROJECTION_EXCEPTION_COLUMNS = [
+    "exception_type",
+    "order_id",
+    "store_code",
+    "sale_date",
+    "sku_key",
+    "sku_id",
+    "my_size",
+    "units",
+    "net_rev_kzt",
+    "details",
+]
 
 
 class ParityError(RuntimeError):
@@ -42,6 +86,46 @@ def _safe_float(value: Any) -> float:
         return float(value or 0.0)
     except Exception:
         return 0.0
+
+
+def _normalize_identity(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"", "NAN", "NAN_NAN", "NONE", "NULL", "NA", "<NA>"}:
+        return ""
+    return text
+
+
+def _first_nonblank(values: pd.Series) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _join_unique(values: pd.Series) -> str:
+    out = sorted({str(value).strip() for value in values if str(value or "").strip()})
+    return "|".join(out)
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _sqlite_scalar(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
 
 
 def _resolve_mapped_csv(*, since: date, until: date, explicit: Path | None, mapped_root: Path) -> Path:
@@ -74,6 +158,9 @@ def _load_archive_monthly(*, mapped_csv: Path, since: date, until: date) -> tupl
         "status_internal",
         "return_flag",
         "transaction_date_source",
+        "mapped_sku_key",
+        "mapped_sku_id",
+        "mapped_size",
     }
     missing = sorted(required_cols - set(df.columns))
     if missing:
@@ -97,6 +184,10 @@ def _load_archive_monthly(*, mapped_csv: Path, since: date, until: date) -> tupl
     df["store_code"] = df["store_code"].astype(str).str.upper()
     df["units"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0.0)
     df["net_rev_kzt"] = pd.to_numeric(df["net_rev_kzt"], errors="coerce").fillna(0.0)
+    df["order_id"] = df["order_id"].astype(str).str.strip()
+    df["mapped_sku_key"] = df["mapped_sku_key"].astype(str).str.strip()
+    df["mapped_sku_id"] = df["mapped_sku_id"].astype(str).str.strip()
+    df["mapped_size"] = df["mapped_size"].astype(str).str.strip()
 
     monthly_archive = (
         df.groupby(["sale_month", "store_code"], dropna=False)
@@ -126,7 +217,452 @@ def _load_archive_monthly(*, mapped_csv: Path, since: date, until: date) -> tupl
     return monthly_archive, df
 
 
-def _load_db_monthly(*, db_path: Path, since: date, until: date) -> pd.DataFrame:
+def _fetch_db_rows_for_projection(conn: sqlite3.Connection, order_ids: list[str]) -> pd.DataFrame:
+    if not order_ids:
+        return pd.DataFrame(
+            columns=[
+                "order_id",
+                "sale_date",
+                "store_code",
+                "sku_key",
+                "sku_id",
+                "my_size",
+                "units",
+                "net_rev_kzt",
+                "cogs_kzt",
+                "profit_kzt",
+                "cogs_source",
+                "source_table",
+            ]
+        )
+
+    frames: list[pd.DataFrame] = []
+    chunk_size = 900
+    for offset in range(0, len(order_ids), chunk_size):
+        chunk = order_ids[offset : offset + chunk_size]
+        placeholders = ",".join(["?"] * len(chunk))
+        query = f"""
+            SELECT
+                CAST(order_id AS TEXT) AS order_id,
+                date(sale_date) AS sale_date,
+                UPPER(TRIM(COALESCE(store_code, 'UNIVERSAL'))) AS store_code,
+                COALESCE(sku_key, '') AS sku_key,
+                COALESCE(sku_id, '') AS sku_id,
+                COALESCE(my_size, '') AS my_size,
+                CAST(COALESCE(units, 0) AS REAL) AS units,
+                CAST(COALESCE(net_rev_kzt, 0) AS REAL) AS net_rev_kzt,
+                CAST(COALESCE(cogs_kzt, 0) AS REAL) AS cogs_kzt,
+                CAST(COALESCE(profit_kzt, 0) AS REAL) AS profit_kzt,
+                COALESCE(cogs_source, 'unresolved') AS cogs_source,
+                COALESCE(source_table, 'view_sales_line_truth') AS source_table
+            FROM view_sales_line_truth
+            WHERE CAST(order_id AS TEXT) IN ({placeholders})
+        """
+        frames.append(pd.read_sql_query(query, conn, params=chunk))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _unique_lookup(records: list[dict[str, Any]], key_fields: tuple[str, ...]) -> tuple[dict[tuple[str, ...], dict[str, Any]], set[tuple[str, ...]]]:
+    lookup: dict[tuple[str, ...], dict[str, Any]] = {}
+    ambiguous: set[tuple[str, ...]] = set()
+    for record in records:
+        key = tuple(str(record.get(field, "") or "") for field in key_fields)
+        if any(not part for part in key):
+            continue
+        if key in lookup:
+            ambiguous.add(key)
+            lookup.pop(key, None)
+            continue
+        if key in ambiguous:
+            continue
+        lookup[key] = record
+    return lookup, ambiguous
+
+
+def _empty_projection() -> pd.DataFrame:
+    return pd.DataFrame(columns=PROJECTION_COLUMNS)
+
+
+def _empty_projection_exceptions() -> pd.DataFrame:
+    return pd.DataFrame(columns=PROJECTION_EXCEPTION_COLUMNS)
+
+
+def build_monthly_sales_economics_statusdate_projection(
+    *,
+    conn: sqlite3.Connection,
+    delivered_rows: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    if delivered_rows.empty:
+        metadata = {
+            "projection_surface_table": PROJECTION_SURFACE_TABLE,
+            "projection_exception_table": PROJECTION_EXCEPTION_TABLE,
+            "archive_anchor_rows": 0,
+            "projected_rows": 0,
+            "matched_rows": 0,
+            "missing_in_db_rows": 0,
+            "duplicate_db_line_match_rows": 0,
+            "unmatched_db_line_rows": 0,
+        }
+        return _empty_projection(), _empty_projection_exceptions(), metadata
+
+    anchors = delivered_rows.copy()
+    anchors["sale_date"] = pd.to_datetime(anchors["transaction_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    anchors["sale_month"] = pd.to_datetime(anchors["transaction_date"], errors="coerce").dt.to_period("M").astype(str)
+    anchors["order_id"] = anchors["order_id"].astype(str).str.strip()
+    anchors["store_code"] = anchors["store_code"].astype(str).str.strip().str.upper()
+    anchors["mapped_sku_key"] = anchors["mapped_sku_key"].astype(str).str.strip()
+    anchors["mapped_sku_id"] = anchors["mapped_sku_id"].astype(str).str.strip()
+    anchors["mapped_size"] = anchors["mapped_size"].astype(str).str.strip()
+    anchors["mapped_sku_key_norm"] = anchors["mapped_sku_key"].map(_normalize_identity)
+    anchors["mapped_sku_id_norm"] = anchors["mapped_sku_id"].map(_normalize_identity)
+    anchors["mapped_size_norm"] = anchors["mapped_size"].map(_normalize_identity)
+
+    archive_anchor_rows = (
+        anchors.groupby(
+            [
+                "order_id",
+                "store_code",
+                "sale_date",
+                "sale_month",
+                "mapped_sku_key_norm",
+                "mapped_sku_id_norm",
+                "mapped_size_norm",
+            ],
+            dropna=False,
+        )
+        .agg(
+            archive_mapped_sku_key=("mapped_sku_key", _first_nonblank),
+            archive_mapped_sku_id=("mapped_sku_id", _first_nonblank),
+            archive_mapped_size=("mapped_size", _first_nonblank),
+            archive_units=("units", "sum"),
+            archive_net_rev_kzt=("net_rev_kzt", "sum"),
+            archive_line_rows=("order_id", "count"),
+            archive_transaction_date_source=("transaction_date_source", _join_unique),
+        )
+        .reset_index()
+    )
+    archive_anchor_rows["has_line_identity"] = archive_anchor_rows.apply(
+        lambda row: bool(row["mapped_sku_id_norm"])
+        or bool(row["mapped_sku_key_norm"] and row["mapped_size_norm"]),
+        axis=1,
+    )
+    order_stores_with_line_identity = {
+        (str(row["order_id"]), str(row["store_code"]))
+        for row in archive_anchor_rows[archive_anchor_rows["has_line_identity"]].to_dict("records")
+    }
+
+    db_rows = _fetch_db_rows_for_projection(
+        conn,
+        sorted(archive_anchor_rows["order_id"].dropna().astype(str).unique().tolist()),
+    )
+    if db_rows.empty:
+        db_lines = pd.DataFrame()
+        db_order_lines = pd.DataFrame()
+    else:
+        for col in ["units", "net_rev_kzt", "cogs_kzt", "profit_kzt"]:
+            db_rows[col] = pd.to_numeric(db_rows[col], errors="coerce").fillna(0.0)
+        db_rows["order_id"] = db_rows["order_id"].astype(str).str.strip()
+        db_rows["store_code"] = db_rows["store_code"].astype(str).str.strip().str.upper()
+        db_rows["sku_key"] = db_rows["sku_key"].astype(str).str.strip()
+        db_rows["sku_id"] = db_rows["sku_id"].astype(str).str.strip()
+        db_rows["my_size"] = db_rows["my_size"].astype(str).str.strip()
+        db_rows["sku_key_norm"] = db_rows["sku_key"].map(_normalize_identity)
+        db_rows["sku_id_norm"] = db_rows["sku_id"].map(_normalize_identity)
+        db_rows["my_size_norm"] = db_rows["my_size"].map(_normalize_identity)
+        db_order_lines = (
+            db_rows.groupby(["order_id", "store_code"], dropna=False)
+            .agg(
+                sku_key=("sku_key", _join_unique),
+                sku_id=("sku_id", _join_unique),
+                my_size=("my_size", _join_unique),
+                units=("units", "sum"),
+                net_rev_kzt=("net_rev_kzt", "sum"),
+                cogs_kzt=("cogs_kzt", "sum"),
+                profit_kzt=("profit_kzt", "sum"),
+                cogs_source=("cogs_source", _join_unique),
+                source_table=("source_table", _join_unique),
+                db_source_sale_dates=("sale_date", _join_unique),
+                db_row_count=("order_id", "count"),
+            )
+            .reset_index()
+        )
+        db_order_lines["db_line_id"] = db_order_lines.apply(
+            lambda row: "|".join([str(row["order_id"]), str(row["store_code"]), "__ORDER__"]),
+            axis=1,
+        )
+        db_lines = (
+            db_rows.groupby(
+                ["order_id", "store_code", "sku_key_norm", "sku_id_norm", "my_size_norm"],
+                dropna=False,
+            )
+            .agg(
+                sku_key=("sku_key", _first_nonblank),
+                sku_id=("sku_id", _first_nonblank),
+                my_size=("my_size", _first_nonblank),
+                units=("units", "sum"),
+                net_rev_kzt=("net_rev_kzt", "sum"),
+                cogs_kzt=("cogs_kzt", "sum"),
+                profit_kzt=("profit_kzt", "sum"),
+                cogs_source=("cogs_source", _join_unique),
+                source_table=("source_table", _join_unique),
+                db_source_sale_dates=("sale_date", _join_unique),
+                db_row_count=("order_id", "count"),
+            )
+            .reset_index()
+        )
+        db_lines["db_line_id"] = db_lines.apply(
+            lambda row: "|".join(
+                [
+                    str(row["order_id"]),
+                    str(row["store_code"]),
+                    str(row["sku_id_norm"]),
+                    str(row["sku_key_norm"]),
+                    str(row["my_size_norm"]),
+                ]
+            ),
+            axis=1,
+        )
+
+    db_records = db_lines.to_dict("records") if not db_lines.empty else []
+    sku_id_lookup, ambiguous_sku_id = _unique_lookup(db_records, ("order_id", "store_code", "sku_id_norm"))
+    sku_size_lookup, ambiguous_sku_size = _unique_lookup(
+        db_records,
+        ("order_id", "store_code", "sku_key_norm", "my_size_norm"),
+    )
+    order_lookup, ambiguous_order = _unique_lookup(
+        db_order_lines.to_dict("records") if not db_order_lines.empty else [],
+        ("order_id", "store_code"),
+    )
+
+    projection_records: list[dict[str, Any]] = []
+    exception_records: list[dict[str, Any]] = []
+    matched_db_line_ids: list[str] = []
+    matched_order_store_keys: set[tuple[str, str]] = set()
+
+    for anchor in archive_anchor_rows.to_dict("records"):
+        sku_id_key = (
+            str(anchor["order_id"]),
+            str(anchor["store_code"]),
+            str(anchor["mapped_sku_id_norm"]),
+        )
+        sku_size_key = (
+            str(anchor["order_id"]),
+            str(anchor["store_code"]),
+            str(anchor["mapped_sku_key_norm"]),
+            str(anchor["mapped_size_norm"]),
+        )
+        db_record: dict[str, Any] | None = None
+        match_key_kind = ""
+        if anchor["mapped_sku_id_norm"]:
+            if sku_id_key in ambiguous_sku_id:
+                match_key_kind = "ambiguous_sku_id"
+            else:
+                db_record = sku_id_lookup.get(sku_id_key)
+                if db_record is not None:
+                    match_key_kind = "sku_id"
+        if db_record is None and anchor["mapped_sku_key_norm"] and anchor["mapped_size_norm"]:
+            if sku_size_key in ambiguous_sku_size:
+                match_key_kind = match_key_kind or "ambiguous_sku_key_size"
+            else:
+                db_record = sku_size_lookup.get(sku_size_key)
+                if db_record is not None:
+                    match_key_kind = "sku_key_size"
+        if (
+            db_record is None
+            and not bool(anchor["has_line_identity"])
+            and (str(anchor["order_id"]), str(anchor["store_code"])) not in order_stores_with_line_identity
+        ):
+            order_key = (str(anchor["order_id"]), str(anchor["store_code"]))
+            if order_key in ambiguous_order:
+                match_key_kind = match_key_kind or "ambiguous_order_store"
+            else:
+                db_record = order_lookup.get(order_key)
+                if db_record is not None:
+                    match_key_kind = "order_store_missing_archive_identity"
+
+        if db_record is None:
+            status = "MISSING_IN_DB"
+            if match_key_kind.startswith("ambiguous"):
+                status = "AMBIGUOUS_DB_LINE_MATCH"
+            exception_records.append(
+                {
+                    "exception_type": status,
+                    "order_id": anchor["order_id"],
+                    "store_code": anchor["store_code"],
+                    "sale_date": anchor["sale_date"],
+                    "sku_key": anchor["archive_mapped_sku_key"],
+                    "sku_id": anchor["archive_mapped_sku_id"],
+                    "my_size": anchor["archive_mapped_size"],
+                    "units": float(anchor["archive_units"]),
+                    "net_rev_kzt": float(anchor["archive_net_rev_kzt"]),
+                    "details": match_key_kind or "no view_sales_line_truth identity match",
+                }
+            )
+            projection_records.append(
+                {
+                    "order_id": anchor["order_id"],
+                    "sale_date": anchor["sale_date"],
+                    "sale_month": anchor["sale_month"],
+                    "store_code": anchor["store_code"],
+                    "sku_key": anchor["archive_mapped_sku_key"],
+                    "sku_id": anchor["archive_mapped_sku_id"],
+                    "my_size": anchor["archive_mapped_size"],
+                    "units": 0.0,
+                    "net_rev_kzt": 0.0,
+                    "cogs_kzt": 0.0,
+                    "profit_kzt": 0.0,
+                    "cogs_source": "unresolved",
+                    "source_table": "",
+                    "db_source_sale_dates": "",
+                    "db_match_status": status,
+                    "match_key_kind": match_key_kind,
+                    "archive_units": float(anchor["archive_units"]),
+                    "archive_net_rev_kzt": float(anchor["archive_net_rev_kzt"]),
+                    "archive_line_rows": int(anchor["archive_line_rows"]),
+                    "archive_transaction_date_source": anchor["archive_transaction_date_source"],
+                    "archive_mapped_sku_key": anchor["archive_mapped_sku_key"],
+                    "archive_mapped_sku_id": anchor["archive_mapped_sku_id"],
+                    "archive_mapped_size": anchor["archive_mapped_size"],
+                    "db_line_reuse_count": 0,
+                    "statusdate_projection_source": "mapped_archive_statusdate",
+                }
+            )
+            continue
+
+        matched_db_line_ids.append(str(db_record["db_line_id"]))
+        if match_key_kind == "order_store_missing_archive_identity":
+            matched_order_store_keys.add((str(db_record["order_id"]), str(db_record["store_code"])))
+        projection_records.append(
+            {
+                "order_id": anchor["order_id"],
+                "sale_date": anchor["sale_date"],
+                "sale_month": anchor["sale_month"],
+                "store_code": anchor["store_code"],
+                "sku_key": db_record["sku_key"],
+                "sku_id": db_record["sku_id"],
+                "my_size": db_record["my_size"],
+                "units": float(db_record["units"]),
+                "net_rev_kzt": float(db_record["net_rev_kzt"]),
+                "cogs_kzt": float(db_record["cogs_kzt"]),
+                "profit_kzt": float(db_record["profit_kzt"]),
+                "cogs_source": db_record["cogs_source"],
+                "source_table": db_record["source_table"],
+                "db_source_sale_dates": db_record["db_source_sale_dates"],
+                "db_match_status": "MATCHED",
+                "match_key_kind": match_key_kind,
+                "archive_units": float(anchor["archive_units"]),
+                "archive_net_rev_kzt": float(anchor["archive_net_rev_kzt"]),
+                "archive_line_rows": int(anchor["archive_line_rows"]),
+                "archive_transaction_date_source": anchor["archive_transaction_date_source"],
+                "archive_mapped_sku_key": anchor["archive_mapped_sku_key"],
+                "archive_mapped_sku_id": anchor["archive_mapped_sku_id"],
+                "archive_mapped_size": anchor["archive_mapped_size"],
+                "db_line_reuse_count": 1,
+                "statusdate_projection_source": "mapped_archive_statusdate",
+                "_db_line_id": str(db_record["db_line_id"]),
+            }
+        )
+
+    reuse_counts = Counter(matched_db_line_ids)
+    for record in projection_records:
+        db_line_id = str(record.pop("_db_line_id", "") or "")
+        if db_line_id:
+            reuse_count = int(reuse_counts[db_line_id])
+            record["db_line_reuse_count"] = reuse_count
+            if reuse_count > 1:
+                record["db_match_status"] = "DUPLICATE_DB_LINE_MATCH"
+                exception_records.append(
+                    {
+                        "exception_type": "DUPLICATE_DB_LINE_MATCH",
+                        "order_id": record["order_id"],
+                        "store_code": record["store_code"],
+                        "sale_date": record["sale_date"],
+                        "sku_key": record["sku_key"],
+                        "sku_id": record["sku_id"],
+                        "my_size": record["my_size"],
+                        "units": record["units"],
+                        "net_rev_kzt": record["net_rev_kzt"],
+                        "details": f"db_line_reuse_count={reuse_count}",
+                    }
+                )
+
+    matched_unique_db_line_ids = {str(line_id) for line_id in matched_db_line_ids}
+    if db_records:
+        for db_record in db_records:
+            if str(db_record["db_line_id"]) in matched_unique_db_line_ids:
+                continue
+            if (str(db_record["order_id"]), str(db_record["store_code"])) in matched_order_store_keys:
+                continue
+            exception_records.append(
+                {
+                    "exception_type": "DB_LINE_WITHOUT_STATUSDATE_ANCHOR",
+                    "order_id": db_record["order_id"],
+                    "store_code": db_record["store_code"],
+                    "sale_date": db_record["db_source_sale_dates"],
+                    "sku_key": db_record["sku_key"],
+                    "sku_id": db_record["sku_id"],
+                    "my_size": db_record["my_size"],
+                    "units": float(db_record["units"]),
+                    "net_rev_kzt": float(db_record["net_rev_kzt"]),
+                    "details": "view_sales_line_truth line for archive order did not match mapped archive identity",
+                }
+            )
+
+    projection = pd.DataFrame(projection_records, columns=PROJECTION_COLUMNS)
+    exceptions = pd.DataFrame(exception_records, columns=PROJECTION_EXCEPTION_COLUMNS)
+    metadata = {
+        "projection_surface_table": PROJECTION_SURFACE_TABLE,
+        "projection_exception_table": PROJECTION_EXCEPTION_TABLE,
+        "archive_anchor_rows": int(len(archive_anchor_rows)),
+        "projected_rows": int(len(projection)),
+        "matched_rows": int((projection["db_match_status"] == "MATCHED").sum()) if not projection.empty else 0,
+        "missing_in_db_rows": int((projection["db_match_status"] == "MISSING_IN_DB").sum()) if not projection.empty else 0,
+        "duplicate_db_line_match_rows": int((projection["db_match_status"] == "DUPLICATE_DB_LINE_MATCH").sum())
+        if not projection.empty
+        else 0,
+        "order_store_identity_fallback_rows": int(
+            (projection["match_key_kind"] == "order_store_missing_archive_identity").sum()
+        )
+        if not projection.empty
+        else 0,
+        "unmatched_db_line_rows": int((exceptions["exception_type"] == "DB_LINE_WITHOUT_STATUSDATE_ANCHOR").sum())
+        if not exceptions.empty
+        else 0,
+    }
+    return projection, exceptions, metadata
+
+
+def _create_temp_projection_table(conn: sqlite3.Connection, table_name: str, df: pd.DataFrame) -> None:
+    conn.execute(f"DROP TABLE IF EXISTS temp.{_quote_identifier(table_name)}")
+    column_sql = ", ".join(f"{_quote_identifier(col)} TEXT" for col in df.columns)
+    conn.execute(f"CREATE TEMP TABLE {_quote_identifier(table_name)} ({column_sql})")
+    if df.empty:
+        return
+    columns = list(df.columns)
+    column_names = ", ".join(_quote_identifier(col) for col in columns)
+    placeholders = ", ".join(["?"] * len(columns))
+    conn.executemany(
+        f"INSERT INTO {_quote_identifier(table_name)} ({column_names}) VALUES ({placeholders})",
+        [tuple(_sqlite_scalar(value) for value in row) for row in df.itertuples(index=False, name=None)],
+    )
+
+
+def _materialize_temp_projection_surface(
+    conn: sqlite3.Connection,
+    projection: pd.DataFrame,
+    exceptions: pd.DataFrame,
+) -> None:
+    _create_temp_projection_table(conn, PROJECTION_SURFACE_TABLE, projection)
+    _create_temp_projection_table(conn, PROJECTION_EXCEPTION_TABLE, exceptions)
+
+
+def _load_db_monthly(
+    *,
+    db_path: Path,
+    since: date,
+    until: date,
+    delivered_rows: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     if not db_path.exists():
         raise ParityError(f"db not found: {db_path}")
 
@@ -134,19 +670,25 @@ def _load_db_monthly(*, db_path: Path, since: date, until: date) -> pd.DataFrame
     conn.row_factory = sqlite3.Row
     try:
         ensure_sales_truth_views(conn)
+        projection, exceptions, projection_meta = build_monthly_sales_economics_statusdate_projection(
+            conn=conn,
+            delivered_rows=delivered_rows,
+        )
+        _materialize_temp_projection_surface(conn, projection, exceptions)
         rows = conn.execute(
             """
             SELECT
-                substr(date(sale_date), 1, 7) AS sale_month,
+                sale_month AS sale_month,
                 UPPER(COALESCE(store_code, 'UNKNOWN')) AS store_code,
-                SUM(COALESCE(units, 0)) AS db_units,
-                SUM(COALESCE(net_rev_kzt, 0)) AS db_net_rev_kzt,
-                SUM(COALESCE(cogs_kzt, 0)) AS db_cogs_kzt,
-                SUM(COALESCE(profit_kzt, 0)) AS db_profit_kzt,
+                SUM(CAST(COALESCE(units, 0) AS REAL)) AS db_units,
+                SUM(CAST(COALESCE(net_rev_kzt, 0) AS REAL)) AS db_net_rev_kzt,
+                SUM(CAST(COALESCE(cogs_kzt, 0) AS REAL)) AS db_cogs_kzt,
+                SUM(CAST(COALESCE(profit_kzt, 0) AS REAL)) AS db_profit_kzt,
                 COUNT(DISTINCT CAST(order_id AS TEXT)) AS db_orders
-            FROM view_sales_line_truth
+            FROM temp.monthly_sales_economics_statusdate_projection
             WHERE date(sale_date) BETWEEN ? AND ?
-            GROUP BY substr(date(sale_date), 1, 7), UPPER(COALESCE(store_code, 'UNKNOWN'))
+              AND db_match_status = 'MATCHED'
+            GROUP BY sale_month, UPPER(COALESCE(store_code, 'UNKNOWN'))
             ORDER BY 1, 2
             """,
             (since.isoformat(), until.isoformat()),
@@ -165,13 +707,13 @@ def _load_db_monthly(*, db_path: Path, since: date, until: date) -> pd.DataFrame
                 "db_profit_kzt",
                 "db_orders",
             ]
-        )
+        ), projection, exceptions, projection_meta
 
     df = pd.DataFrame([dict(r) for r in rows])
     numeric_cols = ["db_units", "db_net_rev_kzt", "db_cogs_kzt", "db_profit_kzt", "db_orders"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-    return df
+    return df, projection, exceptions, projection_meta
 
 
 def _render_md(report: dict[str, Any]) -> str:
@@ -183,6 +725,9 @@ def _render_md(report: dict[str, Any]) -> str:
         f"- status: `{report['status']}`",
         f"- strict: `{str(report['strict']).lower()}`",
         f"- tolerance_pct: `{report['tolerance_pct']}`",
+        f"- db_projection_surface: `{report['db_projection_surface']}`",
+        f"- db_projection_matched_rows: `{report['db_projection_meta']['matched_rows']}`",
+        f"- db_projection_exceptions: `{report['db_projection_exception_count']}`",
         f"- decision_grade_mismatches: `{report['decision_grade_mismatch_count']}`",
         f"- provisional_month_store_pairs: `{report['provisional_pair_count']}`",
         "",
@@ -229,7 +774,12 @@ def validate_monthly_economics_parity(
         since=since,
         until=until,
     )
-    monthly_db = _load_db_monthly(db_path=db_path, since=since, until=until)
+    monthly_db, db_projection, db_projection_exceptions, db_projection_meta = _load_db_monthly(
+        db_path=db_path,
+        since=since,
+        until=until,
+        delivered_rows=delivered_rows,
+    )
 
     merged = monthly_archive.merge(monthly_db, on=["sale_month", "store_code"], how="outer").fillna(0)
     merged = merged.sort_values(["sale_month", "store_code"]).reset_index(drop=True)
@@ -303,18 +853,35 @@ def validate_monthly_economics_parity(
     notes.append(
         f"statusdate_cutover={statusdate_cutover.isoformat()} (months ending before this are provisional by contract)."
     )
+    notes.append(
+        f"db monthly totals use {PROJECTION_SURFACE_TABLE}; projection sale_date is mapped archive transaction_date."
+    )
+    fallback_rows = int(db_projection_meta.get("order_store_identity_fallback_rows", 0) or 0)
+    if fallback_rows > 0:
+        notes.append(
+            f"{fallback_rows} projection rows used order/store fallback because mapped archive line identity was blank."
+        )
+    exception_count = int(len(db_projection_exceptions))
+    if exception_count > 0:
+        notes.append(
+            f"{exception_count} status-date projection exception rows emitted; inspect {PROJECTION_EXCEPTION_TABLE} CSV."
+        )
 
     range_dir = output_root.resolve() / f"{since.isoformat()}_to_{until.isoformat()}"
     range_dir.mkdir(parents=True, exist_ok=True)
 
     monthly_archive_csv = range_dir / "monthly_archive.csv"
     monthly_db_csv = range_dir / "monthly_db.csv"
+    db_projection_csv = range_dir / "db_statusdate_projection.csv"
+    db_projection_exceptions_csv = range_dir / "db_statusdate_projection_exceptions.csv"
     diffs_csv = range_dir / "diffs_by_month.csv"
     summary_json = range_dir / "summary.json"
     report_md = range_dir / "report.md"
 
     monthly_archive.to_csv(monthly_archive_csv, index=False, encoding="utf-8")
     monthly_db.to_csv(monthly_db_csv, index=False, encoding="utf-8")
+    db_projection.to_csv(db_projection_csv, index=False, encoding="utf-8")
+    db_projection_exceptions.to_csv(db_projection_exceptions_csv, index=False, encoding="utf-8")
     pd.DataFrame(rows).to_csv(diffs_csv, index=False, encoding="utf-8")
 
     status = "PASS" if not decision_grade_mismatches else "FAIL"
@@ -326,6 +893,10 @@ def validate_monthly_economics_parity(
         "status": status,
         "tolerance_pct": float(tolerance_pct),
         "statusdate_cutover": statusdate_cutover.isoformat(),
+        "db_projection_surface": PROJECTION_SURFACE_TABLE,
+        "db_projection_exception_surface": PROJECTION_EXCEPTION_TABLE,
+        "db_projection_meta": db_projection_meta,
+        "db_projection_exception_count": exception_count,
         "decision_grade_mismatch_count": len(decision_grade_mismatches),
         "decision_grade_mismatches": decision_grade_mismatches,
         "provisional_pair_count": provisional_pairs,
@@ -333,6 +904,8 @@ def validate_monthly_economics_parity(
         "mapped_csv": str(mapped_csv.resolve()),
         "monthly_archive_csv": str(monthly_archive_csv.resolve()),
         "monthly_db_csv": str(monthly_db_csv.resolve()),
+        "db_projection_csv": str(db_projection_csv.resolve()),
+        "db_projection_exceptions_csv": str(db_projection_exceptions_csv.resolve()),
         "diffs_by_month_csv": str(diffs_csv.resolve()),
         "summary_json": str(summary_json.resolve()),
         "report_md": str(report_md.resolve()),

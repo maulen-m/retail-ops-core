@@ -342,7 +342,7 @@ def test_preflight_autogenerates_business_insides_when_missing(
     assert "PASS" in summary
     gen_calls = [cmd for cmd in calls if "generate_business_insides.py" in " ".join(cmd)]
     assert gen_calls, "expected generate_business_insides.py call"
-    assert any("--strict-cogs" in cmd for cmd in gen_calls)
+    assert all("--strict-cogs" not in cmd for cmd in gen_calls)
     assert any("validate_params.py" in " ".join(cmd) for cmd in calls)
 
 

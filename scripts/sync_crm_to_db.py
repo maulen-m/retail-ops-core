@@ -23,6 +23,7 @@ from core.ingest.sales_ingest import (
     ingest_sales,
     ingest_sales_to_fact_sales,
     parse_sales_excel,
+    resolve_sales_identity,
 )
 from core.db import get_db
 
@@ -79,16 +80,8 @@ def main():
             print("ERROR: No CRM records found; aborting reconcile.")
             sys.exit(1)
 
-        crm_keys = set()
         dates = []
         for row in records:
-            crm_keys.add((
-                str(row.get("order_id") or ""),
-                str(row.get("store_code") or ""),
-                str(row.get("kaspi_offer_name") or ""),
-                str(row.get("sku_key") or ""),
-                str(row.get("my_size") or ""),
-            ))
             dates.append(row.get("order_date"))
 
         min_date = min(dates)
@@ -96,6 +89,24 @@ def main():
         print(f"\nReconciling sales_fact_v2 for {min_date} → {max_date}...")
 
         with get_db() as conn:
+            crm_keys = set()
+            for row in records:
+                sku_key, _sku_id, my_size = resolve_sales_identity(
+                    conn,
+                    row.get("sku_id"),
+                    row.get("sku_key"),
+                    row.get("my_size"),
+                    row.get("kaspi_offer_name"),
+                    row.get("store_code"),
+                )
+                crm_keys.add((
+                    str(row.get("order_id") or ""),
+                    str(row.get("store_code") or ""),
+                    str(row.get("kaspi_offer_name") or ""),
+                    str(sku_key or ""),
+                    str(my_size or ""),
+                ))
+
             existing = conn.execute(
                 """
                 SELECT sale_id, order_id, store_code, kaspi_offer_name, sku_key, my_size

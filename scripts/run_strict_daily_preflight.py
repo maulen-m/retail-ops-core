@@ -231,7 +231,6 @@ def _ensure_business_insides_snapshot(
         str(db_path),
         "--as-of",
         as_of_iso,
-        "--strict-cogs",
     ]
     completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=False)
     if int(completed.returncode) != 0:

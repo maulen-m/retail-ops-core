@@ -29,6 +29,10 @@ For the 30-day window ending `as_of`:
 ## Fail-Closed Behavior
 - Any strict check FAIL -> validator exits non-zero in `--strict`.
 - Profit metrics remain locked (`N/A`) while lock conditions remain.
+- Snapshot generation itself remains allowed when unresolved COGS exist, provided
+  the snapshot records the unresolved-row counts and masks profit metrics. Daily
+  preflight auto-ensure may generate this locked snapshot without `--strict-cogs`;
+  economics publication readiness is enforced by the validator above.
 
 ## Command
 ```bash

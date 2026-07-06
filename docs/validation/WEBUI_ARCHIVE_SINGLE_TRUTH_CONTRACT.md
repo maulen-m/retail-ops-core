@@ -28,6 +28,26 @@ must never be promoted into final sale truth after the strict status-date cutove
 
 Raw downloaded files are evidence inputs only. They are never published directly.
 
+## Monthly Economics Projection Implementation Note
+Monthly sales economics parity must bucket DB economics by WebUI delivered
+status-change date after the strict status-date cutover. The validator-owned
+projection surface is `monthly_sales_economics_statusdate_projection`: it is
+built from delivered rows in
+`exports/sales_archive_statusdate_mapped/<RANGE>/ArchiveSales_ALL_STORES_statusdate_mapped.csv`
+and joins to `view_sales_line_truth` by `order_id`, `store_code`, and line
+identity (`mapped_sku_id` first, then `mapped_sku_key` plus `mapped_size`).
+If the mapped archive row has no usable line identity, the validator may use an
+order/store status-date fallback only for orders that have no other line-identity
+archive anchors; that fallback must be counted in projection metadata and any
+resulting residual must be reported as a source/DB line-grain limitation, not
+silently treated as clean line-grain parity.
+
+The projection's `sale_date` is the archive `transaction_date`; its economics
+amounts remain DB-backed from `view_sales_line_truth`. This is an additive
+consumer-specific projection. It must not silently change
+`view_sales_line_truth` or switch unrelated consumers away from the published DB
+view.
+
 ## Required Pack Guarantees
 - Every source file must have manifest traceability, hash, store attribution, and row counts.
 - Delivered/completed rows missing `status_change_at` fail strict integrity.
