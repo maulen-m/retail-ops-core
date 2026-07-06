@@ -23,6 +23,10 @@ from .telegram import get_telegram_config, send_message
 
 # Error alert chat ID (Adil's direct chat for urgent notifications)
 ERROR_ALERT_CHAT_ID = "687884487"
+ACCEPTED_FLOOR_RED_STATUS = (
+    "FLOOR-RED (accepted): min-cash below owner floor - "
+    "policy ACCEPT_RED_UNTIL_CASH"
+)
 
 
 def _telegram_env_ready() -> tuple[bool, str]:
@@ -175,6 +179,32 @@ def send_run_failure_alert(
     )
 
 
+def _is_min_cash_floor_failure(text: str) -> bool:
+    normalized = text.lower().replace("-", "_")
+    has_min_cash = "min_cash" in normalized or "minimum_cash" in normalized
+    has_floor = "floor" in normalized or "threshold" in normalized
+    return has_min_cash and has_floor
+
+
+def _is_accepted_floor_red(summary: dict, failed_steps: list[str], error_summary: list) -> bool:
+    if len(failed_steps) != 1:
+        return False
+    if "cashflow po preflight" not in failed_steps[0].lower():
+        return False
+
+    try:
+        steps_total = int(summary.get("steps_total") or 0)
+        steps_completed = int(summary.get("steps_completed") or 0)
+    except (TypeError, ValueError):
+        steps_total = 0
+        steps_completed = 0
+    if steps_total and steps_completed != steps_total - 1:
+        return False
+
+    combined_error = "\n".join(str(error) for error in error_summary)
+    return _is_min_cash_floor_failure(combined_error)
+
+
 def alert_import_failed(error: Exception, orders_count: int = 0) -> bool:
     """Convenience function for import failures."""
     return send_error_alert(
@@ -222,15 +252,17 @@ def alert_from_run_tracker(tracker) -> bool:
     duration_str = _format_duration(duration_seconds)
 
     if status.upper() in {"FAILED", "PARTIAL"}:
+        error_summary = summary.get("error_summary") or getattr(tracker, "error_summary", [])
+        accepted_floor_red = _is_accepted_floor_red(summary, failed_steps, error_summary)
+        status_line = ACCEPTED_FLOOR_RED_STATUS if accepted_floor_red else str(status)
         error_lines = [
             f"Run ID: {run_id}",
-            f"Status: {status}",
+            f"Status: {status_line}",
             f"Duration: {duration_str}",
             f"Steps: {steps_completed}/{steps_total}",
         ]
         if failed_steps:
             error_lines.append(f"Failed steps: {', '.join(failed_steps)}")
-        error_summary = summary.get("error_summary") or getattr(tracker, "error_summary", [])
         if error_summary:
             error_lines.append("Errors:")
             error_lines.extend(str(e) for e in error_summary)
