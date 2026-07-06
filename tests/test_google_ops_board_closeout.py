@@ -121,6 +121,39 @@ def test_build_readiness_report_accepts_ready_toggle_and_valid_sizes(tmp_path: P
     assert report["invalid_size_count"] == 0
 
 
+def test_build_readiness_report_fitpack_exclusion_ignores_storeb_blank_size(tmp_path: Path):
+    db_path = tmp_path / "app.db"
+    _make_db(db_path)
+    contract = load_ops_board_contract()
+    client = _FakeClient(
+        {
+            "Run_Control": [
+                contract.tabs["Run_Control"].headers,
+                ["2026-07-04", "READY", "adil", "2026-07-04T18:10:00+05:00", "", "", "", ""],
+            ],
+            "SalesRaw_Today": [
+                contract.tabs["SalesRaw_Today"].headers,
+                ["TODAY", "2026-07-04", "Universal", "", "", "1", "Nike", "1001", "L", "L", "Offer", "SKU-1", "1", "line", "DEFAULT", "LOW"],
+                ["TODAY", "2026-07-04", "STORE-B", "", "", "2", "FitPack", "2001", "", "", "Offer", "SKU-1", "1", "line", "DEFAULT", "LOW"],
+            ],
+        }
+    )
+
+    report = closeout_mod.build_readiness_report(
+        client=client,
+        contract=contract,
+        db_path=db_path,
+        target_date=closeout_mod.date(2026, 7, 4),
+        lookback_days=5,
+        storeb_excluded=True,
+    )
+
+    assert report["ready"] is True
+    assert report["blank_size_count"] == 0
+    assert report["fitpack_storeb_excluded"] is True
+    assert report["fitpack_storeb_skipped_rows"] == 1
+
+
 def test_success_status_resets_run_control_ready_toggle_to_hold() -> None:
     contract = load_ops_board_contract()
     client = _FakeClient(

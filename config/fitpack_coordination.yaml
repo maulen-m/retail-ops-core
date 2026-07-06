@@ -1,0 +1,5 @@
+# Owner-gated FitPack Phase-2 coordination switch.
+# When true, STORE-B is excluded only from packing, waybill, bundle, and closeout
+# surfaces during the 3 official FitPack cycle days. Read-only sync and reporting
+# paths keep running. Flip only with explicit owner approval, then restore false.
+storeb_packing_excluded: false

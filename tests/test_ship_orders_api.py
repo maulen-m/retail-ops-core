@@ -1049,3 +1049,78 @@ def test_ship_orders_confirm_check_falls_back_to_get_order_when_no_get_order_by_
 
     assert result["shipped"] == 1
     assert result["errors"] == []
+
+
+def test_ship_orders_fitpack_exclusion_skips_storeb_but_processes_other_store(monkeypatch, caplog):
+    initialized_clients: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, store_code: str):
+            initialized_clients.append(store_code)
+            self.store_code = store_code
+
+        def assemble_order_by_id(self, base64_id, order_code, parcel_count=1):
+            return APIResponse(success=True, data={"ok": True}, status_code=200)
+
+        def get_order_by_id(self, base64_id):
+            return APIResponse(
+                success=True,
+                data={"attributes": {"assembled": True, "kaspiDelivery": {"waybill": "https://example"}}},
+                status_code=200,
+            )
+
+        def get_waybill_url(self, order):
+            return "https://example"
+
+        def get_pending_assembly_orders(self, since=None):
+            return APIResponse(success=True, data={"data": []}, status_code=200)
+
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _FakeClient)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_RETRIES", 1)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_DELAY", 0)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_REFRESH_RETRIES", 0)
+    monkeypatch.setattr(ship_mod, "STORE_NAME_TO_API_CODE", {"Universal": "UNIVERSAL", "STORE-B": "STOREB"})
+    caplog.set_level("WARNING")
+
+    orders_by_id = {
+        "U1001": [
+            ship_mod.OrderItem(
+                order_id="U1001",
+                store_name="Universal",
+                kaspi_name_core="Nike_Футболка_черная",
+                my_size="M",
+                sku_key="NIKE_TEE_BLACK",
+                sku_id="NIKE_TEE_BLACK_M",
+                quantity=1,
+                planned_date=date(2026, 7, 4),
+            )
+        ],
+        "M2001": [
+            ship_mod.OrderItem(
+                order_id="M2001",
+                store_name="STORE-B",
+                kaspi_name_core="FitPack",
+                my_size="L",
+                sku_key="FITPACK",
+                sku_id="FITPACK_L",
+                quantity=1,
+                planned_date=date(2026, 7, 4),
+            )
+        ],
+    }
+
+    result = ship_mod.ship_orders(
+        orders_by_id=orders_by_id,
+        pending_orders={"UNIVERSAL": {"U1001"}, "STOREB": {"M2001"}},
+        order_id_to_base64={"UNIVERSAL": {"U1001": "VTEwMDE="}, "STOREB": {"M2001": "TTIwMDE="}},
+        dry_run=False,
+        verbose=False,
+        since_days=1,
+        storeb_excluded=True,
+    )
+
+    assert result["shipped"] == 1
+    assert result["skipped"] == 1
+    assert result["fitpack_storeb_skipped"] == 1
+    assert initialized_clients == ["UNIVERSAL"]
+    assert "STOREB_EXCLUDED_FITPACK_CYCLES" in caplog.text

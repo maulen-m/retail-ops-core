@@ -95,6 +95,12 @@ from core.utils.kaspi_name_core_resolver import (
     resolve_kaspi_name_core,
 )
 from core.utils.kaspi_order_core_overrides import load_order_name_core_overrides
+from core.ops.fitpack_coordination import (
+    EXCLUSION_LOG_LINE,
+    filter_storeb_store_codes,
+    is_storeb_store,
+    load_storeb_packing_excluded,
+)
 
 # Default paths
 DEFAULT_CRM_PATH = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
@@ -366,16 +372,25 @@ def get_api_order_ids_for_date(
     store_filter: Optional[str] = None,
     verbose: bool = False,
     include_overdue: bool = False,
+    storeb_excluded: bool | None = None,
 ) -> tuple[dict[str, set[str]], set[str]]:
     """Fetch pending-handover orders from API and return order IDs for target_date."""
     orders_by_store: dict[str, set[str]] = {}
     error_stores: set[str] = set()
+    if storeb_excluded is None:
+        storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
 
     stores = [store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP]
     if store_filter:
         store_filter = store_filter.upper()
         if store_filter in STORE_TOKEN_MAP:
             stores = [store_filter]
+    stores = filter_storeb_store_codes(
+        stores,
+        enabled=storeb_excluded,
+        warn=logger.warning,
+        context="bundle build API selection",
+    )
 
     since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
@@ -2394,6 +2409,9 @@ def main(
     logger.info(f"CRM: {crm_path}")
     logger.info(f"Waybill dir: {waybill_dir}")
     logger.info(f"Output dir: {output_dir}")
+    storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
+    if storeb_excluded:
+        logger.warning(f"{EXCLUSION_LOG_LINE}: STORE-B bundle output is disabled for FitPack cycles.")
 
     stats = {
         'orders_read': 0,
@@ -2420,6 +2438,9 @@ def main(
         'whatsapp_multi_qty': 0,
         'whatsapp_multi_line': 0,
     }
+    if storeb_excluded:
+        stats['fitpack_storeb_excluded'] = True
+        stats['fitpack_storeb_skipped'] = 0
 
     # Read orders from the current CRM batch only.
     resolved_db_path = resolve_db_path(db_path)
@@ -2439,6 +2460,22 @@ def main(
     )
     if selection_cache:
         api_orders_by_store = selection_cache
+        if storeb_excluded:
+            skipped_cache = sum(
+                len(order_ids)
+                for store, order_ids in api_orders_by_store.items()
+                if is_storeb_store(store)
+            )
+            if skipped_cache:
+                logger.warning(
+                    f"{EXCLUSION_LOG_LINE}: skipping {skipped_cache} STORE-B cached bundle targets."
+                )
+                stats['fitpack_storeb_skipped'] += skipped_cache
+            api_orders_by_store = {
+                store: order_ids
+                for store, order_ids in api_orders_by_store.items()
+                if not is_storeb_store(store)
+            }
         api_order_ids = set().union(*api_orders_by_store.values())
         logger.info(
             f"Using cached API selection: {len(api_order_ids)} orders for {target_date}"
@@ -2449,6 +2486,7 @@ def main(
             since_days=api_since_days,
             verbose=verbose,
             include_overdue=include_overdue,
+            storeb_excluded=storeb_excluded,
         )
         if api_error_stores:
             logger.warning(
@@ -2482,6 +2520,27 @@ def main(
                 )
 
     if carryforward_order_ids:
+        if storeb_excluded:
+            skipped_carryforward = sum(
+                len(order_ids)
+                for store, order_ids in carryforward_orders_by_store.items()
+                if is_storeb_store(store)
+            )
+            if skipped_carryforward:
+                logger.warning(
+                    f"{EXCLUSION_LOG_LINE}: skipping {skipped_carryforward} STORE-B carry-forward bundle targets."
+                )
+                stats['fitpack_storeb_skipped'] += skipped_carryforward
+            carryforward_orders_by_store = {
+                store: order_ids
+                for store, order_ids in carryforward_orders_by_store.items()
+                if not is_storeb_store(store)
+            }
+            carryforward_order_ids = (
+                set().union(*carryforward_orders_by_store.values())
+                if carryforward_orders_by_store
+                else set()
+            )
         api_order_ids |= carryforward_order_ids
 
     if resolved_db_path:
@@ -2517,6 +2576,15 @@ def main(
         )
         if orders:
             logger.info("Using current-batch CRM manual sizes for order selection")
+    if storeb_excluded and orders:
+        before = len(orders)
+        orders = [order for order in orders if not is_storeb_store(order.store_name)]
+        skipped_orders = before - len(orders)
+        if skipped_orders:
+            logger.warning(
+                f"{EXCLUSION_LOG_LINE}: skipping {skipped_orders} STORE-B orders in bundle build."
+            )
+            stats['fitpack_storeb_skipped'] += skipped_orders
     stats['orders_read'] = len(orders)
 
     if not orders:

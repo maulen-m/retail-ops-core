@@ -1461,6 +1461,91 @@ def test_main_db_first_build_does_not_open_crm_workbook(
     assert manifest["send_order_ids"] == ["1001"]
 
 
+def test_main_fitpack_exclusion_skips_storeb_bundle_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "Today"
+    waybill_dir = tmp_path / "waybills"
+    waybill_dir.mkdir(parents=True, exist_ok=True)
+    pdf_universal = waybill_dir / "KASPI_SHOP-1001.pdf"
+    pdf_storeb = waybill_dir / "KASPI_SHOP-2001.pdf"
+    pdf_universal.write_bytes(b"%PDF-1.4\n%universal\n")
+    pdf_storeb.write_bytes(b"%PDF-1.4\n%storeb\n")
+
+    orders = {
+        "1001": OrderItem(
+            order_id="1001",
+            store_name="Universal",
+            kaspi_name_core="Nike_Футболка_черная",
+            my_size="M",
+            sku_key="NIKE_TEE_BLACK",
+            sku_id="NIKE_TEE_BLACK_M",
+            quantity=1,
+            kaspi_offer_name="Nike футболка черная M",
+            planned_date=date(2026, 7, 4),
+        ),
+        "2001": OrderItem(
+            order_id="2001",
+            store_name="STORE-B",
+            kaspi_name_core="FitPack",
+            my_size="L",
+            sku_key="FITPACK",
+            sku_id="FITPACK_L",
+            quantity=1,
+            kaspi_offer_name="FitPack L",
+            planned_date=date(2026, 7, 4),
+        ),
+    }
+
+    monkeypatch.setattr(build_daily_waybills_module, "load_storeb_packing_excluded", lambda **_kwargs: True)
+    monkeypatch.setattr(build_daily_waybills_module, "ensure_pdf_merger", lambda: None)
+    monkeypatch.setattr(build_daily_waybills_module, "load_crm_dataframe", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "resolve_db_path",
+        lambda *args, **kwargs: tmp_path / "app.db",
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_selection_cache",
+        lambda *args, **kwargs: {"Universal": {"1001"}, "STOREB": {"2001"}},
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "read_db_orders",
+        lambda *args, **kwargs: [
+            order for order_id, order in orders.items() if order_id in (kwargs.get("order_id_filter") or set())
+        ],
+    )
+    monkeypatch.setattr(build_daily_waybills_module, "read_crm_orders", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_all_waybills",
+        lambda *args, **kwargs: {"1001": pdf_universal, "2001": pdf_storeb},
+    )
+
+    stats = build_daily_waybills_main(
+        crm_path=tmp_path / "CRM.xlsx",
+        db_path=tmp_path / "app.db",
+        waybill_dir=waybill_dir,
+        output_dir=output_dir,
+        target_date=date(2026, 7, 4),
+        lookback_days=0,
+        output_layout="per-store-and-merged",
+        dry_run=False,
+    )
+
+    assert stats["fitpack_storeb_excluded"] is True
+    assert stats["fitpack_storeb_skipped"] == 1
+    assert stats["orders_read"] == 1
+    assert stats["stores_processed"] == 1
+    assert not (output_dir / "PER_STORE" / "STORE-B").exists()
+    manifest_path = output_dir / "MERGED" / "SEND" / "04.07.26_MERGED_qnt1" / "send_batch_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["send_order_ids"] == ["1001"]
+
+
 def test_read_db_orders_prefers_article_map_core_over_offer_text(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     conn = sqlite3.connect(db_path)

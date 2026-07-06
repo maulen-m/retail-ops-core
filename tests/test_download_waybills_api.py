@@ -182,3 +182,63 @@ def test_download_all_waybills_keeps_cached_overdue_fallback_targets(monkeypatch
 
     payload = json.loads((output_dir / "_waybill_selection_orders.json").read_text(encoding="utf-8"))
     assert payload["stores"] == {"STOREB": ["845784291", "847016620"]}
+
+
+def test_download_all_waybills_fitpack_exclusion_filters_storeb_fallback(monkeypatch, tmp_path):
+    output_dir = tmp_path / "waybills"
+    captured: dict[str, set[str]] = {}
+    api_called: list[str] = []
+
+    monkeypatch.setattr(waybill_mod, "load_storeb_packing_excluded", lambda **_kwargs: True)
+    monkeypatch.setattr(waybill_mod, "STORE_TOKEN_MAP", {"STOREB": "token", "UNIVERSAL": "token"})
+    monkeypatch.setattr(
+        waybill_mod,
+        "load_sync_enabled_kaspi_store_codes",
+        lambda: ["STOREB", "UNIVERSAL"],
+    )
+
+    def _fake_api(store_code, *args, **kwargs):
+        api_called.append(store_code)
+        return ([{"attributes": {"code": "U1001"}}], False)
+
+    monkeypatch.setattr(waybill_mod, "get_target_orders_from_api", _fake_api)
+    monkeypatch.setattr(waybill_mod, "get_target_order_ids_from_crm", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        waybill_mod,
+        "get_target_order_ids_from_db",
+        lambda *args, **kwargs: {"STOREB": {"M2001"}, "UNIVERSAL": {"U1002"}},
+    )
+
+    def _fake_download_waybills_for_store(store_code, target_order_ids, **_kwargs):
+        captured[store_code] = set(target_order_ids)
+        return {
+            "downloaded": 0,
+            "skipped_not_target": 0,
+            "missing_waybill": 0,
+            "already_exists": len(target_order_ids),
+            "invalid_pdf": 0,
+            "skipped_terminal": 0,
+            "skipped_nonready": 0,
+            "terminal_skipped_order_ids": [],
+            "nonready_skipped_order_ids": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(waybill_mod, "download_waybills_for_store", _fake_download_waybills_for_store)
+
+    result = waybill_mod.download_all_waybills(
+        output_dir=output_dir,
+        crm_path=tmp_path / "crm.xlsx",
+        sheet_name="Sheet1",
+        target_date=date(2026, 7, 4),
+        db_path=tmp_path / "app.db",
+        since_days=3,
+        fallback_crm=True,
+    )
+
+    assert api_called == ["UNIVERSAL"]
+    assert captured == {"UNIVERSAL": {"U1001", "U1002"}}
+    assert result["fitpack_storeb_excluded"] is True
+    assert result["fitpack_storeb_skipped"] == 1
+    payload = json.loads((output_dir / "_waybill_selection_orders.json").read_text(encoding="utf-8"))
+    assert payload["stores"] == {"UNIVERSAL": ["U1001", "U1002"]}

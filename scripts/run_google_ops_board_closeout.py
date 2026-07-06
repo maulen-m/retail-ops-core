@@ -57,6 +57,12 @@ from scripts.validate_google_closeout_expected_orders import (  # noqa: E402
     write_expected_orders_report,
 )
 from scripts.waybill_delivery_completion import delivery_completion_state  # noqa: E402
+from core.ops.fitpack_coordination import (  # noqa: E402
+    EXCLUSION_LOG_LINE,
+    filter_storeb_store_codes,
+    is_storeb_store,
+    load_storeb_packing_excluded,
+)
 
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
@@ -78,6 +84,21 @@ STORE_NAME_TO_API_CODE = {
     "STORE-B": "STOREB",
     "Store-C": "MELVIS",
 }
+
+
+def _filter_storeb_salesraw_rows(
+    rows: list[dict[str, Any]],
+    *,
+    enabled: bool,
+    context: str,
+) -> tuple[list[dict[str, Any]], int]:
+    if not enabled:
+        return rows, 0
+    kept = [row for row in rows if not is_storeb_store(row.get("STORE_NAME"))]
+    skipped = len(rows) - len(kept)
+    if skipped:
+        print(f"{EXCLUSION_LOG_LINE}: skipped {skipped} STORE-B SalesRaw rows in {context}.")
+    return kept, skipped
 
 
 def _require_apply_gate(apply: bool, env_name: str) -> None:
@@ -163,7 +184,10 @@ def build_readiness_report(
     db_path: Path,
     target_date: date,
     lookback_days: int,
+    storeb_excluded: bool | None = None,
 ) -> dict[str, Any]:
+    if storeb_excluded is None:
+        storeb_excluded = load_storeb_packing_excluded(warn=lambda msg: print(msg, file=sys.stderr))
     run_control_headers = contract.tabs["Run_Control"].headers
     salesraw_headers = contract.tabs["SalesRaw_Today"].headers
 
@@ -171,6 +195,11 @@ def build_readiness_report(
     salesraw_matrix = client.get_tab_values("SalesRaw_Today")
     run_control_rows = extract_rows_from_matrix(run_control_headers, run_control_matrix)
     salesraw_rows = extract_rows_from_matrix(salesraw_headers, salesraw_matrix)
+    salesraw_rows, fitpack_skipped = _filter_storeb_salesraw_rows(
+        salesraw_rows,
+        enabled=bool(storeb_excluded),
+        context="closeout readiness",
+    )
     run_control_row = _select_run_control_row(run_control_rows, target_date)
 
     blank_size_rows: list[dict[str, Any]] = []
@@ -202,7 +231,7 @@ def build_readiness_report(
     no_blank_sizes = len(blank_size_rows) == 0
     no_invalid_sizes = len(writeback_plan["invalid_rows"]) == 0
 
-    return {
+    report = {
         "target_date": target_date.isoformat(),
         "run_control_row": run_control_row or {},
         "run_control_target_match": target_match,
@@ -217,6 +246,10 @@ def build_readiness_report(
         "pending_db_writeback_count": len(writeback_plan["updates"]),
         "ready": bool(target_match and ready_toggle_ok and no_blank_sizes and no_invalid_sizes),
     }
+    if storeb_excluded:
+        report["fitpack_storeb_excluded"] = True
+        report["fitpack_storeb_skipped_rows"] = fitpack_skipped
+    return report
 
 
 def build_store_context_report(*, salesraw_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -544,6 +577,18 @@ def _run_closeout(args: argparse.Namespace) -> int:
     run_control_matrix = client.get_tab_values("Run_Control")
     salesraw_matrix = client.get_tab_values("SalesRaw_Today")
     salesraw_rows = extract_rows_from_matrix(contract.tabs["SalesRaw_Today"].headers, salesraw_matrix)
+    storeb_excluded = load_storeb_packing_excluded(warn=lambda msg: print(msg, file=sys.stderr))
+    closeout_salesraw_rows, fitpack_skipped_rows = _filter_storeb_salesraw_rows(
+        salesraw_rows,
+        enabled=storeb_excluded,
+        context="closeout execution",
+    )
+    report_exclusion = {}
+    if storeb_excluded:
+        report_exclusion = {
+            "fitpack_storeb_excluded": True,
+            "fitpack_storeb_skipped_rows": fitpack_skipped_rows,
+        }
     dump_json(
         run_dir / "run_control_snapshot.json",
         {
@@ -560,6 +605,8 @@ def _run_closeout(args: argparse.Namespace) -> int:
             "headers": contract.tabs["SalesRaw_Today"].headers,
             "matrix": salesraw_matrix,
             "rows": salesraw_rows,
+            "fitpack_filtered_rows": closeout_salesraw_rows,
+            **report_exclusion,
         },
     )
     run_control_row = _select_run_control_row(
@@ -581,7 +628,9 @@ def _run_closeout(args: argparse.Namespace) -> int:
         db_path=db_path,
         target_date=target_date,
         lookback_days=args.lookback_days,
+        storeb_excluded=storeb_excluded,
     )
+    report.update(report_exclusion)
     report["ready"] = bool(readiness["ready"])
     dump_json(run_dir / "readiness_report.json", readiness)
 
@@ -821,7 +870,16 @@ def _run_closeout(args: argparse.Namespace) -> int:
             report["size_writeback_db_backup_path"] = size_payload.get("db_backup_path")
             report["size_writeback_updates_applied"] = size_payload.get("updates_applied")
 
-    store_context = build_store_context_report(salesraw_rows=salesraw_rows)
+    store_context = build_store_context_report(salesraw_rows=closeout_salesraw_rows)
+    if storeb_excluded:
+        store_context["fitpack_storeb_excluded"] = True
+        store_context["fitpack_storeb_skipped_rows"] = fitpack_skipped_rows
+        store_context["active_store_codes"] = filter_storeb_store_codes(
+            store_context.get("active_store_codes") or [],
+            enabled=True,
+            warn=lambda msg: print(msg, file=sys.stderr),
+            context="closeout store context",
+        )
     dump_json(run_dir / "store_context_report.json", store_context)
     report["store_context_report_path"] = str(run_dir / "store_context_report.json")
     if not store_context["ok"]:

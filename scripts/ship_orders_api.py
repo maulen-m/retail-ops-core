@@ -50,6 +50,12 @@ from core.integrations.kaspi_api_client import (
 )
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
 from core.ops.shipment_health import classify_ship_health
+from core.ops.fitpack_coordination import (
+    EXCLUSION_LOG_LINE,
+    filter_storeb_store_codes,
+    is_storeb_store,
+    load_storeb_packing_excluded,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -660,7 +666,7 @@ def get_pending_assembly_orders(
     if since_days is not None:
         since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
 
-    scope = set(store_codes or STORE_TOKEN_MAP.keys())
+    scope = set(STORE_TOKEN_MAP.keys()) if store_codes is None else set(store_codes)
     for store_code in STORE_TOKEN_MAP.keys():
         if store_code not in scope:
             continue
@@ -1090,6 +1096,7 @@ def ship_orders(
     dry_run: bool = False,
     verbose: bool = False,
     since_days: int = 7,
+    storeb_excluded: bool | None = None,
 ) -> dict:
     """
     Ship orders via Kaspi API.
@@ -1109,6 +1116,9 @@ def ship_orders(
     skipped = 0
     already_shipped = 0
     errors = []
+    fitpack_storeb_skipped = 0
+    if storeb_excluded is None:
+        storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
 
     # Flatten pending orders for quick lookup
     all_pending = set()
@@ -1135,6 +1145,14 @@ def ship_orders(
         if not api_store_code:
             logger.warning(f"Unknown store: {store_name}, skipping {len(store_orders)} orders")
             skipped += len(store_orders)
+            continue
+        if storeb_excluded and is_storeb_store(api_store_code):
+            fitpack_storeb_skipped += len(store_orders)
+            skipped += len(store_orders)
+            logger.warning(
+                f"{EXCLUSION_LOG_LINE}: skipping STORE-B shipping assembly "
+                f"for {len(store_orders)} orders."
+            )
             continue
 
         # Initialize API client for this store
@@ -1339,11 +1357,15 @@ def ship_orders(
             for order_code in retry_queue:
                 errors.append(f"{order_code}: Assemble not confirmed (refresh disabled)")
 
-    return {
+    result = {
         'shipped': shipped,
         'skipped': skipped,
         'errors': errors,
     }
+    if storeb_excluded:
+        result['fitpack_storeb_excluded'] = True
+        result['fitpack_storeb_skipped'] = fitpack_storeb_skipped
+    return result
 
 
 def main() -> int:
@@ -1435,6 +1457,9 @@ def main() -> int:
 
     # Load environment variables
     load_dotenv()
+    storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
+    if storeb_excluded:
+        logger.warning(f"{EXCLUSION_LOG_LINE}: STORE-B shipping assembly is disabled for FitPack cycles.")
 
     # Parse target date
     if args.date:
@@ -1470,6 +1495,46 @@ def main() -> int:
     if args.store:
         selected_code = STORE_NAME_TO_API_CODE.get(args.store, args.store.upper())
         selected_store_codes = {selected_code}
+    if selected_store_codes is None:
+        selected_store_codes = set(
+            filter_storeb_store_codes(
+                STORE_TOKEN_MAP.keys(),
+                enabled=storeb_excluded,
+                warn=logger.warning,
+                context="shipping pending-assembly API fetch",
+            )
+        )
+    else:
+        selected_store_codes = set(
+            filter_storeb_store_codes(
+                selected_store_codes,
+                enabled=storeb_excluded,
+                warn=logger.warning,
+                context="shipping store filter",
+            )
+        )
+        if not selected_store_codes and storeb_excluded:
+            result = {
+                'shipped': 0,
+                'skipped': 0,
+                'fitpack_storeb_excluded': True,
+                'fitpack_storeb_skipped': 0,
+                'errors': [],
+                'selection_source': args.selection_source,
+                'target_date': target_date.isoformat(),
+                'store_scope': args.store or "ALL_STORES",
+                'health_code': "OK",
+                'health_message': "STORE-B excluded for FitPack cycles.",
+                'health_exit_code': 0,
+            }
+            if args.json_out:
+                args.json_out.parent.mkdir(parents=True, exist_ok=True)
+                args.json_out.write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2, default=_json_default),
+                    encoding="utf-8",
+                )
+            print(f"{EXCLUSION_LOG_LINE}: STORE-B store filter skipped for FitPack cycles.")
+            return 0
     pending_orders, order_id_to_base64, _planned_map, pending_meta = get_pending_assembly_orders(
         target_date=target_date,
         since_days=args.since_days,
@@ -1631,6 +1696,7 @@ def main() -> int:
         dry_run=args.dry_run,
         verbose=args.verbose,
         since_days=args.since_days,
+        storeb_excluded=storeb_excluded,
     )
 
     # Summary

@@ -58,6 +58,12 @@ from core.ops.waybill_overdue_carryforward import (
 )
 from core.ops.shipment_health import classify_waybill_health
 from core.utils.kaspi_dates import parse_kaspi_date
+from core.ops.fitpack_coordination import (
+    EXCLUSION_LOG_LINE,
+    filter_storeb_store_codes,
+    is_storeb_store,
+    load_storeb_packing_excluded,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -216,8 +222,14 @@ def get_target_orders_from_api(
     include_overdue: bool = False,
     all_dates: bool = False,
     verbose: bool = False,
+    storeb_excluded: bool | None = None,
 ) -> tuple[list[dict], bool]:
     """Fetch delivery-stage orders from API and filter by planned date/signature."""
+    if storeb_excluded is None:
+        storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
+    if storeb_excluded and is_storeb_store(store_code):
+        logger.warning(f"{EXCLUSION_LOG_LINE}: skipping STORE-B waybill API selection.")
+        return [], False
     try:
         client = KaspiAPIClient(store_code=store_code)
     except KaspiAuthError as exc:
@@ -684,6 +696,7 @@ def download_waybills_for_store(
     dry_run: bool = False,
     verbose: bool = False,
     prefetched_orders: Optional[list[dict]] = None,
+    storeb_excluded: bool | None = None,
 ) -> dict:
     """
     Download waybills for specific orders in a store.
@@ -713,6 +726,28 @@ def download_waybills_for_store(
     errors = []
     processed_order_ids: set[str] = set()
     circuit_open = False
+
+    if storeb_excluded is None:
+        storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
+    if storeb_excluded and is_storeb_store(store_code):
+        logger.warning(
+            f"{EXCLUSION_LOG_LINE}: skipping STORE-B waybill PDF download "
+            f"for {len(target_order_ids)} target orders."
+        )
+        return {
+            'downloaded': 0,
+            'skipped_not_target': 0,
+            'missing_waybill': 0,
+            'already_exists': 0,
+            'invalid_pdf': 0,
+            'skipped_terminal': 0,
+            'skipped_nonready': 0,
+            'terminal_skipped_order_ids': [],
+            'nonready_skipped_order_ids': [],
+            'fitpack_storeb_excluded': True,
+            'fitpack_storeb_skipped': len(target_order_ids),
+            'errors': [],
+        }
 
     if not target_order_ids:
         return {
@@ -1079,6 +1114,9 @@ def download_all_waybills(
     elif verbose:
         print(f"  [DRY RUN] Would create directory: {output_dir}")
     resolved_db_path = resolve_db_path(db_path)
+    storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
+    if storeb_excluded:
+        logger.warning(f"{EXCLUSION_LOG_LINE}: STORE-B waybill downloads are disabled for FitPack cycles.")
 
     # Primary selection: Kaspi API planned date (freshest)
     target_orders_by_store: dict[str, set[str]] = {}
@@ -1091,6 +1129,12 @@ def download_all_waybills(
         store_filter_api = normalize_api_store_code(store_filter)
         if store_filter_api:
             stores = [store_filter_api]
+    stores = filter_storeb_store_codes(
+        stores,
+        enabled=storeb_excluded,
+        warn=logger.warning,
+        context="waybill download store scope",
+    )
 
     for store_code in stores:
         orders, had_error = get_target_orders_from_api(
@@ -1101,6 +1145,7 @@ def download_all_waybills(
             include_overdue=not exact_date and not all_dates,
             all_dates=all_dates,
             verbose=verbose,
+            storeb_excluded=storeb_excluded,
         )
         if had_error:
             api_errors.add(store_code)
@@ -1153,9 +1198,32 @@ def download_all_waybills(
     else:
         target_selection_by_store = target_orders_by_store
 
+    fitpack_storeb_skipped = 0
+    if storeb_excluded:
+        fitpack_storeb_skipped = sum(
+            len(order_ids)
+            for store, order_ids in target_selection_by_store.items()
+            if is_storeb_store(store)
+        )
+        if fitpack_storeb_skipped:
+            logger.warning(
+                f"{EXCLUSION_LOG_LINE}: skipping {fitpack_storeb_skipped} "
+                "STORE-B waybill targets."
+            )
+        target_selection_by_store = {
+            store: order_ids
+            for store, order_ids in target_selection_by_store.items()
+            if not is_storeb_store(store)
+        }
+        orders_by_store = {
+            store: orders
+            for store, orders in orders_by_store.items()
+            if not is_storeb_store(store)
+        }
+
     if not target_selection_by_store:
         print("  No orders found for the target date.")
-        return {
+        summary = {
             'downloaded': 0,
             'skipped_not_target': 0,
             'missing_waybill': 0,
@@ -1166,6 +1234,10 @@ def download_all_waybills(
             'skipped_missing_size': 0,
             'errors': [],
         }
+        if storeb_excluded:
+            summary['fitpack_storeb_excluded'] = True
+            summary['fitpack_storeb_skipped'] = fitpack_storeb_skipped
+        return summary
     if source_label:
         print(f"  Using {source_label} for order selection")
 
@@ -1204,6 +1276,7 @@ def download_all_waybills(
             dry_run=dry_run,
             verbose=verbose,
             prefetched_orders=orders_by_store.get(api_store_code),
+            storeb_excluded=storeb_excluded,
         )
 
         total_downloaded += result['downloaded']
@@ -1272,7 +1345,7 @@ def download_all_waybills(
         except Exception as exc:
             logger.warning(f"Failed to write selection status file: {exc}")
 
-    return {
+    summary = {
         'downloaded': total_downloaded,
         'skipped_not_target': total_skipped_not_target,
         'missing_waybill': total_missing_waybill,
@@ -1287,6 +1360,10 @@ def download_all_waybills(
         'fallback_stores': fallback_stores,
         'api_errors': sorted(api_errors),
     }
+    if storeb_excluded:
+        summary['fitpack_storeb_excluded'] = True
+        summary['fitpack_storeb_skipped'] = fitpack_storeb_skipped
+    return summary
 
 
 def main() -> int:
