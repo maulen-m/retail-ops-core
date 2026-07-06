@@ -170,3 +170,28 @@ Execution schedule per approved post-panel plan: read-only prep now (15:00–20:
 ### ADDENDUM 2026-07-03 15:12 +05 — OWNER WINDOW OVERRIDE
 Verbatim (chat): `we have time to work with order processing automations paused until 17pm today - override`
 → Daily-ops (order-processing automations) may be paused NOW until 17:00 today; write lanes authorized in this window. Hard commitment: daily-ops resumed 10/10 BEFORE 17:00 (guard cron armed); DB-writing lanes must complete or stop at a step boundary by ~16:50. Remaining lanes roll to the 20:08 night window as planned.
+
+### ADDENDUM 2026-07-03 20:25 +05 — OWNER NIGHT-SHIFT DIRECTIVE
+Verbatim (chat): `Last note that we should not go to sleep at night, we have to work No matter the night time..`
+→ Standing operating rule for this program: the orchestrator works CONTINUOUSLY through the night — no long idle gaps between lanes. Night work = machine-executable lanes only (write window 20:00–15:00 is open; single-DB-writer + kill-wave-immune dispatch discipline unchanged); anything owner-gated is batched into the morning panel instead of waking the owner. Overnight wake chain armed (~90-min cadence) as a floor under event-driven lane integration.
+
+## Addendum 2026-07-06 ~00:2x — owner scope directives (verbatim intent, recorded from chat)
+- FitPack: "It's the project that runs on my new M5 MacBook Pro independently... we are not dependent upon it within this computer system." -> FitPack EXCLUDED from this machine's execution queue; coordination artifacts (fitpack_coordination.yaml flag, STORE-B slots) remain dormant-ready; Phase-2 flag flips only on explicit owner word.
+- BEINE: "fully stopped because after market research it being considered that it is not having the strong mode [moat]" -> BEINE = STOPPED (not parked); removed from all priority stacks; repo untouched.
+- Owner requested a fillable decision form (panel style, recommended options + placeholders + accept-all-defaults) -> delivered: ~/Docs/OWNER_DECISION_FORM_2026-07-06.md (15 questions + OPTION ZERO; FitPack/BEINE items removed per the directives above).
+
+## Addendum 2026-07-06 00:1x — OWNER DECISION FORM ANSWERED (authoritative; full verbatim copy saved as OWNER_DECISION_FORM_2026-07-06_ANSWERED.md in this dir)
+Z: "if there is anything that I haven't replied to, use the recommended answer as my final answer."
+- Q1 *** DOCTRINE CHANGE ***: OLD 30/35% POC floors are DEAD as floors. Sell-off mode declared: red-line = sell price preserving >=5% POC (profit on COGS). Raise ONLY offers currently below the 5%-POC floor ("yes do the increases of those prices and required changes"); do NOT restore 30/35% floors. Repricer batch must be REBUILT to min=5%-POC floor before apply (GO given for the corrected batch).
+- Q2: SUIT-61 stays 19,990 (no elasticity test; low stock except 3XL/4XL; IG/Meta Astana self-pickup launch coming). LINE51: owner already set 17k + ~2,000 KZT seller bonuses (~3-4 days ago), card 165486887. *** NEW EXTERNAL ORDER ***: LINE61 sub-child bundles restored into sales UNASKED — LS31 + LS21 BLK offer groups must be FULLY REMOVED from ACMEWEAR merchant account (fresh active pricelist upload WITHOUT them; they cheapen LINE61 perception via same-card highlighting = conflict of interest). They belong on UNIVERSAL instead.
+- Q3: (a) ads test approved, recommended budget (cap 140,000). PLUS standing mandate: full marketing history analysis (fetch campaign exports for missing calendar periods), synchronize with sales/orders/prices; ALL profitability judged on NET profit AFTER ads ("I give full access to controlling those marketing campaigns for our actual goal of profit increase").
+- Q4: Astana direct KEEPS RUNNING (real volume ~2-3 orders/day; buyout recording lags manual entry). *** NEW PROJECT MANDATE ***: WhatsApp Business API integration for automated buyout/recording while co-founder keeps using WhatsApp Business app on same number (coexistence); Meta business verified; "assign codex agents to implement it... I give my full blessing", all credentials/approvals granted. ALSO delegation: if ~2-3 buyouts/day of 19,990 LINE61 still unprofitable -> agent may correct city ads budgets (same for LINE61 countrywide Meta ads).
+- Q5: SHR supplier granted 60-day payment delay from 2026-07-06 (due ~2026-09-04). Constraint: NO new men-product POs until debt repaid; repay earlier only if clearly financially sensible. Directive: read AcmeWear web/Facebook-ads repos for full channel picture before actions.
+- Q6: Own-brand versions of the lately-created Nike t-shirt offerings (both UNIVERSAL + STOREB) + BERSERK + other main products: APPROVED. Image generation via Higgsfield CLI, TOTAL APPROVED BUDGET = 600 credits, simple images with existing men avatars; upload properly (P7: brand=ACMEWEAR).
+- Q7: (a) one 2-3h grading mega-session within 48h (time TBD -> propose 07-07 20:00; consolidated board to prepare).
+- Q8: (a) keep-until-replaced. Q9: (a) 1 post/day publish-before-produce. Q10: (a) count 07-10 confirmed (prep pack by 07-08).
+- Q11: one-way-up delegation APPROVED but REBASED to the NEW 5%-POC floors ("update the recommended approach and use it - I fully approve that").
+- Q12: workbook gaps — "identify all potential ways that you can actually fix it without me and do it" -> governed backfill authorized without owner skim.
+- Q13: (a) generate the fill-in table for unmapped CL name-groups.
+- Q14: (b) re-list the 6 ad actions with rationales in next panel.
+- Q15: (a) EOD alert wording change approved (FLOOR-RED (accepted) vs FAILED).

@@ -1,6 +1,6 @@
 # Business Insides Snapshot
 
-- Generated at: `2026-07-02 21:04:06`
+- Generated at: `2026-07-03 21:29:56`
 - As of date: `2026-07-02`
 - Paid-capital snapshot date: `2026-06-29`
 - Bank snapshot date: `2026-07-02`
@@ -27,15 +27,15 @@
 +--------------------------+------------+
 | Metric                   | Value KZT  |
 +--------------------------+------------+
-| Avg 30d Net Rev          | 206,707.30 |
+| Avg 30d Net Rev          | 185,795.31 |
 | Avg 30d COGS             | N/A        |
 | Avg 30d Profit           | N/A        |
-| Avg 30d Ads Spend        | 4,486.73   |
+| Avg 30d Ads Spend        | 20,911.77  |
 | Avg 30d Profit After Ads | N/A        |
-| Avg 7d Net Rev           | 206,940.86 |
+| Avg 7d Net Rev           | 284,387.07 |
 | Avg 7d COGS              | N/A        |
 | Avg 7d Profit            | N/A        |
-| Avg 7d Ads Spend         | 0.00       |
+| Avg 7d Ads Spend         | 32,983.00  |
 | Avg 7d Profit After Ads  | N/A        |
 +--------------------------+------------+
 ```
@@ -46,13 +46,13 @@
 +------------+-----------------------------+------------+------------+-----------+------------+------------------+
 | Date       | Units Delivered (COMPLETED) | Net Rev    | COGS       | Ads Spend | Profit     | Profit After Ads |
 +------------+-----------------------------+------------+------------+-----------+------------+------------------+
-| 2026-06-26 | 14                          | 106,853.00 | 36,553.84  | 0.00      | 61,236.16  | 61,236.16        |
-| 2026-06-27 | 17                          | 165,369.00 | 62,874.27  | 0.00      | 102,494.73 | 102,494.73       |
-| 2026-06-28 | 26                          | 188,558.00 | 84,260.90  | 0.00      | 104,297.10 | 104,297.10       |
-| 2026-06-29 | 32                          | 314,724.00 | 122,873.94 | 0.00      | 191,850.06 | 191,850.06       |
-| 2026-06-30 | 28                          | 258,152.00 | 113,263.55 | 0.00      | 144,888.45 | 144,888.45       |
-| 2026-07-01 | 25                          | 179,229.00 | 87,420.11  | 0.00      | 91,808.89  | 91,808.89        |
-| 2026-07-02 | 32                          | 235,701.00 | 113,248.53 | 0.00      | 122,452.47 | 122,452.47       |
+| 2026-06-26 | 29                          | 218,682.98 | 90,690.81  | 30,729.00 | 103,064.11 | 72,335.11        |
+| 2026-06-27 | 23                          | 177,209.18 | 62,964.54  | 34,194.00 | 88,300.02  | 54,106.02        |
+| 2026-06-28 | 21                          | 155,376.05 | 68,443.18  | 30,395.00 | 65,238.80  | 34,843.80        |
+| 2026-06-29 | 22                          | 132,555.47 | 58,839.78  | 33,071.00 | 58,711.48  | 25,640.48        |
+| 2026-06-30 | 27                          | 284,573.00 | N/A        | 36,213.00 | N/A        | N/A              |
+| 2026-07-01 | 25                          | 198,866.00 | N/A        | 31,777.00 | N/A        | N/A              |
+| 2026-07-02 | 142                         | 823,446.82 | 370,082.06 | 34,502.00 | 376,246.71 | 341,744.71       |
 +------------+-----------------------------+------------+------------+-----------+------------+------------------+
 ```
 
@@ -69,34 +69,24 @@
 +------------+-----------------------------+------------+------------+-----------+------------+------------------+
 | Date       | Units Delivered (COMPLETED) | Net Rev    | COGS       | Ads Spend | Profit     | Profit After Ads |
 +------------+-----------------------------+------------+------------+-----------+------------+------------------+
-| 2026-06-26 | 14                          | 106,853.00 | 36,553.84  | 0.00      | 61,236.16  | 61,236.16        |
-| 2026-06-27 | 17                          | 165,369.00 | 62,874.27  | 0.00      | 102,494.73 | 102,494.73       |
-| 2026-06-28 | 26                          | 188,558.00 | 84,260.90  | 0.00      | 104,297.10 | 104,297.10       |
-| 2026-06-29 | 32                          | 314,724.00 | 122,873.94 | 0.00      | 191,850.06 | 191,850.06       |
-| 2026-06-30 | 28                          | 258,152.00 | 113,263.55 | 0.00      | 144,888.45 | 144,888.45       |
-| 2026-07-01 | 25                          | 179,229.00 | 87,420.11  | 0.00      | 91,808.89  | 91,808.89        |
-| 2026-07-02 | 32                          | 235,701.00 | 113,248.53 | 0.00      | 122,452.47 | 122,452.47       |
+| 2026-06-26 | 29                          | 218,682.98 | 90,690.81  | 30,729.00 | 103,064.11 | 72,335.11        |
+| 2026-06-27 | 23                          | 177,209.18 | 62,964.54  | 34,194.00 | 88,300.02  | 54,106.02        |
+| 2026-06-28 | 21                          | 155,376.05 | 68,443.18  | 30,395.00 | 65,238.80  | 34,843.80        |
+| 2026-06-29 | 22                          | 132,555.47 | 58,839.78  | 33,071.00 | 58,711.48  | 25,640.48        |
+| 2026-06-30 | 27                          | 284,573.00 | N/A        | 36,213.00 | N/A        | N/A              |
+| 2026-07-01 | 25                          | 198,866.00 | N/A        | 31,777.00 | N/A        | N/A              |
+| 2026-07-02 | 142                         | 823,446.82 | 370,082.06 | 34,502.00 | 376,246.71 | 341,744.71       |
 +------------+-----------------------------+------------+------------+-----------+------------+------------------+
 ```
 
 ## Waybill-State Shipment Snapshot
 
-- Snapshot status: `available`
+- Snapshot status: `as_of_mismatch`
 - Cache file: `~/Docs/Autonomous_business/excel_ui/ActiveOrders/waybills/_waybill_selection_orders.json`
-- Target date in cache: `2026-07-02`
+- Target date in cache: `2026-07-03`
 - Include overdue: `True`
 - Mode all_dates: `False`
-
-```text
-+-----------+------------------------------------+------------------------+
-| Store     | Orders Shipped (Waybill Selection) | Units Shipped (DB qty) |
-+-----------+------------------------------------+------------------------+
-| STOREB    | 13                                 | 13                     |
-| ACMEWEAR   | 9                                  | 9                      |
-| UNIVERSAL | 12                                 | 14                     |
-| TOTAL     | 34                                 | 36                     |
-+-----------+------------------------------------+------------------------+
-```
+- Waybill cache is unavailable for this as_of day; shipment metrics are not decision-grade.
 
 ## Ocean Drop Provenance
 
@@ -110,19 +100,19 @@
 
 ## Data Quality
 
-- Sales source: `view_sales_line_truth / view_sales_daily_truth (canonical interface over staging)`.
+- Sales source: `view_sales_line_truth / view_sales_daily_truth (canonical interface over staging) + fact_orders_kaspi COMPLETED revenue-only fallback (days added: 2)`.
 - Metric definition: `Units Delivered (COMPLETED)` come from canonical sales truth views.
 - Metric definition: `Orders/Units Shipped (Waybill Selection)` come from waybill selection cache + DB quantities.
-- COGS fallback rows: `23/701` (3.28%).
-- Unresolved COGS rows: `1`.
+- COGS fallback rows: `26/691` (3.76%).
+- Unresolved COGS rows: `78`.
 - Unresolved SKU count: `1`.
 - Economics volatility window (days): `14`.
-- Economics missing days (COGS/profit): `0` (none).
+- Economics missing days (COGS/profit): `2` (2026-06-30, 2026-07-01).
 - Economics missing nonvolatile days: `0` (none).
 - Profit publication locked: `true`.
 - Ads source status: `available` (reason: `canonical_ads_truth`).
 - Ads mapping coverage: `100.00%`.
-- Ads mapped/unmapped cost: `134,602.00` / `0.00`.
+- Ads mapped/unmapped cost: `627,353.00` / `0.00`.
 - ArchiveOrders source status: `disabled` (reason: `disabled_by_default`).
 - ArchiveOrders files used: `0`.
 

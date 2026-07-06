@@ -1,6 +1,6 @@
 window.GP = {
   "program": "Green-Path — Kaspi ops to 100% green",
-  "updated": "2026-07-03 16:56 +05",
+  "updated": "2026-07-03 22:57 +05",
   "status": "EXECUTING",
   "current_phase": 5,
   "current_take": 3,
@@ -135,14 +135,14 @@ window.GP = {
       "phase": 1,
       "group": "scheduler",
       "type": "HARD",
-      "status": "PARTIAL"
+      "status": "RED"
     },
     {
       "id": "G-SCHED-03",
       "phase": 1,
       "group": "scheduler",
       "type": "HARD",
-      "status": "RED"
+      "status": "GREEN"
     },
     {
       "id": "G-SCHED-04",
@@ -226,14 +226,14 @@ window.GP = {
       "phase": 2,
       "group": "profit_cogs",
       "type": "HARD",
-      "status": "PARTIAL"
+      "status": "GREEN"
     },
     {
       "id": "G-FX-01",
       "phase": 2,
       "group": "fx_cogs",
       "type": "HARD",
-      "status": "RED"
+      "status": "GREEN"
     },
     {
       "id": "G-FX-02",
@@ -254,7 +254,7 @@ window.GP = {
       "phase": 2,
       "group": "cash",
       "type": "HARD",
-      "status": "ARMED"
+      "status": "GREEN"
     },
     {
       "id": "G-CASH-03",
@@ -331,7 +331,7 @@ window.GP = {
       "phase": 2,
       "group": "ads",
       "type": "HARD",
-      "status": "RED"
+      "status": "GREEN"
     },
     {
       "id": "G-ADS-02",
@@ -566,6 +566,18 @@ window.GP = {
     }
   ],
   "activity": [
+    {
+      "ts": "2026-07-03 22:57",
+      "text": "NIGHT TICK 22:37 wave: CL identity saga ROOT-CAUSED - CRM import parser truncates to CL on every re-import (EOD re-ingested 481 tonight); resolver-fix lane running (persistent name->identity mapping + one-time repair). Repricer = THE repricer (208 mins below/unset vs v7; 77 live below floor) - staged 208-row stop-loss batch awaits morning GO. CL-V2 landed (pub-integrity 76->21). COGS-01 corrected GREEN->PARTIAL (validator soft-fails: exit 0 but status=FAIL - scoring now reads status fields). Parity projection lane dispatched (copied-DB)."
+    },
+    {
+      "ts": "2026-07-03 21:45",
+      "text": "NIGHT SCORING wave 1: verified honest flips - G-ADS-01 GREEN (3 validators PASS, truth thru 07-03), G-COGS-01/04 GREEN, G-FX-01 GREEN, G-SCHED-03 GREEN (heartbeat as-of 07-03), G-CASH-02 GREEN (monthly recon + actual/model separation PASS), G-SCHED-02 RED honest-accepted (preflight FAIL by policy). KO_CLEAR inherited 4680 (=parent); AMD-03 3 decrements landed (rows 68076-78). EOD completes all steps, exits 1 on the accepted preflight FAIL + Telegram alert (nightly until cash lifts). NEW: split-identity CL regression found (76 pub-window rows, offers with mapped twins) - re-attribution lane running. EOD caller TypeError fixed (allow_schema_write)."
+    },
+    {
+      "ts": "2026-07-03 20:15",
+      "text": "NIGHT WINDOW OPEN (closeout confirmed 18:43; ops paused 0/10; lease taken). ANCHOR-REBASE PRODUCTION APPLIED: preflight now honest - anchored opening 2,588,680, conservative min 2,322,839 < floor 3,502,612 = FAIL exit 1 -> G-SCHED-02 HONEST RED per ACCEPT_RED_UNTIL_CASH. Invariants PASS 908d. Night chain running: ads canonical refresh (06-19..07-03) -> KO_CLEAR+bridge v2 (pre-resolved rows); floor-everywhere WA lane parallel; scoring wake 21:25."
+    },
     {
       "ts": "2026-07-03 16:56",
       "text": "OVERRIDE WINDOW CLOSED ON TIME: ops 10/10 at 16:54:50 (import slot 17:02 safe; koclear stopped clean - zero writes, re-runs tonight). Window scorecard: Stage-B OPEX+1.15x APPLIED; fake-PASS floor artifact caught -> anchor-rebase fix PROVEN on copy (honest 2.32M < 3.50M floor, production apply tonight pre-EOD); parity mapper fix LANDED (+171 rows, 170 backfills); P7 rules encoded (M=14 NO-CREATE, ACMEWEAR-brand mandatory); marketing source complete 06-19..07-03; price lift executed both stores but REVERTED by ladder-job full-state cadence -> durable floor-clamp packet staged for tonight."
