@@ -3059,7 +3059,7 @@ def main() -> int:
     with sqlite3.connect(str(args.db)) as conn:
         conn.row_factory = sqlite3.Row
         if _table_exists(conn, "fact_cashflow_daily"):
-            _ensure_daily_columns(conn)
+            _ensure_daily_columns(conn, allow_schema_write=False)
         last_statement_date = _load_last_statement_date(conn)
         sync_ages = _load_sync_ages(conn)
         sync_age_hours = _max_sync_age(sync_ages)
@@ -3117,7 +3117,7 @@ def main() -> int:
             if apply_daily:
                 if os.environ.get("ENABLE_CASHFLOW_WRITE") != "1":
                     raise RuntimeError("ENABLE_CASHFLOW_WRITE=1 is required to apply cashflow writes.")
-                _ensure_daily_columns(conn)
+                _ensure_daily_columns(conn, allow_schema_write=False)
                 conn.execute(
                     "DELETE FROM fact_cashflow_daily WHERE date BETWEEN ? AND ?",
                     (history_start.isoformat(), history_end.isoformat()),
