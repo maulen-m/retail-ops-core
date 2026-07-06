@@ -27,6 +27,7 @@ from core.ingest.sales_ingest import (
     get_unmapped_offers,
     update_returns_from_api,
     normalize_store_code,
+    resolve_sales_identity,
 )
 from core.db.ledger import get_stock_balance, get_ledger_events
 
@@ -721,3 +722,160 @@ class TestNormalizeStoreCode:
         """Test normalizing empty/None values."""
         assert normalize_store_code(None) == "UNIVERSAL"
         assert normalize_store_code("") == "UNIVERSAL"
+
+
+class TestOfferNameIdentityMapping:
+    """Tests for persistent offer-name identity overrides before CL fallback."""
+
+    def _create_mapping_table(self, db_path: Path) -> None:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE dim_offer_name_identity (
+                offer_name TEXT,
+                store_code TEXT,
+                sku_key TEXT NOT NULL,
+                sku_id TEXT NULL,
+                my_size TEXT NULL,
+                source TEXT,
+                decided_at TEXT,
+                PRIMARY KEY(offer_name, store_code)
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def _write_cl_row(
+        self,
+        tmp_path: Path,
+        *,
+        offer_name: str,
+        sku_id: str = "CL",
+        sku_key: str = "CL",
+        my_size: str = "M",
+    ) -> str:
+        data = {
+            "OrderID": ["ORD-MAP"],
+            "Date": [date(2026, 7, 3)],
+            "KASPI_OFFER_NAME": [offer_name],
+            "SKU_ID": [sku_id],
+            "SKU_key": [sku_key],
+            "MY_SIZE": [my_size],
+            "Quantity": [1],
+            "Sell_price_kzt": [15000],
+            "STORE_NAME": ["Universal"],
+            "Return": [0],
+        }
+        xlsx_path = tmp_path / "mapped_cl_sales.xlsx"
+        pd.DataFrame(data).to_excel(xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False)
+        return str(xlsx_path)
+
+    def _sales_identity(self, db_path: Path) -> tuple[str, str, str]:
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT sku_key, sku_id, my_size FROM sales_fact_v2 WHERE order_id='ORD-MAP'"
+        ).fetchone()
+        conn.close()
+        return row
+
+    def test_mapped_offer_name_resolves_full_identity(self, test_db, tmp_path):
+        self._create_mapping_table(test_db)
+        conn = sqlite3.connect(str(test_db))
+        conn.execute(
+            """
+            INSERT INTO dim_offer_name_identity (
+                offer_name, store_code, sku_key, sku_id, my_size, source, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Mapped full offer",
+                "UNIVERSAL",
+                "CL_LINE52_BLACK",
+                "CL_LINE52_BLACK_XL",
+                "XL",
+                "test",
+                "2026-07-03T00:00:00Z",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        xlsx_path = self._write_cl_row(tmp_path, offer_name="Mapped full offer", my_size="M")
+        result = ingest_sales(xlsx_path=xlsx_path, db_path=test_db, apply_to_ledger=False)
+
+        assert result["inserted"] == 1
+        assert self._sales_identity(test_db) == ("CL_LINE52_BLACK", "CL_LINE52_BLACK_XL", "XL")
+
+    def test_resolver_uses_store_scoped_mapping_before_cl_fallback(self, test_db):
+        self._create_mapping_table(test_db)
+        conn = sqlite3.connect(str(test_db))
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            INSERT INTO dim_offer_name_identity (
+                offer_name, store_code, sku_key, sku_id, my_size, source, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Mapped direct resolver offer",
+                "ACMEWEAR",
+                "CL_LINE52_BLACK",
+                "CL_LINE52_BLACK_L",
+                "L",
+                "test",
+                "2026-07-03T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+        assert resolve_sales_identity(
+            conn,
+            "CL",
+            "CL",
+            "M",
+            "Mapped direct resolver offer",
+            "ACMEWEAR",
+        ) == ("CL_LINE52_BLACK", "CL_LINE52_BLACK_L", "L")
+        assert resolve_sales_identity(
+            conn,
+            "CL",
+            "CL",
+            "M",
+            "Mapped direct resolver offer",
+            "UNIVERSAL",
+        ) == ("CL", "CL", "M")
+        conn.close()
+
+    def test_unmapped_offer_name_keeps_cl_fallback(self, test_db, tmp_path):
+        self._create_mapping_table(test_db)
+
+        xlsx_path = self._write_cl_row(tmp_path, offer_name="Still unknown offer", my_size="L")
+        result = ingest_sales(xlsx_path=xlsx_path, db_path=test_db, apply_to_ledger=False)
+
+        assert result["inserted"] == 1
+        assert self._sales_identity(test_db) == ("CL", "CL", "L")
+
+    def test_sku_key_only_mapping_does_not_guess_size_identity(self, test_db, tmp_path):
+        self._create_mapping_table(test_db)
+        conn = sqlite3.connect(str(test_db))
+        conn.execute(
+            """
+            INSERT INTO dim_offer_name_identity (
+                offer_name, store_code, sku_key, sku_id, my_size, source, decided_at
+            ) VALUES (?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (
+                "Mapped sku key only offer",
+                "UNIVERSAL",
+                "CL_LINE52_BLACK",
+                "test",
+                "2026-07-03T00:00:00Z",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        xlsx_path = self._write_cl_row(tmp_path, offer_name="Mapped sku key only offer", my_size="M")
+        result = ingest_sales(xlsx_path=xlsx_path, db_path=test_db, apply_to_ledger=False)
+
+        assert result["inserted"] == 1
+        assert self._sales_identity(test_db) == ("CL_LINE52_BLACK", "CL", "M")

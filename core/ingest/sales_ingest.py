@@ -16,6 +16,7 @@ Tables used:
 
 import sqlite3
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,15 @@ from core.utils.sku_normalize import (
 )
 
 _SIZE_TOKEN_RE = re.compile(r"[A-Z0-9]+")
+
+
+@dataclass(frozen=True)
+class SalesIdentityResolution:
+    sku_key: str | None
+    sku_id: str | None
+    my_size: str | None
+    offer_name_mapping_hit: bool = False
+    offer_name_mapping_sku_key_only: bool = False
 
 
 def infer_size_from_offer_name(
@@ -70,6 +80,64 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         (name,),
     ).fetchone()
     return row is not None
+
+
+def _clean_identity_value(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return None
+    return text
+
+
+def _is_placeholder_sku_key(value: str | None) -> bool:
+    text = _clean_identity_value(value)
+    return not text or text.upper() in {"CL", "UNKNOWN"}
+
+
+def _sku_key_exists(conn: sqlite3.Connection, sku_key: str | None) -> bool:
+    key = _clean_identity_value(sku_key)
+    if not key or not _table_exists(conn, "dim_sku"):
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM dim_sku WHERE UPPER(TRIM(sku_key)) = UPPER(TRIM(?)) LIMIT 1",
+        (key,),
+    ).fetchone()
+    return row is not None
+
+
+def _lookup_offer_name_identity(
+    conn: sqlite3.Connection,
+    *,
+    offer_name: str | None,
+    store_code: str | None,
+) -> tuple[str, str | None, str | None] | None:
+    offer = _clean_identity_value(offer_name)
+    store = _clean_identity_value(store_code)
+    if not offer or not store or not _table_exists(conn, "dim_offer_name_identity"):
+        return None
+
+    row = conn.execute(
+        """
+        SELECT sku_key, sku_id, my_size
+        FROM dim_offer_name_identity
+        WHERE TRIM(offer_name) = TRIM(?)
+          AND UPPER(TRIM(store_code)) = UPPER(TRIM(?))
+        LIMIT 1
+        """,
+        (offer, store),
+    ).fetchone()
+    if not row:
+        return None
+    mapped_key = _clean_identity_value(row["sku_key"])
+    if not mapped_key:
+        return None
+    return (
+        mapped_key,
+        _clean_identity_value(row["sku_id"]),
+        _clean_identity_value(row["my_size"]),
+    )
 
 
 def _load_size_synonyms(conn: sqlite3.Connection) -> dict[str, str]:
@@ -113,14 +181,34 @@ def build_sales_dedupe_key(
     )
 
 
-def resolve_sales_identity(
+def resolve_sales_identity_detail(
     conn: sqlite3.Connection,
     sku_id: str | None,
     sku_key: str | None,
     my_size: str | None,
     kaspi_offer_name: str | None = None,
-) -> tuple[str | None, str | None, str | None]:
-    """Resolve sku_key/sku_id/my_size from dim_sku_size when possible."""
+    store_code: str | None = None,
+) -> SalesIdentityResolution:
+    """Resolve sku_key/sku_id/my_size from dim_sku_size and offer-name overrides."""
+    return _resolve_sales_identity_detail(
+        conn,
+        sku_id,
+        sku_key,
+        my_size,
+        kaspi_offer_name=kaspi_offer_name,
+        store_code=store_code,
+    )
+
+
+def _resolve_sales_identity_detail(
+    conn: sqlite3.Connection,
+    sku_id: str | None,
+    sku_key: str | None,
+    my_size: str | None,
+    kaspi_offer_name: str | None = None,
+    store_code: str | None = None,
+) -> SalesIdentityResolution:
+    """Resolve sku_key/sku_id/my_size from dim_sku_size and offer-name overrides."""
     sku_id = str(sku_id).strip() if sku_id else None
     sku_key = str(sku_key).strip() if sku_key else None
     my_size = str(my_size).strip() if my_size else None
@@ -191,7 +279,52 @@ def resolve_sales_identity(
         if row:
             sku_id = row["sku_id"]
 
-    return sku_key, sku_id, my_size
+    mapping = None
+    if store_code and (not _sku_key_exists(conn, sku_key) or _is_placeholder_sku_key(sku_key)):
+        mapping = _lookup_offer_name_identity(
+            conn,
+            offer_name=kaspi_offer_name,
+            store_code=store_code,
+        )
+    if mapping:
+        mapped_key, mapped_id, mapped_size = mapping
+        if mapped_id and mapped_size:
+            return SalesIdentityResolution(
+                mapped_key,
+                mapped_id,
+                mapped_size,
+                offer_name_mapping_hit=True,
+                offer_name_mapping_sku_key_only=False,
+            )
+        return SalesIdentityResolution(
+            mapped_key,
+            sku_id,
+            my_size,
+            offer_name_mapping_hit=True,
+            offer_name_mapping_sku_key_only=True,
+        )
+
+    return SalesIdentityResolution(sku_key, sku_id, my_size)
+
+
+def resolve_sales_identity(
+    conn: sqlite3.Connection,
+    sku_id: str | None,
+    sku_key: str | None,
+    my_size: str | None,
+    kaspi_offer_name: str | None = None,
+    store_code: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve sku_key/sku_id/my_size from dim_sku_size when possible."""
+    resolved = _resolve_sales_identity_detail(
+        conn,
+        sku_id,
+        sku_key,
+        my_size,
+        kaspi_offer_name=kaspi_offer_name,
+        store_code=store_code,
+    )
+    return resolved.sku_key, resolved.sku_id, resolved.my_size
 
 
 def parse_sales_excel(
@@ -550,6 +683,7 @@ def ingest_sales(
                 rec.get("sku_key"),
                 rec.get("my_size"),
                 kaspi_offer_name,
+                store_code,
             )
 
             # Skip if missing resolved identity
@@ -842,31 +976,34 @@ def ingest_sales_to_fact_sales(
                 stats["skipped"] += 1
                 continue
 
-            sku_key, sku_id, my_size = resolve_sales_identity(
+            resolution = _resolve_sales_identity_detail(
                 conn,
                 rec.get("sku_id"),
                 rec.get("sku_key"),
                 rec.get("my_size"),
-                kaspi_offer_name,
+                kaspi_offer_name=kaspi_offer_name,
+                store_code=store_code,
             )
+            sku_key, sku_id, my_size = resolution.sku_key, resolution.sku_id, resolution.my_size
 
             if not sku_key or not my_size or not sku_id:
                 stats["unmapped"].append({"offer": kaspi_offer_name, "order_id": order_id})
                 stats["skipped"] += 1
                 continue
 
-            size_info = size_lookup.get(sku_id)
-            if size_info:
-                sku_key = size_info["sku_key"]
-                my_size = size_info["my_size"]
-            else:
-                resolved_id = size_lookup_by_key.get((sku_key, my_size))
-                if resolved_id:
-                    sku_id = resolved_id
+            if not resolution.offer_name_mapping_sku_key_only:
+                size_info = size_lookup.get(sku_id)
+                if size_info:
+                    sku_key = size_info["sku_key"]
+                    my_size = size_info["my_size"]
                 else:
-                    stats["unmapped"].append({"offer": kaspi_offer_name, "order_id": order_id})
-                    stats["skipped"] += 1
-                    continue
+                    resolved_id = size_lookup_by_key.get((sku_key, my_size))
+                    if resolved_id:
+                        sku_id = resolved_id
+                    else:
+                        stats["unmapped"].append({"offer": kaspi_offer_name, "order_id": order_id})
+                        stats["skipped"] += 1
+                        continue
 
             sku_info = sku_meta.get(sku_key)
             if not sku_info:
