@@ -1,0 +1,55 @@
+{
+  "decision_id": "OD-SHR-SUPPLIER-PAYMENT-DELAY-2026-07-06",
+  "decided_at": "2026-07-06T00:15:00+05:00",
+  "decided_at_precision": "approximate minute from 2026-07-06 00:1x addendum",
+  "title": "Owner SHR supplier payment delay and men-product PO freeze",
+  "owner_answer_verbatim": "Q5: SHR supplier granted 60-day payment delay from 2026-07-06 (due ~2026-09-04). Constraint: NO new men-product POs until debt repaid; repay earlier only if clearly financially sensible. Directive: read AcmeWear web/Facebook-ads repos for full channel picture before actions.",
+  "source_context": {
+    "source_file": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md",
+    "source_section": "Addendum 2026-07-06 00:1x - OWNER DECISION FORM ANSWERED",
+    "source_lines": "Q5",
+    "lane": "PKT-AB-TRUTH-PACK"
+  },
+  "supplier_payable": {
+    "supplier_key": "SHR",
+    "amount_kzt": 3175272,
+    "amount_cny": 44101,
+    "purchase_orders": [
+      "5.2",
+      "6.0a",
+      "6.0b"
+    ],
+    "delay_days": 60,
+    "delayed_from": "2026-07-06",
+    "due_date": "2026-09-04",
+    "due_date_precision": "approximate 60 days from 2026-07-06"
+  },
+  "constraints": [
+    {
+      "constraint_id": "NO_NEW_MEN_PRODUCT_POS_UNTIL_REPAID",
+      "status": "active",
+      "semantics": "No new men-product purchase orders until the SHR debt is repaid."
+    },
+    {
+      "constraint_id": "EARLY_REPAY_ONLY_IF_FINANCIALLY_SENSIBLE",
+      "status": "active",
+      "semantics": "Repay earlier only if clearly financially sensible."
+    }
+  ],
+  "cashflow_commitment_pointer": {
+    "table": "fact_cashflow_commitments",
+    "commit_type": "PO_PAYMENT",
+    "ref_id": "SHR_PAYMENT_DELAY_20260706",
+    "commit_date": "2026-09-04",
+    "amount_kzt": 3175272,
+    "note": "Use the governed cashflow commitments importer with write gate and DB backup."
+  },
+  "explicit_non_authorizations": [
+    "This registry does not authorize supplier payment, supplier messaging, or purchase-order creation.",
+    "This registry does not authorize new men-product POs before repayment."
+  ],
+  "reactivation_policy": {
+    "status": "active_until_repaid_or_new_explicit_owner_decision",
+    "override_requires": "A future override must name this decision_id, repayment status, and exact PO scope affected."
+  }
+}

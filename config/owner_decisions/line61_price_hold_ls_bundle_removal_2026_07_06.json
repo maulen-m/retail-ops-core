@@ -1,0 +1,59 @@
+{
+  "decision_id": "OD-LINE61-LINE51-LS-BUNDLE-DISPOSITION-2026-07-06",
+  "decided_at": "2026-07-06T00:15:00+05:00",
+  "decided_at_precision": "approximate minute from 2026-07-06 00:1x addendum",
+  "title": "Owner LINE61 price hold, LINE51 owner price, and LS bundle removal from ACMEWEAR",
+  "owner_answer_verbatim": "Q2: SUIT-61 stays 19,990 (no elasticity test; low stock except 3XL/4XL; IG/Meta Astana self-pickup launch coming). LINE51: owner already set 17k + ~2,000 KZT seller bonuses (~3-4 days ago), card 165486887. *** NEW EXTERNAL ORDER ***: LINE61 sub-child bundles restored into sales UNASKED - LS31 + LS21 BLK offer groups must be FULLY REMOVED from ACMEWEAR merchant account (fresh active pricelist upload WITHOUT them; they cheapen LINE61 perception via same-card highlighting = conflict of interest). They belong on UNIVERSAL instead.",
+  "source_context": {
+    "source_file": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md",
+    "source_section": "Addendum 2026-07-06 00:1x - OWNER DECISION FORM ANSWERED",
+    "source_lines": "Q2",
+    "lane": "PKT-AB-TRUTH-PACK"
+  },
+  "pricing_decisions": [
+    {
+      "product_key": "SUIT-61",
+      "store_scope": "countrywide",
+      "decision": "price_hold",
+      "price_kzt": 19990,
+      "elasticity_test": "not_authorized"
+    },
+    {
+      "product_key": "LINE51",
+      "kaspi_card_id": "165486887",
+      "decision": "owner_set_price_and_bonus",
+      "price_kzt": 17000,
+      "seller_bonus_kzt_approx": 2000,
+      "owner_set_days_before_decision_approx": "3-4"
+    }
+  ],
+  "offer_group_disposition": [
+    {
+      "offer_group": "LS31 BLK",
+      "remove_from_store": "ACMEWEAR",
+      "belongs_on_store": "UNIVERSAL",
+      "rationale": "conflict of interest; same-card highlighting cheapens LINE61 perception"
+    },
+    {
+      "offer_group": "LS21 BLK",
+      "remove_from_store": "ACMEWEAR",
+      "belongs_on_store": "UNIVERSAL",
+      "rationale": "conflict of interest; same-card highlighting cheapens LINE61 perception"
+    }
+  ],
+  "implementation_pointers": [
+    {
+      "repo": "~/Docs/Web_automation",
+      "surface": "fresh active pricelist upload without LS31/LS21 BLK on ACMEWEAR",
+      "follow_up_lane_required": true
+    }
+  ],
+  "explicit_non_authorizations": [
+    "This registry does not authorize AB to edit pricelist, floor, or Kaspi merchant files.",
+    "This registry does not authorize an AB-side live merchant upload."
+  ],
+  "reactivation_policy": {
+    "status": "active_until_new_explicit_owner_decision",
+    "override_requires": "A future override must name this decision_id, exact offer group, store, and whether the conflict-of-interest rationale has changed."
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "decision_id": "P5A-AMD03-CRM-BUYOUT-ONEOFF-2026-07-03",
+  "title": "AMD-03 CRM buyout one-off decrement",
+  "decided_at": "2026-07-03T15:05:00+05:00",
+  "owner_answer_verbatim": "(a) confirm + one-off decrement now, bridge proposal to follow",
+  "scope": "local_db_stock_ledger_three_adjustments_only",
+  "event_date": "2026-06-27",
+  "reference_type": "AMD03_CRM_BRIDGE_ONEOFF",
+  "notes": "owner P5(a) 2026-07-03 one-off direct-CRM buyout decrement; decision config amd03_crm_buyout_oneoff_decrement_2026_07_03.json",
+  "input_source": "MANUAL",
+  "created_by": "fable5_greenpath_koclear_bridge_v2",
+  "total_value_kzt": 65980,
+  "rows": [
+    {
+      "sku_key": "CL_OC_MEN_LINE51_WHITE",
+      "sku_id": "CL_OC_MEN_LINE51_WHITE_3XL",
+      "my_size": "3XL",
+      "store_code": "UNIVERSAL",
+      "qty_change": -1,
+      "reference_id": "DO-OWNER-OF-8VXM",
+      "idempotency_key": "amd03_oneoff_DO-OWNER-OF-8VXM",
+      "pre_resolved_current_balance": 96,
+      "expected_after_balance": 95
+    },
+    {
+      "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+      "sku_id": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_4XL",
+      "my_size": "4XL",
+      "store_code": "UNIVERSAL",
+      "qty_change": -1,
+      "reference_id": "DO-OWNER-OF-F872",
+      "idempotency_key": "amd03_oneoff_DO-OWNER-OF-F872",
+      "pre_resolved_current_balance": 15,
+      "expected_after_balance": 14
+    },
+    {
+      "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+      "sku_id": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL",
+      "my_size": "XL",
+      "store_code": "UNIVERSAL",
+      "qty_change": -1,
+      "reference_id": "DO-OWNER-OF-H38N",
+      "idempotency_key": "amd03_oneoff_DO-OWNER-OF-H38N",
+      "pre_resolved_current_balance": 99,
+      "expected_after_balance": 98
+    }
+  ],
+  "rollback_pointer": "Restore db/app.db from exports/validation/g_koclear_bridge_20260703/app_pre_koclear_v2.db, or delete the three listed idempotency_key rows if reverting only this owner decision.",
+  "evidence_path": "exports/validation/g_koclear_bridge_20260703/write_session_readbacks.txt"
+}

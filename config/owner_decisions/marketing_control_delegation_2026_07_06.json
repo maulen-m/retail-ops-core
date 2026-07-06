@@ -1,0 +1,43 @@
+{
+  "decision_id": "OD-MARKETING-CONTROL-DELEGATION-PROFIT-AFTER-ADS-2026-07-06",
+  "decided_at": "2026-07-06T00:15:00+05:00",
+  "decided_at_precision": "approximate minute from 2026-07-06 00:1x addendum",
+  "title": "Owner marketing control delegation for profit after ads",
+  "owner_answer_verbatim": "Q3: (a) ads test approved, recommended budget (cap 140,000). PLUS standing mandate: full marketing history analysis (fetch campaign exports for missing calendar periods), synchronize with sales/orders/prices; ALL profitability judged on NET profit AFTER ads (\"I give full access to controlling those marketing campaigns for our actual goal of profit increase\"). Q4: Astana direct KEEPS RUNNING (real volume ~2-3 orders/day; buyout recording lags manual entry). ... ALSO delegation: if ~2-3 buyouts/day of 19,990 LINE61 still unprofitable -> agent may correct city ads budgets (same for LINE61 countrywide Meta ads).",
+  "source_context": {
+    "source_file": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md",
+    "source_section": "Addendum 2026-07-06 00:1x - OWNER DECISION FORM ANSWERED",
+    "source_lines": "Q3, Q4",
+    "lane": "PKT-AB-TRUTH-PACK"
+  },
+  "delegation": {
+    "status": "approved",
+    "scope": "marketing_campaign_control",
+    "objective": "profit_increase",
+    "profitability_metric": "net_profit_after_ads",
+    "profitability_metric_is_exclusive": true,
+    "requires_history_refresh": true,
+    "requires_sales_orders_prices_sync": true
+  },
+  "ads_test_budget": {
+    "approved": true,
+    "daily_increment_kzt": 10000,
+    "duration_days": 14,
+    "total_cap_kzt": 140000
+  },
+  "line61_budget_correction_delegation": {
+    "status": "approved_under_unprofitability_evidence",
+    "product_key": "LINE61",
+    "city_scope": "Astana direct city ads",
+    "countrywide_scope": "LINE61 countrywide Meta ads",
+    "trigger": "2-3 buyouts/day at 19,990 KZT remains unprofitable after ads"
+  },
+  "explicit_non_authorizations": [
+    "This AB registry does not authorize Meta, Kaspi, WhatsApp, or external-system writes from this repo.",
+    "Any live campaign write must be performed in the owning marketing/Web lane with fresh evidence."
+  ],
+  "reactivation_policy": {
+    "status": "active_until_new_explicit_owner_decision",
+    "override_requires": "A future override must name this decision_id, campaign scope, metric, and budget cap change."
+  }
+}

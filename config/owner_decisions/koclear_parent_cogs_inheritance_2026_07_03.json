@@ -1,0 +1,17 @@
+{
+  "decision_id": "P2A-KOCLEAR-PARENT-COGS-2026-07-03",
+  "title": "KO_CLEAR parent COGS inheritance",
+  "decided_at": "2026-07-03T15:05:00+05:00",
+  "owner_answer": "(a) parent-COGS inheritance",
+  "order_id": "972820718",
+  "scope": "local_db_dim_sku_cogs_only",
+  "parent_sku_key": "CL_OC_MEN_LINE51_WHITE",
+  "child_sku_key": "CL_OC_MEN_LINE51_WHITE_KO_CLEAR",
+  "parent_cogs_kzt_recorded": 4680.0,
+  "child_cogs_kzt_before": null,
+  "child_cogs_kzt_after": 4680.0,
+  "applied_by": "fable5_greenpath_koclear_bridge_v2",
+  "applied_at_source": "db/app.db dim_sku",
+  "backup_path": "exports/validation/g_koclear_bridge_20260703/app_pre_koclear_v2.db",
+  "evidence_path": "exports/validation/g_koclear_bridge_20260703/write_session_readbacks.txt"
+}

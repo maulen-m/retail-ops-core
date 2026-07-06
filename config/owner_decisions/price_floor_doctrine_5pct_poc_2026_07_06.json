@@ -1,0 +1,56 @@
+{
+  "decision_id": "OD-PRICE-FLOOR-DOCTRINE-5PCT-POC-2026-07-06",
+  "decided_at": "2026-07-06T00:15:00+05:00",
+  "decided_at_precision": "approximate minute from 2026-07-06 00:1x addendum",
+  "title": "Owner price-floor doctrine: retire 30/35% POC floors and use 5% POC sell-off red-line",
+  "owner_answer_verbatim": "Q1 *** DOCTRINE CHANGE ***: OLD 30/35% POC floors are DEAD as floors. Sell-off mode declared: red-line = sell price preserving >=5% POC (profit on COGS). Raise ONLY offers currently below the 5%-POC floor (\"yes do the increases of those prices and required changes\"); do NOT restore 30/35% floors. Repricer batch must be REBUILT to min=5%-POC floor before apply (GO given for the corrected batch). Q11: one-way-up delegation APPROVED but REBASED to the NEW 5%-POC floors (\"update the recommended approach and use it - I fully approve that\").",
+  "source_context": {
+    "source_file": "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md",
+    "source_section": "Addendum 2026-07-06 00:1x - OWNER DECISION FORM ANSWERED",
+    "source_lines": "Q1, Q11",
+    "lane": "PKT-AB-TRUTH-PACK"
+  },
+  "scope": {
+    "type": "all_price_floor_surfaces",
+    "named_stores": [
+      "ACMEWEAR",
+      "UNIVERSAL",
+      "STORE-B"
+    ],
+    "description": "AB records the owner doctrine. Floor implementation and Repricer/Kaspi writes belong to the owning Web_automation lanes."
+  },
+  "floor_policy": {
+    "retired_floor_poc_percentages": [
+      30,
+      35
+    ],
+    "active_sell_off_red_line_poc_percentage": 5,
+    "profit_basis": "profit_on_cogs",
+    "minimum_sell_price_semantics": "sell price must preserve at least 5% POC profit on COGS",
+    "raise_policy": "raise only offers currently below the 5% POC floor",
+    "forbidden_policy": "do not restore 30% or 35% POC floors as mandatory floors without a new explicit owner decision"
+  },
+  "delegations": [
+    {
+      "delegation_id": "ONE_WAY_UP_AUTO_APPLY_5PCT_POC",
+      "status": "approved",
+      "direction": "one_way_up_only",
+      "floor_basis": "5% POC",
+      "note": "Approved only for correcting offers currently below the new 5% POC floor."
+    },
+    {
+      "delegation_id": "REPRICER_BATCH_REBUILD_TO_5PCT_POC",
+      "status": "go_given_for_corrected_batch",
+      "follow_up_repo": "~/Docs/Web_automation",
+      "note": "Reference-only in AB. Repricer batch must be rebuilt to min=5% POC before apply."
+    }
+  ],
+  "explicit_non_authorizations": [
+    "This registry does not authorize AB to edit floor/pricing implementation files.",
+    "This registry does not authorize a Kaspi, Repricer, or merchant-account write from this repo."
+  ],
+  "reactivation_policy": {
+    "status": "active_until_new_explicit_owner_decision",
+    "override_requires": "A future override must name this decision_id and state the replacement floor percentage, affected store scope, and implementation lane."
+  }
+}
