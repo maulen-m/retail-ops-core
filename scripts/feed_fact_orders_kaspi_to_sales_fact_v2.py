@@ -57,7 +57,10 @@ SHADOW_COLUMNS = [
     "final_my_size_source",
     "kaspi_offer_name",
     "quantity",
+    "quantity_source",
+    "raw_unit_price_kzt",
     "sell_price_kzt",
+    "sell_price_basis",
     "delivery_fee",
     "delivery_fee_source",
     "net_rev",
@@ -67,6 +70,9 @@ SHADOW_COLUMNS = [
     "profit",
     "profit_source",
     "status",
+    "kaspi_status",
+    "kaspi_status_detail",
+    "internal_status",
     "return_flag",
     "return_date",
     "source_file",
@@ -278,6 +284,60 @@ def _sku_key_for_sku_id(conn: sqlite3.Connection, sku_id: str | None) -> str | N
     return _clean_text(row["sku_key"]) if row else None
 
 
+def _sku_key_exists(conn: sqlite3.Connection, sku_key: str | None) -> bool:
+    if not sku_key or not _table_exists(conn, "dim_sku"):
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM dim_sku WHERE UPPER(TRIM(sku_key)) = UPPER(TRIM(?)) LIMIT 1",
+        (sku_key,),
+    ).fetchone()
+    return row is not None
+
+
+def _article_identity_for_row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, str]:
+    if not _table_exists(conn, "dim_kaspi_article_map"):
+        return {}
+    columns = _table_columns(conn, "dim_kaspi_article_map")
+    if not {"kaspi_article", "sku_key"}.issubset(columns):
+        return {}
+
+    article = _clean_text(row["kaspi_article"])
+    if not article:
+        return {}
+    store_code = _clean_text(row["store_code"]) or ""
+    offer_name = _clean_text(row["kaspi_offer_name"]) or ""
+
+    select_cols = [
+        "sku_key",
+        _select_expr(columns, "sku_id", "", "sku_id"),
+        _select_expr(columns, "kaspi_offer_name", "", "kaspi_offer_name"),
+        _select_expr(columns, "store_code", "", "store_code"),
+    ]
+    active_sql = ""
+    if "active_flag" in columns:
+        active_sql = "AND COALESCE(active_flag, 1) != 0"
+    rows = conn.execute(
+        f"""
+        SELECT {', '.join(select_cols)}
+        FROM dim_kaspi_article_map
+        WHERE UPPER(TRIM(kaspi_article)) = UPPER(TRIM(?))
+          {active_sql}
+        ORDER BY
+          CASE WHEN UPPER(TRIM(COALESCE(store_code, ''))) = UPPER(TRIM(?)) THEN 0 ELSE 1 END,
+          CASE WHEN TRIM(COALESCE(kaspi_offer_name, '')) = TRIM(?) THEN 0 ELSE 1 END
+        LIMIT 1
+        """,
+        (article, store_code, offer_name),
+    ).fetchall()
+    if not rows:
+        return {}
+    hit = rows[0]
+    return {
+        "sku_key": _clean_text(hit["sku_key"]) or "",
+        "sku_id": _clean_text(hit["sku_id"]) or "",
+    }
+
+
 def _sku_meta(conn: sqlite3.Connection, sku_key: str | None) -> dict[str, Any]:
     if not sku_key or not _table_exists(conn, "dim_sku"):
         return {}
@@ -295,7 +355,7 @@ def _sku_meta(conn: sqlite3.Connection, sku_key: str | None) -> dict[str, Any]:
 def _resolve_identity_for_direct_row(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
-    final_size: str,
+    final_size: str | None,
     final_size_source: str,
 ) -> tuple[str | None, str | None, str | None, dict[str, Any]]:
     source_sku_id = _clean_text(row["sku_id"])
@@ -309,6 +369,14 @@ def _resolve_identity_for_direct_row(
     else:
         sku_key_input = source_sku_key
         sku_id_input = source_sku_id
+
+    article_identity = _article_identity_for_row(conn, row)
+    mapped_sku_key = _clean_text(article_identity.get("sku_key"))
+    mapped_sku_id = _clean_text(article_identity.get("sku_id"))
+    if mapped_sku_key and (not sku_key_input or not _sku_key_exists(conn, sku_key_input)):
+        sku_key_input = normalize_sku_key(mapped_sku_key)
+        if not sku_id_input and mapped_sku_id:
+            sku_id_input = mapped_sku_id
 
     event_date = _parse_date(row["created_at"]) or _parse_date(row["planned_shipment_date"])
     alias = apply_rombik_kid30_alias(
@@ -334,6 +402,7 @@ def _resolve_identity_for_direct_row(
     return resolution.sku_key, resolution.sku_id, resolution.my_size, {
         "offer_name_mapping_hit": resolution.offer_name_mapping_hit,
         "offer_name_mapping_sku_key_only": resolution.offer_name_mapping_sku_key_only,
+        "article_identity_hit": bool(mapped_sku_key),
     }
 
 
@@ -505,14 +574,9 @@ def build_shadow_rows(
         elif source_sku_id and "_" in source_sku_id:
             product_type = source_sku_id.split("_", 1)[0]
 
-        final_size_source = "assigned_size" if assigned_size else "my_size"
+        final_size_source = "assigned_size" if assigned_size else "my_size" if legacy_size else "resolver_inferred"
         raw_final_size = assigned_size or legacy_size
         final_size = normalize_size(raw_final_size, product_type=product_type) if raw_final_size else None
-        if not final_size:
-            unmapped_rows.append(
-                _unmapped_from_row(row, run_id=run_id, reason="missing_size", final_size="")
-            )
-            continue
 
         sku_key, sku_id, my_size, _resolution_meta = _resolve_identity_for_direct_row(
             conn,
@@ -528,11 +592,12 @@ def build_shadow_rows(
                 missing.append("sku_id")
             if not my_size:
                 missing.append("my_size")
+            reason = "missing_size" if not my_size and not final_size else "unresolved_" + "_".join(missing)
             unmapped_rows.append(
                 _unmapped_from_row(
                     row,
                     run_id=run_id,
-                    reason="unresolved_" + "_".join(missing),
+                    reason=reason,
                     final_size=final_size,
                 )
             )
@@ -540,7 +605,12 @@ def build_shadow_rows(
 
         sku_meta = _sku_meta(conn, sku_key)
         quantity = _to_int(row["quantity"], 1) or 1
-        sell_price = _to_float(row["unit_price_kzt"])
+        raw_sell_price = _to_float(row["unit_price_kzt"])
+        sell_price = raw_sell_price
+        sell_price_basis = "unit_price_kzt"
+        if raw_sell_price is not None and quantity > 1:
+            sell_price = raw_sell_price / quantity
+            sell_price_basis = "unit_price_kzt_div_quantity"
         seller_fee = _to_float(row["delivery_cost_for_seller"])
         source_delivery = _to_float(row["delivery_cost"])
         if seller_fee is not None:
@@ -613,7 +683,10 @@ def build_shadow_rows(
                 "final_my_size_source": final_size_source,
                 "kaspi_offer_name": kaspi_offer_name,
                 "quantity": quantity,
+                "quantity_source": "fact_orders_kaspi.quantity",
+                "raw_unit_price_kzt": raw_sell_price if raw_sell_price is not None else "",
                 "sell_price_kzt": sell_price if sell_price is not None else "",
+                "sell_price_basis": sell_price_basis,
                 "delivery_fee": round(delivery_fee, 2) if delivery_fee is not None else "",
                 "delivery_fee_source": delivery_fee_source,
                 "net_rev": round(net_rev, 2) if net_rev is not None else "",
@@ -623,6 +696,9 @@ def build_shadow_rows(
                 "profit": "",
                 "profit_source": "not_computed_phase1",
                 "status": status,
+                "kaspi_status": _clean_text(row["kaspi_status"]) or "",
+                "kaspi_status_detail": _clean_text(row["kaspi_status_detail"]) or "",
+                "internal_status": _clean_text(row["internal_status"]) or "",
                 "return_flag": return_flag,
                 "return_date": return_date,
                 "source_file": f"fact_orders_kaspi:{run_id}",
@@ -663,6 +739,9 @@ def build_shadow_rows(
         "missing_size": sum(1 for row in unmapped_rows if row["reason"] == "missing_size"),
         "duplicate_logical_keys": sum(1 for count in logical_counts.values() if count > 1),
         "duplicate_db_unique_keys": sum(1 for count in db_counts.values() if count > 1),
+        "unit_price_divided_rows": sum(
+            1 for row in shadow_rows if row.get("sell_price_basis") == "unit_price_kzt_div_quantity"
+        ),
     }
     return {"rows": shadow_rows, "unmapped": unmapped_rows, "summary": summary}
 
@@ -688,6 +767,7 @@ def _write_summary_md(path: Path, summary: dict[str, Any]) -> None:
         f"- shadow_rows: {summary['shadow_rows']}",
         f"- unmapped_rows: {summary['unmapped_rows']}",
         f"- missing_size: {summary['missing_size']}",
+        f"- unit_price_divided_rows: {summary.get('unit_price_divided_rows', 0)}",
         f"- duplicate_logical_keys: {summary['duplicate_logical_keys']}",
         f"- duplicate_db_unique_keys: {summary['duplicate_db_unique_keys']}",
         f"- db_mutations: {summary['db_mutations']}",
@@ -722,7 +802,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--date-filter-basis",
         choices=sorted(DATE_FILTER_COLUMNS),
-        default="any_relevant",
+        default="planned_shipment_date",
     )
     parser.add_argument(
         "--order-date-basis",

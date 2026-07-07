@@ -76,6 +76,14 @@ def _init_db(path: Path) -> sqlite3.Connection:
             kaspi_article TEXT,
             line_identity_key TEXT
         );
+        CREATE TABLE dim_kaspi_article_map (
+            store_code TEXT,
+            kaspi_article TEXT,
+            kaspi_offer_name TEXT,
+            sku_key TEXT,
+            sku_id TEXT,
+            active_flag INTEGER
+        );
         """
     )
     conn.executemany(
@@ -83,6 +91,7 @@ def _init_db(path: Path) -> sqlite3.Connection:
         [
             ("CL_LINE52_BLACK", "Line52", "CL", 1, 0.5, 1000),
             ("CL_LINE51_WHITE", "Line51", "CL", 1, 0.6, 1200),
+            ("CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE", "LINE31", "CL", 1, 0.6, 1200),
         ],
     )
     conn.executemany(
@@ -91,6 +100,11 @@ def _init_db(path: Path) -> sqlite3.Connection:
             ("CL_LINE52_BLACK_M", "CL_LINE52_BLACK", "M"),
             ("CL_LINE52_BLACK_XL", "CL_LINE52_BLACK", "XL"),
             ("CL_LINE51_WHITE_S", "CL_LINE51_WHITE", "S"),
+            (
+                "CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_M",
+                "CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE",
+                "M",
+            ),
         ],
     )
     conn.commit()
@@ -206,6 +220,85 @@ def test_missing_size_and_unmapped_rows_are_excluded_and_reported(tmp_path: Path
     assert "unresolved_sku_id" in reasons
 
 
+def test_quantity_two_uses_crm_unit_price_semantics(tmp_path: Path) -> None:
+    conn = _init_db(tmp_path / "app.db")
+    _insert_order(conn, order_id="ORD-QTY2", quantity=2, unit_price_kzt=20000)
+
+    result = build_shadow_rows(
+        conn,
+        from_date="2026-07-01",
+        to_date="2026-07-03",
+        run_id="test",
+    )
+
+    row = result["rows"][0]
+    assert row["quantity"] == 2
+    assert row["raw_unit_price_kzt"] == 20000
+    assert row["sell_price_kzt"] == 10000
+    assert row["sell_price_basis"] == "unit_price_kzt_div_quantity"
+    assert result["summary"]["unit_price_divided_rows"] == 1
+
+
+def test_resolver_infers_size_from_sku_id_before_missing_size(tmp_path: Path) -> None:
+    conn = _init_db(tmp_path / "app.db")
+    _insert_order(conn, order_id="ORD-INFER", my_size="", assigned_size="")
+
+    result = build_shadow_rows(
+        conn,
+        from_date="2026-07-01",
+        to_date="2026-07-03",
+        run_id="test",
+    )
+
+    assert result["unmapped"] == []
+    assert result["rows"][0]["my_size"] == "M"
+    assert result["rows"][0]["final_my_size_source"] == "resolver_inferred"
+
+
+def test_article_map_recovers_crm_formula_identity_for_raw_article_key(tmp_path: Path) -> None:
+    conn = _init_db(tmp_path / "app.db")
+    conn.execute(
+        """
+        INSERT INTO dim_kaspi_article_map
+            (store_code, kaspi_article, kaspi_offer_name, sku_key, sku_id, active_flag)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "ACMEWEAR",
+            "OF_LINE31_ST_MB_S",
+            "Спортивный костюм ACMEWEAR OF_LINE31_ST_SB_XL голубой 44",
+            "CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE",
+            "",
+            1,
+        ),
+    )
+    conn.commit()
+    _insert_order(
+        conn,
+        order_id="ORD-LINE31",
+        store_code="ACMEWEAR",
+        kaspi_offer_name="Спортивный костюм ACMEWEAR OF_LINE31_ST_SB_XL голубой 44",
+        sku_key="OF_LINE31_ST_MB",
+        sku_id="OF_LINE31_ST_MB_S",
+        assigned_size="M",
+        my_size="",
+        kaspi_article="OF_LINE31_ST_MB_S",
+    )
+
+    result = build_shadow_rows(
+        conn,
+        from_date="2026-07-01",
+        to_date="2026-07-03",
+        run_id="test",
+    )
+
+    assert result["unmapped"] == []
+    row = result["rows"][0]
+    assert row["sku_key"] == "CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE"
+    assert row["sku_id"] == "CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_M"
+    assert row["my_size"] == "M"
+
+
 def test_apply_mode_refuses_phase1_even_with_env_gate(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     conn = _init_db(db)
@@ -233,4 +326,3 @@ def test_apply_mode_refuses_phase1_even_with_env_gate(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "Phase 2 not enabled: owner decision retire_crm_excel_pipeline required" in result.stderr
-

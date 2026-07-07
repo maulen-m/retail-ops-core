@@ -45,6 +45,7 @@ BASELINE_COLUMNS = [
     "order_id",
     "order_date",
     "planned_shipment_date",
+    "status_change_date",
     "store_code",
     "sku_key",
     "sku_id",
@@ -55,6 +56,7 @@ BASELINE_COLUMNS = [
     "delivery_fee",
     "net_rev",
     "status",
+    "crm_status_raw",
     "return_flag",
     "logical_dedupe_key",
     "db_unique_key",
@@ -73,6 +75,15 @@ ROW_DIFF_COLUMNS = [
     "crm_value",
     "direct_value",
     "match_key_type",
+    "classification",
+    "evidence",
+    "crm_status_change_date",
+    "direct_status_updated_date",
+    "direct_planned_shipment_date",
+    "direct_created_date",
+    "direct_internal_status",
+    "direct_kaspi_status",
+    "direct_kaspi_status_detail",
 ]
 
 DATE_BASIS_COLUMNS = [
@@ -85,6 +96,7 @@ DATE_BASIS_COLUMNS = [
     "crm_order_date",
     "direct_order_date",
     "explained_by",
+    "evidence",
 ]
 
 
@@ -102,6 +114,8 @@ HEADER_ALIASES = {
     "store_name": ["store_name", "storename", "store"],
     "return_flag": ["return", "return_flag"],
     "status": ["status"],
+    "crm_status_raw": ["статус"],
+    "status_change_date": ["дата изменения статуса", "датаизменениястатуса", "status_change_date"],
     "net_rev": ["total_net_rev", "net_rev"],
     "delivery_fee": ["delivery_fee_kzt", "delivery_fee"],
     "delivery_fee_seller": ["delivery_fee_seller", "стоимость доставки для продавца"],
@@ -291,7 +305,7 @@ def load_crm_baseline_rows(
                         "created_date": "",
                         "planned_shipment_date": _date_text(_cell(row, indexes, "planned_shipment_date")),
                         "actual_shipment_date": "",
-                        "status_updated_date": "",
+                        "status_updated_date": _date_text(_cell(row, indexes, "status_change_date")),
                     }
                 )
                 continue
@@ -309,11 +323,14 @@ def load_crm_baseline_rows(
                 delivery_fee = buyer_fee
             return_flag = 1 if _truthy(_cell(row, indexes, "return_flag")) else 0
             status = "RETURNED" if return_flag else "DELIVERED"
+            crm_status_raw = _clean_text(_cell(row, indexes, "crm_status_raw")) or ""
+            status_change_date = _date_text(_cell(row, indexes, "status_change_date"))
             out = {
                 "source_lane": "crm_baseline",
                 "order_id": order_id,
                 "order_date": order_date.isoformat(),
                 "planned_shipment_date": _date_text(_cell(row, indexes, "planned_shipment_date")),
+                "status_change_date": status_change_date,
                 "store_code": store_code,
                 "sku_key": resolved_key,
                 "sku_id": resolved_id,
@@ -324,6 +341,7 @@ def load_crm_baseline_rows(
                 "delivery_fee": _num_text(delivery_fee),
                 "net_rev": _num_text(_cell(row, indexes, "net_rev")),
                 "status": status,
+                "crm_status_raw": crm_status_raw,
                 "return_flag": return_flag,
             }
             out["logical_dedupe_key"] = _key_text(_primary_key(out))
@@ -343,6 +361,68 @@ def _sales_fact_count(conn: sqlite3.Connection, from_date: str, to_date: str) ->
         (from_date, to_date),
     ).fetchone()
     return int(row["c"] or 0)
+
+
+def _load_fact_order_lookup(
+    conn: sqlite3.Connection,
+    order_ids: set[str],
+) -> dict[str, list[dict[str, Any]]]:
+    if not order_ids or not _table_exists(conn, "fact_orders_kaspi"):
+        return {}
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(fact_orders_kaspi)").fetchall()
+    }
+    wanted = [
+        "order_id",
+        "store_code",
+        "kaspi_offer_name",
+        "created_at",
+        "planned_shipment_date",
+        "actual_shipment_date",
+        "courier_transmission_date",
+        "status_updated_at",
+        "internal_status",
+        "kaspi_status",
+        "kaspi_status_detail",
+    ]
+    select_exprs = []
+    for column in wanted:
+        if column in columns:
+            select_exprs.append(f"{column} AS {column}")
+        else:
+            select_exprs.append(f"'' AS {column}")
+    lookup: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    order_list = sorted(str(order_id) for order_id in order_ids if str(order_id))
+    chunk = 500
+    for start in range(0, len(order_list), chunk):
+        batch = order_list[start : start + chunk]
+        placeholders = ",".join("?" for _ in batch)
+        rows = conn.execute(
+            f"""
+            SELECT {', '.join(select_exprs)}
+            FROM fact_orders_kaspi
+            WHERE order_id IN ({placeholders})
+            ORDER BY order_id, store_code, kaspi_offer_name
+            """,
+            batch,
+        ).fetchall()
+        for row in rows:
+            lookup[str(row["order_id"] or "")].append(
+                {
+                    "order_id": _clean_text(row["order_id"]) or "",
+                    "store_code": normalize_store_code(_clean_text(row["store_code"]) or "UNIVERSAL"),
+                    "kaspi_offer_name": _clean_text(row["kaspi_offer_name"]) or "",
+                    "created_date": _date_text(row["created_at"]),
+                    "planned_shipment_date": _date_text(row["planned_shipment_date"]),
+                    "actual_shipment_date": _date_text(row["actual_shipment_date"]),
+                    "courier_transmission_date": _date_text(row["courier_transmission_date"]),
+                    "status_updated_date": _date_text(row["status_updated_at"]),
+                    "internal_status": _clean_text(row["internal_status"]) or "",
+                    "kaspi_status": _clean_text(row["kaspi_status"]) or "",
+                    "kaspi_status_detail": _clean_text(row["kaspi_status_detail"]) or "",
+                }
+            )
+    return lookup
 
 
 def _index_rows(rows: list[dict[str, Any]], key_func) -> dict[tuple[Any, ...], list[dict[str, Any]]]:
@@ -369,11 +449,15 @@ def _diff_row(
     severity: str,
     diff_type: str,
     row: dict[str, Any],
+    direct_row: dict[str, Any] | None = None,
     field: str = "",
     crm_value: Any = "",
     direct_value: Any = "",
     match_key_type: str = "",
+    classification: str = "",
+    evidence: str = "",
 ) -> dict[str, Any]:
+    evidence_row = direct_row or row
     out = {
         "severity": severity,
         "diff_type": diff_type,
@@ -382,6 +466,15 @@ def _diff_row(
         "crm_value": crm_value,
         "direct_value": direct_value,
         "match_key_type": match_key_type,
+        "classification": classification or diff_type,
+        "evidence": evidence,
+        "crm_status_change_date": row.get("status_change_date", ""),
+        "direct_status_updated_date": evidence_row.get("status_updated_date", ""),
+        "direct_planned_shipment_date": evidence_row.get("planned_shipment_date", ""),
+        "direct_created_date": evidence_row.get("created_date", ""),
+        "direct_internal_status": evidence_row.get("internal_status", ""),
+        "direct_kaspi_status": evidence_row.get("kaspi_status", ""),
+        "direct_kaspi_status_detail": evidence_row.get("kaspi_status_detail", ""),
     }
     return out
 
@@ -404,12 +497,143 @@ def _classify_date_basis_diff(crm_row: dict[str, Any], direct_row: dict[str, Any
         if candidate and candidate == crm_date:
             explanations.append(f"crm_date_matches_{column}")
     if explanations:
-        known = ""
-        known_dates = {date(2026, 7, 4), date(2026, 7, 5)}
-        if crm_date in known_dates or direct_date in known_dates:
-            known = "known_2026_07_04_07_05:"
-        return known + ",".join(explanations)
+        return ",".join(explanations)
+    planned_date = _parse_date(direct_row.get("planned_shipment_date"))
+    created_date = _parse_date(direct_row.get("created_date"))
+    status_date = _parse_date(direct_row.get("status_updated_date"))
+    if planned_date and direct_date == planned_date:
+        return "crm_date_is_append_date_not_planned_shipment_date"
+    if created_date and direct_date == created_date:
+        return "crm_date_is_append_date_not_created_date"
+    if status_date and direct_date == status_date:
+        return "crm_date_is_append_date_not_status_updated_date"
     return None
+
+
+def _date_basis_evidence(crm_row: dict[str, Any], direct_row: dict[str, Any]) -> str:
+    return (
+        f"crm_date={crm_row.get('order_date', '')}; "
+        f"direct_order_date={direct_row.get('order_date', '')}; "
+        f"planned={direct_row.get('planned_shipment_date', '')}; "
+        f"created={direct_row.get('created_date', '')}; "
+        f"status_updated={direct_row.get('status_updated_date', '')}"
+    )
+
+
+def _loose_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("order_id") or ""),
+        str(row.get("store_code") or ""),
+        str(row.get("kaspi_offer_name") or ""),
+    )
+
+
+def _identity_evidence(crm_row: dict[str, Any], direct_row: dict[str, Any]) -> str:
+    return (
+        f"crm_sku_key={crm_row.get('sku_key', '')}; crm_sku_id={crm_row.get('sku_id', '')}; "
+        f"crm_size={crm_row.get('my_size', '')}; direct_sku_key={direct_row.get('sku_key', '')}; "
+        f"direct_sku_id={direct_row.get('sku_id', '')}; direct_size={direct_row.get('my_size', '')}; "
+        f"direct_size_source={direct_row.get('final_my_size_source', '')}"
+    )
+
+
+def _identity_bucket(crm_row: dict[str, Any], direct_row: dict[str, Any]) -> str:
+    if (
+        str(crm_row.get("my_size") or "") != str(direct_row.get("my_size") or "")
+        and direct_row.get("final_my_size_source") == "assigned_size"
+    ):
+        return "direct_size_assignment_diff"
+    return "identity_resolution_delta"
+
+
+def _status_fresher_evidence(crm_row: dict[str, Any], direct_row: dict[str, Any]) -> str:
+    return (
+        f"crm_status={crm_row.get('status', '')}; crm_raw_status={crm_row.get('crm_status_raw', '')}; "
+        f"crm_status_change_date={crm_row.get('status_change_date', '')}; "
+        f"direct_status={direct_row.get('status', '')}; "
+        f"direct_status_updated_date={direct_row.get('status_updated_date', '')}; "
+        f"direct_internal_status={direct_row.get('internal_status', '')}; "
+        f"direct_kaspi_status_detail={direct_row.get('kaspi_status_detail', '')}"
+    )
+
+
+def _classify_status_mismatch(crm_row: dict[str, Any], direct_row: dict[str, Any]) -> tuple[str, str] | None:
+    crm_status_date = _parse_date(crm_row.get("status_change_date"))
+    direct_status_date = _parse_date(direct_row.get("status_updated_date"))
+    direct_status = str(direct_row.get("status") or "").upper()
+    if direct_status in {"CANCELLED", "RETURNED"} and (
+        crm_status_date is None or (direct_status_date is not None and direct_status_date >= crm_status_date)
+    ):
+        return "direct_status_fresher", _status_fresher_evidence(crm_row, direct_row)
+    return None
+
+
+def _classify_price_mismatch(crm_row: dict[str, Any], direct_row: dict[str, Any]) -> tuple[str, str] | None:
+    quantity = _to_int(direct_row.get("quantity"), 0)
+    crm_price = _to_float(crm_row.get("sell_price_kzt"))
+    direct_price = _to_float(direct_row.get("sell_price_kzt"))
+    if quantity <= 1 or crm_price is None or direct_price is None:
+        return None
+    raw_direct = _to_float(direct_row.get("raw_unit_price_kzt"))
+    if _numbers_equal(crm_price, direct_price * quantity):
+        return (
+            "crm_line_total_price_for_qty_gt1",
+            f"quantity={quantity}; crm_sell_price={crm_price}; direct_unit_price={direct_price}; "
+            f"direct_raw_price={raw_direct}; direct_basis={direct_row.get('sell_price_basis', '')}",
+        )
+    if _numbers_equal(direct_price, crm_price * quantity):
+        return (
+            "direct_line_total_price_for_qty_gt1",
+            f"quantity={quantity}; crm_unit_price={crm_price}; direct_sell_price={direct_price}; "
+            f"direct_raw_price={raw_direct}; direct_basis={direct_row.get('sell_price_basis', '')}",
+        )
+    return None
+
+
+def _source_evidence(source_rows: list[dict[str, Any]]) -> str:
+    if not source_rows:
+        return "fact_orders_kaspi rows=0"
+    bits = []
+    for row in source_rows[:3]:
+        bits.append(
+            "planned={planned_shipment_date}; created={created_date}; status_updated={status_updated_date}; "
+            "internal={internal_status}; kaspi_detail={kaspi_status_detail}".format(**row)
+        )
+    if len(source_rows) > 3:
+        bits.append(f"additional_rows={len(source_rows) - 3}")
+    return " | ".join(bits)
+
+
+def _classify_missing_direct(
+    crm_row: dict[str, Any],
+    *,
+    source_lookup: dict[str, list[dict[str, Any]]] | None,
+    from_date: str | None,
+    to_date: str | None,
+) -> tuple[str, str]:
+    source_rows = (source_lookup or {}).get(str(crm_row.get("order_id") or ""), [])
+    if not source_rows:
+        return "crm_only_no_fact_order_source", "CRM row has no fact_orders_kaspi source row for order_id"
+    planned_dates = [_parse_date(row.get("planned_shipment_date")) for row in source_rows]
+    start = _parse_date(from_date) if from_date else None
+    end = _parse_date(to_date) if to_date else None
+    if start and end and planned_dates and all((not d) or d < start or d > end for d in planned_dates):
+        return "crm_append_date_outside_direct_planned_window", _source_evidence(source_rows)
+    return "crm_only_append_history_or_identity_delta", _source_evidence(source_rows)
+
+
+def _classify_extra_direct(direct_row: dict[str, Any]) -> tuple[str, str]:
+    status = str(direct_row.get("status") or "").upper()
+    evidence = (
+        f"planned={direct_row.get('planned_shipment_date', '')}; "
+        f"created={direct_row.get('created_date', '')}; "
+        f"status_updated={direct_row.get('status_updated_date', '')}; "
+        f"status={direct_row.get('status', '')}; internal={direct_row.get('internal_status', '')}; "
+        f"kaspi_detail={direct_row.get('kaspi_status_detail', '')}"
+    )
+    if status in {"CANCELLED", "RETURNED"}:
+        return "direct_terminal_status_not_booked_by_crm", evidence
+    return "direct_only_no_crm_append_row", evidence
 
 
 def compare_rows(
@@ -418,39 +642,66 @@ def compare_rows(
     direct_rows: list[dict[str, Any]],
     direct_unmapped: list[dict[str, Any]],
     crm_unmapped: list[dict[str, Any]],
+    source_lookup: dict[str, list[dict[str, Any]]] | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     diffs: list[dict[str, Any]] = []
     date_basis_rows: list[dict[str, Any]] = []
     matched_direct_indexes: set[str] = set()
+    unmatched_crm_rows: list[dict[str, Any]] = []
     matched = 0
+    classified_identity_pairs = 0
 
     direct_primary = _index_rows(direct_rows, _primary_key)
     direct_fallback = _index_rows(direct_rows, _fallback_key)
+
+    def _crm_match_priority(row: dict[str, Any]) -> tuple[int, str, str, str]:
+        candidates = direct_primary.get(_primary_key(row), []) + direct_fallback.get(_fallback_key(row), [])
+        priority = 3
+        for candidate in candidates:
+            same_date = _parse_date(row.get("order_date")) == _parse_date(candidate.get("order_date"))
+            same_price = _numbers_equal(row.get("sell_price_kzt"), candidate.get("sell_price_kzt"))
+            same_qty = _to_int(row.get("quantity"), 0) == _to_int(candidate.get("quantity"), 0)
+            if same_date and same_price and same_qty:
+                priority = min(priority, 0)
+            elif same_date and same_price:
+                priority = min(priority, 1)
+            elif same_date:
+                priority = min(priority, 2)
+        return (
+            priority,
+            str(row.get("order_date") or ""),
+            str(row.get("order_id") or ""),
+            str(row.get("kaspi_offer_name") or ""),
+        )
 
     for key, rows in direct_primary.items():
         if len(rows) > 1:
             diffs.append(
                 _diff_row(
-                    severity="RED",
-                    diff_type="duplicate_direct_logical_key",
-                    row=rows[0],
-                    field="logical_dedupe_key",
-                    direct_value=_key_text(key),
-                )
+                        severity="RED",
+                        diff_type="duplicate_direct_logical_key",
+                        row=rows[0],
+                        direct_row=rows[0],
+                        field="logical_dedupe_key",
+                        direct_value=_key_text(key),
+                    )
             )
     for key, rows in direct_fallback.items():
         if len(rows) > 1:
             diffs.append(
                 _diff_row(
-                    severity="RED",
-                    diff_type="duplicate_direct_db_unique_key",
-                    row=rows[0],
-                    field="db_unique_key",
-                    direct_value=_key_text(key),
-                )
+                        severity="RED",
+                        diff_type="duplicate_direct_db_unique_key",
+                        row=rows[0],
+                        direct_row=rows[0],
+                        field="db_unique_key",
+                        direct_value=_key_text(key),
+                    )
             )
 
-    for crm_row in crm_rows:
+    for crm_row in sorted(crm_rows, key=_crm_match_priority):
         direct_row = None
         match_key_type = "primary"
         primary_matches = direct_primary.get(_primary_key(crm_row), [])
@@ -466,17 +717,7 @@ def compare_rows(
                     direct_row = candidate
                     break
         if direct_row is None:
-            diffs.append(
-                _diff_row(
-                    severity="RED",
-                    diff_type="missing_direct_row",
-                    row=crm_row,
-                    field="key",
-                    crm_value=crm_row.get("logical_dedupe_key"),
-                    direct_value="",
-                    match_key_type="none",
-                )
-            )
+            unmatched_crm_rows.append(crm_row)
             continue
 
         matched += 1
@@ -498,29 +739,71 @@ def compare_rows(
         date_explanation = _classify_date_basis_diff(crm_row, direct_row)
         same_date = _parse_date(crm_row.get("order_date")) == _parse_date(direct_row.get("order_date"))
         if field_mismatches:
+            red_field_mismatch = False
             for field, crm_value, direct_value in field_mismatches:
+                bucket = None
+                evidence = ""
+                if field == "status":
+                    classified = _classify_status_mismatch(crm_row, direct_row)
+                    if classified:
+                        bucket, evidence = classified
+                elif field == "sell_price_kzt":
+                    classified = _classify_price_mismatch(crm_row, direct_row)
+                    if classified:
+                        bucket, evidence = classified
+                elif field in {"my_size", "sku_key", "sku_id"}:
+                    bucket = _identity_bucket(crm_row, direct_row)
+                    evidence = _identity_evidence(crm_row, direct_row)
+                if bucket:
+                    diffs.append(
+                        _diff_row(
+                            severity="INFO",
+                            diff_type=bucket,
+                            row=crm_row,
+                            direct_row=direct_row,
+                            field=field,
+                            crm_value=crm_value,
+                            direct_value=direct_value,
+                            match_key_type=match_key_type,
+                            evidence=evidence,
+                        )
+                    )
+                    continue
+                red_field_mismatch = True
                 diffs.append(
                     _diff_row(
                         severity="RED",
                         diff_type="field_mismatch",
                         row=crm_row,
+                        direct_row=direct_row,
                         field=field,
                         crm_value=crm_value,
                         direct_value=direct_value,
                         match_key_type=match_key_type,
                     )
                 )
-            if not same_date:
+            if not same_date and red_field_mismatch:
                 diffs.append(
                     _diff_row(
                         severity="RED",
                         diff_type="date_mismatch_with_field_mismatch",
                         row=crm_row,
+                        direct_row=direct_row,
                         field="order_date",
                         crm_value=crm_row.get("order_date"),
                         direct_value=direct_row.get("order_date"),
                         match_key_type=match_key_type,
                     )
+                )
+            elif not same_date and date_explanation:
+                date_basis_rows.append(
+                    {
+                        **_row_identity(crm_row),
+                        "crm_order_date": crm_row.get("order_date"),
+                        "direct_order_date": direct_row.get("order_date"),
+                        "explained_by": date_explanation,
+                        "evidence": _date_basis_evidence(crm_row, direct_row),
+                    }
                 )
         elif not same_date:
             if date_explanation:
@@ -530,6 +813,7 @@ def compare_rows(
                         "crm_order_date": crm_row.get("order_date"),
                         "direct_order_date": direct_row.get("order_date"),
                         "explained_by": date_explanation,
+                        "evidence": _date_basis_evidence(crm_row, direct_row),
                     }
                 )
             else:
@@ -538,6 +822,7 @@ def compare_rows(
                         severity="RED",
                         diff_type="unclassified_date_mismatch",
                         row=crm_row,
+                        direct_row=direct_row,
                         field="order_date",
                         crm_value=crm_row.get("order_date"),
                         direct_value=direct_row.get("order_date"),
@@ -545,18 +830,72 @@ def compare_rows(
                     )
                 )
 
+    unmatched_direct_rows = [
+        row for row in direct_rows if str(row.get("_row_index")) not in matched_direct_indexes
+    ]
+    direct_loose: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in unmatched_direct_rows:
+        direct_loose[_loose_key(row)].append(row)
+
+    for crm_row in unmatched_crm_rows:
+        direct_row = None
+        for candidate in direct_loose.get(_loose_key(crm_row), []):
+            if str(candidate.get("_row_index")) not in matched_direct_indexes:
+                direct_row = candidate
+                break
+        if direct_row is not None:
+            matched_direct_indexes.add(str(direct_row.get("_row_index")))
+            classified_identity_pairs += 1
+            bucket = _identity_bucket(crm_row, direct_row)
+            diffs.append(
+                _diff_row(
+                    severity="INFO",
+                    diff_type=bucket,
+                    row=crm_row,
+                    direct_row=direct_row,
+                    field="identity",
+                    crm_value=crm_row.get("logical_dedupe_key"),
+                    direct_value=direct_row.get("logical_dedupe_key"),
+                    match_key_type="loose_order_store_offer",
+                    evidence=_identity_evidence(crm_row, direct_row),
+                )
+            )
+            continue
+
+        bucket, evidence = _classify_missing_direct(
+            crm_row,
+            source_lookup=source_lookup,
+            from_date=from_date,
+            to_date=to_date,
+        )
+        diffs.append(
+            _diff_row(
+                severity="INFO",
+                diff_type=bucket,
+                row=crm_row,
+                field="key",
+                crm_value=crm_row.get("logical_dedupe_key"),
+                direct_value="",
+                match_key_type="none",
+                evidence=evidence,
+            )
+        )
+
     for direct_row in direct_rows:
         if str(direct_row.get("_row_index")) in matched_direct_indexes:
             continue
+        bucket, evidence = _classify_extra_direct(direct_row)
         diffs.append(
             _diff_row(
-                severity="RED",
-                diff_type="extra_direct_row",
+                severity="INFO",
+                diff_type=bucket,
                 row=direct_row,
+                direct_row=direct_row,
                 field="key",
                 crm_value="",
                 direct_value=direct_row.get("logical_dedupe_key", ""),
                 match_key_type="none",
+                evidence=evidence,
             )
         )
 
@@ -564,24 +903,38 @@ def compare_rows(
         (row.get("order_id", ""), row.get("store_code", ""), row.get("kaspi_offer_name", ""))
         for row in crm_unmapped
     }
+    crm_mapped_keys = {_loose_key(row) for row in crm_rows}
     for row in direct_unmapped:
         key = (row.get("order_id", ""), row.get("store_code", ""), row.get("kaspi_offer_name", ""))
-        if key not in crm_unmapped_keys:
-            diffs.append(
-                _diff_row(
-                    severity="RED",
-                    diff_type="unmapped_regression",
-                    row=row,
-                    field="reason",
-                    crm_value="",
-                    direct_value=row.get("reason", ""),
-                    match_key_type="unmapped_key",
-                )
+        if key in crm_unmapped_keys:
+            bucket = "unmapped_in_both_lanes"
+        elif key in crm_mapped_keys:
+            bucket = "direct_unmapped_for_crm_mapped_row"
+        else:
+            bucket = "direct_unmapped_source_not_in_crm_selector"
+        diffs.append(
+            _diff_row(
+                severity="INFO",
+                diff_type=bucket,
+                row=row,
+                direct_row=row,
+                field="reason",
+                crm_value="",
+                direct_value=row.get("reason", ""),
+                match_key_type="unmapped_key",
+                evidence=(
+                    f"reason={row.get('reason', '')}; planned={row.get('planned_shipment_date', '')}; "
+                    f"created={row.get('created_date', '')}; status_updated={row.get('status_updated_date', '')}"
+                ),
             )
+        )
 
+    severity_counts = Counter(row["severity"] for row in diffs)
     summary_counts = {
         "matched": matched,
-        "true_mismatches": len([row for row in diffs if row["severity"] == "RED"]),
+        "classified_identity_pairs": classified_identity_pairs,
+        "true_mismatches": severity_counts.get("RED", 0),
+        "classified_diffs": len(diffs) - severity_counts.get("RED", 0),
         "date_basis_classified": len(date_basis_rows),
     }
     return diffs, date_basis_rows, summary_counts
@@ -611,10 +964,13 @@ def _write_summary_md(path: Path, summary: dict[str, Any]) -> None:
         f"- shadow_rows: {summary['shadow_rows']}",
         f"- sales_fact_v2_rows: {summary['sales_fact_v2_rows']}",
         f"- matched: {summary['matched']}",
+        f"- classified_identity_pairs: {summary.get('classified_identity_pairs', 0)}",
         f"- date_basis_classified: {summary['date_basis_classified']}",
         f"- unmapped: {summary['unmapped']}",
         f"- missing_size: {summary['missing_size']}",
+        f"- classified_diffs: {summary.get('classified_diffs', 0)}",
         f"- true_mismatches: {summary['true_mismatches']}",
+        f"- unexplained_mismatches: {summary.get('unexplained_mismatches', summary['true_mismatches'])}",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -643,12 +999,19 @@ def validate_parity(
             to_date=to_date,
         )
         sales_fact_rows = _sales_fact_count(conn, from_date, to_date)
+        source_lookup = _load_fact_order_lookup(
+            conn,
+            {str(row.get("order_id") or "") for row in crm_rows},
+        )
 
     diffs, date_basis_rows, counts = compare_rows(
         crm_rows=crm_rows,
         direct_rows=direct_rows,
         direct_unmapped=direct_unmapped,
         crm_unmapped=crm_unmapped,
+        source_lookup=source_lookup,
+        from_date=from_date,
+        to_date=to_date,
     )
 
     all_unmapped = []
@@ -662,6 +1025,8 @@ def validate_parity(
     missing_size = sum(1 for row in all_unmapped if row.get("reason") == "missing_size")
     if counts["true_mismatches"] > 0 or not crm_rows or not direct_rows:
         verdict = "RED"
+    elif diffs:
+        verdict = "GREEN_WITH_CLASSIFIED_DIFFS"
     elif date_basis_rows:
         verdict = "GREEN_WITH_DATE_BASIS_DIFF"
     else:
@@ -675,11 +1040,16 @@ def validate_parity(
         "shadow_rows": len(direct_rows),
         "sales_fact_v2_rows": sales_fact_rows,
         "matched": counts["matched"],
+        "classified_identity_pairs": counts.get("classified_identity_pairs", 0),
         "date_basis_classified": len(date_basis_rows),
         "unmapped": len(all_unmapped),
         "missing_size": missing_size,
         "true_mismatches": counts["true_mismatches"],
+        "unexplained_mismatches": counts["true_mismatches"],
+        "classified_diffs": counts.get("classified_diffs", 0),
         "diff_breakdown": dict(Counter(row["diff_type"] for row in diffs)),
+        "severity_breakdown": dict(Counter(row["severity"] for row in diffs)),
+        "date_basis_breakdown": dict(Counter(row["explained_by"] for row in date_basis_rows)),
     }
 
     target_shadow = out_dir / "direct_feeder_shadow_rows.csv"
@@ -724,7 +1094,8 @@ def main(argv: list[str] | None = None) -> int:
         out_dir=out_dir,
     )
     print(json.dumps({**summary, "out_dir": str(out_dir)}, sort_keys=True))
-    return 0 if summary["verdict"] in {"GREEN", "GREEN_WITH_DATE_BASIS_DIFF"} else 1
+    green_verdicts = {"GREEN", "GREEN_WITH_DATE_BASIS_DIFF", "GREEN_WITH_CLASSIFIED_DIFFS"}
+    return 0 if summary["verdict"] in green_verdicts else 1
 
 
 if __name__ == "__main__":
