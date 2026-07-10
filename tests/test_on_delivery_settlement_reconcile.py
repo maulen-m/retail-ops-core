@@ -20,6 +20,9 @@ def _init_db(db_path: Path) -> None:
             order_id TEXT,
             store_code TEXT,
             internal_status TEXT,
+            kaspi_status TEXT,
+            kaspi_status_detail TEXT,
+            returned_to_warehouse INTEGER,
             status_updated_at TEXT,
             sku_key TEXT,
             sku_id TEXT
@@ -71,10 +74,146 @@ def test_detects_completed_orders_with_nonzero_on_delivery_balance(tmp_path: Pat
     _init_db(db_path)
     _seed_gap(db_path)
 
-    gaps = find_settlement_gaps(db_path=db_path, since="2026-02-01", until="2026-02-08")
+    gaps = find_settlement_gaps(db_path=db_path, since="2026-02-01", until="2026-02-10")
     assert len(gaps) == 1
     assert gaps[0]["order_id"] == "ORD-1"
     assert gaps[0]["balance_kzt"] == 1500.0
+    assert gaps[0]["event_date"] == "2026-02-08"
+
+
+def test_does_not_settle_api_cancelling_order_with_legacy_cancelled_status(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, internal_status, kaspi_status,
+            kaspi_status_detail, returned_to_warehouse, status_updated_at,
+            sku_key, sku_id
+        )
+        VALUES (
+            'ORD-CANCELLING', 'ACMEWEAR', 'CANCELLED', 'PICKUP',
+            'CANCELLING', 0, '2026-02-08', 'SKU-C', 'SKU-C_M'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_cashflow_events (
+            event_date, event_type, account, amount_kzt, store_code,
+            sku_key, sku_id, ref_type, ref_id, source, event_hash
+        )
+        VALUES (
+            '2026-02-08', 'INVENTORY_MOVE', 'INVENTORY_ON_DELIVERY_COST',
+            1500, 'ACMEWEAR', 'SKU-C', 'SKU-C_M', 'ORDER',
+            'ORD-CANCELLING', 'ORDER_MODELLED', 'h-cancelling'
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    gaps = find_settlement_gaps(
+        db_path=db_path,
+        since="2026-02-01",
+        until="2026-02-08",
+    )
+
+    assert gaps == []
+
+
+def test_does_not_settle_api_return_requested_order(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, internal_status, kaspi_status,
+            kaspi_status_detail, returned_to_warehouse, status_updated_at,
+            sku_key, sku_id
+        )
+        VALUES (
+            'ORD-RETURNING', 'ACMEWEAR', 'RETURNING', 'KASPI_DELIVERY',
+            'KASPI_DELIVERY_RETURN_REQUESTED', 0, '2026-02-08',
+            'SKU-R', 'SKU-R_M'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_cashflow_events (
+            event_date, event_type, account, amount_kzt, store_code,
+            sku_key, sku_id, ref_type, ref_id, source, event_hash
+        )
+        VALUES (
+            '2026-02-08', 'INVENTORY_MOVE', 'INVENTORY_ON_DELIVERY_COST',
+            1500, 'ACMEWEAR', 'SKU-R', 'SKU-R_M', 'ORDER',
+            'ORD-RETURNING', 'ORDER_MODELLED', 'h-returning'
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    gaps = find_settlement_gaps(
+        db_path=db_path,
+        since="2026-02-01",
+        until="2026-02-08",
+    )
+
+    assert gaps == []
+
+
+def test_terminal_api_cancelled_order_is_a_settlement_candidate(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _init_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            order_id, store_code, internal_status, kaspi_status,
+            kaspi_status_detail, returned_to_warehouse, status_updated_at,
+            sku_key, sku_id
+        )
+        VALUES (
+            'ORD-CANCELLED', 'ACMEWEAR', 'CANCELLED', 'ARCHIVE',
+            'CANCELLED', 0, '2026-02-08', 'SKU-C', 'SKU-C_M'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO fact_cashflow_events (
+            event_date, event_type, account, amount_kzt, store_code,
+            sku_key, sku_id, ref_type, ref_id, source, event_hash
+        )
+        VALUES (
+            '2026-02-08', 'INVENTORY_MOVE', 'INVENTORY_ON_DELIVERY_COST',
+            1500, 'ACMEWEAR', 'SKU-C', 'SKU-C_M', 'ORDER',
+            'ORD-CANCELLED', 'ORDER_MODELLED', 'h-cancelled'
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    gaps = find_settlement_gaps(
+        db_path=db_path,
+        since="2026-02-01",
+        until="2026-02-10",
+    )
+
+    assert len(gaps) == 1
+    assert gaps[0]["order_id"] == "ORD-CANCELLED"
+    assert gaps[0]["status"] == "CANCELLED"
+    assert gaps[0]["event_date"] == "2026-02-08"
 
 
 def test_reconcile_script_generates_settlement_events_idempotently(tmp_path: Path, monkeypatch) -> None:

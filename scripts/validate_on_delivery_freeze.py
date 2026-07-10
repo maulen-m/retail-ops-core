@@ -10,6 +10,13 @@ import sqlite3
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.integrations.kaspi_order_stage import (  # noqa: E402
+    StageCode,
+    classify_kaspi_stage_from_db_row,
+)
+
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 
 
@@ -60,10 +67,7 @@ def validate_on_delivery_freeze(
             if candidate in order_cols:
                 date_expr = candidate
                 break
-        status_col = "internal_status" if "internal_status" in order_cols else None
-        if status_col is None and "status" in order_cols:
-            status_col = "status"
-        if status_col is None:
+        if "internal_status" not in order_cols and "status" not in order_cols:
             return ["fact_orders_kaspi status column missing (internal_status/status)"]
 
         has_sku_cols = "sku_key" in order_cols or "sku_id" in order_cols
@@ -82,8 +86,7 @@ def validate_on_delivery_freeze(
             sku_expr = "1"
         order_rows = conn.execute(
             f"""
-            SELECT order_id,
-                   UPPER(TRIM(COALESCE({status_col}, ''))) AS status,
+            SELECT *,
                    {sku_expr} AS has_sku_identity
             FROM fact_orders_kaspi
             WHERE date(COALESCE({date_expr}, '1970-01-01')) BETWEEN ? AND ?
@@ -92,11 +95,11 @@ def validate_on_delivery_freeze(
             (start.isoformat(), as_of.isoformat()),
         ).fetchall()
 
-        status_by_order: dict[str, str] = {}
+        stage_by_order: dict[str, StageCode] = {}
         sku_identity_by_order: dict[str, bool] = {}
         for row in order_rows:
             order_id = str(row["order_id"])
-            status_by_order[order_id] = str(row["status"] or "")
+            stage_by_order[order_id] = classify_kaspi_stage_from_db_row(dict(row))
             sku_identity_by_order[order_id] = bool(int(row["has_sku_identity"] or 0))
 
         balances = conn.execute(
@@ -116,19 +119,27 @@ def validate_on_delivery_freeze(
             if row["order_id"] is not None
         }
 
-        on_delivery_statuses = {"SHIPPED", "ON_DELIVERY"}
-        settled_statuses = {"COMPLETED", "CANCELLED", "RETURNED"}
+        # Only a confirmed in-delivery stage proves that a positive frozen
+        # balance must exist. CANCELLING/RETURN_REQUESTED may occur before
+        # handover; if they already have a frozen balance it must remain, but
+        # this validator must not manufacture a missing-balance requirement.
+        frozen_stages = {StageCode.IN_DELIVERY}
+        settled_stages = {
+            StageCode.ISSUED_COMPLETED,
+            StageCode.CANCELLED,
+            StageCode.RETURNED,
+        }
 
-        for order_id, status in status_by_order.items():
+        for order_id, stage in stage_by_order.items():
             balance = float(on_delivery_balance.get(order_id, 0.0))
             has_identity = sku_identity_by_order.get(order_id, True)
-            if status in on_delivery_statuses and has_identity and balance <= tolerance_kzt:
+            if stage in frozen_stages and has_identity and balance <= tolerance_kzt:
                 errors.append(
-                    f"{order_id}: status={status} has missing INVENTORY_ON_DELIVERY_COST balance (balance={balance:.2f})"
+                    f"{order_id}: stage={stage.value} has missing INVENTORY_ON_DELIVERY_COST balance (balance={balance:.2f})"
                 )
-            if status in settled_statuses and has_identity and abs(balance) > tolerance_kzt:
+            if stage in settled_stages and has_identity and abs(balance) > tolerance_kzt:
                 errors.append(
-                    f"{order_id}: status={status} must settle INVENTORY_ON_DELIVERY_COST to ~0 (balance={balance:.2f})"
+                    f"{order_id}: stage={stage.value} must settle INVENTORY_ON_DELIVERY_COST to ~0 (balance={balance:.2f})"
                 )
     finally:
         conn.close()

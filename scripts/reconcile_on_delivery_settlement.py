@@ -21,6 +21,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.backup_db import backup_database  # noqa: E402
+from core.integrations.kaspi_order_stage import (  # noqa: E402
+    StageCode,
+    classify_kaspi_stage_from_db_row,
+)
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 PROD_WRITE_ENV_GATE = "ENABLE_CASHFLOW_PROD_WRITE"
@@ -189,7 +193,8 @@ def find_settlement_gaps(
                 date_filter += " AND date(COALESCE(" + date_col + ", '1970-01-01')) >= ?"
                 params.append(since_date.isoformat())
 
-        status_col = "internal_status" if "internal_status" in order_cols else "status"
+        if "internal_status" not in order_cols and "status" not in order_cols:
+            raise RuntimeError("fact_orders_kaspi status column missing (internal_status/status)")
         has_sku_cols = "sku_key" in order_cols or "sku_id" in order_cols
         if has_sku_cols:
             sku_expr = (
@@ -204,16 +209,10 @@ def find_settlement_gaps(
             sku_expr = "1"
         rows = conn.execute(
             f"""
-            SELECT DISTINCT
-                order_id,
-                store_code,
-                sku_key,
-                sku_id,
-                UPPER(TRIM(COALESCE({status_col}, ''))) AS status,
+            SELECT DISTINCT *,
                 {sku_expr} AS has_sku_identity
             FROM fact_orders_kaspi
             WHERE COALESCE(TRIM(order_id), '') <> ''
-              AND UPPER(TRIM(COALESCE({status_col}, ''))) IN ('COMPLETED', 'CANCELLED', 'RETURNED')
               {date_filter}
             """,
             tuple(params),
@@ -240,9 +239,17 @@ def find_settlement_gaps(
 
         gaps: list[dict[str, Any]] = []
         seen_orders: set[str] = set()
+        settled_stages = {
+            StageCode.ISSUED_COMPLETED,
+            StageCode.CANCELLED,
+            StageCode.RETURNED,
+        }
         for row in rows:
             order_id = str(row["order_id"])
             if order_id in seen_orders:
+                continue
+            stage = classify_kaspi_stage_from_db_row(dict(row))
+            if stage not in settled_stages:
                 continue
             sku_id = str(row["sku_id"] or "")
             has_identity = bool(int(row["has_sku_identity"] or 0))
@@ -263,7 +270,7 @@ def find_settlement_gaps(
                     "store_code": row["store_code"],
                     "sku_key": row["sku_key"],
                     "sku_id": sku_id,
-                    "status": row["status"],
+                    "status": stage.value,
                     "balance_kzt": round(bal, 2),
                     "event_date": event_date,
                 }
