@@ -50,6 +50,7 @@ from core.ops.waybill_send_batch import (
     select_manifest_entries_for_send as core_select_manifest_entries_for_send,
     transition_send_ledger_entry as core_transition_send_ledger_entry,
 )
+from scripts.waybill_send_policy import blocked_live_action_for_manifest
 
 
 # =============================================================================
@@ -673,6 +674,10 @@ def verify_send_batch_preflight(
                 }
             )
 
+    live_send_policy_decision = blocked_live_action_for_manifest(
+        manifest,
+        action="whatsapp_pdf_send",
+    )
     return {
         "ok": not issues,
         "issues": issues,
@@ -683,6 +688,8 @@ def verify_send_batch_preflight(
         "expected_target_date": expected_target_date.isoformat() if expected_target_date else None,
         "send_pdf_count": int(manifest.get("counts", {}).get("pdfs", 0) or 0),
         "send_order_count": int(manifest.get("counts", {}).get("orders", 0) or 0),
+        "live_send_allowed": live_send_policy_decision is None,
+        "live_send_policy_decision": live_send_policy_decision,
     }
 
 
@@ -3760,6 +3767,28 @@ def run_sender(
         return results
 
     manifest = load_send_batch_manifest(today_folder, source_mode=bundle_source)
+    if not dry_run:
+        blocked = blocked_live_action_for_manifest(
+            manifest,
+            action="whatsapp_pdf_send",
+        )
+        if blocked is not None:
+            results["failed"] += 1
+            results["halted"] = True
+            results["halt_reason"] = "TARGET_DATE_SEND_EXCLUDED"
+            results["error"] = str(
+                blocked.get("reason")
+                or "Manifest target date is excluded from live delivery"
+            )
+            _write_send_stopline(
+                today_folder,
+                {
+                    "halt_reason": results["halt_reason"],
+                    "target_date": manifest.get("target_date"),
+                    "captured_at": datetime.now().isoformat(),
+                },
+            )
+            return results
     batch_root = Path(manifest["batch_root"])
     results["source_root"] = str(batch_root)
     entries = list(manifest.get("entries") or [])
@@ -3790,19 +3819,11 @@ def run_sender(
             verbose=verbose,
         )
 
-    if resume:
-        pdfs_to_send = select_manifest_entries_for_send(
-            manifest,
-            ledger,
-            allow_unsure_resume=allow_unsure_resume,
-        )
-    else:
-        pdfs_to_send = list(entries)
-        _rearm_entries_for_forced_resend(
-            ledger,
-            [str(entry.get("pdf_key") or "") for entry in pdfs_to_send],
-        )
-        save_send_ledger(ledger_path, ledger)
+    pdfs_to_send = select_manifest_entries_for_send(
+        manifest,
+        ledger,
+        allow_unsure_resume=allow_unsure_resume,
+    )
     pdfs_to_send = order_pdfs_for_sending(pdfs_to_send)
     if max_pdfs is not None:
         pdfs_to_send = pdfs_to_send[: max(0, int(max_pdfs))]

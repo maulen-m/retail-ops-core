@@ -29,7 +29,7 @@ from scripts.waybill_delivery_completion import delivery_completion_state  # noq
 FALLBACK_AUTO_ZERO_FAIL = "auto-zero-fail"
 FALLBACK_MANUAL = "manual"
 FALLBACK_DISABLED = "disabled"
-FALLBACK_CHOICES = [FALLBACK_AUTO_ZERO_FAIL, FALLBACK_MANUAL, FALLBACK_DISABLED]
+FALLBACK_CHOICES = [FALLBACK_DISABLED]
 LEDGER_COMPLETION_RECHECK_ATTEMPTS = 5
 LEDGER_COMPLETION_RECHECK_SECONDS = 1.0
 
@@ -131,7 +131,7 @@ def run_delivery(
     expected_target_date: date | None = None,
     telegram_token: str | None = None,
     telegram_chat_id: str | None = None,
-    whatsapp_fallback_policy: str = FALLBACK_AUTO_ZERO_FAIL,
+    whatsapp_fallback_policy: str = FALLBACK_DISABLED,
     output_dir: Path | None = None,
     whatsapp_chat_title: str = DEFAULT_WHATSAPP_CHAT_TITLE,
     whatsapp_browser_mode: str = BROWSER_MODE_LAUNCH,
@@ -200,65 +200,6 @@ def run_delivery(
         )
         return report
 
-    confirmed_total = int(telegram_report.get("confirmed_total") or 0)
-    sent_this_run = int(telegram_report.get("sent") or 0)
-    fallback_allowed = bool(telegram_report.get("fallback_allowed"))
-    should_fallback = (
-        whatsapp_fallback_policy == FALLBACK_AUTO_ZERO_FAIL
-        and fallback_allowed
-        and confirmed_total == 0
-        and sent_this_run == 0
-    )
-
-    if should_fallback:
-        report["whatsapp_fallback_attempted"] = True
-        whatsapp_report = run_whatsapp_fallback(
-            today_folder=today_folder,
-            bundle_source=bundle_source,
-            expected_target_date=expected_date,
-            json_out=whatsapp_report_path,
-            python_executable=python_executable,
-            chat_title=whatsapp_chat_title,
-            browser_mode=whatsapp_browser_mode,
-        )
-        report["whatsapp_report"] = whatsapp_report
-        if whatsapp_report.get("ok"):
-            completion = delivery_completion_state(
-                today_folder=today_folder,
-                target_date=expected_date,
-                explicit_delivery_channel="whatsapp",
-                explicit_delivery_ok=True,
-            )
-            report["delivery_completion"] = completion
-            if not completion.get("completed") or completion.get("channel") != "whatsapp":
-                report.update(
-                    {
-                        "failure_stage": "whatsapp_fallback",
-                        "failure_reason": (
-                            "WhatsApp fallback reported OK but delivery ledger is not complete: "
-                            f"{completion.get('status')}"
-                        ),
-                        "completed_at": _now_iso(),
-                    }
-                )
-                return report
-            report.update(
-                {
-                    "ok": True,
-                    "delivery_channel": "whatsapp",
-                    "completed_at": _now_iso(),
-                }
-            )
-            return report
-        report.update(
-            {
-                "failure_stage": "whatsapp_fallback",
-                "failure_reason": str(whatsapp_report.get("stderr") or whatsapp_report.get("stdout") or "WhatsApp fallback failed"),
-                "completed_at": _now_iso(),
-            }
-        )
-        return report
-
     report.update(
         {
             "failure_stage": "telegram_primary",
@@ -277,13 +218,13 @@ def _parse_iso_date(value: str) -> date:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Primary Telegram waybill delivery with WhatsApp fallback")
+    parser = argparse.ArgumentParser(description="Telegram-only waybill delivery")
     parser.add_argument("--today-folder", type=Path, default=TODAY_FOLDER)
     parser.add_argument("--bundle-source", choices=SOURCE_CHOICES, default=SOURCE_MERGED)
     parser.add_argument("--expected-target-date", type=_parse_iso_date, default=None)
     parser.add_argument("--telegram-token", type=str, default=None)
     parser.add_argument("--telegram-chat-id", type=str, default=None)
-    parser.add_argument("--whatsapp-fallback-policy", choices=FALLBACK_CHOICES, default=FALLBACK_AUTO_ZERO_FAIL)
+    parser.add_argument("--whatsapp-fallback-policy", choices=FALLBACK_CHOICES, default=FALLBACK_DISABLED)
     parser.add_argument("--whatsapp-chat-title", type=str, default=DEFAULT_WHATSAPP_CHAT_TITLE)
     parser.add_argument("--whatsapp-browser-mode", type=str, default=BROWSER_MODE_LAUNCH)
     parser.add_argument("--no-status-messages", dest="status_messages", action="store_false", default=True)

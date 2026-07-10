@@ -36,7 +36,7 @@ Current daily scheduler contract (GMT+5):
 - same-day Google Ops Board cutoff is currently `17:00` for every active Kaspi store.
 - owner-approved PP1 late-window rule: Universal (`30000001_PP1`) and STORE-B (`30000002_PP1`) PP1 warehouse orders received at or before `17:00` Asia/Almaty are same-day eligible; no active PP1 store uses a `16:00` same-day cutoff.
 - Google Ops Board pre-window health gate: `13:45`
-  - runs DB preflight, workbook identity sync, Google board contract check, Kaspi store-context validation, and WhatsApp smoke
+  - runs DB preflight, workbook identity sync, Google board contract check, and Kaspi store-context validation; canonical health is browser-free and never runs WhatsApp smoke
   - blocks later automated publish / closeout if red
 - Google Ops Board publish jobs: `07:00` daily source-refresh + publish, `11:00` daily quiet publish, immediate after successful import, plus `14:01` to `17:11` every 10 minutes as a backstop
   - `07:00` source refresh order is strict:
@@ -59,9 +59,9 @@ Current daily scheduler contract (GMT+5):
   - preserve all manual sizes already entered
   - auto-set `Run_Control.ready_for_closeout = READY`
   - trigger closeout immediately if the board is then green
-- once READY survives debounce, the watcher launches the closeout scheduler; the closeout script itself runs the full closeout health profile, including Kaspi store-context, Telegram delivery config, and WhatsApp smoke as warning-only fallback readiness
+- once READY survives debounce, the watcher launches the closeout scheduler; the closeout script itself runs the full browser-free closeout health profile, including Kaspi store-context and Telegram delivery config
 - manual closeout/send recovery reuses the same automation lock as scheduled closeout so we do not fork duplicate live runs
-- WhatsApp chat safety now relies on the group title plus strong selected-row identifiers; subtitle drift is treated as diagnostic only
+- WhatsApp tooling is diagnostic/manual-only and is not part of canonical daily closeout or recovery
 - Google Ops Board closeout backstop job: `18:30`
 - closeout is checkpointed and resume-capable; later retries resume from the last safe green stage
 - after successful delivery send, closeout runs the DB-only shipped-truth sync immediately; the `19:15` and next-day `09:30` jobs are fallback repairs if the Mac/API is unavailable
@@ -73,6 +73,8 @@ Current daily scheduler contract (GMT+5):
   - the check is green only when no assembled `KASPI_DELIVERY / ACCEPTED_BY_MERCHANT` orders remain without `courierTransmissionDate` in the target/overdue window
   - if an order's PDF was sent in Telegram but Kaspi still shows no `courierTransmissionDate`, it remains operationally unshipped and must carry forward into the next `MERGED/SEND` batch until physically handed over
   - overdue carry-forward is based on merged per-order DB evidence, not one physical DB row: size and waybill evidence may be split across duplicate rows, while any `courierTransmissionDate` excludes the order from re-bundling
+  - carry-forward has no 5-, 14-, or 120-day expiry; internal `SHIPPED` without source-backed physical handover remains unresolved
+  - the `2026-07-10` manifest date is permanently no-send/no-resume. Any still-active, not-physically-handed order is reconciled as a fresh unresolved obligation into a later eligible day; the old July-10 batch is never resent.
 - owner Telegram alerts are low-noise:
   - prewindow green / red
   - closeout started / resumed

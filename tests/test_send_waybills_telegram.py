@@ -10,7 +10,12 @@ from core.integrations import telegram_bot as telegram_bot_mod
 from core.integrations.telegram_bot import get_waybill_telegram_config
 
 
-def _write_manifest(today_root: Path, entries: list[dict]) -> Path:
+def _write_manifest(
+    today_root: Path,
+    entries: list[dict],
+    *,
+    target_date: str = "2026-04-21",
+) -> Path:
     batch_root = today_root / "MERGED" / "SEND" / "21.04.26_MERGED_qnt2"
     pdf_dir = batch_root / "NORMAL_singles"
     pdf_dir.mkdir(parents=True, exist_ok=True)
@@ -40,7 +45,7 @@ def _write_manifest(today_root: Path, entries: list[dict]) -> Path:
     payload = {
         "schema_version": 2,
         "batch_label": batch_root.name,
-        "target_date": "2026-04-21",
+        "target_date": target_date,
         "source_root": str(batch_root),
         "batch_hash": "batchhash-telegram",
         "counts": {"pdfs": len(entries), "orders": len(entries), "overdue_orders": 0},
@@ -331,6 +336,69 @@ def test_telegram_sender_resume_sends_only_failed_entries(monkeypatch, tmp_path:
     assert sent_filenames == ["second.pdf"]
 
 
+def test_confirmed_telegram_ledger_entry_is_immutable() -> None:
+    ledger = {"entries": {"pdf-a": {"state": "confirmed", "history": []}}}
+
+    with pytest.raises(RuntimeError, match="immutable"):
+        telegram_mod._set_entry_state(ledger, "pdf-a", "pending")
+
+    assert ledger["entries"]["pdf-a"]["state"] == "confirmed"
+
+
+def test_telegram_sender_blocks_july_10_manifest_before_any_send(monkeypatch, tmp_path: Path):
+    _write_manifest(
+        tmp_path,
+        [{"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1}],
+        target_date="2026-07-10",
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **kwargs: sent.append(str(kwargs["document_path"])) or {"success": True},
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 7, 10),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+    )
+
+    assert report["ok"] is False
+    assert report["halt_reason"] == "TARGET_DATE_SEND_EXCLUDED"
+    assert sent == []
+
+
+def test_telegram_final_table_is_blocked_for_july_10(monkeypatch, tmp_path: Path):
+    _write_manifest(
+        tmp_path,
+        [{"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1}],
+        target_date="2026-07-10",
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_message",
+        lambda **kwargs: sent.append(str(kwargs["text"])) or {"success": True},
+    )
+
+    report = telegram_mod.send_final_status_table(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 7, 10),
+        token="token-1",
+        chat_id="-1001",
+    )
+
+    assert report["ok"] is False
+    assert "TARGET_DATE_SEND_EXCLUDED" in report["error"]
+    assert sent == []
+
+
 def test_telegram_sender_resume_caption_preserves_manifest_sequence(monkeypatch, tmp_path: Path):
     batch_root = _write_manifest(
         tmp_path,
@@ -416,7 +484,7 @@ def test_telegram_sender_refuses_when_batch_lock_is_held(monkeypatch, tmp_path: 
     assert sent == []
 
 
-def test_telegram_sender_no_resume_reports_current_batch_confirmations_only(monkeypatch, tmp_path: Path):
+def test_telegram_sender_no_resume_never_reselects_confirmed_entries(monkeypatch, tmp_path: Path):
     batch_root = _write_manifest(
         tmp_path,
         [
@@ -460,14 +528,13 @@ def test_telegram_sender_no_resume_reports_current_batch_confirmations_only(monk
     )
 
     assert report["ok"] is True
-    assert report["sent"] == 2
-    assert report["skipped"] == 0
+    assert report["sent"] == 0
+    assert report["skipped"] == 2
     assert report["confirmed_total"] == 2
-    assert captions[0].startswith("<b>1/2</b>")
-    assert captions[1].startswith("<b>2/2</b>")
+    assert captions == []
 
 
-def test_ordered_full_resend_reports_sequence_proof(monkeypatch, tmp_path: Path):
+def test_ordered_full_resend_is_permanently_disabled(monkeypatch, tmp_path: Path):
     batch_root = _write_manifest(
         tmp_path,
         [
@@ -492,18 +559,11 @@ def test_ordered_full_resend_reports_sequence_proof(monkeypatch, tmp_path: Path)
         send_delay=0,
     )
 
-    assert report["ok"] is True
-    assert report["sent"] == 2
-    assert report["confirmed_total"] == 2
-    assert sent_filenames == ["first.pdf", "second.pdf"]
-    assert report["ordered_resend_proof"]["ok"] is True
-    assert report["ordered_resend_proof"]["sequence_match"] is True
-    assert report["ordered_resend_proof"]["message_id_min"] == 101
-    assert report["ordered_resend_proof"]["message_id_max"] == 102
-
-    ledger = json.loads((batch_root / "telegram_send_ledger.json").read_text(encoding="utf-8"))
-    assert ledger["entries"]["pdf-a"]["telegram_message_id"] == "101"
-    assert ledger["entries"]["pdf-b"]["telegram_message_id"] == "102"
+    assert report["ok"] is False
+    assert report["halted"] is True
+    assert report["halt_reason"] == "ORDERED_FULL_RESEND_DISABLED"
+    assert sent_filenames == []
+    assert not (batch_root / "telegram_send_ledger.json").exists()
 
 
 def test_telegram_sender_retries_rate_limited_final_status_message(monkeypatch, tmp_path: Path):
@@ -518,26 +578,10 @@ def test_telegram_sender_retries_rate_limited_final_status_message(monkeypatch, 
         {"success": True, "message_id": "pre-status", "chat_id": "-1001"},
         {"success": False, "error": "Too Many Requests: retry after 7", "retry_after": 7, "ambiguous": False},
         {"success": True, "message_id": "final-status", "chat_id": "-1001"},
-        {"success": True, "message_id": "returns-status", "chat_id": "-1001"},
     ]
 
     monkeypatch.setattr(telegram_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
     monkeypatch.setattr(telegram_mod, "send_document", lambda **_kwargs: {"success": True, "message_id": "doc-1", "chat_id": "-1001"})
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_pickup_ready_snapshot",
-        lambda **_kwargs: {"total_orders": 0, "stores": []},
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "format_returns_pickup_message",
-        lambda snapshot: "<b>Returns Pickup Ready</b>\nNone",
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_returns_pickup_reply_markup",
-        lambda snapshot: {"keyboard": [["Возвраты"]], "resize_keyboard": True},
-    )
     monkeypatch.setattr(telegram_mod, "send_message", lambda **_kwargs: status_results.pop(0))
 
     report = telegram_mod.run_sender(
@@ -557,7 +601,7 @@ def test_telegram_sender_retries_rate_limited_final_status_message(monkeypatch, 
     assert sleeps == [7]
 
 
-def test_telegram_sender_posts_returns_pickup_after_final_status(monkeypatch, tmp_path: Path):
+def test_telegram_sender_does_not_post_returns_pickup_after_final_status(monkeypatch, tmp_path: Path):
     _write_manifest(
         tmp_path,
         [
@@ -571,22 +615,6 @@ def test_telegram_sender_posts_returns_pickup_after_final_status(monkeypatch, tm
         "send_document",
         lambda **_kwargs: {"success": True, "message_id": "doc-1", "chat_id": "-1001"},
     )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_pickup_ready_snapshot",
-        lambda **_kwargs: {"total_orders": 2, "stores": [{"store_code": "ACMEWEAR", "display_name": "AcmeWear"}]},
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "format_returns_pickup_message",
-        lambda snapshot: "<b>Returns Pickup Ready</b>\nAcmeWear: <code>1001</code>",
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_returns_pickup_reply_markup",
-        lambda snapshot: {"keyboard": [["Возвраты"], ["Забрал OF"]], "resize_keyboard": True},
-    )
-
     def _fake_send_message(**kwargs):
         status_texts.append(kwargs["text"])
         return {"success": True, "message_id": f"msg-{len(status_texts)}", "chat_id": "-1001"}
@@ -605,9 +633,9 @@ def test_telegram_sender_posts_returns_pickup_after_final_status(monkeypatch, tm
 
     assert report["ok"] is True
     assert report["final_status_sent"] is True
-    assert report["returns_pickup_sent"] is True
-    assert any("Returns Pickup Ready" in text for text in status_texts)
-    assert "Returns Pickup Ready" in status_texts[-1]
+    assert report["returns_pickup_sent"] is False
+    assert len(status_texts) == 2
+    assert all("Returns Pickup Ready" not in text for text in status_texts)
 
 
 def test_telegram_sender_arms_passive_handover_watch_after_successful_status_messages(monkeypatch, tmp_path: Path):
@@ -618,27 +646,12 @@ def test_telegram_sender_arms_passive_handover_watch_after_successful_status_mes
         ],
     )
     armed_calls: list[dict[str, object]] = []
-    message_ids = iter(["pre-status", "final-status", "returns-status"])
+    message_ids = iter(["pre-status", "final-status"])
 
     monkeypatch.setattr(
         telegram_mod,
         "send_document",
         lambda **_kwargs: {"success": True, "message_id": "doc-1", "chat_id": "-1001"},
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_pickup_ready_snapshot",
-        lambda **_kwargs: {"total_orders": 0, "stores": []},
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "format_returns_pickup_message",
-        lambda snapshot: "<b>Returns Pickup Ready</b>\nNone",
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_returns_pickup_reply_markup",
-        lambda snapshot: {"keyboard": [["Возвраты"]], "resize_keyboard": True},
     )
     monkeypatch.setattr(
         telegram_mod,

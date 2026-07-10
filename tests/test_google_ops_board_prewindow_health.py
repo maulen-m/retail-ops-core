@@ -463,7 +463,7 @@ def test_ensure_prewindow_health_publish_profile_skips_whatsapp_and_store_contex
     assert report["checks"]["whatsapp_smoke"]["skipped"] is True
 
 
-def test_ensure_prewindow_health_closeout_profile_warns_on_whatsapp_when_telegram_is_green(
+def test_ensure_prewindow_health_closeout_profile_skips_whatsapp_when_telegram_is_green(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -496,7 +496,9 @@ def test_ensure_prewindow_health_closeout_profile_warns_on_whatsapp_when_telegra
     monkeypatch.setattr(
         health_mod,
         "_run_whatsapp_smoke_check",
-        lambda *, verbose: {"ok": False, "issues": [{"code": "browser_closed"}]},
+        lambda *, verbose: (_ for _ in ()).throw(
+            AssertionError("canonical closeout health must not open WhatsApp")
+        ),
     )
     monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
 
@@ -516,9 +518,8 @@ def test_ensure_prewindow_health_closeout_profile_warns_on_whatsapp_when_telegra
 
     assert report["ok"] is True
     assert report["checks"]["telegram_delivery_config"]["ok"] is True
-    assert report["checks"]["whatsapp_smoke"]["ok"] is False
-    assert report["checks"]["whatsapp_smoke"]["blocking"] is False
-    assert report["checks"]["whatsapp_smoke"]["warning_only"] is True
+    assert report["checks"]["whatsapp_smoke"]["ok"] is True
+    assert report["checks"]["whatsapp_smoke"]["skipped"] is True
 
 
 def test_closeout_profile_skips_same_day_identity_artifact_reuse(

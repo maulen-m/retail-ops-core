@@ -1,0 +1,22 @@
+{
+  "schema_version": "autonomous_business.waybill_send_exclusions.v1",
+  "decision_id": "WAYBILL-SEND-EXCLUSION-2026-07-10",
+  "recorded_at": "2026-07-10T21:40:00+05:00",
+  "authority": "human_owner",
+  "decisions": [
+    {
+      "target_date": "2026-07-10",
+      "action": "never_send_or_resume",
+      "reason": "Owner deferred every additional July 10 Telegram delivery after the employee shipped the confirmed batch. Any still-active unhanded order must enter a later fresh batch instead of resending the July 10 manifest.",
+      "allow_read_only_preflight": true,
+      "blocked_live_actions": [
+        "telegram_pdf_send",
+        "telegram_resume",
+        "telegram_ordered_resend",
+        "telegram_batch_status_message",
+        "whatsapp_pdf_send",
+        "delivery_fallback"
+      ]
+    }
+  ]
+}

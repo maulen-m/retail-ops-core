@@ -81,8 +81,8 @@ and corresponding tests before merge.
 - keep the automated 18:30 closeout DB-first:
   - final size writeback from `SalesRaw_Today.MY_SIZE`
   - DB-first shipping via `scripts/ship_orders_api.py --selection-source db`
-  - DB-first waybill download / build / Telegram-primary delivery
-  - WhatsApp fallback only when Telegram confirms zero PDFs and the failure is non-ambiguous
+  - DB-first waybill download / build / Telegram-only delivery
+  - canonical daily closeout must not invoke WhatsApp or open a browser
 - keep closeout watcher churn bounded:
   - Google READY must trigger a `60` second debounce, then launch the canonical closeout scheduler
   - the watcher must not own closeout health or browser/API smoke; `scripts/run_google_ops_board_closeout.py` owns the single closeout health profile immediately before external closeout actions
@@ -106,7 +106,9 @@ and corresponding tests before merge.
 - keep delivery completion ledger-based:
   - `Run_Control.last_orchestrator_status = OK` alone is not a green end state
   - Telegram completion requires all manifest `pdf_key` values confirmed in `telegram_send_ledger.json`
-  - WhatsApp fallback completion requires explicit `delivery_send_report.json` evidence plus all manifest `pdf_key` values confirmed in `send_ledger.json`
+  - confirmed Telegram `pdf_key` values are immutable across every recovery mode
+  - `api_started` or `unsure` entries block delivery until evidence reconciliation
+  - target date `2026-07-10` is permanently excluded from send, resume, final-table, and fallback delivery actions by machine-readable owner decision
 - keep shipped-truth refresh DB-only and post-delivery:
   - closeout must run `shipped_truth_sync` after successful delivery send and checkpoint it separately from `delivery_send`
   - if `shipped_truth_sync` fails, rerunning closeout with `--resume` must reuse the completed delivery checkpoint and retry only the shipped-truth sync stage
@@ -118,6 +120,8 @@ and corresponding tests before merge.
   - `scripts/ship_orders_api.py` defaults to overdue carry-forward mode; strict today-only shipping is opt-in only
   - `scripts/import_orders_to_crm.py --include-overdue` may append only previous-day missed pending orders into CRM (`append_date - 1`), while preserving the original Kaspi planned handover date
   - overdue pending assembly backlog must remain visible as a stop-line until shipped; shipping health stays non-green while overdue/stale pending backlog remains after a live shipping run
+  - an unresolved order does not expire after 5, 14, or 120 days; retain it until fresh source-backed physical handover or terminal cancellation/return truth discharges it
+  - internal `SHIPPED` or `COMPLETED` alone is not physical handover evidence
   - `scripts/ship_orders_api.py` must emit a dedicated backlog report with age buckets + exact overdue IDs under `reports/kaspi_pending_backlog/<YYYY-MM-DD>/`
 - keep fallback selection path in waybill download (`--fallback-crm`) to avoid missing PDFs for non-prefetched target IDs
 - keep profile contract in daily ops orchestrator:

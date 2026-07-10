@@ -59,11 +59,10 @@ This generates:
 
 ### 4. Delivery Distribution
 
-Current production path is Google Ops Board closeout with Telegram-primary bundle delivery and WhatsApp fallback only when Telegram confirms zero PDFs. Legacy manual WhatsApp send remains a recovery path, not the primary daily path:
-```bash
-# Double-click or run:
-./excel_ui/run_send_whatsapp.command
-```
+Current production path is Google Ops Board closeout with Telegram-only bundle
+delivery. WhatsApp tooling is diagnostic/manual-only and must not be invoked by
+daily closeout, retry, or fallback automation. Recovery resumes the pinned
+Telegram ledger; it never resends confirmed PDF keys.
 
 **Sending order (automatic):**
 1. SPECIAL_multi_line (highest priority)

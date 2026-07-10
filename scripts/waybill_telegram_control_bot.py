@@ -32,7 +32,7 @@ from core.integrations.telegram_bot import get_waybill_telegram_config, send_mes
 from core.paths import data_path  # noqa: E402
 from scripts.run_google_ops_board_closeout import build_readiness_report  # noqa: E402
 from scripts import returns_pickup_report as returns_pickup_report_mod  # noqa: E402
-from scripts.send_waybills_telegram import run_ordered_full_resend, send_final_status_table  # noqa: E402
+from scripts.send_waybills_telegram import send_final_status_table  # noqa: E402
 from scripts.waybill_delivery_completion import (  # noqa: E402
     delivery_completion_state,
     format_delivery_completion_status,
@@ -545,7 +545,6 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
                 "/delivery_status — manifest/ledger delivery counts\n"
                 "/ready — start 60s closeout debounce\n"
                 "/resume_delivery — resume incomplete delivery\n"
-                "/resend_today_ordered confirm — resend full manifest in canonical order\n"
                 "/handover_done — employee handed packages to courier; check Kaspi after 60s\n"
                 "/handover_status — compact physical courier handover state\n"
                 "/hfull — full physical handover audit table\n"
@@ -638,44 +637,10 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
             _send_text(token=token, chat_id=chat_id, text=f"Delivery resume failed with rc=<code>{result.returncode}</code>.")
         return
     if command == "/resend_today_ordered":
-        if not args or args[0].casefold() != "confirm":
-            _send_text(
-                token=token,
-                chat_id=chat_id,
-                text=(
-                    "Ordered full resend is live and can duplicate documents. "
-                    "Use <code>/resend_today_ordered confirm</code> only after checking the current batch."
-                ),
-            )
-            return
-        _send_text(token=token, chat_id=chat_id, text="Telegram ordered full resend started. Locking batch and sending in manifest order.")
-        result = run_ordered_full_resend(expected_target_date=target_date)
-        proof = dict(result.get("ordered_resend_proof") or {})
-        if result.get("ok") and proof.get("ok"):
-            sent = int(result.get("confirmed_total") or result.get("sent") or 0)
-            total = int(result.get("total") or proof.get("expected_count") or 0)
-            msg_min = proof.get("message_id_min")
-            msg_max = proof.get("message_id_max")
-            _send_text(
-                token=token,
-                chat_id=chat_id,
-                text=(
-                    "Telegram ordered resend complete.\n"
-                    f"Bundles: <code>{sent}/{total}</code>\n"
-                    f"Message IDs: <code>{msg_min}..{msg_max}</code>\n"
-                    f"Sequence match: <code>{bool(proof.get('sequence_match'))}</code>"
-                ),
-            )
-            return
-        issues = proof.get("issues") or result.get("errors") or []
         _send_text(
             token=token,
             chat_id=chat_id,
-            text=(
-                "Telegram ordered resend failed or sequence proof failed.\n"
-                f"Reason: <code>{result.get('halt_reason') or result.get('error') or 'unknown'}</code>\n"
-                f"Issues: <code>{json.dumps(issues, ensure_ascii=False)[:1200]}</code>"
-            ),
+            text="Ordered full resend is permanently disabled. Use pinned-ledger resume; confirmed PDFs are immutable.",
         )
         return
     if command == "/returns_ack_store":

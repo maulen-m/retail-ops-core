@@ -1071,7 +1071,7 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 "--expected-target-date",
                 target_date.isoformat(),
                 "--whatsapp-fallback-policy",
-                "auto-zero-fail",
+                "disabled",
                 "--json-out",
                 str(run_dir / "delivery_send_report.json"),
             ]

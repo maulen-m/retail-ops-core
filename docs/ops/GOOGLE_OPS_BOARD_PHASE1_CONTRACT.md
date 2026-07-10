@@ -104,7 +104,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
     - Google board layout
     - active store token / merchant UID context
     - Telegram delivery config
-    - WhatsApp document-send smoke as legacy fallback readiness
+    - WhatsApp smoke skipped; canonical health is browser-free
     - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/prewindow_health.json`
   - `publish`:
     - DB preflight
@@ -122,10 +122,10 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
     - Google board layout
     - active store token / merchant UID context
     - Telegram delivery config
-    - WhatsApp document-send smoke as warning-only fallback readiness
+    - WhatsApp smoke skipped; canonical health is browser-free
     - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/closeout_health.json`
 - Publish-safe health is mandatory before live Google board writes.
-- Full closeout health is mandatory before closeout external actions; Telegram config and store context block closeout, while WhatsApp smoke is report-visible but does not block Telegram-primary closeout.
+- Full closeout health is mandatory before closeout external actions; Telegram config and store context block closeout. Canonical closeout health is browser-free and must not run WhatsApp smoke.
 - The early closeout watcher must not run closeout health directly. It only detects stable READY / `18:57` auto-readiness and launches `scripts/run_google_ops_board_closeout_scheduler.py --resume`.
 - `scripts/run_google_ops_board_closeout.py` owns the single closeout health profile immediately before external closeout actions. This avoids duplicate watcher-side health/API/browser churn while keeping the irreversible action gated.
 - Automatic identity sync is limited to the `full` health profile and keyed by workbook fingerprint.
@@ -227,7 +227,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - mark `Run_Control.ready_for_closeout = READY`
   - trigger closeout immediately if the board is then green
 - The `18:57` probable-size auto-fill must write an audit artifact under `exports/google_ops_board/auto_probable_fill/<YYYY-MM-DD>/`.
-- The minute-level watcher must not run WhatsApp smoke or store-context health directly; the closeout script delegates that to `scripts/run_google_ops_board_prewindow_health.py` and treats WhatsApp smoke as warning-only in the closeout profile.
+- The minute-level watcher must not run health directly; the closeout script delegates browser-free store-context and Telegram checks to `scripts/run_google_ops_board_prewindow_health.py`.
 - After a successful closeout for the target date:
   - later scheduled size writebacks must skip
   - the `18:30` backstop must skip
@@ -235,14 +235,14 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - do not let closeout and scheduled writeback mutate state concurrently
 - Manual live recovery must use that same lock:
   - direct closeout apply must acquire the closeout lock unless it is already held by the scheduler
-  - manual WhatsApp resend/recovery wrappers must re-enter through the shared lock helper
+  - delivery recovery must resume the pinned Telegram ledger through the canonical scheduler; whole-manifest and WhatsApp fallback resends are forbidden
 - Closeout must fail before shipping if active stores are missing token or merchant UID context.
 - The automated closeout path is DB-first:
   - final size writeback
   - DB-first shipping
   - DB-first waybill download
   - DB-first bundle build; CRM workbook rows are a legacy fallback only when DB-sized orders are unavailable
-  - Telegram-primary delivery with WhatsApp fallback only when Telegram sends zero PDFs
+  - Telegram-only delivery; canonical closeout must never launch a WhatsApp sender or browser fallback
 - Every closeout run writes a dedicated evidence folder under:
   - `exports/google_ops_board/workflow_runs/<YYYY-MM-DD>/<run_id>/`
 - Every closeout step report must include `started_at`, `completed_at`, and `duration_sec`.
@@ -264,11 +264,14 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - Delivery channel authority:
   - `send_batch_manifest.json` remains the only PDF/order scope for delivery
   - Telegram writes `telegram_send_ledger.json`
-  - WhatsApp fallback keeps using its existing `send_ledger.json`
   - `Run_Control.last_orchestrator_status = OK` is not sufficient completion truth by itself
-  - closeout is complete only when the current manifest has every `pdf_key` confirmed in `telegram_send_ledger.json`, or when an explicit `delivery_send_report.json` says `delivery_channel = whatsapp` and `send_ledger.json` confirms every manifest `pdf_key`
+  - closeout is complete only when the pinned current manifest has every `pdf_key` confirmed in `telegram_send_ledger.json`
   - old `whatsapp_send` artifacts do not satisfy the new `delivery_send` stage
-  - if Telegram has confirmed or ambiguously attempted any PDF, WhatsApp fallback must not auto-run, because that would risk duplicate bundles
+  - a confirmed `pdf_key` is immutable and must never be selected by resume, recovery, no-resume, or control-bot paths
+  - `api_started` and `unsure` entries are hard stoplines until reconciled from evidence
+  - a failed-before-send entry may be retried only through the bounded pinned-ledger retry policy
+  - no delivery path may select a newer manifest by modification time after a checkpoint has pinned one
+  - target date `2026-07-10` is permanently `never_send_or_resume`; dry-run/preflight inspection is allowed, but every PDF or batch-tied status-message path must fail closed from the manifest target date
 - Telegram waybill delivery requires:
   - `TELEGRAM_BOT_TOKEN_WAYBILL` preferred for the dedicated waybill bot
   - fallback: `TELEGRAM_BOT_TOKEN`

@@ -466,9 +466,8 @@ def test_waybill_telegram_resume_delivery_runs_scheduler_when_incomplete(monkeyp
     assert any("resuming delivery" in msg.lower() for msg in sent_messages)
 
 
-def test_waybill_telegram_ordered_resend_requires_confirm(monkeypatch, tmp_path: Path):
+def test_waybill_telegram_ordered_resend_is_disabled_without_confirm(monkeypatch, tmp_path: Path):
     sent_messages: list[str] = []
-    resend_calls: list[dict[str, object]] = []
 
     monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
     monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
@@ -489,19 +488,16 @@ def test_waybill_telegram_ordered_resend_requires_confirm(monkeypatch, tmp_path:
             }
         ],
     )
-    monkeypatch.setattr(bot_mod, "run_ordered_full_resend", lambda **kwargs: resend_calls.append(kwargs))
     monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
 
     rc = bot_mod.poll_once(now=datetime(2026, 5, 7, 17, 30, tzinfo=ZoneInfo("Asia/Almaty")))
 
     assert rc == 0
-    assert resend_calls == []
-    assert any("confirm" in msg.lower() for msg in sent_messages)
+    assert any("permanently disabled" in msg.lower() for msg in sent_messages)
 
 
-def test_waybill_telegram_ordered_resend_runs_full_resend(monkeypatch, tmp_path: Path):
+def test_waybill_telegram_ordered_resend_is_disabled_even_with_confirm(monkeypatch, tmp_path: Path):
     sent_messages: list[str] = []
-    resend_calls: list[dict[str, object]] = []
 
     monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
     monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
@@ -523,34 +519,12 @@ def test_waybill_telegram_ordered_resend_runs_full_resend(monkeypatch, tmp_path:
         ],
     )
 
-    def _fake_resend(**kwargs):
-        resend_calls.append(kwargs)
-        return {
-            "ok": True,
-            "sent": 31,
-            "failed": 0,
-            "confirmed_total": 31,
-            "total": 31,
-            "source_root": "/tmp/Today/MERGED/SEND/07.05.26_MERGED_qnt72",
-            "ordered_resend_proof": {
-                "ok": True,
-                "sequence_match": True,
-                "message_id_min": 626,
-                "message_id_max": 656,
-            },
-        }
-
-    monkeypatch.setattr(bot_mod, "run_ordered_full_resend", _fake_resend)
     monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
 
     rc = bot_mod.poll_once(now=datetime(2026, 5, 7, 17, 30, tzinfo=ZoneInfo("Asia/Almaty")))
 
     assert rc == 0
-    assert len(resend_calls) == 1
-    assert resend_calls[0]["expected_target_date"].isoformat() == "2026-05-07"
-    assert any("ordered resend complete" in msg.lower() for msg in sent_messages)
-    assert any("31/31" in msg for msg in sent_messages)
-    assert any("626..656" in msg for msg in sent_messages)
+    assert any("permanently disabled" in msg.lower() for msg in sent_messages)
 
 
 def test_waybill_telegram_final_table_resends_summary(monkeypatch, tmp_path: Path):

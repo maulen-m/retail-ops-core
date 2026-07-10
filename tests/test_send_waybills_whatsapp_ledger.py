@@ -18,7 +18,12 @@ from scripts.send_waybills_whatsapp import (
 )
 
 
-def _write_batch_manifest(today_root: Path, *, filename: str = "a.pdf") -> tuple[Path, Path, dict]:
+def _write_batch_manifest(
+    today_root: Path,
+    *,
+    filename: str = "a.pdf",
+    target_date: str = "2026-03-10",
+) -> tuple[Path, Path, dict]:
     batch_root = today_root / "MERGED" / "SEND" / "10.03.26_MERGED_qnt1"
     pdf_dir = batch_root / "NORMAL_singles"
     pdf_dir.mkdir(parents=True, exist_ok=True)
@@ -29,7 +34,7 @@ def _write_batch_manifest(today_root: Path, *, filename: str = "a.pdf") -> tuple
     payload = {
         "schema_version": 2,
         "batch_label": batch_root.name,
-        "target_date": "2026-03-10",
+        "target_date": target_date,
         "source_root": str(batch_root),
         "batch_hash": "batchhash-1",
         "counts": {"pdfs": 1, "orders": 1, "overdue_orders": 0},
@@ -393,6 +398,48 @@ def test_verify_send_batch_preflight_allows_expected_stale_batch_with_override(t
     )
 
     assert preflight["ok"] is True
+
+
+def test_july_10_preflight_is_structurally_allowed_but_live_send_is_ineligible(tmp_path: Path) -> None:
+    today_root = tmp_path / "Today"
+    _write_batch_manifest(today_root, target_date="2026-07-10")
+
+    preflight = verify_send_batch_preflight(
+        today_root,
+        source_mode=SOURCE_MERGED,
+        expected_target_date=date(2026, 7, 10),
+        allow_stale_batch=True,
+    )
+
+    assert preflight["ok"] is True
+    assert preflight["live_send_allowed"] is False
+    assert preflight["live_send_policy_decision"]["action"] == "never_send_or_resume"
+
+
+def test_whatsapp_sender_blocks_july_10_before_opening_browser(tmp_path: Path, monkeypatch) -> None:
+    today_root = tmp_path / "Today"
+    _write_batch_manifest(today_root, target_date="2026-07-10")
+
+    class _ShouldNotStartSender:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("WhatsApp sender must not start for an excluded manifest")
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.check_playwright", lambda: True)
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _ShouldNotStartSender)
+
+    results = run_sender(
+        today_folder=today_root,
+        chat_title="Заказы",
+        dry_run=False,
+        resume=False,
+        bundle_source=SOURCE_MERGED,
+        status_messages=False,
+        expected_target_date=date(2026, 7, 10),
+    )
+
+    assert results["sent"] == 0
+    assert results["halted"] is True
+    assert results["halt_reason"] == "TARGET_DATE_SEND_EXCLUDED"
 
 
 def test_run_sender_stops_on_stale_batch_before_opening_whatsapp(tmp_path: Path, monkeypatch) -> None:
@@ -1310,7 +1357,7 @@ def test_run_sender_can_limit_live_run_to_one_pdf(
     assert _FakeSender.confirmed == ["confirmed.pdf"]
 
 
-def test_run_sender_no_resume_resends_even_ledger_confirmed_entries(
+def test_run_sender_no_resume_never_resends_ledger_confirmed_entries(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1367,9 +1414,9 @@ def test_run_sender_no_resume_resends_even_ledger_confirmed_entries(
         verbose=False,
     )
 
-    assert results["sent"] == 3
-    assert results["skipped"] == 0
-    assert "confirmed.pdf" in _FakeSender.confirmed
+    assert results["sent"] == 2
+    assert results["skipped"] == 1
+    assert "confirmed.pdf" not in _FakeSender.confirmed
 
 
 def test_run_sender_lingers_before_shutdown_when_requested(

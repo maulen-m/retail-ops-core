@@ -22,8 +22,8 @@ from core.integrations.telegram_bot import (  # noqa: E402
     send_document,
     send_message,
 )
-from scripts import returns_pickup_report as returns_pickup_report_mod  # noqa: E402
 from scripts.waybill_telegram_state import arm_passive_handover_watch  # noqa: E402
+from scripts.waybill_send_policy import blocked_live_action_for_manifest  # noqa: E402
 from scripts.send_waybills_whatsapp import (  # noqa: E402
     ALMATY_TZ,
     SOURCE_AUTO,
@@ -110,6 +110,11 @@ def _set_entry_state(
     if state not in TELEGRAM_LEDGER_STATES:
         raise ValueError(f"Unsupported Telegram ledger state: {state}")
     entry = ledger.setdefault("entries", {}).setdefault(pdf_key, {"history": []})
+    previous_state = str(entry.get("state") or "pending")
+    if previous_state == "confirmed":
+        if state != "confirmed":
+            raise RuntimeError(f"Confirmed Telegram ledger entry is immutable: {pdf_key}")
+        return
     entry["state"] = state
     entry["last_updated"] = _now_iso()
     if extra:
@@ -146,8 +151,6 @@ def _select_entries_for_telegram_send(
     *,
     resume: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    if not resume:
-        return list(manifest_entries), []
     selected: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
     ledger_entries = ledger.get("entries") or {}
@@ -337,32 +340,6 @@ def _send_final_status_table_from_manifest(
     }
 
 
-def _send_returns_pickup_message(
-    *,
-    token: str,
-    chat_id: str,
-    timeout_seconds: int = 15,
-) -> dict[str, Any]:
-    snapshot = returns_pickup_report_mod.build_pickup_ready_snapshot()
-    message = returns_pickup_report_mod.format_returns_pickup_message(snapshot)
-    reply_markup = returns_pickup_report_mod.build_returns_pickup_reply_markup(snapshot)
-    status_result = _send_message_with_rate_limit_retry(
-        token=token,
-        chat_id=chat_id,
-        text=message,
-        timeout_seconds=timeout_seconds,
-        reply_markup=reply_markup,
-    )
-    success = bool(status_result.get("success"))
-    return {
-        "ok": success,
-        "returns_pickup_sent": success,
-        "returns_pickup_message_id": str(status_result.get("message_id") or ""),
-        "status_message_failures": 0 if success else 1,
-        "error": str(status_result.get("error") or ""),
-    }
-
-
 def send_final_status_table(
     *,
     today_folder: Path = TODAY_FOLDER,
@@ -372,7 +349,6 @@ def send_final_status_table(
     chat_id: str | None = None,
     timeout_seconds: int = 15,
 ) -> dict[str, Any]:
-    config = get_waybill_telegram_config(token=token, chat_id=chat_id)
     manifest = load_send_batch_manifest(
         Path(today_folder),
         source_mode=bundle_source,
@@ -389,6 +365,23 @@ def send_final_status_table(
             "confirmed_total": 0,
             "total": len(manifest.get("entries") or []),
         }
+    blocked = blocked_live_action_for_manifest(
+        manifest,
+        action="telegram_batch_status_message",
+    )
+    if blocked is not None:
+        return {
+            "ok": False,
+            "final_status_sent": False,
+            "final_status_message_id": "",
+            "returns_pickup_sent": False,
+            "returns_pickup_message_id": "",
+            "status_message_failures": 1,
+            "error": f"TARGET_DATE_SEND_EXCLUDED: {blocked.get('reason')}",
+            "confirmed_total": 0,
+            "total": len(manifest.get("entries") or []),
+        }
+    config = get_waybill_telegram_config(token=token, chat_id=chat_id)
     ledger = load_telegram_ledger(Path(str(manifest["batch_root"])) / TELEGRAM_SEND_LEDGER_FILE, manifest)
     result = _send_final_status_table_from_manifest(
         manifest=manifest,
@@ -397,19 +390,8 @@ def send_final_status_table(
         chat_id=config["chat_id"],
         timeout_seconds=timeout_seconds,
     )
-    returns_pickup = _send_returns_pickup_message(
-        token=config["token"],
-        chat_id=config["chat_id"],
-        timeout_seconds=timeout_seconds,
-    )
-    result["ok"] = bool(result.get("ok")) and bool(returns_pickup.get("ok"))
-    result["returns_pickup_sent"] = bool(returns_pickup.get("returns_pickup_sent"))
-    result["returns_pickup_message_id"] = str(returns_pickup.get("returns_pickup_message_id") or "")
-    result["status_message_failures"] = int(result.get("status_message_failures") or 0) + int(
-        returns_pickup.get("status_message_failures") or 0
-    )
-    if returns_pickup.get("error"):
-        result["returns_pickup_error"] = str(returns_pickup.get("error") or "")
+    result["returns_pickup_sent"] = False
+    result["returns_pickup_message_id"] = ""
     return result
 
 
@@ -455,6 +437,26 @@ def run_sender(
         _write_stopline(today_folder, report)
         return report
 
+    manifest = load_send_batch_manifest(today_folder, source_mode=bundle_source)
+    if not dry_run:
+        blocked = blocked_live_action_for_manifest(
+            manifest,
+            action="telegram_pdf_send",
+        )
+        if blocked is not None:
+            report.update(
+                {
+                    "failed": 1,
+                    "halted": True,
+                    "halt_reason": "TARGET_DATE_SEND_EXCLUDED",
+                    "error": str(blocked.get("reason") or "Manifest target date is excluded from live delivery"),
+                    "fallback_allowed": False,
+                    "completed_at": _now_iso(),
+                }
+            )
+            _write_stopline(today_folder, report)
+            return report
+
     try:
         config = get_waybill_telegram_config(token=token, chat_id=chat_id)
     except ValueError as exc:
@@ -470,7 +472,6 @@ def run_sender(
         )
         return report
 
-    manifest = load_send_batch_manifest(today_folder, source_mode=bundle_source)
     batch_root = Path(str(manifest["batch_root"]))
     ledger_path = batch_root / TELEGRAM_SEND_LEDGER_FILE
     report.update(
@@ -554,9 +555,6 @@ def _run_sender_with_lock(
         selected_entries = selected_entries[: max(0, int(max_pdfs))]
 
     confirmed_before, confirmed_orders_by_store = _confirmed_progress_snapshot(entries, ledger)
-    if not resume:
-        confirmed_before = 0
-        confirmed_orders_by_store = Counter()
     store_stats = _store_stats_from_manifest(manifest)
     report.update(
         {
@@ -680,15 +678,6 @@ def _run_sender_with_lock(
         report["status_message_failures"] = int(report.get("status_message_failures") or 0) + int(
             final_status.get("status_message_failures") or 0
         )
-        returns_pickup = _send_returns_pickup_message(
-            token=config["token"],
-            chat_id=config["chat_id"],
-        )
-        report["returns_pickup_sent"] = bool(returns_pickup.get("returns_pickup_sent"))
-        report["returns_pickup_message_id"] = str(returns_pickup.get("returns_pickup_message_id") or "")
-        report["status_message_failures"] = int(report.get("status_message_failures") or 0) + int(
-            returns_pickup.get("status_message_failures") or 0
-        )
         if not final_status.get("ok"):
             if verbose:
                 print(f"WARNING: Telegram post-status message failed: {final_status.get('error')}")
@@ -700,7 +689,7 @@ def _run_sender_with_lock(
         and int(report["confirmed_total"]) == 0
         and str(report.get("halt_reason") or "") not in {"MANIFEST_PREFLIGHT_RED", "TELEGRAM_UNSURE"}
     )
-    if report["ok"] and status_messages and (report.get("final_status_sent") or report.get("returns_pickup_sent")):
+    if report["ok"] and int(report.get("confirmed_total") or 0) == len(entries):
         target_date = expected_target_date
         if target_date is None:
             try:
@@ -806,33 +795,16 @@ def run_ordered_full_resend(
     timeout_seconds: int = 60,
     verbose: bool = False,
 ) -> dict[str, Any]:
-    """Live recovery path: resend the whole current manifest once in manifest order."""
-    report = run_sender(
-        today_folder=today_folder,
-        bundle_source=bundle_source,
-        expected_target_date=expected_target_date,
-        token=token,
-        chat_id=chat_id,
-        dry_run=False,
-        resume=False,
-        status_messages=False,
-        send_delay=send_delay,
-        fail_fast=fail_fast,
-        max_pdfs=None,
-        timeout_seconds=timeout_seconds,
-        verbose=verbose,
-    )
-    proof = build_ordered_resend_proof(
-        today_folder=today_folder,
-        bundle_source=bundle_source,
-        started_at=str(report.get("started_at") or ""),
-    )
-    report["ordered_resend_proof"] = proof
-    if not proof.get("ok"):
-        report["ok"] = False
-        report["halted"] = True
-        report["halt_reason"] = "ORDERED_RESEND_SEQUENCE_PROOF_FAILED"
-    return report
+    """Deprecated unsafe recovery path; confirmed ledger keys are immutable."""
+    return {
+        "ok": False,
+        "halted": True,
+        "halt_reason": "ORDERED_FULL_RESEND_DISABLED",
+        "error": "Whole-manifest resend is disabled; resume only the pinned ledger.",
+        "sent": 0,
+        "failed": 0,
+        "confirmed_total": 0,
+    }
 
 
 def _parse_iso_date(value: str) -> date:
@@ -891,18 +863,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if preflight.get("ok") else 1
 
     if args.ordered_full_resend:
-        if not args.confirm_resend:
-            report = {
-                "ok": False,
-                "halted": True,
-                "halt_reason": "ORDERED_RESEND_REQUIRES_CONFIRM",
-                "error": "Pass --confirm-resend to perform a live ordered full resend.",
-            }
-            if args.json_out:
-                args.json_out.parent.mkdir(parents=True, exist_ok=True)
-                args.json_out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 2
         report = run_ordered_full_resend(
             today_folder=args.today_folder,
             bundle_source=args.bundle_source,
