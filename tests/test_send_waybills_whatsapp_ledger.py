@@ -1,11 +1,15 @@
 import json
+import hashlib
+import fcntl
 from datetime import date
 from pathlib import Path
 
 import pytest
 
+from core.ops.waybill_send_batch import resolve_manifest_entry_path
 from scripts.send_waybills_whatsapp import (
     SOURCE_MERGED,
+    _manifest_batch_hash,
     run_sender_smoke_check,
     load_send_batch_manifest,
     load_send_ledger,
@@ -16,6 +20,62 @@ from scripts.send_waybills_whatsapp import (
     transition_send_ledger_entry,
     verify_send_batch_preflight,
 )
+from scripts.build_daily_waybills import _compute_batch_hash
+
+
+def test_manifest_entry_path_cannot_escape_batch_root(tmp_path: Path) -> None:
+    batch_root = tmp_path / "batch"
+    batch_root.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.4\noutside\n")
+
+    with pytest.raises(RuntimeError, match="escapes immutable batch root"):
+        resolve_manifest_entry_path(
+            batch_root,
+            {
+                "relative_output_path": "safe/../../outside.pdf",
+                "sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
+                "file_size": outside.stat().st_size,
+            },
+        )
+
+
+def test_manifest_preflight_hash_matches_request_pinned_builder_hash() -> None:
+    entries = [
+        {
+            "pdf_key": "pdf-1",
+            "relative_output_path": "NORMAL_singles/a.pdf",
+            "sha256": "a" * 64,
+            "file_size": 123,
+            "mtime": "2026-07-11T12:00:00+05:00",
+            "logical_group_type": "NORMAL",
+            "order_ids": ["1001"],
+            "source_row_ids": ["1"],
+            "product_family_key": "FAMILY",
+            "color_key": "BLACK",
+            "product_color_key": "FAMILY|BLACK",
+            "size_token": "L",
+            "size_rank": 3,
+            "send_sequence": 1,
+        }
+    ]
+    request_identity = {
+        "target_date": "2026-07-11",
+        "ready_set_at": "2026-07-11T17:00:00+05:00",
+    }
+    manifest = {
+        "entries": entries,
+        "request_identity": request_identity,
+        "expected_orders_sha256": "b" * 64,
+        "obligation_scope_hash": "c" * 64,
+    }
+
+    assert _manifest_batch_hash(manifest) == _compute_batch_hash(
+        entries,
+        request_identity=request_identity,
+        expected_orders_sha256="b" * 64,
+        obligation_scope_hash="c" * 64,
+    )
 
 
 def _write_batch_manifest(
@@ -32,14 +92,23 @@ def _write_batch_manifest(
     pdf_path.write_bytes(pdf_bytes)
 
     payload = {
-        "schema_version": 2,
+        "schema_version": 4,
         "batch_label": batch_root.name,
         "target_date": target_date,
+        "ready_set_at": f"{target_date}T17:00:00+05:00",
+        "request_identity": {
+            "target_date": target_date,
+            "ready_set_at": f"{target_date}T17:00:00+05:00",
+        },
+        "expected_orders_sha256": "b" * 64,
+        "obligation_scope_hash": "c" * 64,
+        "line_scope_hash": "d" * 64,
         "source_root": str(batch_root),
-        "batch_hash": "batchhash-1",
+        "batch_hash": "",
         "counts": {"pdfs": 1, "orders": 1, "overdue_orders": 0},
         "overdue_order_ids": [],
         "missing_overdue_order_ids": [],
+        "send_order_ids": ["1001"],
         "terminal_orders_excluded": True,
         "entries": [
             {
@@ -48,7 +117,7 @@ def _write_batch_manifest(
                 "filename": filename,
                 "category": "NORMAL_singles",
                 "logical_group_type": "NORMAL",
-                "sha256": "placeholder",
+                "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
                 "file_size": len(pdf_bytes),
                 "mtime": "2026-03-10T00:00:00",
                 "order_ids": ["1001"],
@@ -59,6 +128,7 @@ def _write_batch_manifest(
             }
         ],
     }
+    payload["batch_hash"] = _manifest_batch_hash(payload)
     manifest_path = batch_root / "send_batch_manifest.json"
     manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return batch_root, pdf_path, payload
@@ -74,14 +144,23 @@ def _write_three_entry_batch_manifest(today_root: Path) -> tuple[Path, dict]:
         (pdf_dir / name).write_bytes(pdf_bytes)
 
     payload = {
-        "schema_version": 2,
+        "schema_version": 4,
         "batch_label": batch_root.name,
         "target_date": "2026-03-10",
+        "ready_set_at": "2026-03-10T17:00:00+05:00",
+        "request_identity": {
+            "target_date": "2026-03-10",
+            "ready_set_at": "2026-03-10T17:00:00+05:00",
+        },
+        "expected_orders_sha256": "b" * 64,
+        "obligation_scope_hash": "c" * 64,
+        "line_scope_hash": "d" * 64,
         "source_root": str(batch_root),
-        "batch_hash": "batchhash-3",
+        "batch_hash": "",
         "counts": {"pdfs": 3, "orders": 3, "overdue_orders": 0},
         "overdue_order_ids": [],
         "missing_overdue_order_ids": [],
+        "send_order_ids": ["1001", "1002", "1003"],
         "terminal_orders_excluded": True,
         "entries": [
             {
@@ -90,7 +169,7 @@ def _write_three_entry_batch_manifest(today_root: Path) -> tuple[Path, dict]:
                 "filename": "confirmed.pdf",
                 "category": "NORMAL_singles",
                 "logical_group_type": "NORMAL",
-                "sha256": "placeholder-1",
+                "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
                 "file_size": len(pdf_bytes),
                 "mtime": "2026-03-10T00:00:00",
                 "order_ids": ["1001"],
@@ -105,7 +184,7 @@ def _write_three_entry_batch_manifest(today_root: Path) -> tuple[Path, dict]:
                 "filename": "unsure.pdf",
                 "category": "NORMAL_singles",
                 "logical_group_type": "NORMAL",
-                "sha256": "placeholder-2",
+                "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
                 "file_size": len(pdf_bytes),
                 "mtime": "2026-03-10T00:00:00",
                 "order_ids": ["1002"],
@@ -120,7 +199,7 @@ def _write_three_entry_batch_manifest(today_root: Path) -> tuple[Path, dict]:
                 "filename": "pending.pdf",
                 "category": "NORMAL_singles",
                 "logical_group_type": "NORMAL",
-                "sha256": "placeholder-3",
+                "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
                 "file_size": len(pdf_bytes),
                 "mtime": "2026-03-10T00:00:00",
                 "order_ids": ["1003"],
@@ -131,6 +210,7 @@ def _write_three_entry_batch_manifest(today_root: Path) -> tuple[Path, dict]:
             },
         ],
     }
+    payload["batch_hash"] = _manifest_batch_hash(payload)
     manifest_path = batch_root / "send_batch_manifest.json"
     manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return batch_root, payload
@@ -292,6 +372,58 @@ def test_load_send_batch_manifest_prefers_latest_send_batch_revision(tmp_path: P
     assert manifest["entries"][0]["filename"] == "newer.pdf"
 
 
+def test_load_send_batch_manifest_explicit_path_ignores_newer_revision(tmp_path: Path) -> None:
+    today_root = tmp_path / "Today"
+    old_batch_root, _, payload = _write_batch_manifest(today_root)
+    old_manifest_path = old_batch_root / "send_batch_manifest.json"
+    new_batch_root = old_batch_root.with_name(f"{old_batch_root.name}_r2")
+    new_pdf_dir = new_batch_root / "NORMAL_singles"
+    new_pdf_dir.mkdir(parents=True)
+    new_pdf = new_pdf_dir / "newer.pdf"
+    new_pdf.write_bytes(b"%PDF-1.4\nnewer\n")
+    newer_payload = dict(payload)
+    newer_payload["batch_label"] = new_batch_root.name
+    newer_payload["entries"] = [
+        {
+            **payload["entries"][0],
+            "pdf_key": "pdfkey-newer",
+            "relative_output_path": "NORMAL_singles/newer.pdf",
+            "filename": "newer.pdf",
+        }
+    ]
+    (new_batch_root / "send_batch_manifest.json").write_text(
+        json.dumps(newer_payload),
+        encoding="utf-8",
+    )
+
+    manifest = load_send_batch_manifest(
+        today_root,
+        source_mode=SOURCE_MERGED,
+        manifest_path=old_manifest_path,
+    )
+
+    assert Path(manifest["batch_root"]) == old_batch_root
+    assert manifest["entries"][0]["filename"] == "a.pdf"
+
+
+def test_verify_send_batch_preflight_rejects_explicit_manifest_outside_today_root(tmp_path: Path) -> None:
+    today_root = tmp_path / "Today"
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    outside_manifest = outside_root / "send_batch_manifest.json"
+    outside_manifest.write_text("{}", encoding="utf-8")
+
+    preflight = verify_send_batch_preflight(
+        today_root,
+        source_mode=SOURCE_MERGED,
+        manifest_path=outside_manifest,
+    )
+
+    assert preflight["ok"] is False
+    assert preflight["issues"][0]["code"] == "manifest_unavailable"
+    assert "outside today folder" in preflight["issues"][0]["detail"]
+
+
 def test_verify_send_batch_preflight_fails_when_overdue_orders_are_missing_from_send(tmp_path: Path) -> None:
     today_root = tmp_path / "Today"
     batch_root, _, payload = _write_batch_manifest(today_root)
@@ -440,6 +572,42 @@ def test_whatsapp_sender_blocks_july_10_before_opening_browser(tmp_path: Path, m
     assert results["sent"] == 0
     assert results["halted"] is True
     assert results["halt_reason"] == "TARGET_DATE_SEND_EXCLUDED"
+
+
+def test_whatsapp_sender_lock_blocks_concurrent_ledger_or_browser_use(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    today_root = tmp_path / "Today"
+    batch_root, _, _ = _write_batch_manifest(today_root)
+    lock_path = today_root / "MERGED" / "SEND" / ".whatsapp_send.lock"
+    lock_handle = lock_path.open("a+", encoding="utf-8")
+    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    class _ShouldNotStartSender:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("concurrent WhatsApp sender must not start")
+
+    monkeypatch.setattr("scripts.send_waybills_whatsapp.WhatsAppSender", _ShouldNotStartSender)
+    try:
+        results = run_sender(
+            today_folder=today_root,
+            chat_title="Заказы",
+            dry_run=False,
+            resume=True,
+            bundle_source=SOURCE_MERGED,
+            status_messages=False,
+            expected_target_date=date(2026, 3, 10),
+        )
+    finally:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        lock_handle.close()
+
+    assert results["sent"] == 0
+    assert results["failed"] == 1
+    assert results["halted"] is True
+    assert results["halt_reason"] == "WHATSAPP_SEND_LOCKED"
+    assert not (batch_root / "send_ledger.json").exists()
 
 
 def test_run_sender_stops_on_stale_batch_before_opening_whatsapp(tmp_path: Path, monkeypatch) -> None:

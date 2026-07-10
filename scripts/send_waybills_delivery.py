@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -97,10 +98,14 @@ def _telegram_completion_state_after_sender(
     today_folder: Path,
     expected_date: date,
     telegram_report: dict[str, Any],
+    manifest_path: Path | None = None,
+    manifest_sha256: str = "",
 ) -> dict[str, Any]:
     completion = delivery_completion_state(
         today_folder=today_folder,
         target_date=expected_date,
+        manifest_path=manifest_path,
+        expected_manifest_sha256=manifest_sha256,
     )
     if completion.get("completed"):
         return completion
@@ -118,6 +123,8 @@ def _telegram_completion_state_after_sender(
         completion = delivery_completion_state(
             today_folder=today_folder,
             target_date=expected_date,
+            manifest_path=manifest_path,
+            expected_manifest_sha256=manifest_sha256,
         )
         if completion.get("completed"):
             return completion
@@ -138,6 +145,8 @@ def run_delivery(
     python_executable: str = sys.executable,
     status_messages: bool = True,
     verbose: bool = False,
+    manifest_path: Path | None = None,
+    manifest_sha256: str = "",
 ) -> dict[str, Any]:
     today_folder = Path(today_folder).expanduser()
     expected_date = expected_target_date or datetime.now(ALMATY_TZ).date()
@@ -161,6 +170,35 @@ def run_delivery(
         "completed_at": "",
     }
 
+    required_manifest_sha256 = str(manifest_sha256 or "").strip().lower()
+    if (
+        manifest_path is None
+        or len(required_manifest_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in required_manifest_sha256)
+    ):
+        report.update(
+            {
+                "failure_stage": "manifest_pin",
+                "failure_reason": "live delivery requires explicit manifest path and SHA-256",
+                "completed_at": _now_iso(),
+            }
+        )
+        return report
+    resolved_manifest_path = Path(manifest_path).expanduser().resolve()
+    if (
+        not resolved_manifest_path.is_file()
+        or hashlib.sha256(resolved_manifest_path.read_bytes()).hexdigest()
+        != required_manifest_sha256
+    ):
+        report.update(
+            {
+                "failure_stage": "manifest_pin",
+                "failure_reason": "manifest path is missing or SHA-256 does not match",
+                "completed_at": _now_iso(),
+            }
+        )
+        return report
+
     telegram_report = run_telegram_sender(
         today_folder=today_folder,
         bundle_source=bundle_source,
@@ -170,6 +208,8 @@ def run_delivery(
         status_messages=status_messages,
         fail_fast=True,
         verbose=verbose,
+        manifest_path=manifest_path,
+        expected_manifest_sha256=required_manifest_sha256,
     )
     report["telegram_report"] = telegram_report
     if telegram_report.get("ok"):
@@ -177,6 +217,8 @@ def run_delivery(
             today_folder=today_folder,
             expected_date=expected_date,
             telegram_report=telegram_report,
+            manifest_path=manifest_path,
+            manifest_sha256=required_manifest_sha256,
         )
         report["delivery_completion"] = completion
         if not completion.get("completed") or completion.get("channel") != "telegram":
@@ -222,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--today-folder", type=Path, default=TODAY_FOLDER)
     parser.add_argument("--bundle-source", choices=SOURCE_CHOICES, default=SOURCE_MERGED)
     parser.add_argument("--expected-target-date", type=_parse_iso_date, default=None)
+    parser.add_argument("--manifest-path", type=Path, default=None)
+    parser.add_argument("--manifest-sha256", type=str, default="")
     parser.add_argument("--telegram-token", type=str, default=None)
     parser.add_argument("--telegram-chat-id", type=str, default=None)
     parser.add_argument("--whatsapp-fallback-policy", choices=FALLBACK_CHOICES, default=FALLBACK_DISABLED)
@@ -245,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
         whatsapp_browser_mode=args.whatsapp_browser_mode,
         status_messages=bool(args.status_messages),
         verbose=bool(args.verbose),
+        manifest_path=args.manifest_path,
+        manifest_sha256=args.manifest_sha256,
     )
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)

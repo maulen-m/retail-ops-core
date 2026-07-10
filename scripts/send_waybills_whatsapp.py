@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -39,6 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.ops.waybill_send_batch import (
+    AUTONOMOUS_MANIFEST_SCHEMA_VERSION,
     LEDGER_STATES,
     SEND_BATCH_MANIFEST_FILE,
     SEND_LEDGER_FILE,
@@ -49,6 +52,7 @@ from core.ops.waybill_send_batch import (
     save_send_ledger as core_save_send_ledger,
     select_manifest_entries_for_send as core_select_manifest_entries_for_send,
     transition_send_ledger_entry as core_transition_send_ledger_entry,
+    compute_manifest_batch_hash,
 )
 from scripts.waybill_send_policy import blocked_live_action_for_manifest
 
@@ -105,6 +109,7 @@ SOURCE_CHOICES = [SOURCE_AUTO, SOURCE_MERGED, SOURCE_PER_STORE, SOURCE_LEGACY]
 MERGED_SEND_ROOT_NAME = "SEND"
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 WHATSAPP_DIAGNOSTICS_DIR_NAME = "whatsapp_diagnostics"
+WHATSAPP_SEND_LOCK_FILE = ".whatsapp_send.lock"
 
 STORE_DISPLAY = {
     "STOREB": "STORE-B",
@@ -235,30 +240,8 @@ def _looks_like_sha256(value: Any) -> bool:
     return bool(re.fullmatch(r"[0-9a-fA-F]{64}", str(value or "").strip()))
 
 
-def _manifest_batch_hash(entries: List[Dict[str, Any]]) -> str:
-    digest = hashlib.sha256()
-    stable_entries = []
-    for entry in sorted(entries, key=lambda x: str(x.get("pdf_key") or "")):
-        stable_entries.append(
-            {
-                "pdf_key": entry.get("pdf_key", ""),
-                "relative_output_path": entry.get("relative_output_path", ""),
-                "sha256": entry.get("sha256", ""),
-                "file_size": int(entry.get("file_size", 0) or 0),
-                "mtime": entry.get("mtime", ""),
-                "logical_group_type": entry.get("logical_group_type", ""),
-                "order_ids": list(entry.get("order_ids") or []),
-                "source_row_ids": list(entry.get("source_row_ids") or []),
-                "product_family_key": entry.get("product_family_key", ""),
-                "color_key": entry.get("color_key", ""),
-                "product_color_key": entry.get("product_color_key", ""),
-                "size_token": entry.get("size_token", ""),
-                "size_rank": int(entry.get("size_rank", 0) or 0),
-                "send_sequence": int(entry.get("send_sequence", 0) or 0),
-            }
-        )
-    digest.update(json.dumps(stable_entries, ensure_ascii=False, sort_keys=True).encode("utf-8"))
-    return digest.hexdigest()
+def _manifest_batch_hash(manifest: Dict[str, Any]) -> str:
+    return compute_manifest_batch_hash(manifest)
 
 
 def _resolve_batch_folder(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Path:
@@ -301,13 +284,33 @@ def _resolve_manifest_entry_path(batch_root: Path, entry: Dict[str, Any]) -> Pat
     return core_resolve_manifest_entry_path(batch_root, entry)
 
 
-def load_send_batch_manifest(today_folder: Path, source_mode: str = SOURCE_AUTO) -> Dict[str, Any]:
-    batch_root = _resolve_batch_folder(today_folder, source_mode=source_mode)
-    manifest_path = batch_root / SEND_BATCH_MANIFEST_FILE
+def load_send_batch_manifest(
+    today_folder: Path,
+    source_mode: str = SOURCE_AUTO,
+    *,
+    manifest_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    today_root = Path(today_folder).expanduser().resolve()
+    if manifest_path is not None:
+        resolved_manifest_path = Path(manifest_path).expanduser().resolve()
+        if resolved_manifest_path.name != SEND_BATCH_MANIFEST_FILE:
+            raise ValueError(f"Explicit manifest must be named {SEND_BATCH_MANIFEST_FILE}")
+        try:
+            resolved_manifest_path.relative_to(today_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Explicit manifest is outside today folder: {resolved_manifest_path}"
+            ) from exc
+        batch_root = resolved_manifest_path.parent
+        manifest_path = resolved_manifest_path
+    else:
+        batch_root = _resolve_batch_folder(today_folder, source_mode=source_mode)
+        manifest_path = batch_root / SEND_BATCH_MANIFEST_FILE
     if not manifest_path.exists():
         raise FileNotFoundError(f"Missing send batch manifest: {manifest_path}")
 
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw_manifest = manifest_path.read_bytes()
+    payload = json.loads(raw_manifest.decode("utf-8"))
     entries = list(payload.get("entries") or [])
     hydrated_entries: List[Dict[str, Any]] = []
     for raw_entry in entries:
@@ -319,6 +322,7 @@ def load_send_batch_manifest(today_folder: Path, source_mode: str = SOURCE_AUTO)
     payload["entries"] = hydrated_entries
     payload["manifest_path"] = str(manifest_path)
     payload["batch_root"] = str(batch_root)
+    payload["_manifest_file_sha256"] = hashlib.sha256(raw_manifest).hexdigest()
     return payload
 
 
@@ -559,25 +563,121 @@ def verify_send_batch_preflight(
     allow_unsure_resume: bool = False,
     expected_target_date: Optional[date] = None,
     allow_stale_batch: bool = False,
+    manifest_path: Optional[Path] = None,
+    require_autonomous_manifest: bool = False,
 ) -> Dict[str, Any]:
     issues: List[Dict[str, Any]] = []
     try:
-        manifest = load_send_batch_manifest(today_folder, source_mode=source_mode)
+        manifest = load_send_batch_manifest(
+            today_folder,
+            source_mode=source_mode,
+            manifest_path=manifest_path,
+        )
     except Exception as exc:
         return {
             "ok": False,
             "issues": [{"code": "manifest_unavailable", "detail": str(exc)}],
         }
 
-    computed_hash = _manifest_batch_hash(list(manifest.get("entries") or []))
+    computed_hash = _manifest_batch_hash(manifest)
     manifest_batch_hash = str(manifest.get("batch_hash") or "")
-    if _looks_like_sha256(manifest_batch_hash) and computed_hash != manifest_batch_hash:
+    if not _looks_like_sha256(manifest_batch_hash):
+        issues.append(
+            {
+                "code": "batch_hash_invalid",
+                "detail": "manifest batch_hash must be exactly 64 hexadecimal characters",
+            }
+        )
+    elif computed_hash != manifest_batch_hash:
         issues.append(
             {
                 "code": "batch_hash_mismatch",
                 "detail": f"manifest={manifest_batch_hash} computed={computed_hash}",
             }
         )
+
+    schema_version = int(manifest.get("schema_version") or 0)
+    if require_autonomous_manifest and schema_version < AUTONOMOUS_MANIFEST_SCHEMA_VERSION:
+        issues.append(
+            {
+                "code": "live_manifest_schema_version_unsafe",
+                "detail": (
+                    f"schema={schema_version} required={AUTONOMOUS_MANIFEST_SCHEMA_VERSION}"
+                ),
+            }
+        )
+    has_request_pin = any(
+        key in manifest
+        for key in ("request_identity", "expected_orders_sha256", "obligation_scope_hash")
+    )
+    if has_request_pin and schema_version < AUTONOMOUS_MANIFEST_SCHEMA_VERSION:
+        issues.append(
+            {
+                "code": "manifest_schema_version_unsafe",
+                "detail": (
+                    f"schema={schema_version} required={AUTONOMOUS_MANIFEST_SCHEMA_VERSION}"
+                ),
+            }
+        )
+    if schema_version >= AUTONOMOUS_MANIFEST_SCHEMA_VERSION:
+        request_identity = manifest.get("request_identity") or {}
+        if not isinstance(request_identity, dict):
+            issues.append(
+                {"code": "request_identity_invalid", "detail": "must be an object"}
+            )
+            request_identity = {}
+        manifest_target = str(manifest.get("target_date") or "").strip()
+        request_target = str(request_identity.get("target_date") or "").strip()
+        manifest_ready = str(manifest.get("ready_set_at") or "").strip()
+        request_ready = str(request_identity.get("ready_set_at") or "").strip()
+        if not request_target or request_target != manifest_target:
+            issues.append(
+                {
+                    "code": "request_target_date_mismatch",
+                    "detail": f"manifest={manifest_target or '-'} request={request_target or '-'}",
+                }
+            )
+        if not manifest_ready or manifest_ready != request_ready:
+            issues.append(
+                {
+                    "code": "request_ready_set_at_mismatch",
+                    "detail": f"manifest={manifest_ready or '-'} request={request_ready or '-'}",
+                }
+            )
+        for field in ("expected_orders_sha256", "obligation_scope_hash", "line_scope_hash"):
+            if not _looks_like_sha256(manifest.get(field)):
+                issues.append(
+                    {"code": f"{field}_invalid", "detail": str(manifest.get(field) or "")}
+                )
+
+    for entry in manifest.get("entries") or []:
+        pdf_key = str(entry.get("pdf_key") or "")
+        declared_hash = str(entry.get("sha256") or "")
+        if not _looks_like_sha256(declared_hash):
+            issues.append(
+                {
+                    "code": "pdf_sha256_invalid",
+                    "detail": pdf_key,
+                }
+            )
+            continue
+        pdf_path = Path(entry.get("path") or "")
+        if not pdf_path.is_file():
+            issues.append(
+                {
+                    "code": "pdf_missing",
+                    "detail": f"{pdf_key}:{pdf_path}",
+                }
+            )
+            continue
+        observed_hash = _hash_file(pdf_path)
+        if observed_hash != declared_hash:
+            issues.append(
+                {
+                    "code": "pdf_sha256_mismatch",
+                    "detail": f"{pdf_key}:manifest={declared_hash} observed={observed_hash}",
+                }
+            )
 
     issues.extend(_validate_manifest_order_consistency(manifest))
 
@@ -642,7 +742,7 @@ def verify_send_batch_preflight(
     ledger_path = Path(manifest["batch_root"]) / SEND_LEDGER_FILE
     ledger = load_send_ledger(ledger_path, manifest)
     save_send_ledger(ledger_path, ledger)
-    if str(ledger.get("batch_hash") or "") not in {"", str(manifest.get("batch_hash") or "")}:
+    if str(ledger.get("batch_hash") or "") != str(manifest.get("batch_hash") or ""):
         issues.append(
             {
                 "code": "ledger_batch_hash_mismatch",
@@ -678,12 +778,26 @@ def verify_send_batch_preflight(
         manifest,
         action="whatsapp_pdf_send",
     )
+    manifest_file_sha256 = str(manifest.get("_manifest_file_sha256") or "")
+    try:
+        current_manifest_sha256 = _hash_file(Path(manifest["manifest_path"]))
+    except OSError as exc:
+        current_manifest_sha256 = ""
+        issues.append({"code": "manifest_reread_failed", "detail": str(exc)})
+    if current_manifest_sha256 != manifest_file_sha256:
+        issues.append(
+            {
+                "code": "manifest_changed_during_preflight",
+                "detail": f"loaded={manifest_file_sha256} current={current_manifest_sha256}",
+            }
+        )
     return {
         "ok": not issues,
         "issues": issues,
         "manifest_path": manifest["manifest_path"],
         "batch_root": manifest["batch_root"],
         "batch_hash": manifest.get("batch_hash", ""),
+        "manifest_sha256": manifest_file_sha256,
         "target_date": manifest_target_date.isoformat() if manifest_target_date else manifest_target_raw,
         "expected_target_date": expected_target_date.isoformat() if expected_target_date else None,
         "send_pdf_count": int(manifest.get("counts", {}).get("pdfs", 0) or 0),
@@ -713,6 +827,7 @@ def run_sender_smoke_check(
         source_mode=bundle_source,
         expected_target_date=expected_target_date,
         allow_stale_batch=allow_stale_batch,
+        require_autonomous_manifest=True,
     )
     if not preflight.get("ok"):
         return preflight
@@ -3687,7 +3802,125 @@ def run_delivery_probe(
         return results
 
 
+def _acquire_whatsapp_send_lock(today_folder: Path) -> tuple[Any | None, Path]:
+    """Claim the one WhatsApp send lane before manifest selection or ledger I/O."""
+    lock_path = (
+        Path(today_folder).expanduser()
+        / "MERGED"
+        / MERGED_SEND_ROOT_NAME
+        / WHATSAPP_SEND_LOCK_FILE
+    )
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            return None, lock_path
+        raise
+    handle.seek(0)
+    handle.truncate()
+    handle.write(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "locked_at": datetime.now(ALMATY_TZ).isoformat(),
+                "purpose": "whatsapp_waybill_send",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    handle.flush()
+    return handle, lock_path
+
+
+def _release_whatsapp_send_lock(handle: Any | None) -> None:
+    if handle is None:
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def run_sender(
+    today_folder: Path,
+    chat_title: Optional[str],
+    dry_run: bool = False,
+    resume: bool = True,
+    bundle_source: str = SOURCE_AUTO,
+    status_messages: bool = True,
+    post_status_message_only: bool = False,
+    expected_target_date: Optional[date] = None,
+    allow_stale_batch: bool = False,
+    send_delay: float = SEND_DELAY,
+    chrome_user_data_dir: Path = DEFAULT_CHROME_USER_DATA_DIR,
+    chrome_profile_directory: str = DEFAULT_CHROME_PROFILE_DIR,
+    chrome_profile_name: Optional[str] = DEFAULT_CHROME_PROFILE_NAME,
+    cdp_endpoint: str = DEFAULT_CDP_ENDPOINT,
+    browser_mode: str = DEFAULT_BROWSER_MODE,
+    blocked_chat_titles: Iterable[str] = BLOCKED_CHAT_TITLES_DEFAULT,
+    fail_fast: bool = False,
+    allow_unsure_resume: bool = False,
+    max_pdfs: Optional[int] = None,
+    post_send_linger_seconds: float = 0.0,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    lock_handle, lock_path = _acquire_whatsapp_send_lock(Path(today_folder))
+    if lock_handle is None:
+        return {
+            "sent": 0,
+            "skipped": 0,
+            "failed": 1,
+            "total": 0,
+            "target_chat": chat_title or "",
+            "source_root": "",
+            "status_message_failed": 0,
+            "status_message_failures": 0,
+            "status_message_failures_by_phase": {"pre": 0, "post": 0},
+            "status_message_failure_details": [],
+            "post_send_verification_failed": 0,
+            "post_send_verification_details": [],
+            "halted": True,
+            "halt_reason": "WHATSAPP_SEND_LOCKED",
+            "error": "Another WhatsApp waybill sender owns the send lane",
+            "lock_path": str(lock_path),
+            "diagnostics_dir": "",
+            "recovery_ladder": [],
+        }
+    try:
+        result = _run_sender_under_process_lock(
+            today_folder=today_folder,
+            chat_title=chat_title,
+            dry_run=dry_run,
+            resume=resume,
+            bundle_source=bundle_source,
+            status_messages=status_messages,
+            post_status_message_only=post_status_message_only,
+            expected_target_date=expected_target_date,
+            allow_stale_batch=allow_stale_batch,
+            send_delay=send_delay,
+            chrome_user_data_dir=chrome_user_data_dir,
+            chrome_profile_directory=chrome_profile_directory,
+            chrome_profile_name=chrome_profile_name,
+            cdp_endpoint=cdp_endpoint,
+            browser_mode=browser_mode,
+            blocked_chat_titles=blocked_chat_titles,
+            fail_fast=fail_fast,
+            allow_unsure_resume=allow_unsure_resume,
+            max_pdfs=max_pdfs,
+            post_send_linger_seconds=post_send_linger_seconds,
+            verbose=verbose,
+        )
+        result["lock_path"] = str(lock_path)
+        return result
+    finally:
+        _release_whatsapp_send_lock(lock_handle)
+
+
+def _run_sender_under_process_lock(
     today_folder: Path,
     chat_title: Optional[str],
     dry_run: bool = False,
@@ -3742,12 +3975,26 @@ def run_sender(
         print("Install with: pip install playwright")
         return results
 
+    try:
+        selected_manifest = load_send_batch_manifest(
+            today_folder,
+            source_mode=bundle_source,
+        )
+        explicit_manifest_path = Path(str(selected_manifest["manifest_path"]))
+    except Exception as exc:
+        results["failed"] += 1
+        results["halted"] = True
+        results["halt_reason"] = "PREFLIGHT_RED"
+        results["error"] = str(exc)
+        return results
     preflight = verify_send_batch_preflight(
         today_folder,
         source_mode=bundle_source,
         allow_unsure_resume=allow_unsure_resume,
         expected_target_date=expected_target_date,
         allow_stale_batch=allow_stale_batch,
+        manifest_path=explicit_manifest_path,
+        require_autonomous_manifest=not dry_run,
     )
     if not preflight["ok"]:
         results["failed"] += 1
@@ -3766,7 +4013,18 @@ def run_sender(
             print(f"  - {issue['code']}: {issue['detail']}")
         return results
 
-    manifest = load_send_batch_manifest(today_folder, source_mode=bundle_source)
+    manifest = load_send_batch_manifest(
+        today_folder,
+        source_mode=bundle_source,
+        manifest_path=explicit_manifest_path,
+    )
+    if str(manifest.get("_manifest_file_sha256") or "") != str(
+        preflight.get("manifest_sha256") or ""
+    ):
+        results["failed"] += 1
+        results["halted"] = True
+        results["halt_reason"] = "MANIFEST_TOCTOU"
+        return results
     if not dry_run:
         blocked = blocked_live_action_for_manifest(
             manifest,
@@ -3790,6 +4048,26 @@ def run_sender(
             )
             return results
     batch_root = Path(manifest["batch_root"])
+    expected_manifest_sha256 = str(preflight.get("manifest_sha256") or "")
+
+    def _live_artifact_issue(pdf: Optional[Dict[str, Any]] = None) -> str:
+        try:
+            if _hash_file(Path(manifest["manifest_path"])) != expected_manifest_sha256:
+                return "manifest_bytes_changed_after_preflight"
+        except OSError as exc:
+            return f"manifest_reread_failed:{exc}"
+        if pdf is None:
+            return ""
+        pdf_path = Path(str(pdf.get("path") or ""))
+        try:
+            if int(pdf.get("file_size") or 0) != int(pdf_path.stat().st_size):
+                return f"pdf_size_changed_after_preflight:{pdf_path.name}"
+            if _hash_file(pdf_path) != str(pdf.get("sha256") or ""):
+                return f"pdf_hash_changed_after_preflight:{pdf_path.name}"
+        except OSError as exc:
+            return f"pdf_reread_failed:{pdf_path.name}:{exc}"
+        return ""
+
     results["source_root"] = str(batch_root)
     entries = list(manifest.get("entries") or [])
     results["total"] = len(entries)
@@ -3853,6 +4131,13 @@ def run_sender(
         print("\nPost-send status:")
         print(post_status_text)
         if send_post_status_message and not dry_run and post_status_message_only:
+            artifact_issue = _live_artifact_issue()
+            if artifact_issue:
+                results["failed"] += 1
+                results["halted"] = True
+                results["halt_reason"] = "MANIFEST_TOCTOU"
+                results["error"] = artifact_issue
+                return results
             sender = _make_sender()
             try:
                 with sender:
@@ -3942,6 +4227,9 @@ def run_sender(
                 sender.assert_document_send_ready()
             if send_pre_status_message:
                 try:
+                    artifact_issue = _live_artifact_issue()
+                    if artifact_issue:
+                        raise RuntimeError(f"MANIFEST_TOCTOU: {artifact_issue}")
                     sender.send_text_message(pre_status_text)
                     if hasattr(sender, "confirm_text_message_sent"):
                         sender.confirm_text_message_sent(
@@ -3971,6 +4259,9 @@ def run_sender(
                 pdf_key = str(pdf["pdf_key"])
                 pdf_path = Path(pdf["path"])
                 try:
+                    artifact_issue = _live_artifact_issue(pdf)
+                    if artifact_issue:
+                        raise RuntimeError(f"SEND_ARTIFACT_TOCTOU: {artifact_issue}")
                     transition_send_ledger_entry(
                         ledger,
                         pdf_key,
@@ -4114,6 +4405,9 @@ def run_sender(
             print(post_status_text)
             if send_post_status_message:
                 try:
+                    artifact_issue = _live_artifact_issue()
+                    if artifact_issue:
+                        raise RuntimeError(f"MANIFEST_TOCTOU: {artifact_issue}")
                     sender.send_text_message(post_status_text)
                 except Exception as exc:
                     _record_status_message_failure(results, phase="post", error=exc)
@@ -4548,22 +4842,29 @@ def main() -> None:
         raise SystemExit(1)
 
     if args.resolve_unsure_filename:
-        manifest = load_send_batch_manifest(args.today_folder, source_mode=args.bundle_source)
-        ledger_path = Path(manifest["batch_root"]) / SEND_LEDGER_FILE
-        ledger = load_send_ledger(ledger_path, manifest)
-        pdf_key = resolve_unsure_ledger_entry(
-            manifest,
-            ledger,
-            filename=str(args.resolve_unsure_filename),
-            resolution=str(args.resolve_unsure_as),
-            note=str(args.resolve_unsure_note or ""),
-        )
-        save_send_ledger(ledger_path, ledger)
-        print("UNSURE ledger entry resolved")
-        print(f"  Batch root: {manifest['batch_root']}")
-        print(f"  PDF key: {pdf_key}")
-        print(f"  Filename: {args.resolve_unsure_filename}")
-        print(f"  New state: {args.resolve_unsure_as}")
+        lock_handle, lock_path = _acquire_whatsapp_send_lock(args.today_folder)
+        if lock_handle is None:
+            print(f"UNSURE resolution blocked: WhatsApp send lane is locked ({lock_path})")
+            raise SystemExit(1)
+        try:
+            manifest = load_send_batch_manifest(args.today_folder, source_mode=args.bundle_source)
+            ledger_path = Path(manifest["batch_root"]) / SEND_LEDGER_FILE
+            ledger = load_send_ledger(ledger_path, manifest)
+            pdf_key = resolve_unsure_ledger_entry(
+                manifest,
+                ledger,
+                filename=str(args.resolve_unsure_filename),
+                resolution=str(args.resolve_unsure_as),
+                note=str(args.resolve_unsure_note or ""),
+            )
+            save_send_ledger(ledger_path, ledger)
+            print("UNSURE ledger entry resolved")
+            print(f"  Batch root: {manifest['batch_root']}")
+            print(f"  PDF key: {pdf_key}")
+            print(f"  Filename: {args.resolve_unsure_filename}")
+            print(f"  New state: {args.resolve_unsure_as}")
+        finally:
+            _release_whatsapp_send_lock(lock_handle)
         raise SystemExit(0)
 
     started_at = time.monotonic()

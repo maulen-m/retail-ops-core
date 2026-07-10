@@ -5,6 +5,7 @@ Phase 11 TASK-194: 20 tests for the waybill builder script.
 """
 
 import csv
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -17,6 +18,8 @@ import pandas as pd
 import pytest
 
 import scripts.build_daily_waybills as build_daily_waybills_module
+from core.ops.waybill_shipping_obligations import required_line_scope_hash
+from scripts.validate_google_closeout_expected_orders import validate_manifest_against_expected
 from scripts.build_daily_waybills import (
     HEAVY_ITEMS,
     SIZE_ORDER,
@@ -610,6 +613,95 @@ def test_write_send_batch_manifest_contains_stable_pdf_keys_and_overdue_orders(t
         assert entry["sha256"]
         assert entry["file_size"] > 0
         assert entry["source_row_ids"]
+
+
+def test_schema3_manifest_preserves_source_lines_and_passes_exact_validator(tmp_path: Path):
+    today_root = tmp_path / "Today"
+    batch_root = today_root / "MERGED" / "SEND" / "20.04.26_MERGED_qnt1"
+    normal_dir = batch_root / "NORMAL_singles"
+    normal_dir.mkdir(parents=True)
+    output_pdf = normal_dir / "LINE52_L-1.pdf"
+    output_pdf.write_bytes(b"%PDF-1.4\n%waybill\n")
+    item = OrderItem(
+        "TODAY100",
+        "Universal",
+        "LINE52",
+        "L",
+        "CL_LINE52",
+        "CL_LINE52_L",
+        1,
+        "offer",
+        date(2026, 4, 20),
+    )
+    item.source_row_id = "41"
+    line = {
+        "db_row_id": "41",
+        "store_code": "UNIVERSAL",
+        "order_id": "TODAY100",
+            "sku_key": "CL_LINE52",
+            "sku_id": "CL_LINE52_L",
+            "kaspi_offer_name": "offer",
+            "kaspi_name_core": "LINE52",
+        "quantity": 1,
+        "final_size": "L",
+    }
+    request_identity = {
+        "target_date": "2026-04-20",
+        "ready_set_at": "2026-04-20T17:00:00+05:00",
+    }
+    expected_path = tmp_path / "expected_closeout_orders.json"
+    expected_path.write_text(
+        json.dumps(
+            {
+                    "schema_version": 3,
+                "target_date": "2026-04-20",
+                "request_identity": request_identity,
+                "expected_order_ids": ["TODAY100"],
+                "overdue_order_ids": [],
+                "orders": [
+                    {
+                        "order_id": "TODAY100",
+                            "store_code": "UNIVERSAL",
+                            "lines": [line],
+                            "package_count": 1,
+                    }
+                ],
+                "line_scope_hash": required_line_scope_hash([line]),
+                "counts": {"orders": 1, "overdue_orders": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    expected_sha256 = hashlib.sha256(expected_path.read_bytes()).hexdigest()
+    group = WaybillGroup(
+        group_type="NORMAL",
+        store_name="MERGED",
+        items=[item],
+        pdf_path=output_pdf,
+        pdf_paths=[output_pdf],
+        output_filename="NORMAL_singles/LINE52_L-1.pdf",
+    )
+
+    manifest_path = write_send_batch_manifest(
+        batch_root=batch_root,
+        today_root=today_root,
+        groups=[group],
+        target_date=date(2026, 4, 20),
+        expected_orders_path=str(expected_path),
+        expected_orders_sha256=expected_sha256,
+        request_identity=request_identity,
+        obligation_scope_hash="scope-hash",
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    validation = validate_manifest_against_expected(
+        expected_path=expected_path,
+        manifest_path=manifest_path,
+    )
+
+    assert manifest["entries"][0]["source_lines"] == [line]
+    assert manifest["line_scope_hash"] == required_line_scope_hash([line])
+    assert manifest["batch_hash"]
+    assert validation["ok"] is True
 
 
 def test_write_send_batch_manifest_counts_unique_orders_per_store_for_multi_line(tmp_path: Path):
@@ -1308,6 +1400,91 @@ def test_main_uses_db_sized_orders_when_crm_current_batch_has_no_sizes(
         path.name for path in (output_dir / "MERGED" / "SEND").iterdir() if path.is_dir()
     )
     assert rebuilt_batches == ["10.03.26_MERGED_qnt1"]
+
+
+def test_main_required_orders_file_bypasses_latest_selection_and_pins_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "Today"
+    waybill_dir = tmp_path / "waybills"
+    waybill_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = waybill_dir / "KASPI_SHOP-1001.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%pinned-required-order\n")
+    required_path = tmp_path / "expected_closeout_orders.json"
+    required_path.write_text(
+        json.dumps(
+            {
+                "target_date": "2026-03-10",
+                "request_identity": {
+                    "target_date": "2026-03-10",
+                    "ready_set_at": "2026-03-10T17:00:00+05:00",
+                },
+                "expected_order_ids": ["1001"],
+                "orders": [{"order_id": "1001", "store_code": "UNIVERSAL"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    db_order = OrderItem(
+        order_id="1001",
+        store_name="Universal",
+        kaspi_name_core="Nike_Футболка_черная",
+        my_size="M",
+        sku_key="NIKE_TEE_BLACK",
+        sku_id="NIKE_TEE_BLACK_M",
+        quantity=1,
+        kaspi_offer_name="Nike футболка черная M",
+        planned_date=date(2026, 3, 9),
+    )
+
+    monkeypatch.setattr(build_daily_waybills_module, "ensure_pdf_merger", lambda: None)
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "resolve_db_path",
+        lambda *args, **kwargs: tmp_path / "app.db",
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_selection_cache",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("latest cache must not be read")),
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "get_api_order_ids_for_date",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API selection must not drift")),
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "read_db_orders",
+        lambda *args, **kwargs: [db_order],
+    )
+    monkeypatch.setattr(
+        build_daily_waybills_module,
+        "load_all_waybills",
+        lambda *args, **kwargs: {"1001": pdf_path},
+    )
+
+    stats = build_daily_waybills_main(
+        crm_path=tmp_path / "missing.xlsx",
+        db_path=tmp_path / "app.db",
+        waybill_dir=waybill_dir,
+        output_dir=output_dir,
+        target_date=date(2026, 3, 10),
+        lookback_days=5,
+        include_overdue=True,
+        output_layout="per-store-and-merged",
+        required_orders_file=required_path,
+        dry_run=False,
+    )
+
+    assert stats["orders_read"] == 1
+    manifest_path = output_dir / "MERGED" / "SEND" / "10.03.26_MERGED_qnt1" / "send_batch_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["send_order_ids"] == ["1001"]
+    assert manifest["request_identity"]["ready_set_at"] == "2026-03-10T17:00:00+05:00"
+    assert manifest["expected_orders_path"] == str(required_path.resolve())
+    assert len(manifest["expected_orders_sha256"]) == 64
 
 
 def test_main_uses_db_sized_orders_when_crm_workbook_is_unreadable(

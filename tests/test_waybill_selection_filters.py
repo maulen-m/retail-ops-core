@@ -11,6 +11,7 @@ from core.integrations.kaspi_api_client import APIResponse
 from scripts import build_daily_waybills
 from scripts import download_waybills_api
 from scripts import validate_pending_orders
+from scripts import validate_google_closeout_expected_orders as expected_orders_mod
 
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
@@ -44,6 +45,46 @@ def _make_order(
             "kaspiDelivery": delivery,
         },
     }
+
+
+def test_active_closeout_selector_excludes_cancelling_and_return_requested(
+    monkeypatch,
+) -> None:
+    target = date(2026, 7, 11)
+    orders = [
+        _make_order("PACK1", "ACCEPTED_BY_MERCHANT", False, target),
+        _make_order(
+            "READY1",
+            "ACCEPTED_BY_MERCHANT",
+            False,
+            target,
+            assembled=True,
+        ),
+        _make_order("CANCEL1", "CANCELLING", False, target),
+        _make_order(
+            "RETURN1",
+            "KASPI_DELIVERY_RETURN_REQUESTED",
+            False,
+            target,
+        ),
+        _make_order("RETURN2", "RETURN_REQUESTED", False, target),
+        _make_order("WAREHOUSE1", "ACCEPTED_BY_MERCHANT", False, target),
+    ]
+    orders[-1]["attributes"]["returnedToWarehouse"] = True
+    monkeypatch.setattr(
+        download_waybills_api,
+        "get_target_orders_from_api",
+        lambda *_args, **_kwargs: (orders, False),
+    )
+
+    active = expected_orders_mod.fetch_api_active_order_ids_by_store(
+        target_date=target,
+        lookback_days=5,
+        store_codes=["UNIVERSAL"],
+        api_since_days=14,
+    )
+
+    assert active == {"UNIVERSAL": {"PACK1", "READY1"}}
 
 
 def _init_fact_orders_db(db_path):
@@ -801,7 +842,7 @@ def test_download_waybills_for_store_processes_fallback_targets_not_in_prefetch(
             return APIResponse(success=True, data=_detail_order(order_code), status_code=200)
 
         def download_waybill(self, waybill_url: str, timeout: Optional[int] = None) -> APIResponse:
-            return APIResponse(success=True, data=b"%PDF-1.4 test\n", status_code=200)
+                return APIResponse(success=True, data=b"%PDF-1.4 test\n%%EOF\n", status_code=200)
 
     monkeypatch.setattr(download_waybills_api, "KaspiAPIClient", FakeClient)
 
@@ -1235,3 +1276,143 @@ def test_download_all_waybills_include_overdue_keeps_missing_pdf_fallback_when_a
 
     assert result["fallback_used"] is True
     assert captured_targets["UNIVERSAL"] == {"CRM_EXTRA"}
+
+
+def test_download_all_waybills_required_orders_file_is_exact_and_pinned(tmp_path, monkeypatch):
+    output_dir = tmp_path / "waybills"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target_date = date(2026, 7, 11)
+    required_path = tmp_path / "expected_closeout_orders.json"
+    required_path.write_text(
+        json.dumps(
+            {
+                "target_date": target_date.isoformat(),
+                "request_identity": {
+                    "target_date": target_date.isoformat(),
+                    "ready_set_at": "2026-07-11T17:00:00+05:00",
+                },
+                "expected_order_ids": ["PINNED100"],
+                "orders": [{"order_id": "PINNED100", "store_code": "UNIVERSAL"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    api_extra = _make_order(
+        code="API_EXTRA",
+        status="ACCEPTED_BY_MERCHANT",
+        signature=False,
+        planned=target_date,
+        assembled=True,
+    )
+    captured_targets: dict[str, set[str]] = {}
+
+    monkeypatch.setattr(
+        download_waybills_api,
+        "get_target_orders_from_api",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pinned required mode must bypass broad API selection")
+        ),
+    )
+
+    def _fake_download_waybills_for_store(**kwargs):
+        captured_targets[kwargs["store_code"]] = set(kwargs["target_order_ids"])
+        assert kwargs["prefetched_orders"] == []
+        return {
+            "downloaded": 1,
+            "skipped_not_target": 0,
+            "missing_waybill": 0,
+            "already_exists": 0,
+            "invalid_pdf": 0,
+            "skipped_terminal": 0,
+            "skipped_nonready": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(
+        download_waybills_api,
+        "download_waybills_for_store",
+        _fake_download_waybills_for_store,
+    )
+
+    result = download_waybills_api.download_all_waybills(
+        output_dir=output_dir,
+        crm_path=tmp_path / "missing.xlsx",
+        sheet_name="Sheet1",
+        target_date=target_date,
+        db_path=None,
+        store_filter="UNIVERSAL",
+        since_days=3,
+        download_timeout=20,
+        dry_run=False,
+        verbose=False,
+        required_orders_file=required_path,
+        require_complete_api_selection=True,
+    )
+
+    assert captured_targets == {"UNIVERSAL": {"PINNED100"}}
+    assert result["selection_status"] == "PINNED_REQUIRED_ORDERS"
+    assert result["required_orders_file"] == str(required_path.resolve())
+    assert len(result["required_orders_sha256"]) == 64
+    payload = json.loads((output_dir / "_waybill_selection_orders.json").read_text(encoding="utf-8"))
+    assert payload["stores"] == {"UNIVERSAL": ["PINNED100"]}
+
+
+def test_download_all_waybills_required_mode_ignores_broad_selector_health(tmp_path, monkeypatch):
+    output_dir = tmp_path / "waybills"
+    target_date = date(2026, 7, 11)
+    required_path = tmp_path / "expected_closeout_orders.json"
+    required_path.write_text(
+        json.dumps(
+            {
+                "target_date": target_date.isoformat(),
+                "request_identity": {
+                    "target_date": target_date.isoformat(),
+                    "ready_set_at": "2026-07-11T17:00:00+05:00",
+                },
+                "expected_order_ids": ["PINNED100"],
+                "orders": [{"order_id": "PINNED100", "store_code": "UNIVERSAL"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        download_waybills_api,
+        "get_target_orders_from_api",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pinned required mode must bypass broad API selection")
+        ),
+    )
+    monkeypatch.setattr(
+        download_waybills_api,
+        "download_waybills_for_store",
+        lambda **kwargs: {
+            "downloaded": 1,
+            "skipped_not_target": 0,
+            "missing_waybill": 0,
+            "already_exists": 0,
+            "invalid_pdf": 0,
+            "skipped_terminal": 0,
+            "skipped_nonready": 0,
+            "errors": [],
+        },
+    )
+
+    result = download_waybills_api.download_all_waybills(
+        output_dir=output_dir,
+        crm_path=tmp_path / "missing.xlsx",
+        sheet_name="Sheet1",
+        target_date=target_date,
+        db_path=None,
+        store_filter="UNIVERSAL",
+        since_days=3,
+        download_timeout=20,
+        dry_run=False,
+        verbose=False,
+        required_orders_file=required_path,
+        require_complete_api_selection=True,
+    )
+
+    assert result["downloaded"] == 1
+    assert result["selection_status"] == "PINNED_REQUIRED_ORDERS"
+    assert result["api_errors"] == []
+    assert result["errors"] == []

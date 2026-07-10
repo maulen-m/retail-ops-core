@@ -179,7 +179,7 @@ echo "  - 14:01 to 17:11 every 10 minutes - Google Ops Board publish backstop (f
 echo "  - 15:02 - Import (daily)"
 echo "  - 16:01 - Import (daily)"
 echo "  - 17:02 - Import (17:00 all-store late-window DB freshness / next-day visibility)"
-echo "  - 17:15, 17:30, 17:45, 18:00, 18:15 - Google Ops Board size writeback"
+echo "  - 17:15, 17:30, 17:45, 18:00, 18:15 - Google Ops Board size-writeback preview (read-only)"
 echo "  - 18:20 - Google Ops Board closeout caffeinate keep-awake guard"
 echo "  - every 15s between 11:00 and 19:04 (script-gated, 60s READY debounce; 18:57 probable-size auto-fill) - Google Ops Board early-ready closeout watch"
 echo "  - 18:30 - Google Ops Board closeout backstop (ship -> waybills -> build -> send)"

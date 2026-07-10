@@ -164,6 +164,15 @@ def test_closeout_scheduler_child_processes_receive_default_daily_ledger(monkeyp
     monkeypatch.setattr(closeout_scheduler_mod, "resolve_service_account_json", lambda **_kwargs: creds_path)
     monkeypatch.setattr(closeout_scheduler_mod, "resolve_spreadsheet_id", lambda *_args, **_kwargs: "sheet-id")
     monkeypatch.setattr(closeout_scheduler_mod, "_closeout_already_completed", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        closeout_scheduler_mod,
+        "_current_ready_identity",
+        lambda **_kwargs: {
+            "target_date": "2026-04-22",
+            "ready_set_at": "2026-04-22T17:10:00+05:00",
+            "ready_for_closeout": "READY",
+        },
+    )
     monkeypatch.setattr(closeout_scheduler_mod, "GoogleOpsBoardAutomationLock", _FakeLock)
     monkeypatch.setattr(
         closeout_scheduler_mod.subprocess,
@@ -171,7 +180,14 @@ def test_closeout_scheduler_child_processes_receive_default_daily_ledger(monkeyp
         lambda command, cwd, env: child_envs.append(dict(env)) or _Result(),
     )
 
-    rc = closeout_scheduler_mod.main()
+    rc = closeout_scheduler_mod.main(
+        [
+            "--expected-target-date",
+            "2026-04-22",
+            "--expected-ready-set-at",
+            "2026-04-22T17:10:00+05:00",
+        ]
+    )
 
     expected = str(tmp_path / "runtime" / "api_ledger" / "kaspi_api_2026-04-22.jsonl")
     assert rc == 0

@@ -20,13 +20,25 @@ Google Ops Board operational contract (employee sizing surface):
 - `PROBABLE_SIZE` is DB-computed only; Google Sheets does not own business formulas.
 - `Status` is operational and limited to `TODAY` / `OVERDUE` using waybill carry-forward truth, not simple row age.
 - Same-day publishes refresh system-owned fields in place while preserving employee-entered `HEIGHT`, `WEIGHT`, and `MY_SIZE`.
-- Same-day publishes preserve only rows still present in DB-selected shipping truth; cancelled/archived rows that drop out of fresh truth must be removed from the live board.
+- Same-day publishes preserve every row in the canonical publish scope: fresh source-backed eligible DB rows union unresolved shipping obligations. Mere absence from a current-day selector, API uncertainty, an undifferentiated archive state, or internal `SHIPPED`/`COMPLETED` must not remove a row. Remove it only after fresh exact source truth proves physical handover or a definite terminal cancellation/return.
 - Before the explicit `18:57` fallback, automation must not fill `MY_SIZE` defaults while the employee is manually sizing orders.
 - The first daily Google Ops Board append/publish must order visible shipment rows by store name A-Z in addition to the normal deterministic row order.
 - `SalesRaw_Today` is protected except for `HEIGHT`, `WEIGHT`, and `MY_SIZE`; `Run_Control` is protected except for operator input cells.
 - workbook identity sync runs before the first live board publish of the day and re-runs only when the workbook fingerprint changes.
 - Google Sheets remains UI only; mapping, probable size, naming, and closeout logic stay in Python/DB.
 Promotion minimum merge standard authority: `docs/ops/PROMOTION_MINIMUM_STANDARD.md`.
+
+### Canonical Employee Shipping Workflow After Activation
+
+Deployment and scheduler activation are a separate one-time controlled change. After that one-time activation is explicitly approved and validated, the employee's complete daily system workflow is:
+
+1. Fill or confirm `SalesRaw_Today.MY_SIZE` for every required row.
+2. Set `Run_Control.ready_for_closeout = READY`.
+3. If the reconciled required-order count is nonzero, receive the complete internal Telegram PDF bundle and pack the orders. If it is zero, no bundle is sent and automation records an exact zero-order completion.
+
+No daily owner approval phrase, Telegram command, agent conversation, CLI command, manual PDF reconciliation, or separate approval for carried-forward orders is required. `READY` is the standing daily trigger. The watcher stamps `ready_set_at` exactly once, and `target_date + ready_set_at` becomes the immutable request identity.
+
+An omitted active order remains a durable shipping obligation and joins a later daily request automatically if fresh Kaspi truth still shows it waiting for assembly or physical handover. Obligations have no age expiry. API uncertainty retains the obligation and blocks omission; only source-backed physical handover or definite terminal cancellation/return truth discharges it. Internal `SHIPPED` or `COMPLETED` values alone do not discharge an obligation.
 
 Current daily scheduler contract (GMT+5):
 - import jobs: `11:00`, `15:02`, `16:01`, and `17:02`
@@ -48,7 +60,8 @@ Current daily scheduler contract (GMT+5):
   - publish runs use the quiet `publish` health profile: DB preflight + Google board contract only; identity sync is skipped by design
   - publish backstop must stay browser-silent; it does not open WhatsApp
   - publish fails closed when `excel_ui/ActiveOrders/ActiveOrders.xlsx` is stale for the target date
-- Google Ops Board size writeback jobs: `17:15`, `17:30`, `17:45`, `18:00`, `18:15`
+  - source refresh requires complete enabled-store/API pagination; a successful zero-row refresh writes a current-day canonical header-only workbook so publication can clear stale board rows without treating API failure as zero-order truth
+- Legacy Google Ops Board size-writeback preview jobs (read-only; never apply): `17:15`, `17:30`, `17:45`, `18:00`, `18:15`
 - Google Ops Board closeout keep-awake guard: `18:20`
   - runs `/usr/bin/caffeinate -dimsu -t 4200` so the Mac stays awake through the closeout/send window
 - Google Ops Board early-closeout watch: every 15 seconds between `11:00` and `19:04` (script-gated, no-op unless green)
@@ -60,6 +73,10 @@ Current daily scheduler contract (GMT+5):
   - auto-set `Run_Control.ready_for_closeout = READY`
   - trigger closeout immediately if the board is then green
 - once READY survives debounce, the watcher launches the closeout scheduler; the closeout script itself runs the full browser-free closeout health profile, including Kaspi store-context and Telegram delivery config
+- the closeout-only DB writeback uses a schema-version-2 scope pinned to the exact READY identity, enabled stores, DB row IDs, line keys, and `MY_SIZE` values; live Sheet drift blocks apply
+- the immutable live send manifest is schema v4 and every live delivery receives its exact path plus SHA-256; older or modification-time-discovered manifests are inspection-only
+- every downloaded PDF has request-bound provenance for store/order identity, required-orders SHA-256, READY identity, filename/size/SHA-256, completeness, and current waybill URL; any gap blocks bundle build
+- Telegram and legacy WhatsApp use separate channel-wide non-blocking locks under `MERGED/SEND`; lock contention stops before send and never authorizes cross-channel fallback
 - manual closeout/send recovery reuses the same automation lock as scheduled closeout so we do not fork duplicate live runs
 - WhatsApp tooling is diagnostic/manual-only and is not part of canonical daily closeout or recovery
 - Google Ops Board closeout backstop job: `18:30`
@@ -652,11 +669,13 @@ python scripts/health_check.py
 
 ---
 
-## Phase 9.5: Kaspi Order Automation
+## Phase 9.5: Legacy Manual Kaspi API Operations (Technical Recovery Only)
 
-### Order Sync (Daily)
+This block is an operator/engineer recovery reference. It is not the canonical employee daily workflow, and its commands or confirmation flags must never be substituted for scheduled Google Ops Board closeout.
 
-**When to Run:** Every morning and before processing shipments
+### Order Sync (Legacy Recovery)
+
+**When to Run:** Only during explicitly authorized technical recovery; never as an every-morning employee routine.
 
 ```bash
 # Check current order status
@@ -798,7 +817,7 @@ python scripts/build_size_probability.py --export
 1. **ENABLE_KASPI_WRITE=0** by default — write operations disabled
 2. **Universal store only** for initial testing
 3. Bulk operations require `--confirm` flag
-4. Telegram confirmation required for bulk ops (≥5 orders)
+4. Legacy manual bulk CLI operations retain their explicit confirmation controls. Canonical scheduled Google Ops Board closeout requires no daily Telegram confirmation or owner approval phrase after one-time activation; complete sizing plus `READY` is sufficient.
 5. All status changes logged to `fact_orders_kaspi`
 
 ### Order Status Reference
@@ -814,11 +833,11 @@ python scripts/build_size_probability.py --export
 
 ---
 
-## Phase 11: Daily Kaspi Order Workflow (Excel-Based)
+## Phase 11: Legacy Manual Kaspi Order Workflow (Excel-Based)
 
 ### Overview
 
-Phase 11 provides a simple Excel-based workflow for daily Kaspi order processing:
+Phase 11 is retained only as a manual recovery/reference path. It is not the canonical employee workflow. It provides an Excel-based workflow for daily Kaspi order processing:
 1. **Import orders** from ActiveOrders.xlsx to CRM
 2. **Fill MY_SIZE** manually in Excel
 3. **Build waybill bundles** organized by store and type
@@ -1036,18 +1055,11 @@ Phase 12 automates the Kaspi shipping workflow via API:
 2. **Download waybills** - Download PDFs via API (no manual ZIP downloads)
 3. **Build bundles** - Group waybills by store/type
 
-### Quick Start (Recommended)
+### Canonical Daily Start
 
-**Single command does everything:**
-```bash
-# Double-click to run full workflow (V2 - optimized)
-excel_ui/run_build_waybills_v2.command
-```
+The employee fills `SalesRaw_Today.MY_SIZE`, then sets `Run_Control.ready_for_closeout = READY`. The stable `READY` request automatically performs exact reconciliation, assembly, waybill download, bundle build, and internal Telegram delivery.
 
-This runs 3 steps automatically:
-1. Ship orders (set package count via API)
-2. Download waybills V2 (API-direct, no CRM read - saves 30-60s)
-3. Build waybill bundles
+`excel_ui/run_build_waybills_v2.command` and the CLI examples below are legacy/manual recovery or troubleshooting surfaces. They are not required employee steps and their broad date/lookback selectors are not scheduled selection authority.
 
 ### Prerequisites
 
@@ -1057,11 +1069,11 @@ This runs 3 steps automatically:
 ENABLE_KASPI_WRITE=1
 ```
 
-**Before running:**
-1. Run import script first (`run_import_orders.command`)
-2. Fill `SalesRaw_Today.MY_SIZE` in the Google Ops Board
-3. Set `Run_Control.ready_for_closeout=READY` when the sizing batch is complete
-4. If the board is fully green earlier, the minute-level watch arms a 60-second safety debounce and then starts closeout automatically if the board is still green; `18:30` remains only a backstop, and the watch still stays active through `19:04` for late READY or `18:57` visible `PROBABLE_SIZE` copy-only recovery
+**Employee prerequisites:**
+1. Fill or confirm every required `SalesRaw_Today.MY_SIZE` value.
+2. Set `Run_Control.ready_for_closeout = READY`.
+
+The watcher stamps the request identity once, waits through the 60-second safety debounce, and starts closeout if the board remains green. `18:30` remains a backstop; the watch stays active through `19:04` for late `READY` or the `18:57` visible `PROBABLE_SIZE` copy-only recovery.
 
 ### Step 1: Ship Orders via API
 
@@ -1102,7 +1114,9 @@ python scripts/ship_orders_api.py --store UNIVERSAL --verbose
 
 ### Step 2: Download Waybills via API
 
-Downloads waybill PDFs for TODAY's batch only (exact date match) unless overdue is included.
+The canonical closeout does not select from these broad CLI defaults. It passes one SHA-pinned `--required-orders-file`, containing the union of fresh eligible active orders and unresolved no-expiry obligations, through shipping, download, and build.
+
+The commands below are manual diagnostics. Without `--required-orders-file`, they retain their documented date/lookback behavior and must not be substituted into the scheduled chain.
 
 ```bash
 # Download today's waybills
@@ -1117,7 +1131,7 @@ python scripts/download_waybills_api.py --date 2025-12-10
 # All historical orders (not just today)
 python scripts/download_waybills_api.py --all-dates
 
-# Include overdue orders (planned_date <= today, bounded by lookback)
+# Legacy/manual bounded overdue selector
 python scripts/download_waybills_api.py --include-overdue
 ```
 
@@ -1186,22 +1200,14 @@ python scripts/build_daily_waybills.py --verbose
 - `KASPI_EXTERNAL_DB_ROOT`
 - `KASPI_EXTERNAL_DB_REPO_LABEL` (default `Autonomous_business`)
 
-### Full Workflow Example
+### Full Canonical Workflow Example
 
-```bash
-# 1. Import new orders (if not done)
-python scripts/import_orders_to_crm.py --verbose
+1. Employee fills or confirms all visible `SalesRaw_Today.MY_SIZE` values.
+2. Employee sets `Run_Control.ready_for_closeout = READY`.
+3. Automation reconciles durable obligations and SHA-pins the exact required-order set. If it is nonzero, automation assembles exact orders, downloads and builds the exact bundle, and sends it to the configured internal Telegram group.
+4. If a bundle is sent, the employee receives it, packs every represented order, and hands the packages to the courier. A proven zero-order request sends no bundle.
 
-# 2. [MANUAL] Fill MY_SIZE in Excel, save file
-
-# 3. Run automated shipping workflow
-python scripts/ship_orders_api.py --verbose
-python scripts/download_waybills_api.py --verbose
-python scripts/build_daily_waybills.py --verbose
-
-# Or just double-click:
-excel_ui/run_build_waybills_v2.command
-```
+No owner approval phrase or command-line interaction is part of this daily sequence.
 
 ### CLI Reference
 
@@ -1247,21 +1253,17 @@ excel_ui/run_build_waybills_v2.command
 
 ### Daily Checklist (Phase 12)
 
-**Morning:**
-- [ ] Download ActiveOrders*.xlsx from Kaspi
-- [ ] Place files in `excel_ui/ActiveOrders/`
-- [ ] Run import: `run_import_orders.command`
-- [ ] Open CRM, fill MY_SIZE for new orders
-- [ ] Save CRM
-- [ ] Run: `run_build_waybills_v2.command` (does all 3 steps)
-- [ ] Print manifests from each store folder
-- [ ] Pack orders according to manifests
+**Employee:**
+- [ ] Fill or confirm every required `SalesRaw_Today.MY_SIZE` value.
+- [ ] Set `Run_Control.ready_for_closeout = READY` once.
+- [ ] If the reconciled required-order count is nonzero, receive the complete internal Telegram PDF bundle.
+- [ ] If a bundle is received, pack every represented order and hand it to the courier; if the count is zero, confirm automation recorded zero-order completion and sent no bundle.
 
-**Verification:**
-- [ ] Check ship script output for errors
-- [ ] Check download count matches expected
-- [ ] Check `package_summary.csv` for correct counts
-- [ ] Verify PDF count matches manifest count
+**Automation-owned verification:**
+- [ ] Fresh active orders and unresolved no-expiry obligations reconcile without uncertainty.
+- [ ] One required-orders path/SHA drives assembly, download, and build.
+- [ ] For a nonzero scope, exactly one immutable schema-v4 manifest is created and identity-pinned; for zero scope, no manifest or delivery is created.
+- [ ] Every nonzero-scope manifest PDF key is confirmed in the pinned Telegram ledger.
 
 ---
 

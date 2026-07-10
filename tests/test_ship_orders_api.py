@@ -12,6 +12,92 @@ from scripts import ship_orders_api as ship_mod
 from scripts.ship_orders_api import parse_date, read_crm_orders
 
 
+def _required_detail(order_id: str, *, assembled: bool, base64_id: str = "base64") -> dict:
+    return {
+        "id": base64_id,
+        "attributes": {
+            "code": order_id,
+            "state": "KASPI_DELIVERY",
+            "status": "ACCEPTED_BY_MERCHANT",
+            "assembled": assembled,
+            "creationDate": 1783616400000,
+            "kaspiDelivery": {
+                "courierTransmissionPlanningDate": 1783616400000,
+                **({"waybill": "https://example.test/waybill.pdf"} if assembled else {}),
+            },
+        },
+    }
+
+
+def test_resolve_required_orders_uses_exact_get_without_list_or_date_filter(monkeypatch):
+    calls: list[str] = []
+
+    class _Client:
+        def __init__(self, store_code: str):
+            assert store_code == "UNIVERSAL"
+
+        def get_order(self, order_id: str):
+            calls.append(order_id)
+            return APIResponse(success=True, data=_required_detail(order_id, assembled=False))
+
+        def list_orders(self, **_kwargs):  # pragma: no cover - must never be called
+            raise AssertionError("broad list selector must not be used")
+
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _Client)
+
+    result = ship_mod.resolve_required_assembly_orders({"UNIVERSAL": {"OLD100"}})
+
+    assert calls == ["OLD100"]
+    assert result["pending_by_store"] == {"UNIVERSAL": {"OLD100"}}
+    assert result["order_id_to_base64"] == {"UNIVERSAL": {"OLD100": "base64"}}
+    assert result["errors"] == []
+
+
+def test_resolve_required_orders_counts_already_assembled_as_satisfied(monkeypatch):
+    class _Client:
+        def __init__(self, store_code: str):
+            assert store_code == "UNIVERSAL"
+
+        def get_order(self, order_id: str):
+            return APIResponse(success=True, data=_required_detail(order_id, assembled=True))
+
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _Client)
+
+    result = ship_mod.resolve_required_assembly_orders({"UNIVERSAL": {"READY101"}})
+
+    assert result["pending_by_store"] == {"UNIVERSAL": set()}
+    assert result["satisfied_by_store"] == {"UNIVERSAL": {"READY101"}}
+    assert result["errors"] == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_text"),
+    [
+        ({"id": "base64", "attributes": {"code": "OTHER"}}, "identity mismatch"),
+        (_required_detail("PENDING102", assembled=False, base64_id=""), "missing base64 id"),
+        ({"id": "base64", "attributes": {"code": "PENDING102", "state": "ARCHIVE", "status": "CANCELLED"}}, "non-packable stage"),
+    ],
+)
+def test_resolve_required_orders_fails_closed_on_ambiguous_detail(
+    monkeypatch,
+    payload,
+    error_text,
+):
+    class _Client:
+        def __init__(self, store_code: str):
+            pass
+
+        def get_order(self, order_id: str):
+            return APIResponse(success=True, data=payload)
+
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _Client)
+
+    result = ship_mod.resolve_required_assembly_orders({"UNIVERSAL": {"PENDING102"}})
+
+    assert any(error_text in error for error in result["errors"])
+    assert result["pending_by_store"] == {"UNIVERSAL": set()}
+
+
 def _write_crm(tmp_path, rows):
     df = pd.DataFrame(rows)
     path = tmp_path / "crm.xlsx"
@@ -720,6 +806,79 @@ def test_ship_orders_does_not_count_unconfirmed_assemble(monkeypatch):
 
     assert result["shipped"] == 0
     assert any("829336594" in err for err in result["errors"])
+
+
+def test_ship_orders_exact_once_never_falls_back_or_retries_uncertain_mutation(monkeypatch):
+    mutation_calls: list[tuple[str, str]] = []
+
+    class _FakeClient:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def assemble_order_by_id(self, base64_id, order_code, parcel_count=1):
+            mutation_calls.append(("by_id", order_code))
+            return APIResponse(success=True, data={"ok": True}, status_code=200)
+
+        def assemble_order(self, order_code, parcel_count=1):  # pragma: no cover
+            mutation_calls.append(("fallback", order_code))
+            raise AssertionError("exact-once mode must not perform a fallback mutation")
+
+        def get_order_by_id(self, base64_id):
+            return APIResponse(
+                success=True,
+                data={"attributes": {"assembled": False, "kaspiDelivery": {"waybill": None}}},
+                status_code=200,
+            )
+
+        def get_order(self, order_code):
+            return APIResponse(
+                success=True,
+                data={"attributes": {"assembled": False, "kaspiDelivery": {"waybill": None}}},
+                status_code=200,
+            )
+
+        def get_waybill_url(self, order):
+            return None
+
+        def get_pending_assembly_orders(self, since=None):  # pragma: no cover
+            raise AssertionError("exact-once mode must not enter refresh retry")
+
+    monkeypatch.setattr(ship_mod, "KaspiAPIClient", _FakeClient)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_RETRIES", 1)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_VERIFY_DELAY", 0)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_REFRESH_RETRIES", 3)
+    monkeypatch.setattr(ship_mod, "ASSEMBLE_REFRESH_DELAY", 0)
+    monkeypatch.setattr(ship_mod, "STORE_NAME_TO_API_CODE", {"Universal": "UNIVERSAL"})
+    orders_by_id = {
+        "829336594": [
+            ship_mod.OrderItem(
+                order_id="829336594",
+                store_name="Universal",
+                kaspi_name_core="LINE52",
+                my_size="XL",
+                sku_key="CL_OC_MEN_LINE52_BLACK",
+                sku_id="CL_OC_MEN_LINE52_BLACK_XL",
+                quantity=1,
+                planned_date=date(2026, 2, 20),
+            )
+        ]
+    }
+
+    result = ship_mod.ship_orders(
+        orders_by_id=orders_by_id,
+        pending_orders={"UNIVERSAL": {"829336594"}},
+        order_id_to_base64={"UNIVERSAL": {"829336594": "ODI5MzM2NTk0"}},
+        dry_run=False,
+        verbose=False,
+        since_days=1,
+        exact_once=True,
+    )
+
+    assert mutation_calls == [("by_id", "829336594")]
+    assert result["shipped"] == 0
+    assert result["errors"] == [
+        "829336594: assemble accepted but outcome remains uncertain; no retry mutation"
+    ]
 
 
 def test_main_limits_pending_fetch_scope_when_store_filter_is_set(monkeypatch, tmp_path):

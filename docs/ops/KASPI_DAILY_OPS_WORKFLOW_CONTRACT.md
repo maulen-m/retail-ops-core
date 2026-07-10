@@ -64,6 +64,17 @@ and corresponding tests before merge.
 - Google Ops Board, waybill download, bundle build, and closeout validation paths must normalize `30000001_PP1` to `UNIVERSAL` and `30000002_PP1` to `STOREB` before store comparisons, grouping, or manifest matching.
 - The `17:02` import exists for DB freshness, all-store 17:00 late-window visibility, and next-day visibility; it must not expand same-day Google Ops Board eligibility after the 17:00 cutoff.
 - `excel_ui/run_full_import.command` must publish the Google Ops Board whenever export + DB sync + ActiveOrders enrichment are green, even if CRM Step 2 later turns the overall import workflow red.
+- The canonical ActiveOrders source refresh must fail on any incomplete enabled-store/API pagination. When all required reads complete but the filtered result is empty, it must replace the prior source with a current-day header-only canonical workbook so the publisher can remove stale board rows without weakening source authority.
+
+## Standing Daily Shipping Authority
+
+Deployment and activation are a separate one-time controlled change. A local patch, test run, documentation change, or commit does not activate production schedulers or write gates.
+
+After the owner explicitly approves that one-time deployment and activation and running-state validation is green, the configured daily shipping automation has standing authority within this contract. The employee's completed size entries plus `Run_Control.ready_for_closeout = READY` are sufficient to run canonical closeout.
+
+No per-day, per-batch, per-order, carried-order, or Telegram approval phrase is a runtime prerequisite. Daily execution must never block merely because a new owner permission phrase is absent. Telegram commands remain optional fallback controls, not part of the employee's normal workflow.
+
+This standing authority is limited to the canonical daily shipping chain: narrow size writeback, exact required-order Kaspi assembly, waybill download, bundle construction, internal Telegram delivery, and DB-only shipped-truth refresh. It does not authorize unrelated order changes, stock, prices, offers, customer messages, cash, ads, or other external state.
 
 ## Workflow-Critical Components (Do Not Drift)
 - API client write/read behavior:
@@ -80,8 +91,11 @@ and corresponding tests before merge.
 - keep fail-closed behavior in `run_merged_build_waybills.command` (`HARD_FAIL` -> non-zero exit)
 - keep the automated 18:30 closeout DB-first:
   - final size writeback from `SalesRaw_Today.MY_SIZE`
-  - DB-first shipping via `scripts/ship_orders_api.py --selection-source db`
-  - DB-first waybill download / build / Telegram-only delivery
+  - canonical DB apply only through a closeout-generated `schema_version = 2` scope bound to exact `target_date + ready_set_at`, enabled stores/orders, DB row IDs, line keys, and pinned `MY_SIZE` values; live Sheet rows must still match, while legacy scheduled slots remain preview-only
+  - exact required-order shipping via `scripts/ship_orders_api.py --required-orders-file <PINNED_JSON>`
+  - the same required-order file drives waybill download / build / Telegram-only delivery
+  - an exactly zero pinned required-order count creates no assembly, PDF download/build, manifest, or Telegram send; apply writes a terminal zero-order marker bound to the exact READY identity and empty required-orders path/SHA-256
+  - uncertain or unresolved active obligations block and can never be converted into zero-order completion
   - canonical daily closeout must not invoke WhatsApp or open a browser
 - keep closeout watcher churn bounded:
   - Google READY must trigger a `60` second debounce, then launch the canonical closeout scheduler
@@ -109,6 +123,8 @@ and corresponding tests before merge.
   - confirmed Telegram `pdf_key` values are immutable across every recovery mode
   - `api_started` or `unsure` entries block delivery until evidence reconciliation
   - target date `2026-07-10` is permanently excluded from send, resume, final-table, and fallback delivery actions by machine-readable owner decision
+  - this date exclusion prevents sending a July-10 manifest; it does not discharge any omitted order that remains active and packable in a later fresh request
+  - Telegram and legacy WhatsApp each use a non-blocking channel-wide lock under `MERGED/SEND`; contention stops that channel before send and never creates a cross-channel fallback
 - keep shipped-truth refresh DB-only and post-delivery:
   - closeout must run `shipped_truth_sync` after successful delivery send and checkpoint it separately from `delivery_send`
   - if `shipped_truth_sync` fails, rerunning closeout with `--resume` must reuse the completed delivery checkpoint and retry only the shipped-truth sync stage
@@ -117,12 +133,34 @@ and corresponding tests before merge.
 - keep strict stop-line report (`--strict-stopline`)
 - keep ship-until-shipped carry-forward contract:
   - pending orders that miss one day must continue to surface on later daily runs until shipped or terminally cancelled/returned
-  - `scripts/ship_orders_api.py` defaults to overdue carry-forward mode; strict today-only shipping is opt-in only
-  - `scripts/import_orders_to_crm.py --include-overdue` may append only previous-day missed pending orders into CRM (`append_date - 1`), while preserving the original Kaspi planned handover date
+  - obligation identity is the canonical `(store_code, order_id)` pair
+  - the required daily scope is the union of fresh source-backed eligible orders and every unresolved prior obligation
+  - obligations have no date or lookback expiry
+  - packable active truth keeps or reactivates an obligation
+  - cancelling or return-requested truth suspends packing but retains the obligation
+  - source-backed physical handover, completed/issued, cancelled, or returned truth discharges the obligation
+  - absence, API failure, malformed detail, identity mismatch, or unknown stage retains the obligation and makes closeout non-green
+  - deferring or excluding one send date prevents that date's manifest from sending; it does not discharge unresolved orders from a later fresh request
+  - broad `ship_orders_api.py` overdue/date selectors are manual compatibility surfaces; canonical closeout uses the exact required-order file
+  - Legacy CRM compatibility only: `scripts/import_orders_to_crm.py --include-overdue` may append only `append_date - 1` missed pending rows while preserving the original planned handover date. This compatibility bound does not limit the no-expiry obligation ledger or canonical closeout scope.
   - overdue pending assembly backlog must remain visible as a stop-line until shipped; shipping health stays non-green while overdue/stale pending backlog remains after a live shipping run
   - an unresolved order does not expire after 5, 14, or 120 days; retain it until fresh source-backed physical handover or terminal cancellation/return truth discharges it
   - internal `SHIPPED` or `COMPLETED` alone is not physical handover evidence
   - `scripts/ship_orders_api.py` must emit a dedicated backlog report with age buckets + exact overdue IDs under `reports/kaspi_pending_backlog/<YYYY-MM-DD>/`
+- keep the exact request and artifact contract:
+  - `READY` must have a nonblank `ready_set_at`, stamped exactly once when first observed
+  - immutable request identity is exactly `target_date + ready_set_at`
+  - the same completed identity skips; the same incomplete identity resumes
+  - a new `ready_set_at` is a new request and must not reuse external stages from another identity
+  - force-fresh execution is forbidden
+  - one required-orders JSON path and SHA-256 must drive shipping, download, and build
+  - every required order is exact-read from Kaspi; partial selection or uncertain truth fails closed
+  - build must create exactly one new immutable schema-v4 send manifest for a nonzero scope; lower schemas are inspection-only
+  - schema-v4 `batch_hash` commits the complete send-authorizing payload: PDF/source-line entries, request identity, required-order/obligation/line hashes, terminal-exclusion flag, order-ID sets, and counts
+  - canonical live delivery requires the explicit manifest path and raw-file SHA-256; latest/mtime discovery, hash mismatch, or post-preflight TOCTOU drift halts before send
+  - every PDF requires exact provenance binding store/order identity, required-orders SHA-256, READY identity, filename/size/SHA-256, completeness, and current waybill-URL hash; missing, stale, mismatched, extra, or incomplete provenance blocks build
+  - checkpoint pins manifest path/SHA-256, batch hash, obligation-scope hash, ledger path, PDF-scope hash, request identity, and required-orders path/SHA-256
+  - no recovery path may select a manifest by modification time
 - keep fallback selection path in waybill download (`--fallback-crm`) to avoid missing PDFs for non-prefetched target IDs
 - keep profile contract in daily ops orchestrator:
   - `today-fast`: `report_waybill_status.py --since-days 1` (no `--include-overdue`)

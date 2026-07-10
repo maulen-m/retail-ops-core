@@ -54,6 +54,9 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # This legacy schedule is preview-only even if an older installed plist or
+    # parent shell still exposes the historical DB write gate.
+    env.pop("ENABLE_GOOGLE_OPS_BOARD_DB_WRITE", None)
 
     service_account_json = str(env.get("AB_GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
     if not service_account_json or not Path(service_account_json).exists():
@@ -83,7 +86,11 @@ def main() -> int:
                 print("ERROR: local DB preflight failed; skipping Google Ops Board size writeback.", file=sys.stderr)
                 return int(check.returncode)
 
-            cmd = [sys.executable, str(SCRIPT_PATH), "--apply"]
+            # The canonical closeout owns the only apply path because it first
+            # creates an API-reconciled, READY-bound row/size scope artifact.
+            # This legacy schedule remains a read-only preview and can never
+            # mutate DB rows from an unpinned Sheet snapshot.
+            cmd = [sys.executable, str(SCRIPT_PATH)]
             if spreadsheet_id_override:
                 cmd.extend(["--spreadsheet-id", spreadsheet_id_override])
             cmd.extend(["--service-account-json", service_account_json])

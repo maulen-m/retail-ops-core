@@ -31,17 +31,29 @@ from core.integrations.google_ops_board import (
 from core.calc.size_probability import PRODUCT_TYPE_DEFAULTS, calc_size_from_params, determine_size
 from core.integrations.kaspi_order_stage import StageCode, classify_kaspi_stage_from_db_row
 from core.ops.waybill_overdue_carryforward import get_overdue_waybill_ready_order_ids_from_db
+from core.ops.waybill_shipping_obligations import (
+    active_obligation_ids_by_store,
+    load_shipping_obligation_ledger,
+)
 from core.paths import data_path
+from core.stores.roster import load_sync_enabled_kaspi_store_codes
 from core.utils.kaspi_name_core_resolver import (
     KaspiNameCoreMaps,
     load_active_kaspi_name_core_maps,
     resolve_kaspi_name_core,
 )
 from core.utils.kaspi_order_core_overrides import load_order_name_core_overrides
+from core.ops.fitpack_coordination import (
+    filter_storeb_store_codes,
+    load_storeb_packing_excluded,
+)
 
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_OUTPUT_ROOT = data_path("exports", "google_ops_board")
+DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH = data_path(
+    "runtime", "state", "waybill_shipping_obligations.json"
+)
 METADATA_TABS = {"README", "Config_Do_Not_Edit"}
 SAME_DAY_PRESERVE_TABS = {"SalesRaw_Today", "Run_Control"}
 PENDING_BOARD_STAGES = {
@@ -223,13 +235,11 @@ def _format_express_delivery_status(row: Any) -> str:
 
 
 def _is_shipped(rows: list[sqlite3.Row]) -> bool:
-    shipped_statuses = {"SHIPPED", "COMPLETED"}
-    for row in rows:
-        if _clean_str(row["actual_shipment_date"]) or _clean_str(row["courier_transmission_date"]):
-            return True
-        if _clean_str(row["internal_status"]).upper() in shipped_statuses:
-            return True
-    return False
+    return any(
+        _clean_str(row["actual_shipment_date"])
+        or _clean_str(row["courier_transmission_date"])
+        for row in rows
+    )
 
 
 def _is_row_shipped(row: sqlite3.Row) -> bool:
@@ -240,8 +250,30 @@ def _order_key(row: sqlite3.Row) -> tuple[str, str]:
     return (_normalize_store_key(row["store_code"]), _clean_str(row["order_id"]))
 
 
-def _handed_over_order_keys(rows: list[sqlite3.Row]) -> set[tuple[str, str]]:
-    return {_order_key(row) for row in rows if _is_row_shipped(row)}
+def _is_source_backed_nonpackable(row: sqlite3.Row) -> bool:
+    state = _clean_str(row["kaspi_status"]).upper()
+    detail = _clean_str(row["kaspi_status_detail"]).upper()
+    return (
+        state in {"DELIVERY", "PICKUP"}
+        or detail
+        in {
+            "COMPLETED",
+            "CANCELLED",
+            "RETURNED",
+            "CANCELLING",
+            "KASPI_DELIVERY_RETURN_REQUESTED",
+            "RETURN_REQUESTED",
+        }
+        or _truthy_flag(_row_value(row, "returned_to_warehouse"))
+    )
+
+
+def _nonpackable_order_keys(rows: list[sqlite3.Row]) -> set[tuple[str, str]]:
+    return {
+        _order_key(row)
+        for row in rows
+        if _is_row_shipped(row) or _is_source_backed_nonpackable(row)
+    }
 
 
 def _ship_date(rows: list[sqlite3.Row], target_date: date) -> str:
@@ -316,7 +348,7 @@ def _optional_fk_column(columns: set[str], column_name: str, *, default_sql: str
     return f"{default_sql} AS {column_name}"
 
 
-def _load_db_rows(conn: sqlite3.Connection, *, start: date, target: date) -> list[sqlite3.Row]:
+def _load_db_rows(conn: sqlite3.Connection, *, target: date) -> list[sqlite3.Row]:
     fact_columns = _table_columns(conn, "fact_orders_kaspi")
     express_expr = _optional_fk_column(fact_columns, "express", default_sql="0")
     return conn.execute(
@@ -333,11 +365,58 @@ def _load_db_rows(conn: sqlite3.Connection, *, start: date, target: date) -> lis
                COALESCE(ds.product_type, '') AS product_type
         FROM fact_orders_kaspi fk
         LEFT JOIN dim_sku ds ON ds.sku_key = fk.sku_key
-        WHERE planned_shipment_date BETWEEN ? AND ?
+        WHERE planned_shipment_date IS NOT NULL
+          AND planned_shipment_date != ''
+          AND planned_shipment_date <= ?
         ORDER BY fk.planned_shipment_date, fk.order_id, fk.id, fk.updated_at
         """,
-        (start.isoformat(), target.isoformat()),
+        (target.isoformat(),),
     ).fetchall()
+
+
+def _select_source_backed_board_rows(
+    rows: list[sqlite3.Row],
+    *,
+    target_date: date,
+    allowed_store_codes: set[str],
+    obligation_ids_by_store: dict[str, set[str]],
+) -> list[sqlite3.Row]:
+    """Keep current source observations plus explicitly persisted obligations.
+
+    A no-expiry contract must not mean publishing every historical row that still
+    looks pending in a stale database.  An order is in the board scope only when
+    its configured store was freshly observed on the target day, or its exact
+    `(store, order)` identity is retained by the shipping-obligation ledger.
+    All physical lines for an in-scope order are preserved.
+    """
+    normalized_allowed_store_codes = {
+        _normalize_store_key(store_code)
+        for store_code in allowed_store_codes
+        if _normalize_store_key(store_code)
+    }
+    configured_rows = [
+        row
+        for row in rows
+        if _normalize_store_key(row["store_code"]) in normalized_allowed_store_codes
+    ]
+    # Generic ``updated_at`` is mutation time, not source-observation time: a
+    # local MY_SIZE writeback also changes it. Today's planned source slice
+    # supplies new work; every older unresolved identity must come exclusively
+    # from the durable obligation ledger.
+    fresh_keys: set[tuple[str, str]] = {
+        _order_key(row)
+        for row in configured_rows
+        if _clean_str(row["planned_shipment_date"]) == target_date.isoformat()
+    }
+    obligation_keys = {
+        (_normalize_store_key(store), _clean_str(order_id))
+        for store, order_ids in obligation_ids_by_store.items()
+        if _normalize_store_key(store) in normalized_allowed_store_codes
+        for order_id in order_ids
+        if _clean_str(order_id)
+    }
+    selected_keys = fresh_keys | obligation_keys
+    return [row for row in configured_rows if _order_key(row) in selected_keys]
 
 
 def _parse_local_dt(value: Any) -> datetime | None:
@@ -394,19 +473,18 @@ def _is_pending_carryforward_row(
     row: sqlite3.Row,
     *,
     target_date: date,
-    lookback_days: int,
     contract,
 ) -> bool:
     planned_date = _parse_iso_date(row["planned_shipment_date"])
     if planned_date is None or planned_date >= target_date:
         return False
-    min_date = target_date - timedelta(days=max(lookback_days - 1, 0))
-    if planned_date < min_date:
-        return False
     stage = classify_kaspi_stage_from_db_row(row)
     if stage not in PENDING_BOARD_STAGES:
         return False
-    return _row_is_before_same_day_cutoff(row, contract=contract, target_date=planned_date)
+    # Once an order's planned day has passed, a same-day cutoff must never make the
+    # still-active obligation disappear.  Cutoffs apply only while selecting today's
+    # newly arrived orders in ``_select_operational_rows``.
+    return True
 
 
 def _build_board_overdue_ids_by_store(
@@ -414,10 +492,9 @@ def _build_board_overdue_ids_by_store(
     *,
     waybill_overdue_ids_by_store: dict[str, set[str]],
     target_date: date,
-    lookback_days: int,
     contract,
 ) -> dict[str, set[str]]:
-    handed_over_keys = _handed_over_order_keys(rows)
+    handed_over_keys = _nonpackable_order_keys(rows)
     overdue_ids_by_store = {
         store_code: set(order_ids)
         for store_code, order_ids in waybill_overdue_ids_by_store.items()
@@ -430,7 +507,6 @@ def _build_board_overdue_ids_by_store(
         if not _is_pending_carryforward_row(
             row,
             target_date=target_date,
-            lookback_days=lookback_days,
             contract=contract,
         ):
             continue
@@ -450,7 +526,7 @@ def _select_operational_rows(
 ) -> list[sqlite3.Row]:
     selected: list[sqlite3.Row] = []
     target_iso = target_date.isoformat()
-    handed_over_keys = _handed_over_order_keys(rows)
+    handed_over_keys = _nonpackable_order_keys(rows)
     for row in rows:
         if _order_key(row) in handed_over_keys:
             continue
@@ -658,25 +734,57 @@ def build_phase1_payload(
     target_date: str | date,
     lookback_days: int,
     now_iso: str | None = None,
+    obligation_ledger_path: Path | None = None,
+    allowed_store_codes: set[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     target = _resolve_target_date(target_date.isoformat() if isinstance(target_date, date) else target_date)
-    start = target - timedelta(days=max(lookback_days - 1, 0))
     now_text = now_iso or datetime.now(ALMATY_TZ).isoformat()
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        rows = _load_db_rows(conn, start=start, target=target)
+        configured_stores = {
+            _normalize_store_key(store_code)
+            for store_code in (
+            allowed_store_codes
+            if allowed_store_codes is not None
+            else load_sync_enabled_kaspi_store_codes()
+            )
+            if _normalize_store_key(store_code)
+        }
+        storeb_excluded = load_storeb_packing_excluded()
+        configured_stores = set(
+            filter_storeb_store_codes(
+                configured_stores,
+                enabled=storeb_excluded,
+                context="Google Ops Board packing scope",
+            )
+        )
+        ledger_path = Path(obligation_ledger_path) if obligation_ledger_path else None
+        obligations_by_store: dict[str, set[str]] = {}
+        if ledger_path is not None and ledger_path.exists():
+            obligations_by_store = active_obligation_ids_by_store(
+                load_shipping_obligation_ledger(ledger_path)
+            )
+        rows = _select_source_backed_board_rows(
+            _load_db_rows(conn, target=target),
+            target_date=target,
+            allowed_store_codes=configured_stores,
+            obligation_ids_by_store=obligations_by_store,
+        )
         waybill_overdue_ids_by_store = get_overdue_waybill_ready_order_ids_from_db(
             db_path,
             target_date=target,
-            lookback_days=lookback_days,
+            lookback_days=None,
         )
+        for store_code, order_ids in obligations_by_store.items():
+            waybill_overdue_ids_by_store.setdefault(
+                _normalize_store_key(store_code), set()
+            ).update(order_ids)
         overdue_ids_by_store = _build_board_overdue_ids_by_store(
             rows,
             waybill_overdue_ids_by_store=waybill_overdue_ids_by_store,
             target_date=target,
-            lookback_days=lookback_days,
             contract=contract,
         )
         selected_rows = _select_operational_rows(
@@ -823,7 +931,7 @@ def build_phase1_payload(
         {
             "field": "lookback_days",
             "value": str(lookback_days),
-            "notes": "Carry-forward overdue rows are limited to the operational lookback window",
+            "notes": "Legacy compatibility input only; unresolved carry-forward orders have no age expiry",
         },
         {"field": "source_of_truth", "value": "db/app.db", "notes": "Google Sheet is an ops surface, not the canonical truth"},
         {
@@ -833,8 +941,8 @@ def build_phase1_payload(
         },
         {
             "field": "overdue_policy",
-            "value": "operational_carryforward",
-            "notes": "OVERDUE covers waybill-ready carry-forward plus prior pending rows that were inside store cutoff",
+            "value": "durable_no_expiry_carryforward",
+            "notes": "OVERDUE retains every source-pending prior order until source-backed handover or terminal truth",
         },
         {
             "field": "closeout_gate",
@@ -1097,7 +1205,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--service-account-json", type=Path, default=None, help="Path to service-account JSON")
     parser.add_argument("--spreadsheet-id", type=str, default=None, help="Override spreadsheet ID")
     parser.add_argument("--target-date", type=str, default="today", help="Target date (default: today)")
-    parser.add_argument("--lookback-days", type=int, default=5, help="Operational lookback window (default: 5)")
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=5,
+        help="Legacy compatibility value; unresolved board carry-forward is intentionally unbounded",
+    )
     parser.add_argument("--validate-only", action="store_true", help="Read-only validation; no sheet writes")
     parser.add_argument("--apply", action="store_true", help="Write sheet tabs (default: dry-run)")
     parser.add_argument(
@@ -1130,6 +1243,7 @@ def main(argv: list[str] | None = None) -> int:
         contract=contract,
         target_date=target,
         lookback_days=args.lookback_days,
+        obligation_ledger_path=DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
     )
     before_snapshot = client.snapshot_tabs(existing_tab_names)
     publish_plan = build_publish_plan(

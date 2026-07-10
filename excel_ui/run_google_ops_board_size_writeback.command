@@ -30,11 +30,9 @@ if [ ! -f "${SERVICE_JSON}" ]; then
     exit 1
 fi
 
-ENABLE_GOOGLE_OPS_BOARD_DB_WRITE=1 \
 AB_GOOGLE_SERVICE_ACCOUNT_JSON="${SERVICE_JSON}" \
 PYTHONUNBUFFERED=1 \
 python3 -u scripts/sync_google_ops_board_sizes_to_db.py \
-    --apply \
     --target-date "$(date +%Y-%m-%d)" \
     --service-account-json "${SERVICE_JSON}"
 RC=$?
@@ -43,7 +41,7 @@ echo ""
 if [ ${RC} -ne 0 ]; then
     echo "ERROR: Google Ops Board size writeback failed."
 else
-    echo "Google Ops Board size writeback complete."
+    echo "Google Ops Board size preview complete. Final DB writeback runs only inside the READY-bound closeout."
 fi
 echo ""
 echo "Press Enter to close..."

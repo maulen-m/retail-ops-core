@@ -98,7 +98,10 @@ def inspect_activeorders_source(workbook_path: Path, *, target_date: date) -> di
         report["target_row_count"] = target_rows
         report["contains_target_date"] = target_rows > 0
         report["planned_date_counts"] = dict(counts)
-        report["fresh"] = report["mtime_date"] == target_date.isoformat() and target_rows > 0
+        # A successful current-day refresh may legitimately contain zero new
+        # target-date orders. Freshness is the source observation date, not a
+        # business-volume assertion; carryover obligations are added downstream.
+        report["fresh"] = report["mtime_date"] == target_date.isoformat()
         return report
     except Exception as exc:
         report["error"] = str(exc)
@@ -172,6 +175,7 @@ def build_source_refresh_commands(
             python_executable,
             str(EXPORT_API_ORDERS_PATH),
             "--all-stores",
+            "--require-complete",
             "--state",
             "KASPI_DELIVERY",
             "--days",
