@@ -32,7 +32,7 @@ Cashflow Decision Gate
   - no partial-range rebuild that resets opening balances
 - Owning docs/config:
   - `docs/KASPI_ORDER_CASHFLOW_TRACKING.md`
-  - `docs/KASPI_API_DAILY_PIPELINE_EXEC_SUMMARY_2026-01-22.md`
+  - `docs/archive/KASPI_API_DAILY_PIPELINE_EXEC_SUMMARY_2026-01-22.md`
   - `config/payout_model.yaml`
   - `config/bank_accounts.yaml`
   - `docs/PLAN_G40_G44_CASHFLOW_TRUSTED_DASHBOARD_V3_API_FORWARD.md` if present

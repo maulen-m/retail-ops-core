@@ -40,6 +40,7 @@ ENV/
 # Local agent tooling
 .claude/skills/
 .claude\ alias
+.claude/settings.local.json
 
 # OS
 .DS_Store
@@ -69,6 +70,8 @@ logs.pre_migration_*/
 # Local Telegram control runtime state
 runtime/state/waybill_telegram_allowed_users.txt
 runtime/state/waybill_telegram_control_bot.json
+runtime/state/waybill_prepacked_exclusion.json
+runtime/state/waybill_shipping_obligations.json
 runtime/api_ledger/kaspi_api_*.jsonl
 runtime/playwright/*session*.json
 runtime/playwright/*profile*/
@@ -95,6 +98,7 @@ docs/plan/green_path_2026-06/green_path_run/line31_prechange_export_*.json
 backups/
 backups
 archives/
+scripts/*.bak_*
 backups.pre_migration_*/
 db/backups/
 db/backups
