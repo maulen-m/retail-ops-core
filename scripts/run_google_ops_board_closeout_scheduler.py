@@ -3,18 +3,21 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
-PROJECT_ROOT = Path("~/Docs/Autonomous_business")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.google_ops_board import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
+    extract_rows_from_matrix,
     load_ops_board_contract,
     resolve_service_account_json,
     resolve_spreadsheet_id,
@@ -24,27 +27,61 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     GoogleOpsBoardAutomationLock,
     closeout_completion_state,
     ensure_kaspi_api_call_ledger_env,
+    evaluate_closeout_halt_barrier,
     today_almaty,
 )
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_closeout.py"
 DB_CHECK_PATH = PROJECT_ROOT / "scripts" / "check_local_app_db.py"
 IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
-FORCE_FRESH_ENV = "AB_GOOGLE_OPS_BOARD_FORCE_FRESH_CLOSEOUT"
+_LAST_CLOSEOUT_STATE: dict[str, object] = {}
+
+
+def _clean(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _current_ready_identity(
+    *,
+    service_account_json: str,
+    spreadsheet_id_override: str | None,
+    target_date,
+) -> dict[str, str]:
+    contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
+    spreadsheet_id = resolve_spreadsheet_id(spreadsheet_id_override, contract=contract)
+    client = GoogleOpsBoardClient.from_service_account_file(
+        spreadsheet_id,
+        Path(service_account_json),
+    )
+    rows = extract_rows_from_matrix(
+        contract.tabs["Run_Control"].headers,
+        client.get_tab_values("Run_Control"),
+    )
+    row = next(
+        (
+            item
+            for item in rows
+            if _clean(item.get("target_date")) == target_date.isoformat()
+        ),
+        {},
+    )
+    return {
+        "target_date": _clean(row.get("target_date")),
+        "ready_set_at": _clean(row.get("ready_set_at")),
+        "ready_for_closeout": _clean(row.get("ready_for_closeout")).upper(),
+    }
 
 
 def _closeout_already_completed(
     *,
     service_account_json: str,
     spreadsheet_id_override: str | None,
-    force_fresh: bool = False,
 ) -> bool:
-    if force_fresh:
-        print("Google Ops Board closeout force-fresh requested; not reusing completed delivery.", file=sys.stderr)
-        return False
+    global _LAST_CLOSEOUT_STATE
     contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
     spreadsheet_id = resolve_spreadsheet_id(spreadsheet_id_override, contract=contract)
     client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, Path(service_account_json))
     state = closeout_completion_state(client=client, contract=contract, target_date=today_almaty())
+    _LAST_CLOSEOUT_STATE = dict(state)
     if state["completed"]:
         run_id = state["run_id"] or "unknown"
         print(
@@ -62,7 +99,14 @@ def _closeout_already_completed(
     return bool(state["completed"])
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    global _LAST_CLOSEOUT_STATE
+    _LAST_CLOSEOUT_STATE = {}
+    parser = argparse.ArgumentParser(description="Identity-bound Google Ops Board closeout launcher")
+    parser.add_argument("--expected-target-date", default="")
+    parser.add_argument("--expected-ready-set-at", default="")
+    args = parser.parse_args(argv)
+
     if not SCRIPT_PATH.exists():
         print(f"ERROR: missing Google Ops Board closeout script: {SCRIPT_PATH}", file=sys.stderr)
         return 78
@@ -75,8 +119,19 @@ def main() -> int:
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, "1")
     env.setdefault(AUTOMATION_LOCK_HELD_ENV, "1")
-    force_fresh = str(env.get(FORCE_FRESH_ENV) or "").strip() == "1"
-    ensure_kaspi_api_call_ledger_env(env, target_date=today_almaty(), project_root=PROJECT_ROOT)
+    target_date = today_almaty()
+    if _clean(args.expected_target_date):
+        try:
+            target_date = date.fromisoformat(_clean(args.expected_target_date))
+        except ValueError:
+            print("ERROR: invalid --expected-target-date", file=sys.stderr)
+            return 78
+    if target_date != today_almaty():
+        print("ERROR: closeout scheduler refuses a non-today target date", file=sys.stderr)
+        return 78
+    expected_ready_set_at = _clean(args.expected_ready_set_at)
+
+    ensure_kaspi_api_call_ledger_env(env, target_date=target_date, project_root=PROJECT_ROOT)
     os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
     if env.get("KASPI_API_CALL_LEDGER_PATH"):
         os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
@@ -95,14 +150,68 @@ def main() -> int:
         if _closeout_already_completed(
             service_account_json=service_account_json,
             spreadsheet_id_override=spreadsheet_id_override,
-            force_fresh=force_fresh,
         ):
             return 0
     except Exception as exc:
-        print(f"WARNING: unable to inspect Run_Control before closeout: {exc}", file=sys.stderr)
+        print(f"ERROR: unable to inspect Run_Control before closeout: {exc}", file=sys.stderr)
+        return 78
+
+    if not expected_ready_set_at:
+        state = dict(_LAST_CLOSEOUT_STATE)
+        delivery_state = dict(state.get("delivery_state") or {})
+        request_identity = dict(state.get("request_identity") or {})
+        delivery_status = _clean(delivery_state.get("status")).upper()
+        if (
+            _clean(state.get("status")).upper() == "OK"
+            and _clean(delivery_state.get("manifest_path"))
+            and bool(state.get("delivery_resume_safe", True))
+            and not delivery_status.startswith(("CHECKPOINT_", "PINNED_"))
+            and _clean(request_identity.get("target_date")) == target_date.isoformat()
+            and _clean(request_identity.get("ready_set_at"))
+        ):
+            expected_ready_set_at = _clean(request_identity.get("ready_set_at"))
+            print(
+                "Google Ops Board closeout scheduler: resuming checkpoint-pinned "
+                "incomplete delivery.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "Google Ops Board closeout scheduler: fresh execution is owned by the "
+                "60-second READY watcher; no identity-bound request was supplied.",
+                file=sys.stderr,
+            )
+            return 0
 
     try:
         with GoogleOpsBoardAutomationLock():
+            current_identity = _current_ready_identity(
+                service_account_json=service_account_json,
+                spreadsheet_id_override=spreadsheet_id_override,
+                target_date=target_date,
+            )
+            halt_gate = evaluate_closeout_halt_barrier(
+                target_date=target_date,
+                run_control_row=current_identity,
+                request_ready_set_at=expected_ready_set_at,
+            )
+            if halt_gate["blocked"]:
+                print(
+                    "Google Ops Board closeout scheduler: local halt barrier blocks "
+                    f"launch ({halt_gate['reason']}).",
+                    file=sys.stderr,
+                )
+                return 0
+            if current_identity != {
+                "target_date": target_date.isoformat(),
+                "ready_set_at": expected_ready_set_at,
+                "ready_for_closeout": "READY",
+            }:
+                print(
+                    f"ERROR: READY identity changed before scheduler launch: {current_identity}",
+                    file=sys.stderr,
+                )
+                return 78
             check_cmd = [
                 sys.executable,
                 str(DB_CHECK_PATH),
@@ -114,9 +223,16 @@ def main() -> int:
                 print("ERROR: local DB preflight failed; skipping Google Ops Board closeout.", file=sys.stderr)
                 return int(check.returncode)
 
-            cmd = [sys.executable, str(SCRIPT_PATH), "--apply"]
-            if not force_fresh:
-                cmd.append("--resume")
+            cmd = [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--apply",
+                "--resume",
+                "--target-date",
+                target_date.isoformat(),
+                "--expected-ready-set-at",
+                expected_ready_set_at,
+            ]
             if spreadsheet_id_override:
                 cmd.extend(["--spreadsheet-id", spreadsheet_id_override])
             cmd.extend(["--service-account-json", service_account_json])
