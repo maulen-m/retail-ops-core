@@ -91,6 +91,16 @@ failure.
   policies and is not an operational outage. The matched `01:57 +05` probe was
   `YELLOW_NOT_DUE`, with 10 labels loaded, interval workers healthy, zero API
   calls, and `20.517%` free disk.
+- Before v5 deployment, keep validator roots coherent: validate the live
+  checkout with its live manifest and validate v5 inside the v5 worktree. Do
+  not point the full v5 runtime validator at the older live source tree; it
+  correctly reports the intentionally absent candidate files and generated
+  v5 document as deployment drift. The only predeployment cross-root paths are
+  tools whose contracts explicitly support them: shipment preflight with
+  `--project-root`, the matched v5 health monitor (whose manifest names the
+  live root), and post-closeout credential rotation with
+  `--live-project-root`. This boundary prevents a false RED from triggering a
+  premature production copy.
 
 ## Post-Closeout Activation Sequence
 
