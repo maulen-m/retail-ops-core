@@ -31,8 +31,8 @@ def test_google_ops_board_publish_plist_contract() -> None:
     ]
     assert env.get("ENABLE_GOOGLE_OPS_BOARD_WRITE") == "1"
     assert env.get("ENABLE_KASPI_WORKBOOK_MAP_SYNC") == "1"
-    assert env.get("KASPI_PLANNED_CUTOFF_HOUR") == "17"
-    assert env.get("KASPI_PLANNED_CUTOFF_MINUTE") == "0"
+    assert env.get("KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR") == "17"
+    assert env.get("KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR") == "0"
     assert env.get("AB_GOOGLE_SERVICE_ACCOUNT_JSON") == "~/Docs/Business/S/ab-ops-board-sync-key.json"
     assert env.get("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID") == "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg"
     assert plist.get("StandardOutPath") == (
@@ -221,7 +221,8 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "every `15` seconds" in doc
     assert "60" in doc
     assert "18:57" in doc
-    assert "19:04" in doc or "19:05" in doc
+    assert "09:00" in doc
+    assert "24:00" in doc
     assert "Run_Control" in doc
     assert "READY" in doc
     assert "pre-window health gate" in doc or "prewindow health gate" in doc
@@ -273,7 +274,7 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "17:02 - Import (17:00 all-store late-window DB freshness / next-day visibility)" in script
     assert "17:15, 17:30, 17:45, 18:00, 18:15 - Google Ops Board size-writeback preview (read-only)" in script
     assert "18:20 - Google Ops Board closeout caffeinate keep-awake guard" in script
-    assert "every 15s between 11:00 and 19:04 (script-gated, 60s READY debounce; 18:57 probable-size auto-fill)" in script
+    assert "every 15s between 09:00 and 24:00 (script-gated, 60s READY debounce; 18:57 probable-size auto-fill)" in script
     assert "18:30 - Google Ops Board closeout backstop" in script
     assert "09:30 and 19:15 - Kaspi shipped-truth DB sync" in script
     assert "Telegram /ready fallback control" in script

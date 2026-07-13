@@ -66,7 +66,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - `18:20` closeout-window keep-awake guard
   - command: `/usr/bin/caffeinate -dimsu -t 4200`
 - `config/com.example.google-ops-board-closeout-watch.plist`
-  - every `15` seconds, with script-gated watch window `11:00` to `19:04`
+  - every `15` seconds, with script-gated watch window `09:00` to `24:00`
   - if `Run_Control` is green early, arm a `60` second READY debounce
   - start closeout only if the board is still green after that debounce
   - at `18:57`, if any `SalesRaw_Today.MY_SIZE` rows are still blank:

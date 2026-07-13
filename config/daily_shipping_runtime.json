@@ -1,0 +1,268 @@
+{
+  "schema_version": 1,
+  "authority": "Autonomous_business daily shipping runtime",
+  "timezone": "Asia/Almaty",
+  "employee_ready_by_local": "17:00",
+  "project_root": "~/Docs/Autonomous_business",
+  "generated_doc": "docs/ops/DAILY_SHIPPING_RUNTIME.generated.md",
+  "automation_scope_manifest": "config/business_automation_manifest.json",
+  "store_sources": [
+    "config/stores.yaml",
+    "config/kaspi_stores.yaml"
+  ],
+  "store_roster": {
+    "active": [
+      "STOREB",
+      "ACMEWEAR",
+      "UNIVERSAL"
+    ],
+    "archived": [
+      "11KZ",
+      "MELVIS"
+    ]
+  },
+  "watch": {
+    "constants_source": "scripts/google_ops_board_automation_common.py",
+    "start_local": "09:00",
+    "end_local": "24:00",
+    "poll_interval_seconds": 15,
+    "ready_debounce_seconds": 60,
+    "auto_probable_local": "18:57"
+  },
+  "workflow": {
+    "state_owner": "scripts/run_google_ops_board_closeout.py",
+    "checkpoint_root": "exports/google_ops_board/workflow_runs",
+    "stages": [
+      "source_refresh",
+      "board_publish",
+      "ready_identity",
+      "size_writeback",
+      "ship_orders",
+      "waybill_download",
+      "bundle_build",
+      "telegram_delivery",
+      "shipped_truth_sync"
+    ],
+    "retry_policy": "resume_only_failed_or_incomplete_stage",
+    "completion_authority": "checkpoint plus exact manifest plus confirmed Telegram ledger"
+  },
+  "recovery": {
+    "rpo_minutes": 15,
+    "rto_minutes": 30,
+    "minimum_disk_free_percent": 20,
+    "one_writer_cluster": true,
+    "cutover_requires_separate_green_packet": true
+  },
+  "security": {
+    "forbidden_embedded_env_name_fragments": [
+      "TOKEN",
+      "PASSWORD",
+      "SECRET",
+      "COOKIE",
+      "AUTHORIZATION",
+      "CHAT_ID"
+    ],
+    "credential_values_must_never_be_reported": true
+  },
+  "credential_files": [
+    {
+      "path": "${PROJECT_ROOT}/.env",
+      "required": true,
+      "max_mode": "0600"
+    },
+    {
+      "path": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
+      "required": true,
+      "max_mode": "0600"
+    }
+  ],
+  "defaults": {
+    "working_directory": "${PROJECT_ROOT}",
+    "run_at_load": false,
+    "keep_alive": false,
+    "path_env": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  },
+  "schedulers": [
+    {
+      "label": "com.example.kaspi-import-v2",
+      "source_plist": "config/com.example.kaspi-import.plist",
+      "role": "order source refresh",
+      "program_arguments": [
+        "${PROJECT_ROOT}/.venv/bin/python",
+        "${PROJECT_ROOT}/scripts/run_kaspi_import_scheduler.py"
+      ],
+      "schedule": {
+        "type": "calendar",
+        "times": ["11:00", "15:02", "16:01", "17:02"]
+      },
+      "environment_variables": {
+        "CRM_IMPORT_TIMEOUT_SEC": "1500",
+        "KASPI_LOOKBACK_DAYS_LONG": "14",
+        "KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR": "17",
+        "KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR": "0"
+      },
+      "stdout": "${PROJECT_ROOT}/runtime_logs/kaspi_import_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/kaspi_import_stderr.log"
+    },
+    {
+      "label": "com.example.google-ops-board-publish",
+      "source_plist": "config/com.example.google-ops-board-publish.plist",
+      "role": "employee board source refresh and publish",
+      "program_arguments": [
+        "${PROJECT_ROOT}/.venv/bin/python",
+        "${PROJECT_ROOT}/scripts/run_google_ops_board_publish_scheduler.py"
+      ],
+      "schedule": {
+        "type": "calendar",
+        "times": [
+          "07:00", "11:00",
+          "14:01", "14:11", "14:21", "14:31", "14:41", "14:51",
+          "15:01", "15:11", "15:21", "15:31", "15:41", "15:51",
+          "16:01", "16:11", "16:21", "16:31", "16:41", "16:51",
+          "17:01", "17:11"
+        ]
+      },
+      "environment_variables": {
+        "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
+        "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
+        "ENABLE_GOOGLE_OPS_BOARD_WRITE": "1",
+        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1",
+        "KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR": "17",
+        "KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR": "0"
+      },
+      "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_publish_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_publish_stderr.log"
+    },
+    {
+      "label": "com.example.google-ops-board-prewindow-health",
+      "source_plist": "config/com.example.google-ops-board-prewindow-health.plist",
+      "role": "prewindow health and identity sync",
+      "program_arguments": [
+        "${PROJECT_ROOT}/.venv/bin/python",
+        "${PROJECT_ROOT}/scripts/run_google_ops_board_prewindow_health_scheduler.py"
+      ],
+      "schedule": {"type": "calendar", "times": ["13:45"]},
+      "environment_variables": {
+        "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
+        "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
+        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1"
+      },
+      "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_prewindow_health_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_prewindow_health_stderr.log"
+    },
+    {
+      "label": "com.example.google-ops-board-size-writeback",
+      "source_plist": "config/com.example.google-ops-board-size-writeback.plist",
+      "role": "read-only size writeback preview",
+      "program_arguments": [
+        "${PROJECT_ROOT}/.venv/bin/python",
+        "${PROJECT_ROOT}/scripts/run_google_ops_board_size_writeback_scheduler.py"
+      ],
+      "schedule": {
+        "type": "calendar",
+        "times": ["17:15", "17:30", "17:45", "18:00", "18:15"]
+      },
+      "environment_variables": {
+        "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
+        "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json"
+      },
+      "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_size_writeback_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_size_writeback_stderr.log"
+    },
+    {
+      "label": "com.example.google-ops-board-closeout-watch",
+      "source_plist": "config/com.example.google-ops-board-closeout-watch.plist",
+      "role": "READY watcher and closeout trigger",
+      "program_arguments": [
+        "${PROJECT_ROOT}/.venv/bin/python",
+        "${PROJECT_ROOT}/scripts/run_google_ops_board_closeout_watch_scheduler.py"
+      ],
+      "schedule": {"type": "interval", "seconds": 15},
+      "environment_variables": {
+        "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
+        "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
+        "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT": "1",
+        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1"
+      },
+      "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_watch_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_watch_stderr.log"
+    },
+    {
+      "label": "com.example.google-ops-board-closeout-caffeinate",
+      "source_plist": "config/com.example.google-ops-board-closeout-caffeinate.plist",
+      "role": "closeout keep-awake guard",
+      "program_arguments": ["/usr/bin/caffeinate", "-dimsu", "-t", "4200"],
+      "schedule": {"type": "calendar", "times": ["18:20"]},
+      "environment_variables": {},
+      "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_caffeinate_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_caffeinate_stderr.log"
+    },
+    {
+      "label": "com.example.kaspi-waybill-deadline",
+      "source_plist": "config/com.example.kaspi-waybill-deadline.plist",
+      "role": "shipping closeout backstop",
+      "program_arguments": [
+        "${PROJECT_ROOT}/.venv/bin/python",
+        "${PROJECT_ROOT}/scripts/run_google_ops_board_closeout_scheduler.py"
+      ],
+      "schedule": {"type": "calendar", "times": ["18:30"]},
+      "environment_variables": {
+        "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
+        "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
+        "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT": "1",
+        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1"
+      },
+      "stdout": "${PROJECT_ROOT}/runtime_logs/kaspi_waybill_deadline_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/kaspi_waybill_deadline_stderr.log"
+    },
+    {
+      "label": "com.example.waybill-telegram-control",
+      "source_plist": "config/com.example.waybill-telegram-control.plist",
+      "role": "Telegram control fallback",
+      "program_arguments": [
+        "${PROJECT_ROOT}/.venv/bin/python",
+        "${PROJECT_ROOT}/scripts/waybill_telegram_control_bot.py"
+      ],
+      "schedule": {"type": "interval", "seconds": 15},
+      "environment_variables": {
+        "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
+        "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
+        "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT": "1",
+        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1"
+      },
+      "stdout": "${PROJECT_ROOT}/runtime_logs/waybill_telegram_control_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/waybill_telegram_control_stderr.log"
+    },
+    {
+      "label": "com.example.kaspi-shipped-truth-sync",
+      "source_plist": "config/com.example.kaspi-shipped-truth-sync.plist",
+      "role": "post-closeout shipped truth sync",
+      "program_arguments": [
+        "${PROJECT_ROOT}/.venv/bin/python",
+        "${PROJECT_ROOT}/scripts/run_kaspi_shipped_truth_sync_scheduler.py"
+      ],
+      "schedule": {"type": "calendar", "times": ["09:30", "19:15"]},
+      "environment_variables": {
+        "ENABLE_KASPI_SHIPPED_TRUTH_SYNC": "1",
+        "KASPI_SHIPPED_TRUTH_LOOKBACK_DAYS": "13"
+      },
+      "stdout": "${PROJECT_ROOT}/runtime_logs/kaspi_shipped_truth_sync_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/kaspi_shipped_truth_sync_stderr.log"
+    },
+    {
+      "label": "com.example.kaspi-daily-ops-report",
+      "source_plist": "config/com.example.kaspi-daily-ops-report.plist",
+      "role": "daily operational closeout report",
+      "program_arguments": [
+        "${PROJECT_ROOT}/.venv/bin/python",
+        "${PROJECT_ROOT}/scripts/run_kaspi_daily_ops_report_scheduler.py",
+        "--profile",
+        "catch-up"
+      ],
+      "schedule": {"type": "calendar", "times": ["19:10"]},
+      "environment_variables": {},
+      "stdout": "${PROJECT_ROOT}/runtime_logs/kaspi_daily_ops_report_stdout.log",
+      "stderr": "${PROJECT_ROOT}/runtime_logs/kaspi_daily_ops_report_stderr.log"
+    }
+  ]
+}

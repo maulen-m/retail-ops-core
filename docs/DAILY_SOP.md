@@ -64,7 +64,7 @@ Current daily scheduler contract (GMT+5):
 - Legacy Google Ops Board size-writeback preview jobs (read-only; never apply): `17:15`, `17:30`, `17:45`, `18:00`, `18:15`
 - Google Ops Board closeout keep-awake guard: `18:20`
   - runs `/usr/bin/caffeinate -dimsu -t 4200` so the Mac stays awake through the closeout/send window
-- Google Ops Board early-closeout watch: every 15 seconds between `11:00` and `19:04` (script-gated, no-op unless green)
+- Google Ops Board early-closeout watch: every 15 seconds between `09:00` and `24:00` (script-gated, no-op unless green)
 - early-ready safety gate: first `READY` detection arms a 60-second debounce; closeout starts only if the board is still green after that wait
 - `18:57` edge-case fallback:
   - if any `SalesRaw_Today.MY_SIZE` cells are still blank, fill only those blanks from visible, valid `PROBABLE_SIZE`
