@@ -5,7 +5,7 @@
   "current_drop_validator_command": "python3 scripts/validate_line31_current_final_creative_drop.py --json",
   "deploy_liveqa_sequence_execute_command": "python3 scripts/run_line31_deploy_liveqa_readiness_sequence.py --approval-text-file /absolute/path/to/exact_deploy_liveqa_approval.txt --execute-approved-deploy-liveqa --json",
   "deploy_liveqa_sequence_plan_command": "python3 scripts/run_line31_deploy_liveqa_readiness_sequence.py --json",
-  "generated_at": "2026-07-03T00:13:43+05:00",
+  "generated_at": "2026-07-12T20:47:41+05:00",
   "internal_kaspi_policy": "KEEP_INTERNAL_KASPI_LINE31_CAMPAIGNS_ON_UNTIL_SEPARATE_OWNER_APPROVAL",
   "latest_customer_journey_traceability_audit": {
     "audit_command": "python3 scripts/build_line31_customer_journey_traceability_audit.py --json",
@@ -1129,7 +1129,9 @@
     "three LINE31 Meta ads are not live/source-verified"
   ],
   "next_action": "Keep the paused shell paused. Next, run/read a currency-safe Meta preflight and either repair/rebuild the paused shell with exact owner approval, then solve the app-mode/UI fallback path before creating exactly three ads.",
-  "noncreative_blockers": [],
+  "noncreative_blockers": [
+    "current non-creative gate is not green-except-creative: One or more LINE31 launch-blocking non-creative validators failed.; retained_noncreative_blockers=compact_child_cogs_integrity, profit_publication_integrity, generic_po_dashboard_stock_freshness_validator"
+  ],
   "one_shot_example_command": "python3 scripts/prepare_line31_launch_readiness_from_assets.py --creative-id line31_countrywide_v1 --asset-dir /absolute/path/to/final_creative_drop_folder --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 --duration-seconds 18 --utm-placement reels --landing-url 'https://acmewear.pro/line31' --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' --creative-ready-declared --approval-text-file /absolute/path/to/pasted_owner_approval.txt --tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json --overwrite --json",
   "owner_facing_publish_status": "YELLOW_SAFE_PAUSED__BUDGET_AND_APP_BLOCKERS_REMAIN",
   "pending_gate": "GREEN_LINE31_META_PARTIAL_SHELL_SAFETY_PAUSED",
@@ -1143,5 +1145,5 @@
   "standalone_approval_recorder_example_command": "python3 scripts/record_line31_owner_publish_approval.py --require-mapping-ready --mapping ~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json --approval-text-file /absolute/path/to/pasted_owner_approval.txt --json",
   "starter_prompt": "Read the repo bootstrap context and execute ~/Docs/Autonomous_business/docs/agent_handoffs/LINE31_FINAL_CREATIVE_META_PUBLISH_20260601_STARTERS/01_AGENT_1__FINAL_CREATIVE_META_PUBLISH__SERIAL.md.",
   "status": "YELLOW_META_PARTIAL_SHELL_PAUSED_BUDGET_REPAIR_PENDING",
-  "strict_gate": "GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH"
+  "strict_gate": "YELLOW"
 }

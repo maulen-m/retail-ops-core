@@ -1,6 +1,6 @@
 # LINE31 Active Goal Completion Audit
 
-Generated: 2026-07-03T00:13:27+05:00
+Generated: 2026-07-12T20:47:24+05:00
 
 Gate: `INCOMPLETE`
 Complete: `false`
@@ -9,16 +9,16 @@ Ready to publish: `false`
 ## Current Non-Creative Matrix
 
 Refreshed: `true`
-Overall gate: `GREEN`
-Can use GREEN_EXCEPT_CREATIVE: `true`
+Overall gate: `YELLOW`
+Can use GREEN_EXCEPT_CREATIVE: `false`
 Evidence root: `~/Docs/Autonomous_business/exports/validation/line31_current_noncreative_gate_refresh_current`
 
 ## Requirement Status
 
 | requirement | status | evidence | blocker |
 | --- | --- | --- | --- |
-| Non-creative LINE31 launch readiness remains green | `ACHIEVED` | `validate_line31_launch_readiness --allow-pending-creative => GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH` |  |
-| Option 2 unrelated-failure repair first is repaired/quarantined | `ACHIEVED` | `~/Docs/Autonomous_business/exports/validation/line31_green_except_creative_round3_strict_unrelated_repair_20260601/final_synthesis/FINAL_GREEN_EXCEPT_CREATIVE_MATRIX.json` |  |
+| Non-creative LINE31 launch readiness remains green | `PENDING` | `validate_line31_launch_readiness --allow-pending-creative => YELLOW` | current non-creative gate is not green-except-creative: One or more LINE31 launch-blocking non-creative validators failed.; retained_noncreative_blockers=compact_child_cogs_integrity, profit_publication_integrity, generic_po_dashboard_stock_freshness_validator |
+| Option 2 unrelated-failure repair first is repaired/quarantined | `PENDING` | `~/Docs/Autonomous_business/exports/validation/line31_green_except_creative_round3_strict_unrelated_repair_20260601/final_synthesis/FINAL_GREEN_EXCEPT_CREATIVE_MATRIX.json` | unrelated repair queue is not green or current non-creative matrix is not green |
 | Owner objective source freshness is green | `PENDING` | `~/Docs/Autonomous_business/exports/validation/line31_green_except_creative_owner_clarified_current_20260601_130108/CURRENT_OWNER_CLARIFICATION_FACTS.json via YELLOW_SOURCE_WEAK` | Cash_Balances latest timestamp mismatch: 2026-07-02 19:55:38 GMT+5 != 2026-06-01 09:06:51 GMT+5; SHR paid base total does not match owner facts; SHR remaining payable does not match owner facts |
 | Current cash and SHR timing use latest owner workbook truth | `PENDING` | `~/Documents/useful tables/Main crm spreadsheets/main tables/Purchase_orders/vibe_code_PO/Inbound_calendar_V10.002.xlsx via YELLOW_SOURCE_WEAK` | cash timestamp or SHR #18 7000 CNY paid-with-receipt-pending fact is missing |
 | Protected cash reserve is exactly 800000 KZT | `PENDING` | `~/Docs/Autonomous_business/exports/validation/line31_green_except_creative_owner_clarified_current_20260601_130108/CURRENT_OWNER_CLARIFICATION_FACTS.json via YELLOW_SOURCE_WEAK` | protected reserve is not exactly 800000 KZT in source freshness proof |
@@ -33,7 +33,7 @@ Evidence root: `~/Docs/Autonomous_business/exports/validation/line31_current_non
 | Post-publish monitoring plan is ready and truth-separated | `ACHIEVED` | `~/Docs/Autonomous_business/exports/validation/line31_post_publish_monitoring_packet_20260603_184254/post_publish_monitoring_manifest.json` |  |
 | Customer journey traceability audit is green | `ACHIEVED` | `~/Docs/Autonomous_business/exports/validation/line31_customer_journey_traceability_audit_20260604_125048/traceability_manifest.json` |  |
 | Exact owner Meta publish approval evidence is recorded and SHA-verified | `ACHIEVED` | `~/Docs/Autonomous_business/exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/final_creative_publish_intake_and_approval.md` |  |
-| Strict LINE31 launch readiness passes | `ACHIEVED` | `validate_line31_launch_readiness => GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH` |  |
+| Strict LINE31 launch readiness passes | `PENDING` | `validate_line31_launch_readiness => YELLOW` | current non-creative gate is not green-except-creative: One or more LINE31 launch-blocking non-creative validators failed.; retained_noncreative_blockers=compact_child_cogs_integrity, profit_publication_integrity, generic_po_dashboard_stock_freshness_validator |
 | Internal Kaspi LINE31 campaigns remain protected unless separately approved | `ACHIEVED` | `KEEP_INTERNAL_KASPI_LINE31_CAMPAIGNS_ON_UNTIL_SEPARATE_OWNER_APPROVAL` |  |
 
 ## Next Action

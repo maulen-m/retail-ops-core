@@ -1,13 +1,13 @@
 # LINE31 Launch Current Status
 
-Generated: `2026-07-03T00:13:43+05:00`
+Generated: `2026-07-12T20:47:41+05:00`
 
 Status: `YELLOW_META_PARTIAL_SHELL_PAUSED_BUDGET_REPAIR_PENDING`
 Owner-facing publish status: `YELLOW_SAFE_PAUSED__BUDGET_AND_APP_BLOCKERS_REMAIN`
 Post-expert integration: `INTEGRATED_STRICT_GATE_ADDENDUM_20260602`
 Ready to publish: `false`
 Pending gate: `GREEN_LINE31_META_PARTIAL_SHELL_SAFETY_PAUSED`
-Strict gate: `GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH`
+Strict gate: `YELLOW`
 
 ## Next Action
 
@@ -68,7 +68,7 @@ Keep the paused shell paused. Next, run/read a currency-safe Meta preflight and 
 
 ## Non-Creative Blockers
 
-- None
+- current non-creative gate is not green-except-creative: One or more LINE31 launch-blocking non-creative validators failed.; retained_noncreative_blockers=compact_child_cogs_integrity, profit_publication_integrity, generic_po_dashboard_stock_freshness_validator
 
 ## Latest Drop-Intake Commands
 
