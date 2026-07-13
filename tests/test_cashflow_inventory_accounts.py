@@ -1,9 +1,14 @@
 import sqlite3
+import hashlib
 from datetime import date
 from pathlib import Path
 
 from scripts.rebuild_cashflow_calendar import compute_daily_rows
 from scripts.validate_cashflow_invariants import validate
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _init_daily_db(db_path: Path) -> None:
@@ -71,7 +76,9 @@ def _init_daily_db(db_path: Path) -> None:
 def test_inventory_accounts_never_negative(tmp_path):
     db_path = tmp_path / "cashflow.db"
     _init_daily_db(db_path)
+    db_sha_before = _sha256(db_path)
     assert validate(db_path, tolerance=0.01) == 1
+    assert _sha256(db_path) == db_sha_before
 
 
 def test_inbound_to_onhand_transfer_no_cash_effect():
