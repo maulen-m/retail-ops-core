@@ -1,20 +1,29 @@
 import json
+import hashlib
 from datetime import date
 from pathlib import Path
 
 import pytest
 
 from scripts import send_waybills_telegram as telegram_mod
-from scripts.send_waybills_whatsapp import SOURCE_MERGED
+from scripts.send_waybills_whatsapp import SOURCE_MERGED, _manifest_batch_hash
 from core.integrations import telegram_bot as telegram_bot_mod
 from core.integrations.telegram_bot import get_waybill_telegram_config
 
 
-def _write_manifest(today_root: Path, entries: list[dict]) -> Path:
-    batch_root = today_root / "MERGED" / "SEND" / "21.04.26_MERGED_qnt2"
+def _write_manifest(
+    today_root: Path,
+    entries: list[dict],
+    *,
+    target_date: str = "2026-04-21",
+    ready_set_at: str | None = None,
+    batch_label: str = "21.04.26_MERGED_qnt2",
+) -> Path:
+    batch_root = today_root / "MERGED" / "SEND" / batch_label
     pdf_dir = batch_root / "NORMAL_singles"
     pdf_dir.mkdir(parents=True, exist_ok=True)
     pdf_bytes = b"%PDF-1.4\ntelegram-test\n"
+    ready_identity = ready_set_at or f"{target_date}T17:00:00+05:00"
     for entry in entries:
         (pdf_dir / entry["filename"]).write_bytes(pdf_bytes)
 
@@ -27,7 +36,7 @@ def _write_manifest(today_root: Path, entries: list[dict]) -> Path:
                 "filename": entry["filename"],
                 "category": "NORMAL_singles",
                 "logical_group_type": "NORMAL",
-                "sha256": "placeholder",
+                "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
                 "file_size": len(pdf_bytes),
                 "mtime": "2026-04-21T00:00:00+05:00",
                 "order_ids": [entry["order_id"]],
@@ -38,17 +47,27 @@ def _write_manifest(today_root: Path, entries: list[dict]) -> Path:
             }
         )
     payload = {
-        "schema_version": 2,
+        "schema_version": 4,
         "batch_label": batch_root.name,
-        "target_date": "2026-04-21",
+        "target_date": target_date,
+        "ready_set_at": ready_identity,
+        "request_identity": {
+            "target_date": target_date,
+            "ready_set_at": ready_identity,
+        },
+        "expected_orders_sha256": "b" * 64,
+        "obligation_scope_hash": "c" * 64,
+        "line_scope_hash": "d" * 64,
         "source_root": str(batch_root),
-        "batch_hash": "batchhash-telegram",
+        "batch_hash": "",
         "counts": {"pdfs": len(entries), "orders": len(entries), "overdue_orders": 0},
         "overdue_order_ids": [],
         "missing_overdue_order_ids": [],
+        "send_order_ids": sorted(entry["order_id"] for entry in entries),
         "terminal_orders_excluded": True,
         "entries": payload_entries,
     }
+    payload["batch_hash"] = _manifest_batch_hash(payload)
     (batch_root / "send_batch_manifest.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -56,13 +75,40 @@ def _write_manifest(today_root: Path, entries: list[dict]) -> Path:
     return batch_root
 
 
+def _batch_hash(batch_root: Path) -> str:
+    return json.loads(
+        (batch_root / "send_batch_manifest.json").read_text(encoding="utf-8")
+    )["batch_hash"]
+
+
 @pytest.fixture(autouse=True)
-def _avoid_real_handover_watch_state(monkeypatch):
+def _avoid_real_handover_watch_state(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         telegram_mod,
         "arm_passive_handover_watch",
         lambda **_kwargs: {"armed": False},
         raising=False,
+    )
+    real_run_sender = telegram_mod.run_sender
+
+    def _identity_pinned_run_sender(*args, **kwargs):
+        if not bool(kwargs.get("dry_run")) and kwargs.get("manifest_path") is None:
+            today_folder = Path(kwargs.get("today_folder") or args[0])
+            manifests = sorted(
+                (today_folder / "MERGED" / "SEND").glob("*/send_batch_manifest.json")
+            )
+            if len(manifests) == 1:
+                kwargs["manifest_path"] = manifests[0]
+                kwargs["expected_manifest_sha256"] = hashlib.sha256(
+                    manifests[0].read_bytes()
+                ).hexdigest()
+        return real_run_sender(*args, **kwargs)
+
+    monkeypatch.setattr(telegram_mod, "run_sender", _identity_pinned_run_sender)
+    monkeypatch.setattr(
+        telegram_mod,
+        "CLOSEOUT_HALT_BARRIER_PATH",
+        tmp_path / "closeout_halt_barrier.json",
     )
 
 
@@ -201,6 +247,88 @@ def test_telegram_sender_sends_manifest_sequence_and_records_ledger(monkeypatch,
     assert ledger["entries"]["pdf-a"]["telegram_message_id"] == "msg-2"
 
 
+def test_telegram_sender_halt_after_first_pdf_leaves_second_pending(
+    monkeypatch,
+    tmp_path: Path,
+):
+    batch_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1},
+            {"pdf_key": "pdf-b", "filename": "second.pdf", "order_id": "1002", "send_sequence": 2},
+        ],
+    )
+    halt_path = tmp_path / "closeout_halt_barrier.json"
+    sent_filenames: list[str] = []
+    status_messages: list[str] = []
+
+    def _fake_send_document(*, token, chat_id, document_path, caption, timeout_seconds):
+        sent_filenames.append(Path(document_path).name)
+        if len(sent_filenames) == 1:
+            halt_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "target_date": "2026-04-21",
+                        "halt_requested_at": "2026-04-21T17:01:00+05:00",
+                        "source": "test:/halt",
+                        "halt_request_key": "telegram_update:1",
+                        "state": "PENDING_HOLD",
+                        "blocks_automation": True,
+                        "updated_at": "2026-04-21T17:01:00+05:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return {
+            "success": True,
+            "message_id": f"msg-{len(sent_filenames)}",
+            "chat_id": chat_id,
+        }
+
+    def _fake_send_message(**kwargs):
+        status_messages.append(str(kwargs["text"]))
+        return {
+            "success": True,
+            "message_id": f"status-{len(status_messages)}",
+            "chat_id": kwargs["chat_id"],
+        }
+
+    monkeypatch.setattr(telegram_mod, "send_document", _fake_send_document)
+    monkeypatch.setattr(telegram_mod, "send_message", _fake_send_message)
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=True,
+        send_delay=0,
+    )
+
+    assert report["ok"] is False
+    assert report["halted"] is True
+    assert report["halt_reason"] == "TELEGRAM_HALT_BARRIER"
+    assert report["halt_gate_reason"] == "REQUEST_HALTED"
+    assert report["fallback_allowed"] is False
+    assert report["sent"] == 1
+    assert report["confirmed_total"] == 1
+    assert sent_filenames == ["first.pdf"]
+    assert len(status_messages) == 1
+    assert report["pre_status_sent"] is True
+    assert report["final_status_sent"] is False
+
+    ledger = json.loads((batch_root / "telegram_send_ledger.json").read_text(encoding="utf-8"))
+    assert ledger["entries"]["pdf-a"]["state"] == "confirmed"
+    assert [item["state"] for item in ledger["entries"]["pdf-a"]["history"]] == [
+        "api_started",
+        "confirmed",
+    ]
+    assert ledger["entries"]["pdf-b"]["state"] == "pending"
+    assert ledger["entries"]["pdf-b"]["history"] == []
+
+
 def test_telegram_sender_retries_rate_limited_documents(monkeypatch, tmp_path: Path):
     batch_root = _write_manifest(
         tmp_path,
@@ -295,9 +423,14 @@ def test_telegram_sender_resume_sends_only_failed_entries(monkeypatch, tmp_path:
             {
                 "schema_version": 1,
                 "channel": "telegram",
-                "batch_hash": "batchhash-telegram",
+                "batch_hash": _batch_hash(batch_root),
+                "telegram_chat_id": "-1001",
                 "entries": {
-                    "pdf-a": {"state": "confirmed", "history": []},
+                    "pdf-a": {
+                        "state": "confirmed",
+                        "history": [],
+                        "telegram_chat_id": "-1001",
+                    },
                     "pdf-b": {"state": "failed", "history": []},
                 },
             },
@@ -331,6 +464,115 @@ def test_telegram_sender_resume_sends_only_failed_entries(monkeypatch, tmp_path:
     assert sent_filenames == ["second.pdf"]
 
 
+def test_telegram_sender_refuses_resume_to_a_different_chat(monkeypatch, tmp_path: Path):
+    batch_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1},
+        ],
+    )
+    (batch_root / "telegram_send_ledger.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "channel": "telegram",
+                "batch_hash": _batch_hash(batch_root),
+                "telegram_chat_id": "-2002",
+                "entries": {
+                    "pdf-a": {"state": "failed", "history": [{"event": "api_started"}]},
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **_kwargs: sent.append("sent") or {"success": True},
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+    )
+
+    assert report["ok"] is False
+    assert report["halt_reason"] == "TELEGRAM_LEDGER_IDENTITY"
+    assert report["fallback_allowed"] is False
+    assert sent == []
+
+
+def test_confirmed_telegram_ledger_entry_is_immutable() -> None:
+    ledger = {"entries": {"pdf-a": {"state": "confirmed", "history": []}}}
+
+    with pytest.raises(RuntimeError, match="immutable"):
+        telegram_mod._set_entry_state(ledger, "pdf-a", "pending")
+
+    assert ledger["entries"]["pdf-a"]["state"] == "confirmed"
+
+
+def test_telegram_sender_blocks_july_10_manifest_before_any_send(monkeypatch, tmp_path: Path):
+    _write_manifest(
+        tmp_path,
+        [{"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1}],
+        target_date="2026-07-10",
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **kwargs: sent.append(str(kwargs["document_path"])) or {"success": True},
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 7, 10),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+    )
+
+    assert report["ok"] is False
+    assert report["halt_reason"] == "TARGET_DATE_SEND_EXCLUDED"
+    assert sent == []
+
+
+def test_telegram_final_table_is_blocked_for_july_10(monkeypatch, tmp_path: Path):
+    _write_manifest(
+        tmp_path,
+        [{"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1}],
+        target_date="2026-07-10",
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_message",
+        lambda **kwargs: sent.append(str(kwargs["text"])) or {"success": True},
+    )
+
+    report = telegram_mod.send_final_status_table(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 7, 10),
+        token="token-1",
+        chat_id="-1001",
+    )
+
+    assert report["ok"] is False
+    assert "TARGET_DATE_SEND_EXCLUDED" in report["error"]
+    assert sent == []
+
+
 def test_telegram_sender_resume_caption_preserves_manifest_sequence(monkeypatch, tmp_path: Path):
     batch_root = _write_manifest(
         tmp_path,
@@ -344,9 +586,14 @@ def test_telegram_sender_resume_caption_preserves_manifest_sequence(monkeypatch,
             {
                 "schema_version": 1,
                 "channel": "telegram",
-                "batch_hash": "batchhash-telegram",
+                "batch_hash": _batch_hash(batch_root),
+                "telegram_chat_id": "-1001",
                 "entries": {
-                    "pdf-a": {"state": "confirmed", "history": []},
+                    "pdf-a": {
+                        "state": "confirmed",
+                        "history": [],
+                        "telegram_chat_id": "-1001",
+                    },
                     "pdf-b": {"state": "failed", "history": []},
                 },
             },
@@ -387,7 +634,7 @@ def test_telegram_sender_refuses_when_batch_lock_is_held(monkeypatch, tmp_path: 
             {"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1},
         ],
     )
-    lock_path = batch_root / ".telegram_send.lock"
+    lock_path = batch_root.parent / ".telegram_send.lock"
     lock_path.touch()
     sent: list[str] = []
 
@@ -416,7 +663,181 @@ def test_telegram_sender_refuses_when_batch_lock_is_held(monkeypatch, tmp_path: 
     assert sent == []
 
 
-def test_telegram_sender_no_resume_reports_current_batch_confirmations_only(monkeypatch, tmp_path: Path):
+def test_telegram_sender_blocks_same_date_sibling_with_missing_ledger(
+    monkeypatch,
+    tmp_path: Path,
+):
+    sibling_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-old", "filename": "old.pdf", "order_id": "1000", "send_sequence": 1},
+        ],
+        ready_set_at="2026-04-21T16:00:00+05:00",
+        batch_label="21.04.26_MERGED_old",
+    )
+    current_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-new", "filename": "new.pdf", "order_id": "1001", "send_sequence": 1},
+        ],
+        ready_set_at="2026-04-21T17:00:00+05:00",
+        batch_label="21.04.26_MERGED_new",
+    )
+    current_manifest = current_root / "send_batch_manifest.json"
+    sent: list[str] = []
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **kwargs: sent.append(str(kwargs["document_path"])) or {"success": True},
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+        manifest_path=current_manifest,
+        expected_manifest_sha256=hashlib.sha256(current_manifest.read_bytes()).hexdigest(),
+    )
+
+    assert report["ok"] is False
+    assert report["halt_reason"] == "TELEGRAM_PRIOR_REQUEST_ATTEMPT"
+    assert "missing_same_target_date_sibling_telegram_ledger" in report["error"]
+    assert report["fallback_allowed"] is False
+    assert sent == []
+    assert not (sibling_root / "telegram_send_ledger.json").exists()
+    assert not (current_root / "telegram_send_ledger.json").exists()
+
+
+def test_telegram_sender_blocks_attempted_same_date_sibling_with_different_ready_identity(
+    monkeypatch,
+    tmp_path: Path,
+):
+    sibling_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-old", "filename": "old.pdf", "order_id": "1000", "send_sequence": 1},
+        ],
+        ready_set_at="2026-04-21T16:00:00+05:00",
+        batch_label="21.04.26_MERGED_old",
+    )
+    (sibling_root / "telegram_send_ledger.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "channel": "telegram",
+                "batch_hash": _batch_hash(sibling_root),
+                "telegram_chat_id": "-1001",
+                "entries": {
+                    "pdf-old": {
+                        "state": "failed",
+                        "history": [{"state": "api_started", "at": "2026-04-21T16:01:00+05:00"}],
+                    },
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    current_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-new", "filename": "new.pdf", "order_id": "1001", "send_sequence": 1},
+        ],
+        ready_set_at="2026-04-21T17:00:00+05:00",
+        batch_label="21.04.26_MERGED_new",
+    )
+    current_manifest = current_root / "send_batch_manifest.json"
+    sent: list[str] = []
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **kwargs: sent.append(str(kwargs["document_path"])) or {"success": True},
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+        manifest_path=current_manifest,
+        expected_manifest_sha256=hashlib.sha256(current_manifest.read_bytes()).hexdigest(),
+    )
+
+    assert report["ok"] is False
+    assert report["halt_reason"] == "TELEGRAM_PRIOR_REQUEST_ATTEMPT"
+    assert "same_target_date_attempt_in_other_batch" in report["error"]
+    assert report["fallback_allowed"] is False
+    assert sent == []
+    assert not (current_root / "telegram_send_ledger.json").exists()
+
+
+def test_telegram_sender_allows_resume_of_complete_current_batch_ledger(
+    monkeypatch,
+    tmp_path: Path,
+):
+    batch_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1},
+        ],
+    )
+    (batch_root / "telegram_send_ledger.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "channel": "telegram",
+                "batch_hash": _batch_hash(batch_root),
+                "telegram_chat_id": "-1001",
+                "entries": {
+                    "pdf-a": {
+                        "state": "confirmed",
+                        "history": [{"state": "confirmed", "at": "2026-04-21T17:01:00+05:00"}],
+                        "telegram_chat_id": "-1001",
+                        "telegram_message_id": "message-1",
+                    },
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = batch_root / "send_batch_manifest.json"
+    sent: list[str] = []
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **kwargs: sent.append(str(kwargs["document_path"])) or {"success": True},
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+        manifest_path=manifest_path,
+        expected_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+    )
+
+    assert report["ok"] is True
+    assert report["sent"] == 0
+    assert report["skipped"] == 1
+    assert report["confirmed_total"] == 1
+    assert sent == []
+
+
+def test_telegram_sender_no_resume_never_reselects_confirmed_entries(monkeypatch, tmp_path: Path):
     batch_root = _write_manifest(
         tmp_path,
         [
@@ -429,10 +850,19 @@ def test_telegram_sender_no_resume_reports_current_batch_confirmations_only(monk
             {
                 "schema_version": 1,
                 "channel": "telegram",
-                "batch_hash": "batchhash-telegram",
+                "batch_hash": _batch_hash(batch_root),
+                "telegram_chat_id": "-1001",
                 "entries": {
-                    "pdf-a": {"state": "confirmed", "history": []},
-                    "pdf-b": {"state": "confirmed", "history": []},
+                    "pdf-a": {
+                        "state": "confirmed",
+                        "history": [],
+                        "telegram_chat_id": "-1001",
+                    },
+                    "pdf-b": {
+                        "state": "confirmed",
+                        "history": [],
+                        "telegram_chat_id": "-1001",
+                    },
                 },
             },
             ensure_ascii=False,
@@ -460,14 +890,13 @@ def test_telegram_sender_no_resume_reports_current_batch_confirmations_only(monk
     )
 
     assert report["ok"] is True
-    assert report["sent"] == 2
-    assert report["skipped"] == 0
+    assert report["sent"] == 0
+    assert report["skipped"] == 2
     assert report["confirmed_total"] == 2
-    assert captions[0].startswith("<b>1/2</b>")
-    assert captions[1].startswith("<b>2/2</b>")
+    assert captions == []
 
 
-def test_ordered_full_resend_reports_sequence_proof(monkeypatch, tmp_path: Path):
+def test_ordered_full_resend_is_permanently_disabled(monkeypatch, tmp_path: Path):
     batch_root = _write_manifest(
         tmp_path,
         [
@@ -492,18 +921,11 @@ def test_ordered_full_resend_reports_sequence_proof(monkeypatch, tmp_path: Path)
         send_delay=0,
     )
 
-    assert report["ok"] is True
-    assert report["sent"] == 2
-    assert report["confirmed_total"] == 2
-    assert sent_filenames == ["first.pdf", "second.pdf"]
-    assert report["ordered_resend_proof"]["ok"] is True
-    assert report["ordered_resend_proof"]["sequence_match"] is True
-    assert report["ordered_resend_proof"]["message_id_min"] == 101
-    assert report["ordered_resend_proof"]["message_id_max"] == 102
-
-    ledger = json.loads((batch_root / "telegram_send_ledger.json").read_text(encoding="utf-8"))
-    assert ledger["entries"]["pdf-a"]["telegram_message_id"] == "101"
-    assert ledger["entries"]["pdf-b"]["telegram_message_id"] == "102"
+    assert report["ok"] is False
+    assert report["halted"] is True
+    assert report["halt_reason"] == "ORDERED_FULL_RESEND_DISABLED"
+    assert sent_filenames == []
+    assert not (batch_root / "telegram_send_ledger.json").exists()
 
 
 def test_telegram_sender_retries_rate_limited_final_status_message(monkeypatch, tmp_path: Path):
@@ -518,26 +940,10 @@ def test_telegram_sender_retries_rate_limited_final_status_message(monkeypatch, 
         {"success": True, "message_id": "pre-status", "chat_id": "-1001"},
         {"success": False, "error": "Too Many Requests: retry after 7", "retry_after": 7, "ambiguous": False},
         {"success": True, "message_id": "final-status", "chat_id": "-1001"},
-        {"success": True, "message_id": "returns-status", "chat_id": "-1001"},
     ]
 
     monkeypatch.setattr(telegram_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
     monkeypatch.setattr(telegram_mod, "send_document", lambda **_kwargs: {"success": True, "message_id": "doc-1", "chat_id": "-1001"})
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_pickup_ready_snapshot",
-        lambda **_kwargs: {"total_orders": 0, "stores": []},
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "format_returns_pickup_message",
-        lambda snapshot: "<b>Returns Pickup Ready</b>\nNone",
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_returns_pickup_reply_markup",
-        lambda snapshot: {"keyboard": [["Возвраты"]], "resize_keyboard": True},
-    )
     monkeypatch.setattr(telegram_mod, "send_message", lambda **_kwargs: status_results.pop(0))
 
     report = telegram_mod.run_sender(
@@ -557,7 +963,7 @@ def test_telegram_sender_retries_rate_limited_final_status_message(monkeypatch, 
     assert sleeps == [7]
 
 
-def test_telegram_sender_posts_returns_pickup_after_final_status(monkeypatch, tmp_path: Path):
+def test_telegram_sender_does_not_post_returns_pickup_after_final_status(monkeypatch, tmp_path: Path):
     _write_manifest(
         tmp_path,
         [
@@ -571,22 +977,6 @@ def test_telegram_sender_posts_returns_pickup_after_final_status(monkeypatch, tm
         "send_document",
         lambda **_kwargs: {"success": True, "message_id": "doc-1", "chat_id": "-1001"},
     )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_pickup_ready_snapshot",
-        lambda **_kwargs: {"total_orders": 2, "stores": [{"store_code": "ACMEWEAR", "display_name": "AcmeWear"}]},
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "format_returns_pickup_message",
-        lambda snapshot: "<b>Returns Pickup Ready</b>\nAcmeWear: <code>1001</code>",
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_returns_pickup_reply_markup",
-        lambda snapshot: {"keyboard": [["Возвраты"], ["Забрал OF"]], "resize_keyboard": True},
-    )
-
     def _fake_send_message(**kwargs):
         status_texts.append(kwargs["text"])
         return {"success": True, "message_id": f"msg-{len(status_texts)}", "chat_id": "-1001"}
@@ -605,9 +995,9 @@ def test_telegram_sender_posts_returns_pickup_after_final_status(monkeypatch, tm
 
     assert report["ok"] is True
     assert report["final_status_sent"] is True
-    assert report["returns_pickup_sent"] is True
-    assert any("Returns Pickup Ready" in text for text in status_texts)
-    assert "Returns Pickup Ready" in status_texts[-1]
+    assert report["returns_pickup_sent"] is False
+    assert len(status_texts) == 2
+    assert all("Returns Pickup Ready" not in text for text in status_texts)
 
 
 def test_telegram_sender_arms_passive_handover_watch_after_successful_status_messages(monkeypatch, tmp_path: Path):
@@ -618,27 +1008,12 @@ def test_telegram_sender_arms_passive_handover_watch_after_successful_status_mes
         ],
     )
     armed_calls: list[dict[str, object]] = []
-    message_ids = iter(["pre-status", "final-status", "returns-status"])
+    message_ids = iter(["pre-status", "final-status"])
 
     monkeypatch.setattr(
         telegram_mod,
         "send_document",
         lambda **_kwargs: {"success": True, "message_id": "doc-1", "chat_id": "-1001"},
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_pickup_ready_snapshot",
-        lambda **_kwargs: {"total_orders": 0, "stores": []},
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "format_returns_pickup_message",
-        lambda snapshot: "<b>Returns Pickup Ready</b>\nNone",
-    )
-    monkeypatch.setattr(
-        telegram_mod.returns_pickup_report_mod,
-        "build_returns_pickup_reply_markup",
-        lambda snapshot: {"keyboard": [["Возвраты"]], "resize_keyboard": True},
     )
     monkeypatch.setattr(
         telegram_mod,

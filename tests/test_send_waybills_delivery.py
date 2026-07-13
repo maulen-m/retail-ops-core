@@ -1,7 +1,30 @@
+import hashlib
 from datetime import date
 from pathlib import Path
 
 from scripts import send_waybills_delivery as delivery_mod
+
+
+def _manifest_pin(today_folder: Path) -> dict[str, object]:
+    manifest_path = today_folder / "MERGED" / "SEND" / "batch" / "send_batch_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("{}", encoding="utf-8")
+    return {
+        "manifest_path": manifest_path,
+        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+    }
+
+
+def test_delivery_requires_explicit_manifest_path_and_sha(tmp_path: Path):
+    report = delivery_mod.run_delivery(
+        today_folder=tmp_path,
+        expected_target_date=date(2026, 4, 21),
+        telegram_token="token-1",
+        telegram_chat_id="-1001",
+    )
+
+    assert report["ok"] is False
+    assert report["failure_stage"] == "manifest_pin"
 
 
 def test_delivery_uses_telegram_success_without_whatsapp(monkeypatch, tmp_path: Path):
@@ -28,6 +51,7 @@ def test_delivery_uses_telegram_success_without_whatsapp(monkeypatch, tmp_path: 
         expected_target_date=date(2026, 4, 21),
         telegram_token="token-1",
         telegram_chat_id="-1001",
+        **_manifest_pin(tmp_path),
     )
 
     assert report["ok"] is True
@@ -61,6 +85,7 @@ def test_delivery_blocks_telegram_ok_when_ledger_is_incomplete(monkeypatch, tmp_
         expected_target_date=date(2026, 4, 21),
         telegram_token="token-1",
         telegram_chat_id="-1001",
+        **_manifest_pin(tmp_path),
     )
 
     assert report["ok"] is False
@@ -100,6 +125,7 @@ def test_delivery_rechecks_when_telegram_report_is_complete_but_ledger_lags(monk
         expected_target_date=date(2026, 5, 3),
         telegram_token="token-1",
         telegram_chat_id="-1001",
+        **_manifest_pin(tmp_path),
     )
 
     assert report["ok"] is True
@@ -108,7 +134,7 @@ def test_delivery_rechecks_when_telegram_report_is_complete_but_ledger_lags(monk
     assert sleep_calls == [1.0]
 
 
-def test_delivery_auto_falls_back_to_whatsapp_only_when_telegram_sent_zero(monkeypatch, tmp_path: Path):
+def test_delivery_never_auto_falls_back_to_whatsapp(monkeypatch, tmp_path: Path):
     whatsapp_calls: list[dict] = []
 
     monkeypatch.setattr(
@@ -139,15 +165,19 @@ def test_delivery_auto_falls_back_to_whatsapp_only_when_telegram_sent_zero(monke
         expected_target_date=date(2026, 4, 21),
         telegram_token="",
         telegram_chat_id="",
+        whatsapp_fallback_policy=delivery_mod.FALLBACK_AUTO_ZERO_FAIL,
+        **_manifest_pin(tmp_path),
     )
 
-    assert report["ok"] is True
-    assert report["delivery_channel"] == "whatsapp"
-    assert report["whatsapp_fallback_attempted"] is True
-    assert len(whatsapp_calls) == 1
+    assert report["ok"] is False
+    assert report["delivery_channel"] == ""
+    assert report["whatsapp_fallback_attempted"] is False
+    assert report["failure_stage"] == "telegram_primary"
+    assert whatsapp_calls == []
 
 
-def test_delivery_blocks_whatsapp_fallback_ok_when_ledger_is_incomplete(monkeypatch, tmp_path: Path):
+def test_delivery_ignores_legacy_auto_fallback_policy(monkeypatch, tmp_path: Path):
+    whatsapp_calls: list[dict] = []
     monkeypatch.setattr(
         delivery_mod,
         "run_telegram_sender",
@@ -163,7 +193,7 @@ def test_delivery_blocks_whatsapp_fallback_ok_when_ledger_is_incomplete(monkeypa
     monkeypatch.setattr(
         delivery_mod,
         "run_whatsapp_fallback",
-        lambda **_kwargs: {"ok": True, "returncode": 0},
+        lambda **kwargs: whatsapp_calls.append(kwargs) or {"ok": True, "returncode": 0},
     )
     monkeypatch.setattr(
         delivery_mod,
@@ -176,13 +206,14 @@ def test_delivery_blocks_whatsapp_fallback_ok_when_ledger_is_incomplete(monkeypa
         expected_target_date=date(2026, 4, 21),
         telegram_token="",
         telegram_chat_id="",
+        **_manifest_pin(tmp_path),
     )
 
     assert report["ok"] is False
     assert report["delivery_channel"] == ""
-    assert report["whatsapp_fallback_attempted"] is True
-    assert report["failure_stage"] == "whatsapp_fallback"
-    assert "WHATSAPP_LEDGER_INCOMPLETE" in report["failure_reason"]
+    assert report["whatsapp_fallback_attempted"] is False
+    assert report["failure_stage"] == "telegram_primary"
+    assert whatsapp_calls == []
 
 
 def test_delivery_blocks_whatsapp_after_partial_telegram_send(monkeypatch, tmp_path: Path):
@@ -211,6 +242,7 @@ def test_delivery_blocks_whatsapp_after_partial_telegram_send(monkeypatch, tmp_p
         expected_target_date=date(2026, 4, 21),
         telegram_token="token-1",
         telegram_chat_id="-1001",
+        **_manifest_pin(tmp_path),
     )
 
     assert report["ok"] is False
