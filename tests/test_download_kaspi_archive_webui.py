@@ -118,6 +118,7 @@ def test_download_kaspi_archive_webui_live_mode_writes_manifest(
         manual_login=True,
         since=date(2026, 1, 1),
         until=date(2026, 2, 28),
+        write_anchor=False,
     )
 
     assert report["status"] == "PASS"
@@ -189,6 +190,7 @@ def test_download_kaspi_archive_webui_strict_failure_still_writes_manifest(
             store_codes=["ACMEWEAR"],
             headful=True,
             manual_login=True,
+            write_anchor=False,
         )
 
     manifest_path = tmp_path / "exports" / "run_fail" / "run_manifest.json"
