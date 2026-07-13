@@ -20,6 +20,8 @@ M1 currently owns the only proven live daily-shipping chain. M5 is newer and sho
 - Canonical manifest: `config/daily_shipping_runtime.json`
 - Release gate: `scripts/run_daily_shipping_release_gate.sh`
 - Receiver gate: `scripts/run_m5_daily_shipping_shadow.py`
+- Post-closeout M1 credential procedure:
+  `docs/ops/DAILY_SHIPPING_CREDENTIAL_ROTATION.md`
 
 Use the exact final commit and tag from the closeout. Do not use M1's dirty working tree as the transfer authority.
 
@@ -35,6 +37,9 @@ against the current receiver release commit.
   successful apply `closeout_report.json`, `run_control_snapshot.json`, and
   `salesraw_snapshot.json` for the preserved business date.
 - Fresh M5-local credentials installed outside Git with owner-only permissions.
+- The fresh M5 credential source must use the post-rotation owner-selected bot
+  token. Do not copy `before.env`, a fresh-token input file, or any rotation
+  receipt backup into the receiver packet.
 - No historical exports, PDFs, logs, broad backup tree, `.claude` runs, or stale worktrees unless the closeout explicitly names them as required runtime state.
 
 ## Shadow Phase: No External Writes
@@ -102,3 +107,4 @@ The live M1 employee path must be ready by **2026-07-14 17:00
 Asia/Almaty**. No cutover occurs before that employee workflow. M1 remains
 authoritative through the ledger-confirmed closeout unless the owner explicitly
 approves a separate emergency cutover packet after all checks above are GREEN.
+Credential apply is also after closeout; pre-deadline readiness is metadata-only.

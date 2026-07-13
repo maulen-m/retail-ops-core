@@ -28,6 +28,7 @@ done < <(
     -name 'test_compact_runtime_backups.py' -o \
     -name 'test_manage_daily_shipping_recovery.py' -o \
     -name 'test_run_m5_daily_shipping_shadow.py' -o \
+    -name 'test_rotate_daily_shipping_credential.py' -o \
     -name 'test_monitor_daily_shipping_health.py' -o \
     -name 'test_rotate_daily_shipping_logs.py' -o \
     -name 'test_archive_cold_evidence.py' -o \

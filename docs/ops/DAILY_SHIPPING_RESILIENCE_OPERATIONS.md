@@ -28,6 +28,13 @@ failure.
   Board. It consumes protected M5 credentials for read-only Kaspi API context,
   strips all write-enable gates after dotenv loading, exposes no credential
   value, and cannot invoke apply/send/launchctl mutation arguments.
+- `scripts/rotate_daily_shipping_credential.py` is the post-closeout Telegram
+  credential gate. Readiness inspects only metadata and key names. Apply needs
+  the explicit environment gate, a same-day successful employee closeout, an
+  owner-only fresh-token file outside Git, and a successful read-only Telegram
+  `getMe` check. It atomically rewrites one allowlisted key and emits only a
+  secret-free owner-local receipt. The exact procedure is in
+  `docs/ops/DAILY_SHIPPING_CREDENTIAL_ROTATION.md`.
 - `scripts/rotate_daily_shipping_logs.py` discovers shipping logs from the
   runtime manifest and creates verified owner-only gzip archives only with its
   explicit apply gate.
@@ -76,8 +83,11 @@ Run this sequence only after the 2026-07-14 delivery ledger confirms the full
 employee workflow:
 
 1. Re-run the release gate and installed-runtime validator.
-2. Rotate the previously exposed Telegram credential, update only the
-   owner-only credential source, and re-run the installed credential scan.
+2. Follow `docs/ops/DAILY_SHIPPING_CREDENTIAL_ROTATION.md` to rotate the
+   owner-selected Telegram key. The tool must return a GREEN secret-free
+   receipt; then re-run the installed credential scan and bounded shipping
+   gate. Do not rotate both keys without identifying the actual bot being
+   replaced.
 3. Run one new encrypted backup and one empty-target restore drill from the
    exact release commit.
 4. Install the generated recovery and retention plists together, change their

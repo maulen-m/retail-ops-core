@@ -102,6 +102,14 @@ def test_shipping_release_gate_covers_m5_receiver_shadow_contract() -> None:
     assert "test_run_m5_daily_shipping_shadow.py" in gate
 
 
+def test_shipping_release_gate_covers_credential_rotation_contract() -> None:
+    gate = (PROJECT_ROOT / "scripts" / "run_daily_shipping_release_gate.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "test_rotate_daily_shipping_credential.py" in gate
+
+
 def test_health_monitor_candidate_uses_owner_only_state_and_is_not_active() -> None:
     manifest = load_manifest(MANIFEST_PATH)
     monitor = manifest["observability"]["health_monitor"]
