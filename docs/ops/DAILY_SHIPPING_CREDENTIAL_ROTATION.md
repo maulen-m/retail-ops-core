@@ -14,13 +14,29 @@ local credential file changes.
 
 ## Before Employee Closeout
 
-Readiness is metadata-only. Run it separately for the credential key that will
-be replaced:
+The live M1 checkout intentionally does not receive rescue-branch files before
+the employee closeout. Use the clean release worktree as the executable source
+and point it explicitly at the live owner-only environment file. On a future
+M5 checkout of the release tag, `RELEASE_ROOT` and `LIVE_ROOT` are the same
+path.
 
 ```bash
-cd ~/Docs/Autonomous_business
-.venv/bin/python scripts/rotate_daily_shipping_credential.py \
-  --env-file ~/Docs/Autonomous_business/.env \
+RELEASE_ROOT=~/Docs/Autonomous_business__wt_shipping_rescue_20260713
+LIVE_ROOT=~/Docs/Autonomous_business
+PYTHON="$LIVE_ROOT/.venv/bin/python"
+RELEASE_TAG=release/daily-shipping-m5-shadow-20260714-v4
+test "$(git -C "$RELEASE_ROOT" rev-parse "$RELEASE_TAG^{}")" = \
+  "075e8f9b9ecf2ea93bd34c5813125cb3028b7beb"
+test "$(git -C "$RELEASE_ROOT" hash-object scripts/rotate_daily_shipping_credential.py)" = \
+  "$(git -C "$RELEASE_ROOT" rev-parse "${RELEASE_TAG}^{}:scripts/rotate_daily_shipping_credential.py")"
+```
+
+Stop if either equality check fails. Readiness is metadata-only. Run it
+separately for the credential key that will be replaced:
+
+```bash
+"$PYTHON" "$RELEASE_ROOT/scripts/rotate_daily_shipping_credential.py" \
+  --env-file "$LIVE_ROOT/.env" \
   --key TELEGRAM_BOT_TOKEN \
   --json
 ```
@@ -54,10 +70,9 @@ selected from direct artifact readback. It must say `ok: true`, `mode: apply`,
 `target_date: 2026-07-14`, and contain a `run_id`.
 
 ```bash
-cd ~/Docs/Autonomous_business
 export ENABLE_DAILY_SHIPPING_CREDENTIAL_ROTATION=1
-.venv/bin/python scripts/rotate_daily_shipping_credential.py \
-  --env-file ~/Docs/Autonomous_business/.env \
+"$PYTHON" "$RELEASE_ROOT/scripts/rotate_daily_shipping_credential.py" \
+  --env-file "$LIVE_ROOT/.env" \
   --key TELEGRAM_BOT_TOKEN \
   --token-file "$TOKEN_FILE" \
   --closeout-report "$CLOSEOUT" \
@@ -79,8 +94,11 @@ fails after replacement, the tool restores the exact pre-rotation bytes.
 
 Immediately after a GREEN rotation receipt:
 
-1. Re-run `scripts/validate_daily_shipping_runtime.py --check-installed --json`.
-2. Re-run `scripts/run_daily_shipping_release_gate.sh`.
+1. Re-run the live checkout's
+   `scripts/validate_daily_shipping_runtime.py --check-installed
+   --check-credentials --json`.
+2. Re-run the release worktree's `scripts/run_daily_shipping_release_gate.sh`
+   with `PYTHON_BIN="$PYTHON"`.
 3. Run the prewindow health and shipment preflight without any send action.
 4. Verify the ten canonical M1 labels are still the only loaded writer cluster.
 5. Preserve the receipt and its `before.env` backup owner-only; do not add
