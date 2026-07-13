@@ -5,7 +5,22 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from scripts import waybill_telegram_control_bot as bot_mod
+
+REAL_COMMAND_MESSAGE_IS_FRESH = bot_mod._command_message_is_fresh
+
+
+@pytest.fixture(autouse=True)
+def _existing_runtime_offset_and_fresh_messages(monkeypatch) -> None:
+    """Legacy unit fixtures model an already initialized long-running bot."""
+    monkeypatch.setattr(bot_mod, "_needs_backlog_baseline", lambda _offset: False)
+    monkeypatch.setattr(
+        bot_mod,
+        "_command_message_is_fresh",
+        lambda _message, *, now: True,
+    )
 
 
 def _green_readiness() -> dict[str, object]:
@@ -18,6 +33,90 @@ def _green_readiness() -> dict[str, object]:
         "invalid_size_count": 0,
         "invalid_size_rows": [],
     }
+
+
+def test_run_control_write_refuses_wrong_date_fallback(monkeypatch, tmp_path: Path) -> None:
+    contract = bot_mod.load_ops_board_contract(bot_mod.DEFAULT_CONTRACT_PATH)
+
+    class _Client:
+        def __init__(self) -> None:
+            self.updates: list[object] = []
+
+        def get_tab_values(self, tab_name: str):
+            assert tab_name == "Run_Control"
+            return [
+                contract.tabs["Run_Control"].headers,
+                ["2026-04-14", "READY", "adil", "", "", "", "old-run", "OK"],
+            ]
+
+        def update_tab_rows(self, *_args, **_kwargs) -> None:
+            self.updates.append((_args, _kwargs))
+
+    client = _Client()
+    creds = tmp_path / "svc.json"
+    creds.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bot_mod, "resolve_service_account_json", lambda **_kwargs: creds)
+    monkeypatch.setattr(bot_mod, "resolve_spreadsheet_id", lambda **_kwargs: "sheet-id")
+    monkeypatch.setattr(
+        bot_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: client,
+    )
+
+    with pytest.raises(RuntimeError, match="no exact target-date row"):
+        bot_mod.set_run_control_hold(target_date=bot_mod.date(2026, 4, 15))
+
+    assert client.updates == []
+
+
+def test_run_control_ready_reuses_identity_and_hold_clears_it(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract = bot_mod.load_ops_board_contract(bot_mod.DEFAULT_CONTRACT_PATH)
+    headers = contract.tabs["Run_Control"].headers
+    source_row = {header: "" for header in headers}
+    source_row.update(
+        {
+            "target_date": "2026-04-15",
+            "ready_for_closeout": "READY",
+            "ready_set_at": "2026-04-15T16:59:00+05:00",
+            "ready_set_by": "EMPLOYEE",
+        }
+    )
+
+    class _Client:
+        def __init__(self) -> None:
+            self.updates: list[tuple[object, object]] = []
+
+        def get_tab_values(self, tab_name: str):
+            assert tab_name == "Run_Control"
+            return [headers, [source_row.get(header, "") for header in headers]]
+
+        def update_tab_rows(self, *_args, **_kwargs) -> None:
+            self.updates.append((_args, _kwargs))
+
+    client = _Client()
+    creds = tmp_path / "svc.json"
+    creds.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bot_mod, "resolve_service_account_json", lambda **_kwargs: creds)
+    monkeypatch.setattr(bot_mod, "resolve_spreadsheet_id", lambda **_kwargs: "sheet-id")
+    monkeypatch.setattr(
+        bot_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: client,
+    )
+
+    ready_identity = bot_mod.set_run_control_ready(target_date=bot_mod.date(2026, 4, 15))
+    assert ready_identity["ready_set_at"] == "2026-04-15T16:59:00+05:00"
+    assert client.updates == []
+
+    hold_identity = bot_mod.set_run_control_hold(target_date=bot_mod.date(2026, 4, 15))
+    assert hold_identity["ready_set_at"] == ""
+    assert len(client.updates) == 1
+    updated_row = client.updates[0][0][2][0]["row"]
+    assert updated_row["ready_for_closeout"] == "HOLD"
+    assert updated_row["ready_set_at"] == ""
 
 
 def test_waybill_telegram_ready_reports_missing_sizes_without_starting_closeout(monkeypatch, tmp_path: Path):
@@ -137,7 +236,9 @@ def test_waybill_telegram_ready_allows_users_from_runtime_allowlist_file(monkeyp
 
     assert rc == 0
     assert any("accepted" in msg.lower() for msg in sent_messages)
-    assert json.loads(bot_mod.STATE_FILE.read_text(encoding="utf-8"))["pending_ready"]["user_id"] == "42"
+    pending = json.loads(bot_mod.STATE_FILE.read_text(encoding="utf-8"))["pending_ready"]
+    assert pending["user_id"] == "42"
+    assert pending["ready_set_at"] == "2026-04-15T17:00:00+05:00"
 
 
 def test_waybill_telegram_ready_arms_debounce_without_google_ready_button(monkeypatch, tmp_path: Path):
@@ -172,6 +273,7 @@ def test_waybill_telegram_ready_arms_debounce_without_google_ready_button(monkey
     assert rc == 0
     assert state["pending_ready"]["chat_id"] == "-5102810505"
     assert state["pending_ready"]["user_id"] == "42"
+    assert state["pending_ready"]["ready_set_at"] == "2026-04-15T17:00:00+05:00"
     assert any("60" in msg and "accepted" in msg.lower() for msg in sent_messages)
 
 
@@ -186,6 +288,7 @@ def test_waybill_telegram_pending_ready_starts_closeout_after_stable_delay(monke
                     "chat_id": "-5102810505",
                     "user_id": "42",
                     "requested_at": "2026-04-15T17:00:00+05:00",
+                    "ready_set_at": "2026-04-15T16:59:59+05:00",
                 },
             }
         ),
@@ -202,7 +305,15 @@ def test_waybill_telegram_pending_ready_starts_closeout_after_stable_delay(monke
     monkeypatch.setattr(bot_mod, "get_waybill_telegram_config", lambda: {"token": "token", "chat_id": "-5102810505"})
     monkeypatch.setattr(bot_mod, "_get_updates", lambda token, offset: [])
     monkeypatch.setattr(bot_mod, "build_waybill_control_readiness", lambda **_kwargs: _green_readiness())
-    monkeypatch.setattr(bot_mod, "set_run_control_ready", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "_read_run_control_ready_identity",
+        lambda _target_date: {
+            "target_date": "2026-04-15",
+            "ready_set_at": "2026-04-15T16:59:59+05:00",
+            "ready_for_closeout": "READY",
+        },
+    )
     monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
     monkeypatch.setattr(bot_mod.subprocess, "run", lambda command, cwd, env: calls.append(command) or _Result())
 
@@ -210,7 +321,14 @@ def test_waybill_telegram_pending_ready_starts_closeout_after_stable_delay(monke
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert rc == 0
-    assert calls == [[str(bot_mod.sys.executable), str(bot_mod.CLOSEOUT_SCHEDULER_PATH), "--resume"]]
+    assert calls == [[
+        str(bot_mod.sys.executable),
+        str(bot_mod.CLOSEOUT_SCHEDULER_PATH),
+        "--expected-target-date",
+        "2026-04-15",
+        "--expected-ready-set-at",
+        "2026-04-15T16:59:59+05:00",
+    ]]
     assert "pending_ready" not in state
     assert any("starting closeout" in msg.lower() for msg in sent_messages)
 
@@ -239,14 +357,16 @@ def test_waybill_telegram_delivery_status_reports_ledger_counts(monkeypatch, tmp
     )
     monkeypatch.setattr(
         bot_mod,
-        "delivery_completion_state",
-        lambda **_kwargs: {
+        "_pinned_closeout_completion",
+        lambda _target_date: {
             "completed": False,
-            "status": "TELEGRAM_LEDGER_INCOMPLETE",
-            "channel": "telegram",
-            "manifest_count": 39,
-            "confirmed_count": 38,
-            "batch_label": "21.04.26_MERGED_qnt94_r2",
+            "delivery_state": {
+                "status": "TELEGRAM_LEDGER_INCOMPLETE",
+                "channel": "telegram",
+                "manifest_count": 39,
+                "confirmed_count": 38,
+                "batch_label": "21.04.26_MERGED_qnt94_r2",
+            },
         },
     )
     monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
@@ -446,13 +566,20 @@ def test_waybill_telegram_resume_delivery_runs_scheduler_when_incomplete(monkeyp
     )
     monkeypatch.setattr(
         bot_mod,
-        "delivery_completion_state",
-        lambda **_kwargs: {
+        "_pinned_closeout_completion",
+        lambda _target_date: {
             "completed": False,
-            "status": "TELEGRAM_LEDGER_INCOMPLETE",
-            "channel": "telegram",
-            "manifest_count": 39,
-            "confirmed_count": 38,
+            "request_identity": {
+                "target_date": "2026-04-21",
+                "ready_set_at": "2026-04-21T16:59:00+05:00",
+            },
+            "delivery_state": {
+                "status": "TELEGRAM_LEDGER_INCOMPLETE",
+                "channel": "telegram",
+                "manifest_count": 39,
+                "confirmed_count": 38,
+                "manifest_path": str(tmp_path / "manifest.json"),
+            },
         },
     )
     monkeypatch.setattr(bot_mod, "build_waybill_control_readiness", lambda **_kwargs: _green_readiness())
@@ -462,13 +589,71 @@ def test_waybill_telegram_resume_delivery_runs_scheduler_when_incomplete(monkeyp
     rc = bot_mod.poll_once(now=datetime(2026, 4, 21, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
 
     assert rc == 0
-    assert calls == [[str(bot_mod.sys.executable), str(bot_mod.CLOSEOUT_SCHEDULER_PATH), "--resume"]]
+    assert calls == [[
+        str(bot_mod.sys.executable),
+        str(bot_mod.CLOSEOUT_SCHEDULER_PATH),
+        "--expected-target-date",
+        "2026-04-21",
+        "--expected-ready-set-at",
+        "2026-04-21T16:59:00+05:00",
+    ]]
     assert any("resuming delivery" in msg.lower() for msg in sent_messages)
 
 
-def test_waybill_telegram_ordered_resend_requires_confirm(monkeypatch, tmp_path: Path):
+def test_waybill_telegram_resume_blocks_missing_ledger_after_attempt(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     sent_messages: list[str] = []
-    resend_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(
+        bot_mod,
+        "_pinned_closeout_completion",
+        lambda _target_date: {
+            "completed": False,
+            "delivery_resume_safe": False,
+            "request_identity": {
+                "target_date": "2026-04-21",
+                "ready_set_at": "2026-04-21T16:59:00+05:00",
+            },
+            "row": {
+                "target_date": "2026-04-21",
+                "ready_for_closeout": "READY",
+                "ready_set_at": "2026-04-21T16:59:00+05:00",
+            },
+            "delivery_state": {
+                "status": "TELEGRAM_LEDGER_MISSING_AFTER_ATTEMPT",
+                "manifest_path": str(tmp_path / "send_batch_manifest.json"),
+            },
+        },
+    )
+    monkeypatch.setattr(
+        bot_mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resume scheduler must not launch")
+        ),
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "send_message",
+        lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True},
+    )
+
+    bot_mod._handle_command(
+        text="/resume_delivery",
+        chat_id="-5102810505",
+        user_id="42",
+        token="token",
+        now=datetime(2026, 4, 21, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")),
+    )
+
+    assert len(sent_messages) == 1
+    assert "TELEGRAM_LEDGER_MISSING_AFTER_ATTEMPT" in sent_messages[0]
+
+
+def test_waybill_telegram_ordered_resend_is_disabled_without_confirm(monkeypatch, tmp_path: Path):
+    sent_messages: list[str] = []
 
     monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
     monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
@@ -489,19 +674,16 @@ def test_waybill_telegram_ordered_resend_requires_confirm(monkeypatch, tmp_path:
             }
         ],
     )
-    monkeypatch.setattr(bot_mod, "run_ordered_full_resend", lambda **kwargs: resend_calls.append(kwargs))
     monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
 
     rc = bot_mod.poll_once(now=datetime(2026, 5, 7, 17, 30, tzinfo=ZoneInfo("Asia/Almaty")))
 
     assert rc == 0
-    assert resend_calls == []
-    assert any("confirm" in msg.lower() for msg in sent_messages)
+    assert any("permanently disabled" in msg.lower() for msg in sent_messages)
 
 
-def test_waybill_telegram_ordered_resend_runs_full_resend(monkeypatch, tmp_path: Path):
+def test_waybill_telegram_ordered_resend_is_disabled_even_with_confirm(monkeypatch, tmp_path: Path):
     sent_messages: list[str] = []
-    resend_calls: list[dict[str, object]] = []
 
     monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
     monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
@@ -523,34 +705,12 @@ def test_waybill_telegram_ordered_resend_runs_full_resend(monkeypatch, tmp_path:
         ],
     )
 
-    def _fake_resend(**kwargs):
-        resend_calls.append(kwargs)
-        return {
-            "ok": True,
-            "sent": 31,
-            "failed": 0,
-            "confirmed_total": 31,
-            "total": 31,
-            "source_root": "/tmp/Today/MERGED/SEND/07.05.26_MERGED_qnt72",
-            "ordered_resend_proof": {
-                "ok": True,
-                "sequence_match": True,
-                "message_id_min": 626,
-                "message_id_max": 656,
-            },
-        }
-
-    monkeypatch.setattr(bot_mod, "run_ordered_full_resend", _fake_resend)
     monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
 
     rc = bot_mod.poll_once(now=datetime(2026, 5, 7, 17, 30, tzinfo=ZoneInfo("Asia/Almaty")))
 
     assert rc == 0
-    assert len(resend_calls) == 1
-    assert resend_calls[0]["expected_target_date"].isoformat() == "2026-05-07"
-    assert any("ordered resend complete" in msg.lower() for msg in sent_messages)
-    assert any("31/31" in msg for msg in sent_messages)
-    assert any("626..656" in msg for msg in sent_messages)
+    assert any("permanently disabled" in msg.lower() for msg in sent_messages)
 
 
 def test_waybill_telegram_final_table_resends_summary(monkeypatch, tmp_path: Path):
@@ -574,6 +734,17 @@ def test_waybill_telegram_final_table_resends_summary(monkeypatch, tmp_path: Pat
                 },
             }
         ],
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "_pinned_closeout_completion",
+        lambda _target_date: {
+            "completed": False,
+            "delivery_state": {
+                "status": "TELEGRAM_LEDGER_INCOMPLETE",
+                "manifest_path": str(tmp_path / "send_batch_manifest.json"),
+            },
+        },
     )
     monkeypatch.setattr(
         bot_mod,
@@ -782,6 +953,15 @@ def test_waybill_telegram_halt_clears_pending_and_sets_run_control_hold(monkeypa
         ],
     )
     monkeypatch.setattr(bot_mod, "set_run_control_hold", lambda **kwargs: hold_calls.append(kwargs))
+    monkeypatch.setattr(
+        bot_mod,
+        "_read_run_control_ready_identity",
+        lambda _target_date: {
+            "target_date": "2026-04-15",
+            "ready_for_closeout": "HOLD",
+            "ready_set_at": "",
+        },
+    )
     monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
 
     rc = bot_mod.poll_once(now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
@@ -790,3 +970,183 @@ def test_waybill_telegram_halt_clears_pending_and_sets_run_control_hold(monkeypa
     assert not state_path.exists() or "pending_ready" not in json.loads(state_path.read_text(encoding="utf-8"))
     assert hold_calls
     assert any("halted" in msg.lower() for msg in sent_messages)
+
+
+def test_waybill_telegram_halt_acknowledges_update_only_after_hold_commits(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(
+        bot_mod,
+        "get_waybill_telegram_config",
+        lambda: {"token": "token", "chat_id": "-5102810505"},
+    )
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: 22)
+    monkeypatch.setattr(
+        bot_mod,
+        "_save_offset",
+        lambda offset: events.append(f"offset:{offset}"),
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda _token, _offset: [
+            {
+                "update_id": 22,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/halt",
+                },
+            }
+        ],
+    )
+    barrier_path = tmp_path / "google_ops_board_closeout_halt_barrier.json"
+
+    def _hold_after_local_barrier(**_kwargs):
+        barrier = json.loads(barrier_path.read_text(encoding="utf-8"))
+        events.append(f"barrier:{barrier['state']}")
+        events.append("hold")
+
+    monkeypatch.setattr(bot_mod, "set_run_control_hold", _hold_after_local_barrier)
+    monkeypatch.setattr(
+        bot_mod,
+        "_read_run_control_ready_identity",
+        lambda _target_date: events.append("readback")
+        or {
+            "target_date": "2026-04-15",
+            "ready_for_closeout": "HOLD",
+            "ready_set_at": "",
+        },
+    )
+    monkeypatch.setattr(bot_mod, "send_message", lambda **_kwargs: {"success": True})
+
+    rc = bot_mod.poll_once(
+        now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+    )
+
+    assert rc == 0
+    assert events == ["barrier:PENDING_HOLD", "hold", "readback", "offset:23"]
+    barrier = json.loads(barrier_path.read_text(encoding="utf-8"))
+    assert barrier["state"] == "HOLD_CONFIRMED"
+    assert barrier["blocks_automation"] is True
+
+
+def test_waybill_telegram_halt_failure_is_replayable_and_stops_due_timers(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    saved_offsets: list[int] = []
+    pending_calls: list[object] = []
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(
+        bot_mod,
+        "get_waybill_telegram_config",
+        lambda: {"token": "token", "chat_id": "-5102810505"},
+    )
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: 22)
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: saved_offsets.append(offset))
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda _token, _offset: [
+            {
+                "update_id": 22,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/halt",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "set_run_control_hold",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("sheet unavailable")),
+    )
+    monkeypatch.setattr(bot_mod, "send_message", lambda **_kwargs: {"success": True})
+    monkeypatch.setattr(
+        bot_mod,
+        "_process_pending_ready",
+        lambda **kwargs: pending_calls.append(kwargs) or 0,
+    )
+
+    rc = bot_mod.poll_once(
+        now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+    )
+
+    assert rc == 1
+    assert saved_offsets == []
+    assert pending_calls == []
+    barrier = json.loads(
+        (tmp_path / "google_ops_board_closeout_halt_barrier.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert barrier["state"] == "PENDING_HOLD"
+    assert barrier["blocks_automation"] is True
+
+
+def test_waybill_telegram_first_boot_discards_stale_backlog_without_dispatch(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    saved_offsets: list[int] = []
+    readiness_calls: list[object] = []
+    monkeypatch.setenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", "42")
+    monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(
+        bot_mod,
+        "get_waybill_telegram_config",
+        lambda: {"token": "token", "chat_id": "-5102810505"},
+    )
+    monkeypatch.setattr(bot_mod, "_load_offset", lambda: None)
+    monkeypatch.setattr(bot_mod, "_needs_backlog_baseline", lambda _offset: True)
+    monkeypatch.setattr(
+        bot_mod,
+        "_command_message_is_fresh",
+        lambda _message, *, now: False,
+    )
+    monkeypatch.setattr(bot_mod, "_save_offset", lambda offset: saved_offsets.append(offset))
+    monkeypatch.setattr(
+        bot_mod,
+        "_get_updates",
+        lambda _token, _offset: [
+            {
+                "update_id": 91,
+                "message": {
+                    "chat": {"id": -5102810505},
+                    "from": {"id": 42},
+                    "text": "/ready",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        bot_mod,
+        "build_waybill_control_readiness",
+        lambda **kwargs: readiness_calls.append(kwargs),
+    )
+
+    rc = bot_mod.poll_once(
+        now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+    )
+
+    assert rc == 0
+    assert saved_offsets == [92]
+    assert readiness_calls == []
+
+
+def test_waybill_telegram_command_freshness_rejects_yesterday_and_missing_date() -> None:
+    now = datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+    recent = int(datetime(2026, 4, 15, 16, 59, tzinfo=ZoneInfo("Asia/Almaty")).timestamp())
+    yesterday = int(datetime(2026, 4, 14, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")).timestamp())
+
+    assert REAL_COMMAND_MESSAGE_IS_FRESH({"date": recent}, now=now) is True
+    assert REAL_COMMAND_MESSAGE_IS_FRESH({"date": yesterday}, now=now) is False
+    assert REAL_COMMAND_MESSAGE_IS_FRESH({}, now=now) is False
