@@ -62,3 +62,6 @@ Before a future cutover, prove all of the following in one packet: no active clo
 5. Benchmark cloud compute after local reproducibility is proven; cloud compute is not a prerequisite for tomorrow's shipping.
 
 Encrypted off-machine recovery is documented in `docs/ops/ENCRYPTED_OFFSITE_RECOVERY.md`.
+The candidate recovery, log maintenance, disk-preservation, and post-closeout
+activation sequence is documented in
+`docs/ops/DAILY_SHIPPING_RESILIENCE_OPERATIONS.md`.

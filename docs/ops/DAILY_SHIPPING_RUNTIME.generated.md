@@ -13,6 +13,10 @@
 - Retry rule: resume only the failed or incomplete stage
 - Writer rule: exactly one host owns this cluster
 - Recovery targets: RPO `15` minutes, RTO `30` minutes
+- Recovery automation: `candidate_not_installed`, every `900` seconds
+- Recovery retention: `24h` dense, `14` daily, `8` weekly, `12` monthly
+- Kaspi API call budget: warning at `1500`, hard alert at `3000` daily calls; state `observe_only_until_shadow_validated`
+- Runtime-log maintenance: `candidate_not_installed`, rotate above `10485760` bytes
 
 ## Workflow Stages
 
@@ -25,6 +29,18 @@
 7. `bundle_build`
 8. `telegram_delivery`
 9. `shipped_truth_sync`
+
+## Stage Execution Timeouts
+
+| Executable stage | Timeout (seconds) |
+|---|---:|
+| `size_writeback` | 600 |
+| `shipping` | 1200 |
+| `download_waybills` | 1200 |
+| `build_waybills` | 600 |
+| `delivery_send` | 1200 |
+| `shipped_truth_sync` | 600 |
+| `telegram_delivery` | 1200 |
 
 ## Scheduler Cluster
 

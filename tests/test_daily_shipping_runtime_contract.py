@@ -9,6 +9,8 @@ import yaml
 
 from scripts.validate_daily_shipping_runtime import (
     build_plist_payload,
+    build_recovery_plist_payload,
+    build_recovery_retention_plist_payload,
     load_manifest,
     render_runtime_markdown,
     validate_daily_shipping_runtime,
@@ -62,6 +64,23 @@ def test_watch_constants_are_checked_against_manifest(tmp_path: Path) -> None:
 
     assert report["ok"] is False
     assert any("READY_DEBOUNCE_SECONDS" in item for item in report["errors"])
+
+
+def test_stage_timeouts_are_checked_against_manifest(tmp_path: Path) -> None:
+    manifest = load_manifest(MANIFEST_PATH)
+    manifest["workflow"]["stage_timeouts_seconds"]["shipping"] = 1199
+    manifest_path = tmp_path / "manifest.json"
+    _write_json(manifest_path, manifest)
+
+    report = validate_daily_shipping_runtime(
+        manifest_path=manifest_path,
+        project_root=PROJECT_ROOT,
+        check_installed=False,
+        check_generated_doc=False,
+    )
+
+    assert report["ok"] is False
+    assert "workflow stage timeout drift: STAGE_TIMEOUT_SECONDS" in report["errors"]
 
 
 def test_store_roster_drift_fails_closed(tmp_path: Path) -> None:
@@ -159,6 +178,36 @@ def test_installed_plist_semantic_drift_is_reported(tmp_path: Path) -> None:
 
     assert report["ok"] is False
     assert any("StartInterval" in item for item in report["errors"])
+
+
+def test_candidate_recovery_scheduler_cannot_be_installed_before_activation(
+    tmp_path: Path,
+) -> None:
+    manifest = load_manifest(MANIFEST_PATH)
+    installed = tmp_path / "LaunchAgents"
+    installed.mkdir()
+    for scheduler in manifest["schedulers"]:
+        payload = build_plist_payload(manifest, scheduler, PROJECT_ROOT)
+        (installed / f"{scheduler['label']}.plist").write_bytes(plistlib.dumps(payload))
+    recovery = build_recovery_plist_payload(manifest)
+    (installed / f"{recovery['Label']}.plist").write_bytes(plistlib.dumps(recovery))
+    retention = build_recovery_retention_plist_payload(manifest)
+    (installed / f"{retention['Label']}.plist").write_bytes(plistlib.dumps(retention))
+
+    report = validate_daily_shipping_runtime(
+        manifest_path=MANIFEST_PATH,
+        project_root=PROJECT_ROOT,
+        installed_dir=installed,
+        check_installed=True,
+        check_credentials=False,
+    )
+
+    assert report["ok"] is False
+    assert "recovery candidate installed before canonical activation" in report["errors"]
+    assert (
+        "recovery retention candidate installed before canonical activation"
+        in report["errors"]
+    )
 
 
 def test_global_installed_scan_catches_credentials_outside_shipping_cluster(

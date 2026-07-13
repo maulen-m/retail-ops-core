@@ -25,6 +25,29 @@ def _isolate_closeout_runtime_defaults(monkeypatch, tmp_path: Path) -> None:
     )
 
 
+def test_stage_runner_enforces_named_timeout_and_persists_timeout_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fake_run(command, **kwargs):
+        assert kwargs["timeout"] == closeout_mod.STAGE_TIMEOUT_SECONDS["telegram_delivery"]
+        raise closeout_mod.subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(closeout_mod.subprocess, "run", fake_run)
+    report_path = tmp_path / "step.json"
+
+    report = closeout_mod._run_command(
+        name="telegram_delivery",
+        command=["sender"],
+        env={},
+        report_path=report_path,
+    )
+
+    assert report["returncode"] == 124
+    assert report["timed_out"] is True
+    assert report["timeout_seconds"] == closeout_mod.STAGE_TIMEOUT_SECONDS["telegram_delivery"]
+    assert json.loads(report_path.read_text(encoding="utf-8"))["timed_out"] is True
+
+
 def test_apply_custom_run_root_requires_explicit_canonical_obligation_ledger(
     tmp_path: Path,
 ) -> None:

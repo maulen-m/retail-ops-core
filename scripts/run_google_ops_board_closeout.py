@@ -100,6 +100,15 @@ STAGE_ORDER = [
     "delivery_send",
     "shipped_truth_sync",
 ]
+STAGE_TIMEOUT_SECONDS = {
+    "size_writeback": 600,
+    "shipping": 1200,
+    "download_waybills": 1200,
+    "build_waybills": 600,
+    "delivery_send": 1200,
+    "shipped_truth_sync": 600,
+    "telegram_delivery": 1200,
+}
 STORE_NAME_TO_API_CODE = {
     "AcmeWear": "ACMEWEAR",
     "Universal": "UNIVERSAL",
@@ -415,26 +424,48 @@ def _run_command(
 ) -> dict[str, Any]:
     started_dt = datetime.now(ALMATY_TZ)
     started_at = started_dt.isoformat()
-    proc = subprocess.run(
-        command,
-        cwd=str(PROJECT_ROOT),
-        env=env,
-        text=True,
-        capture_output=True,
-    )
+    timeout_seconds = int(STAGE_TIMEOUT_SECONDS.get(name, 10 * 60))
+    timed_out = False
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+        returncode = int(proc.returncode)
+        stdout = proc.stdout
+        stderr = proc.stderr
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        returncode = 124
+        stdout = (
+            exc.stdout.decode(errors="replace")
+            if isinstance(exc.stdout, bytes)
+            else (exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode(errors="replace")
+            if isinstance(exc.stderr, bytes)
+            else (exc.stderr or "")
+        )
     finished_dt = datetime.now(ALMATY_TZ)
     finished_at = finished_dt.isoformat()
     report = {
         "name": name,
         "command": command,
-        "returncode": int(proc.returncode),
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
         "started_at": started_at,
         "completed_at": finished_at,
         "finished_at": finished_at,
         "duration_sec": round(max(0.0, (finished_dt - started_dt).total_seconds()), 3),
-        "ok": proc.returncode == 0,
+        "timeout_seconds": timeout_seconds,
+        "timed_out": timed_out,
+        "ok": returncode == 0,
     }
     dump_json(report_path, report)
     return report

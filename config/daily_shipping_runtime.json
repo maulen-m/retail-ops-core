@@ -43,6 +43,16 @@
       "telegram_delivery",
       "shipped_truth_sync"
     ],
+    "timeout_source": "scripts/run_google_ops_board_closeout.py",
+    "stage_timeouts_seconds": {
+      "size_writeback": 600,
+      "shipping": 1200,
+      "download_waybills": 1200,
+      "build_waybills": 600,
+      "delivery_send": 1200,
+      "shipped_truth_sync": 600,
+      "telegram_delivery": 1200
+    },
     "retry_policy": "resume_only_failed_or_incomplete_stage",
     "completion_authority": "checkpoint plus exact manifest plus confirmed Telegram ledger"
   },
@@ -51,7 +61,55 @@
     "rto_minutes": 30,
     "minimum_disk_free_percent": 20,
     "one_writer_cluster": true,
-    "cutover_requires_separate_green_packet": true
+    "cutover_requires_separate_green_packet": true,
+    "automation": {
+      "manager": "scripts/manage_daily_shipping_recovery.py",
+      "method": "docs/ops/DAILY_SHIPPING_RECOVERY_AUTOMATION.md",
+      "candidate_plist": "config/com.example.daily-shipping-recovery.plist",
+      "label": "com.example.daily-shipping-recovery",
+      "interval_seconds": 900,
+      "retention_plist": "config/com.example.daily-shipping-recovery-retention.plist",
+      "retention_label": "com.example.daily-shipping-recovery-retention",
+      "retention_schedule": {
+        "hour": 3,
+        "minute": 35
+      },
+      "retention_policy": {
+        "keep_within": "24h",
+        "keep_daily": 14,
+        "keep_weekly": 8,
+        "keep_monthly": 12
+      },
+      "state_root": "${HOME}/Library/Application Support/Autonomous_business/shipping_recovery",
+      "encrypted_repository": "rclone:gdrive2:Autonomous_business_backups/restic_critical_shipping_m1",
+      "activation_state": "candidate_not_installed"
+    }
+  },
+  "observability": {
+    "kaspi_api_daily_budget": {
+      "warning_calls": 1500,
+      "hard_alert_calls": 3000,
+      "enforcement_state": "observe_only_until_shadow_validated"
+    },
+    "log_maintenance": {
+      "manager": "scripts/rotate_daily_shipping_logs.py",
+      "candidate_plist": "config/com.example.daily-shipping-log-maintenance.plist",
+      "label": "com.example.daily-shipping-log-maintenance",
+      "schedule": {
+        "hour": 2,
+        "minute": 45
+      },
+      "max_bytes": 10485760,
+      "keep_archives_per_log": 14,
+      "archive_root": "${HOME}/Library/Application Support/Autonomous_business/shipping_logs",
+      "extra_paths": [
+        "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_stdout.log",
+        "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_stderr.log",
+        "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_retention_stdout.log",
+        "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_retention_stderr.log"
+      ],
+      "activation_state": "candidate_not_installed"
+    }
   },
   "security": {
     "forbidden_embedded_env_name_fragments": [

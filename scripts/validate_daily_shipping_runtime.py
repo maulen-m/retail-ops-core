@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-import os
 import plistlib
 import stat
 import sys
@@ -88,6 +87,95 @@ def build_plist_payload(
     return _expand(payload, project_root=runtime_root)
 
 
+def build_recovery_plist_payload(manifest: dict[str, Any]) -> dict[str, Any]:
+    automation = manifest.get("recovery", {}).get("automation") or {}
+    runtime_root = Path(str(manifest.get("project_root") or PROJECT_ROOT)).expanduser()
+    state_root = str(automation.get("state_root") or "")
+    payload = {
+        "Label": str(automation["label"]),
+        "ProgramArguments": [
+            "${PROJECT_ROOT}/.venv/bin/python",
+            "${PROJECT_ROOT}/scripts/manage_daily_shipping_recovery.py",
+            "backup",
+            "--apply",
+            "--json-out",
+            f"{state_root}/latest_attempt.json",
+        ],
+        "WorkingDirectory": "${PROJECT_ROOT}",
+        "EnvironmentVariables": {
+            "ENABLE_SHIPPING_RECOVERY_BACKUP": "1",
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+        "StartInterval": int(automation["interval_seconds"]),
+        "RunAtLoad": False,
+        "KeepAlive": False,
+        "StandardOutPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_stdout.log",
+        "StandardErrorPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_stderr.log",
+    }
+    return _expand(payload, project_root=runtime_root)
+
+
+def build_recovery_retention_plist_payload(manifest: dict[str, Any]) -> dict[str, Any]:
+    automation = manifest.get("recovery", {}).get("automation") or {}
+    runtime_root = Path(str(manifest.get("project_root") or PROJECT_ROOT)).expanduser()
+    state_root = str(automation.get("state_root") or "")
+    schedule = automation.get("retention_schedule") or {}
+    payload = {
+        "Label": str(automation["retention_label"]),
+        "ProgramArguments": [
+            "${PROJECT_ROOT}/.venv/bin/python",
+            "${PROJECT_ROOT}/scripts/manage_daily_shipping_recovery.py",
+            "retention",
+            "--apply",
+            "--json-out",
+            f"{state_root}/latest_retention_attempt.json",
+        ],
+        "WorkingDirectory": "${PROJECT_ROOT}",
+        "EnvironmentVariables": {
+            "ENABLE_SHIPPING_RECOVERY_RETENTION": "1",
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+        "StartCalendarInterval": {
+            "Hour": int(schedule["hour"]),
+            "Minute": int(schedule["minute"]),
+        },
+        "RunAtLoad": False,
+        "KeepAlive": False,
+        "StandardOutPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_retention_stdout.log",
+        "StandardErrorPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_retention_stderr.log",
+    }
+    return _expand(payload, project_root=runtime_root)
+
+
+def build_log_maintenance_plist_payload(manifest: dict[str, Any]) -> dict[str, Any]:
+    maintenance = manifest.get("observability", {}).get("log_maintenance") or {}
+    runtime_root = Path(str(manifest.get("project_root") or PROJECT_ROOT)).expanduser()
+    schedule = maintenance.get("schedule") or {}
+    payload = {
+        "Label": str(maintenance["label"]),
+        "ProgramArguments": [
+            "${PROJECT_ROOT}/.venv/bin/python",
+            "${PROJECT_ROOT}/scripts/rotate_daily_shipping_logs.py",
+            "--apply",
+            "--json",
+        ],
+        "WorkingDirectory": "${PROJECT_ROOT}",
+        "EnvironmentVariables": {
+            "ENABLE_DAILY_SHIPPING_LOG_MAINTENANCE": "1",
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+        "StartCalendarInterval": {
+            "Hour": int(schedule["hour"]),
+            "Minute": int(schedule["minute"]),
+        },
+        "RunAtLoad": False,
+        "KeepAlive": False,
+        "StandardOutPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_log_maintenance_stdout.log",
+        "StandardErrorPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_log_maintenance_stderr.log",
+    }
+    return _expand(payload, project_root=runtime_root)
+
+
 def _schedule_text(schedule: dict[str, Any]) -> str:
     if schedule.get("type") == "interval":
         return f"every {int(schedule['seconds'])} seconds"
@@ -114,11 +202,35 @@ def render_runtime_markdown(manifest: dict[str, Any]) -> str:
         "- Retry rule: resume only the failed or incomplete stage",
         "- Writer rule: exactly one host owns this cluster",
         f"- Recovery targets: RPO `{recovery['rpo_minutes']}` minutes, RTO `{recovery['rto_minutes']}` minutes",
+        f"- Recovery automation: `{recovery['automation']['activation_state']}`, every `{recovery['automation']['interval_seconds']}` seconds",
+        "- Recovery retention: "
+        f"`{recovery['automation']['retention_policy']['keep_within']}` dense, "
+        f"`{recovery['automation']['retention_policy']['keep_daily']}` daily, "
+        f"`{recovery['automation']['retention_policy']['keep_weekly']}` weekly, "
+        f"`{recovery['automation']['retention_policy']['keep_monthly']}` monthly",
+        "- Kaspi API call budget: warning at "
+        f"`{manifest['observability']['kaspi_api_daily_budget']['warning_calls']}`, hard alert at "
+        f"`{manifest['observability']['kaspi_api_daily_budget']['hard_alert_calls']}` daily calls; "
+        f"state `{manifest['observability']['kaspi_api_daily_budget']['enforcement_state']}`",
+        "- Runtime-log maintenance: "
+        f"`{manifest['observability']['log_maintenance']['activation_state']}`, rotate above "
+        f"`{manifest['observability']['log_maintenance']['max_bytes']}` bytes",
         "",
         "## Workflow Stages",
         "",
     ]
     lines.extend(f"{index}. `{stage}`" for index, stage in enumerate(manifest["workflow"]["stages"], start=1))
+    lines.extend(
+        [
+            "",
+            "## Stage Execution Timeouts",
+            "",
+            "| Executable stage | Timeout (seconds) |",
+            "|---|---:|",
+        ]
+    )
+    for stage, timeout_seconds in manifest["workflow"]["stage_timeouts_seconds"].items():
+        lines.append(f"| `{stage}` | {int(timeout_seconds)} |")
     lines.extend(
         [
             "",
@@ -159,6 +271,34 @@ def write_runtime_surfaces(manifest: dict[str, Any], *, project_root: Path) -> l
         payload = build_plist_payload(manifest, scheduler, project_root)
         target.write_bytes(plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False))
         written.append(str(target))
+    recovery = manifest.get("recovery", {}).get("automation") or {}
+    recovery_target = Path(project_root) / str(recovery["candidate_plist"])
+    recovery_target.parent.mkdir(parents=True, exist_ok=True)
+    recovery_target.write_bytes(
+        plistlib.dumps(build_recovery_plist_payload(manifest), fmt=plistlib.FMT_XML, sort_keys=False)
+    )
+    written.append(str(recovery_target))
+    retention_target = Path(project_root) / str(recovery["retention_plist"])
+    retention_target.parent.mkdir(parents=True, exist_ok=True)
+    retention_target.write_bytes(
+        plistlib.dumps(
+            build_recovery_retention_plist_payload(manifest),
+            fmt=plistlib.FMT_XML,
+            sort_keys=False,
+        )
+    )
+    written.append(str(retention_target))
+    log_maintenance = manifest.get("observability", {}).get("log_maintenance") or {}
+    log_target = Path(project_root) / str(log_maintenance["candidate_plist"])
+    log_target.parent.mkdir(parents=True, exist_ok=True)
+    log_target.write_bytes(
+        plistlib.dumps(
+            build_log_maintenance_plist_payload(manifest),
+            fmt=plistlib.FMT_XML,
+            sort_keys=False,
+        )
+    )
+    written.append(str(log_target))
     doc_path = Path(project_root) / str(manifest["generated_doc"])
     doc_path.parent.mkdir(parents=True, exist_ok=True)
     doc_path.write_text(render_runtime_markdown(manifest), encoding="utf-8")
@@ -391,6 +531,136 @@ def validate_daily_shipping_runtime(
         else:
             if actual_labels != labels:
                 errors.append("daily-ops automation scope label order or membership drift")
+
+    timeout_source = project_root / str(manifest["workflow"]["timeout_source"])
+    if not timeout_source.exists():
+        errors.append(f"missing workflow timeout source: {manifest['workflow']['timeout_source']}")
+    else:
+        timeout_assignments = _literal_assignments(timeout_source)
+        expected_timeouts = manifest["workflow"].get("stage_timeouts_seconds") or {}
+        actual_timeouts = timeout_assignments.get("STAGE_TIMEOUT_SECONDS")
+        if actual_timeouts != expected_timeouts:
+            errors.append("workflow stage timeout drift: STAGE_TIMEOUT_SECONDS")
+        if not expected_timeouts or any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in expected_timeouts.values()
+        ):
+            errors.append("workflow stage timeouts must be positive integer seconds")
+
+    recovery = manifest.get("recovery", {}).get("automation") or {}
+    try:
+        recovery_interval = int(recovery["interval_seconds"])
+        if recovery_interval != int(manifest["recovery"]["rpo_minutes"]) * 60:
+            errors.append("recovery interval does not match the declared RPO")
+        for key in ("manager", "method", "candidate_plist", "retention_plist"):
+            relative = Path(str(recovery[key]))
+            if not (project_root / relative).exists():
+                errors.append(f"missing recovery automation surface: {relative}")
+        expected_recovery = build_recovery_plist_payload(manifest)
+        recovery_plist = project_root / str(recovery["candidate_plist"])
+        if recovery_plist.exists():
+            actual_recovery = plistlib.loads(recovery_plist.read_bytes())
+            differences = _field_differences(
+                _normalize_plist_for_compare(expected_recovery),
+                _normalize_plist_for_compare(actual_recovery),
+            )
+            if differences:
+                errors.append(f"recovery candidate plist drift: {', '.join(differences)}")
+        expected_retention = build_recovery_retention_plist_payload(manifest)
+        retention_plist = project_root / str(recovery["retention_plist"])
+        if retention_plist.exists():
+            actual_retention = plistlib.loads(retention_plist.read_bytes())
+            differences = _field_differences(
+                _normalize_plist_for_compare(expected_retention),
+                _normalize_plist_for_compare(actual_retention),
+            )
+            if differences:
+                errors.append(f"recovery retention plist drift: {', '.join(differences)}")
+        if check_installed:
+            installed_recovery = installed_directory / f"{recovery['label']}.plist"
+            installed_retention = installed_directory / f"{recovery['retention_label']}.plist"
+            activation_state = str(recovery.get("activation_state") or "")
+            if activation_state == "candidate_not_installed":
+                if installed_recovery.exists():
+                    errors.append("recovery candidate installed before canonical activation")
+                if installed_retention.exists():
+                    errors.append(
+                        "recovery retention candidate installed before canonical activation"
+                    )
+            elif activation_state.startswith("active_"):
+                if not installed_recovery.exists():
+                    errors.append("active recovery scheduler is not installed")
+                else:
+                    actual_installed = plistlib.loads(installed_recovery.read_bytes())
+                    differences = _field_differences(
+                        _normalize_plist_for_compare(expected_recovery),
+                        _normalize_plist_for_compare(actual_installed),
+                    )
+                    if differences:
+                        errors.append(
+                            "installed recovery plist drift: " + ", ".join(differences)
+                        )
+                if not installed_retention.exists():
+                    errors.append("active recovery retention scheduler is not installed")
+                else:
+                    actual_installed = plistlib.loads(installed_retention.read_bytes())
+                    differences = _field_differences(
+                        _normalize_plist_for_compare(expected_retention),
+                        _normalize_plist_for_compare(actual_installed),
+                    )
+                    if differences:
+                        errors.append(
+                            "installed recovery retention plist drift: "
+                            + ", ".join(differences)
+                        )
+    except (KeyError, TypeError, ValueError, DailyShippingRuntimeError) as exc:
+        errors.append(f"invalid recovery automation definition: {exc}")
+
+    log_maintenance = manifest.get("observability", {}).get("log_maintenance") or {}
+    try:
+        for key in ("manager", "candidate_plist"):
+            relative = Path(str(log_maintenance[key]))
+            if not (project_root / relative).exists():
+                errors.append(f"missing log-maintenance surface: {relative}")
+        warning_calls = int(manifest["observability"]["kaspi_api_daily_budget"]["warning_calls"])
+        hard_calls = int(manifest["observability"]["kaspi_api_daily_budget"]["hard_alert_calls"])
+        if warning_calls < 1 or hard_calls <= warning_calls:
+            errors.append("Kaspi API warning/hard-alert budgets are invalid")
+        if int(log_maintenance["max_bytes"]) < 1:
+            errors.append("log-maintenance max_bytes must be positive")
+        if int(log_maintenance["keep_archives_per_log"]) < 1:
+            errors.append("log-maintenance archive count must be positive")
+        expected_log = build_log_maintenance_plist_payload(manifest)
+        log_plist = project_root / str(log_maintenance["candidate_plist"])
+        if log_plist.exists():
+            actual_log = plistlib.loads(log_plist.read_bytes())
+            differences = _field_differences(
+                _normalize_plist_for_compare(expected_log),
+                _normalize_plist_for_compare(actual_log),
+            )
+            if differences:
+                errors.append(f"log-maintenance candidate plist drift: {', '.join(differences)}")
+        if check_installed:
+            installed_log = installed_directory / f"{log_maintenance['label']}.plist"
+            activation_state = str(log_maintenance.get("activation_state") or "")
+            if activation_state == "candidate_not_installed" and installed_log.exists():
+                errors.append("log-maintenance candidate installed before canonical activation")
+            elif activation_state.startswith("active_"):
+                if not installed_log.exists():
+                    errors.append("active log-maintenance scheduler is not installed")
+                else:
+                    actual_installed = plistlib.loads(installed_log.read_bytes())
+                    differences = _field_differences(
+                        _normalize_plist_for_compare(expected_log),
+                        _normalize_plist_for_compare(actual_installed),
+                    )
+                    if differences:
+                        errors.append(
+                            "installed log-maintenance plist drift: "
+                            + ", ".join(differences)
+                        )
+    except (KeyError, TypeError, ValueError, DailyShippingRuntimeError) as exc:
+        errors.append(f"invalid log-maintenance definition: {exc}")
 
     if check_generated_doc:
         path = project_root / str(manifest["generated_doc"])
