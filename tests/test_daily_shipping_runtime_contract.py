@@ -161,6 +161,44 @@ def test_installed_plist_semantic_drift_is_reported(tmp_path: Path) -> None:
     assert any("StartInterval" in item for item in report["errors"])
 
 
+def test_global_installed_scan_catches_credentials_outside_shipping_cluster(
+    tmp_path: Path,
+) -> None:
+    manifest = load_manifest(MANIFEST_PATH)
+    manifest["schedulers"] = [manifest["schedulers"][0]]
+    scheduler = manifest["schedulers"][0]
+    installed = tmp_path / "LaunchAgents"
+    installed.mkdir()
+    expected = build_plist_payload(manifest, scheduler, PROJECT_ROOT)
+    (installed / f"{scheduler['label']}.plist").write_bytes(plistlib.dumps(expected))
+    unrelated = {
+        "Label": "com.example.unrelated",
+        "EnvironmentVariables": {"API_SECRET": "must-not-appear"},
+    }
+    (installed / "com.example.unrelated.plist").write_bytes(plistlib.dumps(unrelated))
+    manifest_path = tmp_path / "manifest.json"
+    _write_json(manifest_path, manifest)
+
+    report = validate_daily_shipping_runtime(
+        manifest_path=manifest_path,
+        project_root=PROJECT_ROOT,
+        installed_dir=installed,
+        check_installed=True,
+        check_repo_plists=False,
+        check_watch_constants=False,
+        check_automation_scope=False,
+        check_generated_doc=False,
+        check_credentials=False,
+    )
+    serialized = json.dumps(report)
+
+    assert report["ok"] is False
+    assert report["installed_plists_scanned"] == 2
+    assert "com.example.unrelated" in serialized
+    assert "API_SECRET" in serialized
+    assert "must-not-appear" not in serialized
+
+
 @pytest.mark.parametrize("mode", [0o644, 0o666])
 def test_credential_file_permissions_above_0600_fail(tmp_path: Path, mode: int) -> None:
     credential = tmp_path / "service-account.json"

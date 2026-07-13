@@ -290,6 +290,9 @@ def validate_daily_shipping_runtime(
     if len(labels) != len(set(labels)):
         errors.append("daily shipping scheduler labels are not unique")
 
+    installed_directory = Path(installed_dir or (Path.home() / "Library" / "LaunchAgents"))
+    installed_plists_scanned = 0
+
     for scheduler in schedulers:
         label = str(scheduler.get("label") or "")
         try:
@@ -314,8 +317,7 @@ def validate_daily_shipping_runtime(
                 if differences:
                     errors.append(f"canonical plist drift for {label}: {', '.join(differences)}")
         if check_installed:
-            directory = Path(installed_dir or (Path.home() / "Library" / "LaunchAgents"))
-            path = directory / f"{label}.plist"
+            path = installed_directory / f"{label}.plist"
             if not path.exists():
                 errors.append(f"installed plist missing for {label}")
             else:
@@ -329,6 +331,22 @@ def validate_daily_shipping_runtime(
                 )
                 if differences:
                     errors.append(f"installed plist drift for {label}: {', '.join(differences)}")
+
+    if check_installed and installed_directory.is_dir():
+        for path in sorted(installed_directory.glob("*.plist")):
+            installed_plists_scanned += 1
+            try:
+                payload = plistlib.loads(path.read_bytes())
+            except Exception as exc:
+                errors.append(f"installed plist unreadable during global credential scan: {path.name}: {exc}")
+                continue
+            forbidden = _forbidden_env_names(payload, fragments)
+            if forbidden:
+                label = str(payload.get("Label") or path.stem)
+                errors.append(
+                    "installed plist globally embeds forbidden environment names for "
+                    f"{label}: {', '.join(forbidden)}"
+                )
 
     active_stores = sorted(str(value) for value in manifest.get("store_roster", {}).get("active") or [])
     archived_stores = sorted(str(value) for value in manifest.get("store_roster", {}).get("archived") or [])
@@ -400,6 +418,7 @@ def validate_daily_shipping_runtime(
         "manifest": str(Path(manifest_path)),
         "project_root": str(project_root),
         "installed_checked": bool(check_installed),
+        "installed_plists_scanned": installed_plists_scanned,
         "credential_values_read": False,
         "scheduler_count": len(schedulers),
         "active_stores": active_stores,
