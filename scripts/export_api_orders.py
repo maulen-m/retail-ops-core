@@ -520,6 +520,7 @@ def export_store_orders(
     delivery_type: Optional[str] = None,
     signature_required: Optional[bool] = None,
     include_orders: Optional[str] = None,
+    require_complete: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from a single store.
@@ -537,6 +538,8 @@ def export_store_orders(
     try:
         client = KaspiAPIClient(store_code=store_code)
     except KaspiAuthError as e:
+        if require_complete:
+            raise
         logger.warning(f"Skipping {store_code}: {e}")
         return []
 
@@ -552,6 +555,7 @@ def export_store_orders(
         delivery_type=delivery_type,
         signature_required=signature_required,
         include_orders=include_orders,
+        raise_on_error=require_complete,
     )
 
     if verbose:
@@ -579,6 +583,7 @@ def export_store_orders(
             delivery_type=delivery_type,
             signature_required=signature_required,
             include_orders=include_orders,
+            raise_on_error=require_complete,
         )
         if verbose:
             print(f"    Found {len(archive_orders)} archive orders")
@@ -652,6 +657,7 @@ def export_all_stores(
     delivery_type: Optional[str] = None,
     signature_required: Optional[bool] = None,
     include_orders: Optional[str] = None,
+    require_complete: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from all configured stores.
@@ -666,8 +672,20 @@ def export_all_stores(
         List of all row dicts
     """
     all_rows = []
+    enabled_store_codes = list(load_sync_enabled_kaspi_store_codes())
+    unsupported_store_codes = [
+        store for store in enabled_store_codes if store not in STORE_TOKEN_MAP
+    ]
+    if require_complete and unsupported_store_codes:
+        raise RuntimeError(
+            "Sync-enabled Kaspi stores are missing API token mappings: "
+            + ", ".join(sorted(unsupported_store_codes))
+        )
+    store_codes = [store for store in enabled_store_codes if store in STORE_TOKEN_MAP]
+    if require_complete and not store_codes:
+        raise RuntimeError("No sync-enabled Kaspi stores are configured for a complete export")
 
-    for store_code in (store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP):
+    for store_code in store_codes:
         rows = export_store_orders(
             store_code=store_code,
             state=state,
@@ -680,6 +698,7 @@ def export_all_stores(
             delivery_type=delivery_type,
             signature_required=signature_required,
             include_orders=include_orders,
+            require_complete=require_complete,
         )
         all_rows.extend(rows)
 
@@ -802,15 +821,18 @@ def write_excel(rows: List[Dict[str, Any]], output_path: Path) -> int:
     Returns:
         Number of rows written
     """
-    if not rows:
-        return 0
+    if rows:
+        # Ensure column order matches EXCEL_COLUMNS
+        df = pd.DataFrame(rows)
 
-    # Ensure column order matches EXCEL_COLUMNS
-    df = pd.DataFrame(rows)
-
-    # Reorder columns to match expected format
-    ordered_cols = [c for c in EXCEL_COLUMNS if c in df.columns]
-    df = df[ordered_cols]
+        # Reorder columns to match expected format
+        ordered_cols = [c for c in EXCEL_COLUMNS if c in df.columns]
+        df = df[ordered_cols]
+    else:
+        # A successful zero-row refresh must replace yesterday's workbook.
+        # Preserve the canonical schema so downstream validation can distinguish
+        # proven empty source truth from a missing or malformed source.
+        df = pd.DataFrame(columns=EXCEL_COLUMNS)
 
     # Create parent directory if needed
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -926,8 +948,16 @@ def main():
         action='store_true',
         help='Dry run for --db-direct (no DB writes)'
     )
+    parser.add_argument(
+        '--require-complete',
+        action='store_true',
+        help='Fail instead of publishing partial source truth when any configured store/API page cannot be read'
+    )
 
     args = parser.parse_args()
+
+    if args.require_complete and not args.all_stores:
+        parser.error("--require-complete requires --all-stores")
 
     # Load environment variables
     load_dotenv()
@@ -998,6 +1028,7 @@ def main():
             delivery_type=args.delivery_type,
             signature_required=args.signature_required,
             include_orders=include_orders,
+            require_complete=args.require_complete,
         )
     else:
         print(f"Exporting from {args.store}...")
@@ -1013,6 +1044,7 @@ def main():
             delivery_type=args.delivery_type,
             signature_required=args.signature_required,
             include_orders=include_orders,
+            require_complete=args.require_complete,
         )
 
     print(f"\nTotal rows from API: {len(rows)}")
@@ -1035,10 +1067,15 @@ def main():
 
     if not rows:
         print("No orders found matching criteria.")
-        return
+        if not args.require_complete:
+            print("Completeness was not required; preserving the existing output workbook.")
+            return
 
     if args.dry_run:
-        print("\n[DRY RUN] Would write but skipping.")
+        if rows:
+            print("\n[DRY RUN] Would write but skipping.")
+        else:
+            print("\n[DRY RUN] Would write a canonical header-only workbook but skipping.")
         # Show sample
         if rows:
             print("\nSample row:")
