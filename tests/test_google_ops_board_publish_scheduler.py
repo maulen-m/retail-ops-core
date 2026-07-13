@@ -52,7 +52,9 @@ def test_inspect_activeorders_source_marks_fresh_with_today_rows_and_today_mtime
     assert report["fresh"] is True
 
 
-def test_inspect_activeorders_source_is_not_fresh_when_target_date_missing(tmp_path: Path) -> None:
+def test_inspect_activeorders_source_is_fresh_when_current_refresh_has_only_carryover(
+    tmp_path: Path,
+) -> None:
     workbook_path = tmp_path / "ActiveOrders.xlsx"
     _write_activeorders_workbook(workbook_path, ["16.04.2026", "16.04.2026"])
     fresh_ts = datetime(2026, 4, 17, 7, 5, tzinfo=ALMATY_TZ).timestamp()
@@ -66,7 +68,24 @@ def test_inspect_activeorders_source_is_not_fresh_when_target_date_missing(tmp_p
     assert report["row_count"] == 2
     assert report["target_row_count"] == 0
     assert report["contains_target_date"] is False
-    assert report["fresh"] is False
+    assert report["fresh"] is True
+
+
+def test_inspect_activeorders_source_is_fresh_for_current_zero_order_refresh(
+    tmp_path: Path,
+) -> None:
+    workbook_path = tmp_path / "ActiveOrders.xlsx"
+    _write_activeorders_workbook(workbook_path, [])
+    fresh_ts = datetime(2026, 4, 17, 7, 5, tzinfo=ALMATY_TZ).timestamp()
+    import os
+
+    os.utime(workbook_path, (fresh_ts, fresh_ts))
+
+    report = inspect_activeorders_source(workbook_path, target_date=date(2026, 4, 17))
+
+    assert report["row_count"] == 0
+    assert report["target_row_count"] == 0
+    assert report["fresh"] is True
 
 
 def test_build_source_refresh_commands_covers_export_sync_enrich(tmp_path: Path) -> None:
@@ -83,6 +102,7 @@ def test_build_source_refresh_commands_covers_export_sync_enrich(tmp_path: Path)
         "/usr/bin/python3",
         "~/Docs/Autonomous_business/scripts/export_api_orders.py",
         "--all-stores",
+        "--require-complete",
         "--state",
         "KASPI_DELIVERY",
         "--days",
@@ -136,6 +156,23 @@ def test_write_source_snapshot_records_fingerprint_and_freshness(tmp_path: Path)
     assert snapshot["source_state"]["fresh"] is True
     assert snapshot["source_fingerprint"]["sha256"]
     assert Path(snapshot["path"]).exists()
+
+
+def test_inspect_activeorders_source_rejects_yesterday_header_only_workbook(
+    tmp_path: Path,
+) -> None:
+    workbook_path = tmp_path / "ActiveOrders.xlsx"
+    _write_activeorders_workbook(workbook_path, [])
+    stale_ts = datetime(2026, 4, 16, 23, 59, tzinfo=ALMATY_TZ).timestamp()
+    import os
+
+    os.utime(workbook_path, (stale_ts, stale_ts))
+
+    report = inspect_activeorders_source(workbook_path, target_date=date(2026, 4, 17))
+
+    assert report["row_count"] == 0
+    assert report["mtime_date"] == "2026-04-16"
+    assert report["fresh"] is False
 
 
 def test_publish_scheduler_runs_publish_inside_shared_automation_lock(

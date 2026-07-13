@@ -60,7 +60,7 @@ def test_google_ops_board_size_writeback_plist_contract() -> None:
         "~/Docs/Autonomous_business/.venv/bin/python",
         "~/Docs/Autonomous_business/scripts/run_google_ops_board_size_writeback_scheduler.py",
     ]
-    assert env.get("ENABLE_GOOGLE_OPS_BOARD_DB_WRITE") == "1"
+    assert "ENABLE_GOOGLE_OPS_BOARD_DB_WRITE" not in env
     assert env.get("AB_GOOGLE_SERVICE_ACCOUNT_JSON") == "~/Docs/Business/S/ab-ops-board-sync-key.json"
     assert env.get("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID") == "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg"
     assert plist.get("StandardOutPath") == (
@@ -228,6 +228,12 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "checkpoint" in doc
     assert "resume" in doc
     assert "run_control_resume_fingerprint" in doc
+    assert "target_date + ready_set_at" in doc
+    assert "no date/lookback expiry" in doc
+    assert "required-orders path/SHA-256" in doc
+    assert "manifest_sha256" in doc
+    assert "obligation_scope_hash" in doc
+    assert "no daily owner approval phrase" in doc
     assert "BLOCKED_MISSING_SIZES" in doc
     assert "only `ready_for_closeout` stays editable for operators" in doc
     assert "Telegram" in doc
@@ -237,6 +243,21 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "upsert-preserve" in doc
     assert "next-day rollover" in doc
     assert "protected sheets" in doc or "managed protected sheets" in doc
+    normalized_doc = " ".join(doc.split())
+    assert "canonical publish scope is the union of fresh source-backed eligible DB rows and unresolved shipping obligations" in normalized_doc
+    assert "absence from a broad/current-day selector" in normalized_doc
+    assert "longer present in DB-selected shipping truth must be removed" not in normalized_doc
+    assert "must remove stale live rows that are no longer present" not in normalized_doc
+    assert "Legacy/manual WhatsApp diagnostics (outside canonical closeout)" in doc
+    assert "this block does not authorize any WhatsApp send" in doc
+    assert "must not block a live send" not in doc
+    assert "schema_version = 2" in doc
+    assert "schema_version = 4" in doc
+    assert "explicit manifest path and raw-file SHA-256" in doc
+    assert "provenance sidecar" in doc
+    assert "channel-wide lock" in doc
+    assert "terminal zero-order marker" in doc
+    assert "size-writeback previews (read-only; never apply)" in doc
     assert "com.example.google-ops-board-publish.plist" in script
     assert "com.example.google-ops-board-prewindow-health.plist" in script
     assert "com.example.google-ops-board-size-writeback.plist" in script
@@ -250,7 +271,7 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "13:45 - Google Ops Board prewindow health + identity sync" in script
     assert "14:01 to 17:11 every 10 minutes - Google Ops Board publish backstop (fails closed if ActiveOrders is stale for target date)" in script
     assert "17:02 - Import (17:00 all-store late-window DB freshness / next-day visibility)" in script
-    assert "17:15, 17:30, 17:45, 18:00, 18:15 - Google Ops Board size writeback" in script
+    assert "17:15, 17:30, 17:45, 18:00, 18:15 - Google Ops Board size-writeback preview (read-only)" in script
     assert "18:20 - Google Ops Board closeout caffeinate keep-awake guard" in script
     assert "every 15s between 11:00 and 19:04 (script-gated, 60s READY debounce; 18:57 probable-size auto-fill)" in script
     assert "18:30 - Google Ops Board closeout backstop" in script

@@ -75,8 +75,15 @@ def test_ensure_prewindow_health_runs_full_green_gate(monkeypatch, tmp_path: Pat
     )
     monkeypatch.setattr(
         health_mod,
+        "_build_telegram_delivery_config_report",
+        lambda: {"ok": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        health_mod,
         "_run_whatsapp_smoke_check",
-        lambda *, verbose: {"ok": True, "issues": [], "active_chat_title": "Заказы"},
+        lambda *, verbose: (_ for _ in ()).throw(
+            AssertionError("canonical health must stay browser-free")
+        ),
     )
     monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
 
@@ -97,6 +104,7 @@ def test_ensure_prewindow_health_runs_full_green_gate(monkeypatch, tmp_path: Pat
     assert calls == {"import": 1, "rebuild": 1}
     assert Path(report["report_path"]).exists()
     assert report["checks"]["google_layout"]["ok"] is True
+    assert report["checks"]["whatsapp_smoke"]["skipped"] is True
     assert os.environ["KASPI_API_CALL_LEDGER_PATH"].endswith(
         "runtime/api_ledger/kaspi_api_2026-04-16.jsonl"
     )
@@ -126,8 +134,15 @@ def test_ensure_prewindow_health_reuses_current_green_state(monkeypatch, tmp_pat
     monkeypatch.setattr(health_mod, "_build_store_context_report", lambda _stores: {"ok": True, "stores": [], "failure_count": 0, "failures": []})
     monkeypatch.setattr(
         health_mod,
+        "_build_telegram_delivery_config_report",
+        lambda: {"ok": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        health_mod,
         "_run_whatsapp_smoke_check",
-        lambda *, verbose: calls.__setitem__("smoke", calls["smoke"] + 1) or {"ok": True, "issues": []},
+        lambda *, verbose: (_ for _ in ()).throw(
+            AssertionError("canonical health must stay browser-free")
+        ),
     )
     monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
 
@@ -157,7 +172,7 @@ def test_ensure_prewindow_health_reuses_current_green_state(monkeypatch, tmp_pat
     assert first["ok"] is True
     assert second["ok"] is True
     assert calls["import"] == 1
-    assert calls["smoke"] == 2
+    assert calls["smoke"] == 0
     assert second["identity_sync_reused"] is True
     assert second["checks"]["identity_sync"]["reused"] is True
 
@@ -197,8 +212,15 @@ def test_closeout_profile_skips_workbook_identity_sync(monkeypatch, tmp_path: Pa
     )
     monkeypatch.setattr(
         health_mod,
+        "_build_telegram_delivery_config_report",
+        lambda: {"ok": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        health_mod,
         "_run_whatsapp_smoke_check",
-        lambda *, verbose: {"ok": True, "issues": [], "active_chat_title": "Заказы"},
+        lambda *, verbose: (_ for _ in ()).throw(
+            AssertionError("canonical health must stay browser-free")
+        ),
     )
     monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
 
@@ -380,8 +402,15 @@ def test_ensure_prewindow_health_loads_repo_dotenv(monkeypatch, tmp_path: Path) 
     )
     monkeypatch.setattr(
         health_mod,
+        "_build_telegram_delivery_config_report",
+        lambda: {"ok": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        health_mod,
         "_run_whatsapp_smoke_check",
-        lambda *, verbose: {"ok": True, "issues": [], "active_chat_title": "Заказы"},
+        lambda *, verbose: (_ for _ in ()).throw(
+            AssertionError("canonical health must stay browser-free")
+        ),
     )
     monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
 
@@ -463,7 +492,7 @@ def test_ensure_prewindow_health_publish_profile_skips_whatsapp_and_store_contex
     assert report["checks"]["whatsapp_smoke"]["skipped"] is True
 
 
-def test_ensure_prewindow_health_closeout_profile_warns_on_whatsapp_when_telegram_is_green(
+def test_ensure_prewindow_health_closeout_profile_skips_whatsapp_when_telegram_is_green(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -496,7 +525,9 @@ def test_ensure_prewindow_health_closeout_profile_warns_on_whatsapp_when_telegra
     monkeypatch.setattr(
         health_mod,
         "_run_whatsapp_smoke_check",
-        lambda *, verbose: {"ok": False, "issues": [{"code": "browser_closed"}]},
+        lambda *, verbose: (_ for _ in ()).throw(
+            AssertionError("canonical closeout health must not open WhatsApp")
+        ),
     )
     monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
 
@@ -516,9 +547,8 @@ def test_ensure_prewindow_health_closeout_profile_warns_on_whatsapp_when_telegra
 
     assert report["ok"] is True
     assert report["checks"]["telegram_delivery_config"]["ok"] is True
-    assert report["checks"]["whatsapp_smoke"]["ok"] is False
-    assert report["checks"]["whatsapp_smoke"]["blocking"] is False
-    assert report["checks"]["whatsapp_smoke"]["warning_only"] is True
+    assert report["checks"]["whatsapp_smoke"]["ok"] is True
+    assert report["checks"]["whatsapp_smoke"]["skipped"] is True
 
 
 def test_closeout_profile_skips_same_day_identity_artifact_reuse(
