@@ -13,9 +13,9 @@ M1 currently owns the only proven live daily-shipping chain. M5 is newer and sho
 - Receiver checkout: the exact later commit recorded in the rescue closeout;
   the M5 gate proves the base tag is its ancestor
 - Current receiver release tag:
-  `release/daily-shipping-m5-shadow-20260714-v2`
+  `release/daily-shipping-m5-shadow-20260714-v3`
 - Current receiver release commit:
-  `6e624d46b65fdb3ba774a7f793df048c9d5c1e69`
+  `200c8c1ab8d1ce01a1a31bc12be6d2aa45ca6b39`
 - Runtime root required on M5: `~/Docs/Autonomous_business`
 - Canonical manifest: `config/daily_shipping_runtime.json`
 - Release gate: `scripts/run_daily_shipping_release_gate.sh`
@@ -25,7 +25,7 @@ M1 currently owns the only proven live daily-shipping chain. M5 is newer and sho
 
 Use the exact final commit and tag from the closeout. Do not use M1's dirty working tree as the transfer authority.
 
-Remote CI authority: GitHub Actions daily-shipping run `29280471751` passed
+Remote CI authority: GitHub Actions daily-shipping run `29281950357` passed
 against the current receiver release commit.
 
 ## Required M5 Inputs
