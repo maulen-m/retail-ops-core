@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from collections import Counter
 from datetime import date
@@ -13,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.paths import data_path  # noqa: E402
+from core.ops.waybill_send_batch import compute_manifest_batch_hash  # noqa: E402
 
 
 DEFAULT_TODAY_FOLDER = data_path("excel_ui", "Kaspi_orders", "Today")
@@ -90,6 +92,7 @@ def _base_state(
         "status": status,
         "channel": "",
         "target_date": target_date.isoformat(),
+        "request_identity": dict((manifest or {}).get("request_identity") or {}),
         "manifest_path": str(manifest_path or ""),
         "batch_root": str(batch_root or ""),
         "batch_label": _clean((manifest or {}).get("batch_label")) or (batch_root.name if batch_root else ""),
@@ -124,7 +127,23 @@ def _ledger_completion_state(
     ledger = _load_json(ledger_path)
     manifest_hash = _clean(manifest.get("batch_hash"))
     ledger_hash = _clean(ledger.get("batch_hash"))
-    if manifest_hash and ledger_hash and manifest_hash != ledger_hash:
+    if not manifest_hash:
+        return _base_state(
+            status=f"{channel.upper()}_MANIFEST_BATCH_HASH_MISSING",
+            target_date=target_date,
+            manifest_path=manifest_path,
+            manifest=manifest,
+            batch_root=batch_root,
+        ) | {"channel": channel, "ledger_path": str(ledger_path)}
+    if not ledger_hash:
+        return _base_state(
+            status=f"{channel.upper()}_LEDGER_BATCH_HASH_MISSING",
+            target_date=target_date,
+            manifest_path=manifest_path,
+            manifest=manifest,
+            batch_root=batch_root,
+        ) | {"channel": channel, "ledger_path": str(ledger_path)}
+    if manifest_hash != ledger_hash:
         return _base_state(
             status=f"{channel.upper()}_LEDGER_BATCH_HASH_MISMATCH",
             target_date=target_date,
@@ -135,9 +154,33 @@ def _ledger_completion_state(
 
     pdf_keys = _manifest_pdf_keys(manifest)
     ledger_entries = ledger.get("entries") or {}
+    pinned_chat_id = _clean(ledger.get("telegram_chat_id")) if channel == "telegram" else ""
+    if channel == "telegram" and not pinned_chat_id:
+        return _base_state(
+            status="TELEGRAM_LEDGER_TARGET_MISSING",
+            target_date=target_date,
+            manifest_path=manifest_path,
+            manifest=manifest,
+            batch_root=batch_root,
+        ) | {"channel": channel, "ledger_path": str(ledger_path)}
     confirmed_count = 0
     for pdf_key in pdf_keys:
-        if _clean((ledger_entries.get(pdf_key) or {}).get("state")) == "confirmed":
+        ledger_entry = ledger_entries.get(pdf_key) or {}
+        if _clean(ledger_entry.get("state")) == "confirmed":
+            if channel == "telegram" and _clean(
+                ledger_entry.get("telegram_chat_id")
+            ) != pinned_chat_id:
+                return _base_state(
+                    status="TELEGRAM_LEDGER_TARGET_MISMATCH",
+                    target_date=target_date,
+                    manifest_path=manifest_path,
+                    manifest=manifest,
+                    batch_root=batch_root,
+                ) | {
+                    "channel": channel,
+                    "ledger_path": str(ledger_path),
+                    "telegram_chat_id": pinned_chat_id,
+                }
             confirmed_count += 1
     state_counts = dict(_state_counts(ledger))
     completed = bool(pdf_keys) and confirmed_count == len(pdf_keys)
@@ -146,6 +189,7 @@ def _ledger_completion_state(
         "status": f"{channel.upper()}_CONFIRMED" if completed else f"{channel.upper()}_LEDGER_INCOMPLETE",
         "channel": channel,
         "target_date": target_date.isoformat(),
+        "request_identity": dict(manifest.get("request_identity") or {}),
         "manifest_path": str(manifest_path),
         "batch_root": str(batch_root),
         "batch_label": _clean(manifest.get("batch_label")) or batch_root.name,
@@ -155,6 +199,7 @@ def _ledger_completion_state(
         "ledger_path": str(ledger_path),
         "delivery_report_path": "",
         "state_counts": state_counts,
+        "telegram_chat_id": pinned_chat_id,
     }
 
 
@@ -166,19 +211,74 @@ def delivery_completion_state(
     run_id: str = "",
     explicit_delivery_channel: str = "",
     explicit_delivery_ok: bool = False,
+    manifest_path: Path | None = None,
+    expected_manifest_sha256: str = "",
 ) -> dict[str, Any]:
-    manifest_path = find_latest_send_manifest(today_folder, target_date=target_date)
-    if manifest_path is None:
+    manifest_was_explicit = manifest_path is not None
+    resolved_manifest_path = Path(manifest_path).expanduser().resolve() if manifest_path else None
+    if resolved_manifest_path is not None:
+        today_root = Path(today_folder).expanduser().resolve()
+        try:
+            resolved_manifest_path.relative_to(today_root)
+        except ValueError:
+            return _base_state(status="PINNED_MANIFEST_OUTSIDE_TODAY", target_date=target_date)
+        if resolved_manifest_path.name != SEND_BATCH_MANIFEST_FILE:
+            return _base_state(status="PINNED_MANIFEST_INVALID_NAME", target_date=target_date)
+    else:
+        resolved_manifest_path = find_latest_send_manifest(today_folder, target_date=target_date)
+    if resolved_manifest_path is None:
         return _base_state(status="SEND_MANIFEST_MISSING", target_date=target_date)
 
-    manifest = _load_json(manifest_path)
-    batch_root = manifest_path.parent
+    manifest = _load_json(resolved_manifest_path)
+    if not manifest_was_explicit:
+        return _base_state(
+            status="UNPINNED_MANIFEST_DISCOVERY_ONLY",
+            target_date=target_date,
+            manifest_path=resolved_manifest_path,
+            manifest=manifest,
+            batch_root=resolved_manifest_path.parent,
+        )
+    expected_sha = _clean(expected_manifest_sha256).lower()
+    if len(expected_sha) != 64 or any(char not in "0123456789abcdef" for char in expected_sha):
+        return _base_state(
+            status="PINNED_MANIFEST_SHA256_REQUIRED",
+            target_date=target_date,
+            manifest_path=resolved_manifest_path,
+            manifest=manifest,
+            batch_root=resolved_manifest_path.parent,
+        )
+    observed_sha = hashlib.sha256(resolved_manifest_path.read_bytes()).hexdigest()
+    if observed_sha != expected_sha:
+        return _base_state(
+            status="PINNED_MANIFEST_SHA256_MISMATCH",
+            target_date=target_date,
+            manifest_path=resolved_manifest_path,
+            manifest=manifest,
+            batch_root=resolved_manifest_path.parent,
+        )
+    if _clean(manifest.get("batch_hash")) != compute_manifest_batch_hash(manifest):
+        return _base_state(
+            status="PINNED_MANIFEST_BATCH_HASH_MISMATCH",
+            target_date=target_date,
+            manifest_path=resolved_manifest_path,
+            manifest=manifest,
+            batch_root=resolved_manifest_path.parent,
+        )
+    if _clean(manifest.get("target_date")) != target_date.isoformat():
+        return _base_state(
+            status="PINNED_MANIFEST_TARGET_DATE_MISMATCH",
+            target_date=target_date,
+            manifest_path=resolved_manifest_path,
+            manifest=manifest,
+            batch_root=resolved_manifest_path.parent,
+        )
+    batch_root = resolved_manifest_path.parent
     telegram_state = _ledger_completion_state(
         channel="telegram",
         ledger_path=batch_root / TELEGRAM_SEND_LEDGER_FILE,
         manifest=manifest,
         target_date=target_date,
-        manifest_path=manifest_path,
+        manifest_path=resolved_manifest_path,
         batch_root=batch_root,
     )
     if telegram_state["completed"]:
@@ -190,7 +290,7 @@ def delivery_completion_state(
             ledger_path=batch_root / WHATSAPP_SEND_LEDGER_FILE,
             manifest=manifest,
             target_date=target_date,
-            manifest_path=manifest_path,
+            manifest_path=resolved_manifest_path,
             batch_root=batch_root,
         )
         whatsapp_state["delivery_report_path"] = "explicit:send_waybills_delivery"
@@ -204,7 +304,7 @@ def delivery_completion_state(
             ledger_path=batch_root / WHATSAPP_SEND_LEDGER_FILE,
             manifest=manifest,
             target_date=target_date,
-            manifest_path=manifest_path,
+            manifest_path=resolved_manifest_path,
             batch_root=batch_root,
         )
         whatsapp_state["delivery_report_path"] = _clean(delivery_report.get("_report_path"))

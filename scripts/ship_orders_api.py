@@ -50,12 +50,29 @@ from core.integrations.kaspi_api_client import (
 )
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
 from core.ops.shipment_health import classify_ship_health
+from core.integrations.kaspi_order_stage import StageCode, classify_kaspi_order_stage
+from core.ops.waybill_shipping_obligations import (
+    load_required_orders_file,
+    normalize_store_code,
+    required_line_scope_hash,
+)
+from core.ops.waybill_package_count import (
+    HEAVY_ITEMS,
+    calculate_package_count_from_lines,
+    is_heavy_product,
+)
+from core.utils.kaspi_name_core_resolver import (
+    load_active_kaspi_name_core_maps,
+    resolve_kaspi_name_core,
+)
+from core.utils.kaspi_order_core_overrides import load_order_name_core_overrides
 from core.ops.fitpack_coordination import (
     EXCLUSION_LOG_LINE,
     filter_storeb_store_codes,
     is_storeb_store,
     load_storeb_packing_excluded,
 )
+from core.stores.roster import load_sync_enabled_kaspi_store_codes
 
 # Configure logging
 logging.basicConfig(
@@ -90,19 +107,6 @@ STORE_NAME_TO_API_CODE = {
 }
 API_CODE_TO_STORE_NAME = {v: k for k, v in STORE_NAME_TO_API_CODE.items()}
 
-# Heavy items (always separate package)
-HEAVY_ITEMS = {
-    'Костюм_мужской_Хус',
-    'Line51',
-    'Принт_5в1_черный',
-    'Костюм_Ромбик_ДЕТСКИЙ',
-    'Спортивный_3в1_детский_черный',
-    'CL_NEW-CLO2_MEN_SUIT-61_BLACK',
-    'CL_NEW-CLO2_MEN_SUIT-51_BLACK_GREY',
-    'CL_NK_MEN_LINE51_WHITE',
-    'CL_OC_MEN_LINE52_BLACK',  # Print 5v1 SKU prefix
-}
-
 # Assemble verification (handles delayed state updates / async waybill creation)
 ASSEMBLE_VERIFY_RETRIES = int(os.environ.get("KASPI_ASSEMBLE_VERIFY_RETRIES", "5"))
 ASSEMBLE_VERIFY_DELAY = float(os.environ.get("KASPI_ASSEMBLE_VERIFY_DELAY", "3"))
@@ -121,6 +125,9 @@ class OrderItem:
     sku_id: str
     quantity: int
     planned_date: Optional[date]
+    source_row_id: str = ""
+    kaspi_offer_name: str = ""
+    kaspi_name_core_source: str = ""
 
 
 def _coerce_str(value: Any) -> str:
@@ -156,6 +163,7 @@ def load_db_order_info(
         rows = conn.execute(
             f"""
             SELECT
+                rowid AS id,
                 order_id,
                 assigned_size,
                 my_size,
@@ -269,21 +277,13 @@ def _json_default(value: Any) -> Any:
 
 def is_heavy_item(item: OrderItem) -> bool:
     """Check if item is heavy (requires separate package)."""
-    # Check against name core, sku_key, and sku_id
-    checks = [item.kaspi_name_core, item.sku_key, item.sku_id]
-
-    for check_value in checks:
-        if not check_value:
-            continue
-        # Exact match
-        if check_value in HEAVY_ITEMS:
-            return True
-        # Prefix match for SKU codes
-        for heavy in HEAVY_ITEMS:
-            if check_value.startswith(heavy):
-                return True
-
-    return False
+    return is_heavy_product(
+        {
+            "kaspi_name_core": item.kaspi_name_core,
+            "sku_key": item.sku_key,
+            "sku_id": item.sku_id,
+        }
+    )
 
 
 def calculate_package_count(items: list[OrderItem]) -> int:
@@ -300,32 +300,15 @@ def calculate_package_count(items: list[OrderItem]) -> int:
         - Light items combine into 1 package (if any)
         - If total qty <= 3 and no heavy items: 1 package
     """
-    if not items:
-        return 1
-
-    # Single line item
-    if len(items) == 1:
-        item = items[0]
-        if item.quantity == 1:
-            # NORMAL: always 1 package
-            return 1
-        else:
-            # MULTI_QTY
-            if is_heavy_item(item) or item.quantity > 3:
-                return item.quantity
-            else:
-                return 1
-
-    # Multiple line items (MULTI_LINE)
-    heavy_count = sum(1 for item in items if is_heavy_item(item))
-    light_count = len(items) - heavy_count
-    total_qty = sum(item.quantity for item in items)
-
-    if total_qty <= 3 and heavy_count == 0:
-        return 1
-    else:
-        # Heavy items get separate packages, light items combine
-        return heavy_count + (1 if light_count > 0 else 0)
+    return calculate_package_count_from_lines(
+        {
+            "kaspi_name_core": item.kaspi_name_core,
+            "sku_key": item.sku_key,
+            "sku_id": item.sku_id,
+            "quantity": item.quantity,
+        }
+        for item in items
+    )
 
 
 def read_crm_orders(
@@ -522,6 +505,7 @@ def read_db_orders(
         rows = conn.execute(
             f"""
             SELECT
+                rowid AS id,
                 order_id,
                 store_code,
                 kaspi_offer_name,
@@ -537,6 +521,15 @@ def read_db_orders(
             """,
             params,
         ).fetchall()
+        kaspi_core_maps = load_active_kaspi_name_core_maps(
+            conn,
+            sku_keys={_coerce_str(row["sku_key"]) for row in rows},
+            store_offer_pairs={
+                (_coerce_str(row["store_code"]), _coerce_str(row["kaspi_offer_name"]))
+                for row in rows
+            },
+        )
+    order_core_overrides = load_order_name_core_overrides()
 
     orders_by_id: dict[str, list[OrderItem]] = defaultdict(list)
     skipped_no_size = 0
@@ -566,9 +559,20 @@ def read_db_orders(
             continue
 
         kaspi_offer_name = _coerce_str(row["kaspi_offer_name"])
-        kaspi_name_core = extract_name_core(kaspi_offer_name) if kaspi_offer_name else ""
-        if not kaspi_name_core or kaspi_name_core.lower() == "unknown":
-            kaspi_name_core = _coerce_str(row["sku_key"]) or _coerce_str(row["sku_id"]) or "UNKNOWN"
+        sku_key = _coerce_str(row["sku_key"])
+        sku_id = _coerce_str(row["sku_id"])
+        preferred_core = order_core_overrides.get(order_id, "")
+        resolution = resolve_kaspi_name_core(
+            store_code=row["store_code"],
+            kaspi_offer_name=kaspi_offer_name,
+            sku_key=sku_key,
+            sku_id=sku_id,
+            maps=kaspi_core_maps,
+            preferred_core=preferred_core,
+            preferred_source="forced_core" if preferred_core else "preferred_core",
+            extract_fallback=extract_name_core,
+        )
+        kaspi_name_core = resolution.core or "UNKNOWN"
 
         quantity = int(row["quantity"] or 1)
         item = OrderItem(
@@ -576,10 +580,13 @@ def read_db_orders(
             store_name=store_name,
             kaspi_name_core=kaspi_name_core,
             my_size=final_size,
-            sku_key=_coerce_str(row["sku_key"]),
-            sku_id=_coerce_str(row["sku_id"]),
+            sku_key=sku_key,
+            sku_id=sku_id,
             quantity=quantity,
             planned_date=planned_date,
+            source_row_id=_coerce_str(row["id"]),
+            kaspi_offer_name=kaspi_offer_name,
+            kaspi_name_core_source=resolution.source,
         )
         orders_by_id[order_id].append(item)
 
@@ -631,6 +638,83 @@ def _response_requires_since(response: Any) -> bool:
         return False
     err_text = str(response.error or "")
     return "creationDate" in err_text and "$ge" in err_text
+
+
+def resolve_required_assembly_orders(
+    required_orders_by_store: dict[str, set[str]],
+) -> dict[str, Any]:
+    """Exact-read every pinned order without list or date-window fallback."""
+    pending_by_store: dict[str, set[str]] = {}
+    order_id_to_base64: dict[str, dict[str, str]] = {}
+    planned_by_store: dict[str, dict[str, date]] = {}
+    pending_meta_by_store: dict[str, dict[str, dict[str, Any]]] = {}
+    satisfied_by_store: dict[str, set[str]] = {}
+    stages: dict[str, str] = {}
+    errors: list[str] = []
+
+    for store_code, order_ids in sorted(required_orders_by_store.items()):
+        pending_by_store.setdefault(store_code, set())
+        satisfied_by_store.setdefault(store_code, set())
+        try:
+            client = KaspiAPIClient(store_code=store_code)
+        except Exception as exc:
+            errors.extend(
+                f"{store_code}:{order_id}: auth/client error: {type(exc).__name__}: {exc}"
+                for order_id in sorted(order_ids)
+            )
+            continue
+        for order_id in sorted(order_ids):
+            key = f"{store_code}:{order_id}"
+            try:
+                response = client.get_order(order_id)
+            except Exception as exc:
+                errors.append(f"{key}: exact read error: {type(exc).__name__}: {exc}")
+                continue
+            if not response.success:
+                errors.append(f"{key}: exact read failed: {response.error or 'unknown error'}")
+                continue
+            order = response.data
+            if not isinstance(order, dict):
+                errors.append(f"{key}: exact read returned malformed payload")
+                continue
+            attrs = order.get("attributes") or {}
+            observed_code = _coerce_str(attrs.get("code") or attrs.get("orderCode"))
+            if observed_code != order_id:
+                errors.append(
+                    f"{key}: identity mismatch: observed={observed_code or 'blank'}"
+                )
+                continue
+            stage = classify_kaspi_order_stage(order)
+            stages[key] = stage.value
+            if stage == StageCode.ACCEPTED_PENDING_ASSEMBLY:
+                base64_id = _coerce_str(order.get("id"))
+                if not base64_id:
+                    errors.append(f"{key}: pending assembly detail is missing base64 id")
+                    continue
+                pending_by_store[store_code].add(order_id)
+                order_id_to_base64.setdefault(store_code, {})[order_id] = base64_id
+                planned = _planned_date_from_order(order)
+                if planned:
+                    planned_by_store.setdefault(store_code, {})[order_id] = planned
+                pending_meta_by_store.setdefault(store_code, {})[order_id] = {
+                    "planned_date": planned,
+                    "created_at": _creation_dt_from_order(order),
+                    "fetch_mode": "required-exact-detail",
+                }
+            elif stage == StageCode.ASSEMBLED_PENDING_HANDOVER:
+                satisfied_by_store[store_code].add(order_id)
+            else:
+                errors.append(f"{key}: pinned order advanced to non-packable stage {stage.value}")
+
+    return {
+        "pending_by_store": pending_by_store,
+        "order_id_to_base64": order_id_to_base64,
+        "planned_by_store": planned_by_store,
+        "pending_meta_by_store": pending_meta_by_store,
+        "satisfied_by_store": satisfied_by_store,
+        "stages": stages,
+        "errors": errors,
+    }
 
 
 def get_pending_assembly_orders(
@@ -1097,6 +1181,7 @@ def ship_orders(
     verbose: bool = False,
     since_days: int = 7,
     storeb_excluded: bool | None = None,
+    exact_once: bool = False,
 ) -> dict:
     """
     Ship orders via Kaspi API.
@@ -1226,12 +1311,22 @@ def ship_orders(
                             if verbose:
                                 print("      -> Shipped OK (fallback)")
                             return True
+                        if exact_once:
+                            errors.append(
+                                f"{order_id}: assemble outcome uncertain after one exact mutation"
+                            )
+                            return False
                         _queue_retry(order_id, parcel_count)
                         return False
                     err_text = str(result_fallback.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
                         if _wait_for_assembled(order_id, base64_hint):
                             return True
+                        if exact_once:
+                            errors.append(
+                                f"{order_id}: assemble not-found outcome uncertain after one exact mutation"
+                            )
+                            return False
                         _queue_retry(order_id, parcel_count)
                         return False
                     errors.append(f"{order_id}: API error - {result_fallback.error} (fallback)")
@@ -1241,6 +1336,11 @@ def ship_orders(
                     if "not found" in str(exc).lower() or "resource not found" in str(exc).lower():
                         if _wait_for_assembled(order_id, base64_hint):
                             return True
+                        if exact_once:
+                            errors.append(
+                                f"{order_id}: assemble exception outcome uncertain after one exact mutation"
+                            )
+                            return False
                         _queue_retry(order_id, parcel_count)
                         return False
                     errors.append(f"{order_id}: {str(exc)} (fallback)")
@@ -1260,15 +1360,27 @@ def ship_orders(
             try:
                 result = client.assemble_order_by_id(base64_id, order_id, parcel_count=parcel_count)
                 if result.success:
-                    if _is_assembled_now(order_id, base64_id):
+                    if _wait_for_assembled(order_id, base64_id):
                         shipped += 1
                         if verbose:
                             print("      -> Shipped OK")
+                    elif exact_once:
+                        errors.append(
+                            f"{order_id}: assemble accepted but outcome remains uncertain; no retry mutation"
+                        )
                     elif _fallback_assemble("Assemble accepted but not confirmed", base64_id):
                         shipped += 1
                     else:
                         _queue_retry(order_id, parcel_count)
                 else:
+                    if exact_once:
+                        if _wait_for_assembled(order_id, base64_id):
+                            shipped += 1
+                        else:
+                            errors.append(
+                                f"{order_id}: assemble API outcome uncertain; no retry mutation: {result.error}"
+                            )
+                        continue
                     # Some API errors return 404-equivalent errors without raising.
                     err_text = str(result.error or "")
                     if "not found" in err_text.lower() or "resource not found" in err_text.lower():
@@ -1282,7 +1394,14 @@ def ship_orders(
                         print(f"      -> ERROR: {result.error}")
             except KaspiNotFoundError as e:
                 # Retry with direct lookup if base64 ID is stale or mismatched.
-                if _fallback_assemble(str(e), base64_id):
+                if exact_once:
+                    if _wait_for_assembled(order_id, base64_id):
+                        shipped += 1
+                    else:
+                        errors.append(
+                            f"{order_id}: assemble not-found outcome uncertain; no retry mutation: {e}"
+                        )
+                elif _fallback_assemble(str(e), base64_id):
                     shipped += 1
             except KaspiWriteDisabledError:
                 logger.error("Write operations disabled. Set ENABLE_KASPI_WRITE=1 in .env")
@@ -1293,14 +1412,21 @@ def ship_orders(
                 }
             except Exception as e:
                 # Unknown exception: try fallback once, then record error.
-                if _fallback_assemble(str(e), base64_id):
+                if exact_once:
+                    if _wait_for_assembled(order_id, base64_id):
+                        shipped += 1
+                    else:
+                        errors.append(
+                            f"{order_id}: assemble exception outcome uncertain; no retry mutation: {e}"
+                        )
+                elif _fallback_assemble(str(e), base64_id):
                     shipped += 1
                 else:
                     errors.append(f"{order_id}: {str(e)}")
                     if verbose:
                         print(f"      -> EXCEPTION: {e}")
 
-        if retry_queue and ASSEMBLE_REFRESH_RETRIES > 0:
+        if retry_queue and ASSEMBLE_REFRESH_RETRIES > 0 and not exact_once:
             refresh_since = (datetime.now(ALMATY_TZ) - timedelta(days=since_days)).strftime('%Y-%m-%d')
             if verbose:
                 print(f"  Retrying {len(retry_queue)} orders after refresh...")
@@ -1452,6 +1578,12 @@ def main() -> int:
         default=None,
         help='Optional JSON output path for shipping summary'
     )
+    parser.add_argument(
+        '--required-orders-file',
+        type=Path,
+        default=None,
+        help='Pinned expected_closeout_orders.json; use exact per-order readback only',
+    )
 
     args = parser.parse_args()
 
@@ -1466,6 +1598,33 @@ def main() -> int:
         target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
     else:
         target_date = datetime.now(ALMATY_TZ).date()
+
+    def _write_json_out(payload: dict[str, Any]) -> None:
+        if not args.json_out:
+            return
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default),
+            encoding="utf-8",
+        )
+
+    try:
+        required_orders = (
+            load_required_orders_file(args.required_orders_file, target_date=target_date)
+            if args.required_orders_file
+            else None
+        )
+    except Exception as exc:
+        payload = {
+            "selection_status": "PINNED_REQUIRED_ORDERS_INVALID",
+            "target_date": target_date.isoformat(),
+            "errors": [f"{type(exc).__name__}: {exc}"],
+            "health_code": "RED",
+            "health_exit_code": 1,
+        }
+        _write_json_out(payload)
+        print(payload["errors"][0], file=sys.stderr)
+        return 1
     include_overdue = bool(args.include_overdue) and not bool(args.today_only)
     overdue_lookback_days = args.overdue_lookback_days
     if include_overdue and overdue_lookback_days is None:
@@ -1478,6 +1637,11 @@ def main() -> int:
     print(f"  CRM file: {args.crm_file}")
     print(f"  Target date: {target_date}")
     print(f"  Selection source: {args.selection_source}")
+    if required_orders:
+        print(
+            f"  Required-order pin: {required_orders['path']} "
+            f"({len(required_orders['order_ids'])} orders)"
+        )
     if include_overdue:
         lookback_label = overdue_lookback_days if overdue_lookback_days is not None else "all"
         print(f"  Date mode: planned <= target (lookback {lookback_label}d)")
@@ -1486,25 +1650,121 @@ def main() -> int:
     if args.store:
         print(f"  Store filter: {args.store}")
     if args.dry_run:
-        print("  [DRY RUN MODE - No API calls]")
+        print("  [DRY RUN MODE - Read-only API preflight; no assembly writes]")
     print()
 
     # Step 1: Get pending assembly orders from API
     print("Step 1: Fetching pending assembly orders from API...")
     selected_store_codes: Optional[set[str]] = None
-    if args.store:
+    required_resolution: Optional[dict[str, Any]] = None
+    sync_enabled_store_codes = {
+        str(value).strip().upper().replace("STORE-B", "STOREB")
+        for value in load_sync_enabled_kaspi_store_codes()
+    }
+    if required_orders:
+        selected_store_codes = set(required_orders["orders_by_store"])
+        disabled_required_stores = sorted(
+            selected_store_codes - sync_enabled_store_codes
+        )
+        if disabled_required_stores:
+            payload = {
+                "selection_status": "PINNED_REQUIRED_ORDERS_SYNC_DISABLED_STORE",
+                "target_date": target_date.isoformat(),
+                "errors": [
+                    "Pinned required orders include store(s) outside the current "
+                    "sync-enabled roster: " + ",".join(disabled_required_stores)
+                ],
+                "health_code": "RED",
+                "health_exit_code": 1,
+            }
+            _write_json_out(payload)
+            return 1
+        if args.store:
+            selected_code = STORE_NAME_TO_API_CODE.get(args.store, args.store.upper())
+            if selected_store_codes != {selected_code}:
+                payload = {
+                    "selection_status": "PINNED_REQUIRED_ORDERS_STORE_CONFLICT",
+                    "target_date": target_date.isoformat(),
+                    "errors": [
+                        f"--store {selected_code} conflicts with pinned stores "
+                        f"{','.join(sorted(selected_store_codes)) or '-'}"
+                    ],
+                    "health_code": "RED",
+                    "health_exit_code": 1,
+                }
+                _write_json_out(payload)
+                return 1
+        if storeb_excluded and any(is_storeb_store(store) for store in selected_store_codes):
+            payload = {
+                "selection_status": "PINNED_REQUIRED_ORDERS_FITPACK_CONFLICT",
+                "target_date": target_date.isoformat(),
+                "errors": ["Pinned required orders include STORE-B while FitPack exclusion is active"],
+                "health_code": "RED",
+                "health_exit_code": 1,
+            }
+            _write_json_out(payload)
+            return 1
+    elif args.store:
         selected_code = STORE_NAME_TO_API_CODE.get(args.store, args.store.upper())
+        if selected_code not in sync_enabled_store_codes:
+            payload = {
+                "selection_status": "STORE_SYNC_DISABLED",
+                "target_date": target_date.isoformat(),
+                "errors": [f"Store {selected_code} is outside the current sync-enabled roster"],
+                "health_code": "RED",
+                "health_exit_code": 1,
+            }
+            _write_json_out(payload)
+            return 1
         selected_store_codes = {selected_code}
-    if selected_store_codes is None:
+    if required_orders:
+        required_resolution = resolve_required_assembly_orders(
+            {
+                store: set(order_ids)
+                for store, order_ids in required_orders["orders_by_store"].items()
+            }
+        )
+        pending_orders = required_resolution["pending_by_store"]
+        order_id_to_base64 = required_resolution["order_id_to_base64"]
+        _planned_map = required_resolution["planned_by_store"]
+        pending_meta = required_resolution["pending_meta_by_store"]
+        required_count = len(required_orders["order_ids"])
+        resolved_count = sum(len(ids) for ids in pending_orders.values()) + sum(
+            len(ids) for ids in required_resolution["satisfied_by_store"].values()
+        )
+        resolution_errors = list(required_resolution["errors"])
+        if resolved_count != required_count:
+            resolution_errors.append(
+                f"Pinned exact-read coverage mismatch: required={required_count} resolved={resolved_count}"
+            )
+        if resolution_errors:
+            payload = {
+                "selection_status": "PINNED_REQUIRED_ORDERS_EXACT_READ_FAILED",
+                "target_date": target_date.isoformat(),
+                "required_orders_path": required_orders["path"],
+                "required_orders_sha256": required_orders["sha256"],
+                "request_identity": required_orders["request_identity"],
+                "required_count": required_count,
+                "resolved_count": resolved_count,
+                "observed_stages": required_resolution["stages"],
+                "errors": resolution_errors,
+                "health_code": "RED",
+                "health_exit_code": 1,
+            }
+            _write_json_out(payload)
+            for error in resolution_errors:
+                print(f"  ERROR: {error}", file=sys.stderr)
+            return 1
+    elif selected_store_codes is None:
         selected_store_codes = set(
             filter_storeb_store_codes(
-                STORE_TOKEN_MAP.keys(),
+                sync_enabled_store_codes,
                 enabled=storeb_excluded,
                 warn=logger.warning,
                 context="shipping pending-assembly API fetch",
             )
         )
-    else:
+    elif not required_orders:
         selected_store_codes = set(
             filter_storeb_store_codes(
                 selected_store_codes,
@@ -1535,16 +1795,39 @@ def main() -> int:
                 )
             print(f"{EXCLUSION_LOG_LINE}: STORE-B store filter skipped for FitPack cycles.")
             return 0
-    pending_orders, order_id_to_base64, _planned_map, pending_meta = get_pending_assembly_orders(
-        target_date=target_date,
-        since_days=args.since_days,
-        store_codes=selected_store_codes,
-        include_overdue=include_overdue,
-        overdue_lookback_days=overdue_lookback_days,
-    )
+    if not required_orders:
+        pending_orders, order_id_to_base64, _planned_map, pending_meta = get_pending_assembly_orders(
+            target_date=target_date,
+            since_days=args.since_days,
+            store_codes=selected_store_codes,
+            include_overdue=include_overdue,
+            overdue_lookback_days=overdue_lookback_days,
+        )
 
     total_pending = sum(len(ids) for ids in pending_orders.values())
     if total_pending == 0:
+        if required_orders:
+            satisfied_count = sum(
+                len(ids) for ids in required_resolution["satisfied_by_store"].values()
+            )
+            payload = {
+                "selection_status": "PINNED_REQUIRED_ORDERS_ALREADY_ASSEMBLED",
+                "target_date": target_date.isoformat(),
+                "required_orders_path": required_orders["path"],
+                "required_orders_sha256": required_orders["sha256"],
+                "request_identity": required_orders["request_identity"],
+                "required_count": len(required_orders["order_ids"]),
+                "pending_count": 0,
+                "satisfied_count": satisfied_count,
+                "observed_stages": required_resolution["stages"],
+                "shipped": 0,
+                "skipped": 0,
+                "errors": [],
+                "health_code": "OK",
+                "health_message": "All pinned orders were exact-read as already assembled.",
+                "health_exit_code": 0,
+            }
+            _write_json_out(payload)
         print("No orders pending assembly in Kaspi (Упаковка stage).")
         return 0
 
@@ -1558,16 +1841,29 @@ def main() -> int:
     all_pending = set()
     for order_ids in pending_orders.values():
         all_pending.update(order_ids)
+    required_action_scope = (
+        set(required_orders["order_ids"])
+        if required_orders
+        else set(all_pending)
+    )
     pending_store_for_order: dict[str, str] = {}
     for store_code, order_ids in pending_orders.items():
         for order_id in order_ids:
             pending_store_for_order[order_id] = store_code
+    required_store_for_order = dict(pending_store_for_order)
+    if required_orders:
+        for store_code, order_ids in required_orders["orders_by_store"].items():
+            for order_id in order_ids:
+                required_store_for_order[order_id] = store_code
 
     # Step 2: Read orders from CRM
     resolved_db_path = resolve_db_path(args.db_path)
     if resolved_db_path:
         print(f"  DB: {resolved_db_path}")
-    db_order_info = load_db_order_info(resolved_db_path or DEFAULT_DB_PATH, all_pending)
+    db_order_info = load_db_order_info(
+        resolved_db_path or DEFAULT_DB_PATH,
+        required_action_scope,
+    )
     if args.selection_source == "db":
         print("\nStep 2: Reading DB-assigned sizes for automated closeout...")
         if not resolved_db_path:
@@ -1576,7 +1872,7 @@ def main() -> int:
             resolved_db_path,
             target_date,
             store_filter=args.store,
-            target_order_ids=all_pending,
+            target_order_ids=required_action_scope,
             apply_date_filter=False,
             allow_missing_size=args.allow_missing_size,
         )
@@ -1587,7 +1883,7 @@ def main() -> int:
             args.sheet,
             target_date,
             store_filter=args.store,
-            target_order_ids=all_pending,
+            target_order_ids=required_action_scope,
             db_order_info=db_order_info,
             apply_date_filter=False,
             allow_missing_size=args.allow_missing_size,
@@ -1596,7 +1892,7 @@ def main() -> int:
     # Add placeholder orders missing in the current CRM batch only when
     # allow_missing_size is explicitly enabled. Never reintroduce DB sizes as
     # actionable size truth for operator shipping.
-    missing_in_selection = all_pending - set(orders_by_id.keys())
+    missing_in_selection = required_action_scope - set(orders_by_id.keys())
     added_missing_crm_placeholders = 0
     skipped_missing_current_crm = 0
     skipped_placeholder_store = 0
@@ -1608,7 +1904,7 @@ def main() -> int:
                 skipped_missing_current_crm += 1
                 continue
             if not info:
-                store_code = pending_store_for_order.get(order_id)
+                store_code = required_store_for_order.get(order_id)
                 if args.store:
                     expected_code = STORE_NAME_TO_API_CODE.get(args.store, args.store)
                     if store_code and store_code != expected_code:
@@ -1665,6 +1961,88 @@ def main() -> int:
     if skipped_placeholder_store:
         print(f"  Skipped {skipped_placeholder_store} pending orders (store filter)")
 
+    if required_orders:
+        coverage_errors: list[str] = []
+        selected_ids = set(orders_by_id)
+        if selected_ids != required_action_scope:
+            coverage_errors.append(
+                "Pinned actionable coverage mismatch: "
+                f"missing={','.join(sorted(required_action_scope - selected_ids)) or '-'} "
+                f"extra={','.join(sorted(selected_ids - required_action_scope)) or '-'}"
+            )
+        for order_id, items in orders_by_id.items():
+            expected_store = required_store_for_order.get(order_id)
+            if not items:
+                coverage_errors.append(f"{order_id}: no actionable DB rows")
+                continue
+            observed_stores = {
+                STORE_NAME_TO_API_CODE.get(item.store_name, item.store_name.upper())
+                for item in items
+            }
+            if observed_stores != {expected_store}:
+                coverage_errors.append(
+                    f"{order_id}: DB store mismatch expected={expected_store} "
+                    f"observed={','.join(sorted(observed_stores)) or '-'}"
+                )
+            if any(not _coerce_str(item.my_size) for item in items):
+                coverage_errors.append(f"{order_id}: final size is missing")
+        if required_orders.get("line_scope_required"):
+            actual_lines = [
+                {
+                    "db_row_id": item.source_row_id,
+                    "store_code": normalize_store_code(
+                        STORE_NAME_TO_API_CODE.get(item.store_name, item.store_name)
+                    ),
+                    "order_id": order_id,
+                    "sku_key": item.sku_key,
+                    "sku_id": item.sku_id,
+                    "kaspi_offer_name": item.kaspi_offer_name,
+                    "kaspi_name_core": item.kaspi_name_core,
+                    "quantity": item.quantity,
+                    "final_size": item.my_size,
+                }
+                for order_id, items in sorted(orders_by_id.items())
+                for item in items
+            ]
+            try:
+                actual_line_scope_hash = required_line_scope_hash(actual_lines)
+            except ValueError as exc:
+                coverage_errors.append(f"invalid DB line scope: {exc}")
+            else:
+                if actual_line_scope_hash != required_orders.get("line_scope_hash"):
+                    coverage_errors.append(
+                        "Pinned DB line/size scope mismatch: "
+                        f"expected={required_orders.get('line_scope_hash')} "
+                        f"actual={actual_line_scope_hash}"
+                    )
+        for order_id, items in sorted(orders_by_id.items()):
+            expected_package_count = int(
+                (required_orders.get("package_counts_by_order") or {}).get(order_id) or 0
+            )
+            actual_package_count = calculate_package_count(items)
+            if expected_package_count != actual_package_count:
+                coverage_errors.append(
+                    f"{order_id}: pinned package_count mismatch "
+                    f"expected={expected_package_count} actual={actual_package_count}"
+                )
+        if coverage_errors:
+            payload = {
+                "selection_status": "PINNED_REQUIRED_ORDERS_DB_COVERAGE_FAILED",
+                "target_date": target_date.isoformat(),
+                "required_orders_path": required_orders["path"],
+                "required_orders_sha256": required_orders["sha256"],
+                "request_identity": required_orders["request_identity"],
+                "required_count": len(required_orders["order_ids"]),
+                "pending_count": len(all_pending),
+                "errors": coverage_errors,
+                "health_code": "RED",
+                "health_exit_code": 1,
+            }
+            _write_json_out(payload)
+            for error in coverage_errors:
+                print(f"  ERROR: {error}", file=sys.stderr)
+            return 1
+
     if not orders_by_id and not missing_in_selection:
         print("No eligible orders in DB/API selection.")
         return 0
@@ -1697,6 +2075,7 @@ def main() -> int:
         verbose=args.verbose,
         since_days=args.since_days,
         storeb_excluded=storeb_excluded,
+        exact_once=bool(required_orders),
     )
 
     # Summary
@@ -1713,16 +2092,40 @@ def main() -> int:
             print(f"    ... and {len(result['errors']) - 5} more")
 
     if args.dry_run:
-        print("\n  [DRY RUN] No API calls were made.")
+        print("\n  [DRY RUN] Exact readback completed; no assembly write was made.")
+        if required_orders and (
+            result.get("shipped") != total_pending
+            or result.get("skipped")
+            or result.get("errors")
+        ):
+            result.setdefault("errors", []).append(
+                "Pinned dry-run coverage did not match the exact pending set"
+            )
         remaining_backlog = None
     else:
-        remaining_pending, _remaining_base64, _remaining_planned, remaining_meta = get_pending_assembly_orders(
-            target_date=target_date,
-            since_days=args.since_days,
-            store_codes=selected_store_codes,
-            include_overdue=include_overdue,
-            overdue_lookback_days=overdue_lookback_days,
-        )
+        if required_orders:
+            post_resolution = resolve_required_assembly_orders(
+                {
+                    store: set(order_ids)
+                    for store, order_ids in required_orders["orders_by_store"].items()
+                }
+            )
+            remaining_pending = post_resolution["pending_by_store"]
+            remaining_meta = post_resolution["pending_meta_by_store"]
+            result.setdefault("errors", []).extend(post_resolution["errors"])
+            if any(remaining_pending.values()):
+                result["errors"].append(
+                    "Pinned orders remain pending assembly after the write/readback cycle"
+                )
+            result["postread_observed_stages"] = post_resolution["stages"]
+        else:
+            remaining_pending, _remaining_base64, _remaining_planned, remaining_meta = get_pending_assembly_orders(
+                target_date=target_date,
+                since_days=args.since_days,
+                store_codes=selected_store_codes,
+                include_overdue=include_overdue,
+                overdue_lookback_days=overdue_lookback_days,
+            )
         remaining_backlog = build_pending_backlog_report(
             remaining_meta,
             target_date=target_date,
@@ -1753,15 +2156,25 @@ def main() -> int:
     result["selection_source"] = args.selection_source
     result["target_date"] = target_date.isoformat()
     result["store_scope"] = args.store or "ALL_STORES"
+    if required_orders:
+        result.update(
+            {
+                "selection_status": "PINNED_REQUIRED_ORDERS",
+                "required_orders_path": required_orders["path"],
+                "required_orders_sha256": required_orders["sha256"],
+                "request_identity": required_orders["request_identity"],
+                "required_count": len(required_orders["order_ids"]),
+                "required_pending_before": total_pending,
+                "required_satisfied_before": sum(
+                    len(ids) for ids in required_resolution["satisfied_by_store"].values()
+                ),
+                "prewrite_observed_stages": required_resolution["stages"],
+            }
+        )
     result["health_code"] = health.code
     result["health_message"] = health.message
     result["health_exit_code"] = health.exit_code
-    if args.json_out:
-        args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2, default=_json_default),
-            encoding="utf-8",
-        )
+    _write_json_out(result)
     return health.exit_code
 
 

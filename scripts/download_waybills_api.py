@@ -56,6 +56,14 @@ from core.paths import data_path, get_data_root
 from core.ops.waybill_overdue_carryforward import (
     get_overdue_waybill_ready_order_ids_from_db,
 )
+from core.ops.waybill_shipping_obligations import load_required_orders_file
+from core.ops.waybill_pdf_provenance import (
+    validate_waybill_pdf_provenance,
+    write_waybill_pdf_provenance,
+)
+from scripts.validate_google_closeout_expected_orders import (
+    validate_required_orders_against_db,
+)
 from core.ops.shipment_health import classify_waybill_health
 from core.utils.kaspi_dates import parse_kaspi_date
 from core.ops.fitpack_coordination import (
@@ -295,7 +303,108 @@ def _is_pdf_bytes(data: bytes) -> bool:
     """Quick check that the payload looks like a PDF."""
     if not data:
         return False
-    return data.lstrip().startswith(b"%PDF")
+    return data.lstrip().startswith(b"%PDF") and b"%%EOF" in data[-2048:]
+
+
+def _is_complete_pdf_file(path: Path) -> bool:
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return False
+    return _is_pdf_bytes(data) and b"%%EOF" in data[-2048:]
+
+
+def _write_pdf_atomically(path: Path, data: bytes) -> None:
+    if not _is_pdf_bytes(data):
+        raise ValueError("refusing to write non-PDF payload")
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        with temp_path.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(target)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _write_pinned_waybill_artifacts(
+    *,
+    output_path: Path,
+    pdf_bytes: bytes,
+    store_code: str,
+    order_code: str,
+    waybill_url: str,
+    api_resource_id: str,
+    required_orders_sha256: str,
+    request_identity: dict[str, Any],
+) -> None:
+    """Publish PDF first and provenance last; interrupted pairs remain untrusted."""
+    _write_pdf_atomically(output_path, pdf_bytes)
+    write_waybill_pdf_provenance(
+        pdf_path=output_path,
+        store_code=store_code,
+        order_id=order_code,
+        waybill_url=waybill_url,
+        api_resource_id=api_resource_id,
+        required_orders_sha256=required_orders_sha256,
+        request_identity=request_identity,
+    )
+
+
+def _refresh_pinned_cached_waybill_binding(
+    *,
+    output_path: Path,
+    store_code: str,
+    order_code: str,
+    waybill_url: str,
+    api_resource_id: str,
+    required_orders_sha256: str,
+    request_identity: dict[str, Any],
+) -> tuple[bool, str]:
+    """Reuse cache only after exact API detail proves the same current waybill URL."""
+    valid, reason, _payload = validate_waybill_pdf_provenance(
+        pdf_path=output_path,
+        expected_store_code=store_code,
+        expected_order_id=order_code,
+        expected_required_orders_sha256=required_orders_sha256,
+        expected_request_identity=request_identity,
+        expected_waybill_url=waybill_url,
+        require_request_binding=False,
+    )
+    if not valid:
+        return False, reason
+    write_waybill_pdf_provenance(
+        pdf_path=output_path,
+        store_code=store_code,
+        order_id=order_code,
+        waybill_url=waybill_url,
+        api_resource_id=api_resource_id,
+        required_orders_sha256=required_orders_sha256,
+        request_identity=request_identity,
+    )
+    rebound, rebound_reason, _payload = validate_waybill_pdf_provenance(
+        pdf_path=output_path,
+        expected_store_code=store_code,
+        expected_order_id=order_code,
+        expected_required_orders_sha256=required_orders_sha256,
+        expected_request_identity=request_identity,
+        expected_waybill_url=waybill_url,
+    )
+    return rebound, rebound_reason
+
+
+def _order_payload_matches(order: Any, expected_order_code: str) -> bool:
+    if not isinstance(order, dict):
+        return False
+    attrs = order.get("attributes") if isinstance(order.get("attributes"), dict) else order
+    observed = str(attrs.get("code") or attrs.get("orderCode") or "").strip()
+    return observed == str(expected_order_code).strip()
 
 
 def parse_date(value: Any) -> Optional[date]:
@@ -697,6 +806,8 @@ def download_waybills_for_store(
     verbose: bool = False,
     prefetched_orders: Optional[list[dict]] = None,
     storeb_excluded: bool | None = None,
+    required_orders_sha256: str = "",
+    request_identity: Optional[dict[str, Any]] = None,
 ) -> dict:
     """
     Download waybills for specific orders in a store.
@@ -726,6 +837,13 @@ def download_waybills_for_store(
     errors = []
     processed_order_ids: set[str] = set()
     circuit_open = False
+    pinned_provenance = bool(str(required_orders_sha256 or "").strip())
+    pinned_request_identity = dict(request_identity or {})
+    if pinned_provenance and (
+        not pinned_request_identity.get("target_date")
+        or not pinned_request_identity.get("ready_set_at")
+    ):
+        raise ValueError("pinned waybill download requires complete request identity")
 
     if storeb_excluded is None:
         storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
@@ -813,23 +931,51 @@ def download_waybills_for_store(
 
         # Check if already downloaded
         output_path = output_dir / f"{order_code}.pdf"
-        if output_path.exists():
+        if (
+            not pinned_provenance
+            and output_path.exists()
+            and _is_complete_pdf_file(output_path)
+        ):
             already_exists += 1
             if verbose:
                 print(f"      {order_code}: Already exists, skipping")
             continue
+        if output_path.exists() and verbose:
+            print(f"      {order_code}: Existing PDF is incomplete; redownloading atomically")
 
-        # Get waybill URL (list payload may omit it; fallback to order detail)
-        waybill_url = client.get_waybill_url(order)
-        if not waybill_url:
+        # Pinned mode always exact-reads the order before trusting either URL or cache.
+        detail = None
+        if pinned_provenance:
             detail = client.get_order(order_code)
-            if detail.success:
-                waybill_url = client.get_waybill_url(detail.data)
-                if waybill_url and verbose:
-                    print(f"      {order_code}: Waybill URL found via detail fetch")
+            if not detail.success:
+                errors.append(f"{order_code}: detail fetch failed - {detail.error}")
+                missing_orders.append(order_code)
+                consecutive_errors += 1
+                continue
+            if not _order_payload_matches(detail.data, order_code):
+                errors.append(f"{order_code}: detail identity mismatch")
+                missing_orders.append(order_code)
+                consecutive_errors += 1
+                continue
+            waybill_url = client.get_waybill_url(detail.data)
+        else:
+            # Unpinned compatibility: list payload may carry the URL.
+            waybill_url = client.get_waybill_url(order)
+            if not waybill_url:
+                detail = client.get_order(order_code)
+                if detail.success:
+                    if not _order_payload_matches(detail.data, order_code):
+                        errors.append(f"{order_code}: detail identity mismatch")
+                        missing_orders.append(order_code)
+                        consecutive_errors += 1
+                        continue
+                    waybill_url = client.get_waybill_url(detail.data)
+                    if waybill_url and verbose:
+                        print(f"      {order_code}: Waybill URL found via detail fetch")
 
         if not waybill_url:
-            terminal_stage = _terminal_no_waybill_stage(detail.data if detail.success else order)
+            detail_payload = detail.data if detail is not None and detail.success else order
+            terminal_stage = _terminal_no_waybill_stage(detail_payload)
             if terminal_stage is not None:
                 skipped_terminal += 1
                 terminal_skipped_order_ids.add(order_code)
@@ -838,7 +984,7 @@ def download_waybills_for_store(
                         f"      {order_code}: Terminal status {terminal_stage.value}, skipping retries"
                     )
                 continue
-            nonready_stage = _nonready_no_waybill_stage(detail.data if detail.success else order)
+            nonready_stage = _nonready_no_waybill_stage(detail_payload)
             if nonready_stage is not None:
                 skipped_nonready += 1
                 nonready_skipped_order_ids.add(order_code)
@@ -851,6 +997,31 @@ def download_waybills_for_store(
             if verbose:
                 print(f"      {order_code}: No waybill URL yet")
             continue
+
+        api_resource_id = str(
+            (detail.data if detail is not None and detail.success else order).get("id") or ""
+        )
+        if pinned_provenance and output_path.exists() and _is_complete_pdf_file(output_path):
+            try:
+                cache_ok, cache_reason = _refresh_pinned_cached_waybill_binding(
+                    output_path=output_path,
+                    store_code=store_code,
+                    order_code=order_code,
+                    waybill_url=waybill_url,
+                    api_resource_id=api_resource_id,
+                    required_orders_sha256=required_orders_sha256,
+                    request_identity=pinned_request_identity,
+                )
+            except Exception as exc:
+                cache_ok, cache_reason = False, f"provenance_refresh_failed:{exc}"
+            if cache_ok:
+                already_exists += 1
+                consecutive_errors = 0
+                if verbose:
+                    print(f"      {order_code}: Exact-verified cached PDF reused")
+                continue
+            if verbose:
+                print(f"      {order_code}: Cached PDF untrusted ({cache_reason}); redownloading")
 
         if dry_run:
             downloaded += 1
@@ -869,8 +1040,19 @@ def download_waybills_for_store(
                     if verbose:
                         print(f"      {order_code}: Invalid PDF payload")
                 else:
-                    # Save PDF
-                    output_path.write_bytes(result.data)
+                    if pinned_provenance:
+                        _write_pinned_waybill_artifacts(
+                            output_path=output_path,
+                            pdf_bytes=result.data,
+                            store_code=store_code,
+                            order_code=order_code,
+                            waybill_url=waybill_url,
+                            api_resource_id=api_resource_id,
+                            required_orders_sha256=required_orders_sha256,
+                            request_identity=pinned_request_identity,
+                        )
+                    else:
+                        _write_pdf_atomically(output_path, result.data)
                     downloaded += 1
                     consecutive_errors = 0  # Reset on success
                     if verbose:
@@ -900,11 +1082,20 @@ def download_waybills_for_store(
         remaining_target_ids = sorted(target_order_ids - processed_order_ids)
         for order_code in remaining_target_ids:
             output_path = output_dir / f"{order_code}.pdf"
-            if output_path.exists():
+            if (
+                not pinned_provenance
+                and output_path.exists()
+                and _is_complete_pdf_file(output_path)
+            ):
                 already_exists += 1
                 if verbose:
                     print(f"      {order_code}: Already exists, skipping (fallback target)")
                 continue
+            if output_path.exists() and verbose:
+                print(
+                    f"      {order_code}: Existing PDF is incomplete; "
+                    "redownloading atomically (fallback target)"
+                )
 
             detail = client.get_order(order_code)
             if not detail.success:
@@ -920,6 +1111,14 @@ def download_waybills_for_store(
                     )
                     circuit_open = True
                     break
+                continue
+
+            if not _order_payload_matches(detail.data, order_code):
+                errors.append(f"{order_code}: detail identity mismatch")
+                missing_orders.append(order_code)
+                consecutive_errors += 1
+                if verbose:
+                    print(f"      {order_code}: Detail identity mismatch")
                 continue
 
             waybill_url = client.get_waybill_url(detail.data)
@@ -947,6 +1146,35 @@ def download_waybills_for_store(
                     print(f"      {order_code}: No waybill URL yet (fallback target)")
                 continue
 
+            api_resource_id = str(detail.data.get("id") or "")
+            if pinned_provenance and output_path.exists() and _is_complete_pdf_file(output_path):
+                try:
+                    cache_ok, cache_reason = _refresh_pinned_cached_waybill_binding(
+                        output_path=output_path,
+                        store_code=store_code,
+                        order_code=order_code,
+                        waybill_url=waybill_url,
+                        api_resource_id=api_resource_id,
+                        required_orders_sha256=required_orders_sha256,
+                        request_identity=pinned_request_identity,
+                    )
+                except Exception as exc:
+                    cache_ok, cache_reason = False, f"provenance_refresh_failed:{exc}"
+                if cache_ok:
+                    already_exists += 1
+                    consecutive_errors = 0
+                    if verbose:
+                        print(
+                            f"      {order_code}: Exact-verified cached PDF reused "
+                            "(fallback target)"
+                        )
+                    continue
+                if verbose:
+                    print(
+                        f"      {order_code}: Cached PDF untrusted ({cache_reason}); "
+                        "redownloading"
+                    )
+
             if dry_run:
                 downloaded += 1
                 if verbose:
@@ -963,7 +1191,19 @@ def download_waybills_for_store(
                         if verbose:
                             print(f"      {order_code}: Invalid PDF payload")
                     else:
-                        output_path.write_bytes(result.data)
+                        if pinned_provenance:
+                            _write_pinned_waybill_artifacts(
+                                output_path=output_path,
+                                pdf_bytes=result.data,
+                                store_code=store_code,
+                                order_code=order_code,
+                                waybill_url=waybill_url,
+                                api_resource_id=api_resource_id,
+                                required_orders_sha256=required_orders_sha256,
+                                request_identity=pinned_request_identity,
+                            )
+                        else:
+                            _write_pdf_atomically(output_path, result.data)
                         downloaded += 1
                         consecutive_errors = 0
                         if verbose:
@@ -1000,11 +1240,19 @@ def download_waybills_for_store(
             still_missing: list[str] = []
             for order_code in missing_orders:
                 output_path = output_dir / f"{order_code}.pdf"
-                if output_path.exists():
+                if (
+                    not pinned_provenance
+                    and output_path.exists()
+                    and _is_complete_pdf_file(output_path)
+                ):
                     already_exists += 1
                     continue
                 detail = client.get_order(order_code)
                 if detail.success:
+                    if not _order_payload_matches(detail.data, order_code):
+                        errors.append(f"{order_code}: detail identity mismatch (retry)")
+                        still_missing.append(order_code)
+                        continue
                     waybill_url = client.get_waybill_url(detail.data)
                 else:
                     waybill_url = None
@@ -1033,6 +1281,25 @@ def download_waybills_for_store(
                     if verbose:
                         print(f"      {order_code}: No waybill URL yet (retry)")
                     continue
+                api_resource_id = str(detail.data.get("id") or "")
+                if pinned_provenance and output_path.exists() and _is_complete_pdf_file(output_path):
+                    try:
+                        cache_ok, _cache_reason = _refresh_pinned_cached_waybill_binding(
+                            output_path=output_path,
+                            store_code=store_code,
+                            order_code=order_code,
+                            waybill_url=waybill_url,
+                            api_resource_id=api_resource_id,
+                            required_orders_sha256=required_orders_sha256,
+                            request_identity=pinned_request_identity,
+                        )
+                    except Exception:
+                        cache_ok = False
+                    if cache_ok:
+                        already_exists += 1
+                        if verbose:
+                            print(f"      {order_code}: Exact-verified cached PDF reused (retry)")
+                        continue
                 try:
                     result = client.download_waybill(waybill_url, timeout=download_timeout)
                     if result.success:
@@ -1042,7 +1309,19 @@ def download_waybills_for_store(
                             if verbose:
                                 print(f"      {order_code}: Invalid PDF payload")
                         else:
-                            output_path.write_bytes(result.data)
+                            if pinned_provenance:
+                                _write_pinned_waybill_artifacts(
+                                    output_path=output_path,
+                                    pdf_bytes=result.data,
+                                    store_code=store_code,
+                                    order_code=order_code,
+                                    waybill_url=waybill_url,
+                                    api_resource_id=api_resource_id,
+                                    required_orders_sha256=required_orders_sha256,
+                                    request_identity=pinned_request_identity,
+                                )
+                            else:
+                                _write_pdf_atomically(output_path, result.data)
                             downloaded += 1
                             if verbose:
                                 print(f"      {order_code}: Downloaded OK (retry)")
@@ -1089,6 +1368,8 @@ def download_all_waybills(
     all_dates: bool = False,
     exact_date: bool = False,
     fallback_crm: bool = False,
+    required_orders_file: Optional[Path] = None,
+    require_complete_api_selection: bool = False,
 ) -> dict:
     """
     Download waybills for pending orders from CRM.
@@ -1114,9 +1395,78 @@ def download_all_waybills(
     elif verbose:
         print(f"  [DRY RUN] Would create directory: {output_dir}")
     resolved_db_path = resolve_db_path(db_path)
+    required_orders = (
+        load_required_orders_file(Path(required_orders_file), target_date=target_date)
+        if required_orders_file is not None
+        else None
+    )
+
+    def _pinned_scope_error(status: str, message: str) -> dict[str, Any]:
+        return {
+            "downloaded": 0,
+            "skipped_not_target": 0,
+            "missing_waybill": len(required_orders["order_ids"]) if required_orders else 0,
+            "already_exists": 0,
+            "invalid_pdf": 0,
+            "skipped_terminal": 0,
+            "skipped_nonready": 0,
+            "skipped_missing_size": 0,
+            "errors": [message],
+            "selection_status": status,
+            "fallback_used": False,
+            "fallback_stores": [],
+            "api_errors": [],
+            "required_orders_file": required_orders["path"] if required_orders else "",
+            "required_orders_sha256": required_orders["sha256"] if required_orders else "",
+        }
+    if required_orders is not None and required_orders.get("line_scope_required"):
+        required_db_gate = validate_required_orders_against_db(
+            required_orders=required_orders,
+            db_path=resolved_db_path,
+            target_date=target_date,
+        )
+        if not required_db_gate.get("ok"):
+            return {
+                "downloaded": 0,
+                "already_exists": 0,
+                "missing_waybill": len(required_orders["order_ids"]),
+                "errors": [
+                    "Pinned required-order DB line/size gate failed: "
+                    + ",".join(required_db_gate.get("issues") or [])
+                ],
+                "selection_status": "PINNED_REQUIRED_ORDERS_DB_LINE_SCOPE_FAILED",
+                "required_orders_file": required_orders["path"],
+                "required_orders_sha256": required_orders["sha256"],
+                "required_db_gate": required_db_gate,
+            }
     storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
     if storeb_excluded:
         logger.warning(f"{EXCLUSION_LOG_LINE}: STORE-B waybill downloads are disabled for FitPack cycles.")
+
+    sync_enabled_stores = {
+        store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP
+    }
+    if required_orders is not None:
+        required_stores = set(required_orders["orders_by_store"])
+        disabled_stores = sorted(required_stores - sync_enabled_stores)
+        if disabled_stores:
+            return _pinned_scope_error(
+                "PINNED_REQUIRED_ORDERS_SYNC_DISABLED_STORE",
+                "Pinned required orders include sync-disabled stores: "
+                + ",".join(disabled_stores),
+            )
+        if storeb_excluded and any(is_storeb_store(store) for store in required_stores):
+            return _pinned_scope_error(
+                "PINNED_REQUIRED_ORDERS_STOREB_EXCLUDED",
+                "Pinned required orders conflict with active STORE-B exclusion",
+            )
+        if store_filter:
+            requested_store = normalize_api_store_code(store_filter)
+            if required_stores != {requested_store}:
+                return _pinned_scope_error(
+                    "PINNED_REQUIRED_ORDERS_STORE_FILTER_MISMATCH",
+                    "--store cannot narrow a pinned required-order scope",
+                )
 
     # Primary selection: Kaspi API planned date (freshest)
     target_orders_by_store: dict[str, set[str]] = {}
@@ -1124,7 +1474,7 @@ def download_all_waybills(
     api_errors: set[str] = set()
     source_label = None
 
-    stores = [store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP]
+    stores = sorted(sync_enabled_stores)
     if store_filter:
         store_filter_api = normalize_api_store_code(store_filter)
         if store_filter_api:
@@ -1136,27 +1486,52 @@ def download_all_waybills(
         context="waybill download store scope",
     )
 
-    for store_code in stores:
-        orders, had_error = get_target_orders_from_api(
-            store_code,
-            target_date,
-            since_days=since_days,
-            exact_date=exact_date,
-            include_overdue=not exact_date and not all_dates,
-            all_dates=all_dates,
-            verbose=verbose,
-            storeb_excluded=storeb_excluded,
-        )
-        if had_error:
-            api_errors.add(store_code)
+    # A pinned closeout request already owns exact selection.  Do not issue a
+    # broad list/date query in this mode: each required ID is read directly by
+    # ``download_waybills_for_store`` below.
+    if required_orders is None:
+        for store_code in stores:
+            orders, had_error = get_target_orders_from_api(
+                store_code,
+                target_date,
+                since_days=since_days,
+                exact_date=exact_date,
+                include_overdue=not exact_date and not all_dates,
+                all_dates=all_dates,
+                verbose=verbose,
+                storeb_excluded=storeb_excluded,
+            )
+            if had_error:
+                api_errors.add(store_code)
 
-        if orders:
-            orders_by_store[store_code] = orders
-            target_orders_by_store[store_code] = {
-                o.get('attributes', {}).get('code', '')
-                for o in orders
-                if o.get('attributes', {}).get('code', '')
-            }
+            if orders:
+                orders_by_store[store_code] = orders
+                target_orders_by_store[store_code] = {
+                    o.get('attributes', {}).get('code', '')
+                    for o in orders
+                    if o.get('attributes', {}).get('code', '')
+                }
+
+    if api_errors and require_complete_api_selection:
+        error_text = "API selection failed for stores: " + ", ".join(sorted(api_errors))
+        logger.error(error_text)
+        return {
+            'downloaded': 0,
+            'skipped_not_target': 0,
+            'missing_waybill': 0,
+            'already_exists': 0,
+            'invalid_pdf': 0,
+            'skipped_terminal': 0,
+            'skipped_nonready': 0,
+            'skipped_missing_size': 0,
+            'errors': [error_text],
+            'selection_status': 'API_ERRORS',
+            'fallback_used': False,
+            'fallback_stores': [],
+            'api_errors': sorted(api_errors),
+            'required_orders_file': str(required_orders["path"]) if required_orders else "",
+            'required_orders_sha256': str(required_orders["sha256"]) if required_orders else "",
+        }
 
     if target_orders_by_store:
         source_label = "Kaspi API (planned date)"
@@ -1164,7 +1539,7 @@ def download_all_waybills(
     # Current-batch CRM manual sizes are the only authoritative actionable target set.
     manual_orders_by_store: dict[str, set[str]] = {}
     db_orders_by_store: dict[str, set[str]] = {}
-    if fallback_crm and crm_path:
+    if required_orders is None and fallback_crm and crm_path:
         manual_orders_by_store = get_target_order_ids_from_crm(
             crm_path,
             sheet_name,
@@ -1185,7 +1560,13 @@ def download_all_waybills(
                 lookback_days=None if all_dates or exact_date else since_days,
             )
 
-    if fallback_crm and manual_orders_by_store:
+    if required_orders is not None:
+        target_selection_by_store = {
+            store: set(order_ids)
+            for store, order_ids in required_orders["orders_by_store"].items()
+        }
+        source_label = "pinned expected closeout orders"
+    elif fallback_crm and manual_orders_by_store:
         target_selection_by_store = manual_orders_by_store
     elif fallback_crm and db_orders_by_store:
         target_selection_by_store = {
@@ -1275,8 +1656,18 @@ def download_all_waybills(
             download_timeout=download_timeout,
             dry_run=dry_run,
             verbose=verbose,
-            prefetched_orders=orders_by_store.get(api_store_code),
+            prefetched_orders=(
+                [] if required_orders is not None else orders_by_store.get(api_store_code)
+            ),
             storeb_excluded=storeb_excluded,
+            required_orders_sha256=(
+                str(required_orders["sha256"]) if required_orders is not None else ""
+            ),
+            request_identity=(
+                dict(required_orders["request_identity"])
+                if required_orders is not None
+                else {}
+            ),
         )
 
         total_downloaded += result['downloaded']
@@ -1292,11 +1683,17 @@ def download_all_waybills(
         # from selection cache + downstream target counts to keep reports aligned.
         terminal_ids = set(result.get("terminal_skipped_order_ids", []))
         if terminal_ids:
-            target_selection_by_store[api_store_code] = set(order_ids) - terminal_ids
-            logger.info(
-                f"{api_store_code}: removed {len(terminal_ids)} terminal "
-                "(cancelled/returned) orders from target selection"
-            )
+            if required_orders is not None:
+                all_errors.append(
+                    f"{api_store_code}: pinned required orders became terminal during download: "
+                    + ",".join(sorted(terminal_ids))
+                )
+            else:
+                target_selection_by_store[api_store_code] = set(order_ids) - terminal_ids
+                logger.info(
+                    f"{api_store_code}: removed {len(terminal_ids)} terminal "
+                    "(cancelled/returned) orders from target selection"
+                )
         # Per-store summary
         print(f"    Downloaded: {result['downloaded']}, "
               f"Exists: {result['already_exists']}, "
@@ -1305,10 +1702,10 @@ def download_all_waybills(
               f"Terminal skipped: {result.get('skipped_terminal', 0)}, "
               f"Not-ready skipped: {result.get('skipped_nonready', 0)}")
 
-    selection_status = "API_ONLY"
-    if fallback_used:
+    selection_status = "PINNED_REQUIRED_ORDERS" if required_orders is not None else "API_ONLY"
+    if required_orders is None and fallback_used:
         selection_status = "API_PARTIAL_FALLBACK" if api_errors else "API_FALLBACK"
-    elif api_errors:
+    elif required_orders is None and api_errors:
         selection_status = "API_ERRORS"
 
     if not dry_run and output_dir.exists():
@@ -1324,6 +1721,9 @@ def download_all_waybills(
                     for store, order_ids in sorted(target_selection_by_store.items())
                     if order_ids
                 },
+                "required_orders_file": str(required_orders["path"]) if required_orders else "",
+                "required_orders_sha256": str(required_orders["sha256"]) if required_orders else "",
+                "request_identity": dict(required_orders["request_identity"]) if required_orders else {},
             }
             selection_orders_path.write_text(
                 json.dumps(cache_payload, ensure_ascii=False, indent=2) + "\n",
@@ -1359,6 +1759,8 @@ def download_all_waybills(
         'fallback_used': fallback_used,
         'fallback_stores': fallback_stores,
         'api_errors': sorted(api_errors),
+        'required_orders_file': str(required_orders["path"]) if required_orders else "",
+        'required_orders_sha256': str(required_orders["sha256"]) if required_orders else "",
     }
     if storeb_excluded:
         summary['fitpack_storeb_excluded'] = True
@@ -1440,6 +1842,17 @@ def main() -> int:
         help='Fallback to DB/CRM selection if API returns no orders'
     )
     parser.add_argument(
+        '--required-orders-file',
+        type=Path,
+        default=None,
+        help='Pinned expected_closeout_orders.json; use its exact order set downstream',
+    )
+    parser.add_argument(
+        '--require-complete-api-selection',
+        action='store_true',
+        help='Fail before any download when any scoped Kaspi API selector fails',
+    )
+    parser.add_argument(
         '--allow-partial-health',
         action=argparse.BooleanOptionalAction,
         default=_env_bool("KASPI_ALLOW_PARTIAL_WAYBILL_HEALTH", False),
@@ -1509,6 +1922,8 @@ def main() -> int:
         all_dates=args.all_dates,
         exact_date=(False if args.include_overdue else args.exact_date),
         fallback_crm=args.fallback_crm,
+        required_orders_file=args.required_orders_file,
+        require_complete_api_selection=bool(args.require_complete_api_selection),
     )
 
     # Summary
