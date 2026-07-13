@@ -83,6 +83,14 @@ failure.
   `YELLOW_NOT_DUE`: all ten labels were loaded, interval/resident checks passed,
   calendar jobs had not reached their due slots, disk was `20.494%` free, and
   alert requested/enabled/sent remained `false/false/false`.
+- A manual monitor must use the executable and manifest from the same release.
+  Until the v5 manifest is deployed into the live checkout, run the v5 monitor
+  with the v5 worktree's `config/daily_shipping_runtime.json`; that manifest
+  already points at `~/Docs/Autonomous_business`. Mixing the v5
+  monitor with the older live manifest deliberately fails on missing health
+  policies and is not an operational outage. The matched `01:57 +05` probe was
+  `YELLOW_NOT_DUE`, with 10 labels loaded, interval workers healthy, zero API
+  calls, and `20.517%` free disk.
 
 ## Post-Closeout Activation Sequence
 
