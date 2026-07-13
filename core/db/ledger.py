@@ -166,6 +166,7 @@ def add_ledger_event(
     notes: str = None,
     input_source: str = "SYSTEM",
     created_by: str = "system",
+    idempotency_key: str | None = None,
     db_path: Optional[Path] = None,
 ) -> int:
     """
@@ -228,14 +229,26 @@ def add_ledger_event(
         previous_balance = balance_row["total"] if balance_row else 0
         running_balance = previous_balance + qty_change
 
-        # Insert the event
-        cursor = conn.execute("""
-            INSERT INTO stock_ledger (
-                event_date, event_type, sku_key, sku_id, my_size, store_code,
-                qty_change, running_balance, reference_id, reference_type,
-                kaspi_offer_name, notes, input_source, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(stock_ledger)").fetchall()
+        }
+        fields = [
+            "event_date",
+            "event_type",
+            "sku_key",
+            "sku_id",
+            "my_size",
+            "store_code",
+            "qty_change",
+            "running_balance",
+            "reference_id",
+            "reference_type",
+            "kaspi_offer_name",
+            "notes",
+            "input_source",
+            "created_by",
+        ]
+        values = [
             event_date.isoformat() if isinstance(event_date, date) else event_date,
             event_type,
             sku_key,
@@ -250,7 +263,19 @@ def add_ledger_event(
             notes,
             input_source,
             created_by,
-        ))
+        ]
+        if idempotency_key is not None:
+            if "idempotency_key" not in columns:
+                raise RuntimeError(
+                    "stock_ledger.idempotency_key is required for an idempotent ledger write"
+                )
+            fields.append("idempotency_key")
+            values.append(idempotency_key)
+        cursor = conn.execute(
+            f"INSERT INTO stock_ledger ({', '.join(fields)}) "
+            f"VALUES ({', '.join('?' for _ in fields)})",
+            values,
+        )
 
         return cursor.lastrowid
 

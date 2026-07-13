@@ -16,6 +16,7 @@ Tables used:
 
 import sqlite3
 import re
+import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -622,6 +623,124 @@ def get_unmapped_offers(
     return sorted(unmapped.values(), key=lambda x: -x["order_count"])
 
 
+def _active_stock_quarantine_pairs(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    """Return source store/order pairs whose existing policy excludes stock."""
+
+    pairs: set[tuple[str, str]] = set()
+    for table in (
+        "fact_order_entry_header_only_source_gap_quarantine",
+        "fact_order_entry_product_identity_quarantine",
+    ):
+        if not _table_exists(conn, table):
+            continue
+        columns = {
+            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        required = {
+            "store_code",
+            "order_id",
+            "active_flag",
+            "publication_exclusion_required",
+            "product_stock_excluded",
+        }
+        if not required.issubset(columns):
+            continue
+        for row in conn.execute(
+            f"""
+            SELECT store_code, order_id
+            FROM {table}
+            WHERE COALESCE(active_flag, 1) = 1
+              AND COALESCE(publication_exclusion_required, 0) = 1
+              AND COALESCE(product_stock_excluded, 0) = 1
+            """
+        ).fetchall():
+            pairs.add(
+                (
+                    normalize_store_code(str(row["store_code"] or "UNIVERSAL")),
+                    str(row["order_id"] or "").strip(),
+                )
+            )
+    return pairs
+
+
+def _ledger_event_idempotency_key(event: dict) -> str:
+    identity = "|".join(
+        [
+            "sales-ingest-ledger-v2",
+            str(event["event_type"]),
+            str(event["reference_id"]),
+            str(event["event_date"]),
+            str(event["sku_key"]),
+            str(event["sku_id"]),
+            str(event["my_size"]),
+            str(event.get("kaspi_offer_name") or ""),
+            str(event["store_code"]),
+            str(event["qty_change"]),
+        ]
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _ledger_event_state(event: dict, *, db_path: Path) -> str:
+    """Classify one expected event as missing, exact, or conflicting."""
+
+    event_date = event["event_date"]
+    if isinstance(event_date, date):
+        event_date = event_date.isoformat()
+    with get_db(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT event_date, sku_key, sku_id, my_size, qty_change,
+                   kaspi_offer_name
+            FROM stock_ledger
+            WHERE UPPER(COALESCE(event_type, '')) = UPPER(?)
+              AND CAST(reference_id AS TEXT) = ?
+              AND UPPER(COALESCE(reference_type, '')) = 'SALE'
+              AND sku_id = ?
+              AND UPPER(COALESCE(store_code, 'UNIVERSAL')) = ?
+              AND COALESCE(kaspi_offer_name, '') = COALESCE(?, '')
+            ORDER BY ledger_id
+            """,
+            (
+                event["event_type"],
+                str(event["reference_id"]),
+                event["sku_id"],
+                str(event["store_code"]).upper(),
+                event.get("kaspi_offer_name"),
+            ),
+        ).fetchall()
+    if not rows:
+        return "MISSING"
+    exact = [
+        row
+        for row in rows
+        if str(row["event_date"] or "") == str(event_date)
+        and str(row["sku_key"] or "") == str(event["sku_key"])
+        and str(row["sku_id"] or "") == str(event["sku_id"])
+        and str(row["my_size"] or "").strip().upper()
+        == str(event["my_size"]).strip().upper()
+        and int(row["qty_change"] or 0) == int(event["qty_change"])
+    ]
+    if len(rows) == 1 and len(exact) == 1:
+        return "EXACT"
+    return "CONFLICT"
+
+
+def _queue_ledger_event(
+    pending: list[dict],
+    *,
+    quarantines: set[tuple[str, str]],
+    source_store_code: str,
+    event: dict,
+    result: dict,
+) -> None:
+    pair = (normalize_store_code(source_store_code), str(event["reference_id"]).strip())
+    if pair in quarantines:
+        result["ledger_quarantined"] += 1
+        return
+    pending.append(event)
+
+
 def ingest_sales(
     xlsx_path: str,
     sheet_name: str = "SALES_KSP_CRM_1",
@@ -665,6 +784,7 @@ def ingest_sales(
         "returns_processed": 0,
         "unmapped": [],
         "ledger_events": 0,
+        "ledger_quarantined": 0,
         "errors": [],
     }
 
@@ -672,6 +792,7 @@ def ingest_sales(
     pending_ledger_events = []
 
     with get_db(db_path) as conn:
+        active_stock_quarantines = _active_stock_quarantine_pairs(conn)
         for rec in records:
             order_id = rec["order_id"]
             store_code = rec["store_code"]
@@ -726,18 +847,26 @@ def ingest_sales(
 
                     # Queue RETURN event to ledger (stock increase)
                     if apply_to_ledger:
-                        pending_ledger_events.append({
+                        _queue_ledger_event(
+                            pending_ledger_events,
+                            quarantines=active_stock_quarantines,
+                            source_store_code=store_code,
+                            result=result,
+                            event={
                             "event_type": "RETURN",
+                            "sku_key": sku_key,
                             "sku_id": sku_id,
+                            "my_size": my_size,
                             "qty_change": rec["quantity"],
                             "event_date": date.today(),
-                            "store_code": store_code,
+                            "store_code": inventory_pool_store_code(),
                             "reference_id": order_id,
                             "reference_type": "SALE",
                             "kaspi_offer_name": kaspi_offer_name,
                             "notes": "Return detected on re-ingest",
                             "input_source": "IMPORT",
-                        })
+                            },
+                        )
 
                     result["returns_processed"] += 1
                 else:
@@ -775,44 +904,68 @@ def ingest_sales(
                 if apply_to_ledger:
                     if rec["return_flag"]:
                         # This is a historical return - add both SALE and RETURN events
-                        pending_ledger_events.append({
+                        _queue_ledger_event(
+                            pending_ledger_events,
+                            quarantines=active_stock_quarantines,
+                            source_store_code=store_code,
+                            result=result,
+                            event={
                             "event_type": "SALE",
+                            "sku_key": sku_key,
                             "sku_id": sku_id,
+                            "my_size": my_size,
                             "qty_change": -rec["quantity"],
                             "event_date": rec["order_date"],
-                            "store_code": store_code,
+                            "store_code": inventory_pool_store_code(),
                             "reference_id": order_id,
                             "reference_type": "SALE",
                             "kaspi_offer_name": kaspi_offer_name,
                             "notes": "Historical sale with return",
                             "input_source": "IMPORT",
-                        })
-                        pending_ledger_events.append({
+                            },
+                        )
+                        _queue_ledger_event(
+                            pending_ledger_events,
+                            quarantines=active_stock_quarantines,
+                            source_store_code=store_code,
+                            result=result,
+                            event={
                             "event_type": "RETURN",
+                            "sku_key": sku_key,
                             "sku_id": sku_id,
+                            "my_size": my_size,
                             "qty_change": rec["quantity"],
                             "event_date": rec["order_date"],
-                            "store_code": store_code,
+                            "store_code": inventory_pool_store_code(),
                             "reference_id": order_id,
                             "reference_type": "SALE",
                             "kaspi_offer_name": kaspi_offer_name,
                             "notes": "Historical return",
                             "input_source": "IMPORT",
-                        })
+                            },
+                        )
                         result["returns_processed"] += 1
                     else:
                         # Normal sale - SALE event (stock decrease)
-                        pending_ledger_events.append({
+                        _queue_ledger_event(
+                            pending_ledger_events,
+                            quarantines=active_stock_quarantines,
+                            source_store_code=store_code,
+                            result=result,
+                            event={
                             "event_type": "SALE",
+                            "sku_key": sku_key,
                             "sku_id": sku_id,
+                            "my_size": my_size,
                             "qty_change": -rec["quantity"],
                             "event_date": rec["order_date"],
-                            "store_code": store_code,
+                            "store_code": inventory_pool_store_code(),
                             "reference_id": order_id,
                             "reference_type": "SALE",
                             "kaspi_offer_name": kaspi_offer_name,
                             "input_source": "IMPORT",
-                        })
+                            },
+                        )
 
             except sqlite3.IntegrityError as e:
                 # Duplicate - should be caught by check above
@@ -822,23 +975,32 @@ def ingest_sales(
 
     # Now add ledger events outside the main transaction
     for event in pending_ledger_events:
-        try:
-            add_ledger_event(
-                event_type=event["event_type"],
-                sku_id=event["sku_id"],
-                qty_change=event["qty_change"],
-                event_date=event["event_date"],
-                store_code=inventory_pool_store_code(),
-                reference_id=event["reference_id"],
-                reference_type=event["reference_type"],
-                kaspi_offer_name=event.get("kaspi_offer_name"),
-                notes=event.get("notes"),
-                input_source=event["input_source"],
-                db_path=db_path,
+        state = _ledger_event_state(event, db_path=db_path)
+        if state == "EXACT":
+            continue
+        if state != "MISSING":
+            raise RuntimeError(
+                "stock ledger identity exists with duplicate or mismatched payload: "
+                f"event_type={event['event_type']} reference_id={event['reference_id']} "
+                f"sku_id={event['sku_id']} offer={event.get('kaspi_offer_name')!r}"
             )
-            result["ledger_events"] += 1
-        except Exception as e:
-            result["errors"].append(f"Ledger event for {event['sku_id']}: {str(e)}")
+        add_ledger_event(
+            event_type=event["event_type"],
+            sku_key=event["sku_key"],
+            sku_id=event["sku_id"],
+            my_size=event["my_size"],
+            qty_change=event["qty_change"],
+            event_date=event["event_date"],
+            store_code=event["store_code"],
+            reference_id=event["reference_id"],
+            reference_type=event["reference_type"],
+            kaspi_offer_name=event.get("kaspi_offer_name"),
+            notes=event.get("notes"),
+            input_source=event["input_source"],
+            idempotency_key=_ledger_event_idempotency_key(event),
+            db_path=db_path,
+        )
+        result["ledger_events"] += 1
 
     # Log audit entry for batch import
     if result["inserted"] > 0:

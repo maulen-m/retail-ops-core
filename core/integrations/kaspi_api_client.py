@@ -611,6 +611,7 @@ class KaspiAPIClient:
         signature_required: Optional[bool] = None,
         include_orders: Optional[str] = None,
         max_pages: int = 100,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         List all orders with pagination handling.
@@ -626,6 +627,23 @@ class KaspiAPIClient:
         """
         all_orders = []
         page = 0
+        pages_fetched = 0
+        expected_page_count: int | None = None
+        expected_total_count: int | None = None
+
+        def _meta_count(meta: dict, field: str) -> int:
+            value = meta.get(field)
+            if isinstance(value, bool):
+                raise KaspiAPIError(f"Invalid pagination meta.{field}: {value!r}")
+            if isinstance(value, int):
+                parsed = value
+            elif isinstance(value, str) and value.strip().isdigit():
+                parsed = int(value.strip())
+            else:
+                raise KaspiAPIError(f"Invalid pagination meta.{field}: {value!r}")
+            if parsed < 0:
+                raise KaspiAPIError(f"Invalid pagination meta.{field}: {parsed}")
+            return parsed
 
         while page < max_pages:
             response = self.list_orders(
@@ -641,19 +659,112 @@ class KaspiAPIClient:
             )
 
             if not response.success:
-                logger.error(f"Failed to fetch page {page}: {response.error}")
+                message = f"Failed to fetch page {page}: {response.error}"
+                logger.error(message)
+                if raise_on_error:
+                    raise KaspiAPIError(message)
                 break
 
-            data = response.data.get('data', [])
-            if not data:
+            payload = response.data
+            if not isinstance(payload, dict):
+                message = f"Invalid page {page} payload: expected object"
+                logger.error(message)
+                if raise_on_error:
+                    raise KaspiAPIError(message)
                 break
+            data = payload.get('data', [])
+            if not isinstance(data, list):
+                message = f"Invalid page {page} data: expected list"
+                logger.error(message)
+                if raise_on_error:
+                    raise KaspiAPIError(message)
+                break
+
+            if raise_on_error:
+                meta = payload.get('meta')
+                if not isinstance(meta, dict):
+                    raise KaspiAPIError(f"Missing pagination meta on page {page}")
+                page_count = _meta_count(meta, 'pageCount')
+                total_count = _meta_count(meta, 'totalCount')
+                if expected_page_count is None:
+                    if total_count == 0 and page_count not in {0, 1}:
+                        raise KaspiAPIError(
+                            "Inconsistent pagination meta: "
+                            f"pageCount={page_count} totalCount={total_count}"
+                        )
+                    if total_count > 0 and page_count == 0:
+                        raise KaspiAPIError(
+                            "Inconsistent pagination meta: "
+                            f"pageCount={page_count} totalCount={total_count}"
+                        )
+                    if page_count > total_count and total_count > 0:
+                        raise KaspiAPIError(
+                            "Inconsistent pagination meta: "
+                            f"pageCount={page_count} totalCount={total_count}"
+                        )
+                    if page_count > max_pages:
+                        raise KaspiAPIError(
+                            f"Advertised pageCount {page_count} exceeds safety limit {max_pages}"
+                        )
+                    expected_page_count = page_count
+                    expected_total_count = total_count
+                elif (
+                    page_count != expected_page_count
+                    or total_count != expected_total_count
+                ):
+                    raise KaspiAPIError(
+                        f"Pagination meta changed on page {page}: "
+                        f"expected pageCount={expected_page_count} totalCount={expected_total_count}; "
+                        f"observed pageCount={page_count} totalCount={total_count}"
+                    )
+                if expected_total_count > 0 and expected_page_count > 0 and not data:
+                    raise KaspiAPIError(
+                        f"Pagination page-count mismatch: advertised page {page} is empty"
+                    )
 
             all_orders.extend(data)
+            if (
+                raise_on_error
+                and expected_total_count is not None
+                and len(all_orders) > expected_total_count
+            ):
+                raise KaspiAPIError(
+                    f"Pagination total-count mismatch: expected {expected_total_count} rows, "
+                    f"observed at least {len(all_orders)}"
+                )
+            pages_fetched += 1
             page += 1
 
+            if raise_on_error:
+                if expected_page_count == 0 or page >= expected_page_count:
+                    break
+                continue
+
             # Check if there are more pages
+            if not data:
+                break
             if len(data) < 100:
                 break
+        else:
+            message = f"Pagination exceeded safety limit of {max_pages} pages"
+            logger.error(message)
+            if raise_on_error:
+                raise KaspiAPIError(message)
+
+        if raise_on_error:
+            if expected_page_count is None or expected_total_count is None:
+                raise KaspiAPIError("Pagination metadata was not established")
+            expected_fetches = expected_page_count if expected_page_count > 0 else 1
+            if pages_fetched != expected_fetches:
+                raise KaspiAPIError(
+                    f"Pagination page-count mismatch: expected {expected_fetches} fetches, "
+                    f"observed {pages_fetched}"
+                )
+            if len(all_orders) != expected_total_count:
+                raise KaspiAPIError(
+                    f"Pagination total-count mismatch: expected {expected_total_count} rows, "
+                    f"observed {len(all_orders)}"
+                )
 
         logger.info(f"Fetched {len(all_orders)} orders across {page} pages")
         return all_orders
@@ -679,11 +790,33 @@ class KaspiAPIClient:
         # Extract single order from list response
         if result.success and isinstance(result.data, dict):
             orders = result.data.get('data', [])
-            if orders:
+            matching_orders = []
+            for order in orders if isinstance(orders, list) else []:
+                if not isinstance(order, dict):
+                    continue
+                attrs = order.get('attributes') if isinstance(order.get('attributes'), dict) else order
+                observed_code = str(
+                    attrs.get('code') or attrs.get('orderCode') or ''
+                ).strip()
+                if observed_code == str(order_code).strip():
+                    matching_orders.append(order)
+            if len(matching_orders) == 1:
                 return APIResponse(
                     success=True,
-                    data=orders[0],
+                    data=matching_orders[0],
                     status_code=result.status_code
+                )
+            if len(matching_orders) > 1:
+                return APIResponse(
+                    success=False,
+                    error=f"Order {order_code} identity is ambiguous ({len(matching_orders)} matches)",
+                    status_code=result.status_code,
+                )
+            if orders:
+                return APIResponse(
+                    success=False,
+                    error=f"Order {order_code} identity mismatch in filtered response",
+                    status_code=result.status_code,
                 )
             return APIResponse(
                 success=False,
