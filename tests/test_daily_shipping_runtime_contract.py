@@ -67,6 +67,14 @@ def test_ci_dependencies_pin_production_compatible_pdf_and_browser_apis() -> Non
     assert "playwright==1.58.0" in requirements
 
 
+def test_shipping_release_workflow_installs_docs_lint_dependency() -> None:
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "daily-shipping-release.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "apt-get install --yes ripgrep" in workflow
+
+
 def test_generated_markdown_is_exactly_manifest_derived() -> None:
     manifest = load_manifest(MANIFEST_PATH)
     expected = render_runtime_markdown(manifest)
