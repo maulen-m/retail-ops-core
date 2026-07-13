@@ -10,7 +10,7 @@ import subprocess
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, MutableMapping
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -224,16 +224,19 @@ def _load_repo_dotenv() -> None:
     load_dotenv(DEFAULT_DOTENV_PATH, override=False)
 
 
-def _strip_shadow_write_gates() -> list[str]:
+def _strip_shadow_write_gates(
+    environment: MutableMapping[str, str] | None = None,
+) -> list[str]:
     """Remove every local write enable before a receiver shadow can run."""
 
+    target = os.environ if environment is None else environment
     removed = sorted(
         key
-        for key in os.environ
+        for key in target
         if key.startswith("ENABLE_") or key == AUTOMATION_LOCK_HELD_ENV
     )
     for key in removed:
-        os.environ.pop(key, None)
+        target.pop(key, None)
     return removed
 
 

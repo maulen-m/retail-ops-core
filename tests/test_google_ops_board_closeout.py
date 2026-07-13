@@ -168,25 +168,25 @@ def test_preserved_board_mode_cannot_be_combined_with_apply(tmp_path: Path) -> N
     assert exc_info.value.code == 2
 
 
-def test_shadow_mode_strips_write_gates_after_dotenv_load(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ENABLE_GOOGLE_OPS_BOARD_WRITE", "1")
-    monkeypatch.setenv("ENABLE_KASPI_SHIP_WRITE", "1")
-    monkeypatch.setenv(closeout_mod.AUTOMATION_LOCK_HELD_ENV, "1")
-    monkeypatch.setenv("KASPI_TOKEN_ACMEWEAR", "protected-runtime-value")
+def test_shadow_mode_strips_write_gates_after_dotenv_load() -> None:
+    environment = {
+        "ENABLE_GOOGLE_OPS_BOARD_WRITE": "1",
+        "ENABLE_KASPI_SHIP_WRITE": "1",
+        closeout_mod.AUTOMATION_LOCK_HELD_ENV: "1",
+        "KASPI_TOKEN_ACMEWEAR": "protected-runtime-value",
+    }
 
-    removed = closeout_mod._strip_shadow_write_gates()
+    removed = closeout_mod._strip_shadow_write_gates(environment)
 
     assert removed == [
         closeout_mod.AUTOMATION_LOCK_HELD_ENV,
         "ENABLE_GOOGLE_OPS_BOARD_WRITE",
         "ENABLE_KASPI_SHIP_WRITE",
     ]
-    assert "ENABLE_GOOGLE_OPS_BOARD_WRITE" not in closeout_mod.os.environ
-    assert "ENABLE_KASPI_SHIP_WRITE" not in closeout_mod.os.environ
-    assert closeout_mod.AUTOMATION_LOCK_HELD_ENV not in closeout_mod.os.environ
-    assert closeout_mod.os.environ["KASPI_TOKEN_ACMEWEAR"] == "protected-runtime-value"
+    assert "ENABLE_GOOGLE_OPS_BOARD_WRITE" not in environment
+    assert "ENABLE_KASPI_SHIP_WRITE" not in environment
+    assert closeout_mod.AUTOMATION_LOCK_HELD_ENV not in environment
+    assert environment["KASPI_TOKEN_ACMEWEAR"] == "protected-runtime-value"
 
 
 def test_stage_runner_enforces_named_timeout_and_persists_timeout_report(
