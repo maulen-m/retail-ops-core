@@ -54,6 +54,10 @@ failure.
   on 2026-07-13: ten schedulers passed, disk was `20.613%` free, the API ledger
   had `707` valid rows, and inactive recovery freshness was reported as
   `NOT_ACTIVE`. No alert was requested or sent.
+- The 2026-07-14 `00:08` rollover probe correctly returned
+  `YELLOW_NOT_DUE`: all ten labels were loaded, interval/resident checks passed,
+  calendar jobs had not reached their due slots, disk was `20.494%` free, and
+  alert requested/enabled/sent remained `false/false/false`.
 
 ## Post-Closeout Activation Sequence
 
@@ -80,13 +84,13 @@ employee workflow:
 
 ## Global Test Debt
 
-The bounded shipping release gate is hermetic and GREEN. The historical full
-suite has 110 inherited failures in both the untouched v1 release clone and
-this branch. They depend mainly on ignored LINE31 evidence, mutable economics
-fixtures, old absolute paths, and external runtime state. Do not copy private
-databases or historical evidence into Git to make those tests pass. Repair
-those suites by replacing hidden runtime dependencies with declared fixtures,
-one domain at a time.
+The bounded shipping release gate is hermetic and GREEN. Broad GitHub run
+`29276852849` retained the v2.2 baseline's `145` inherited failures while
+passing tests increased from `4074` to `4097`. They depend mainly on ignored
+LINE31 evidence, mutable economics fixtures, old absolute paths, and external
+runtime state. Do not copy private databases or historical evidence into Git
+to make those tests pass. Repair those suites by replacing hidden runtime
+dependencies with declared fixtures, one domain at a time.
 
 ## Rollback
 
