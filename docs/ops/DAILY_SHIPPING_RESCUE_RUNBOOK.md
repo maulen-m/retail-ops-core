@@ -60,3 +60,5 @@ Before a future cutover, prove all of the following in one packet: no active clo
 3. Restore the attached-drive mirror and add an encrypted truly off-machine copy.
 4. Promote M5 only after seven consecutive M1/release-green days or a separately approved accelerated cutover packet.
 5. Benchmark cloud compute after local reproducibility is proven; cloud compute is not a prerequisite for tomorrow's shipping.
+
+Encrypted off-machine recovery is documented in `docs/ops/ENCRYPTED_OFFSITE_RECOVERY.md`.
