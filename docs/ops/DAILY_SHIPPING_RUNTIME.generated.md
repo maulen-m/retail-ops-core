@@ -17,6 +17,7 @@
 - Recovery retention: `24h` dense, `14` daily, `8` weekly, `12` monthly
 - Kaspi API call budget: warning at `1500`, hard alert at `3000` daily calls; state `observe_only_until_shadow_validated`
 - Runtime-log maintenance: `candidate_not_installed`, rotate above `10485760` bytes
+- Health monitor: `candidate_not_installed`, every `300` seconds; manifest-driven heartbeat, disk, recovery, and API-budget checks
 
 ## Workflow Stages
 

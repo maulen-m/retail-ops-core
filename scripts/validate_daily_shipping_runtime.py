@@ -204,6 +204,36 @@ def build_log_maintenance_plist_payload(manifest: dict[str, Any]) -> dict[str, A
     )
 
 
+def build_health_monitor_plist_payload(manifest: dict[str, Any]) -> dict[str, Any]:
+    monitor = manifest.get("observability", {}).get("health_monitor") or {}
+    runtime_root = Path(str(manifest.get("project_root") or PROJECT_ROOT)).expanduser()
+    payload = {
+        "Label": str(monitor["label"]),
+        "ProgramArguments": [
+            "${PROJECT_ROOT}/.venv/bin/python",
+            "${PROJECT_ROOT}/scripts/monitor_daily_shipping_health.py",
+            "--strict",
+            "--send-alert",
+            "--json",
+        ],
+        "WorkingDirectory": "${PROJECT_ROOT}",
+        "EnvironmentVariables": {
+            "ENABLE_DAILY_SHIPPING_HEALTH_ALERTS": "1",
+            "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+        "StartInterval": int(monitor["interval_seconds"]),
+        "RunAtLoad": False,
+        "KeepAlive": False,
+        "StandardOutPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_health_stdout.log",
+        "StandardErrorPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_health_stderr.log",
+    }
+    return _expand(
+        payload,
+        project_root=runtime_root,
+        runtime_home=_runtime_home(manifest),
+    )
+
+
 def _schedule_text(schedule: dict[str, Any]) -> str:
     if schedule.get("type") == "interval":
         return f"every {int(schedule['seconds'])} seconds"
@@ -243,6 +273,10 @@ def render_runtime_markdown(manifest: dict[str, Any]) -> str:
         "- Runtime-log maintenance: "
         f"`{manifest['observability']['log_maintenance']['activation_state']}`, rotate above "
         f"`{manifest['observability']['log_maintenance']['max_bytes']}` bytes",
+        "- Health monitor: "
+        f"`{manifest['observability']['health_monitor']['activation_state']}`, every "
+        f"`{manifest['observability']['health_monitor']['interval_seconds']}` seconds; "
+        "manifest-driven heartbeat, disk, recovery, and API-budget checks",
         "",
         "## Workflow Stages",
         "",
@@ -327,6 +361,17 @@ def write_runtime_surfaces(manifest: dict[str, Any], *, project_root: Path) -> l
         )
     )
     written.append(str(log_target))
+    health_monitor = manifest.get("observability", {}).get("health_monitor") or {}
+    health_target = Path(project_root) / str(health_monitor["candidate_plist"])
+    health_target.parent.mkdir(parents=True, exist_ok=True)
+    health_target.write_bytes(
+        plistlib.dumps(
+            build_health_monitor_plist_payload(manifest),
+            fmt=plistlib.FMT_XML,
+            sort_keys=False,
+        )
+    )
+    written.append(str(health_target))
     doc_path = Path(project_root) / str(manifest["generated_doc"])
     doc_path.parent.mkdir(parents=True, exist_ok=True)
     doc_path.write_text(render_runtime_markdown(manifest), encoding="utf-8")
@@ -466,6 +511,33 @@ def validate_daily_shipping_runtime(
 
     for scheduler in schedulers:
         label = str(scheduler.get("label") or "")
+        health = scheduler.get("health")
+        if not isinstance(health, dict) or not str(health.get("mode") or ""):
+            errors.append(f"scheduler missing health policy: {label}")
+        else:
+            mode = str(health.get("mode") or "")
+            schedule = scheduler.get("schedule") or {}
+            if mode not in {
+                "loaded",
+                "loaded_exit_zero",
+                "running",
+                "interval_log",
+                "calendar_log",
+            }:
+                errors.append(f"scheduler has invalid health mode for {label}: {mode}")
+            elif mode == "calendar_log":
+                if schedule.get("type") != "calendar":
+                    errors.append(f"calendar_log health requires calendar schedule: {label}")
+                if int(health.get("grace_minutes") or 0) < 1:
+                    errors.append(f"calendar_log health requires positive grace_minutes: {label}")
+            elif mode == "interval_log":
+                if schedule.get("type") != "interval":
+                    errors.append(f"interval_log health requires interval schedule: {label}")
+                max_age = int(health.get("max_age_seconds") or 0)
+                if max_age < int(schedule.get("seconds") or 0):
+                    errors.append(f"interval_log max_age_seconds is too small: {label}")
+            elif mode == "running" and schedule.get("type") != "interval":
+                errors.append(f"running health requires interval schedule: {label}")
         try:
             expected = build_plist_payload(manifest, scheduler, project_root)
         except (KeyError, ValueError, DailyShippingRuntimeError) as exc:
@@ -692,6 +764,55 @@ def validate_daily_shipping_runtime(
                         )
     except (KeyError, TypeError, ValueError, DailyShippingRuntimeError) as exc:
         errors.append(f"invalid log-maintenance definition: {exc}")
+
+    health_monitor = manifest.get("observability", {}).get("health_monitor") or {}
+    try:
+        for key in ("manager", "candidate_plist"):
+            relative = Path(str(health_monitor[key]))
+            if not (project_root / relative).exists():
+                errors.append(f"missing health-monitor surface: {relative}")
+        interval_seconds = int(health_monitor["interval_seconds"])
+        if interval_seconds < 60:
+            errors.append("health-monitor interval must be at least 60 seconds")
+        recovery_max_age = int(health_monitor["recovery_max_age_seconds"])
+        if recovery_max_age < int(manifest["recovery"]["rpo_minutes"]) * 60:
+            errors.append("health-monitor recovery freshness is shorter than the declared RPO")
+        if int(health_monitor["repeat_alert_seconds"]) < interval_seconds:
+            errors.append("health-monitor repeat alert window is shorter than its interval")
+        state_root = str(health_monitor["state_root"])
+        if not state_root.startswith("${HOME}/Library/Application Support/"):
+            errors.append("health-monitor state_root must use owner-only Application Support")
+        expected_health = build_health_monitor_plist_payload(manifest)
+        health_plist = project_root / str(health_monitor["candidate_plist"])
+        if health_plist.exists():
+            actual_health = plistlib.loads(health_plist.read_bytes())
+            differences = _field_differences(
+                _normalize_plist_for_compare(expected_health),
+                _normalize_plist_for_compare(actual_health),
+            )
+            if differences:
+                errors.append(f"health-monitor candidate plist drift: {', '.join(differences)}")
+        if check_installed:
+            installed_health = installed_directory / f"{health_monitor['label']}.plist"
+            activation_state = str(health_monitor.get("activation_state") or "")
+            if activation_state == "candidate_not_installed" and installed_health.exists():
+                errors.append("health-monitor candidate installed before canonical activation")
+            elif activation_state.startswith("active_"):
+                if not installed_health.exists():
+                    errors.append("active health-monitor scheduler is not installed")
+                else:
+                    actual_installed = plistlib.loads(installed_health.read_bytes())
+                    differences = _field_differences(
+                        _normalize_plist_for_compare(expected_health),
+                        _normalize_plist_for_compare(actual_installed),
+                    )
+                    if differences:
+                        errors.append(
+                            "installed health-monitor plist drift: "
+                            + ", ".join(differences)
+                        )
+    except (KeyError, TypeError, ValueError, DailyShippingRuntimeError) as exc:
+        errors.append(f"invalid health-monitor definition: {exc}")
 
     if check_generated_doc:
         path = project_root / str(manifest["generated_doc"])

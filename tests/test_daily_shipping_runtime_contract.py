@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from scripts.validate_daily_shipping_runtime import (
+    build_health_monitor_plist_payload,
     build_plist_payload,
     build_recovery_plist_payload,
     build_recovery_retention_plist_payload,
@@ -83,6 +84,84 @@ def test_shipping_release_gate_covers_order_import_scheduler_contracts() -> None
 
     assert "test_kaspi_import_scheduler_contract.py" in gate
     assert "test_run_kaspi_import_scheduler.py" in gate
+
+
+def test_shipping_release_gate_covers_manifest_driven_health_monitor() -> None:
+    gate = (PROJECT_ROOT / "scripts" / "run_daily_shipping_release_gate.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "test_monitor_daily_shipping_health.py" in gate
+
+
+def test_health_monitor_candidate_uses_owner_only_state_and_is_not_active() -> None:
+    manifest = load_manifest(MANIFEST_PATH)
+    monitor = manifest["observability"]["health_monitor"]
+    payload = build_health_monitor_plist_payload(manifest)
+
+    assert monitor["activation_state"] == "candidate_not_installed"
+    assert monitor["state_root"].startswith("${HOME}/Library/Application Support/")
+    assert payload["Label"] == "com.example.daily-shipping-health-monitor"
+    assert payload["StartInterval"] == 300
+    assert "--send-alert" in payload["ProgramArguments"]
+    assert payload["EnvironmentVariables"]["ENABLE_DAILY_SHIPPING_HEALTH_ALERTS"] == "1"
+
+
+def test_runtime_rejects_missing_scheduler_health_policy(tmp_path: Path) -> None:
+    manifest = load_manifest(MANIFEST_PATH)
+    manifest["schedulers"][0].pop("health")
+    manifest_path = tmp_path / "manifest.json"
+    _write_json(manifest_path, manifest)
+
+    report = validate_daily_shipping_runtime(
+        manifest_path=manifest_path,
+        project_root=PROJECT_ROOT,
+        check_installed=False,
+        check_repo_plists=False,
+        check_generated_doc=False,
+    )
+
+    assert report["ok"] is False
+    assert any("missing health policy" in item for item in report["errors"])
+
+
+def test_runtime_rejects_premature_health_monitor_installation(tmp_path: Path) -> None:
+    manifest = load_manifest(MANIFEST_PATH)
+    installed = tmp_path / "LaunchAgents"
+    installed.mkdir()
+    monitor = manifest["observability"]["health_monitor"]
+    (installed / f"{monitor['label']}.plist").write_bytes(
+        plistlib.dumps(build_health_monitor_plist_payload(manifest))
+    )
+
+    report = validate_daily_shipping_runtime(
+        manifest_path=MANIFEST_PATH,
+        project_root=PROJECT_ROOT,
+        installed_dir=installed,
+        check_installed=True,
+        check_generated_doc=True,
+        check_credentials=False,
+    )
+
+    assert report["ok"] is False
+    assert "health-monitor candidate installed before canonical activation" in report["errors"]
+
+
+def test_runtime_detects_health_monitor_candidate_plist_drift(tmp_path: Path) -> None:
+    manifest = load_manifest(MANIFEST_PATH)
+    manifest["observability"]["health_monitor"]["interval_seconds"] = 301
+    manifest_path = tmp_path / "manifest.json"
+    _write_json(manifest_path, manifest)
+
+    report = validate_daily_shipping_runtime(
+        manifest_path=manifest_path,
+        project_root=PROJECT_ROOT,
+        check_installed=False,
+        check_generated_doc=False,
+    )
+
+    assert report["ok"] is False
+    assert any("health-monitor candidate plist drift" in item for item in report["errors"])
 
 
 def test_generated_markdown_is_exactly_manifest_derived() -> None:

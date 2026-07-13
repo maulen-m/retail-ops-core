@@ -92,6 +92,16 @@
       "hard_alert_calls": 3000,
       "enforcement_state": "observe_only_until_shadow_validated"
     },
+    "health_monitor": {
+      "manager": "scripts/monitor_daily_shipping_health.py",
+      "candidate_plist": "config/com.example.daily-shipping-health-monitor.plist",
+      "label": "com.example.daily-shipping-health-monitor",
+      "interval_seconds": 300,
+      "state_root": "${HOME}/Library/Application Support/Autonomous_business/shipping_health",
+      "recovery_max_age_seconds": 1800,
+      "repeat_alert_seconds": 21600,
+      "activation_state": "candidate_not_installed"
+    },
     "log_maintenance": {
       "manager": "scripts/rotate_daily_shipping_logs.py",
       "candidate_plist": "config/com.example.daily-shipping-log-maintenance.plist",
@@ -154,6 +164,7 @@
         "type": "calendar",
         "times": ["11:00", "15:02", "16:01", "17:02"]
       },
+      "health": {"mode": "calendar_log", "grace_minutes": 30},
       "environment_variables": {
         "CRM_IMPORT_TIMEOUT_SEC": "1500",
         "KASPI_LOOKBACK_DAYS_LONG": "14",
@@ -181,6 +192,7 @@
           "17:01", "17:11"
         ]
       },
+      "health": {"mode": "calendar_log", "grace_minutes": 20},
       "environment_variables": {
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
@@ -201,6 +213,7 @@
         "${PROJECT_ROOT}/scripts/run_google_ops_board_prewindow_health_scheduler.py"
       ],
       "schedule": {"type": "calendar", "times": ["13:45"]},
+      "health": {"mode": "calendar_log", "grace_minutes": 20},
       "environment_variables": {
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
@@ -221,6 +234,7 @@
         "type": "calendar",
         "times": ["17:15", "17:30", "17:45", "18:00", "18:15"]
       },
+      "health": {"mode": "calendar_log", "grace_minutes": 20},
       "environment_variables": {
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json"
@@ -237,6 +251,7 @@
         "${PROJECT_ROOT}/scripts/run_google_ops_board_closeout_watch_scheduler.py"
       ],
       "schedule": {"type": "interval", "seconds": 15},
+      "health": {"mode": "interval_log", "max_age_seconds": 180},
       "environment_variables": {
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
@@ -252,6 +267,7 @@
       "role": "closeout keep-awake guard",
       "program_arguments": ["/usr/bin/caffeinate", "-dimsu", "-t", "4200"],
       "schedule": {"type": "calendar", "times": ["18:20"]},
+      "health": {"mode": "loaded"},
       "environment_variables": {},
       "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_caffeinate_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_caffeinate_stderr.log"
@@ -265,6 +281,7 @@
         "${PROJECT_ROOT}/scripts/run_google_ops_board_closeout_scheduler.py"
       ],
       "schedule": {"type": "calendar", "times": ["18:30"]},
+      "health": {"mode": "calendar_log", "grace_minutes": 30},
       "environment_variables": {
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
@@ -283,6 +300,7 @@
         "${PROJECT_ROOT}/scripts/waybill_telegram_control_bot.py"
       ],
       "schedule": {"type": "interval", "seconds": 15},
+      "health": {"mode": "loaded_exit_zero"},
       "environment_variables": {
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
@@ -301,6 +319,7 @@
         "${PROJECT_ROOT}/scripts/run_kaspi_shipped_truth_sync_scheduler.py"
       ],
       "schedule": {"type": "calendar", "times": ["09:30", "19:15"]},
+      "health": {"mode": "calendar_log", "grace_minutes": 30},
       "environment_variables": {
         "ENABLE_KASPI_SHIPPED_TRUTH_SYNC": "1",
         "KASPI_SHIPPED_TRUTH_LOOKBACK_DAYS": "13"
@@ -319,6 +338,7 @@
         "catch-up"
       ],
       "schedule": {"type": "calendar", "times": ["19:10"]},
+      "health": {"mode": "calendar_log", "grace_minutes": 30},
       "environment_variables": {},
       "stdout": "${PROJECT_ROOT}/runtime_logs/kaspi_daily_ops_report_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/kaspi_daily_ops_report_stderr.log"
