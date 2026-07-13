@@ -56,6 +56,12 @@ def test_step2_uses_transactional_strict_xlwings_mode():
     assert "${FIXED_BACKFILL_FLAGS}" in step2_block
 
 
+def test_activeorders_refresh_requires_complete_enabled_store_pagination() -> None:
+    text = Path("excel_ui/run_full_import.command").read_text(encoding="utf-8")
+
+    assert text.count("export_api_orders.py --all-stores --require-complete") == 2
+
+
 def test_step2_timeout_defaults_fail_faster_without_being_aggressive():
     script_path = Path("excel_ui/run_full_import.command")
     text = script_path.read_text(encoding="utf-8")

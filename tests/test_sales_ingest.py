@@ -61,9 +61,14 @@ def test_db():
             notes TEXT,
             input_source TEXT DEFAULT 'SYSTEM',
             created_by TEXT DEFAULT 'system',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            idempotency_key TEXT
         )
     """)
+    conn.execute(
+        "CREATE UNIQUE INDEX ux_stock_ledger_idempotency_key "
+        "ON stock_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL"
+    )
 
     # Create sales_fact_v2 table
     conn.execute("""
@@ -583,6 +588,69 @@ class TestIngestSales:
         count = conn.execute("SELECT COUNT(*) FROM sales_fact_v2").fetchone()[0]
         conn.close()
         assert count == 4
+
+    def test_ingest_does_not_replay_ledger_when_source_rows_are_rebuilt(
+        self,
+        test_db,
+        sample_sales_excel,
+    ):
+        """Rebuilding sales_fact_v2 must not duplicate established stock events."""
+        first = ingest_sales(xlsx_path=sample_sales_excel, db_path=test_db)
+        assert first["ledger_events"] == 4
+
+        conn = sqlite3.connect(str(test_db))
+        conn.execute("DELETE FROM sales_fact_v2")
+        conn.commit()
+        ledger_before = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(qty_change), 0) FROM stock_ledger"
+        ).fetchone()
+        conn.close()
+
+        replay = ingest_sales(xlsx_path=sample_sales_excel, db_path=test_db)
+
+        conn = sqlite3.connect(str(test_db))
+        ledger_after = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(qty_change), 0) FROM stock_ledger"
+        ).fetchone()
+        conn.close()
+        assert replay["inserted"] == 4
+        assert replay["ledger_events"] == 0
+        assert ledger_after == ledger_before
+
+    def test_ingest_suppresses_stock_for_active_quarantine_pair(
+        self,
+        test_db,
+        sample_sales_excel,
+    ):
+        conn = sqlite3.connect(str(test_db))
+        conn.execute(
+            """
+            CREATE TABLE fact_order_entry_header_only_source_gap_quarantine (
+                store_code TEXT,
+                order_id TEXT,
+                publication_exclusion_required INTEGER,
+                product_stock_excluded INTEGER,
+                active_flag INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO fact_order_entry_header_only_source_gap_quarantine "
+            "VALUES ('UNIVERSAL','ORD-001',1,1,1)"
+        )
+        conn.commit()
+        conn.close()
+
+        result = ingest_sales(xlsx_path=sample_sales_excel, db_path=test_db)
+
+        conn = sqlite3.connect(str(test_db))
+        quarantined_rows = conn.execute(
+            "SELECT COUNT(*) FROM stock_ledger WHERE reference_id='ORD-001'"
+        ).fetchone()[0]
+        conn.close()
+        assert result["ledger_quarantined"] == 1
+        assert result["ledger_events"] == 3
+        assert quarantined_rows == 0
 
 
 class TestUpdateReturnsFromApi:
