@@ -8,6 +8,16 @@
   "owner_signoff_path": "docs/plan/green_path_2026-06/green_path_run/OWNER_ACCEPTANCE_SIGNOFF.md",
   "owner_signoff_marker": "G-ACC-01 OWNER SIGNOFF",
   "post_eod_cutoff_local_time": "21:10",
+  "max_dashboard_age_hours": 24,
+  "max_scoreboard_age_hours": 24,
+  "max_operational_as_of_age_hours": 24,
+  "allowed_dashboard_statuses": [
+    "READY_FOR_ACCEPTANCE",
+    "COMPLETE"
+  ],
+  "require_scoreboard_matrix_coverage": true,
+  "require_dashboard_scoreboard_agreement": true,
+  "require_green_gate_evidence": true,
   "dashboard_is_authority": true,
   "required_hard_status": "GREEN",
   "allowed_advisory_statuses": [
