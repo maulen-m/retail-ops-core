@@ -37,14 +37,26 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
     return payload
 
 
-def _expand(value: Any, *, project_root: Path) -> Any:
+def _expand(value: Any, *, project_root: Path, runtime_home: Path) -> Any:
     if isinstance(value, str):
-        return value.replace("${PROJECT_ROOT}", str(project_root)).replace("${HOME}", str(Path.home()))
+        return value.replace("${PROJECT_ROOT}", str(project_root)).replace(
+            "${HOME}", str(runtime_home)
+        )
     if isinstance(value, list):
-        return [_expand(item, project_root=project_root) for item in value]
+        return [
+            _expand(item, project_root=project_root, runtime_home=runtime_home)
+            for item in value
+        ]
     if isinstance(value, dict):
-        return {key: _expand(item, project_root=project_root) for key, item in value.items()}
+        return {
+            key: _expand(item, project_root=project_root, runtime_home=runtime_home)
+            for key, item in value.items()
+        }
     return value
+
+
+def _runtime_home(manifest: dict[str, Any]) -> Path:
+    return Path(str(manifest.get("runtime_home") or Path.home())).expanduser()
 
 
 def _calendar_item(value: str) -> dict[str, int]:
@@ -84,7 +96,11 @@ def build_plist_payload(
     else:
         raise DailyShippingRuntimeError(f"unknown schedule type for {scheduler['label']}")
     runtime_root = Path(str(manifest.get("project_root") or project_root)).expanduser()
-    return _expand(payload, project_root=runtime_root)
+    return _expand(
+        payload,
+        project_root=runtime_root,
+        runtime_home=_runtime_home(manifest),
+    )
 
 
 def build_recovery_plist_payload(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -112,7 +128,11 @@ def build_recovery_plist_payload(manifest: dict[str, Any]) -> dict[str, Any]:
         "StandardOutPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_stdout.log",
         "StandardErrorPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_stderr.log",
     }
-    return _expand(payload, project_root=runtime_root)
+    return _expand(
+        payload,
+        project_root=runtime_root,
+        runtime_home=_runtime_home(manifest),
+    )
 
 
 def build_recovery_retention_plist_payload(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -144,7 +164,11 @@ def build_recovery_retention_plist_payload(manifest: dict[str, Any]) -> dict[str
         "StandardOutPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_retention_stdout.log",
         "StandardErrorPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_retention_stderr.log",
     }
-    return _expand(payload, project_root=runtime_root)
+    return _expand(
+        payload,
+        project_root=runtime_root,
+        runtime_home=_runtime_home(manifest),
+    )
 
 
 def build_log_maintenance_plist_payload(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -173,7 +197,11 @@ def build_log_maintenance_plist_payload(manifest: dict[str, Any]) -> dict[str, A
         "StandardOutPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_log_maintenance_stdout.log",
         "StandardErrorPath": "${PROJECT_ROOT}/runtime_logs/daily_shipping_log_maintenance_stderr.log",
     }
-    return _expand(payload, project_root=runtime_root)
+    return _expand(
+        payload,
+        project_root=runtime_root,
+        runtime_home=_runtime_home(manifest),
+    )
 
 
 def _schedule_text(schedule: dict[str, Any]) -> str:
@@ -424,6 +452,9 @@ def validate_daily_shipping_runtime(
     project_root = Path(project_root).resolve()
     errors: list[str] = []
     warnings: list[str] = []
+    runtime_home = _runtime_home(manifest)
+    if not runtime_home.is_absolute():
+        errors.append("runtime_home must be an absolute path")
     fragments = list(manifest.get("security", {}).get("forbidden_embedded_env_name_fragments") or [])
     schedulers = list(manifest.get("schedulers") or [])
     labels = [str(item.get("label") or "") for item in schedulers]
@@ -672,7 +703,13 @@ def validate_daily_shipping_runtime(
     if check_credentials:
         for item in manifest.get("credential_files") or []:
             runtime_root = Path(str(manifest.get("project_root") or project_root)).expanduser()
-            path = Path(_expand(str(item["path"]), project_root=runtime_root))
+            path = Path(
+                _expand(
+                    str(item["path"]),
+                    project_root=runtime_root,
+                    runtime_home=runtime_home,
+                )
+            )
             if not path.exists():
                 if item.get("required", False):
                     errors.append(f"required credential file missing: {path}")

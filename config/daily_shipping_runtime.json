@@ -3,6 +3,7 @@
   "authority": "Autonomous_business daily shipping runtime",
   "timezone": "Asia/Almaty",
   "employee_ready_by_local": "17:00",
+  "runtime_home": "~",
   "project_root": "~/Docs/Autonomous_business",
   "generated_doc": "docs/ops/DAILY_SHIPPING_RUNTIME.generated.md",
   "automation_scope_manifest": "config/business_automation_manifest.json",

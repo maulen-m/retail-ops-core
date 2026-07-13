@@ -49,6 +49,26 @@ def test_generated_markdown_is_exactly_manifest_derived() -> None:
     assert "17:00 Asia/Almaty" in actual
 
 
+def test_generated_paths_use_manifest_runtime_home() -> None:
+    manifest = load_manifest(MANIFEST_PATH)
+    manifest["runtime_home"] = "/opt/shipping-owner"
+    publisher = next(
+        item
+        for item in manifest["schedulers"]
+        if item["label"] == "com.example.google-ops-board-publish"
+    )
+
+    publisher_plist = build_plist_payload(manifest, publisher, PROJECT_ROOT)
+    recovery_plist = build_recovery_plist_payload(manifest)
+
+    assert publisher_plist["EnvironmentVariables"][
+        "AB_GOOGLE_SERVICE_ACCOUNT_JSON"
+    ].startswith("/opt/shipping-owner/")
+    assert recovery_plist["ProgramArguments"][-1].startswith(
+        "/opt/shipping-owner/"
+    )
+
+
 def test_watch_constants_are_checked_against_manifest(tmp_path: Path) -> None:
     manifest = load_manifest(MANIFEST_PATH)
     manifest["watch"]["ready_debounce_seconds"] = 61
