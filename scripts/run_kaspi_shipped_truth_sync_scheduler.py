@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_ROOT = Path("~/Docs/Autonomous_business")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SYNC_KASPI_ORDERS_PATH = PROJECT_ROOT / "scripts" / "sync_kaspi_orders.py"
 DB_CHECK_PATH = PROJECT_ROOT / "scripts" / "check_local_app_db.py"
 DEFAULT_DB_PATH = PROJECT_ROOT / "db" / "app.db"

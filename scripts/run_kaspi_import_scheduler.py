@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path("~/Docs/Autonomous_business")
-COMMAND_PATH = Path("~/Docs/Autonomous_business/excel_ui/run_full_import.command")
-DB_CHECK_PATH = Path("~/Docs/Autonomous_business/scripts/check_local_app_db.py")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+COMMAND_PATH = PROJECT_ROOT / "excel_ui" / "run_full_import.command"
+DB_CHECK_PATH = PROJECT_ROOT / "scripts" / "check_local_app_db.py"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

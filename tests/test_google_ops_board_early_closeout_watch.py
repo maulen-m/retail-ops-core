@@ -358,6 +358,8 @@ def test_early_closeout_watch_arms_debounce_when_board_first_becomes_ready(monke
 
     monkeypatch.setenv("AB_GOOGLE_SERVICE_ACCOUNT_JSON", str(creds))
     monkeypatch.setenv("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID", "sheet-id")
+    monkeypatch.delenv("KASPI_API_CALL_LEDGER_PATH", raising=False)
+    monkeypatch.delenv("KASPI_API_CALL_LEDGER", raising=False)
     _stub_closeout_health_green(monkeypatch, tmp_path)
     monkeypatch.setattr(watch_mod, "_in_watch_window", lambda: True)
     monkeypatch.setattr(watch_mod, "today_almaty", lambda: date(2026, 4, 15))
@@ -424,6 +426,8 @@ def test_early_closeout_watch_triggers_scheduler_only_after_debounce_elapsed(mon
 
     monkeypatch.setenv("AB_GOOGLE_SERVICE_ACCOUNT_JSON", str(creds))
     monkeypatch.setenv("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID", "sheet-id")
+    monkeypatch.delenv("KASPI_API_CALL_LEDGER_PATH", raising=False)
+    monkeypatch.delenv("KASPI_API_CALL_LEDGER", raising=False)
     _stub_closeout_health_green(monkeypatch, tmp_path)
     monkeypatch.setattr(watch_mod, "_in_watch_window", lambda: True)
     monkeypatch.setattr(watch_mod, "today_almaty", lambda: date(2026, 4, 15))

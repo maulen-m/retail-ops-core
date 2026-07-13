@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import plistlib
 from pathlib import Path
@@ -20,6 +21,15 @@ from scripts.validate_daily_shipping_runtime import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = PROJECT_ROOT / "config" / "daily_shipping_runtime.json"
 
+SCHEDULER_MODULES = (
+    "scripts.google_ops_board_lock_exec",
+    "scripts.run_google_ops_board_prewindow_health_scheduler",
+    "scripts.run_google_ops_board_publish_scheduler",
+    "scripts.run_google_ops_board_size_writeback_scheduler",
+    "scripts.run_kaspi_import_scheduler",
+    "scripts.run_kaspi_shipped_truth_sync_scheduler",
+)
+
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -37,6 +47,24 @@ def test_canonical_manifest_matches_repo_runtime_surfaces() -> None:
     assert report["active_stores"] == ["STOREB", "ACMEWEAR", "UNIVERSAL"]
     assert report["archived_stores"] == ["11KZ", "MELVIS"]
     assert report["scheduler_count"] == 10
+
+
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+def test_scheduler_module_uses_its_checkout_as_project_root(module_name: str) -> None:
+    module = importlib.import_module(module_name)
+
+    assert module.PROJECT_ROOT == PROJECT_ROOT
+
+
+def test_ci_dependencies_pin_production_compatible_pdf_and_browser_apis() -> None:
+    requirements = {
+        line.strip()
+        for line in (PROJECT_ROOT / "requirements-ci.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "pypdf==4.3.1" in requirements
+    assert "playwright==1.58.0" in requirements
 
 
 def test_generated_markdown_is_exactly_manifest_derived() -> None:

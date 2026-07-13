@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path("~/Docs/Autonomous_business")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_prewindow_health.py"
 IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
 if str(PROJECT_ROOT) not in sys.path:

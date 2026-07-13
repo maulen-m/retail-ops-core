@@ -110,6 +110,13 @@ def test_shipped_truth_sync_scheduler_blocks_without_apply_gate(monkeypatch, tmp
     monkeypatch.delenv("ENABLE_KASPI_SHIPPED_TRUTH_SYNC", raising=False)
     monkeypatch.setattr(mod, "today_almaty", lambda: date(2026, 4, 22))
 
-    rc = mod.main(["--target-date", "2026-04-22"])
+    rc = mod.main(
+        [
+            "--target-date",
+            "2026-04-22",
+            "--json-out",
+            str(tmp_path / "blocked.json"),
+        ]
+    )
 
     assert rc == 78

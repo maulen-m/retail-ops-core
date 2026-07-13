@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from openpyxl import Workbook
 
 from scripts.run_google_ops_board_publish_scheduler import (
+    PROJECT_ROOT,
     build_source_refresh_commands,
     inspect_activeorders_source,
     is_source_refresh_slot,
@@ -100,7 +101,7 @@ def test_build_source_refresh_commands_covers_export_sync_enrich(tmp_path: Path)
 
     assert commands[0] == [
         "/usr/bin/python3",
-        "~/Docs/Autonomous_business/scripts/export_api_orders.py",
+        str(PROJECT_ROOT / "scripts" / "export_api_orders.py"),
         "--all-stores",
         "--require-complete",
         "--state",
@@ -116,12 +117,12 @@ def test_build_source_refresh_commands_covers_export_sync_enrich(tmp_path: Path)
     ]
     assert commands[1] == [
         "/usr/bin/python3",
-        "~/Docs/Autonomous_business/scripts/validate_activeorders_columns.py",
+        str(PROJECT_ROOT / "scripts" / "validate_activeorders_columns.py"),
         str(workbook_path),
     ]
     assert commands[2] == [
         "/usr/bin/python3",
-        "~/Docs/Autonomous_business/scripts/sync_kaspi_orders.py",
+        str(PROJECT_ROOT / "scripts" / "sync_kaspi_orders.py"),
         "--all",
         "--since",
         "2026-04-12",
@@ -129,7 +130,7 @@ def test_build_source_refresh_commands_covers_export_sync_enrich(tmp_path: Path)
     ]
     assert commands[3] == [
         "/usr/bin/python3",
-        "~/Docs/Autonomous_business/scripts/enrich_kaspi_orders_from_activeorders.py",
+        str(PROJECT_ROOT / "scripts" / "enrich_kaspi_orders_from_activeorders.py"),
         "--apply",
         "--file",
         str(workbook_path),

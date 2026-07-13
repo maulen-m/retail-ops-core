@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+import os
 import sqlite3
 from pathlib import Path
 
@@ -227,9 +228,10 @@ def test_load_shipped_truth_snapshot_prefers_newest_summary(tmp_path: Path) -> N
         ),
         encoding="utf-8",
     )
-    # Ensure deterministic ordering by mtime.
-    older.touch()
-    newer.touch()
+    # Use distinct timestamps: fast filesystems can otherwise assign equal
+    # mtimes and legitimately invoke the smaller-window tie-breaker.
+    os.utime(older, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(newer, ns=(2_000_000_000, 2_000_000_000))
 
     snapshot = load_shipped_truth_snapshot(
         as_of_date=date.fromisoformat("2026-02-17"),
