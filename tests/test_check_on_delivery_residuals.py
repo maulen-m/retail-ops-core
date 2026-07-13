@@ -3,7 +3,24 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from scripts import check_on_delivery_residuals
 from scripts.check_on_delivery_residuals import run_residual_check
+
+
+def test_repo_dotenv_loader_uses_repo_file_without_overriding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    monkeypatch.setattr(check_on_delivery_residuals, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        check_on_delivery_residuals,
+        "_load_dotenv",
+        lambda path, override: calls.append((path, override)),
+    )
+
+    check_on_delivery_residuals.load_repo_dotenv()
+
+    assert calls == [(tmp_path / ".env", False)]
 
 
 def _init_db(db_path: Path) -> None:

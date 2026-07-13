@@ -17,6 +17,8 @@ import sys
 import time
 from typing import Callable, Sequence, Tuple
 
+from dotenv import load_dotenv as _load_dotenv
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
@@ -35,6 +37,10 @@ from core.db.validation_copy import validation_db_path
 # Optional dependency loaded lazily for bootstrap safety and test injection.
 build_single_truth_drift_pack: Callable[..., dict] | None = None
 send_run_failure_alert: Callable[..., bool] | None = None
+
+
+def load_repo_dotenv() -> None:
+    _load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
 def _resolve_reexec_target(
@@ -380,6 +386,7 @@ def run_preflight(
 
 
 def main() -> int:
+    load_repo_dotenv()
     parser = argparse.ArgumentParser(description="Run strict daily preflight with workbook-anchor enforcement")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="Database path")
     parser.add_argument("--workbook", type=Path, default=None, help="CRM workbook path (overrides env)")
