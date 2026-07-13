@@ -13,9 +13,9 @@ M1 currently owns the only proven live daily-shipping chain. M5 is newer and sho
 - Receiver checkout: the exact later commit recorded in the rescue closeout;
   the M5 gate proves the base tag is its ancestor
 - Current receiver release tag:
-  `release/daily-shipping-m5-shadow-20260714-v4`
+  `release/daily-shipping-m5-shadow-20260714-v5`
 - Current receiver release commit: resolve the immutable tag with
-  `git rev-parse 'release/daily-shipping-m5-shadow-20260714-v4^{}'` and require
+  `git rev-parse 'release/daily-shipping-m5-shadow-20260714-v5^{}'` and require
   it to equal the SHA in the migration control pointer before transfer
 - Runtime root required on M5: `~/Docs/Autonomous_business`
 - Canonical manifest: `config/daily_shipping_runtime.json`
@@ -27,7 +27,7 @@ M1 currently owns the only proven live daily-shipping chain. M5 is newer and sho
 Use the exact final commit and tag from the closeout. Do not use M1's dirty working tree as the transfer authority.
 
 Remote CI authority: require a successful `daily-shipping-release` workflow
-whose `headSha` equals the resolved v4 tag. The exact SHA and run ID are
+whose `headSha` equals the resolved v5 tag. The exact SHA and run ID are
 recorded in the migration control pointer after CI completes; this repo doc
 does not embed a copied mutable run pointer inside the release tag.
 
@@ -37,8 +37,11 @@ does not embed a copied mutable run pointer inside the release tag.
 - Current `db/app.db` plus any live `-wal` and `-shm` files captured while all M1 writers are paused.
 - Current canonical CRM workbook and the minimal runtime state named by the final cutover packet.
 - The recovery snapshot's `workflow/replay/` directory, containing the
-  successful apply `closeout_report.json`, `run_control_snapshot.json`, and
-  `salesraw_snapshot.json` for the preserved business date.
+  successful apply `closeout_report.json`, aggregate-only
+  `closeout_evidence.json`, `run_control_snapshot.json`, and
+  `salesraw_snapshot.json` for the preserved business date. The evidence
+  receipt carries counts and hashes only, never order IDs, chat IDs, or source
+  paths.
 - Fresh M5-local credentials installed outside Git with owner-only permissions.
 - The fresh M5 credential source must use the post-rotation owner-selected bot
   token. Do not copy `before.env`, a fresh-token input file, or any rotation
@@ -55,12 +58,15 @@ does not embed a copied mutable run pointer inside the release tag.
 6. Record disk latency, restore duration, API-read error rate, and end-to-end shadow duration.
 7. Write a standalone GREEN/YELLOW/RED shadow packet. Shadow GREEN does not authorize cutover.
 
-The post-closeout M1 snapshot command is local-only:
+The post-closeout M1 snapshot command is local-only and runs the immutable
+release tool against the explicit live root:
 
 ```bash
-~/Docs/Autonomous_business/.venv/bin/python \
-  scripts/manage_daily_shipping_recovery.py snapshot \
-  --project-root ~/Docs/Autonomous_business \
+RELEASE_ROOT=~/Docs/Autonomous_business__wt_shipping_rescue_20260713
+LIVE_ROOT=~/Docs/Autonomous_business
+"$LIVE_ROOT/.venv/bin/python" \
+  "$RELEASE_ROOT/scripts/manage_daily_shipping_recovery.py" snapshot \
+  --project-root "$LIVE_ROOT" \
   --state-root "$HOME/Library/Application Support/Autonomous_business/m5_shipping_transfer" \
   --json-out "$HOME/Library/Application Support/Autonomous_business/m5_shipping_transfer/snapshot_receipt.json"
 ```
@@ -75,12 +81,15 @@ After the checksummed snapshot folder and exact Git commit reach M5, run:
   --snapshot-manifest /ABSOLUTE/PATH/TO/SNAPSHOT/snapshot_manifest.json \
   --output-root "$HOME/Library/Application Support/Autonomous_business/m5_shadow/20260714" \
   --expected-commit FULL_40_CHARACTER_COMMIT_SHA \
+  --release-tag release/daily-shipping-m5-shadow-20260714-v5 \
   --json
 ```
 
 The receiver refuses a dirty or wrong checkout, a same-host run, a hash
 mismatch, loose credential permissions, any loaded shipping label, an output
-inside the repo, or missing preserved replay evidence. Its subprocess
+inside the repo, or missing/inconsistent preserved replay evidence. The M5
+receiver requires the aggregate closeout receipt to match the preserved
+closeout hash and terminal count contract before replay. Its subprocess
 environment starts without inherited write gates or secret-like variables. The
 closeout child then loads the protected M5 credential source for read-only
 Kaspi API context, strips every `ENABLE_*` write gate again, and never copies a

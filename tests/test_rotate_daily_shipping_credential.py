@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import traceback
@@ -43,7 +44,55 @@ def _env_file(tmp_path: Path) -> Path:
 
 
 def _successful_closeout(tmp_path: Path, *, target_date: str = "2026-07-14") -> Path:
-    path = tmp_path / "closeout" / "closeout_report.json"
+    run_id = f"successful-{target_date}-closeout"
+    run_dir = (
+        tmp_path
+        / "repo"
+        / "exports"
+        / "google_ops_board"
+        / "workflow_runs"
+        / target_date
+        / run_id
+    )
+    expected_orders = _write_owner_file(
+        run_dir / "expected_closeout_orders.json",
+        json.dumps(
+            {
+                "schema_version": 3,
+                "target_date": target_date,
+                "request_identity": {
+                    "target_date": target_date,
+                    "ready_set_at": f"{target_date}T17:00:00+05:00",
+                },
+                "expected_order_ids": [],
+                "orders": [],
+                "counts": {"orders": 0, "order_lines": 0, "overdue_orders": 0},
+            }
+        )
+        + "\n",
+    )
+    expected_sha = hashlib.sha256(expected_orders.read_bytes()).hexdigest()
+    marker = _write_owner_file(
+        run_dir / "zero_order_completion.json",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "completed": True,
+                "mode": "apply",
+                "run_id": run_id,
+                "target_date": target_date,
+                "request_identity": {
+                    "target_date": target_date,
+                    "ready_set_at": f"{target_date}T17:00:00+05:00",
+                },
+                "required_order_count": 0,
+                "required_orders_path": str(expected_orders.resolve()),
+                "required_orders_sha256": expected_sha,
+            }
+        )
+        + "\n",
+    )
+    path = run_dir / "closeout_report.json"
     return _write_owner_file(
         path,
         json.dumps(
@@ -51,7 +100,39 @@ def _successful_closeout(tmp_path: Path, *, target_date: str = "2026-07-14") -> 
                 "ok": True,
                 "mode": "apply",
                 "target_date": target_date,
-                "run_id": "successful-closeout",
+                "run_id": run_id,
+                "zero_order_noop": True,
+                "expected_closeout_order_count": 0,
+                "expected_closeout_orders_path": str(expected_orders.resolve()),
+                "zero_order_completion_path": str(marker.resolve()),
+            }
+        )
+        + "\n",
+    )
+
+
+def _superficial_closeout(tmp_path: Path) -> Path:
+    run_id = "superficial-closeout"
+    path = (
+        tmp_path
+        / "repo"
+        / "exports"
+        / "google_ops_board"
+        / "workflow_runs"
+        / "2026-07-14"
+        / run_id
+        / "closeout_report.json"
+    )
+    return _write_owner_file(
+        path,
+        json.dumps(
+            {
+                "ok": True,
+                "mode": "apply",
+                "target_date": "2026-07-14",
+                "run_id": run_id,
+                "zero_order_noop": False,
+                "expected_closeout_order_count": 1,
             }
         )
         + "\n",
@@ -159,6 +240,24 @@ def test_rotation_requires_same_day_successful_apply_closeout(
             key="TELEGRAM_BOT_TOKEN",
             token_file=_token_file(tmp_path),
             closeout_report_path=closeout_path,
+            receipt_root=tmp_path / "receipts",
+            project_root=tmp_path / "repo",
+            apply=True,
+            environment={ROTATION_APPLY_ENV: "1"},
+            now=NOW,
+            verifier=lambda _token: {"ok": True},
+        )
+
+
+def test_rotation_rejects_superficial_ok_without_ledger_confirmed_evidence(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(CredentialRotationError, match="ledger-confirmed"):
+        rotate_credential(
+            env_path=_env_file(tmp_path),
+            key="TELEGRAM_BOT_TOKEN",
+            token_file=_token_file(tmp_path),
+            closeout_report_path=_superficial_closeout(tmp_path),
             receipt_root=tmp_path / "receipts",
             project_root=tmp_path / "repo",
             apply=True,
@@ -312,8 +411,44 @@ def test_successful_rotation_is_atomic_backed_up_and_secret_free_in_receipt(
     assert report["gate"] == "GREEN"
     assert report["credential_values_read"] is True
     assert report["credential_values_exposed"] is False
+    assert report["closeout_completion_kind"] == "zero_order_noop"
+    assert report["closeout_pending_count"] == 0
     assert OLD_TOKEN not in serialized
     assert NEW_TOKEN not in serialized
+
+
+def test_live_root_is_explicit_when_code_and_runtime_roots_differ(tmp_path: Path) -> None:
+    code_root = tmp_path / "release"
+    live_root = tmp_path / "repo"
+    code_root.mkdir()
+    with pytest.raises(CredentialRotationError, match="live project root"):
+        rotate_credential(
+            env_path=_env_file(tmp_path),
+            key="TELEGRAM_BOT_TOKEN",
+            token_file=_token_file(tmp_path),
+            closeout_report_path=_successful_closeout(tmp_path),
+            receipt_root=tmp_path / "receipts",
+            project_root=code_root,
+            apply=True,
+            environment={ROTATION_APPLY_ENV: "1"},
+            now=NOW,
+            verifier=lambda _token: {"ok": True},
+        )
+
+    report = rotate_credential(
+        env_path=live_root / ".env",
+        key="TELEGRAM_BOT_TOKEN",
+        token_file=_token_file(tmp_path),
+        closeout_report_path=_successful_closeout(tmp_path),
+        receipt_root=tmp_path / "receipts-explicit",
+        project_root=code_root,
+        live_project_root=live_root,
+        apply=True,
+        environment={ROTATION_APPLY_ENV: "1"},
+        now=NOW,
+        verifier=lambda _token: {"ok": True},
+    )
+    assert report["gate"] == "GREEN"
 
 
 def test_only_allowlisted_telegram_keys_can_rotate(tmp_path: Path) -> None:

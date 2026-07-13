@@ -19,7 +19,12 @@ failure.
   owner-only snapshots and sends them to the existing encrypted restic
   repository only with its explicit apply gate. After a successful daily
   apply closeout, the snapshot also preserves the exact Board run-control and
-  SalesRaw snapshots plus their successful closeout report for offline replay.
+  SalesRaw snapshots plus their successful closeout report and a PII-free
+  terminal-evidence receipt for offline replay.
+- `scripts/verify_daily_shipping_closeout.py` is the read-only terminal proof
+  gate. It rejects superficial `ok: true` reports and recomputes either the
+  exact zero-order marker or the pinned manifest, Telegram ledger, six stages,
+  expected-order gate, shipping residuals, and shipped-truth sync.
 - `scripts/run_m5_daily_shipping_shadow.py` is the receiver-side gate. It
   verifies the exact Git release ancestry, snapshot and restored-state hashes,
   SQLite and workbook integrity, credential file permissions, and that none of
@@ -33,7 +38,9 @@ failure.
   the explicit environment gate, a same-day successful employee closeout, an
   owner-only fresh-token file outside Git, and a successful read-only Telegram
   `getMe` check. It atomically rewrites one allowlisted key and emits only a
-  secret-free owner-local receipt. The exact procedure is in
+  secret-free owner-local receipt. The terminal closeout is recomputed before
+  and after provider verification so drift cannot open the apply gate. The
+  exact procedure is in
   `docs/ops/DAILY_SHIPPING_CREDENTIAL_ROTATION.md`.
 - `scripts/rotate_daily_shipping_logs.py` discovers shipping logs from the
   runtime manifest and creates verified owner-only gzip archives only with its

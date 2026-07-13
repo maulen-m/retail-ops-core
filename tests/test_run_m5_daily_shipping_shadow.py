@@ -132,6 +132,32 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         replay_dir / "salesraw_snapshot.json",
         {"target_date": business_date, "matrix": [["Date"], [business_date]]},
     )
+    _write_json(
+        replay_dir / "closeout_evidence.json",
+        {
+            "schema_version": 1,
+            "ok": True,
+            "gate": "GREEN",
+            "target_date": business_date,
+            "run_id": "preserved-apply-run",
+            "completion_kind": "zero_order_noop",
+            "expected_order_count": 0,
+            "manifest_count": 0,
+            "confirmed_count": 0,
+            "pending_count": 0,
+            "required_stage_count": 0,
+            "closeout_report_sha256": _sha256(
+                replay_dir / "closeout_report.json"
+            ),
+            "terminal_artifact_sha256": {
+                "expected_orders": "1" * 64,
+                "zero_order_marker": "2" * 64,
+            },
+            "credential_values_exposed": False,
+            "customer_data_exposed": False,
+            "external_writes_performed": 0,
+        },
+    )
     artifacts = {}
     for path in (
         source_db,
@@ -139,6 +165,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         source_state,
         source_checkpoint,
         replay_dir / "closeout_report.json",
+        replay_dir / "closeout_evidence.json",
         replay_dir / "run_control_snapshot.json",
         replay_dir / "salesraw_snapshot.json",
     ):
@@ -216,9 +243,11 @@ def test_snapshot_transfer_verifies_hashes_sqlite_and_workbook(tmp_path: Path) -
 
     report = verify_snapshot_transfer(snapshot_manifest, project_root=project)
 
-    assert report["artifact_count"] == 7
+    assert report["artifact_count"] == 8
     assert report["database_quick_check"] == "ok"
     assert report["workbook_zip_ok"] is True
+    assert report["closeout_evidence_gate"] == "GREEN"
+    assert report["closeout_completion_kind"] == "zero_order_noop"
 
 
 def test_snapshot_transfer_rejects_tampered_receiver_copy(tmp_path: Path) -> None:
@@ -255,10 +284,27 @@ def test_snapshot_transfer_requires_database_and_workbook(tmp_path: Path) -> Non
 def test_snapshot_transfer_requires_preserved_board_replay(tmp_path: Path) -> None:
     project, _manifest, snapshot_manifest, _home = _fixture(tmp_path)
     payload = json.loads(snapshot_manifest.read_text(encoding="utf-8"))
-    payload["artifacts"].pop("workflow/replay/closeout_report.json")
+    payload["artifacts"].pop("workflow/replay/closeout_evidence.json")
     _write_json(snapshot_manifest, payload)
 
     with pytest.raises(ShadowGateError, match="required snapshot artifact missing"):
+        verify_snapshot_transfer(snapshot_manifest, project_root=project)
+
+
+def test_snapshot_transfer_rejects_closeout_evidence_drift(tmp_path: Path) -> None:
+    project, _manifest, snapshot_manifest, _home = _fixture(tmp_path)
+    evidence_path = snapshot_manifest.parent / "workflow" / "replay" / "closeout_evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["closeout_report_sha256"] = "0" * 64
+    _write_json(evidence_path, evidence)
+    payload = json.loads(snapshot_manifest.read_text(encoding="utf-8"))
+    payload["artifacts"]["workflow/replay/closeout_evidence.json"] = {
+        "sha256": _sha256(evidence_path),
+        "size_bytes": evidence_path.stat().st_size,
+    }
+    _write_json(snapshot_manifest, payload)
+
+    with pytest.raises(ShadowGateError, match="closeout evidence hash"):
         verify_snapshot_transfer(snapshot_manifest, project_root=project)
 
 

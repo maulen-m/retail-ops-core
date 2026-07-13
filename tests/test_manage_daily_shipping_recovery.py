@@ -55,16 +55,61 @@ def _write_closeout_run(
         / run_name
     )
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "closeout_report.json").write_text(
-        json.dumps(
+    closeout = {
+        "ok": ok,
+        "mode": mode,
+        "target_date": target_date,
+        "run_id": run_name,
+    }
+    if ok and mode == "apply":
+        expected_path = run_dir / "expected_closeout_orders.json"
+        expected_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 3,
+                    "target_date": target_date,
+                    "request_identity": {
+                        "target_date": target_date,
+                        "ready_set_at": f"{target_date}T17:00:00+05:00",
+                    },
+                    "expected_order_ids": [],
+                    "orders": [],
+                    "counts": {"orders": 0, "order_lines": 0, "overdue_orders": 0},
+                }
+            ),
+            encoding="utf-8",
+        )
+        expected_sha = _sha256(expected_path)
+        marker_path = run_dir / "zero_order_completion.json"
+        marker_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "completed": True,
+                    "mode": "apply",
+                    "run_id": run_name,
+                    "target_date": target_date,
+                    "request_identity": {
+                        "target_date": target_date,
+                        "ready_set_at": f"{target_date}T17:00:00+05:00",
+                    },
+                    "required_order_count": 0,
+                    "required_orders_path": str(expected_path.resolve()),
+                    "required_orders_sha256": expected_sha,
+                }
+            ),
+            encoding="utf-8",
+        )
+        closeout.update(
             {
-                "ok": ok,
-                "mode": mode,
-                "target_date": target_date,
-                "run_id": run_name,
+                "zero_order_noop": True,
+                "expected_closeout_order_count": 0,
+                "expected_closeout_orders_path": str(expected_path.resolve()),
+                "zero_order_completion_path": str(marker_path.resolve()),
             }
-        ),
-        encoding="utf-8",
+        )
+    (run_dir / "closeout_report.json").write_text(
+        json.dumps(closeout), encoding="utf-8"
     )
     (run_dir / "run_control_snapshot.json").write_text(
         json.dumps({"target_date": target_date, "matrix": [["target_date"], [target_date]]}),
@@ -140,6 +185,7 @@ def test_create_snapshot_is_sqlite_consistent_and_manifest_verified(
     assert "runtime/state/waybill_shipping_obligations.json" in manifest["artifacts"]
     assert "workflow/closeout_checkpoint.json" in manifest["artifacts"]
     assert "workflow/replay/closeout_report.json" in manifest["artifacts"]
+    assert "workflow/replay/closeout_evidence.json" in manifest["artifacts"]
     assert "workflow/replay/run_control_snapshot.json" in manifest["artifacts"]
     assert "workflow/replay/salesraw_snapshot.json" in manifest["artifacts"]
     replay_report = json.loads(
@@ -148,6 +194,20 @@ def test_create_snapshot_is_sqlite_consistent_and_manifest_verified(
         )
     )
     assert replay_report["run_id"] == "20260713_191124_2026-07-13_closeout"
+    closeout_evidence = json.loads(
+        (snapshot / "workflow" / "replay" / "closeout_evidence.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    serialized_evidence = json.dumps(closeout_evidence)
+    assert closeout_evidence["gate"] == "GREEN"
+    assert closeout_evidence["completion_kind"] == "zero_order_noop"
+    assert closeout_evidence["closeout_report_sha256"] == _sha256(
+        snapshot / "workflow" / "replay" / "closeout_report.json"
+    )
+    assert closeout_evidence["pending_count"] == 0
+    assert closeout_evidence["customer_data_exposed"] is False
+    assert str(project) not in serialized_evidence
 
 
 def test_snapshot_ignores_newer_failed_closeout_for_replay(tmp_path: Path) -> None:
@@ -157,6 +217,38 @@ def test_snapshot_ignores_newer_failed_closeout_for_replay(tmp_path: Path) -> No
         run_name="20260713_201500_2026-07-13_closeout",
         ok=False,
     )
+
+    report = create_snapshot(
+        project_root=project,
+        state_root=tmp_path / "state",
+        now=datetime(2026, 7, 13, 17, 0, tzinfo=UTC),
+        hostname="M1-test",
+    )
+
+    replay_report = json.loads(
+        (
+            Path(report["snapshot_dir"])
+            / "workflow"
+            / "replay"
+            / "closeout_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert replay_report["run_id"] == "20260713_191124_2026-07-13_closeout"
+
+
+def test_snapshot_ignores_newer_superficial_ok_closeout_without_terminal_evidence(
+    tmp_path: Path,
+) -> None:
+    project = _project_fixture(tmp_path)
+    superficial = _write_closeout_run(
+        project,
+        run_name="20260713_202000_2026-07-13-closeout",
+    )
+    closeout_path = superficial / "closeout_report.json"
+    payload = json.loads(closeout_path.read_text(encoding="utf-8"))
+    payload["zero_order_noop"] = False
+    payload.pop("zero_order_completion_path")
+    closeout_path.write_text(json.dumps(payload), encoding="utf-8")
 
     report = create_snapshot(
         project_root=project,

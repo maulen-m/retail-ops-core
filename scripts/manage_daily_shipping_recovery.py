@@ -19,9 +19,10 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import time
 from contextlib import AbstractContextManager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from zipfile import BadZipFile, ZipFile
@@ -29,6 +30,15 @@ from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.verify_daily_shipping_closeout import (  # noqa: E402
+    CloseoutEvidenceError,
+    verify_closeout_evidence,
+)
+
+
 DEFAULT_STATE_ROOT = (
     Path.home()
     / "Library"
@@ -219,14 +229,11 @@ def _latest_successful_closeout_run(
         reverse=True,
     ):
         try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-            if (
-                not isinstance(report, dict)
-                or report.get("ok") is not True
-                or str(report.get("mode") or "") != "apply"
-                or str(report.get("target_date") or "") != business_date
-            ):
-                continue
+            verify_closeout_evidence(
+                closeout_report_path=report_path,
+                expected_date=date.fromisoformat(business_date),
+                project_root=project_root,
+            )
             for filename in (
                 "run_control_snapshot.json",
                 "salesraw_snapshot.json",
@@ -240,10 +247,51 @@ def _latest_successful_closeout_run(
                     or not isinstance(snapshot.get("matrix"), list)
                 ):
                     raise ValueError("invalid preserved board snapshot")
-        except (OSError, json.JSONDecodeError, ValueError):
+        except (
+            CloseoutEvidenceError,
+            OSError,
+            json.JSONDecodeError,
+            ValueError,
+        ):
             continue
         return report_path.parent
     return None
+
+
+def _closeout_evidence_receipt(report: dict[str, Any]) -> dict[str, Any]:
+    hash_fields = {
+        "delivery_report": "delivery_report_sha256",
+        "expected_order_gate": "expected_order_gate_sha256",
+        "expected_orders": "expected_orders_sha256",
+        "ledger": "ledger_sha256",
+        "manifest": "manifest_sha256",
+        "shipping_report": "shipping_report_sha256",
+        "shipped_truth_sync_report": "shipped_truth_sync_report_sha256",
+        "zero_order_marker": "zero_order_marker_sha256",
+    }
+    terminal_hashes = {
+        label: str(report[field])
+        for label, field in hash_fields.items()
+        if str(report.get(field) or "")
+    }
+    return {
+        "schema_version": 1,
+        "ok": True,
+        "gate": "GREEN",
+        "target_date": str(report["target_date"]),
+        "run_id": str(report["run_id"]),
+        "completion_kind": str(report["completion_kind"]),
+        "expected_order_count": int(report.get("expected_order_count") or 0),
+        "manifest_count": int(report["manifest_count"]),
+        "confirmed_count": int(report["confirmed_count"]),
+        "pending_count": int(report["pending_count"]),
+        "required_stage_count": int(report.get("required_stage_count") or 0),
+        "closeout_report_sha256": str(report["closeout_report_sha256"]),
+        "terminal_artifact_sha256": terminal_hashes,
+        "credential_values_exposed": False,
+        "customer_data_exposed": False,
+        "external_writes_performed": 0,
+    }
 
 
 def create_snapshot(
@@ -322,6 +370,19 @@ def create_snapshot(
                 replay_target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(replay_source / filename, replay_target)
                 _record_artifact(artifacts, snapshot, replay_target)
+            evidence = verify_closeout_evidence(
+                closeout_report_path=replay_source / "closeout_report.json",
+                expected_date=date.fromisoformat(_target_date(current)),
+                project_root=project_root,
+            )
+            evidence_target = (
+                snapshot / "workflow" / "replay" / "closeout_evidence.json"
+            )
+            _atomic_write_json(
+                evidence_target,
+                _closeout_evidence_receipt(evidence),
+            )
+            _record_artifact(artifacts, snapshot, evidence_target)
 
         manifest = {
             "schema_version": 1,

@@ -28,6 +28,15 @@ from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.verify_daily_shipping_closeout import (  # noqa: E402
+    CloseoutEvidenceError,
+    verify_closeout_evidence,
+)
+
+
 DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_RECEIPT_ROOT = (
     Path.home()
@@ -138,6 +147,11 @@ def inspect_rotation_readiness(
 
     _require_allowlisted_key(key)
     env_file = _require_regular_owner_file(Path(env_path), label="environment file")
+    live_root = Path(project_root).expanduser().resolve()
+    if env_file != (live_root / ".env").resolve():
+        raise CredentialRotationError(
+            "environment file must be the .env at the explicit live project root"
+        )
     counts = _dotenv_key_counts(env_file)
     if counts.get(key, 0) > 1:
         raise CredentialRotationError(f"environment file has duplicate target key: {key}")
@@ -145,7 +159,7 @@ def inspect_rotation_readiness(
         "schema_version": 1,
         "ok": True,
         "gate": "READY_AFTER_CLOSEOUT",
-        "project_root": str(Path(project_root).expanduser().resolve()),
+        "project_root": str(live_root),
         "env_path": str(env_file),
         "key": key,
         "key_present": counts.get(key, 0) == 1,
@@ -155,40 +169,10 @@ def inspect_rotation_readiness(
     }
 
 
-def _load_successful_closeout(path: Path, *, target_date: str) -> dict[str, Any]:
-    report_path = Path(path).expanduser()
-    try:
-        metadata = report_path.lstat()
-    except FileNotFoundError as exc:
-        raise CredentialRotationError(
-            f"same-day closeout report does not exist: {report_path}"
-        ) from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise CredentialRotationError("same-day closeout report must be a regular file")
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CredentialRotationError("same-day closeout report is invalid JSON") from exc
-    if (
-        not isinstance(report, dict)
-        or report.get("ok") is not True
-        or str(report.get("mode") or "") != "apply"
-    ):
-        raise CredentialRotationError(
-            "credential rotation requires a successful apply closeout"
-        )
-    if str(report.get("target_date") or "") != target_date:
-        raise CredentialRotationError(
-            f"closeout target date must equal current Almaty date {target_date}"
-        )
-    if not str(report.get("run_id") or "").strip():
-        raise CredentialRotationError("closeout report is missing run_id")
-    return report
-
-
-def _read_fresh_token(path: Path, *, project_root: Path) -> str:
+def _read_fresh_token(path: Path, *, forbidden_roots: tuple[Path, ...]) -> str:
     token_path = _require_regular_owner_file(Path(path), label="fresh token file")
-    _require_outside_repo(token_path, project_root=project_root, label="fresh token file")
+    for root in forbidden_roots:
+        _require_outside_repo(token_path, project_root=root, label="fresh token file")
     raw = token_path.read_text(encoding="utf-8")
     lines = raw.splitlines()
     if len(lines) != 1 or raw.strip() != lines[0] or not TOKEN_PATTERN.fullmatch(lines[0]):
@@ -318,6 +302,7 @@ def rotate_credential(
     closeout_report_path: Path,
     receipt_root: Path = DEFAULT_RECEIPT_ROOT,
     project_root: Path = PROJECT_ROOT,
+    live_project_root: Path | None = None,
     apply: bool = False,
     environment: MutableMapping[str, str] | Mapping[str, str] | None = None,
     now: datetime | None = None,
@@ -325,8 +310,19 @@ def rotate_credential(
 ) -> dict[str, Any]:
     """Inspect or rotate one token; apply can occur only after today's closeout."""
 
+    code_root = Path(project_root).expanduser().resolve()
+    env_candidate = Path(env_path).expanduser().resolve()
+    if live_project_root is None and env_candidate != (code_root / ".env").resolve():
+        raise CredentialRotationError(
+            "live project root must be explicit when code and runtime roots differ"
+        )
+    live_root = (
+        Path(live_project_root).expanduser().resolve()
+        if live_project_root is not None
+        else code_root
+    )
     readiness = inspect_rotation_readiness(
-        env_path=Path(env_path), key=key, project_root=Path(project_root)
+        env_path=Path(env_path), key=key, project_root=live_root
     )
     if not apply:
         return {
@@ -343,30 +339,59 @@ def rotate_credential(
         )
 
     current = _aware(now)
-    target_date = current.astimezone(ALMATY_TZ).date().isoformat()
+    target_day = current.astimezone(ALMATY_TZ).date()
+    target_date = target_day.isoformat()
     closeout_input = Path(closeout_report_path).expanduser()
-    closeout = _load_successful_closeout(closeout_input, target_date=target_date)
-    closeout_path = closeout_input.resolve()
-    root = Path(project_root).expanduser().resolve()
+    try:
+        closeout_evidence = verify_closeout_evidence(
+            closeout_report_path=closeout_input,
+            expected_date=target_day,
+            project_root=live_root,
+        )
+    except CloseoutEvidenceError as exc:
+        raise CredentialRotationError(
+            "credential rotation requires ledger-confirmed closeout evidence: "
+            f"{exc}"
+        ) from None
+    closeout_path = Path(closeout_evidence["closeout_report_path"])
     env_file = Path(readiness["env_path"])
     env_before = env_file.read_bytes()
     env_before_sha = _sha256_bytes(env_before)
-    token = _read_fresh_token(Path(token_file), project_root=root)
+    token = _read_fresh_token(
+        Path(token_file), forbidden_roots=(code_root, live_root)
+    )
     verification = verifier(token)
     if not isinstance(verification, Mapping) or verification.get("ok") is not True:
         raise CredentialRotationError(
             "fresh Telegram token verification failed: Telegram identity rejected"
         )
 
-    receipts = _require_outside_repo(
-        Path(receipt_root), project_root=root, label="credential receipt root"
-    )
+    receipts = Path(receipt_root)
+    for root in (code_root, live_root):
+        receipts = _require_outside_repo(
+            receipts, project_root=root, label="credential receipt root"
+        )
     receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(receipts, 0o700)
     with _RotationLock(receipts / ".rotation.lock"):
         if _sha256(env_file) != env_before_sha:
             raise CredentialRotationError(
                 "environment file changed during credential verification; retry"
+            )
+        try:
+            current_closeout_evidence = verify_closeout_evidence(
+                closeout_report_path=closeout_path,
+                expected_date=target_day,
+                project_root=live_root,
+            )
+        except CloseoutEvidenceError as exc:
+            raise CredentialRotationError(
+                "ledger-confirmed closeout changed during credential verification: "
+                f"{exc}"
+            ) from None
+        if current_closeout_evidence != closeout_evidence:
+            raise CredentialRotationError(
+                "ledger-confirmed closeout changed during credential verification; retry"
             )
         updated_text = _replace_dotenv_value(
             env_before.decode("utf-8"), key=key, token=token
@@ -394,8 +419,18 @@ def rotate_credential(
             "backup_sha256": _sha256(backup_path),
             "receipt_path": str(receipt_path),
             "closeout_report_path": str(closeout_path),
-            "closeout_report_sha256": _sha256(closeout_path),
-            "closeout_run_id": str(closeout["run_id"]),
+            "closeout_report_sha256": str(
+                closeout_evidence["closeout_report_sha256"]
+            ),
+            "closeout_run_id": str(closeout_evidence["run_id"]),
+            "closeout_completion_kind": str(
+                closeout_evidence["completion_kind"]
+            ),
+            "closeout_manifest_count": int(closeout_evidence["manifest_count"]),
+            "closeout_confirmed_count": int(
+                closeout_evidence["confirmed_count"]
+            ),
+            "closeout_pending_count": int(closeout_evidence["pending_count"]),
             "telegram_identity_verified": True,
             "credential_values_read": True,
             "credential_values_exposed": False,
@@ -419,6 +454,12 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Inspect or rotate one daily-shipping Telegram credential."
     )
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH)
+    parser.add_argument(
+        "--live-project-root",
+        type=Path,
+        default=None,
+        help="Required when the executable checkout differs from the live runtime root.",
+    )
     parser.add_argument("--key", choices=sorted(ALLOWED_KEYS), required=True)
     parser.add_argument("--token-file", type=Path)
     parser.add_argument("--closeout-report", type=Path)
@@ -439,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
             token_file=args.token_file or Path("unused-in-dry-run"),
             closeout_report_path=args.closeout_report or Path("unused-in-dry-run"),
             receipt_root=args.receipt_root,
+            live_project_root=args.live_project_root,
             apply=args.apply,
         )
     except CredentialRotationError as exc:

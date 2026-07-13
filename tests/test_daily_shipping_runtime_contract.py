@@ -110,6 +110,25 @@ def test_shipping_release_gate_covers_credential_rotation_contract() -> None:
     assert "test_rotate_daily_shipping_credential.py" in gate
 
 
+def test_shipping_release_gate_covers_ledger_confirmed_closeout_contract() -> None:
+    gate = (PROJECT_ROOT / "scripts" / "run_daily_shipping_release_gate.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "test_verify_daily_shipping_closeout.py" in gate
+
+
+def test_credential_runbook_binds_live_root_and_terminal_verifier() -> None:
+    runbook = (
+        PROJECT_ROOT / "docs" / "ops" / "DAILY_SHIPPING_CREDENTIAL_ROTATION.md"
+    ).read_text(encoding="utf-8")
+
+    assert runbook.count('--live-project-root "$LIVE_ROOT"') >= 2
+    assert "scripts/verify_daily_shipping_closeout.py" in runbook
+    assert "--project-root \"$LIVE_ROOT\"" in runbook
+    assert "pending count is zero" in runbook
+
+
 def test_health_monitor_candidate_uses_owner_only_state_and_is_not_active() -> None:
     manifest = load_manifest(MANIFEST_PATH)
     monitor = manifest["observability"]["health_monitor"]

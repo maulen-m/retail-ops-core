@@ -24,11 +24,13 @@ path.
 RELEASE_ROOT=~/Docs/Autonomous_business__wt_shipping_rescue_20260713
 LIVE_ROOT=~/Docs/Autonomous_business
 PYTHON="$LIVE_ROOT/.venv/bin/python"
-RELEASE_TAG=release/daily-shipping-m5-shadow-20260714-v4
-test "$(git -C "$RELEASE_ROOT" rev-parse "$RELEASE_TAG^{}")" = \
-  "075e8f9b9ecf2ea93bd34c5813125cb3028b7beb"
+RELEASE_TAG=release/daily-shipping-m5-shadow-20260714-v5
+RELEASE_COMMIT="$(git -C "$RELEASE_ROOT" rev-parse "$RELEASE_TAG^{}")"
+test "${#RELEASE_COMMIT}" = 40
 test "$(git -C "$RELEASE_ROOT" hash-object scripts/rotate_daily_shipping_credential.py)" = \
   "$(git -C "$RELEASE_ROOT" rev-parse "${RELEASE_TAG}^{}:scripts/rotate_daily_shipping_credential.py")"
+test "$(git -C "$RELEASE_ROOT" hash-object scripts/verify_daily_shipping_closeout.py)" = \
+  "$(git -C "$RELEASE_ROOT" rev-parse "${RELEASE_TAG}^{}:scripts/verify_daily_shipping_closeout.py")"
 ```
 
 Stop if either equality check fails. Readiness is metadata-only. Run it
@@ -36,6 +38,7 @@ separately for the credential key that will be replaced:
 
 ```bash
 "$PYTHON" "$RELEASE_ROOT/scripts/rotate_daily_shipping_credential.py" \
+  --live-project-root "$LIVE_ROOT" \
   --env-file "$LIVE_ROOT/.env" \
   --key TELEGRAM_BOT_TOKEN \
   --json
@@ -67,11 +70,27 @@ symlink.
 Set `CLOSEOUT` to the exact successful
 `exports/google_ops_board/workflow_runs/2026-07-14/*/closeout_report.json`
 selected from direct artifact readback. It must say `ok: true`, `mode: apply`,
-`target_date: 2026-07-14`, and contain a `run_id`.
+`target_date: 2026-07-14`, and contain a `run_id`. Those summary fields alone
+are not enough. Recompute the terminal evidence before apply:
+
+```bash
+"$PYTHON" "$RELEASE_ROOT/scripts/verify_daily_shipping_closeout.py" \
+  --project-root "$LIVE_ROOT" \
+  --expected-date 2026-07-14 \
+  --closeout-report "$CLOSEOUT" \
+  --json
+```
+
+Proceed only when this returns `Gate: GREEN`, with either a hashed zero-order
+apply marker or a manifest-bound Telegram ledger whose confirmed count equals
+its manifest count and whose pending count is zero. For nonzero days, the
+verifier also requires all six terminal stage reports, the pinned expected
+order gate, zero shipping residuals, and shipped-truth sync.
 
 ```bash
 export ENABLE_DAILY_SHIPPING_CREDENTIAL_ROTATION=1
 "$PYTHON" "$RELEASE_ROOT/scripts/rotate_daily_shipping_credential.py" \
+  --live-project-root "$LIVE_ROOT" \
   --env-file "$LIVE_ROOT/.env" \
   --key TELEGRAM_BOT_TOKEN \
   --token-file "$TOKEN_FILE" \
@@ -84,7 +103,8 @@ unset ENABLE_DAILY_SHIPPING_CREDENTIAL_ROTATION
 Use `TELEGRAM_BOT_TOKEN_WAYBILL` instead only when that is the owner-selected
 bot key. Never rotate both keys merely because both exist.
 
-The apply path verifies the fresh token with `getMe`, then creates an
+The apply path recomputes the same closeout evidence before and after the
+read-only provider check, verifies the fresh token with `getMe`, then creates an
 owner-only backup and secret-free receipt under
 `~/Library/Application Support/Autonomous_business/credential_rotation/`.
 It atomically changes only the selected dotenv key. If receipt persistence

@@ -59,8 +59,19 @@ FORBIDDEN_COMMAND_ARGS = {
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 PRESERVED_REPLAY_ARTIFACTS = {
     "workflow/replay/closeout_report.json",
+    "workflow/replay/closeout_evidence.json",
     "workflow/replay/run_control_snapshot.json",
     "workflow/replay/salesraw_snapshot.json",
+}
+TERMINAL_EVIDENCE_HASH_KEYS = {
+    "delivery_report",
+    "expected_order_gate",
+    "expected_orders",
+    "ledger",
+    "manifest",
+    "shipping_report",
+    "shipped_truth_sync_report",
+    "zero_order_marker",
 }
 
 
@@ -143,6 +154,124 @@ def _receiver_artifact_path(
     raise ShadowGateError(f"unsupported snapshot artifact: {value}")
 
 
+def _verify_closeout_evidence_receipt(
+    *, snapshot_root: Path, business_date: str
+) -> dict[str, str]:
+    evidence_path = snapshot_root / "workflow" / "replay" / "closeout_evidence.json"
+    closeout_path = snapshot_root / "workflow" / "replay" / "closeout_report.json"
+    evidence = _load_json(evidence_path, label="closeout evidence")
+    allowed_keys = {
+        "schema_version",
+        "ok",
+        "gate",
+        "target_date",
+        "run_id",
+        "completion_kind",
+        "expected_order_count",
+        "manifest_count",
+        "confirmed_count",
+        "pending_count",
+        "required_stage_count",
+        "closeout_report_sha256",
+        "terminal_artifact_sha256",
+        "credential_values_exposed",
+        "customer_data_exposed",
+        "external_writes_performed",
+    }
+    if set(evidence) != allowed_keys:
+        raise ShadowGateError("closeout evidence fields do not match schema v1")
+    if (
+        int(evidence.get("schema_version") or 0) != 1
+        or evidence.get("ok") is not True
+        or str(evidence.get("gate") or "") != "GREEN"
+        or str(evidence.get("target_date") or "") != business_date
+        or evidence.get("credential_values_exposed") is not False
+        or evidence.get("customer_data_exposed") is not False
+        or evidence.get("external_writes_performed") != 0
+    ):
+        raise ShadowGateError("closeout evidence is not a clean GREEN receipt")
+    closeout = _load_json(closeout_path, label="preserved closeout report")
+    run_id = str(evidence.get("run_id") or "")
+    if (
+        not run_id
+        or str(closeout.get("run_id") or "") != run_id
+        or str(closeout.get("target_date") or "") != business_date
+        or closeout.get("ok") is not True
+        or str(closeout.get("mode") or "") != "apply"
+    ):
+        raise ShadowGateError("closeout evidence identity does not match preserved closeout")
+    expected_closeout_sha = str(evidence.get("closeout_report_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_closeout_sha) or _sha256(
+        closeout_path
+    ) != expected_closeout_sha:
+        raise ShadowGateError("closeout evidence hash does not match preserved closeout")
+
+    count_names = (
+        "expected_order_count",
+        "manifest_count",
+        "confirmed_count",
+        "pending_count",
+        "required_stage_count",
+    )
+    counts: dict[str, int] = {}
+    for name in count_names:
+        value = evidence.get(name)
+        if isinstance(value, bool):
+            raise ShadowGateError(f"closeout evidence {name} must be an integer")
+        try:
+            counts[name] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ShadowGateError(
+                f"closeout evidence {name} must be an integer"
+            ) from exc
+        if counts[name] < 0:
+            raise ShadowGateError(f"closeout evidence {name} must not be negative")
+    completion_kind = str(evidence.get("completion_kind") or "")
+    if completion_kind == "zero_order_noop":
+        if any(counts.values()):
+            raise ShadowGateError("zero-order closeout evidence has nonzero counts")
+    elif completion_kind == "telegram_ledger":
+        if (
+            counts["expected_order_count"] < 1
+            or counts["manifest_count"] < 1
+            or counts["confirmed_count"] != counts["manifest_count"]
+            or counts["pending_count"] != 0
+            or counts["required_stage_count"] != 6
+        ):
+            raise ShadowGateError("Telegram closeout evidence is not terminal")
+    else:
+        raise ShadowGateError("closeout evidence completion kind is unsupported")
+
+    terminal_hashes = evidence.get("terminal_artifact_sha256")
+    if not isinstance(terminal_hashes, dict) or not set(terminal_hashes).issubset(
+        TERMINAL_EVIDENCE_HASH_KEYS
+    ):
+        raise ShadowGateError("closeout evidence terminal hashes are invalid")
+    if not all(
+        isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+        for value in terminal_hashes.values()
+    ):
+        raise ShadowGateError("closeout evidence terminal hashes are invalid")
+    if completion_kind == "zero_order_noop" and not {
+        "expected_orders",
+        "zero_order_marker",
+    }.issubset(terminal_hashes):
+        raise ShadowGateError("zero-order closeout evidence hashes are incomplete")
+    if completion_kind == "telegram_ledger" and not {
+        "delivery_report",
+        "expected_order_gate",
+        "ledger",
+        "manifest",
+        "shipping_report",
+        "shipped_truth_sync_report",
+    }.issubset(terminal_hashes):
+        raise ShadowGateError("Telegram closeout evidence hashes are incomplete")
+    return {
+        "closeout_evidence_gate": "GREEN",
+        "closeout_completion_kind": completion_kind,
+    }
+
+
 def verify_snapshot_transfer(
     snapshot_manifest_path: Path, *, project_root: Path
 ) -> dict[str, Any]:
@@ -220,6 +349,10 @@ def verify_snapshot_transfer(
         raise ShadowGateError("receiver workbook is not a valid XLSX ZIP") from exc
     if bad_member:
         raise ShadowGateError("receiver workbook ZIP integrity failed")
+    closeout_evidence = _verify_closeout_evidence_receipt(
+        snapshot_root=snapshot_root,
+        business_date=business_date,
+    )
     return {
         "artifact_count": len(artifacts),
         "business_date": business_date,
@@ -227,6 +360,7 @@ def verify_snapshot_transfer(
         "database_quick_check": quick_check,
         "workbook_zip_ok": True,
         "snapshot_manifest_sha256": _sha256(manifest_path),
+        **closeout_evidence,
     }
 
 
