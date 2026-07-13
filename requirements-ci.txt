@@ -6,5 +6,6 @@ PyYAML
 requests
 pypdf==4.3.1
 playwright==1.58.0
+lxml==6.0.2
 python-dotenv
 google-auth

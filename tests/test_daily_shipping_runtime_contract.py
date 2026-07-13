@@ -65,6 +65,7 @@ def test_ci_dependencies_pin_production_compatible_pdf_and_browser_apis() -> Non
 
     assert "pypdf==4.3.1" in requirements
     assert "playwright==1.58.0" in requirements
+    assert "lxml==6.0.2" in requirements
 
 
 def test_shipping_release_workflow_installs_docs_lint_dependency() -> None:
