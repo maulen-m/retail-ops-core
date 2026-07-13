@@ -7,6 +7,7 @@ import argparse
 import csv
 from datetime import datetime, time
 import json
+from math import isfinite
 from pathlib import Path
 import re
 from typing import Any
@@ -51,6 +52,81 @@ def _parse_as_of(value: str | None) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=ALMATY_TZ)
     return parsed.astimezone(ALMATY_TZ)
+
+
+def _parse_source_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        parsed = None
+        for fmt in ("%Y%m%d_%H%M%S", "%Y%m%d_%H%M", "%Y%m%d"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ALMATY_TZ)
+    return parsed.astimezone(ALMATY_TZ)
+
+
+def _positive_finite_hours(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isfinite(parsed) and parsed > 0 else None
+
+
+def _source_freshness(raw: Any, *, as_of_dt: datetime, max_age_hours: float | None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "raw": str(raw or ""),
+        "observed_at": None,
+        "age_hours": None,
+        "max_age_hours": max_age_hours,
+        "ok": False,
+        "error": "",
+    }
+    if max_age_hours is None:
+        result["error"] = "freshness limit is missing or invalid"
+        return result
+    observed = _parse_source_timestamp(raw)
+    if observed is None:
+        result["error"] = "timestamp is missing or invalid"
+        return result
+    result["observed_at"] = observed.replace(microsecond=0).isoformat()
+    age_seconds = (as_of_dt - observed).total_seconds()
+    result["age_hours"] = round(age_seconds / 3600.0, 6)
+    if age_seconds < 0:
+        result["error"] = "timestamp is in the future"
+        return result
+    if age_seconds > max_age_hours * 3600.0:
+        result["error"] = "timestamp is stale"
+        return result
+    result["ok"] = True
+    return result
+
+
+def _freshness_sla_limit(raw: Any) -> tuple[str, float | None, str]:
+    text = str(raw or "").strip().lower()
+    if text == "n/a":
+        return "NOT_APPLICABLE", None, ""
+    duration_match = re.match(r"^(\d+(?:\.\d+)?)d(?:\b|\s)", text)
+    if duration_match:
+        return "DURATION", float(duration_match.group(1)) * 24.0, ""
+    if text.startswith("continuous"):
+        return "DURATION", 24.0, ""
+    if not text:
+        return "UNSUPPORTED", None, "freshness_sla is missing"
+    return "UNSUPPORTED", None, "freshness_sla is not time-evaluable"
 
 
 def _resolve_path(raw: str | Path | None) -> Path:
@@ -101,23 +177,38 @@ def _load_dashboard(path: Path) -> tuple[dict[str, str], dict[str, Any]]:
     return states, meta
 
 
-def _load_scoreboard(path: Path) -> dict[str, dict[str, str]]:
+def _load_scoreboard(path: Path) -> tuple[dict[str, dict[str, str]], dict[str, Any]]:
     if not path.exists():
-        return {}
+        return {}, {
+            "error": f"missing scoreboard: {path}",
+            "row_count": 0,
+            "last_row_number": None,
+            "last_dated": "",
+            "dated_values": [],
+        }
     rows: dict[str, dict[str, str]] = {}
+    physical_rows: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
-        for row in reader:
+        for row_number, row in enumerate(reader, start=2):
             gate_id = str(row.get("gate_id") or row.get("gate") or "").strip()
+            dated = str(row.get("dated") or "").strip()
+            physical_rows.append({"row_number": row_number, "gate_id": gate_id, "dated": dated})
             if not gate_id:
                 continue
             state = str(row.get("status") or row.get("state") or "").strip().upper()
             rows[gate_id] = {
                 "state": state,
                 "evidence": str(row.get("evidence") or "").strip(),
-                "dated": str(row.get("dated") or "").strip(),
+                "dated": dated,
             }
-    return rows
+    last_row = physical_rows[-1] if physical_rows else {}
+    return rows, {
+        "row_count": len(physical_rows),
+        "last_row_number": last_row.get("row_number"),
+        "last_dated": last_row.get("dated", ""),
+        "dated_values": [row["dated"] for row in physical_rows],
+    }
 
 
 def _normal_status(raw: Any) -> str:
@@ -271,6 +362,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
         f"Gate: {report['gate']}",
         f"Generated: {report['generated_at']}",
         f"As of: {report['as_of']}",
+        f"Evaluated at: {report['evaluated_at']}",
         f"Dashboard updated: {report['dashboard_meta'].get('updated', '')}",
         "",
         "## Summary",
@@ -280,6 +372,32 @@ def _render_markdown(report: dict[str, Any]) -> str:
         f"- advisory_green_or_waived: {report['advisory_green_or_waived']}/{report['advisory_total']}",
         f"- owner_signoff_present: {report['owner_signoff_present']}",
         f"- deferred_queue_rows: {report['deferred_queue']['row_count']}",
+        f"- source_freshness_ok: {report['source_freshness_ok']}",
+        f"- inputs_reconciled: {report['inputs_reconciled']}",
+        f"- evaluation_mode: {report['evaluation_mode']}",
+        (
+            "- operational_as_of_age_hours: "
+            f"{report['operational_as_of']['age_hours']} "
+            f"(max {report['operational_as_of']['max_age_hours']})"
+        ),
+        f"- status_counts_current: {report['status_counts_current']}",
+        f"- status_counts_label: {report['status_counts_label']}",
+        (
+            "- dashboard_source_age_hours: "
+            f"{report['source_freshness']['dashboard']['age_hours']} "
+            f"(max {report['source_freshness']['dashboard']['max_age_hours']})"
+        ),
+        (
+            "- scoreboard_source_age_hours: "
+            f"{report['source_freshness']['scoreboard']['age_hours']} "
+            f"(max {report['source_freshness']['scoreboard']['max_age_hours']})"
+        ),
+        f"- scoreboard_missing_gate_ids: {len(report['provenance']['scoreboard_missing_gate_ids'])}",
+        f"- dashboard_scoreboard_disagreements: {len(report['provenance']['dashboard_scoreboard_disagreements'])}",
+        f"- green_gates_missing_evidence: {len(report['provenance']['green_gates_missing_evidence'])}",
+        f"- green_gate_freshness_failures: {len(report['provenance']['green_gate_freshness_failures'])}",
+        f"- invalid_dashboard_states: {len(report['provenance']['invalid_dashboard_states'])}",
+        f"- invalid_scoreboard_states: {len(report['provenance']['invalid_scoreboard_states'])}",
         "",
         "## Status Counts",
         "",
@@ -326,9 +444,16 @@ def build_final_acceptance_report(
     config_path: Path = DEFAULT_CONFIG,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     as_of: str | None = None,
+    evaluation_time: str | None = None,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     acceptance_blockers: list[str] = []
+    as_of_dt = _parse_as_of(as_of)
+    evaluation_dt = (
+        _parse_as_of(evaluation_time)
+        if evaluation_time
+        else datetime.now(ALMATY_TZ)
+    )
 
     config_path = config_path.expanduser().resolve()
     config = _load_json(config_path) if config_path.exists() else {}
@@ -346,14 +471,36 @@ def build_final_acceptance_report(
     scoreboard_path = _resolve_path(config.get("scoreboard_path"))
     deferred_path = _resolve_path(config.get("deferred_queue_path"))
     signoff_path = _resolve_path(config.get("owner_signoff_path"))
-    allowed_advisory = {str(value).upper() for value in config.get("allowed_advisory_statuses") or ["GREEN", "WAIVED"]}
+    allowed_advisory = {
+        str(value).upper()
+        for value in config.get("allowed_advisory_statuses") or ["GREEN", "WAIVED"]
+    }
+    allowed_dashboard_statuses = {
+        str(value).strip().upper()
+        for value in config.get("allowed_dashboard_statuses") or []
+        if str(value).strip()
+    }
 
     gate_matrix = _load_gate_matrix(matrix_path)
     dashboard_states, dashboard_meta = _load_dashboard(dashboard_path)
-    scoreboard_rows = _load_scoreboard(scoreboard_path)
+    scoreboard_rows, scoreboard_meta = _load_scoreboard(scoreboard_path)
     checks.append(_check(bool(gate_matrix), "gate_matrix_loaded", str(matrix_path), gate_count=len(gate_matrix)))
     checks.append(_check(bool(dashboard_states), "dashboard_loaded", str(dashboard_path), gate_count=len(dashboard_states)))
     checks.append(_check(bool(scoreboard_rows), "scoreboard_loaded", str(scoreboard_path), gate_count=len(scoreboard_rows)))
+
+    matrix_ids = {str(row.get("gate_id") or "").strip() for row in gate_matrix}
+    matrix_ids.discard("")
+    dashboard_ids = set(dashboard_states)
+    scoreboard_ids = set(scoreboard_rows)
+    dashboard_missing_gate_ids = sorted(matrix_ids - dashboard_ids)
+    dashboard_extra_gate_ids = sorted(dashboard_ids - matrix_ids)
+    scoreboard_missing_gate_ids = sorted(matrix_ids - scoreboard_ids)
+    scoreboard_extra_gate_ids = sorted(scoreboard_ids - matrix_ids)
+    gate_by_id = {
+        str(row.get("gate_id") or "").strip(): row
+        for row in gate_matrix
+        if str(row.get("gate_id") or "").strip()
+    }
     checks.append(
         _check(
             len(gate_matrix) == len(dashboard_states),
@@ -361,8 +508,283 @@ def build_final_acceptance_report(
             f"matrix={len(gate_matrix)} dashboard={len(dashboard_states)}",
         )
     )
+    checks.append(
+        _check(
+            not dashboard_missing_gate_ids and not dashboard_extra_gate_ids,
+            "matrix_dashboard_gate_identity_match",
+            f"missing={dashboard_missing_gate_ids} extra={dashboard_extra_gate_ids}",
+        )
+    )
 
-    as_of_dt = _parse_as_of(as_of)
+    provenance_flags = {
+        "require_scoreboard_matrix_coverage": config.get("require_scoreboard_matrix_coverage") is True,
+        "require_dashboard_scoreboard_agreement": config.get("require_dashboard_scoreboard_agreement") is True,
+        "require_green_gate_evidence": config.get("require_green_gate_evidence") is True,
+    }
+    provenance_policy_ok = (
+        config.get("dashboard_is_authority") is True
+        and bool(allowed_dashboard_statuses)
+        and all(provenance_flags.values())
+    )
+    checks.append(
+        _check(
+            provenance_policy_ok,
+            "provenance_policy_valid",
+            (
+                f"dashboard_is_authority={config.get('dashboard_is_authority')} "
+                f"allowed_dashboard_statuses={sorted(allowed_dashboard_statuses)} "
+                f"flags={provenance_flags}"
+            ),
+        )
+    )
+    checks.append(
+        _check(
+            not scoreboard_missing_gate_ids,
+            "scoreboard_matrix_coverage",
+            f"missing={scoreboard_missing_gate_ids} extra={scoreboard_extra_gate_ids}",
+        )
+    )
+
+    invalid_dashboard_states = [
+        {"gate_id": gate_id, "raw_state": str(dashboard_states.get(gate_id) or "").strip().upper()}
+        for gate_id in sorted(matrix_ids & dashboard_ids)
+        if str(dashboard_states.get(gate_id) or "").strip().upper() not in VALID_GATE_STATUSES
+        or str(dashboard_states.get(gate_id) or "").strip().upper() == "MISSING"
+    ]
+    invalid_scoreboard_states = [
+        {"gate_id": gate_id, "raw_state": str(scoreboard_rows[gate_id].get("state") or "").strip().upper()}
+        for gate_id in sorted(matrix_ids & scoreboard_ids)
+        if str(scoreboard_rows[gate_id].get("state") or "").strip().upper() not in VALID_GATE_STATUSES
+        or str(scoreboard_rows[gate_id].get("state") or "").strip().upper() == "MISSING"
+    ]
+    checks.append(
+        _check(
+            not invalid_dashboard_states and not invalid_scoreboard_states,
+            "source_gate_states_valid",
+            f"dashboard={invalid_dashboard_states} scoreboard={invalid_scoreboard_states}",
+        )
+    )
+
+    dashboard_scoreboard_disagreements: list[dict[str, str]] = []
+    for gate_id in sorted(matrix_ids & dashboard_ids & scoreboard_ids):
+        dashboard_state = _normal_status(dashboard_states.get(gate_id))
+        scoreboard_state = _normal_status(scoreboard_rows[gate_id].get("state"))
+        if dashboard_state != scoreboard_state:
+            dashboard_scoreboard_disagreements.append(
+                {
+                    "gate_id": gate_id,
+                    "dashboard": dashboard_state,
+                    "scoreboard": scoreboard_state,
+                }
+            )
+    checks.append(
+        _check(
+            not dashboard_scoreboard_disagreements,
+            "dashboard_scoreboard_agreement",
+            f"disagreement_count={len(dashboard_scoreboard_disagreements)}",
+        )
+    )
+
+    accepted_gate_ids: set[str] = set()
+    for gate_id in sorted(matrix_ids - {"G-ACC-01"}):
+        state = _normal_status(dashboard_states.get(gate_id))
+        blocking = str(gate_by_id.get(gate_id, {}).get("blocking") or "").strip().upper()
+        if (blocking == "HARD" and state == "GREEN") or (
+            blocking == "ADVISORY" and state in allowed_advisory
+        ):
+            accepted_gate_ids.add(gate_id)
+
+    green_gates_missing_evidence: list[str] = []
+    for gate_id in sorted(accepted_gate_ids):
+        row = scoreboard_rows.get(gate_id, {})
+        if not str(row.get("evidence") or "").strip() or _parse_source_timestamp(row.get("dated")) is None:
+            green_gates_missing_evidence.append(gate_id)
+    checks.append(
+        _check(
+            not green_gates_missing_evidence,
+            "green_gate_evidence_complete",
+            f"missing_or_invalid={green_gates_missing_evidence}",
+        )
+    )
+
+    green_gate_freshness_failures: list[dict[str, Any]] = []
+    for gate_id in sorted(accepted_gate_ids):
+        scoreboard_row = scoreboard_rows.get(gate_id, {})
+        observed = _parse_source_timestamp(scoreboard_row.get("dated"))
+        if observed is None:
+            continue
+        freshness_sla = str(gate_by_id.get(gate_id, {}).get("freshness_sla") or "").strip()
+        policy, max_age_hours, policy_error = _freshness_sla_limit(freshness_sla)
+        age_hours = round((as_of_dt - observed).total_seconds() / 3600.0, 6)
+        if age_hours < 0:
+            error = "evidence timestamp is in the future"
+        elif policy == "NOT_APPLICABLE":
+            continue
+        elif policy == "DURATION":
+            if max_age_hours is not None and age_hours > max_age_hours:
+                error = "evidence exceeds freshness_sla"
+            else:
+                error = ""
+        else:
+            error = policy_error
+        if error:
+            green_gate_freshness_failures.append(
+                {
+                    "gate_id": gate_id,
+                    "freshness_sla": freshness_sla,
+                    "dated": str(scoreboard_row.get("dated") or ""),
+                    "age_hours": age_hours,
+                    "max_age_hours": max_age_hours,
+                    "error": error,
+                }
+            )
+    checks.append(
+        _check(
+            not green_gate_freshness_failures,
+            "green_gate_freshness_sla",
+            f"failure_count={len(green_gate_freshness_failures)}",
+        )
+    )
+
+    dashboard_status = str(dashboard_meta.get("status") or "").strip().upper()
+    checks.append(
+        _check(
+            dashboard_status in allowed_dashboard_statuses,
+            "dashboard_terminal_status",
+            f"status={dashboard_status or 'MISSING'} allowed={sorted(allowed_dashboard_statuses)}",
+        )
+    )
+
+    max_dashboard_age_hours = _positive_finite_hours(config.get("max_dashboard_age_hours"))
+    max_scoreboard_age_hours = _positive_finite_hours(config.get("max_scoreboard_age_hours"))
+    max_operational_as_of_age_hours = _positive_finite_hours(
+        config.get("max_operational_as_of_age_hours")
+    )
+    freshness_policy_ok = all(
+        limit is not None
+        for limit in (
+            max_dashboard_age_hours,
+            max_scoreboard_age_hours,
+            max_operational_as_of_age_hours,
+        )
+    )
+    checks.append(
+        _check(
+            freshness_policy_ok,
+            "freshness_policy_valid",
+            (
+                f"max_dashboard_age_hours={config.get('max_dashboard_age_hours')} "
+                f"max_scoreboard_age_hours={config.get('max_scoreboard_age_hours')} "
+                "max_operational_as_of_age_hours="
+                f"{config.get('max_operational_as_of_age_hours')}"
+            ),
+        )
+    )
+    dashboard_freshness = _source_freshness(
+        dashboard_meta.get("updated"),
+        as_of_dt=as_of_dt,
+        max_age_hours=max_dashboard_age_hours,
+    )
+    scoreboard_freshness = _source_freshness(
+        scoreboard_meta.get("last_dated"),
+        as_of_dt=as_of_dt,
+        max_age_hours=max_scoreboard_age_hours,
+    )
+    scoreboard_freshness.update(
+        {
+            "row_number": scoreboard_meta.get("last_row_number"),
+            "unparseable_dated_count": sum(
+                1
+                for value in scoreboard_meta.get("dated_values", [])
+                if _parse_source_timestamp(value) is None
+            ),
+        }
+    )
+    source_freshness = {
+        "dashboard": dashboard_freshness,
+        "scoreboard": scoreboard_freshness,
+    }
+    source_freshness_ok = freshness_policy_ok and all(
+        bool(row["ok"]) for row in source_freshness.values()
+    )
+    checks.append(
+        _check(
+            dashboard_freshness["ok"],
+            "dashboard_source_freshness",
+            (
+                f"raw={dashboard_freshness['raw']} age_hours={dashboard_freshness['age_hours']} "
+                f"max_age_hours={dashboard_freshness['max_age_hours']} "
+                f"error={dashboard_freshness['error'] or 'none'}"
+            ),
+        )
+    )
+    checks.append(
+        _check(
+            scoreboard_freshness["ok"],
+            "scoreboard_source_freshness",
+            (
+                f"raw={scoreboard_freshness['raw']} age_hours={scoreboard_freshness['age_hours']} "
+                f"max_age_hours={scoreboard_freshness['max_age_hours']} "
+                f"row_number={scoreboard_freshness['row_number']} "
+                f"error={scoreboard_freshness['error'] or 'none'}"
+            ),
+        )
+    )
+    operational_as_of = _source_freshness(
+        as_of_dt.isoformat(),
+        as_of_dt=evaluation_dt,
+        max_age_hours=max_operational_as_of_age_hours,
+    )
+    checks.append(
+        _check(
+            operational_as_of["ok"],
+            "operational_as_of_window",
+            (
+                f"as_of={operational_as_of['raw']} "
+                f"evaluated_at={evaluation_dt.replace(microsecond=0).isoformat()} "
+                f"age_hours={operational_as_of['age_hours']} "
+                f"max_age_hours={operational_as_of['max_age_hours']} "
+                f"error={operational_as_of['error'] or 'none'}"
+            ),
+        )
+    )
+
+    provenance_ok = (
+        provenance_policy_ok
+        and not dashboard_missing_gate_ids
+        and not dashboard_extra_gate_ids
+        and not scoreboard_missing_gate_ids
+        and not dashboard_scoreboard_disagreements
+        and not green_gates_missing_evidence
+        and not invalid_dashboard_states
+        and not invalid_scoreboard_states
+        and not green_gate_freshness_failures
+        and dashboard_status in allowed_dashboard_statuses
+    )
+    provenance = {
+        "ok": provenance_ok,
+        "dashboard_missing_gate_ids": dashboard_missing_gate_ids,
+        "dashboard_extra_gate_ids": dashboard_extra_gate_ids,
+        "scoreboard_missing_gate_ids": scoreboard_missing_gate_ids,
+        "scoreboard_extra_gate_ids": scoreboard_extra_gate_ids,
+        "dashboard_scoreboard_disagreements": dashboard_scoreboard_disagreements,
+        "green_gates_missing_evidence": green_gates_missing_evidence,
+        "green_gate_freshness_failures": green_gate_freshness_failures,
+        "invalid_dashboard_states": invalid_dashboard_states,
+        "invalid_scoreboard_states": invalid_scoreboard_states,
+        "dashboard_status": dashboard_status,
+        "allowed_dashboard_statuses": sorted(allowed_dashboard_statuses),
+    }
+    inputs_reconciled = source_freshness_ok and provenance_ok
+    status_counts_current = inputs_reconciled and operational_as_of["ok"]
+    if status_counts_current:
+        status_counts_label = "CURRENT_RECONCILED_INPUTS"
+    elif inputs_reconciled and not operational_as_of["ok"]:
+        status_counts_label = "HISTORICAL_REPLAY_RECONCILED_INPUTS"
+    else:
+        status_counts_label = "STALE_OR_UNRECONCILED_INPUT_REPLAY"
+    evaluation_mode = "OPERATIONAL" if operational_as_of["ok"] else "HISTORICAL_REPLAY"
+
     post_eod_ok, post_eod_details = _post_eod_ok(as_of_dt, str(config.get("post_eod_cutoff_local_time") or "21:10"))
     checks.append(_check(post_eod_ok, "post_eod_acceptance_window", post_eod_details))
     if not post_eod_ok:
@@ -442,11 +864,25 @@ def build_final_acceptance_report(
         "ok": gate == "GREEN",
         "generated_at": _now_almaty(),
         "as_of": as_of_dt.replace(microsecond=0).isoformat(),
+        "evaluated_at": evaluation_dt.replace(microsecond=0).isoformat(),
+        "evaluation_mode": evaluation_mode,
+        "operational_as_of": operational_as_of,
         "config_path": str(config_path),
         "gate_matrix_path": str(matrix_path),
         "dashboard_path": str(dashboard_path),
         "scoreboard_path": str(scoreboard_path),
         "dashboard_meta": dashboard_meta,
+        "scoreboard_meta": {
+            "row_count": scoreboard_meta.get("row_count"),
+            "last_row_number": scoreboard_meta.get("last_row_number"),
+            "last_dated": scoreboard_meta.get("last_dated"),
+        },
+        "source_freshness": source_freshness,
+        "source_freshness_ok": source_freshness_ok,
+        "provenance": provenance,
+        "inputs_reconciled": inputs_reconciled,
+        "status_counts_current": status_counts_current,
+        "status_counts_label": status_counts_label,
         "total_gates": len(scored_rows),
         "status_counts": _count_statuses(scored_rows),
         "hard_total": len(hard_rows),

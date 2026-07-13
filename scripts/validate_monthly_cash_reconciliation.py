@@ -18,8 +18,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.sales import ensure_sales_truth_views
-
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "cash_reconciliation"
 DEFAULT_STATUSDATE_CUTOVER = date(2026, 2, 27)
@@ -27,6 +25,34 @@ DEFAULT_STATUSDATE_CUTOVER = date(2026, 2, 27)
 
 class CashReconciliationError(RuntimeError):
     """Raised when strict cash reconciliation fails."""
+
+
+def _connect_readonly(db_path: Path) -> sqlite3.Connection:
+    resolved = db_path.expanduser().resolve()
+    conn = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
+def _object_exists(conn: sqlite3.Connection, object_type: str, name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?",
+            (object_type, name),
+        ).fetchone()
+        is not None
+    )
+
+
+def _paths_collide(left: Path, right: Path) -> bool:
+    left_resolved = left.expanduser().resolve()
+    right_resolved = right.expanduser().resolve()
+    if left_resolved == right_resolved:
+        return True
+    try:
+        return left_resolved.exists() and right_resolved.exists() and left_resolved.samefile(right_resolved)
+    except OSError:
+        return False
 
 
 def _month_end(month_key: str) -> date:
@@ -93,10 +119,24 @@ def validate_monthly_cash_reconciliation(
     if not db_path.exists():
         raise CashReconciliationError(f"db not found: {db_path}")
 
-    conn = sqlite3.connect(str(db_path))
+    db_path = db_path.expanduser().resolve()
+    output_root = output_root.expanduser().resolve()
+    if _paths_collide(output_root, db_path):
+        raise CashReconciliationError("output_root must not resolve to the DB path or a hardlink to it")
+    if db_path != DEFAULT_DB.expanduser().resolve() and output_root == DEFAULT_OUTPUT_ROOT.expanduser().resolve():
+        raise CashReconciliationError(
+            "non-production DB requires an explicit noncanonical output_root"
+        )
+
+    conn = _connect_readonly(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        ensure_sales_truth_views(conn)
+        if not _object_exists(conn, "view", "view_sales_line_truth"):
+            raise CashReconciliationError(
+                "required view missing: view_sales_line_truth; prepare schema in a separately write-gated lane"
+            )
+        if not _object_exists(conn, "table", "fact_cashflow_events"):
+            raise CashReconciliationError("required table missing: fact_cashflow_events")
         sales = pd.read_sql_query(
             """
             SELECT
@@ -217,6 +257,7 @@ def validate_monthly_cash_reconciliation(
         "tolerance_pct": float(tolerance_pct),
         "statusdate_cutover": statusdate_cutover.isoformat(),
         "db_path": str(db_path.resolve()),
+        "db_open_mode": "read_only",
         "rows_csv": str(rows_csv),
     }
 
