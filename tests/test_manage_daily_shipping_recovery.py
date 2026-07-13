@@ -38,6 +38,45 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_closeout_run(
+    project: Path,
+    *,
+    run_name: str,
+    target_date: str = "2026-07-13",
+    ok: bool = True,
+    mode: str = "apply",
+) -> Path:
+    run_dir = (
+        project
+        / "exports"
+        / "google_ops_board"
+        / "workflow_runs"
+        / target_date
+        / run_name
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "closeout_report.json").write_text(
+        json.dumps(
+            {
+                "ok": ok,
+                "mode": mode,
+                "target_date": target_date,
+                "run_id": run_name,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "run_control_snapshot.json").write_text(
+        json.dumps({"target_date": target_date, "matrix": [["target_date"], [target_date]]}),
+        encoding="utf-8",
+    )
+    (run_dir / "salesraw_snapshot.json").write_text(
+        json.dumps({"target_date": target_date, "matrix": [["Date"], [target_date]]}),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
 def _project_fixture(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     (project / "db").mkdir(parents=True)
@@ -65,6 +104,10 @@ def _project_fixture(tmp_path: Path) -> Path:
     )
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text(json.dumps({"stages": {}}), encoding="utf-8")
+    _write_closeout_run(
+        project,
+        run_name="20260713_191124_2026-07-13_closeout",
+    )
     return project
 
 
@@ -96,6 +139,41 @@ def test_create_snapshot_is_sqlite_consistent_and_manifest_verified(
     assert "excel_ui/SALES_KSP_CRM_V3.xlsx" in manifest["artifacts"]
     assert "runtime/state/waybill_shipping_obligations.json" in manifest["artifacts"]
     assert "workflow/closeout_checkpoint.json" in manifest["artifacts"]
+    assert "workflow/replay/closeout_report.json" in manifest["artifacts"]
+    assert "workflow/replay/run_control_snapshot.json" in manifest["artifacts"]
+    assert "workflow/replay/salesraw_snapshot.json" in manifest["artifacts"]
+    replay_report = json.loads(
+        (snapshot / "workflow" / "replay" / "closeout_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert replay_report["run_id"] == "20260713_191124_2026-07-13_closeout"
+
+
+def test_snapshot_ignores_newer_failed_closeout_for_replay(tmp_path: Path) -> None:
+    project = _project_fixture(tmp_path)
+    _write_closeout_run(
+        project,
+        run_name="20260713_201500_2026-07-13_closeout",
+        ok=False,
+    )
+
+    report = create_snapshot(
+        project_root=project,
+        state_root=tmp_path / "state",
+        now=datetime(2026, 7, 13, 17, 0, tzinfo=UTC),
+        hostname="M1-test",
+    )
+
+    replay_report = json.loads(
+        (
+            Path(report["snapshot_dir"])
+            / "workflow"
+            / "replay"
+            / "closeout_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert replay_report["run_id"] == "20260713_191124_2026-07-13_closeout"
 
 
 def stat_mode(path: Path) -> int:

@@ -3,8 +3,9 @@
 ## Current Operating Boundary
 
 M1 remains the only daily-shipping writer through the employee workflow on
-2026-07-14. The employee continues to fill sizes and set READY before `17:00
-Asia/Almaty`; no employee-facing process changed.
+2026-07-14. The live path must be ready by `17:00 Asia/Almaty`; the employee
+continues to fill sizes and set READY as usual, and no employee-facing process
+changed.
 
 The recovery, retention, log-maintenance, and health-monitor LaunchAgents in
 this release are generated candidates. They are not installed, loaded, or
@@ -16,7 +17,17 @@ failure.
 
 - `scripts/manage_daily_shipping_recovery.py` creates SQLite-consistent,
   owner-only snapshots and sends them to the existing encrypted restic
-  repository only with its explicit apply gate.
+  repository only with its explicit apply gate. After a successful daily
+  apply closeout, the snapshot also preserves the exact Board run-control and
+  SalesRaw snapshots plus their successful closeout report for offline replay.
+- `scripts/run_m5_daily_shipping_shadow.py` is the receiver-side gate. It
+  verifies the exact Git release ancestry, snapshot and restored-state hashes,
+  SQLite and workbook integrity, credential file permissions, and that none of
+  the canonical shipping labels are loaded. Its preserved-day closeout reads
+  only the checksummed Board snapshots; it does not read the current Google
+  Board. It consumes protected M5 credentials for read-only Kaspi API context,
+  strips all write-enable gates after dotenv loading, exposes no credential
+  value, and cannot invoke apply/send/launchctl mutation arguments.
 - `scripts/rotate_daily_shipping_logs.py` discovers shipping logs from the
   runtime manifest and creates verified owner-only gzip archives only with its
   explicit apply gate.
@@ -81,6 +92,11 @@ employee workflow:
    when healthy.
 7. Keep M5 and cloud compute shadow-only until their own one-writer cutover
    packet is GREEN.
+
+The exact M5 packet and command are canonical in
+`docs/ops/M5_DAILY_SHIPPING_SHADOW_CUTOVER_HANDOFF_20260713.md`. A GREEN
+receiver report proves only no-send reproducibility. It never authorizes a
+scheduler load or live canary.
 
 ## Global Test Debt
 

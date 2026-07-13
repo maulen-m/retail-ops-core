@@ -201,6 +201,51 @@ def _target_date(now: datetime) -> str:
     return _aware(now).astimezone(ALMATY_TZ).date().isoformat()
 
 
+def _latest_successful_closeout_run(
+    project_root: Path, *, business_date: str
+) -> Path | None:
+    day_root = (
+        project_root
+        / "exports"
+        / "google_ops_board"
+        / "workflow_runs"
+        / business_date
+    )
+    if not day_root.is_dir():
+        return None
+    for report_path in sorted(
+        day_root.glob("*/closeout_report.json"),
+        key=lambda path: path.parent.name,
+        reverse=True,
+    ):
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(report, dict)
+                or report.get("ok") is not True
+                or str(report.get("mode") or "") != "apply"
+                or str(report.get("target_date") or "") != business_date
+            ):
+                continue
+            for filename in (
+                "run_control_snapshot.json",
+                "salesraw_snapshot.json",
+            ):
+                snapshot = json.loads(
+                    (report_path.parent / filename).read_text(encoding="utf-8")
+                )
+                if (
+                    not isinstance(snapshot, dict)
+                    or str(snapshot.get("target_date") or "") != business_date
+                    or not isinstance(snapshot.get("matrix"), list)
+                ):
+                    raise ValueError("invalid preserved board snapshot")
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        return report_path.parent
+    return None
+
+
 def create_snapshot(
     *,
     project_root: Path = PROJECT_ROOT,
@@ -262,6 +307,21 @@ def create_snapshot(
             copied_checkpoint.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(checkpoint, copied_checkpoint)
             _record_artifact(artifacts, snapshot, copied_checkpoint)
+
+        replay_source = _latest_successful_closeout_run(
+            project_root,
+            business_date=_target_date(current),
+        )
+        if replay_source is not None:
+            for filename in (
+                "closeout_report.json",
+                "run_control_snapshot.json",
+                "salesraw_snapshot.json",
+            ):
+                replay_target = snapshot / "workflow" / "replay" / filename
+                replay_target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(replay_source / filename, replay_target)
+                _record_artifact(artifacts, snapshot, replay_target)
 
         manifest = {
             "schema_version": 1,

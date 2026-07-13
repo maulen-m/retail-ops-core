@@ -118,6 +118,74 @@ STORE_NAME_TO_API_CODE = {
 }
 
 
+class _PreservedBoardClient:
+    """Read-only Google Board adapter backed by a completed run's snapshots."""
+
+    def __init__(self, matrices: dict[str, list[Any]]) -> None:
+        self._matrices = copy.deepcopy(matrices)
+
+    def get_tab_values(self, tab_name: str) -> list[Any]:
+        if tab_name not in self._matrices:
+            raise KeyError(f"preserved board snapshot has no tab: {tab_name}")
+        return copy.deepcopy(self._matrices[tab_name])
+
+    def update_tab_rows(self, *_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("preserved board client is read-only")
+
+
+def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is missing or invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return payload
+
+
+def _load_preserved_board_client(
+    run_dir: Path,
+    *,
+    target_date: date,
+) -> tuple[_PreservedBoardClient, dict[str, Any]]:
+    """Load an offline Board view from one successful apply closeout."""
+
+    source = Path(run_dir).expanduser().resolve()
+    if not source.is_dir():
+        raise ValueError("preserved board run directory is missing")
+    report = _read_json_object(
+        source / "closeout_report.json", label="preserved closeout report"
+    )
+    target_iso = target_date.isoformat()
+    if report.get("ok") is not True or str(report.get("mode") or "") != "apply":
+        raise ValueError("preserved board source must be a successful apply closeout")
+    if str(report.get("target_date") or "") != target_iso:
+        raise ValueError("preserved closeout target date does not match replay target date")
+
+    matrices: dict[str, list[Any]] = {}
+    for tab_name, filename in (
+        ("Run_Control", "run_control_snapshot.json"),
+        ("SalesRaw_Today", "salesraw_snapshot.json"),
+    ):
+        snapshot = _read_json_object(
+            source / filename, label=f"preserved {tab_name} snapshot"
+        )
+        if str(snapshot.get("target_date") or "") != target_iso:
+            raise ValueError(f"preserved {tab_name} snapshot target date does not match")
+        matrix = snapshot.get("matrix")
+        if not isinstance(matrix, list) or not all(
+            isinstance(row, list) for row in matrix
+        ):
+            raise ValueError(f"preserved {tab_name} snapshot matrix must be a list")
+        matrices[tab_name] = matrix
+
+    return _PreservedBoardClient(matrices), {
+        "board_source_mode": "preserved_snapshot",
+        "board_source_path": str(source),
+        "source_apply_run_id": str(report.get("run_id") or ""),
+    }
+
+
 def _filter_storeb_salesraw_rows(
     rows: list[dict[str, Any]],
     *,
@@ -154,6 +222,19 @@ def _require_apply_gate(apply: bool, env_name: str) -> None:
 
 def _load_repo_dotenv() -> None:
     load_dotenv(DEFAULT_DOTENV_PATH, override=False)
+
+
+def _strip_shadow_write_gates() -> list[str]:
+    """Remove every local write enable before a receiver shadow can run."""
+
+    removed = sorted(
+        key
+        for key in os.environ
+        if key.startswith("ENABLE_") or key == AUTOMATION_LOCK_HELD_ENV
+    )
+    for key in removed:
+        os.environ.pop(key, None)
+    return removed
 
 
 def _resolve_target_date(value: str) -> date:
@@ -1494,10 +1575,25 @@ def _run_closeout(args: argparse.Namespace) -> int:
     _require_apply_gate(args.apply, contract.closeout_write_env_gate)
 
     target_date = _resolve_target_date(args.target_date)
+    shadow_board_run_dir = getattr(args, "shadow_board_run_dir", None)
+    if args.apply and shadow_board_run_dir:
+        raise ValueError("--shadow-board-run-dir cannot be combined with --apply")
     db_path = Path(args.db_path).expanduser() if args.db_path else data_path("db", "app.db")
     service_account_json = resolve_service_account_json(args.service_account_json, contract=contract)
     spreadsheet_id = resolve_spreadsheet_id(args.spreadsheet_id, contract=contract)
-    client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, service_account_json)
+    if shadow_board_run_dir:
+        client, board_source = _load_preserved_board_client(
+            Path(shadow_board_run_dir), target_date=target_date
+        )
+    else:
+        client = GoogleOpsBoardClient.from_service_account_file(
+            spreadsheet_id, service_account_json
+        )
+        board_source = {
+            "board_source_mode": "live_google_board",
+            "board_source_path": "",
+            "source_apply_run_id": "",
+        }
     execution_mode = "apply" if args.apply else "dry_run"
     if args.checkpoint_path:
         checkpoint_path = Path(args.checkpoint_path).expanduser()
@@ -1535,6 +1631,7 @@ def _run_closeout(args: argparse.Namespace) -> int:
         "resume_requested": bool(args.resume),
         "resumed_from_checkpoint": False,
         "ok": False,
+        **board_source,
     }
 
     run_control_matrix = client.get_tab_values("Run_Control")
@@ -2897,8 +2994,6 @@ def _run_closeout(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _load_repo_dotenv()
-
     parser = argparse.ArgumentParser(description="Run fail-closed Google Ops Board daily closeout.")
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT_PATH, help="Contract YAML path")
     parser.add_argument("--db-path", type=Path, default=None, help="Optional DB path (default: db/app.db)")
@@ -2922,9 +3017,25 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Immutable READY timestamp supplied by the debounced launcher; required for --apply",
     )
+    parser.add_argument(
+        "--shadow-board-run-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Dry-run only: read Run_Control and SalesRaw_Today from a preserved "
+            "successful apply closeout instead of Google"
+        ),
+    )
     parser.add_argument("--apply", action="store_true", help="Run live closeout (default: dry-run)")
     parser.add_argument("--json-out", type=Path, default=None, help="Optional top-level JSON report path")
     args = parser.parse_args(argv)
+
+    if args.apply and args.shadow_board_run_dir:
+        parser.error("--shadow-board-run-dir cannot be combined with --apply")
+
+    _load_repo_dotenv()
+    if args.shadow_board_run_dir:
+        _strip_shadow_write_gates()
 
     if args.apply and str(os.environ.get(AUTOMATION_LOCK_HELD_ENV) or "").strip() != "1":
         previous = os.environ.get(AUTOMATION_LOCK_HELD_ENV)

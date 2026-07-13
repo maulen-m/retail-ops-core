@@ -25,6 +25,170 @@ def _isolate_closeout_runtime_defaults(monkeypatch, tmp_path: Path) -> None:
     )
 
 
+def _preserved_board_run(
+    tmp_path: Path,
+    *,
+    target_date: str = "2026-07-13",
+    report_ok: bool = True,
+    report_mode: str = "apply",
+) -> Path:
+    contract = load_ops_board_contract()
+    run_dir = tmp_path / "preserved_closeout"
+    run_dir.mkdir()
+    run_control_row = [
+        target_date,
+        "READY",
+        "owner",
+        f"{target_date}T17:00:00+05:00",
+        "",
+        "",
+        "",
+        "",
+    ]
+    salesraw_row = [
+        "TODAY",
+        target_date,
+        "Universal",
+        "",
+        "",
+        "1",
+        "Nike",
+        "1001",
+        "L",
+        "L",
+        "Offer",
+        "SKU-1",
+        "1",
+        "line",
+        "DEFAULT",
+        "LOW",
+    ]
+    (run_dir / "closeout_report.json").write_text(
+        json.dumps(
+            {
+                "ok": report_ok,
+                "mode": report_mode,
+                "target_date": target_date,
+                "run_id": "preserved-apply-run",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "run_control_snapshot.json").write_text(
+        json.dumps(
+            {
+                "target_date": target_date,
+                "matrix": [contract.tabs["Run_Control"].headers, run_control_row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "salesraw_snapshot.json").write_text(
+        json.dumps(
+            {
+                "target_date": target_date,
+                "matrix": [contract.tabs["SalesRaw_Today"].headers, salesraw_row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def test_preserved_board_client_loads_snapshots_without_online_constructor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = _preserved_board_run(tmp_path)
+    monkeypatch.setattr(
+        closeout_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: pytest.fail("online board client must not be constructed"),
+    )
+
+    client, receipt = closeout_mod._load_preserved_board_client(
+        run_dir, target_date=date(2026, 7, 13)
+    )
+
+    assert client.get_tab_values("Run_Control")[1][0] == "2026-07-13"
+    assert client.get_tab_values("SalesRaw_Today")[1][7] == "1001"
+    assert receipt["board_source_mode"] == "preserved_snapshot"
+    assert receipt["source_apply_run_id"] == "preserved-apply-run"
+
+
+def test_preserved_board_client_refuses_writes(tmp_path: Path) -> None:
+    run_dir = _preserved_board_run(tmp_path)
+    client, _receipt = closeout_mod._load_preserved_board_client(
+        run_dir, target_date=date(2026, 7, 13)
+    )
+
+    with pytest.raises(RuntimeError, match="read-only"):
+        client.update_tab_rows("Run_Control", [], [])
+
+
+@pytest.mark.parametrize(
+    ("report_ok", "report_mode", "target_date", "match"),
+    [
+        (False, "apply", "2026-07-13", "successful apply"),
+        (True, "dry_run", "2026-07-13", "successful apply"),
+        (True, "apply", "2026-07-12", "target date"),
+    ],
+)
+def test_preserved_board_client_rejects_non_authoritative_closeout(
+    tmp_path: Path,
+    report_ok: bool,
+    report_mode: str,
+    target_date: str,
+    match: str,
+) -> None:
+    run_dir = _preserved_board_run(
+        tmp_path,
+        target_date=target_date,
+        report_ok=report_ok,
+        report_mode=report_mode,
+    )
+
+    with pytest.raises(ValueError, match=match):
+        closeout_mod._load_preserved_board_client(
+            run_dir, target_date=date(2026, 7, 13)
+        )
+
+
+def test_preserved_board_mode_cannot_be_combined_with_apply(tmp_path: Path) -> None:
+    run_dir = _preserved_board_run(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        closeout_mod.main(
+            [
+                "--apply",
+                "--shadow-board-run-dir",
+                str(run_dir),
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_shadow_mode_strips_write_gates_after_dotenv_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_GOOGLE_OPS_BOARD_WRITE", "1")
+    monkeypatch.setenv("ENABLE_KASPI_SHIP_WRITE", "1")
+    monkeypatch.setenv(closeout_mod.AUTOMATION_LOCK_HELD_ENV, "1")
+    monkeypatch.setenv("KASPI_TOKEN_ACMEWEAR", "protected-runtime-value")
+
+    removed = closeout_mod._strip_shadow_write_gates()
+
+    assert removed == [
+        closeout_mod.AUTOMATION_LOCK_HELD_ENV,
+        "ENABLE_GOOGLE_OPS_BOARD_WRITE",
+        "ENABLE_KASPI_SHIP_WRITE",
+    ]
+    assert "ENABLE_GOOGLE_OPS_BOARD_WRITE" not in closeout_mod.os.environ
+    assert "ENABLE_KASPI_SHIP_WRITE" not in closeout_mod.os.environ
+    assert closeout_mod.AUTOMATION_LOCK_HELD_ENV not in closeout_mod.os.environ
+    assert closeout_mod.os.environ["KASPI_TOKEN_ACMEWEAR"] == "protected-runtime-value"
+
+
 def test_stage_runner_enforces_named_timeout_and_persists_timeout_report(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -724,8 +888,6 @@ def test_build_readiness_report_blocks_when_hold_and_blank_size(tmp_path: Path):
             ],
         }
     )
-
-    seen_health: dict[str, object] = {}
 
     report = closeout_mod.build_readiness_report(
         client=client,
