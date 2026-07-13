@@ -76,6 +76,15 @@ def test_shipping_release_workflow_installs_docs_lint_dependency() -> None:
     assert "apt-get install --yes ripgrep" in workflow
 
 
+def test_shipping_release_gate_covers_order_import_scheduler_contracts() -> None:
+    gate = (PROJECT_ROOT / "scripts" / "run_daily_shipping_release_gate.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "test_kaspi_import_scheduler_contract.py" in gate
+    assert "test_run_kaspi_import_scheduler.py" in gate
+
+
 def test_generated_markdown_is_exactly_manifest_derived() -> None:
     manifest = load_manifest(MANIFEST_PATH)
     expected = render_runtime_markdown(manifest)
