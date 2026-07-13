@@ -8,7 +8,7 @@ Purpose: fail-closed blocker before shipping/waybill workflow so shipment cannot
 ## Checks (all required)
 - `anchor_health`: `python3 scripts/check_anchor_health.py --project-root <repo>`
 - `scheduler_validate_only`: `bash scripts/install_single_truth_ops_scheduler.sh --validate-only`
-- `validate_params_strict`: `python3 scripts/validate_params.py --strict`
+- `local_db_preflight`: run `scripts/check_local_app_db.py` with the same Python interpreter as the shipment preflight. Global accounting/economics publication validation remains a separate gate and does not block the daily shipping transport chain.
 - `validate_single_truth_system`: `python3 scripts/validate_single_truth_system.py`
 - `ops_status`: `python3 scripts/ops_status.py --project-root <repo>`
 
