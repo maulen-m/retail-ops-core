@@ -6,9 +6,9 @@ M1 remains the only daily-shipping writer through the employee workflow on
 2026-07-14. The employee continues to fill sizes and set READY before `17:00
 Asia/Almaty`; no employee-facing process changed.
 
-The recovery, retention, and log-maintenance LaunchAgents in this release are
-generated candidates. They are not installed, loaded, or part of tomorrow's
-live writer cluster. Their activation state is canonical in
+The recovery, retention, log-maintenance, and health-monitor LaunchAgents in
+this release are generated candidates. They are not installed, loaded, or
+part of tomorrow's live writer cluster. Their activation state is canonical in
 `config/daily_shipping_runtime.json` and premature installation is a validator
 failure.
 
@@ -29,6 +29,12 @@ failure.
   executable stage and records timeout failures as return code `124` in the
   stage report. The validator compares those values with the canonical
   manifest.
+- `scripts/monitor_daily_shipping_health.py` evaluates all ten canonical
+  schedulers using explicit per-scheduler evidence modes. It also checks the
+  disk floor, recovery-receipt freshness after activation, and the redacted
+  daily Kaspi API ledger. Reports are owner-only and live outside the repo.
+  Alerting needs both `--send-alert` and
+  `ENABLE_DAILY_SHIPPING_HEALTH_ALERTS=1`.
 
 ## Current Proof
 
@@ -44,6 +50,10 @@ failure.
   no-send shadow proves that enforcement cannot interrupt fulfillment.
 - Log maintenance is dry-run only before activation. A large log is not a
   reason to rotate it while a writer still has an open handle.
+- A manual no-alert health-monitor probe against the live M1 runtime was GREEN
+  on 2026-07-13: ten schedulers passed, disk was `20.613%` free, the API ledger
+  had `707` valid rows, and inactive recovery freshness was reported as
+  `NOT_ACTIVE`. No alert was requested or sent.
 
 ## Post-Closeout Activation Sequence
 
@@ -61,7 +71,11 @@ employee workflow:
 5. Leave log maintenance uninstalled for its first live review. Apply one
    manual rotation only when the target log has no open writer, then activate
    its generated plist in a separate change.
-6. Keep M5 and cloud compute shadow-only until their own one-writer cutover
+6. Run the health monitor manually without `--send-alert`. After one full
+   post-closeout day is GREEN, activate its generated plist in a separate
+   change and confirm the first alert-enabled run writes only owner-local state
+   when healthy.
+7. Keep M5 and cloud compute shadow-only until their own one-writer cutover
    packet is GREEN.
 
 ## Global Test Debt
