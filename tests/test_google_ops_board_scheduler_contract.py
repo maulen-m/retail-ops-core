@@ -58,7 +58,11 @@ def test_google_ops_board_size_writeback_plist_contract() -> None:
         "~/Docs/Autonomous_business/scripts/run_google_ops_board_size_writeback_scheduler.py",
     ]
     assert "ENABLE_GOOGLE_OPS_BOARD_DB_WRITE" not in env
-    assert env == {"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
+    assert env == {
+        "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
+        "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "~/Docs/Business/S/ab-ops-board-sync-key.json",
+        "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    }
     assert plist.get("StandardOutPath") == (
         "~/Docs/Autonomous_business/runtime_logs/google_ops_board_size_writeback_stdout.log"
     )

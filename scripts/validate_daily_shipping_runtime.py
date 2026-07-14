@@ -316,6 +316,22 @@ def render_runtime_markdown(manifest: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Back-office Sidecars",
+            "",
+            "These jobs are outside READY closeout and must never become employee-workflow prerequisites.",
+            "",
+            "| Label | Schedule | Entrypoint | State |",
+            "|---|---|---|---|",
+        ]
+    )
+    for sidecar in manifest.get("backoffice_sidecars") or []:
+        lines.append(
+            f"| `{sidecar['label']}` | `{sidecar['schedule']}` | `{sidecar['program']}` | "
+            f"`{sidecar['activation_state']}` |"
+        )
+    lines.extend(
+        [
+            "",
             "## Credential Boundary",
             "",
             "LaunchAgent files contain credential file pointers and non-secret switches only. Secret values live in owner-only files, are never rendered here, and are never included in validator output.",
@@ -578,6 +594,47 @@ def validate_daily_shipping_runtime(
                 )
                 if differences:
                     errors.append(f"installed plist drift for {label}: {', '.join(differences)}")
+
+    for sidecar in manifest.get("backoffice_sidecars") or []:
+        label = str(sidecar.get("label") or "").strip()
+        source_plist = project_root / str(sidecar.get("source_plist") or "")
+        program = project_root / str(sidecar.get("program") or "")
+        if not label:
+            errors.append("back-office sidecar label is missing")
+            continue
+        if not source_plist.exists():
+            errors.append(f"missing back-office sidecar plist for {label}: {source_plist}")
+            continue
+        if not program.exists():
+            errors.append(f"missing back-office sidecar program for {label}: {program}")
+        try:
+            payload = plistlib.loads(source_plist.read_bytes())
+        except Exception as exc:
+            errors.append(f"unreadable back-office sidecar plist for {label}: {exc}")
+            continue
+        if str(payload.get("Label") or "") != label:
+            errors.append(f"back-office sidecar plist label drift: {label}")
+        forbidden = _forbidden_env_names(payload, fragments)
+        if forbidden:
+            errors.append(
+                f"back-office sidecar plist embeds forbidden environment names for {label}: "
+                + ", ".join(forbidden)
+            )
+        if check_installed and str(sidecar.get("activation_state") or "").startswith("active_"):
+            installed_path = installed_directory / f"{label}.plist"
+            if not installed_path.exists():
+                errors.append(f"active back-office sidecar is not installed: {label}")
+            else:
+                installed_payload = plistlib.loads(installed_path.read_bytes())
+                differences = _field_differences(
+                    _normalize_plist_for_compare(payload),
+                    _normalize_plist_for_compare(installed_payload),
+                )
+                if differences:
+                    errors.append(
+                        f"installed back-office sidecar plist drift for {label}: "
+                        + ", ".join(differences)
+                    )
 
     if check_installed and installed_directory.is_dir():
         for path in sorted(installed_directory.glob("*.plist")):

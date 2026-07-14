@@ -111,7 +111,7 @@
         "minute": 45
       },
       "max_bytes": 10485760,
-      "keep_archives_per_log": 5,
+      "keep_archives_per_log": 14,
       "archive_root": "${HOME}/Library/Application Support/Autonomous_business/shipping_logs",
       "extra_paths": [
         "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_stdout.log",
@@ -151,6 +151,22 @@
     "keep_alive": false,
     "path_env": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   },
+  "backoffice_sidecars": [
+    {
+      "label": "com.example.kaspi-crm-nightly-sidecar",
+      "source_plist": "config/com.example.kaspi-crm-nightly-sidecar.plist",
+      "program": "scripts/run_crm_nightly_sidecar.py",
+      "schedule": "00:30",
+      "activation_state": "active_until_seven_consecutive_parity_green_business_days",
+      "forbidden_dependencies": [
+        "Google Ops Board publish",
+        "production DB write",
+        "READY closeout",
+        "Telegram",
+        "WhatsApp"
+      ]
+    }
+  ],
   "schedulers": [
     {
       "label": "com.example.kaspi-import-v2",
@@ -236,7 +252,10 @@
         "type": "manual"
       },
       "health": {"mode": "loaded"},
-      "environment_variables": {},
+      "environment_variables": {
+        "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
+        "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json"
+      },
       "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_size_writeback_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_size_writeback_stderr.log"
     },

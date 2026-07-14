@@ -58,6 +58,14 @@
 | `com.example.kaspi-shipped-truth-sync` | post-closeout shipped truth sync | `09:30, 19:15` | `${PROJECT_ROOT}/scripts/run_kaspi_shipped_truth_sync_scheduler.py` | `config/com.example.kaspi-shipped-truth-sync.plist` |
 | `com.example.kaspi-daily-ops-report` | daily operational closeout report | `19:10` | `${PROJECT_ROOT}/scripts/run_kaspi_daily_ops_report_scheduler.py` | `config/com.example.kaspi-daily-ops-report.plist` |
 
+## Back-office Sidecars
+
+These jobs are outside READY closeout and must never become employee-workflow prerequisites.
+
+| Label | Schedule | Entrypoint | State |
+|---|---|---|---|
+| `com.example.kaspi-crm-nightly-sidecar` | `00:30` | `scripts/run_crm_nightly_sidecar.py` | `active_until_seven_consecutive_parity_green_business_days` |
+
 ## Credential Boundary
 
 LaunchAgent files contain credential file pointers and non-secret switches only. Secret values live in owner-only files, are never rendered here, and are never included in validator output.
