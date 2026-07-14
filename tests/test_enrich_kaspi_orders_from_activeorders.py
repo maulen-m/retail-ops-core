@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+import hashlib
+import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import scripts.enrich_kaspi_orders_from_activeorders as enrich_mod
 
 from scripts.enrich_kaspi_orders_from_activeorders import (
     _apply_updates,
@@ -235,6 +240,7 @@ def test_plan_activeorders_enrichment_matches_blank_identity_then_inserts_extra_
             "sku_key": "",
             "sku_id": "",
             "quantity": 1,
+            "unit_price_kzt": 1990,
             "internal_status": "ACCEPTED",
         }
     ]
@@ -272,15 +278,155 @@ def test_plan_activeorders_enrichment_handles_blank_parsed_identity_without_cras
             "sku_key": "",
             "sku_id": "",
             "quantity": 1,
+            "unit_price_kzt": 1990,
             "internal_status": "ACCEPTED",
         }
     ]
 
     plan = plan_activeorders_enrichment(parsed_orders=parsed_orders, candidate_rows=candidate_rows)
 
-    assert len(plan["updates"]) == 1
-    assert plan["updates"][0]["candidate"]["id"] == 44
+    assert plan["updates"] == []
+    assert plan["noop_matches"] == 1
     assert plan["inserts"] == []
+
+
+def _insert_equal_enrichment_fixture(db_path: Path, *, quantity: int = 1) -> dict[str, object]:
+    conn = _make_db(db_path)
+    order = {
+        "order_id": "NOOP-1001",
+        "store_code": "UNIVERSAL",
+        "planned_shipment_date": "2026-04-15",
+        "kaspi_offer_name": "Offer Name",
+        "kaspi_article": "ARTICLE-1001",
+        "line_identity_key": "ARTICLE-1001",
+        "sku_key": "CL_NEW-CLO_MEN_TEST_BLACK",
+        "sku_id": "CL_NEW-CLO_MEN_TEST_BLACK_XL",
+        "my_size": "XL",
+        "product_type": "CL",
+        "quantity": quantity,
+        "unit_price_kzt": 1990,
+        "internal_status": "READY",
+    }
+    conn.execute(
+        """
+        INSERT INTO fact_orders_kaspi (
+            id, order_id, store_code, channel_code, kaspi_offer_name, kaspi_article,
+            line_identity_key, sku_key, sku_id, quantity, unit_price_kzt,
+            planned_shipment_date, actual_shipment_date, kaspi_status, internal_status,
+            source, source_file, updated_at
+        ) VALUES (1, ?, ?, 'KSP', ?, ?, ?, ?, ?, 1, ?, ?, NULL,
+                  'KASPI_DELIVERY', 'ACCEPTED', 'API', 'existing-source', 'stable')
+        """,
+        (
+            order["order_id"],
+            order["store_code"],
+            order["kaspi_offer_name"],
+            order["kaspi_article"],
+            order["line_identity_key"],
+            order["sku_key"],
+            order["sku_id"],
+            order["unit_price_kzt"],
+            order["planned_shipment_date"],
+        ),
+    )
+    _ensure_dim_sku(conn, str(order["sku_key"]), product_type="CL")
+    _ensure_dim_sku_size(
+        conn,
+        str(order["sku_id"]),
+        str(order["sku_key"]),
+        str(order["my_size"]),
+    )
+    conn.commit()
+    conn.close()
+    return order
+
+
+def test_identical_apply_skips_db_backup_and_preserves_database_bytes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    export_path = tmp_path / "ActiveOrders.xlsx"
+    export_path.write_bytes(b"test fixture; parser is stubbed")
+    output_path = tmp_path / "report.json"
+    order = _insert_equal_enrichment_fixture(db_path)
+    before_sha = hashlib.sha256(db_path.read_bytes()).hexdigest()
+
+    monkeypatch.setenv(enrich_mod.WRITE_ENV_GATE, "1")
+    monkeypatch.setattr(
+        enrich_mod,
+        "parse_active_orders",
+        lambda _path: SimpleNamespace(orders=[dict(order)]),
+    )
+    monkeypatch.setattr(
+        enrich_mod,
+        "_backup_db",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("identical enrichment must not create a DB backup")
+        ),
+    )
+
+    assert enrich_mod.main(
+        [
+            "--db", str(db_path),
+            "--file", str(export_path),
+            "--target-date", "2026-04-15",
+            "--backup-root", str(tmp_path / "backups"),
+            "--output-json", str(output_path),
+            "--apply",
+        ]
+    ) == 0
+
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["updates_planned"] == 0
+    assert report["inserts_planned"] == 0
+    assert report["db_backup_path"] is None
+    assert report["db_write_skipped_noop"] is True
+    assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_sha
+
+
+def test_real_enrichment_change_still_creates_backup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    export_path = tmp_path / "ActiveOrders.xlsx"
+    export_path.write_bytes(b"test fixture; parser is stubbed")
+    output_path = tmp_path / "report.json"
+    order = _insert_equal_enrichment_fixture(db_path, quantity=2)
+    backup_calls: list[Path] = []
+
+    def _fake_backup(_db_path: Path, backup_root: Path) -> Path:
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_root / "backup.sqlite"
+        backup_path.write_bytes(Path(_db_path).read_bytes())
+        backup_calls.append(backup_path)
+        return backup_path
+
+    monkeypatch.setenv(enrich_mod.WRITE_ENV_GATE, "1")
+    monkeypatch.setattr(
+        enrich_mod,
+        "parse_active_orders",
+        lambda _path: SimpleNamespace(orders=[dict(order)]),
+    )
+    monkeypatch.setattr(enrich_mod, "_backup_db", _fake_backup)
+
+    assert enrich_mod.main(
+        [
+            "--db", str(db_path),
+            "--file", str(export_path),
+            "--target-date", "2026-04-15",
+            "--backup-root", str(tmp_path / "backups"),
+            "--output-json", str(output_path),
+            "--apply",
+        ]
+    ) == 0
+
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["updates_planned"] == 1
+    assert report["updates_applied"] == 1
+    assert report["db_write_skipped_noop"] is False
+    assert len(backup_calls) == 1
 
 
 def test_canonicalize_parsed_orders_uses_article_map_for_acmewear_line51_alias(tmp_path: Path):
