@@ -174,8 +174,8 @@ logs/
 
 | Script | Purpose | Schedule |
 |--------|---------|----------|
-| `run_full_import.command` | Import orders from API | 11:00, 15:02, 16:01, 17:02 (launchd) |
-| `run_google_ops_board_closeout_watch_scheduler.py` | Stamp/observe stable `READY` and launch closeout | Every 15 seconds in watch window |
+| `run_kaspi_import_scheduler.py` | Direct API source refresh, DB enrichment, and Board publish; no CRM | 11:00, 15:02, 16:01, 17:02 (launchd) |
+| `run_google_ops_board_closeout_watch_scheduler.py` | Stamp/observe stable `READY` and launch closeout | Every 60 seconds in watch window; Run_Control-only while HOLD |
 | `run_google_ops_board_closeout_scheduler.py` | Serialize and resume the exact daily request | Triggered by watcher; 18:30 backstop |
 | `run_google_ops_board_closeout.py` | Size writeback through pinned Telegram delivery | Canonical closeout entrypoint |
 | `run_build_waybills_v2.command` | Legacy manual bundle recovery | Manual only |

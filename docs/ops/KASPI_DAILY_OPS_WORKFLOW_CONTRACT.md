@@ -6,7 +6,8 @@ Lock the operational contract for daily order import and waybill workflow so cha
 This contract is fail-closed: workflow regressions must surface as test failures or non-zero runtime exits.
 
 ## Canonical Entrypoints
-- `excel_ui/run_full_import.command`
+- `scripts/run_kaspi_import_scheduler.py`
+- `scripts/run_google_ops_board_publish_scheduler.py --force-source-refresh`
 - `excel_ui/run_merged_build_waybills.command`
 - `excel_ui/run_google_ops_board_closeout.command`
 - `scripts/run_kaspi_daily_ops.py`
@@ -23,7 +24,7 @@ This contract is fail-closed: workflow regressions must surface as test failures
 - `config/com.example.kaspi-waybill-deadline.plist`
   - `18:30` daily Google Ops Board closeout run
 - `config/com.example.waybill-telegram-control.plist`
-  - every `15` seconds
+  - every `60` seconds
   - Telegram /status, Telegram /ready, and Telegram /halt fallback control for the same closeout gate
 - `config/com.example.kaspi-daily-ops-report.plist`
   - `19:10` daily daily-ops report run
@@ -63,7 +64,7 @@ and corresponding tests before merge.
 - Owner-approved PP1 late-window rule: Universal (`30000001_PP1`) and STORE-B (`30000002_PP1`) PP1 warehouse orders share the same all-store `17:00` Asia/Almaty cutoff; they must not fall back to any legacy `16:00` cutoff.
 - Google Ops Board, waybill download, bundle build, and closeout validation paths must normalize `30000001_PP1` to `UNIVERSAL` and `30000002_PP1` to `STOREB` before store comparisons, grouping, or manifest matching.
 - The `17:02` import exists for DB freshness, all-store 17:00 late-window visibility, and next-day visibility; it must not expand same-day Google Ops Board eligibility after the 17:00 cutoff.
-- `excel_ui/run_full_import.command` must publish the Google Ops Board whenever export + DB sync + ActiveOrders enrichment are green, even if CRM Step 2 later turns the overall import workflow red.
+- Scheduled daily shipping refresh must run direct Kaspi export + validation + DB sync + ActiveOrders enrichment + Google Ops Board publish without entering the Excel CRM workflow. `excel_ui/run_full_import.command` remains a legacy/manual back-office surface and is not a scheduled shipping prerequisite.
 - The canonical ActiveOrders source refresh must fail on any incomplete enabled-store/API pagination. When all required reads complete but the filtered result is empty, it must replace the prior source with a current-day header-only canonical workbook so the publisher can remove stale board rows without weakening source authority.
 
 ## Standing Daily Shipping Authority
@@ -108,6 +109,7 @@ This standing authority is limited to the canonical daily shipping chain: narrow
   - scheduled Kaspi API call ledgers default to `runtime/api_ledger/kaspi_api_<YYYY-MM-DD>.jsonl` and must be JSONL, redacted, and endpoint-family based, never token/parameter dumps
   - publish, import, closeout, closeout watcher, and prewindow health schedulers must preserve explicit ledger overrides and otherwise pass the default daily ledger to child processes
 - keep no-op writes cheap:
+  - ActiveOrders enrichment with no fact-row or dimension change must not create a DB backup or update timestamps
   - size writeback with zero planned DB updates must not create a DB backup
   - publisher must report and skip no-op tab rewrites where generated rows already match live rows
 - keep Telegram fallback control equivalent to the Google Sheet ready button:
@@ -117,6 +119,7 @@ This standing authority is limited to the canonical daily shipping chain: narrow
   - Telegram /final_table is status-only and resends the final totals table from the existing manifest/ledger without resending any PDFs or starting closeout
   - Telegram /halt cancels any pending Telegram debounce and writes `Run_Control.ready_for_closeout = HOLD`
   - commands must be restricted by `TELEGRAM_WAYBILL_ALLOWED_USER_IDS` or local runtime file `runtime/state/waybill_telegram_allowed_users.txt`
+  - the fallback-control poll is supervised every `60` seconds; persistent loop mode is not production authority until nonzero poll exits propagate and log handles are released safely
 - keep delivery completion ledger-based:
   - `Run_Control.last_orchestrator_status = OK` alone is not a green end state
   - Telegram completion requires all manifest `pdf_key` values confirmed in `telegram_send_ledger.json`

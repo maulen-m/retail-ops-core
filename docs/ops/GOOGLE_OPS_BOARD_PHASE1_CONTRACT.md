@@ -23,7 +23,8 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - `scripts/run_google_ops_board_closeout_watch_scheduler.py`
 - `scripts/run_google_ops_board_closeout_scheduler.py`
 - `scripts/waybill_telegram_control_bot.py`
-- `excel_ui/run_full_import.command`
+- `scripts/run_kaspi_import_scheduler.py`
+- `scripts/run_google_ops_board_publish_scheduler.py --force-source-refresh`
 - `excel_ui/run_google_ops_board_prewindow_health.command`
 - `excel_ui/run_google_ops_board_publish.command`
 - `excel_ui/run_google_ops_board_size_writeback.command`
@@ -51,7 +52,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - Import success path:
   - immediate after successful import - Google Ops Board publish
   - import-time board publish is anchored to `export_api_orders -> sync_kaspi_orders -> enrich_kaspi_orders_from_activeorders`
-  - CRM Step 2 may still fail the overall import workflow, but it must not block board publish once DB truth is green
+  - scheduled shipping refresh never enters CRM Step 2; Excel CRM is a separate legacy/manual back-office surface
 - `config/com.example.google-ops-board-prewindow-health.plist`
   - `13:45` pre-window health gate + identity sync
 - `config/com.example.google-ops-board-publish.plist`
@@ -61,12 +62,13 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - `14:01` to `17:11` every 10 minutes publish backstop
   - publish backstop uses a quiet publish profile; it does not run WhatsApp UI smoke
 - `config/com.example.google-ops-board-size-writeback.plist`
-  - `17:15`, `17:30`, `17:45`, `18:00`, `18:15` legacy size-writeback previews (read-only; never apply)
+  - legacy size-writeback preview remains loadable for manual diagnostics but has no schedule; READY closeout owns the request-bound writeback
 - `config/com.example.google-ops-board-closeout-caffeinate.plist`
   - `18:20` closeout-window keep-awake guard
   - command: `/usr/bin/caffeinate -dimsu -t 4200`
 - `config/com.example.google-ops-board-closeout-watch.plist`
-  - every `15` seconds, with script-gated watch window `09:00` to `24:00`
+  - every `60` seconds, with script-gated watch window `09:00` to `24:00`
+  - HOLD performs only the target-date Run_Control read and returns before SalesRaw, DB, manifest, ledger, or subprocess work, except when the explicitly enabled `18:57` fallback is due
   - if `Run_Control` is green early, arm a `60` second READY debounce
   - start closeout only if the board is still green after that debounce
   - at `18:57`, if any `SalesRaw_Today.MY_SIZE` rows are still blank:
@@ -76,7 +78,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
     - auto-set `Run_Control.ready_for_closeout = READY`
     - trigger closeout immediately without waiting for manual READY input
 - `config/com.example.waybill-telegram-control.plist`
-  - every `15` seconds
+  - every `60` seconds
   - Telegram fallback control for `/status`, `/delivery_status`, `/ready`, `/resume_delivery`, `/final_table`, and `/halt`
   - `/ready` runs the same sizing gate as Google `Run_Control`, then arms the same `60` second debounce
   - `/resume_delivery` resumes closeout only when the sizing gate is green, delivery is not already ledger-complete, and the checkpoint-pinned Telegram ledger is present and valid
