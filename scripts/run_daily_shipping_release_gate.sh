@@ -21,6 +21,7 @@ done < <(
     -name 'test_delivery*.py' -o \
     -name 'test_kaspi_import_scheduler_contract.py' -o \
     -name 'test_run_kaspi_import_scheduler.py' -o \
+    -name 'test_run_crm_nightly_sidecar.py' -o \
     -name 'test_kaspi_api_call_ledger.py' -o \
     -name 'test_kaspi_shipped*.py' -o \
     -name 'test_kaspi_daily_ops_workflow_contract_doc.py' -o \
