@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import hashlib
 import json
@@ -36,6 +37,7 @@ from core.integrations.google_ops_board import (  # noqa: E402
     resolve_service_account_json,
     resolve_spreadsheet_id,
 )
+from core.stores.roster import load_sync_enabled_kaspi_store_codes  # noqa: E402
 from scripts.google_ops_board_automation_common import (  # noqa: E402
     AUTOMATION_LOCK_HELD_ENV,
     GoogleOpsBoardAutomationLock,
@@ -155,6 +157,7 @@ def write_source_snapshot(
         "refresh_slot": bool(refresh_slot),
         "source_state": source_state,
         "source_fingerprint": build_file_fingerprint(workbook_path),
+        "active_store_roster": sorted(load_sync_enabled_kaspi_store_codes()),
         "path": str(path),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,7 +184,6 @@ def build_source_refresh_commands(
             "--days",
             str(lookback_days),
             "--include-overdue",
-            "--refetch-missing-costs",
             "--no-archive",
             "--output",
             str(workbook_path),
@@ -254,7 +256,13 @@ def run_source_refresh(*, target_date: date, env: dict[str, str]) -> int:
     return 0
 
 
-def run_publish_cycle(*, env: dict[str, str], service_account_json: str, spreadsheet_id: str) -> int:
+def run_publish_cycle(
+    *,
+    env: dict[str, str],
+    service_account_json: str,
+    spreadsheet_id: str,
+    force_source_refresh: bool = False,
+) -> int:
     target_date = today_almaty()
     ensure_kaspi_api_call_ledger_env(env, target_date=target_date, project_root=PROJECT_ROOT)
     if env.get("KASPI_API_CALL_LEDGER_PATH"):
@@ -271,8 +279,10 @@ def run_publish_cycle(*, env: dict[str, str], service_account_json: str, spreads
         print("ERROR: local DB preflight failed; skipping Google Ops Board publish.", file=sys.stderr)
         return int(check.returncode)
 
-    if is_source_refresh_slot():
-        print("07:00 publish slot detected; running full ActiveOrders -> DB source refresh before publish.")
+    refresh_requested = bool(force_source_refresh or is_source_refresh_slot())
+    if refresh_requested:
+        reason = "forced shipping-source refresh" if force_source_refresh else "07:00 publish slot"
+        print(f"{reason} detected; running full ActiveOrders -> DB source refresh before publish.")
         refresh_rc = run_source_refresh(target_date=target_date, env=env)
         if refresh_rc != 0:
             return int(refresh_rc)
@@ -281,7 +291,7 @@ def run_publish_cycle(*, env: dict[str, str], service_account_json: str, spreads
     snapshot = write_source_snapshot(
         target_date=target_date,
         workbook_path=ACTIVEORDERS_PATH,
-        refresh_slot=is_source_refresh_slot(),
+        refresh_slot=refresh_requested,
     )
     print(f"Source snapshot: {snapshot['path']}")
     if not source_state.get("fresh"):
@@ -319,7 +329,15 @@ def run_publish_cycle(*, env: dict[str, str], service_account_json: str, spreads
     return int(result.returncode)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Publish the Google Ops Board from the canonical shipping source.")
+    parser.add_argument(
+        "--force-source-refresh",
+        action="store_true",
+        help="Run complete Kaspi source refresh and DB enrichment before publishing.",
+    )
+    args = parser.parse_args([] if argv is None else argv)
+
     if not SCRIPT_PATH.exists():
         print(f"ERROR: missing Google Ops Board publisher: {SCRIPT_PATH}", file=sys.stderr)
         return 78
@@ -353,6 +371,7 @@ def main() -> int:
             env=env,
             service_account_json=service_account_json,
             spreadsheet_id=spreadsheet_id,
+            force_source_refresh=args.force_source_refresh,
         )
 
     previous_lock_env = os.environ.get(AUTOMATION_LOCK_HELD_ENV)
@@ -364,6 +383,7 @@ def main() -> int:
                 env=env,
                 service_account_json=service_account_json,
                 spreadsheet_id=spreadsheet_id,
+                force_source_refresh=args.force_source_refresh,
             )
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
@@ -376,4 +396,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

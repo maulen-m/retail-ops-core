@@ -112,29 +112,34 @@ def test_publish_scheduler_child_processes_receive_default_daily_ledger(monkeypa
 
 
 def test_kaspi_import_scheduler_child_processes_receive_default_daily_ledger(monkeypatch, tmp_path) -> None:
-    command_path = tmp_path / "run_full_import.command"
-    db_check_path = tmp_path / "check_local_app_db.py"
-    command_path.write_text("#!/bin/bash\n", encoding="utf-8")
-    db_check_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    source_refresh_path = tmp_path / "run_google_ops_board_publish_scheduler.py"
+    source_refresh_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
     child_envs: list[dict[str, str]] = []
+    child_commands: list[list[str]] = []
 
     monkeypatch.delenv("KASPI_API_CALL_LEDGER_PATH", raising=False)
     monkeypatch.delenv("KASPI_API_CALL_LEDGER", raising=False)
     monkeypatch.setattr(import_scheduler_mod, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(import_scheduler_mod, "COMMAND_PATH", command_path)
-    monkeypatch.setattr(import_scheduler_mod, "DB_CHECK_PATH", db_check_path)
+    monkeypatch.setattr(import_scheduler_mod, "SOURCE_REFRESH_PATH", source_refresh_path)
     monkeypatch.setattr(import_scheduler_mod, "today_almaty", lambda: date(2026, 4, 22))
     monkeypatch.setattr(
         import_scheduler_mod.subprocess,
         "run",
-        lambda command, cwd, env: child_envs.append(dict(env)) or _Result(),
+        lambda command, cwd, env: (
+            child_commands.append(list(command)),
+            child_envs.append(dict(env)),
+            _Result(),
+        )[-1],
     )
 
     rc = import_scheduler_mod.main()
 
     expected = str(tmp_path / "runtime" / "api_ledger" / "kaspi_api_2026-04-22.jsonl")
     assert rc == 0
-    assert len(child_envs) == 2
+    assert child_commands == [
+        [import_scheduler_mod.sys.executable, str(source_refresh_path), "--force-source-refresh"]
+    ]
+    assert len(child_envs) == 1
     assert all(child_env["KASPI_API_CALL_LEDGER_PATH"] == expected for child_env in child_envs)
 
 

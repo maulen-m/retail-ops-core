@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LaunchAgent entrypoint for Kaspi import schedule."""
+"""LaunchAgent entrypoint for the CRM-free daily shipping source refresh."""
 
 from __future__ import annotations
 
@@ -10,8 +10,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-COMMAND_PATH = PROJECT_ROOT / "excel_ui" / "run_full_import.command"
-DB_CHECK_PATH = PROJECT_ROOT / "scripts" / "check_local_app_db.py"
+SOURCE_REFRESH_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_publish_scheduler.py"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -20,13 +19,9 @@ from scripts.google_ops_board_automation_common import ensure_kaspi_api_call_led
 
 def main() -> int:
     project_root = PROJECT_ROOT
-    command_path = COMMAND_PATH
 
-    if not command_path.exists():
-        print(f"ERROR: missing scheduler command: {command_path}", file=sys.stderr)
-        return 78
-    if not DB_CHECK_PATH.exists():
-        print(f"ERROR: missing DB preflight script: {DB_CHECK_PATH}", file=sys.stderr)
+    if not SOURCE_REFRESH_PATH.exists():
+        print(f"ERROR: missing direct source refresh entrypoint: {SOURCE_REFRESH_PATH}", file=sys.stderr)
         return 78
 
     env = os.environ.copy()
@@ -35,18 +30,11 @@ def main() -> int:
     if env.get("KASPI_API_CALL_LEDGER_PATH"):
         os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
 
-    check_cmd = [
-        sys.executable,
-        str(DB_CHECK_PATH),
-        "--db-path",
-        str(project_root / "db" / "app.db"),
-    ]
-    check = subprocess.run(check_cmd, cwd=str(project_root), env=env)
-    if check.returncode != 0:
-        print("ERROR: local DB preflight failed; skipping scheduled import.", file=sys.stderr)
-        return int(check.returncode)
-
-    result = subprocess.run(["/bin/bash", str(command_path)], cwd=str(project_root), env=env)
+    result = subprocess.run(
+        [sys.executable, str(SOURCE_REFRESH_PATH), "--force-source-refresh"],
+        cwd=str(project_root),
+        env=env,
+    )
     return int(result.returncode)
 
 

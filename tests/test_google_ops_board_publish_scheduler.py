@@ -109,7 +109,6 @@ def test_build_source_refresh_commands_covers_export_sync_enrich(tmp_path: Path)
         "--days",
         "5",
         "--include-overdue",
-        "--refetch-missing-costs",
         "--no-archive",
         "--output",
         str(workbook_path),
@@ -232,6 +231,41 @@ def test_publish_scheduler_runs_publish_inside_shared_automation_lock(
     assert publish_call["events"] == ["lock_enter"]
     assert publish_call["held_env"] == "1"
     assert events == ["lock_enter", "lock_exit"]
+
+
+def test_force_source_refresh_runs_refresh_before_publish(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import scripts.run_google_ops_board_publish_scheduler as scheduler
+
+    service_account_json = tmp_path / "service-account.json"
+    service_account_json.write_text("{}", encoding="utf-8")
+    events: list[str] = []
+
+    class FakeLock:
+        def __enter__(self):
+            events.append("lock_enter")
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            events.append("lock_exit")
+            return False
+
+    monkeypatch.delenv("AB_GOOGLE_OPS_BOARD_LOCK_HELD", raising=False)
+    monkeypatch.setattr(scheduler, "GoogleOpsBoardAutomationLock", FakeLock)
+    monkeypatch.setattr(scheduler, "load_ops_board_contract", lambda path: object())
+    monkeypatch.setattr(scheduler, "resolve_service_account_json", lambda contract: service_account_json)
+    monkeypatch.setattr(scheduler, "resolve_spreadsheet_id", lambda override, contract: "sheet-id")
+    monkeypatch.setattr(
+        scheduler,
+        "run_publish_cycle",
+        lambda **kwargs: events.append(
+            f"publish:{kwargs['force_source_refresh']}"
+        ) or 0,
+    )
+
+    assert scheduler.main(["--force-source-refresh"]) == 0
+    assert events == ["lock_enter", "publish:True", "lock_exit"]
 
 
 def test_publish_scheduler_skips_cleanly_when_shared_lock_is_busy(
