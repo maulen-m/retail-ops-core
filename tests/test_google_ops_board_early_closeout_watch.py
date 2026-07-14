@@ -52,6 +52,61 @@ def test_early_closeout_watch_window_starts_for_morning_employee_ready() -> None
     assert not common_mod.within_early_closeout_watch_window(datetime(2026, 4, 15, 8, 59, tzinfo=tz))
 
 
+def test_hold_fast_path_reads_only_run_control_and_skips_deep_readiness(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    creds = _write_creds(tmp_path)
+    target_date = date(2026, 4, 15)
+    contract = load_ops_board_contract()
+    headers = contract.tabs["Run_Control"].headers
+    row = {header: "" for header in headers}
+    row.update(
+        {
+            "target_date": target_date.isoformat(),
+            "ready_for_closeout": "HOLD",
+        }
+    )
+
+    class _CountingClient(_FakeClient):
+        def __init__(self):
+            super().__init__({"Run_Control": [headers, [row[header] for header in headers]]})
+            self.read_tabs: list[str] = []
+
+        def get_tab_values(self, tab_name: str):
+            self.read_tabs.append(tab_name)
+            return super().get_tab_values(tab_name)
+
+    client = _CountingClient()
+    monkeypatch.setenv("AB_GOOGLE_SERVICE_ACCOUNT_JSON", str(creds))
+    monkeypatch.setenv("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID", "sheet-id")
+    monkeypatch.delenv("AB_GOOGLE_OPS_BOARD_ALLOW_AUTO_PROBABLE_FILL", raising=False)
+    monkeypatch.setattr(watch_mod, "_in_watch_window", lambda: True)
+    monkeypatch.setattr(watch_mod, "today_almaty", lambda: target_date)
+    monkeypatch.setattr(
+        watch_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "closeout_completion_state",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("HOLD must not inspect manifest or ledger completion")
+        ),
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "build_readiness_report",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("HOLD must not read SalesRaw or DB readiness")
+        ),
+    )
+
+    assert watch_mod.main() == 0
+    assert client.read_tabs == ["Run_Control"]
+
+
 def test_halt_barrier_requires_hold_or_strictly_fresh_ready_identity(
     tmp_path: Path,
 ) -> None:

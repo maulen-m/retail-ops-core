@@ -39,6 +39,7 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     now_almaty,
     save_json_file,
     save_ready_debounce_state,
+    select_run_control_row,
     today_almaty,
     within_early_closeout_watch_window,
 )
@@ -519,6 +520,21 @@ def main() -> int:
     ensure_kaspi_api_call_ledger_env(env, target_date=target_date, project_root=PROJECT_ROOT)
     if env.get("KASPI_API_CALL_LEDGER_PATH"):
         os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
+
+    # HOLD is the dominant steady state. Keep it intentionally cheap: one
+    # target-date Run_Control read and no SalesRaw, DB, manifest, ledger, or
+    # subprocess work. The explicitly enabled 18:57 probable-size fallback is
+    # the only reason to continue from HOLD into full readiness evaluation.
+    fast_row = select_run_control_row(client=client, contract=contract, target_date=target_date)
+    fast_ready_value = _clean((fast_row or {}).get("ready_for_closeout")).upper()
+    fallback_due = bool(
+        auto_probable_fill_enabled
+        and auto_probable_closeout_cutoff_reached(now_almaty())
+    )
+    if fast_row is not None and fast_ready_value != "READY" and not fallback_due:
+        clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
+        print("Google Ops Board early-closeout watch: Run_Control is HOLD; lightweight poll complete.")
+        return 0
 
     completion = closeout_completion_state(client=client, contract=contract, target_date=target_date)
     completion_row = dict(completion.get("row") or {})
