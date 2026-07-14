@@ -51,18 +51,14 @@ def test_google_ops_board_size_writeback_plist_contract() -> None:
 
     assert plist.get("Label") == "com.example.google-ops-board-size-writeback"
     assert plist.get("WorkingDirectory") == "~/Docs/Autonomous_business"
-    pairs = sorted((int(item["Hour"]), int(item["Minute"])) for item in intervals)
-    assert pairs == [
-        (17, 15), (17, 30), (17, 45),
-        (18, 0), (18, 15),
-    ]
+    assert intervals == []
+    assert "StartInterval" not in plist
     assert args[:2] == [
         "~/Docs/Autonomous_business/.venv/bin/python",
         "~/Docs/Autonomous_business/scripts/run_google_ops_board_size_writeback_scheduler.py",
     ]
     assert "ENABLE_GOOGLE_OPS_BOARD_DB_WRITE" not in env
-    assert env.get("AB_GOOGLE_SERVICE_ACCOUNT_JSON") == "~/Docs/Business/S/ab-ops-board-sync-key.json"
-    assert env.get("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID") == "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg"
+    assert env == {"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
     assert plist.get("StandardOutPath") == (
         "~/Docs/Autonomous_business/runtime_logs/google_ops_board_size_writeback_stdout.log"
     )
@@ -78,7 +74,7 @@ def test_google_ops_board_closeout_watch_plist_contract() -> None:
 
     assert plist.get("Label") == "com.example.google-ops-board-closeout-watch"
     assert plist.get("WorkingDirectory") == "~/Docs/Autonomous_business"
-    assert plist.get("StartInterval") == 15
+    assert plist.get("StartInterval") == 60
     assert args[:2] == [
         "~/Docs/Autonomous_business/.venv/bin/python",
         "~/Docs/Autonomous_business/scripts/run_google_ops_board_closeout_watch_scheduler.py",
@@ -119,7 +115,7 @@ def test_waybill_telegram_control_plist_contract() -> None:
 
     assert plist.get("Label") == "com.example.waybill-telegram-control"
     assert plist.get("WorkingDirectory") == "~/Docs/Autonomous_business"
-    assert plist.get("StartInterval") == 15
+    assert plist.get("StartInterval") == 60
     assert args[:2] == [
         "~/Docs/Autonomous_business/.venv/bin/python",
         "~/Docs/Autonomous_business/scripts/waybill_telegram_control_bot.py",
@@ -215,10 +211,10 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "normalize PP1 warehouse codes to canonical store codes" in doc
     assert "export_api_orders -> validate_activeorders_columns -> sync_kaspi_orders -> enrich_kaspi_orders_from_activeorders -> publish" in doc
     assert "stale for the target date" in doc
-    assert "17:15" in doc
+    assert "manual diagnostics" in doc
     assert "18:20" in doc
     assert "18:30" in doc
-    assert "every `15` seconds" in doc
+    assert "every `60` seconds" in doc
     assert "60" in doc
     assert "18:57" in doc
     assert "09:00" in doc
@@ -258,7 +254,7 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "provenance sidecar" in doc
     assert "channel-wide lock" in doc
     assert "terminal zero-order marker" in doc
-    assert "size-writeback previews (read-only; never apply)" in doc
+    assert "legacy size-writeback preview remains loadable for manual diagnostics" in doc
     assert "com.example.google-ops-board-publish.plist" in script
     assert "com.example.google-ops-board-prewindow-health.plist" in script
     assert "com.example.google-ops-board-size-writeback.plist" in script
@@ -272,9 +268,9 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "13:45 - Google Ops Board prewindow health + identity sync" in script
     assert "14:01 to 17:11 every 10 minutes - Google Ops Board publish backstop (fails closed if ActiveOrders is stale for target date)" in script
     assert "17:02 - Import (17:00 all-store late-window DB freshness / next-day visibility)" in script
-    assert "17:15, 17:30, 17:45, 18:00, 18:15 - Google Ops Board size-writeback preview (read-only)" in script
+    assert "manual-only - Google Ops Board size-writeback preview (read-only)" in script
     assert "18:20 - Google Ops Board closeout caffeinate keep-awake guard" in script
-    assert "every 15s between 09:00 and 24:00 (script-gated, 60s READY debounce; 18:57 probable-size auto-fill)" in script
+    assert "every 60s between 09:00 and 24:00 (script-gated, 60s READY debounce; 18:57 probable-size auto-fill)" in script
     assert "18:30 - Google Ops Board closeout backstop" in script
     assert "09:30 and 19:15 - Kaspi shipped-truth DB sync" in script
     assert "Telegram /ready fallback control" in script
