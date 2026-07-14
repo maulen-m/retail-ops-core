@@ -42,6 +42,12 @@ An omitted active order remains a durable shipping obligation and joins a later 
 
 Current daily scheduler contract (GMT+5):
 - import jobs: `11:00`, `15:02`, `16:01`, and `17:02`
+  - direct Kaspi source refresh, DB enrichment, and Google Ops Board publish; no Excel CRM step
+  - forced refresh retries temporary shared-lock contention for a bounded window and then fails nonzero; it cannot silently disappear
+- legacy CRM compatibility writer: `00:30` nightly sidecar only
+  - writes only the guarded local CRM workbook from the latest canonical ActiveOrders snapshot
+  - no Google Ops Board publish, DB sync, Telegram, WhatsApp, or READY/closeout work
+  - remains scheduled until seven consecutive business-day shadow-parity results are GREEN and a separate direct-feeder cutover gate is approved
 - shipped-truth DB sync jobs: `09:30` and `19:15`
   - DB-only path; no Excel CRM import, no Google Sheet publish, no Telegram/WhatsApp send
   - refreshes recent `KASPI_DELIVERY` + `ARCHIVE` order states so `fact_orders_kaspi.actual_shipment_date` / `courier_transmission_date` do not stay stale after evening closeout

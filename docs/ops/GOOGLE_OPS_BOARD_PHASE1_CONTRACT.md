@@ -69,6 +69,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - `config/com.example.google-ops-board-closeout-watch.plist`
   - every `60` seconds, with script-gated watch window `09:00` to `24:00`
   - HOLD performs only the target-date Run_Control read and returns before SalesRaw, DB, manifest, ledger, or subprocess work, except when the explicitly enabled `18:57` fallback is due
+  - an absent target-date Run_Control row also fails closed immediately after that one tab read; absence must not fall through to SalesRaw, DB, obligation, manifest, ledger, or subprocess work
   - if `Run_Control` is green early, arm a `60` second READY debounce
   - start closeout only if the board is still green after that debounce
   - at `18:57`, if any `SalesRaw_Today.MY_SIZE` rows are still blank:

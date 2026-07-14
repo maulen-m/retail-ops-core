@@ -40,7 +40,7 @@ The automated import runs at 11:00 GMT+5:
 - Synchronizes DB truth and publishes the Google Ops Board
 - Preserves any employee-entered values in editable board columns
 
-The Excel CRM is a legacy/manual recovery surface and is not part of the canonical employee workflow.
+The Excel CRM is a legacy/back-office compatibility surface and is not part of the canonical employee workflow. Its guarded writer runs once at `00:30` as an isolated nightly sidecar while seven-day direct-feeder parity is collected; it never gates Board sizing or READY closeout.
 
 ### 2. Size Entry (11:00-12:00)
 
