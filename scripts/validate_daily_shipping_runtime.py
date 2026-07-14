@@ -93,6 +93,8 @@ def build_plist_payload(
         if not items:
             raise DailyShippingRuntimeError(f"calendar scheduler has no times: {scheduler['label']}")
         payload["StartCalendarInterval"] = items[0] if len(items) == 1 else items
+    elif schedule.get("type") == "manual":
+        pass
     else:
         raise DailyShippingRuntimeError(f"unknown schedule type for {scheduler['label']}")
     runtime_root = Path(str(manifest.get("project_root") or project_root)).expanduser()
@@ -237,6 +239,8 @@ def build_health_monitor_plist_payload(manifest: dict[str, Any]) -> dict[str, An
 def _schedule_text(schedule: dict[str, Any]) -> str:
     if schedule.get("type") == "interval":
         return f"every {int(schedule['seconds'])} seconds"
+    if schedule.get("type") == "manual":
+        return "manual only"
     return ", ".join(str(value) for value in schedule.get("times") or [])
 
 

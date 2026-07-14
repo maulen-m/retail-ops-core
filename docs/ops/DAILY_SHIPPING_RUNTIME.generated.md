@@ -6,7 +6,7 @@
 - Employee-ready deadline: `17:00 Asia/Almaty`
 - Active stores: `STOREB, ACMEWEAR, UNIVERSAL`
 - Archived stores: `11KZ, MELVIS`
-- READY watch: `09:00 to 24:00`, every `15` seconds
+- READY watch: `09:00 to 24:00`, every `60` seconds
 - Stable READY debounce: `60` seconds
 - Auto-probable fallback: `18:57`
 - Completion proof: checkpoint + exact manifest + confirmed Telegram ledger
@@ -50,11 +50,11 @@
 | `com.example.kaspi-import-v2` | order source refresh | `11:00, 15:02, 16:01, 17:02` | `${PROJECT_ROOT}/scripts/run_kaspi_import_scheduler.py` | `config/com.example.kaspi-import.plist` |
 | `com.example.google-ops-board-publish` | employee board source refresh and publish | `07:00, 11:00, 14:01, 14:11, 14:21, 14:31, 14:41, 14:51, 15:01, 15:11, 15:21, 15:31, 15:41, 15:51, 16:01, 16:11, 16:21, 16:31, 16:41, 16:51, 17:01, 17:11` | `${PROJECT_ROOT}/scripts/run_google_ops_board_publish_scheduler.py` | `config/com.example.google-ops-board-publish.plist` |
 | `com.example.google-ops-board-prewindow-health` | prewindow health and identity sync | `13:45` | `${PROJECT_ROOT}/scripts/run_google_ops_board_prewindow_health_scheduler.py` | `config/com.example.google-ops-board-prewindow-health.plist` |
-| `com.example.google-ops-board-size-writeback` | read-only size writeback preview | `17:15, 17:30, 17:45, 18:00, 18:15` | `${PROJECT_ROOT}/scripts/run_google_ops_board_size_writeback_scheduler.py` | `config/com.example.google-ops-board-size-writeback.plist` |
-| `com.example.google-ops-board-closeout-watch` | READY watcher and closeout trigger | `every 15 seconds` | `${PROJECT_ROOT}/scripts/run_google_ops_board_closeout_watch_scheduler.py` | `config/com.example.google-ops-board-closeout-watch.plist` |
+| `com.example.google-ops-board-size-writeback` | read-only size writeback preview | `manual only` | `${PROJECT_ROOT}/scripts/run_google_ops_board_size_writeback_scheduler.py` | `config/com.example.google-ops-board-size-writeback.plist` |
+| `com.example.google-ops-board-closeout-watch` | READY watcher and closeout trigger | `every 60 seconds` | `${PROJECT_ROOT}/scripts/run_google_ops_board_closeout_watch_scheduler.py` | `config/com.example.google-ops-board-closeout-watch.plist` |
 | `com.example.google-ops-board-closeout-caffeinate` | closeout keep-awake guard | `18:20` | `/usr/bin/caffeinate` | `config/com.example.google-ops-board-closeout-caffeinate.plist` |
 | `com.example.kaspi-waybill-deadline` | shipping closeout backstop | `18:30` | `${PROJECT_ROOT}/scripts/run_google_ops_board_closeout_scheduler.py` | `config/com.example.kaspi-waybill-deadline.plist` |
-| `com.example.waybill-telegram-control` | Telegram control fallback | `every 15 seconds` | `${PROJECT_ROOT}/scripts/waybill_telegram_control_bot.py` | `config/com.example.waybill-telegram-control.plist` |
+| `com.example.waybill-telegram-control` | Telegram control fallback | `every 60 seconds` | `${PROJECT_ROOT}/scripts/waybill_telegram_control_bot.py` | `config/com.example.waybill-telegram-control.plist` |
 | `com.example.kaspi-shipped-truth-sync` | post-closeout shipped truth sync | `09:30, 19:15` | `${PROJECT_ROOT}/scripts/run_kaspi_shipped_truth_sync_scheduler.py` | `config/com.example.kaspi-shipped-truth-sync.plist` |
 | `com.example.kaspi-daily-ops-report` | daily operational closeout report | `19:10` | `${PROJECT_ROOT}/scripts/run_kaspi_daily_ops_report_scheduler.py` | `config/com.example.kaspi-daily-ops-report.plist` |
 

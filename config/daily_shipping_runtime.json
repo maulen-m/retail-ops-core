@@ -26,7 +26,7 @@
     "constants_source": "scripts/google_ops_board_automation_common.py",
     "start_local": "09:00",
     "end_local": "24:00",
-    "poll_interval_seconds": 15,
+    "poll_interval_seconds": 60,
     "ready_debounce_seconds": 60,
     "auto_probable_local": "18:57"
   },
@@ -111,7 +111,7 @@
         "minute": 45
       },
       "max_bytes": 10485760,
-      "keep_archives_per_log": 14,
+      "keep_archives_per_log": 5,
       "archive_root": "${HOME}/Library/Application Support/Autonomous_business/shipping_logs",
       "extra_paths": [
         "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_stdout.log",
@@ -166,8 +166,8 @@
       },
       "health": {"mode": "calendar_log", "grace_minutes": 30},
       "environment_variables": {
-        "CRM_IMPORT_TIMEOUT_SEC": "1500",
-        "KASPI_LOOKBACK_DAYS_LONG": "14",
+        "KASPI_PLANNED_CUTOFF_HOUR": "17",
+        "KASPI_PLANNED_CUTOFF_MINUTE": "0",
         "KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR": "17",
         "KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR": "0"
       },
@@ -198,6 +198,8 @@
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
         "ENABLE_GOOGLE_OPS_BOARD_WRITE": "1",
         "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1",
+        "KASPI_PLANNED_CUTOFF_HOUR": "17",
+        "KASPI_PLANNED_CUTOFF_MINUTE": "0",
         "KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR": "17",
         "KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR": "0"
       },
@@ -231,14 +233,10 @@
         "${PROJECT_ROOT}/scripts/run_google_ops_board_size_writeback_scheduler.py"
       ],
       "schedule": {
-        "type": "calendar",
-        "times": ["17:15", "17:30", "17:45", "18:00", "18:15"]
+        "type": "manual"
       },
-      "health": {"mode": "calendar_log", "grace_minutes": 20},
-      "environment_variables": {
-        "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
-        "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json"
-      },
+      "health": {"mode": "loaded"},
+      "environment_variables": {},
       "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_size_writeback_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_size_writeback_stderr.log"
     },
@@ -250,13 +248,15 @@
         "${PROJECT_ROOT}/.venv/bin/python",
         "${PROJECT_ROOT}/scripts/run_google_ops_board_closeout_watch_scheduler.py"
       ],
-      "schedule": {"type": "interval", "seconds": 15},
+      "schedule": {"type": "interval", "seconds": 60},
       "health": {"mode": "interval_log", "max_age_seconds": 180},
       "environment_variables": {
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
         "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT": "1",
-        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1"
+        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1",
+        "KASPI_PLANNED_CUTOFF_HOUR": "17",
+        "KASPI_PLANNED_CUTOFF_MINUTE": "0"
       },
       "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_watch_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_watch_stderr.log"
@@ -286,7 +286,9 @@
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
         "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT": "1",
-        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1"
+        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1",
+        "KASPI_PLANNED_CUTOFF_HOUR": "17",
+        "KASPI_PLANNED_CUTOFF_MINUTE": "0"
       },
       "stdout": "${PROJECT_ROOT}/runtime_logs/kaspi_waybill_deadline_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/kaspi_waybill_deadline_stderr.log"
@@ -299,13 +301,15 @@
         "${PROJECT_ROOT}/.venv/bin/python",
         "${PROJECT_ROOT}/scripts/waybill_telegram_control_bot.py"
       ],
-      "schedule": {"type": "interval", "seconds": 15},
+      "schedule": {"type": "interval", "seconds": 60},
       "health": {"mode": "loaded_exit_zero"},
       "environment_variables": {
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
         "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT": "1",
-        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1"
+        "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1",
+        "KASPI_PLANNED_CUTOFF_HOUR": "17",
+        "KASPI_PLANNED_CUTOFF_MINUTE": "0"
       },
       "stdout": "${PROJECT_ROOT}/runtime_logs/waybill_telegram_control_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/waybill_telegram_control_stderr.log"
