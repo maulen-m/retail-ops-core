@@ -531,6 +531,14 @@ def main() -> int:
         auto_probable_fill_enabled
         and auto_probable_closeout_cutoff_reached(now_almaty())
     )
+    if fast_row is None:
+        clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
+        print(
+            "ERROR: Google Ops Board early-closeout watch: target-date "
+            "Run_Control row is missing; fail-closed lightweight poll stopped.",
+            file=sys.stderr,
+        )
+        return 1
     if fast_row is not None and fast_ready_value != "READY" and not fallback_due:
         clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
         print("Google Ops Board early-closeout watch: Run_Control is HOLD; lightweight poll complete.")

@@ -107,6 +107,53 @@ def test_hold_fast_path_reads_only_run_control_and_skips_deep_readiness(
     assert client.read_tabs == ["Run_Control"]
 
 
+def test_missing_target_run_control_row_fails_after_only_run_control_read(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    creds = _write_creds(tmp_path)
+    target_date = date(2026, 4, 15)
+    contract = load_ops_board_contract()
+
+    class _CountingClient(_FakeClient):
+        def __init__(self):
+            super().__init__({"Run_Control": [contract.tabs["Run_Control"].headers]})
+            self.read_tabs: list[str] = []
+
+        def get_tab_values(self, tab_name: str):
+            self.read_tabs.append(tab_name)
+            return super().get_tab_values(tab_name)
+
+    client = _CountingClient()
+    monkeypatch.setenv("AB_GOOGLE_SERVICE_ACCOUNT_JSON", str(creds))
+    monkeypatch.setenv("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID", "sheet-id")
+    monkeypatch.delenv("AB_GOOGLE_OPS_BOARD_ALLOW_AUTO_PROBABLE_FILL", raising=False)
+    monkeypatch.setattr(watch_mod, "_in_watch_window", lambda: True)
+    monkeypatch.setattr(watch_mod, "today_almaty", lambda: target_date)
+    monkeypatch.setattr(
+        watch_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "closeout_completion_state",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing Run_Control must not inspect completion evidence")
+        ),
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "build_readiness_report",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing Run_Control must not read SalesRaw or DB")
+        ),
+    )
+
+    assert watch_mod.main() == 1
+    assert client.read_tabs == ["Run_Control"]
+
+
 def test_halt_barrier_requires_hold_or_strictly_fresh_ready_identity(
     tmp_path: Path,
 ) -> None:
@@ -294,12 +341,15 @@ def test_early_closeout_watcher_stops_before_readiness_when_halt_barrier_blocks(
     target_date = date(2026, 4, 15)
     now = datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty"))
     contract = load_ops_board_contract()
-    client = _FakeClient({"Run_Control": [contract.tabs["Run_Control"].headers]})
     row = {
         "target_date": "2026-04-15",
         "ready_for_closeout": "READY",
         "ready_set_at": "2026-04-15T16:59:00+05:00",
     }
+    headers = contract.tabs["Run_Control"].headers
+    client = _FakeClient(
+        {"Run_Control": [headers, [row.get(header, "") for header in headers]]}
+    )
     monkeypatch.setenv("AB_GOOGLE_SERVICE_ACCOUNT_JSON", str(creds))
     monkeypatch.setenv("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID", "sheet-id")
     monkeypatch.setattr(watch_mod, "_in_watch_window", lambda: True)
