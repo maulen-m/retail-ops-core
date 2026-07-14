@@ -1104,6 +1104,94 @@ def test_source_confirmed_prior_obligation_api_error_still_blocks() -> None:
     assert result["issues"][0]["code"] == "obligation_api_uncertain"
 
 
+def _obligation_ledger(store: str, count: int) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "entries": {
+            f"{store}:ORDER-{idx:03d}": {
+                "store_code": store,
+                "order_id": f"ORDER-{idx:03d}",
+                "status": "unresolved",
+                "first_seen_target_date": "2026-07-10",
+                "last_seen_target_date": "2026-07-13",
+            }
+            for idx in range(count)
+        },
+    }
+
+
+def test_obligation_detail_resolver_uses_bulk_reads_before_exact_fallback(monkeypatch) -> None:
+    exact_reads: list[str] = []
+    bulk_reads: list[str] = []
+
+    class _Client:
+        def __init__(self, store_code: str):
+            assert store_code == "UNIVERSAL"
+
+        def list_all_orders(self, *, state, since, until, max_pages, raise_on_error):
+            bulk_reads.append(state)
+            if state != "KASPI_DELIVERY":
+                return []
+            return [
+                {"id": f"ID-{idx}", "attributes": {"code": f"ORDER-{idx:03d}"}}
+                for idx in range(20)
+            ]
+
+        def get_order(self, order_id: str):
+            exact_reads.append(order_id)
+            raise AssertionError("bulk resolution should cover this obligation")
+
+    monkeypatch.setattr(closeout_mod, "KaspiAPIClient", _Client)
+    stats: dict[str, object] = {}
+    result = closeout_mod._fetch_prior_obligation_details(
+        ledger=_obligation_ledger("UNIVERSAL", 20),
+        current_active_order_ids_by_store={"UNIVERSAL": set()},
+        target_date=closeout_mod.date(2026, 7, 14),
+        stats_out=stats,
+    )
+
+    assert len(result) == 20
+    assert all("order" in item for item in result.values())
+    assert bulk_reads == ["KASPI_DELIVERY", "ARCHIVE"]
+    assert exact_reads == []
+    assert stats["exact_read_count"] == 0
+    assert stats["resolved_count"] == 20
+
+
+def test_obligation_detail_resolver_fails_closed_when_exact_budget_is_exhausted(monkeypatch) -> None:
+    class _Response:
+        success = True
+        error = None
+
+        def __init__(self, order_id: str):
+            self.data = {"attributes": {"code": order_id}}
+
+    class _Client:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def list_all_orders(self, **_kwargs):
+            return []
+
+        def get_order(self, order_id: str):
+            return _Response(order_id)
+
+    monkeypatch.setattr(closeout_mod, "KaspiAPIClient", _Client)
+    stats: dict[str, object] = {}
+    result = closeout_mod._fetch_prior_obligation_details(
+        ledger=_obligation_ledger("UNIVERSAL", 30),
+        current_active_order_ids_by_store={"UNIVERSAL": set()},
+        target_date=closeout_mod.date(2026, 7, 14),
+        stats_out=stats,
+    )
+
+    errors = [item for item in result.values() if "error" in item]
+    assert len(errors) == 5
+    assert all("budget exhausted" in item["error"] for item in errors)
+    assert stats["exact_read_count"] == 25
+    assert stats["budget_exhausted"] is True
+
+
 def test_success_status_resets_run_control_ready_toggle_to_hold() -> None:
     contract = load_ops_board_contract()
     client = _FakeClient(

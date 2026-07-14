@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, MutableMapping
@@ -92,6 +93,11 @@ DEFAULT_TODAY_FOLDER = data_path("excel_ui", "Kaspi_orders", "Today")
 DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH = data_path(
     "runtime", "state", "waybill_shipping_obligations.json"
 )
+OBLIGATION_DETAIL_MAX_OPEN = 100
+OBLIGATION_DETAIL_MAX_EXACT_READS = 25
+OBLIGATION_DETAIL_MAX_PAGES_PER_STATE = 10
+OBLIGATION_DETAIL_MAX_SECONDS = 30.0
+OBLIGATION_DETAIL_BULK_THRESHOLD = 5
 STAGE_ORDER = [
     "size_writeback",
     "shipping",
@@ -1110,11 +1116,44 @@ def _fetch_prior_obligation_details(
     *,
     ledger: dict[str, Any],
     current_active_order_ids_by_store: dict[str, set[str]],
+    target_date: date | None = None,
+    stats_out: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    started = time.monotonic()
     results: dict[str, dict[str, Any]] = {}
     entries = dict(ledger.get("entries") or {})
     clients: dict[str, KaspiAPIClient] = {}
-    for key in open_obligation_keys_needing_detail(ledger, current_active_order_ids_by_store):
+    keys = list(open_obligation_keys_needing_detail(ledger, current_active_order_ids_by_store))
+    stats: dict[str, Any] = {
+        "candidate_count": len(keys),
+        "bulk_read_count": 0,
+        "exact_read_count": 0,
+        "resolved_count": 0,
+        "budget_exhausted": False,
+        "bulk_errors": [],
+    }
+
+    def _publish_stats() -> None:
+        stats["resolved_count"] = sum(1 for value in results.values() if "order" in value)
+        stats["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        if stats_out is not None:
+            stats_out.clear()
+            stats_out.update(stats)
+
+    if len(keys) > OBLIGATION_DETAIL_MAX_OPEN:
+        stats["budget_exhausted"] = True
+        for key in keys:
+            results[str(key)] = {
+                "error": (
+                    "obligation detail open-set budget exhausted: "
+                    f"{len(keys)} > {OBLIGATION_DETAIL_MAX_OPEN}"
+                )
+            }
+        _publish_stats()
+        return results
+
+    unresolved_by_store: dict[str, list[tuple[str, str]]] = {}
+    for key in keys:
         entry = dict(entries.get(key) or {})
         store_code = _clean(entry.get("store_code")).upper().replace("STORE-B", "STOREB")
         order_id = _clean(entry.get("order_id"))
@@ -1122,20 +1161,74 @@ def _fetch_prior_obligation_details(
         if not store_code or not order_id:
             results[canonical_key] = {"error": "obligation identity is incomplete"}
             continue
-        try:
-            client = clients.get(store_code)
-            if client is None:
-                client = KaspiAPIClient(store_code=store_code)
-                clients[store_code] = client
-            response = client.get_order(order_id)
-            if not response.success:
-                results[canonical_key] = {"error": str(response.error or "exact API read failed")}
-            elif not isinstance(response.data, dict):
-                results[canonical_key] = {"error": "exact API read returned a malformed payload"}
-            else:
-                results[canonical_key] = {"order": response.data}
-        except Exception as exc:
-            results[canonical_key] = {"error": f"{type(exc).__name__}: {exc}"}
+        unresolved_by_store.setdefault(store_code, []).append((canonical_key, order_id))
+
+    if target_date is not None:
+        since = (target_date - timedelta(days=13)).isoformat()
+        until = target_date.isoformat()
+        for store_code, identities in sorted(unresolved_by_store.items()):
+            if len(identities) < OBLIGATION_DETAIL_BULK_THRESHOLD:
+                continue
+            try:
+                client = clients.get(store_code)
+                if client is None:
+                    client = KaspiAPIClient(store_code=store_code)
+                    clients[store_code] = client
+                wanted = {order_id for _key, order_id in identities}
+                for state in ("KASPI_DELIVERY", "ARCHIVE"):
+                    if time.monotonic() - started >= OBLIGATION_DETAIL_MAX_SECONDS:
+                        stats["budget_exhausted"] = True
+                        break
+                    orders = client.list_all_orders(
+                        state=state,
+                        since=since,
+                        until=until,
+                        max_pages=OBLIGATION_DETAIL_MAX_PAGES_PER_STATE,
+                        raise_on_error=True,
+                    )
+                    stats["bulk_read_count"] += 1
+                    for order in orders:
+                        if not isinstance(order, dict):
+                            continue
+                        attrs = order.get("attributes") if isinstance(order.get("attributes"), dict) else order
+                        observed_id = _clean(attrs.get("code") or attrs.get("orderCode"))
+                        if observed_id not in wanted:
+                            continue
+                        results[obligation_key(store_code, observed_id)] = {"order": order}
+            except Exception as exc:
+                stats["bulk_errors"].append(
+                    {"store_code": store_code, "error": f"{type(exc).__name__}: {exc}"}
+                )
+
+    for store_code, identities in sorted(unresolved_by_store.items()):
+        for canonical_key, order_id in identities:
+            if canonical_key in results:
+                continue
+            if (
+                int(stats["exact_read_count"]) >= OBLIGATION_DETAIL_MAX_EXACT_READS
+                or time.monotonic() - started >= OBLIGATION_DETAIL_MAX_SECONDS
+            ):
+                stats["budget_exhausted"] = True
+                results[canonical_key] = {
+                    "error": "obligation detail exact-read budget exhausted"
+                }
+                continue
+            try:
+                client = clients.get(store_code)
+                if client is None:
+                    client = KaspiAPIClient(store_code=store_code)
+                    clients[store_code] = client
+                stats["exact_read_count"] += 1
+                response = client.get_order(order_id)
+                if not response.success:
+                    results[canonical_key] = {"error": str(response.error or "exact API read failed")}
+                elif not isinstance(response.data, dict):
+                    results[canonical_key] = {"error": "exact API read returned a malformed payload"}
+                else:
+                    results[canonical_key] = {"order": response.data}
+            except Exception as exc:
+                results[canonical_key] = {"error": f"{type(exc).__name__}: {exc}"}
+    _publish_stats()
     return results
 
 
@@ -1235,9 +1328,12 @@ def _resolve_db_bootstrap_hints(
             "quarantined": [],
         }
 
+    detail_stats: dict[str, Any] = {}
     detail_results = _fetch_prior_obligation_details(
         ledger=hint_ledger,
         current_active_order_ids_by_store={},
+        target_date=target_date,
+        stats_out=detail_stats,
     )
     hint_result = reconcile_shipping_obligations(
         prior_ledger=hint_ledger,
@@ -1279,7 +1375,8 @@ def _resolve_db_bootstrap_hints(
         "ok": not quarantined,
         "ledger": merged,
         "candidate_count": sum(len(values) for values in hint_candidates.values()),
-        "exact_detail_read_count": len(detail_results),
+        "exact_detail_read_count": int(detail_stats.get("exact_read_count") or 0),
+        "detail_resolution": detail_stats,
         "promoted_keys": promoted_keys,
         "terminal_audit_keys": terminal_audit_keys,
         "quarantined": quarantined,
@@ -2260,9 +2357,12 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 "quarantined": [],
             }
             prior_obligations = bootstrap_resolution["ledger"]
+            detail_stats: dict[str, Any] = {}
             detail_results = _fetch_prior_obligation_details(
                 ledger=prior_obligations,
                 current_active_order_ids_by_store=active_order_ids_by_store,
+                target_date=target_date,
+                stats_out=detail_stats,
             )
             obligation_result = reconcile_shipping_obligations(
                 prior_ledger=prior_obligations,
@@ -2304,7 +2404,8 @@ def _run_closeout(args: argparse.Namespace) -> int:
                     store: len(order_ids)
                     for store, order_ids in sorted(db_bootstrap_ids_by_store.items())
                 },
-                "exact_detail_read_count": len(detail_results),
+                "exact_detail_read_count": int(detail_stats.get("exact_read_count") or 0),
+                "detail_resolution": detail_stats,
                 "db_bootstrap_hint_resolution": {
                     key: value
                     for key, value in bootstrap_resolution.items()
