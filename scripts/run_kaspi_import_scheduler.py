@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -15,6 +16,35 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.google_ops_board_automation_common import ensure_kaspi_api_call_ledger_env, today_almaty  # noqa: E402
+
+
+LOCK_CONTENTION_EXIT_CODE = 75
+LOCK_RETRY_INTERVAL_SECONDS = 15
+LOCK_RETRY_MAX_ATTEMPTS = 21
+
+
+def run_forced_source_refresh(*, project_root: Path, env: dict[str, str]) -> int:
+    command = [sys.executable, str(SOURCE_REFRESH_PATH), "--force-source-refresh"]
+    for attempt in range(1, LOCK_RETRY_MAX_ATTEMPTS + 1):
+        result = subprocess.run(command, cwd=str(project_root), env=env)
+        returncode = int(result.returncode)
+        if returncode != LOCK_CONTENTION_EXIT_CODE:
+            return returncode
+        if attempt == LOCK_RETRY_MAX_ATTEMPTS:
+            print(
+                "ERROR: forced shipping-source refresh exhausted the bounded "
+                f"shared-lock retry window ({attempt} attempts).",
+                file=sys.stderr,
+            )
+            return returncode
+        print(
+            "Shared Google Ops Board lock is busy; retrying forced source "
+            f"refresh in {LOCK_RETRY_INTERVAL_SECONDS}s "
+            f"({attempt}/{LOCK_RETRY_MAX_ATTEMPTS - 1}).",
+            file=sys.stderr,
+        )
+        time.sleep(LOCK_RETRY_INTERVAL_SECONDS)
+    return LOCK_CONTENTION_EXIT_CODE
 
 
 def main() -> int:
@@ -30,12 +60,7 @@ def main() -> int:
     if env.get("KASPI_API_CALL_LEDGER_PATH"):
         os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
 
-    result = subprocess.run(
-        [sys.executable, str(SOURCE_REFRESH_PATH), "--force-source-refresh"],
-        cwd=str(project_root),
-        env=env,
-    )
-    return int(result.returncode)
+    return run_forced_source_refresh(project_root=project_root, env=env)
 
 
 if __name__ == "__main__":

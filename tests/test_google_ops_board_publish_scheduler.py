@@ -300,3 +300,28 @@ def test_publish_scheduler_skips_cleanly_when_shared_lock_is_busy(
     captured = capsys.readouterr()
     assert "Another Google Ops Board automation instance is already running." in captured.err
     assert subprocess_calls == []
+
+
+def test_forced_source_refresh_returns_temporary_failure_when_shared_lock_is_busy(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import scripts.run_google_ops_board_publish_scheduler as scheduler
+
+    service_account_json = tmp_path / "service-account.json"
+    service_account_json.write_text("{}", encoding="utf-8")
+
+    class BusyLock:
+        def __enter__(self):
+            raise RuntimeError("Another Google Ops Board automation instance is already running.")
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+    monkeypatch.delenv("AB_GOOGLE_OPS_BOARD_LOCK_HELD", raising=False)
+    monkeypatch.setattr(scheduler, "GoogleOpsBoardAutomationLock", BusyLock)
+    monkeypatch.setattr(scheduler, "load_ops_board_contract", lambda path: object())
+    monkeypatch.setattr(scheduler, "resolve_service_account_json", lambda contract: service_account_json)
+    monkeypatch.setattr(scheduler, "resolve_spreadsheet_id", lambda override, contract: "sheet-id")
+
+    assert scheduler.main(["--force-source-refresh"]) == scheduler.LOCK_CONTENTION_EXIT_CODE
+    assert "already running" in capsys.readouterr().err

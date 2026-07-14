@@ -49,6 +49,7 @@ from scripts.run_google_ops_board_prewindow_health import ensure_prewindow_healt
 
 IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
 ACTIVEORDERS_DB_WRITE_ENV_GATE = "ENABLE_KASPI_ACTIVEORDERS_DB_WRITE"
+LOCK_CONTENTION_EXIT_CODE = 75
 
 
 def is_source_refresh_slot(now: datetime | None = None) -> bool:
@@ -387,7 +388,11 @@ def main(argv: list[str] | None = None) -> int:
             )
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
-        return 0
+        # Quiet backstop publication is redundant while another canonical
+        # Board owner holds the lock. A forced source refresh is not: its
+        # caller must see temporary failure and retry or alert rather than
+        # silently losing an import slot.
+        return LOCK_CONTENTION_EXIT_CODE if args.force_source_refresh else 0
     finally:
         if previous_lock_env is None:
             os.environ.pop(AUTOMATION_LOCK_HELD_ENV, None)
