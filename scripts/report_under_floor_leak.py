@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import sqlite3
 from typing import Any
+import warnings
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -112,6 +113,27 @@ STRATEGIC_EXCLUDED_COLUMNS = [
     "kaspi_offer_name",
 ]
 
+SELLOFF_PROTECTED_COLUMNS = [
+    "protection_match",
+    "protection_eval_status",
+    "order_date",
+    "order_id",
+    "store_code",
+    "sku_key",
+    "sku_id",
+    "my_size",
+    "quantity",
+    "sell_price_kzt",
+    "floor_sku_key",
+    "floor_min_price_kzt",
+    "floor_source",
+    "floor_resolution_source",
+    "gap_per_unit_kzt",
+    "gap_total_kzt",
+    "status",
+    "kaspi_offer_name",
+]
+
 
 def _now_almaty() -> str:
     return datetime.now(ALMATY_TZ).replace(microsecond=0).isoformat()
@@ -119,6 +141,58 @@ def _now_almaty() -> str:
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_simple_top_level_yaml(path: Path) -> dict[str, Any]:
+    """Load the small, flat WA protection contract without requiring PyYAML."""
+    payload: dict[str, Any] = {}
+    active_list: str | None = None
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if raw_line.startswith("  - "):
+            if not active_list:
+                raise ValueError(f"line_{line_number}:list_item_without_key")
+            value = stripped[2:].strip().strip('"').strip("'")
+            payload[active_list].append(value)
+            continue
+        if raw_line[:1].isspace():
+            raise ValueError(f"line_{line_number}:nested_yaml_not_supported")
+        key, separator, raw_value = raw_line.partition(":")
+        if not separator or not key.strip():
+            raise ValueError(f"line_{line_number}:invalid_mapping")
+        key = key.strip()
+        value = raw_value.strip()
+        if not value:
+            payload[key] = []
+            active_list = key
+            continue
+        active_list = None
+        if value.lower() == "true":
+            payload[key] = True
+        elif value.lower() == "false":
+            payload[key] = False
+        elif value.lower() in {"null", "~"}:
+            payload[key] = None
+        else:
+            payload[key] = value.strip('"').strip("'")
+    return payload
+
+
+def _load_mapping(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() == ".json":
+        payload: Any = _load_json(path)
+    else:
+        try:
+            import yaml  # type: ignore[import-not-found]
+        except ModuleNotFoundError:
+            payload = _load_simple_top_level_yaml(path)
+        else:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("config_root_must_be_object")
+    return payload
 
 
 def _check(ok: bool, name: str, details: str, **extra: Any) -> dict[str, Any]:
@@ -208,6 +282,108 @@ def _as_text_list(value: Any) -> list[str]:
     else:
         return []
     return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _load_selloff_price_protect(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    authority = config.get("selloff_price_protect")
+    empty = {
+        "enabled": False,
+        "source_kind": "",
+        "source_path": "",
+        "schema_version": "",
+        "never_raise": False,
+        "sku_key_prefixes": [],
+        "product_codes": [],
+        "owner_decision": "",
+    }
+    if authority is None:
+        return empty, [], []
+    if not isinstance(authority, dict):
+        return empty, [{"error": "selloff_price_protect_must_be_object"}], []
+
+    wa_raw = _clean_text(authority.get("wa_path"))
+    fallback_raw = _clean_text(authority.get("local_fallback_path"))
+    if not wa_raw:
+        return empty, [{"error": "wa_path_required"}], []
+    if not fallback_raw:
+        return empty, [{"error": "local_fallback_path_required"}], []
+
+    wa_path = _resolve_project_path(wa_raw)
+    fallback_path = _resolve_project_path(fallback_raw)
+    source_path: Path | None = None
+    source_kind = ""
+    load_warnings: list[str] = []
+    if wa_path.exists():
+        source_path = wa_path
+        source_kind = "wa_primary"
+    elif fallback_path.exists():
+        source_path = fallback_path
+        source_kind = "ab_local_fallback"
+        message = f"selloff_price_protect WA YAML unavailable; using AB-local fallback: {fallback_path}"
+        load_warnings.append(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+    else:
+        return (
+            empty,
+            [
+                {
+                    "error": "selloff_price_protect_sources_missing",
+                    "wa_path": str(wa_path),
+                    "local_fallback_path": str(fallback_path),
+                }
+            ],
+            [],
+        )
+
+    try:
+        payload = _load_mapping(source_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return (
+            {**empty, "source_kind": source_kind, "source_path": str(source_path)},
+            [{"error": "selloff_price_protect_load_failed", "details": str(exc)}],
+            load_warnings,
+        )
+
+    errors: list[dict[str, Any]] = []
+    schema_version = _clean_text(payload.get("schema_version"))
+    sku_key_prefixes = _as_text_list(payload.get("sku_key_prefixes"))
+    product_codes = _as_text_list(payload.get("product_codes"))
+    never_raise = payload.get("never_raise") is True
+    required_never_raise = authority.get("required_never_raise", True) is True
+    if not schema_version:
+        errors.append({"error": "schema_version_required"})
+    if not sku_key_prefixes and not product_codes:
+        errors.append({"error": "protection_scope_required"})
+    if required_never_raise and not never_raise:
+        errors.append({"error": "never_raise_true_required"})
+
+    loaded = {
+        "enabled": not errors,
+        "source_kind": source_kind,
+        "source_path": str(source_path),
+        "schema_version": schema_version,
+        "never_raise": never_raise,
+        "sku_key_prefixes": sku_key_prefixes,
+        "product_codes": product_codes,
+        "owner_decision": _clean_text(payload.get("owner_decision")),
+    }
+    return loaded, errors, load_warnings
+
+
+def _selloff_protection_match(row: dict[str, Any], authority: dict[str, Any]) -> str | None:
+    if not authority.get("enabled"):
+        return None
+    sku_key = _clean_text(row.get("sku_key"))
+    for prefix in authority.get("sku_key_prefixes") or []:
+        if sku_key.startswith(str(prefix)):
+            return f"sku_key_prefix:{prefix}"
+    sku_id = _clean_text(row.get("sku_id"))
+    for product_code in authority.get("product_codes") or []:
+        if sku_id == str(product_code):
+            return f"product_code:{product_code}"
+    return None
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
@@ -454,6 +630,9 @@ def _render_md(report: dict[str, Any]) -> str:
         f"- under-floor rows: {report['under_floor_row_count']}",
         f"- under-floor units: {report['under_floor_units']}",
         f"- under-floor gap KZT: {report['under_floor_gap_kzt']}",
+        f"- selloff-protected rows: {report['selloff_protected']['row_count']}",
+        f"- selloff-protected units: {report['selloff_protected']['units']}",
+        f"- selloff-protected gap KZT: {report['selloff_protected']['gap_kzt']}",
         f"- strategic brand pricing excluded rows: {report['strategic_brand_pricing_excluded_row_count']}",
         f"- strategic brand pricing excluded units: {report['strategic_brand_pricing_excluded_units']}",
         f"- strategic brand pricing excluded gap KZT: {report['strategic_brand_pricing_excluded_gap_kzt']}",
@@ -468,6 +647,20 @@ def _render_md(report: dict[str, Any]) -> str:
     for check in report["checks"]:
         mark = "PASS" if check["ok"] else "FAIL"
         lines.append(f"- {mark} {check['check']}: {check['details']}")
+    lines.extend(
+        [
+            "",
+            "## Selloff Protected",
+            "",
+            f"- authority source: `{report['selloff_protected']['source_path']}`",
+            f"- source kind: {report['selloff_protected']['source_kind']}",
+            f"- rows: {report['selloff_protected']['row_count']}",
+            f"- units: {report['selloff_protected']['units']}",
+            f"- under-floor gap excluded from lift candidates KZT: {report['selloff_protected']['gap_kzt']}",
+            f"- warnings: {len(report['selloff_protected']['warnings'])}",
+            f"- CSV: `{report['artifacts'].get('selloff_protected_csv', '')}`",
+        ]
+    )
     lines.extend(
         [
             "",
@@ -508,9 +701,25 @@ def build_under_floor_leak_report(
     max_sales_lag_days = int(config.get("max_sales_data_lag_days") or 2)
     strict_missing_floor = bool(config.get("strict_missing_floor_blocks_green", True))
     strict_missing_price = bool(config.get("strict_missing_price_blocks_green", True))
+    selloff_protect, selloff_protect_errors, selloff_protect_warnings = _load_selloff_price_protect(config)
     scoring_exception_entries, scoring_exception_errors = _load_scoring_exception_authority(config)
 
     checks: list[dict[str, Any]] = []
+    if "selloff_price_protect" in config:
+        checks.append(
+            _check(
+                not selloff_protect_errors,
+                "selloff_price_protect_config_valid",
+                (
+                    f"source_kind={selloff_protect['source_kind'] or '<missing>'} "
+                    f"prefixes={len(selloff_protect['sku_key_prefixes'])} "
+                    f"product_codes={len(selloff_protect['product_codes'])} "
+                    f"warnings={len(selloff_protect_warnings)} errors={len(selloff_protect_errors)}"
+                ),
+                errors=selloff_protect_errors,
+                warnings=selloff_protect_warnings,
+            )
+        )
     if "scoring_exception_authority" in config:
         exclude_count = sum(1 for entry in scoring_exception_entries if entry.get("action") == EXCLUDE_FROM_LEAK_SCORING)
         enforce_count = sum(1 for entry in scoring_exception_entries if entry.get("action") == ENFORCE_FLOOR)
@@ -566,6 +775,7 @@ def build_under_floor_leak_report(
 
     non_cancelled_rows: list[dict[str, Any]] = []
     under_floor_rows: list[dict[str, Any]] = []
+    selloff_protected_rows: list[dict[str, Any]] = []
     strategic_excluded_rows: list[dict[str, Any]] = []
     missing_floor_rows: list[dict[str, Any]] = []
     missing_price_rows: list[dict[str, Any]] = []
@@ -581,6 +791,44 @@ def build_under_floor_leak_report(
         floor_sku_key, floor_resolution_source = _alias_for(config, sku_key)
         floor = floor_rows.get(floor_sku_key)
         sell_price = _as_float(row.get("sell_price_kzt"))
+
+        protection_match = _selloff_protection_match(row, selloff_protect)
+        if protection_match is not None:
+            floor_min = float(floor["floor_min_price_kzt"]) if floor else None
+            gap_per_unit = max(0.0, floor_min - sell_price) if floor_min is not None and sell_price is not None else None
+            gap_total = gap_per_unit * quantity if gap_per_unit is not None else None
+            if floor is None:
+                protection_eval_status = "missing_floor_protected"
+            elif sell_price is None:
+                protection_eval_status = "missing_price_protected"
+            elif gap_per_unit and gap_per_unit > 0:
+                protection_eval_status = "under_floor_protected"
+            else:
+                protection_eval_status = "not_under_floor_protected"
+            selloff_protected_rows.append(
+                {
+                    "protection_match": protection_match,
+                    "protection_eval_status": protection_eval_status,
+                    "order_date": row.get("order_date", ""),
+                    "order_id": row.get("order_id", ""),
+                    "store_code": row.get("store_code", ""),
+                    "sku_key": sku_key,
+                    "sku_id": row.get("sku_id", ""),
+                    "my_size": row.get("my_size", ""),
+                    "quantity": quantity,
+                    "sell_price_kzt": _fmt_money(sell_price),
+                    "floor_sku_key": floor_sku_key,
+                    "floor_min_price_kzt": _fmt_money(floor_min),
+                    "floor_source": floor.get("floor_source", "") if floor else "",
+                    "floor_resolution_source": floor_resolution_source,
+                    "gap_per_unit_kzt": _fmt_money(gap_per_unit),
+                    "gap_total_kzt": _fmt_money(gap_total),
+                    "status": status,
+                    "kaspi_offer_name": row.get("kaspi_offer_name", ""),
+                }
+            )
+            continue
+
         bucket_key = (sku_key, floor_sku_key)
         bucket = by_sku.setdefault(
             bucket_key,
@@ -734,6 +982,9 @@ def build_under_floor_leak_report(
         )
     by_sku_rows.sort(key=lambda row: (-int(row["under_floor_units"]), -int(row["missing_floor_rows"]), str(row["sku_key"])))
     under_floor_rows.sort(key=lambda row: (str(row["order_date"]), str(row["store_code"]), str(row["sku_key"]), str(row["order_id"])))
+    selloff_protected_rows.sort(
+        key=lambda row: (str(row["order_date"]), str(row["store_code"]), str(row["sku_key"]), str(row["order_id"]))
+    )
     strategic_excluded_rows.sort(
         key=lambda row: (
             str(row["exception_id"]),
@@ -747,10 +998,12 @@ def build_under_floor_leak_report(
     missing_price_rows.sort(key=lambda row: (str(row["order_date"]), str(row["store_code"]), str(row["sku_key"]), str(row["order_id"])))
 
     under_floor_units = sum(_as_int(row["quantity"]) for row in under_floor_rows)
+    selloff_protected_units = sum(_as_int(row["quantity"]) for row in selloff_protected_rows)
     strategic_excluded_units = sum(_as_int(row["quantity"]) for row in strategic_excluded_rows)
     missing_floor_units = sum(_as_int(row["quantity"]) for row in missing_floor_rows)
     missing_price_units = sum(_as_int(row["quantity"]) for row in missing_price_rows)
     gap_total = sum(float(row["gap_total_kzt"] or 0) for row in under_floor_rows)
+    selloff_protected_gap_total = sum(float(row["gap_total_kzt"] or 0) for row in selloff_protected_rows)
     strategic_excluded_gap_total = sum(float(row["gap_total_kzt"] or 0) for row in strategic_excluded_rows)
     non_cancelled_units = sum(max(0, _as_int(row.get("quantity"))) for row in non_cancelled_rows)
 
@@ -781,11 +1034,13 @@ def build_under_floor_leak_report(
     output_dir = output_root.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     under_floor_csv = output_dir / "under_floor_sales.csv"
+    selloff_protected_csv = output_dir / "selloff_protected.csv"
     strategic_excluded_csv = output_dir / "strategic_brand_pricing_excluded_rows.csv"
     missing_floor_csv = output_dir / "missing_floor_sales.csv"
     missing_price_csv = output_dir / "missing_price_sales.csv"
     by_sku_csv = output_dir / "under_floor_by_sku.csv"
     _write_csv(under_floor_csv, UNDER_FLOOR_COLUMNS, under_floor_rows)
+    _write_csv(selloff_protected_csv, SELLOFF_PROTECTED_COLUMNS, selloff_protected_rows)
     _write_csv(strategic_excluded_csv, STRATEGIC_EXCLUDED_COLUMNS, strategic_excluded_rows)
     _write_csv(missing_floor_csv, MISSING_FLOOR_COLUMNS, missing_floor_rows)
     _write_csv(missing_price_csv, MISSING_PRICE_COLUMNS, missing_price_rows)
@@ -808,6 +1063,7 @@ def build_under_floor_leak_report(
         "floor_rows_loaded": len(floor_rows),
         "floor_errors": floor_errors,
         "floor_alias_count": len(config.get("floor_aliases") or {}),
+        "selloff_price_protect_errors": selloff_protect_errors,
         "scoring_exception_authority_entry_count": len(scoring_exception_entries),
         "scoring_exception_authority_errors": scoring_exception_errors,
         "window_days": window_days,
@@ -822,6 +1078,20 @@ def build_under_floor_leak_report(
         "under_floor_row_count": len(under_floor_rows),
         "under_floor_units": under_floor_units,
         "under_floor_gap_kzt": _fmt_money(gap_total),
+        "selloff_protected": {
+            "source_kind": selloff_protect["source_kind"],
+            "source_path": selloff_protect["source_path"],
+            "schema_version": selloff_protect["schema_version"],
+            "never_raise": selloff_protect["never_raise"],
+            "sku_key_prefixes": selloff_protect["sku_key_prefixes"],
+            "product_codes": selloff_protect["product_codes"],
+            "owner_decision": selloff_protect["owner_decision"],
+            "warnings": selloff_protect_warnings,
+            "rows": selloff_protected_rows,
+            "row_count": len(selloff_protected_rows),
+            "units": selloff_protected_units,
+            "gap_kzt": _fmt_money(selloff_protected_gap_total),
+        },
         "strategic_brand_pricing_excluded_rows": strategic_excluded_rows,
         "strategic_brand_pricing_excluded_row_count": len(strategic_excluded_rows),
         "strategic_brand_pricing_excluded_units": strategic_excluded_units,
@@ -833,6 +1103,7 @@ def build_under_floor_leak_report(
         "checks": checks,
         "artifacts": {
             "under_floor_sales_csv": str(under_floor_csv),
+            "selloff_protected_csv": str(selloff_protected_csv),
             "strategic_brand_pricing_excluded_csv": str(strategic_excluded_csv),
             "missing_floor_sales_csv": str(missing_floor_csv),
             "missing_price_sales_csv": str(missing_price_csv),
@@ -871,6 +1142,7 @@ def main() -> int:
         print(f"Gate: {report['gate']}")
         print(f"ok: {report['ok']}")
         print(f"under_floor_units: {report['under_floor_units']}")
+        print(f"selloff_protected_units: {report['selloff_protected']['units']}")
         print(f"strategic_brand_pricing_excluded_units: {report['strategic_brand_pricing_excluded_units']}")
         print(f"missing_floor_rows: {report['missing_floor_row_count']}")
         print(f"Report: {report['json_path']}")

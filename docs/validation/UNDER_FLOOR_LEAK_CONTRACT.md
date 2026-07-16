@@ -18,8 +18,15 @@ The gate is GREEN only when a read-only report over the trailing 7 calendar days
 
 Binding floor source:
 
-- Web_automation `exports/pricelist_snapshots/min_price_floor_35pct_by_sku_v7.csv`
-- documented by Web_automation `Docs/inventory/repricer_live_price_rules.md`
+- owner decision
+  `config/owner_decisions/price_floor_doctrine_5pct_poc_2026_07_06.json`
+  (`OD-PRICE-FLOOR-DOCTRINE-5PCT-POC-2026-07-06`), which retires the old
+  30/35%-POC floors and makes the sell-off red-line the sell price that
+  preserves at least 5% profit on COGS;
+- Web_automation
+  `exports/pricelist_snapshots/min_price_floor_5pct_by_sku_v8.csv`, whose
+  compatibility column `Min_price_35pct` carries the binding 5%-POC values;
+- documented by Web_automation `Docs/inventory/repricer_live_price_rules.md`.
 
 Sales source:
 
@@ -79,7 +86,32 @@ defines the current `STRATEGIC_BRAND_PRICING` policy:
   `SUIT-31-LS`; the config also names literal owner label `LS31-BLK` if a future
   row arrives with that key.
 - UNIVERSAL and STOREB rows are generic commodity rows and remain fully enforced
-  with no strategic exception authority.
+  with no strategic exception authority. The independent selloff-protection
+  rule below may still protect an explicitly named product family in any store.
+
+## Selloff protection
+
+The reporter loads the read-only selloff-protection authority from
+Web_automation `config/selloff_price_protect.yaml`, introduced by commit
+`2600dde53c7d9fcae18ef1c2c1999e3fc58a8cee`. If that path is unavailable, the
+reporter must load the AB-local mirror
+`config/validation/selloff_price_protect.local.json` and emit a visible warning
+that the fallback was used. If neither source is available or the selected
+source is invalid, `selloff_price_protect_config_valid` fails closed.
+
+The selected protection source must declare `never_raise: true`. SKU-key prefix
+matching is exact and case-sensitive. Product-code matching is exact against
+the sales row's `sku_id`, the only product-code-like identifier on the
+`sales_fact_v2` reporting grain. Protection applies across all stores; it is
+not strategic-brand pricing and does not reuse
+`scoring_exception_authority`.
+
+Every matching non-cancelled row is reported informationally under the JSON
+`selloff_protected` section and in `selloff_protected.csv`, including whether
+it is below floor, above floor, missing a floor, or missing a price. Protected
+rows are excluded from `under_floor_sales.csv` and from
+`under_floor_by_sku.csv`; they never become lift candidates or contribute to
+the strict leak, missing-floor, or missing-price counts.
 
 This is scoring authority only. It does not create aggressive price-lowering
 authority, owner-brand price-change authority, Repricer authority, Kaspi
@@ -96,6 +128,7 @@ Default outputs:
 - `exports/validation/under_floor_leak/<run>/under_floor_leak_report.json`
 - `exports/validation/under_floor_leak/<run>/under_floor_leak_report.md`
 - `exports/validation/under_floor_leak/<run>/under_floor_sales.csv`
+- `exports/validation/under_floor_leak/<run>/selloff_protected.csv`
 - `exports/validation/under_floor_leak/<run>/strategic_brand_pricing_excluded_rows.csv`
 - `exports/validation/under_floor_leak/<run>/missing_floor_sales.csv`
 - `exports/validation/under_floor_leak/<run>/missing_price_sales.csv`
@@ -103,6 +136,8 @@ Default outputs:
 
 JSON reports include:
 
+- `selloff_protected`: selected authority source, warnings, visible row list,
+  row/unit counts, and informational under-floor gap;
 - `strategic_brand_pricing_excluded_rows`: visible list of every row matched by
   `EXCLUDE_FROM_LEAK_SCORING`;
 - `strategic_brand_pricing_excluded_row_count`;

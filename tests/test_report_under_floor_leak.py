@@ -6,6 +6,8 @@ from pathlib import Path
 import sqlite3
 import sys
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -75,9 +77,37 @@ def _write_floor_csv(path: Path) -> None:
                 "floor_source": "fixture",
             }
         )
+        writer.writerow(
+            {
+                "SKU_key": "CL_NEW-CLO_KID_ROMBIK_BLACK",
+                "COGS": "5447",
+                "Wt_kg": "0.93",
+                "AvgPrc_v7": "10910",
+                "Min_price_35pct": "7608",
+                "floor_source": "fixture_v8_5pct",
+            }
+        )
+        writer.writerow(
+            {
+                "SKU_key": "CL_NEW-CLO_MEN_TAICI_BLACK",
+                "COGS": "568",
+                "Wt_kg": "0.13",
+                "AvgPrc_v7": "970",
+                "Min_price_35pct": "767",
+                "floor_source": "fixture_v8_5pct",
+            }
+        )
 
 
-def _write_config(path: Path, db_path: Path, floor_path: Path, *, include_scoring_authority: bool = False) -> None:
+def _write_config(
+    path: Path,
+    db_path: Path,
+    floor_path: Path,
+    *,
+    include_scoring_authority: bool = False,
+    selloff_wa_path: Path | None = None,
+    selloff_fallback_path: Path | None = None,
+) -> None:
     config = {
         "db_path": str(db_path),
         "floor_csv_path": str(floor_path),
@@ -98,6 +128,14 @@ def _write_config(path: Path, db_path: Path, floor_path: Path, *, include_scorin
         "strict_missing_floor_blocks_green": True,
         "strict_missing_price_blocks_green": True,
     }
+    if selloff_wa_path is not None or selloff_fallback_path is not None:
+        assert selloff_wa_path is not None
+        assert selloff_fallback_path is not None
+        config["selloff_price_protect"] = {
+            "wa_path": str(selloff_wa_path),
+            "local_fallback_path": str(selloff_fallback_path),
+            "required_never_raise": True,
+        }
     if include_scoring_authority:
         config["scoring_exception_authority"] = {
             "schema_version": "under_floor_leak.scoring_exception_authority.v1",
@@ -130,6 +168,52 @@ def _write_config(path: Path, db_path: Path, floor_path: Path, *, include_scorin
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _replace_sales_rows(path: Path, rows: list[tuple[object, ...]]) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM sales_fact_v2")
+        conn.executemany(
+            """
+            INSERT INTO sales_fact_v2 (
+                order_id, order_date, sku_key, sku_id, my_size, kaspi_offer_name,
+                store_code, quantity, sell_price_kzt, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+
+def _write_selloff_yaml(path: Path) -> None:
+    path.write_text(
+        """schema_version: web_auto.selloff_price_protect.v1
+sku_key_prefixes:
+  - CL_NEW-CLO_KID_ROMBIK_
+product_codes:
+  - \"135222379\"
+  - \"128541983\"
+never_raise: true
+owner_decision: fixture owner decision
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_selloff_json(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "web_auto.selloff_price_protect.v1",
+                "sku_key_prefixes": ["CL_NEW-CLO_KID_ROMBIK_"],
+                "product_codes": ["135222379", "128541983"],
+                "never_raise": True,
+                "owner_decision": "fixture owner decision",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_under_floor_report_detects_leaks_missing_floor_and_aliases(tmp_path: Path) -> None:
@@ -281,3 +365,182 @@ def test_default_config_records_od2_b_strategic_brand_pricing_authority() -> Non
             == "docs/plan/green_path_2026-06/green_path_run/OWNER_APPROVALS_20260702_RESUME.md#OD2-B"
         )
         assert entry.get("sku_keys") or entry.get("sku_key_prefixes")
+
+
+def test_kid_rombik_7990_is_above_v8_floor_and_not_a_lift_candidate(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    floor_path = tmp_path / "floor.csv"
+    config_path = tmp_path / "config.json"
+    output_dir = tmp_path / "out"
+    _make_db(db_path)
+    _replace_sales_rows(
+        db_path,
+        [
+            (
+                "kid-above",
+                "2026-07-17",
+                "CL_NEW-CLO_KID_ROMBIK_BLACK",
+                "CL_NEW-CLO_KID_ROMBIK_BLACK_2XL",
+                "2XL",
+                "KID ROMBIK",
+                "UNIVERSAL",
+                1,
+                7990,
+                "DELIVERED",
+            )
+        ],
+    )
+    _write_floor_csv(floor_path)
+    _write_config(config_path, db_path, floor_path)
+
+    report = build_under_floor_leak_report(config_path=config_path, output_root=output_dir, as_of="2026-07-17")
+
+    assert report["gate"] == "GREEN"
+    assert report["under_floor_row_count"] == 0
+    by_sku = _read_csv(Path(report["artifacts"]["under_floor_by_sku_csv"]))
+    assert by_sku[0]["floor_min_price_kzt"] == "7608.00"
+    assert by_sku[0]["under_floor_rows"] == "0"
+
+
+def test_kid_rombik_7000_is_selloff_protected_not_a_lift_candidate(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    floor_path = tmp_path / "floor.csv"
+    config_path = tmp_path / "config.json"
+    protect_path = tmp_path / "selloff_price_protect.yaml"
+    fallback_path = tmp_path / "selloff_price_protect.local.json"
+    output_dir = tmp_path / "out"
+    _make_db(db_path)
+    _replace_sales_rows(
+        db_path,
+        [
+            (
+                "kid-protected",
+                "2026-07-17",
+                "CL_NEW-CLO_KID_ROMBIK_BLACK",
+                "CL_NEW-CLO_KID_ROMBIK_BLACK_2XL",
+                "2XL",
+                "KID ROMBIK",
+                "STOREB",
+                1,
+                7000,
+                "DELIVERED",
+            )
+        ],
+    )
+    _write_floor_csv(floor_path)
+    _write_selloff_yaml(protect_path)
+    _write_selloff_json(fallback_path)
+    _write_config(
+        config_path,
+        db_path,
+        floor_path,
+        selloff_wa_path=protect_path,
+        selloff_fallback_path=fallback_path,
+    )
+
+    report = build_under_floor_leak_report(config_path=config_path, output_root=output_dir, as_of="2026-07-17")
+
+    assert report["gate"] == "GREEN"
+    assert report["under_floor_row_count"] == 0
+    assert report["selloff_protected"]["row_count"] == 1
+    protected = report["selloff_protected"]["rows"][0]
+    assert protected["floor_min_price_kzt"] == "7608.00"
+    assert protected["protection_eval_status"] == "under_floor_protected"
+    assert _read_csv(Path(report["artifacts"]["under_floor_sales_csv"])) == []
+    assert _read_csv(Path(report["artifacts"]["under_floor_by_sku_csv"])) == []
+
+
+def test_unprotected_taici_700_is_a_v8_lift_candidate(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    floor_path = tmp_path / "floor.csv"
+    config_path = tmp_path / "config.json"
+    protect_path = tmp_path / "selloff_price_protect.yaml"
+    fallback_path = tmp_path / "selloff_price_protect.local.json"
+    output_dir = tmp_path / "out"
+    _make_db(db_path)
+    _replace_sales_rows(
+        db_path,
+        [
+            (
+                "taici-below",
+                "2026-07-17",
+                "CL_NEW-CLO_MEN_TAICI_BLACK",
+                "CL_NEW-CLO_MEN_TAICI_BLACK_M",
+                "M",
+                "TAICI BLACK",
+                "UNIVERSAL",
+                1,
+                700,
+                "DELIVERED",
+            )
+        ],
+    )
+    _write_floor_csv(floor_path)
+    _write_selloff_yaml(protect_path)
+    _write_selloff_json(fallback_path)
+    _write_config(
+        config_path,
+        db_path,
+        floor_path,
+        selloff_wa_path=protect_path,
+        selloff_fallback_path=fallback_path,
+    )
+
+    report = build_under_floor_leak_report(config_path=config_path, output_root=output_dir, as_of="2026-07-17")
+
+    assert report["gate"] == "RED"
+    assert report["selloff_protected"]["row_count"] == 0
+    assert report["under_floor_row_count"] == 1
+    lift_rows = _read_csv(Path(report["artifacts"]["under_floor_sales_csv"]))
+    assert lift_rows[0]["sku_key"] == "CL_NEW-CLO_MEN_TAICI_BLACK"
+    assert lift_rows[0]["floor_min_price_kzt"] == "767.00"
+    by_sku = _read_csv(Path(report["artifacts"]["under_floor_by_sku_csv"]))
+    assert by_sku[0]["under_floor_rows"] == "1"
+
+
+def test_missing_wa_yaml_uses_local_fallback_and_emits_warning(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    floor_path = tmp_path / "floor.csv"
+    config_path = tmp_path / "config.json"
+    missing_wa_path = tmp_path / "missing" / "selloff_price_protect.yaml"
+    fallback_path = tmp_path / "selloff_price_protect.local.json"
+    output_dir = tmp_path / "out"
+    _make_db(db_path)
+    _replace_sales_rows(
+        db_path,
+        [
+            (
+                "kid-fallback",
+                "2026-07-17",
+                "UNMAPPED_SELLOFF_PRODUCT",
+                "135222379",
+                "2XL",
+                "KID ROMBIK",
+                "UNIVERSAL",
+                1,
+                7000,
+                "DELIVERED",
+            )
+        ],
+    )
+    _write_floor_csv(floor_path)
+    _write_selloff_json(fallback_path)
+    _write_config(
+        config_path,
+        db_path,
+        floor_path,
+        selloff_wa_path=missing_wa_path,
+        selloff_fallback_path=fallback_path,
+    )
+
+    with pytest.warns(RuntimeWarning, match="using AB-local fallback"):
+        report = build_under_floor_leak_report(config_path=config_path, output_root=output_dir, as_of="2026-07-17")
+
+    assert report["gate"] == "GREEN"
+    assert report["selloff_protected"]["source_kind"] == "ab_local_fallback"
+    assert report["selloff_protected"]["source_path"] == str(fallback_path)
+    assert report["selloff_protected"]["warnings"]
+    assert report["selloff_protected"]["rows"][0]["protection_match"] == "product_code:135222379"
+    protect_check = next(check for check in report["checks"] if check["check"] == "selloff_price_protect_config_valid")
+    assert protect_check["ok"] is True
+    assert "warnings=1" in protect_check["details"]

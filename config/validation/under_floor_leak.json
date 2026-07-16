@@ -1,9 +1,32 @@
 {
-  "schema_version": "under_floor_leak.v1",
+  "schema_version": "under_floor_leak.v2",
+  "config_version": "2026-07-17.5pct-poc-v8-selloff-protect",
+  "effective_date": "2026-07-17",
   "gate_id": "G-PRICE-03",
   "db_path": "db/app.db",
-  "floor_csv_path": "../Web_automation/exports/pricelist_snapshots/min_price_floor_35pct_by_sku_v7.csv",
-  "floor_version": "v7",
+  "floor_csv_path": "../Web_automation/exports/pricelist_snapshots/min_price_floor_5pct_by_sku_v8.csv",
+  "floor_version": "v8_5pct_poc",
+  "floor_value_column": "Min_price_35pct",
+  "floor_value_semantics": "5pct_poc_floor_in_legacy_compatibility_column",
+  "floor_row_count_expected": 47,
+  "owner_decision_refs": [
+    {
+      "decision_id": "OD-PRICE-FLOOR-DOCTRINE-5PCT-POC-2026-07-06",
+      "decision_date": "2026-07-06",
+      "decision_record": "config/owner_decisions/price_floor_doctrine_5pct_poc_2026_07_06.json"
+    },
+    {
+      "decision_id": "AB-SELL-OFF-PRICE-PROTECT-2026-07-17",
+      "decision_date": "2026-07-17",
+      "decision_record": "Web_automation config/selloff_price_protect.yaml at commit 2600dde53c7d9fcae18ef1c2c1999e3fc58a8cee"
+    }
+  ],
+  "selloff_price_protect": {
+    "wa_path": "../Web_automation/config/selloff_price_protect.yaml",
+    "local_fallback_path": "config/validation/selloff_price_protect.local.json",
+    "source_commit": "2600dde53c7d9fcae18ef1c2c1999e3fc58a8cee",
+    "required_never_raise": true
+  },
   "window_days": 7,
   "max_sales_data_lag_days": 2,
   "excluded_status_tokens": [
