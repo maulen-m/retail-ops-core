@@ -1723,6 +1723,208 @@ def test_closeout_main_dry_run_executes_steps_in_order(monkeypatch, tmp_path: Pa
     assert report["steps"][-1]["skipped"] is True
 
 
+def test_closeout_mixed_exclusion_uncertainty_proceeds_and_reports_split(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _make_db(db_path)
+    _set_db_size(db_path)
+    contract = load_ops_board_contract()
+    creds = tmp_path / "svc.json"
+    creds.write_text("{}", encoding="utf-8")
+    ledger_path = closeout_mod.DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "entries": {
+                    "UNIVERSAL:COVERED": {
+                        "store_code": "UNIVERSAL",
+                        "order_id": "COVERED",
+                        "status": "unresolved",
+                        "first_seen_target_date": "2026-04-14",
+                        "last_seen_target_date": "2026-04-14",
+                    },
+                    "UNIVERSAL:CLEAN": {
+                        "store_code": "UNIVERSAL",
+                        "order_id": "CLEAN",
+                        "status": "unresolved",
+                        "first_seen_target_date": "2026-04-14",
+                        "last_seen_target_date": "2026-04-14",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = _FakeClient(
+        {
+            "Run_Control": [
+                contract.tabs["Run_Control"].headers,
+                [
+                    "2026-04-15",
+                    "READY",
+                    "adil",
+                    "2026-04-15T18:10:00+05:00",
+                    "",
+                    "",
+                    "",
+                    "",
+                ],
+            ],
+            "SalesRaw_Today": [
+                contract.tabs["SalesRaw_Today"].headers,
+                [
+                    "TODAY",
+                    "2026-04-15",
+                    "Universal",
+                    "",
+                    "",
+                    "1",
+                    "Nike",
+                    "1001",
+                    "L",
+                    "L",
+                    "Offer",
+                    "SKU-1",
+                    "1",
+                    "1001|2026-04-15|SKU-1|Offer|1",
+                    "DEFAULT",
+                    "LOW",
+                ],
+            ],
+        }
+    )
+    lifecycle: list[str] = []
+    stage_calls: list[str] = []
+    alerts: list[dict[str, object]] = []
+
+    def _load_decision(**_kwargs):
+        lifecycle.append("decision")
+        return {
+            "decision_id": "TEST-COVERED",
+            "path": str(tmp_path / "decision.json"),
+            "preserve_physical_handover_obligation": True,
+            "excluded_order_ids_by_store": {"UNIVERSAL": {"COVERED"}},
+        }
+
+    def _fetch_details(**_kwargs):
+        lifecycle.append("details")
+        return {
+            "UNIVERSAL:COVERED": {"error": "timeout"},
+            "UNIVERSAL:CLEAN": {
+                "order": {
+                    "attributes": {
+                        "code": "CLEAN",
+                        "state": "KASPI_DELIVERY",
+                        "status": "TRANSMITTED_TO_COURIER",
+                        "courierTransmissionDate": 1776268800000,
+                    }
+                }
+            },
+        }
+
+    def _fake_run_command(*, name, command, env, report_path):
+        stage_calls.append(name)
+        if "--output-json" in command:
+            Path(command[command.index("--output-json") + 1]).write_text(
+                json.dumps(
+                    {
+                        "db_backup_path": None,
+                        "updates_applied": 0,
+                        "updates_count": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        step = {
+            "name": name,
+            "command": command,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "ok": True,
+        }
+        report_path.write_text(json.dumps(step), encoding="utf-8")
+        return step
+
+    monkeypatch.setattr(
+        closeout_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setattr(closeout_mod, "_run_command", _fake_run_command)
+    monkeypatch.setattr(closeout_mod, "load_validated_prepacked_exclusion", _load_decision)
+    monkeypatch.setattr(closeout_mod, "_fetch_prior_obligation_details", _fetch_details)
+    monkeypatch.setattr(
+        closeout_mod,
+        "fetch_api_active_order_ids_by_store",
+        lambda **_kwargs: {"UNIVERSAL": {"1001"}},
+    )
+    monkeypatch.setattr(
+        closeout_mod,
+        "build_store_context_report",
+        lambda **_kwargs: {
+            "ok": True,
+            "active_store_codes": ["UNIVERSAL"],
+            "stores": [],
+            "failure_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        "core.ops.waybill_shipping_obligations.enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
+    report_path = tmp_path / "closeout_report.json"
+
+    rc = closeout_mod.main(
+        [
+            "--db-path",
+            str(db_path),
+            "--service-account-json",
+            str(creds),
+            "--spreadsheet-id",
+            "sheet-id",
+            "--target-date",
+            "2026-04-15",
+            "--run-root",
+            str(tmp_path / "workflow_runs"),
+            "--json-out",
+            str(report_path),
+        ]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    reconciliation = json.loads(
+        Path(report["shipping_obligation_reconciliation_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert rc == 0
+    assert report["ok"] is True
+    assert lifecycle == ["decision", "details"]
+    assert stage_calls == [
+        "size_writeback",
+        "shipping",
+        "download_waybills",
+        "build_waybills",
+    ]
+    assert reconciliation["ok"] is True
+    assert reconciliation["uncertainty_scope_counts"] == {
+        "covered": 1,
+        "uncovered": 0,
+    }
+    assert reconciliation["issues"][0]["code"] == (
+        "obligation_api_uncertain_excluded_scope"
+    )
+    assert reconciliation["active_order_ids_by_store"] == {
+        "UNIVERSAL": ["COVERED"]
+    }
+    assert alerts == []
+
+
 def test_pinned_delivery_attempt_evidence_blocks_rebuild_after_partial_send(tmp_path: Path) -> None:
     batch_root = tmp_path / "MERGED" / "SEND" / "batch"
     batch_root.mkdir(parents=True)

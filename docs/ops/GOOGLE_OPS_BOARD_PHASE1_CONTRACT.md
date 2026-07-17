@@ -261,6 +261,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - final size writeback only through a closeout-generated `schema_version = 2` scope bound to exact `target_date + ready_set_at`, enabled-store/order scope, DB row IDs, line keys, and `MY_SIZE` values; the live Sheet must still match every pinned row and size
   - reconcile current source-active orders with the persistent no-expiry shipping-obligation ledger
   - exact-read prior obligations absent from the active selector; uncertainty retains the obligation and blocks closeout
+  - narrow exception: when a validated same-day prepacked-exclusion decision declares the exact store/order ID, API/UNKNOWN uncertainty retains that obligation as unresolved, records `obligation_api_uncertain_excluded_scope`, queues a WARN, and is non-blocking only for that declared ID; uncovered uncertainty and identity mismatch remain blocking, while clean physical-handover truth still discharges normally
   - write and SHA-pin the complete required-order set
   - pass that same required-order file to exact Kaspi shipping, waybill download, and bundle build
   - require exactly one new immutable send manifest and pin its complete delivery identity

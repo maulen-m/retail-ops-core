@@ -17,6 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from core.alerts.ops_alert_outbox import enqueue_alert
 from core.integrations.kaspi_order_stage import StageCode, classify_kaspi_order_stage
 
 
@@ -275,13 +276,17 @@ def reconcile_shipping_obligations(
     target_date: date,
     ready_set_at: str,
     now: datetime,
+    uncertainty_waiver_ids_by_store: Mapping[str, Iterable[Any]] | None = None,
+    enqueue_uncertainty_warnings: bool = False,
 ) -> dict[str, Any]:
     """Reconcile prior obligations against fresh read-only Kaspi truth.
 
     ``detail_results`` is required for every prior open obligation not present in
     the current paginated active selector.  A result is ``{"order": <payload>}``
     or ``{"error": <reason>}``.  Errors and unknown states retain the obligation
-    and make ``ok`` false.
+    and make ``ok`` false unless the obligation is in the explicitly supplied
+    validated exclusion scope.  Omitting ``uncertainty_waiver_ids_by_store``
+    preserves the legacy result contract and fail-closed behavior.
     """
     ledger = copy.deepcopy(dict(prior_ledger or empty_shipping_obligation_ledger()))
     if int(ledger.get("schema_version") or SCHEMA_VERSION) != SCHEMA_VERSION:
@@ -292,9 +297,57 @@ def reconcile_shipping_obligations(
 
     current = _normalized_order_ids_by_store(current_active_order_ids_by_store)
     details = {str(key): dict(value or {}) for key, value in dict(detail_results or {}).items()}
+    waiver_scope_enabled = uncertainty_waiver_ids_by_store is not None
+    uncertainty_waivers = _normalized_order_ids_by_store(
+        uncertainty_waiver_ids_by_store
+    )
     now_iso = now.isoformat()
     target_iso = target_date.isoformat()
     issues: list[dict[str, str]] = []
+    blocking_issues: list[dict[str, str]] = []
+    uncertainty_scope_counts = {"covered": 0, "uncovered": 0}
+
+    def record_uncertainty(
+        *,
+        store: str,
+        order_id: str,
+        key: str,
+        detail: str,
+        uncovered_code: str,
+    ) -> None:
+        covered = order_id in uncertainty_waivers.get(store, set())
+        if covered:
+            issue = {
+                "code": "obligation_api_uncertain_excluded_scope",
+                "key": key,
+                "detail": detail,
+            }
+            issues.append(issue)
+            uncertainty_scope_counts["covered"] += 1
+            if enqueue_uncertainty_warnings:
+                enqueue_alert(
+                    title="Shipping obligation uncertainty in prepacked exclusion scope",
+                    lines=[
+                        f"Target date: {target_iso}",
+                        f"Obligation: {key}",
+                        f"Detail: {detail}",
+                        "The obligation remains unresolved; only this validated exclusion scope is non-blocking.",
+                    ],
+                    severity="WARN",
+                    dedup_key=(
+                        "shipping_obligation_uncertainty_excluded_scope:"
+                        f"{target_iso}:{key}"
+                    ),
+                )
+            return
+        issue = {
+            "code": uncovered_code,
+            "key": key,
+            "detail": detail,
+        }
+        issues.append(issue)
+        blocking_issues.append(issue)
+        uncertainty_scope_counts["uncovered"] += 1
 
     detail_keys = set(open_obligation_keys_needing_detail(ledger, current))
     for store, order_ids in sorted(current.items()):
@@ -339,12 +392,12 @@ def reconcile_shipping_obligations(
             entries[canonical_key] = entry
             if canonical_key != raw_key:
                 entries.pop(raw_key, None)
-            issues.append(
-                {
-                    "code": "obligation_api_uncertain",
-                    "key": canonical_key,
-                    "detail": issue_detail,
-                }
+            record_uncertainty(
+                store=store,
+                order_id=order_id,
+                key=canonical_key,
+                detail=issue_detail,
+                uncovered_code="obligation_api_uncertain",
             )
             continue
 
@@ -359,13 +412,13 @@ def reconcile_shipping_obligations(
                 }
             )
             entries[canonical_key] = entry
-            issues.append(
-                {
-                    "code": "obligation_api_identity_mismatch",
-                    "key": canonical_key,
-                    "detail": detail_text,
-                }
-            )
+            issue = {
+                "code": "obligation_api_identity_mismatch",
+                "key": canonical_key,
+                "detail": detail_text,
+            }
+            issues.append(issue)
+            blocking_issues.append(issue)
             continue
 
         source_state, source_status, returned_to_warehouse = _detail_stage_inputs(order)
@@ -428,16 +481,16 @@ def reconcile_shipping_obligations(
                     "last_seen_target_date": target_iso,
                 }
             )
-            issues.append(
-                {
-                    "code": "obligation_api_stage_uncertain",
-                    "key": canonical_key,
-                    "detail": (
-                        "ARCHIVE_UNDIFFERENTIATED"
-                        if source_state == "ARCHIVE"
-                        else stage.value
-                    ),
-                }
+            record_uncertainty(
+                store=store,
+                order_id=order_id,
+                key=canonical_key,
+                detail=(
+                    "ARCHIVE_UNDIFFERENTIATED"
+                    if source_state == "ARCHIVE"
+                    else stage.value
+                ),
+                uncovered_code="obligation_api_stage_uncertain",
             )
         entries[canonical_key] = entry
         if canonical_key != raw_key:
@@ -477,12 +530,15 @@ def reconcile_shipping_obligations(
             "entries": dict(sorted(entries.items())),
         }
     )
-    return {
-        "ok": not issues,
+    result = {
+        "ok": not blocking_issues,
         "issues": issues,
         "ledger": ledger,
         "active_order_ids_by_store": active_obligation_ids_by_store(ledger),
     }
+    if waiver_scope_enabled:
+        result["uncertainty_scope_counts"] = uncertainty_scope_counts
+    return result
 
 
 def load_required_orders_file(path: Path, *, target_date: date) -> dict[str, Any]:

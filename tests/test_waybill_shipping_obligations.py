@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from core.ops import waybill_shipping_obligations as obligation_mod
 from core.ops.waybill_shipping_obligations import (
     active_obligation_ids_by_store,
     load_required_orders_file,
@@ -269,6 +270,163 @@ def test_reconcile_api_uncertainty_retains_obligation_and_blocks() -> None:
     assert active_obligation_ids_by_store(result["ledger"]) == {
         "UNIVERSAL": {"992447685"}
     }
+
+
+@pytest.mark.parametrize(
+    ("detail_result", "expected_detail"),
+    [
+        ({"error": "timeout"}, "timeout"),
+        (
+            {"order": _order("992447685", state="ARCHIVE", status="")},
+            "ARCHIVE_UNDIFFERENTIATED",
+        ),
+    ],
+)
+def test_reconcile_exclusion_covered_uncertainty_is_retained_warned_and_nonblocking(
+    monkeypatch: pytest.MonkeyPatch,
+    detail_result: dict,
+    expected_detail: str,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        obligation_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
+
+    result = reconcile_shipping_obligations(
+        prior_ledger=_prior_ledger(),
+        current_active_order_ids_by_store={},
+        detail_results={"UNIVERSAL:992447685": detail_result},
+        target_date=date(2026, 7, 18),
+        ready_set_at="2026-07-18T17:00:00+05:00",
+        now=datetime(2026, 7, 18, 17, 0, 1, tzinfo=ALMATY),
+        uncertainty_waiver_ids_by_store={"30000001_PP1": {"992447685"}},
+        enqueue_uncertainty_warnings=True,
+    )
+
+    assert result["ok"] is True
+    assert result["issues"] == [
+        {
+            "code": "obligation_api_uncertain_excluded_scope",
+            "key": "UNIVERSAL:992447685",
+            "detail": expected_detail,
+        }
+    ]
+    assert result["uncertainty_scope_counts"] == {"covered": 1, "uncovered": 0}
+    assert active_obligation_ids_by_store(result["ledger"]) == {
+        "UNIVERSAL": {"992447685"}
+    }
+    assert result["ledger"]["entries"]["UNIVERSAL:992447685"]["status"] == (
+        "unresolved"
+    )
+    assert alerts == [
+        {
+            "title": "Shipping obligation uncertainty in prepacked exclusion scope",
+            "lines": [
+                "Target date: 2026-07-18",
+                "Obligation: UNIVERSAL:992447685",
+                f"Detail: {expected_detail}",
+                "The obligation remains unresolved; only this validated exclusion scope is non-blocking.",
+            ],
+            "severity": "WARN",
+            "dedup_key": (
+                "shipping_obligation_uncertainty_excluded_scope:"
+                "2026-07-18:UNIVERSAL:992447685"
+            ),
+        }
+    ]
+
+
+def test_reconcile_uncovered_uncertainty_still_blocks_with_waiver_present() -> None:
+    result = reconcile_shipping_obligations(
+        prior_ledger=_prior_ledger(),
+        current_active_order_ids_by_store={},
+        detail_results={"UNIVERSAL:992447685": {"error": "timeout"}},
+        target_date=date(2026, 7, 18),
+        ready_set_at="2026-07-18T17:00:00+05:00",
+        now=datetime(2026, 7, 18, 17, 0, 1, tzinfo=ALMATY),
+        uncertainty_waiver_ids_by_store={"UNIVERSAL": {"OTHER-ORDER"}},
+    )
+
+    assert result["ok"] is False
+    assert result["issues"][0]["code"] == "obligation_api_uncertain"
+    assert result["uncertainty_scope_counts"] == {"covered": 0, "uncovered": 1}
+
+
+def test_reconcile_exclusion_scope_does_not_waive_identity_mismatch() -> None:
+    result = reconcile_shipping_obligations(
+        prior_ledger=_prior_ledger(),
+        current_active_order_ids_by_store={},
+        detail_results={
+            "UNIVERSAL:992447685": {"order": _order("DIFFERENT-ORDER")}
+        },
+        target_date=date(2026, 7, 18),
+        ready_set_at="2026-07-18T17:00:00+05:00",
+        now=datetime(2026, 7, 18, 17, 0, 1, tzinfo=ALMATY),
+        uncertainty_waiver_ids_by_store={"UNIVERSAL": {"992447685"}},
+    )
+
+    assert result["ok"] is False
+    assert result["issues"][0]["code"] == "obligation_api_identity_mismatch"
+    assert result["uncertainty_scope_counts"] == {"covered": 0, "uncovered": 0}
+
+
+def test_reconcile_exclusion_covered_handover_still_discharges_normally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        obligation_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
+
+    result = reconcile_shipping_obligations(
+        prior_ledger=_prior_ledger(),
+        current_active_order_ids_by_store={},
+        detail_results={
+            "UNIVERSAL:992447685": {
+                "order": _order(
+                    "992447685",
+                    courier_transmission_date=1784383200000,
+                )
+            }
+        },
+        target_date=date(2026, 7, 18),
+        ready_set_at="2026-07-18T17:00:00+05:00",
+        now=datetime(2026, 7, 18, 17, 0, 1, tzinfo=ALMATY),
+        uncertainty_waiver_ids_by_store={"UNIVERSAL": {"992447685"}},
+        enqueue_uncertainty_warnings=True,
+    )
+
+    entry = result["ledger"]["entries"]["UNIVERSAL:992447685"]
+    assert result["ok"] is True
+    assert result["issues"] == []
+    assert result["uncertainty_scope_counts"] == {"covered": 0, "uncovered": 0}
+    assert entry["status"] == "discharged"
+    assert entry["discharge_reason"] == "IN_DELIVERY"
+    assert alerts == []
+
+
+def test_reconcile_absent_uncertainty_waiver_keeps_legacy_result_contract() -> None:
+    result = reconcile_shipping_obligations(
+        prior_ledger=_prior_ledger(),
+        current_active_order_ids_by_store={},
+        detail_results={"UNIVERSAL:992447685": {"error": "timeout"}},
+        target_date=date(2026, 7, 18),
+        ready_set_at="2026-07-18T17:00:00+05:00",
+        now=datetime(2026, 7, 18, 17, 0, 1, tzinfo=ALMATY),
+    )
+
+    assert set(result) == {
+        "ok",
+        "issues",
+        "ledger",
+        "active_order_ids_by_store",
+    }
+    assert result["ok"] is False
+    assert result["issues"][0]["code"] == "obligation_api_uncertain"
 
 
 def test_reconcile_adds_every_current_active_order_without_daily_approval() -> None:

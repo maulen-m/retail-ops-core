@@ -2692,6 +2692,9 @@ def _run_closeout(args: argparse.Namespace) -> int:
             prepacked_decision = load_validated_prepacked_exclusion(
                 target_date=target_date,
             )
+            uncertainty_waiver_ids_by_store = dict(
+                (prepacked_decision or {}).get("excluded_order_ids_by_store") or {}
+            )
             # The exact current active selector plus the already-persisted
             # obligation ledger are sufficient for this owner-authorized,
             # date-bound request.  Never put the legacy all-history bootstrap
@@ -2737,6 +2740,8 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 target_date=target_date,
                 ready_set_at=request_identity["ready_set_at"],
                 now=datetime.now(ALMATY_TZ),
+                uncertainty_waiver_ids_by_store=uncertainty_waiver_ids_by_store,
+                enqueue_uncertainty_warnings=bool(args.apply),
             )
             if not bootstrap_resolution.get("ok"):
                 obligation_result["ok"] = False
@@ -2760,6 +2765,16 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 "target_date": target_date.isoformat(),
                 "request_identity": request_identity,
                 "issues": obligation_result.get("issues") or [],
+                "uncertainty_scope_counts": dict(
+                    obligation_result.get("uncertainty_scope_counts")
+                    or {"covered": 0, "uncovered": 0}
+                ),
+                "uncertainty_waiver_ids_by_store": {
+                    store: sorted(order_ids)
+                    for store, order_ids in sorted(
+                        uncertainty_waiver_ids_by_store.items()
+                    )
+                },
                 "active_order_ids_by_store": {
                     store: sorted(order_ids)
                     for store, order_ids in sorted(
