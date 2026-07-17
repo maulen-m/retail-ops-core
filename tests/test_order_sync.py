@@ -11,9 +11,11 @@ Tests cover:
 """
 
 import os
+import json
 import sqlite3
 import tempfile
 import pytest
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -23,6 +25,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.sync.order_sync_engine import (
+    ORDER_STATUS_EVENT_WRITE_ENV_GATE,
     OrderSyncEngine,
     SyncResult,
     StatusChange,
@@ -35,6 +38,37 @@ from core.integrations.kaspi_order_stage import StageCode, stage_to_internal_sta
 # =============================================================================
 # FIXTURES
 # =============================================================================
+
+
+def _create_order_status_event_table(
+    conn: sqlite3.Connection,
+    *,
+    reject_stage: str = "",
+    unique_idempotency: bool = True,
+) -> None:
+    check_clause = f"CHECK(stage_code != '{reject_stage}')" if reject_stage else ""
+    unique_clause = "UNIQUE" if unique_idempotency else ""
+    conn.execute(
+        f"""
+        CREATE TABLE order_status_event (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_code TEXT NOT NULL,
+            order_id TEXT NOT NULL,
+            stage_code TEXT NOT NULL {check_clause},
+            event_ts TEXT NOT NULL,
+            source TEXT NOT NULL,
+            raw_state TEXT,
+            raw_status TEXT,
+            source_status_change_at TEXT,
+            source_run_id TEXT,
+            flags_json TEXT NOT NULL DEFAULT '{{}}',
+            source_row_hash TEXT,
+            idempotency_key TEXT NOT NULL {unique_clause},
+            observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
 
 @pytest.fixture
 def temp_db():
@@ -509,6 +543,444 @@ class TestDatabaseOperations:
         assert result['status_change'] is None
 
         conn.close()
+
+    def test_status_event_capture_is_default_off(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.delenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, raising=False)
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn)
+
+        engine._save_order(conn, "UNIVERSAL", sample_api_orders[0])
+
+        assert conn.execute("SELECT COUNT(*) FROM order_status_event").fetchone()[0] == 0
+        conn.close()
+
+    def test_status_event_capture_appends_new_and_changed_only_once(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn)
+        order = sample_api_orders[0]
+
+        engine._save_order(
+            conn,
+            "UNIVERSAL",
+            order,
+            status_event_run_id="pytest-status-capture-1",
+        )
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM order_status_event").fetchone()[0] == 1
+
+        engine._save_order(
+            conn,
+            "UNIVERSAL",
+            order,
+            status_event_run_id="pytest-status-capture-2",
+        )
+        assert conn.execute("SELECT COUNT(*) FROM order_status_event").fetchone()[0] == 1
+
+        order["attributes"]["state"] = "KASPI_DELIVERY"
+        order["attributes"]["status"] = "ACCEPTED_BY_MERCHANT"
+        engine._save_order(
+            conn,
+            "UNIVERSAL",
+            order,
+            status_event_run_id="pytest-status-capture-3",
+        )
+        rows = conn.execute(
+            """
+            SELECT stage_code, source, source_run_id, flags_json
+            FROM order_status_event
+            ORDER BY event_id
+            """
+        ).fetchall()
+        assert [row["stage_code"] for row in rows] == [
+            "NEW_APPROVED",
+            "IN_DELIVERY",
+        ]
+        assert [row["source_run_id"] for row in rows] == [
+            "pytest-status-capture-1",
+            "pytest-status-capture-3",
+        ]
+        assert {row["source"] for row in rows} == {"KASPI_ORDER_SYNC"}
+        assert json.loads(rows[0]["flags_json"])["observation_kind"] == "new_order"
+        assert json.loads(rows[1]["flags_json"])["observation_kind"] == "status_transition"
+        conn.close()
+
+    def test_status_event_insert_failure_rolls_back_header_change(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.delenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, raising=False)
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        order = sample_api_orders[0]
+        engine._save_order(conn, "UNIVERSAL", order)
+        conn.commit()
+        _create_order_status_event_table(
+            conn,
+            reject_stage="IN_DELIVERY",
+        )
+        conn.commit()
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        order["attributes"]["state"] = "KASPI_DELIVERY"
+        order["attributes"]["status"] = "ACCEPTED_BY_MERCHANT"
+
+        with pytest.raises(sqlite3.IntegrityError):
+            engine._save_order(
+                conn,
+                "UNIVERSAL",
+                order,
+                status_event_run_id="pytest-status-capture-fail",
+            )
+
+        row = conn.execute(
+            "SELECT internal_status FROM fact_orders_kaspi WHERE order_id = '111111'"
+        ).fetchone()
+        assert row["internal_status"] == "NEW"
+        assert conn.execute("SELECT COUNT(*) FROM order_status_event").fetchone()[0] == 0
+        conn.close()
+
+    def test_unknown_new_order_rolls_back_when_status_capture_is_enabled(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn)
+        order = sample_api_orders[0]
+        order["attributes"]["code"] = "UNKNOWN-ORDER"
+        order["attributes"]["state"] = "UNSUPPORTED_STATE"
+        order["attributes"]["status"] = "UNSUPPORTED_STATUS"
+
+        with pytest.raises(RuntimeError, match="unknown stage"):
+            engine._save_order(
+                conn,
+                "UNIVERSAL",
+                order,
+                status_event_run_id="pytest-status-capture-unknown",
+            )
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM fact_orders_kaspi WHERE order_id = 'UNKNOWN-ORDER'"
+        ).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM order_status_event").fetchone()[0] == 0
+        conn.close()
+
+    def test_existing_order_without_event_seeds_one_baseline_then_noops(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.delenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, raising=False)
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn)
+        order = sample_api_orders[0]
+        engine._save_order(conn, "UNIVERSAL", order)
+        conn.commit()
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+
+        engine._save_order(conn, "UNIVERSAL", order, status_event_run_id="baseline-1")
+        engine._save_order(conn, "UNIVERSAL", order, status_event_run_id="baseline-2")
+
+        rows = conn.execute(
+            "SELECT stage_code, flags_json FROM order_status_event ORDER BY event_id"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["stage_code"] == "NEW_APPROVED"
+        assert json.loads(rows[0]["flags_json"])["observation_kind"] == "baseline_existing"
+        conn.close()
+
+    def test_same_internal_status_stage_transitions_are_all_captured(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn)
+        order = sample_api_orders[0]
+        engine._save_order(conn, "UNIVERSAL", order)
+
+        order["attributes"]["state"] = "SIGN_REQUIRED"
+        order["attributes"]["status"] = "SIGN_REQUIRED"
+        engine._save_order(conn, "UNIVERSAL", order)
+
+        order["attributes"]["state"] = "NEW"
+        order["attributes"]["status"] = "APPROVED_BY_BANK"
+        order["attributes"]["signatureRequired"] = False
+        order["attributes"]["preOrder"] = True
+        engine._save_order(conn, "UNIVERSAL", order)
+
+        rows = conn.execute(
+            "SELECT stage_code FROM order_status_event ORDER BY event_id"
+        ).fetchall()
+        assert [row[0] for row in rows] == [
+            "NEW_APPROVED",
+            "SIGN_REQUIRED",
+            "PREORDER_IN_TRANSIT",
+        ]
+        assert conn.execute(
+            "SELECT internal_status FROM fact_orders_kaspi WHERE order_id = '111111'"
+        ).fetchone()[0] == "NEW"
+        conn.close()
+
+    def test_cancelling_to_cancelled_is_captured_despite_same_internal_status(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn)
+        order = sample_api_orders[0]
+        order["attributes"]["state"] = "KASPI_DELIVERY"
+        order["attributes"]["status"] = "CANCELLING"
+        engine._save_order(conn, "UNIVERSAL", order)
+        order["attributes"]["status"] = "CANCELLED"
+        engine._save_order(conn, "UNIVERSAL", order)
+
+        assert [
+            row[0]
+            for row in conn.execute(
+                "SELECT stage_code FROM order_status_event ORDER BY event_id"
+            ).fetchall()
+        ] == ["CANCELLING", "CANCELLED"]
+        conn.close()
+
+    def test_raw_tuple_change_within_same_stage_is_captured_and_revisit_is_distinct(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn)
+        order = sample_api_orders[0]
+        delivery = order["attributes"].setdefault("kaspiDelivery", {})
+        delivery["courierTransmissionDate"] = None
+        delivery["waybill"] = None
+        delivery["waybillNumber"] = None
+        order["attributes"]["state"] = "KASPI_DELIVERY"
+        order["attributes"]["status"] = "ACCEPTED_BY_MERCHANT"
+        engine._save_order(conn, "UNIVERSAL", order)
+        order["attributes"]["status"] = "ASSEMBLY"
+        engine._save_order(conn, "UNIVERSAL", order)
+        order["attributes"]["status"] = "ACCEPTED_BY_MERCHANT"
+        engine._save_order(conn, "UNIVERSAL", order)
+
+        rows = conn.execute(
+            "SELECT stage_code, raw_status, idempotency_key FROM order_status_event ORDER BY event_id"
+        ).fetchall()
+        assert [row["stage_code"] for row in rows] == [
+            "ACCEPTED_PENDING_ASSEMBLY",
+            "ACCEPTED_PENDING_ASSEMBLY",
+            "ACCEPTED_PENDING_ASSEMBLY",
+        ]
+        assert [row["raw_status"] for row in rows] == [
+            "ACCEPTED_BY_MERCHANT",
+            "ASSEMBLY",
+            "ACCEPTED_BY_MERCHANT",
+        ]
+        assert len({row["idempotency_key"] for row in rows}) == 3
+        conn.close()
+
+    def test_event_timestamp_matches_source_change_timestamp_and_is_parseable(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn)
+        engine._save_order(conn, "UNIVERSAL", sample_api_orders[0])
+        row = conn.execute(
+            "SELECT event_ts, source_status_change_at FROM order_status_event"
+        ).fetchone()
+        assert row["event_ts"] == row["source_status_change_at"]
+        assert datetime.fromisoformat(row["event_ts"].replace("Z", "+00:00"))
+        conn.close()
+
+    def test_conflicting_line_grain_headers_converge_to_one_api_state_and_one_event(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.delenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, raising=False)
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        engine._save_order(conn, "UNIVERSAL", sample_api_orders[0])
+        conn.commit()
+        conn.executescript(
+            """
+            ALTER TABLE fact_orders_kaspi RENAME TO fact_orders_kaspi_old;
+            CREATE TABLE fact_orders_kaspi AS
+                SELECT * FROM fact_orders_kaspi_old WHERE 0;
+            INSERT INTO fact_orders_kaspi SELECT * FROM fact_orders_kaspi_old;
+            INSERT INTO fact_orders_kaspi SELECT * FROM fact_orders_kaspi_old;
+            UPDATE fact_orders_kaspi
+            SET id = 2,
+                internal_status = 'COMPLETED',
+                kaspi_status = 'ARCHIVE',
+                kaspi_status_detail = 'COMPLETED'
+            WHERE rowid = (SELECT MAX(rowid) FROM fact_orders_kaspi);
+            DROP TABLE fact_orders_kaspi_old;
+            """
+        )
+        _create_order_status_event_table(conn)
+        conn.commit()
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+
+        result = engine._save_order(
+            conn,
+            "UNIVERSAL",
+            sample_api_orders[0],
+            status_event_run_id="multirow-convergence",
+        )
+
+        states = conn.execute(
+            """
+            SELECT DISTINCT internal_status, kaspi_status, kaspi_status_detail
+            FROM fact_orders_kaspi
+            WHERE order_id = '111111' AND store_code = 'UNIVERSAL'
+            """
+        ).fetchall()
+        assert [tuple(row) for row in states] == [
+            ("NEW", "NEW", "APPROVED_BY_BANK")
+        ]
+        assert conn.execute("SELECT COUNT(*) FROM fact_orders_kaspi").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM order_status_event").fetchone()[0] == 1
+        assert result["status_change"].old_status == "CONFLICTING_HEADERS"
+        conn.close()
+
+    def test_predecessor_bound_idempotency_accepts_exact_duplicate_race_only(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn)
+        order_data = engine._parse_api_order(sample_api_orders[0], "UNIVERSAL")
+        event_tuple = engine._status_event_tuple(
+            store_code="UNIVERSAL",
+            order_id="111111",
+            api_order=sample_api_orders[0],
+            order_data=order_data,
+        )
+        kwargs = {
+            "store_code": "UNIVERSAL",
+            "order_id": "111111",
+            "order_data": order_data,
+            "event_tuple": event_tuple,
+            "predecessor_idempotency_key": None,
+            "run_id": "race-a",
+            "observation_kind": "new_order",
+            "old_internal_status": None,
+        }
+        engine._persist_status_event(
+            conn,
+            observed_at="2026-07-16T00:00:00.000Z",
+            **kwargs,
+        )
+        engine._persist_status_event(
+            conn,
+            observed_at="2026-07-16T00:00:01.000Z",
+            **{**kwargs, "run_id": "race-b"},
+        )
+
+        assert conn.execute("SELECT COUNT(*) FROM order_status_event").fetchone()[0] == 1
+        conn.close()
+
+    def test_missing_unique_idempotency_index_fails_before_header_write(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _create_order_status_event_table(conn, unique_idempotency=False)
+
+        with pytest.raises(RuntimeError, match="unique idempotency_key index"):
+            engine._save_order(conn, "UNIVERSAL", sample_api_orders[0])
+
+        assert conn.execute("SELECT COUNT(*) FROM fact_orders_kaspi").fetchone()[0] == 0
+        conn.close()
+
+    def test_capture_failure_rolls_back_whole_store_and_zeroes_reported_commits(
+        self,
+        engine,
+        temp_db,
+        sample_api_orders,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(ORDER_STATUS_EVENT_WRITE_ENV_GATE, "1")
+        with sqlite3.connect(temp_db) as conn:
+            _create_order_status_event_table(conn)
+        good = deepcopy(sample_api_orders[0])
+        bad = deepcopy(sample_api_orders[1])
+        bad["attributes"]["state"] = "UNSUPPORTED_STATE"
+        bad["attributes"]["status"] = "UNSUPPORTED_STATUS"
+
+        class FakeClient:
+            def list_all_orders(self, **_kwargs):
+                return [good, bad]
+
+        monkeypatch.setattr(engine, "_get_client", lambda _store: FakeClient())
+        result = engine.sync_store("UNIVERSAL", since="2026-01-01")
+
+        assert result.success is False
+        assert result.orders_inserted == 0
+        assert result.orders_updated == 0
+        assert result.status_changes == []
+        with sqlite3.connect(temp_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM fact_orders_kaspi").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM order_status_event").fetchone()[0] == 0
+            assert conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='kaspi_order_sync_log'"
+            ).fetchone()[0] == 0
 
     def test_same_status_does_not_restamp_status_timestamp(self, engine, temp_db, sample_api_orders):
         """Same-status refresh must keep status timestamp but refresh synced timestamp."""

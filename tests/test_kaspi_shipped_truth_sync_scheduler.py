@@ -98,6 +98,7 @@ def test_shipped_truth_sync_scheduler_runs_db_only_kaspi_status_sync(monkeypatch
     assert child_calls[1]["env"]["KASPI_API_CALL_LEDGER_PATH"] == str(
         tmp_path / "runtime" / "api_ledger" / "kaspi_api_2026-04-22.jsonl"
     )
+    assert "ENABLE_ORDER_STATUS_EVENT_WRITE" not in child_calls[1]["env"]
 
     report = json.loads(json_out.read_text(encoding="utf-8"))
     assert report["ok"] is True
@@ -113,3 +114,46 @@ def test_shipped_truth_sync_scheduler_blocks_without_apply_gate(monkeypatch, tmp
     rc = mod.main(["--target-date", "2026-04-22"])
 
     assert rc == 78
+
+
+def test_shipped_truth_sync_forwards_status_capture_gate_only_from_high_level(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "db" / "app.db"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_text("stub", encoding="utf-8")
+    sync_path = tmp_path / "scripts" / "sync_kaspi_orders.py"
+    db_check_path = tmp_path / "scripts" / "check_local_app_db.py"
+    sync_path.parent.mkdir(parents=True)
+    sync_path.write_text("# stub\n", encoding="utf-8")
+    db_check_path.write_text("# stub\n", encoding="utf-8")
+    child_envs: list[dict[str, str]] = []
+
+    def fake_run(command, cwd, env, text=False, capture_output=False):
+        child_envs.append(dict(env))
+        return _Result()
+
+    monkeypatch.setenv("ENABLE_KASPI_SHIPPED_TRUTH_SYNC", "1")
+    monkeypatch.setenv("ENABLE_KASPI_CURRENT_ORDER_STATUS_EVENT_SYNC", "1")
+    monkeypatch.setattr(mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(mod, "SYNC_KASPI_ORDERS_PATH", sync_path)
+    monkeypatch.setattr(mod, "DB_CHECK_PATH", db_check_path)
+    monkeypatch.setattr(
+        mod,
+        "_db_shipped_summary",
+        lambda _db_path: {"max_shipped_at": "", "row_count": 0},
+    )
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    assert mod.main(
+        [
+            "--target-date",
+            "2026-04-22",
+            "--db-path",
+            str(db_path),
+            "--json-out",
+            str(tmp_path / "report.json"),
+        ]
+    ) == 0
+    assert child_envs[-1]["ENABLE_ORDER_STATUS_EVENT_WRITE"] == "1"

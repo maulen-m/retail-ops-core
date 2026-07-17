@@ -29,6 +29,8 @@ DB_CHECK_PATH = PROJECT_ROOT / "scripts" / "check_local_app_db.py"
 DEFAULT_DB_PATH = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "kaspi_shipped_truth_sync"
 APPLY_GATE_ENV = "ENABLE_KASPI_SHIPPED_TRUTH_SYNC"
+CURRENT_ORDER_STATUS_EVENT_SYNC_ENV_GATE = "ENABLE_KASPI_CURRENT_ORDER_STATUS_EVENT_SYNC"
+ORDER_STATUS_EVENT_WRITE_ENV_GATE = "ENABLE_ORDER_STATUS_EVENT_WRITE"
 DEFAULT_STATES = ["KASPI_DELIVERY", "ARCHIVE"]
 DEFAULT_LOOKBACK_DAYS = 13
 
@@ -155,6 +157,10 @@ def main(argv: list[str] | None = None) -> int:
     env = os.environ.copy()
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
+    if str(env.get(CURRENT_ORDER_STATUS_EVENT_SYNC_ENV_GATE) or "").strip() == "1":
+        env[ORDER_STATUS_EVENT_WRITE_ENV_GATE] = "1"
+    else:
+        env.pop(ORDER_STATUS_EVENT_WRITE_ENV_GATE, None)
     ensure_kaspi_api_call_ledger_env(env, target_date=target_date, project_root=PROJECT_ROOT)
     if env.get("KASPI_API_CALL_LEDGER_PATH"):
         os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])

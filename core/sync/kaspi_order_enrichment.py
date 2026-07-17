@@ -210,6 +210,7 @@ def enrich_orders(
     since: str,
     until: str,
     apply: bool = False,
+    require_complete: bool = False,
     config_path: Path = DEFAULT_CONFIG,
     client_factory: Callable[[str], KaspiAPIClient] = KaspiAPIClient,
 ) -> dict:
@@ -218,6 +219,8 @@ def enrich_orders(
 
     config = _load_config(config_path)
     if not config.get("enabled"):
+        if require_complete:
+            raise RuntimeError("strict Kaspi entry enrichment requires enabled: true")
         logger.info("Kaspi enrichment disabled in config.")
         return {"enabled": False, "inserted": 0, "skipped": 0}
 
@@ -227,8 +230,15 @@ def enrich_orders(
         if str(store).strip()
     ]
     if allowlist and store_code.upper() not in allowlist:
+        if require_complete:
+            raise RuntimeError(
+                f"strict Kaspi entry enrichment excludes required store {store_code}"
+            )
         logger.info("Kaspi enrichment skipped for %s (not in allowlist).", store_code)
         return {"enabled": True, "inserted": 0, "skipped": 0}
+
+    if require_complete and not config.get("fetch_entries", True):
+        raise RuntimeError("strict Kaspi entry enrichment requires fetch_entries: true")
 
     if apply and os.environ.get("ENABLE_KASPI_ENRICHMENT") != "1":
         raise RuntimeError("ENABLE_KASPI_ENRICHMENT=1 is required to apply enrichment writes.")
@@ -261,6 +271,10 @@ def enrich_orders(
         seen_pos_ids: set[str] = set()
         inserted = 0
         skipped = 0
+        fetched_order_ids: set[str] = set()
+        expected_entry_ids: set[str] = set()
+        expected_entry_owners: dict[str, str] = {}
+        failures: list[dict[str, str]] = []
         for order_id, order_store, entry_updated_at in orders:
             try:
                 if not config.get("fetch_entries", True):
@@ -268,17 +282,47 @@ def enrich_orders(
                 response = client.get_order_entries(order_id)
                 if not getattr(response, "success", False):
                     logger.warning("Order entries fetch failed for %s", order_id)
+                    failures.append({"order_id": order_id, "reason": "api_unsuccessful"})
                     continue
                 entries = (response.data or {}).get("data") or []
+                if not isinstance(entries, list):
+                    failures.append({"order_id": order_id, "reason": "api_data_not_list"})
+                    continue
+                if not entries:
+                    failures.append({"order_id": order_id, "reason": "api_zero_entries"})
+                    continue
+                fetched_order_ids.add(order_id)
             except Exception as exc:
                 logger.warning("Order entries error for %s: %s", order_id, exc)
+                failures.append({"order_id": order_id, "reason": "api_exception"})
                 continue
 
             for entry in entries:
                 parsed = _parse_entry(entry, order_id, order_store)
                 if not parsed.get("entry_id"):
                     skipped += 1
+                    failures.append({"order_id": order_id, "reason": "entry_id_missing"})
                     continue
+                if str(parsed.get("order_id") or "") != str(order_id):
+                    failures.append(
+                        {
+                            "order_id": order_id,
+                            "reason": "entry_order_identity_mismatch",
+                        }
+                    )
+                    continue
+                entry_id = str(parsed["entry_id"])
+                previous_owner = expected_entry_owners.get(entry_id)
+                if previous_owner and previous_owner != order_id:
+                    failures.append(
+                        {
+                            "order_id": order_id,
+                            "reason": "entry_id_cross_order_collision",
+                        }
+                    )
+                    continue
+                expected_entry_owners[entry_id] = order_id
+                expected_entry_ids.add(entry_id)
 
                 if config.get("fetch_entry_detail") and parsed.get("entry_id"):
                     try:
@@ -389,7 +433,58 @@ def enrich_orders(
                             except Exception as exc:
                                 logger.warning("point of service fetch failed: %s", exc)
 
+        selected_order_ids = {str(order_id) for order_id, _, _ in orders}
+        missing_fetch_order_ids = sorted(selected_order_ids - fetched_order_ids)
+        for order_id in missing_fetch_order_ids:
+            if not any(item["order_id"] == order_id for item in failures):
+                failures.append({"order_id": order_id, "reason": "not_fetched"})
+
+        readback_entry_ids: set[str] = set()
+        missing_entry_ids: list[str] = []
+        if apply and expected_entry_ids:
+            readback_entry_ids = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT entry_id FROM fact_order_entries_kaspi WHERE store_code = ?",
+                    (store_code,),
+                ).fetchall()
+                if row[0] is not None
+            }
+            missing_entry_ids = sorted(expected_entry_ids - readback_entry_ids)
+            for entry_id in missing_entry_ids:
+                failures.append(
+                    {
+                        "order_id": expected_entry_owners.get(entry_id, ""),
+                        "reason": "entry_readback_missing",
+                    }
+                )
+
+        report = {
+            "enabled": True,
+            "applied": apply,
+            "require_complete": require_complete,
+            "store_code": store_code,
+            "selected_order_count": len(selected_order_ids),
+            "fetched_order_count": len(fetched_order_ids),
+            "expected_entry_count": len(expected_entry_ids),
+            "readback_entry_count": (
+                len(expected_entry_ids & readback_entry_ids) if apply else 0
+            ),
+            "inserted": inserted,
+            "skipped": skipped,
+            "failure_count": len(failures),
+            "failure_order_ids": sorted(
+                {item["order_id"] for item in failures if item["order_id"]}
+            ),
+            "failure_reasons": sorted({item["reason"] for item in failures}),
+            "missing_entry_ids": missing_entry_ids,
+        }
+        if require_complete and failures:
+            raise RuntimeError(
+                "strict Kaspi entry enrichment incomplete: "
+                + json.dumps(report, ensure_ascii=False, sort_keys=True)
+            )
         if apply:
             conn.commit()
 
-    return {"enabled": True, "inserted": inserted, "skipped": skipped}
+    return report

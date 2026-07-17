@@ -19,6 +19,8 @@ Usage:
 """
 
 import logging
+import hashlib
+import os
 import yaml
 from dataclasses import dataclass, field
 import json
@@ -55,6 +57,7 @@ DB_PATH = Path(__file__).parent.parent.parent / "db" / "app.db"
 
 DEFAULT_LOOKBACK_DAYS = 7
 MAX_ORDERS_PER_SYNC = 1000
+ORDER_STATUS_EVENT_WRITE_ENV_GATE = "ENABLE_ORDER_STATUS_EVENT_WRITE"
 
 
 # =============================================================================
@@ -151,6 +154,230 @@ class OrderSyncEngine:
             """
         )
 
+    @staticmethod
+    def _status_event_capture_enabled() -> bool:
+        return os.environ.get(ORDER_STATUS_EVENT_WRITE_ENV_GATE) == "1"
+
+    @staticmethod
+    def _ensure_status_event_capture_schema(conn) -> None:
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(order_status_event)").fetchall()
+        }
+        required = {
+            "event_id",
+            "store_code",
+            "order_id",
+            "stage_code",
+            "event_ts",
+            "source",
+            "raw_state",
+            "raw_status",
+            "source_status_change_at",
+            "source_run_id",
+            "flags_json",
+            "source_row_hash",
+            "idempotency_key",
+        }
+        missing = sorted(required - columns)
+        if missing:
+            raise RuntimeError(
+                "order_status_event capture schema is missing required columns: "
+                + ", ".join(missing)
+            )
+        idempotency_unique = False
+        for index_row in conn.execute("PRAGMA index_list(order_status_event)").fetchall():
+            if not bool(index_row[2]):
+                continue
+            index_columns = [
+                str(column_row[2])
+                for column_row in conn.execute(
+                    f"PRAGMA index_info({index_row[1]})"
+                ).fetchall()
+            ]
+            if index_columns == ["idempotency_key"]:
+                idempotency_unique = True
+                break
+        if not idempotency_unique:
+            raise RuntimeError(
+                "order_status_event capture requires a unique idempotency_key index"
+            )
+
+    @staticmethod
+    def _status_event_stage_code(stage: StageCode) -> str:
+        if stage == StageCode.ISSUED_COMPLETED:
+            return "COMPLETED"
+        if stage == StageCode.RETURN_REQUESTED:
+            return "RETURN"
+        return stage.value
+
+    @staticmethod
+    def _hash_status_event_payload(payload: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _db_observed_at(conn) -> str:
+        row = conn.execute(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+        ).fetchone()
+        observed_at = str(row[0] or "").strip()
+        if not observed_at:
+            raise RuntimeError("SQLite did not provide a status-event observation timestamp")
+        return observed_at
+
+    def _status_event_tuple(
+        self,
+        *,
+        store_code: str,
+        order_id: str,
+        api_order: dict,
+        order_data: dict,
+    ) -> dict[str, str | None]:
+        stage = classify_kaspi_order_stage(api_order)
+        if stage == StageCode.UNKNOWN:
+            raise RuntimeError(
+                f"cannot append order_status_event for unknown stage: {store_code}/{order_id}"
+            )
+        raw_state = str(order_data.get("kaspi_status") or "").strip().upper() or None
+        raw_status = (
+            str(order_data.get("kaspi_status_detail") or "").strip().upper() or None
+        )
+        if (
+            stage == StageCode.ISSUED_COMPLETED
+            and not (raw_state == "ARCHIVE" and raw_status == "COMPLETED")
+        ):
+            raise RuntimeError(
+                "cannot append completed order_status_event without strict "
+                f"ARCHIVE/COMPLETED header evidence: {store_code}/{order_id}"
+            )
+        return {
+            "stage_code": self._status_event_stage_code(stage),
+            "raw_state": raw_state,
+            "raw_status": raw_status,
+        }
+
+    @staticmethod
+    def _latest_status_event(conn, *, store_code: str, order_id: str):
+        return conn.execute(
+            """
+            SELECT event_id, stage_code, raw_state, raw_status, idempotency_key
+            FROM order_status_event
+            WHERE store_code = ? AND order_id = ?
+            ORDER BY event_ts DESC, event_id DESC
+            LIMIT 1
+            """,
+            (store_code, order_id),
+        ).fetchone()
+
+    @staticmethod
+    def _event_tuple_matches(row, event_tuple: dict[str, str | None]) -> bool:
+        if row is None:
+            return False
+        return (
+            str(row["stage_code"] or "").strip().upper()
+            == str(event_tuple["stage_code"] or "").strip().upper()
+            and str(row["raw_state"] or "").strip().upper()
+            == str(event_tuple["raw_state"] or "").strip().upper()
+            and str(row["raw_status"] or "").strip().upper()
+            == str(event_tuple["raw_status"] or "").strip().upper()
+        )
+
+    def _persist_status_event(
+        self,
+        conn,
+        *,
+        store_code: str,
+        order_id: str,
+        order_data: dict,
+        event_tuple: dict[str, str | None],
+        predecessor_idempotency_key: str | None,
+        observed_at: str,
+        run_id: str,
+        observation_kind: str,
+        old_internal_status: str | None,
+    ) -> None:
+        predecessor = predecessor_idempotency_key or "GENESIS"
+        stage_code = str(event_tuple["stage_code"])
+        raw_state = event_tuple["raw_state"]
+        raw_status = event_tuple["raw_status"]
+        source_payload = {
+            "source": "KASPI_ORDER_SYNC",
+            "store_code": store_code,
+            "order_id": order_id,
+            "stage_code": stage_code,
+            "raw_state": raw_state,
+            "raw_status": raw_status,
+            "predecessor_idempotency_key": predecessor,
+        }
+        source_row_hash = self._hash_status_event_payload(source_payload)
+        idempotency_key = source_row_hash
+        cursor = conn.execute(
+            """
+            INSERT INTO order_status_event (
+                store_code, order_id, stage_code, event_ts, source,
+                raw_state, raw_status, source_status_change_at, source_run_id,
+                flags_json, source_row_hash, idempotency_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(idempotency_key) DO NOTHING
+            """,
+            (
+                store_code,
+                order_id,
+                stage_code,
+                observed_at,
+                "KASPI_ORDER_SYNC",
+                raw_state,
+                raw_status,
+                observed_at,
+                run_id,
+                json.dumps(
+                    {
+                        "capture": "order_sync_engine",
+                        "observation_kind": observation_kind,
+                        "old_internal_status": old_internal_status,
+                        "new_internal_status": order_data.get("internal_status"),
+                        "predecessor_idempotency_key": predecessor,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                source_row_hash,
+                idempotency_key,
+            ),
+        )
+        if cursor.rowcount == 1:
+            return
+        existing = conn.execute(
+            """
+            SELECT store_code, order_id, stage_code, raw_state, raw_status,
+                   source, source_row_hash, idempotency_key
+            FROM order_status_event
+            WHERE idempotency_key = ?
+            """,
+            (idempotency_key,),
+        ).fetchone()
+        if existing is None or not (
+            str(existing["store_code"] or "") == store_code
+            and str(existing["order_id"] or "") == order_id
+            and str(existing["stage_code"] or "") == stage_code
+            and str(existing["raw_state"] or "").strip().upper()
+            == str(raw_state or "").strip().upper()
+            and str(existing["raw_status"] or "").strip().upper()
+            == str(raw_status or "").strip().upper()
+            and str(existing["source"] or "") == "KASPI_ORDER_SYNC"
+            and str(existing["source_row_hash"] or "") == source_row_hash
+        ):
+            raise RuntimeError(
+                "order_status_event idempotency conflict did not read back exact semantic row: "
+                f"{store_code}/{order_id}"
+            )
+
     def _extract_order_date(self, api_order: dict) -> Optional[date]:
         attrs = api_order.get("attributes", {})
         if attrs.get("creationDate"):
@@ -219,6 +446,7 @@ class OrderSyncEngine:
         start_time = datetime.now()
         run_id = start_time.strftime("%Y%m%d_%H%M%S")
         result = SyncResult(store_code=store_code, success=True)
+        capture_status_events = self._status_event_capture_enabled()
 
         logger.info(f"Starting sync for {store_code}, since={since}, dry_run={dry_run}")
 
@@ -241,9 +469,20 @@ class OrderSyncEngine:
 
             # Save to database
             with get_db(self.db_path) as conn:
+                if capture_status_events:
+                    self._ensure_status_event_capture_schema(conn)
+                    # Ensure per-order savepoints are nested inside one store
+                    # transaction; releasing a top-level SQLite savepoint would
+                    # otherwise commit earlier orders before a later fail-closed stop.
+                    conn.execute("BEGIN IMMEDIATE")
                 for order in orders:
                     try:
-                        save_result = self._save_order(conn, store_code, order)
+                        save_result = self._save_order(
+                            conn,
+                            store_code,
+                            order,
+                            status_event_run_id=run_id,
+                        )
                         if save_result['inserted']:
                             result.orders_inserted += 1
                         elif save_result['updated']:
@@ -255,6 +494,8 @@ class OrderSyncEngine:
                     except Exception as e:
                         logger.error(f"Error saving order {order.get('id')}: {e}")
                         result.errors.append(str(e))
+                        if capture_status_events:
+                            raise
                 if result.success:
                     self._record_sync_log(conn, store_code, orders, result, run_id)
 
@@ -270,6 +511,10 @@ class OrderSyncEngine:
             logger.exception(f"Unexpected error syncing {store_code}: {e}")
             result.success = False
             result.errors.append(f"Unexpected error: {e}")
+            if capture_status_events:
+                result.orders_inserted = 0
+                result.orders_updated = 0
+                result.status_changes = []
 
         result.duration_sec = (datetime.now() - start_time).total_seconds()
 
@@ -336,6 +581,8 @@ class OrderSyncEngine:
         conn,
         store_code: str,
         api_order: dict,
+        *,
+        status_event_run_id: str | None = None,
     ) -> dict:
         """
         Save or update order in database.
@@ -349,44 +596,132 @@ class OrderSyncEngine:
             Dict with 'inserted', 'updated', 'status_change' keys
         """
         result = {'inserted': False, 'updated': False, 'status_change': None}
+        capture_status_event = self._status_event_capture_enabled()
+        if capture_status_event:
+            self._ensure_status_event_capture_schema(conn)
+            conn.execute("SAVEPOINT order_sync_status_event")
 
-        # Parse API order
-        order_data = self._parse_api_order(api_order, store_code)
-        order_id = order_data['order_id']
-
-        # Check if order exists
-        existing = conn.execute(
-            """
-            SELECT id, internal_status, kaspi_status
-            FROM fact_orders_kaspi
-            WHERE order_id = ? AND store_code = ?
-            """,
-            (order_id, store_code)
-        ).fetchone()
-
-        if existing:
-            # Check for status change
-            old_status = existing['internal_status']
-            new_status = order_data['internal_status']
-            status_changed = old_status != new_status
-
-            if status_changed:
-                result['status_change'] = StatusChange(
+        try:
+            # Parse API order
+            order_data = self._parse_api_order(api_order, store_code)
+            order_id = order_data['order_id']
+            observed_at = None
+            event_tuple = None
+            latest_event = None
+            event_changed = False
+            if capture_status_event:
+                observed_at = self._db_observed_at(conn)
+                event_tuple = self._status_event_tuple(
+                    store_code=store_code,
                     order_id=order_id,
-                    old_status=old_status,
-                    new_status=new_status,
-                    kaspi_status=order_data.get('kaspi_status'),
+                    api_order=api_order,
+                    order_data=order_data,
+                )
+                latest_event = self._latest_status_event(
+                    conn,
+                    store_code=store_code,
+                    order_id=order_id,
+                )
+                event_changed = not self._event_tuple_matches(latest_event, event_tuple)
+                existing_rows = conn.execute(
+                    """
+                    SELECT id, internal_status, kaspi_status, kaspi_status_detail
+                    FROM fact_orders_kaspi
+                    WHERE order_id = ? AND store_code = ?
+                    ORDER BY id
+                    """,
+                    (order_id, store_code),
+                ).fetchall()
+                header_tuples = {
+                    (
+                        str(row["internal_status"] or "").strip().upper(),
+                        str(row["kaspi_status"] or "").strip().upper(),
+                        str(row["kaspi_status_detail"] or "").strip().upper(),
+                    )
+                    for row in existing_rows
+                }
+                headers_conflicting = len(header_tuples) > 1
+            else:
+                existing = conn.execute(
+                    """
+                    SELECT id, internal_status, kaspi_status, kaspi_status_detail
+                    FROM fact_orders_kaspi
+                    WHERE order_id = ? AND store_code = ?
+                    """,
+                    (order_id, store_code),
+                ).fetchone()
+                existing_rows = [existing] if existing else []
+                headers_conflicting = False
+
+            if existing_rows:
+                # Check for status change
+                old_status = (
+                    "CONFLICTING_HEADERS"
+                    if headers_conflicting
+                    else existing_rows[0]['internal_status']
+                )
+                new_status = order_data['internal_status']
+                status_changed = any(
+                    str(row['internal_status'] or "") != str(new_status or "")
+                    for row in existing_rows
                 )
 
-            # Update existing
-            self._update_order(conn, existing['id'], order_data, status_changed=status_changed)
-            result['updated'] = True
-        else:
-            # Insert new
-            self._insert_order(conn, order_data)
-            result['inserted'] = True
+                if status_changed:
+                    result['status_change'] = StatusChange(
+                        order_id=order_id,
+                        old_status=old_status,
+                        new_status=new_status,
+                        kaspi_status=order_data.get('kaspi_status'),
+                    )
 
-        return result
+                # Update every line-grain header row under guarded capture; the
+                # legacy default-off path retains its original single-row behavior.
+                for existing in existing_rows:
+                    self._update_order(
+                        conn,
+                        existing['id'],
+                        order_data,
+                        status_changed=(status_changed or event_changed),
+                        observed_at=observed_at,
+                    )
+                result['updated'] = True
+            else:
+                # Insert new
+                self._insert_order(conn, order_data, observed_at=observed_at)
+                result['inserted'] = True
+
+            if capture_status_event and event_changed:
+                self._persist_status_event(
+                    conn,
+                    store_code=store_code,
+                    order_id=order_id,
+                    order_data=order_data,
+                    event_tuple=event_tuple,
+                    predecessor_idempotency_key=(
+                        str(latest_event["idempotency_key"])
+                        if latest_event is not None
+                        else None
+                    ),
+                    observed_at=str(observed_at),
+                    run_id=status_event_run_id or "order_sync",
+                    observation_kind=(
+                        "status_transition"
+                        if latest_event is not None
+                        else ("baseline_existing" if existing_rows else "new_order")
+                    ),
+                    old_internal_status=(
+                        existing_rows[0]['internal_status'] if existing_rows else None
+                    ),
+                )
+
+            if capture_status_event:
+                conn.execute("RELEASE SAVEPOINT order_sync_status_event")
+            return result
+        except Exception:
+            if capture_status_event:
+                conn.execute("ROLLBACK TO SAVEPOINT order_sync_status_event")
+                conn.execute("RELEASE SAVEPOINT order_sync_status_event")
+            raise
 
     def _parse_api_order(self, api_order: dict, store_code: str) -> dict:
         """
@@ -506,9 +841,15 @@ class OrderSyncEngine:
 
         return {key: _sanitize_value(value) for key, value in order_data.items()}
 
-    def _insert_order(self, conn, order_data: dict):
+    def _insert_order(
+        self,
+        conn,
+        order_data: dict,
+        *,
+        observed_at: str | None = None,
+    ) -> int:
         """Insert new order into database."""
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO fact_orders_kaspi (
                 order_id, store_code, channel_code,
@@ -565,6 +906,17 @@ class OrderSyncEngine:
                 order_data['source'],
             )
         )
+        row_id = int(cursor.lastrowid)
+        if observed_at is not None:
+            if not self._column_exists(conn, "fact_orders_kaspi", "status_updated_at"):
+                raise RuntimeError(
+                    "fact_orders_kaspi lacks status_updated_at required for lifecycle capture"
+                )
+            conn.execute(
+                "UPDATE fact_orders_kaspi SET status_updated_at = ? WHERE id = ?",
+                (observed_at, row_id),
+            )
+        return row_id
 
     @staticmethod
     def _column_exists(conn, table: str, column: str) -> bool:
@@ -579,6 +931,7 @@ class OrderSyncEngine:
         order_data: dict,
         *,
         status_changed: bool,
+        observed_at: str | None = None,
     ):
         """Update existing order in database."""
         has_synced_at = self._column_exists(conn, "fact_orders_kaspi", "synced_at")
@@ -615,7 +968,10 @@ class OrderSyncEngine:
                 customer_first_name = COALESCE(?, customer_first_name),
                 customer_last_name = COALESCE(?, customer_last_name),
                 customer_phone = COALESCE(?, customer_phone),
-                status_updated_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE status_updated_at END
+                status_updated_at = CASE
+                    WHEN ? = 1 THEN COALESCE(?, CURRENT_TIMESTAMP)
+                    ELSE status_updated_at
+                END
                 {synced_at_clause}
             WHERE id = ?
             """,
@@ -649,6 +1005,7 @@ class OrderSyncEngine:
                 order_data.get('customer_last_name'),
                 order_data.get('customer_phone'),
                 1 if status_changed else 0,
+                observed_at,
                 row_id,
             ),
         )

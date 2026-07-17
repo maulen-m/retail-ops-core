@@ -452,6 +452,54 @@ def _match_group_updates(
     return updates, inserts
 
 
+def _values_equivalent(column: str, left: Any, right: Any) -> bool:
+    if column == "quantity":
+        return _safe_int(left, default=0) == _safe_int(right, default=0)
+    if column == "unit_price_kzt":
+        if left in (None, "") and right in (None, ""):
+            return True
+        try:
+            return float(left) == float(right)
+        except (TypeError, ValueError):
+            return _clean(left) == _clean(right)
+    return _clean(left) == _clean(right)
+
+
+def _desired_fact_update_values(
+    order: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "kaspi_offer_name": _clean(order.get("kaspi_offer_name")) or candidate.get("kaspi_offer_name"),
+        "sku_key": _clean(order.get("sku_key")) or candidate.get("sku_key"),
+        "sku_id": _clean(order.get("sku_id")) or candidate.get("sku_id"),
+        "quantity": _safe_int(order.get("quantity"), default=_safe_int(candidate.get("quantity"), 1)),
+        "unit_price_kzt": (
+            order.get("unit_price_kzt")
+            if order.get("unit_price_kzt") not in ("", None)
+            else candidate.get("unit_price_kzt")
+        ),
+        "planned_shipment_date": _clean(order.get("planned_shipment_date"))
+        or candidate.get("planned_shipment_date"),
+    }
+    if "kaspi_article" in candidate:
+        values["kaspi_article"] = _clean(order.get("kaspi_article")) or candidate.get("kaspi_article")
+    if "line_identity_key" in candidate:
+        values["line_identity_key"] = (
+            _line_identity_key(order) or candidate.get("line_identity_key") or ""
+        )
+    return values
+
+
+def _fact_update_has_change(update: dict[str, Any]) -> bool:
+    candidate = dict(update.get("candidate") or {})
+    desired = _desired_fact_update_values(dict(update.get("order") or {}), candidate)
+    return any(
+        not _values_equivalent(column, candidate.get(column), value)
+        for column, value in desired.items()
+    )
+
+
 def plan_activeorders_enrichment(
     *,
     parsed_orders: list[dict[str, Any]],
@@ -482,11 +530,32 @@ def plan_activeorders_enrichment(
                 }
             )
 
+    changed_updates = [item for item in updates if _fact_update_has_change(item)]
     return {
-        "updates": updates,
+        "updates": changed_updates,
         "inserts": inserts,
         "unmatched_db_groups": unmatched_db_groups,
+        "noop_matches": len(updates) - len(changed_updates),
     }
+
+
+def _missing_dimension_counts(
+    conn: sqlite3.Connection,
+    orders: list[dict[str, Any]],
+) -> tuple[int, int]:
+    sku_keys = sorted({_clean(order.get("sku_key")) for order in orders if _clean(order.get("sku_key"))})
+    sku_ids = sorted({_clean(order.get("sku_id")) for order in orders if _clean(order.get("sku_id"))})
+    missing_keys = sum(
+        1
+        for sku_key in sku_keys
+        if conn.execute("SELECT 1 FROM dim_sku WHERE sku_key = ?", (sku_key,)).fetchone() is None
+    )
+    missing_ids = sum(
+        1
+        for sku_id in sku_ids
+        if conn.execute("SELECT 1 FROM dim_sku_size WHERE sku_id = ?", (sku_id,)).fetchone() is None
+    )
+    return missing_keys, missing_ids
 
 
 def _ensure_dim_sku(conn: sqlite3.Connection, sku_key: str, *, product_type: str) -> bool:
@@ -534,24 +603,10 @@ def _apply_updates(conn: sqlite3.Connection, updates: list[dict[str, Any]], sour
     for update in updates:
         order = update["order"]
         candidate = update["candidate"]
-        assignments: list[tuple[str, Any]] = [
-            ("kaspi_offer_name", _clean(order.get("kaspi_offer_name")) or candidate.get("kaspi_offer_name")),
-            ("sku_key", _clean(order.get("sku_key")) or candidate.get("sku_key")),
-            ("sku_id", _clean(order.get("sku_id")) or candidate.get("sku_id")),
-            ("quantity", _safe_int(order.get("quantity"), default=_safe_int(candidate.get("quantity"), 1))),
-            (
-                "unit_price_kzt",
-                order.get("unit_price_kzt")
-                if order.get("unit_price_kzt") not in ("", None)
-                else candidate.get("unit_price_kzt"),
-            ),
-            ("planned_shipment_date", _clean(order.get("planned_shipment_date")) or candidate.get("planned_shipment_date")),
-            ("source_file", source_file),
-        ]
-        if "kaspi_article" in columns:
-            assignments.append(("kaspi_article", _clean(order.get("kaspi_article")) or candidate.get("kaspi_article")))
-        if "line_identity_key" in columns:
-            assignments.append(("line_identity_key", _line_identity_key(order) or candidate.get("line_identity_key") or ""))
+        assignments: list[tuple[str, Any]] = list(
+            _desired_fact_update_values(order, candidate).items()
+        )
+        assignments.append(("source_file", source_file))
         assignments = [(column, value) for column, value in assignments if column in columns]
         set_sql = ",\n                ".join(f"{column} = ?" for column, _value in assignments)
         values = [value for _column, value in assignments]
@@ -793,19 +848,28 @@ def main(argv: list[str] | None = None) -> int:
         "candidate_rows": len(candidate_rows),
         "updates_planned": len(plan["updates"]),
         "inserts_planned": len(plan["inserts"]),
+        "noop_matches": int(plan.get("noop_matches") or 0),
         "unmatched_db_groups": plan["unmatched_db_groups"],
         "article_map_overrides": article_map_override_count,
         "apply": args.apply,
     }
 
-    if args.apply:
+    with get_db(db_path) as conn:
+        missing_sku_keys, missing_sku_ids = _missing_dimension_counts(conn, parsed_orders)
+    report["missing_sku_keys_planned"] = missing_sku_keys
+    report["missing_sku_ids_planned"] = missing_sku_ids
+    mutation_planned = bool(
+        plan["updates"] or plan["inserts"] or missing_sku_keys or missing_sku_ids
+    )
+
+    if args.apply and mutation_planned:
         backup_path = _backup_db(db_path, Path(args.backup_root).expanduser())
         report["db_backup_path"] = str(backup_path)
+        report["db_write_skipped_noop"] = False
         with get_db(db_path) as conn:
             created_sku_keys = 0
             created_sku_ids = 0
-            for item in [*plan["updates"], *plan["inserts"]]:
-                order = item["order"]
+            for order in parsed_orders:
                 product_type = _product_type_from_order(order)
                 if _ensure_dim_sku(conn, _clean(order.get("sku_key")), product_type=product_type):
                     created_sku_keys += 1
@@ -822,6 +886,13 @@ def main(argv: list[str] | None = None) -> int:
         report["created_sku_ids"] = created_sku_ids
         report["updates_applied"] = updates_applied
         report["inserts_applied"] = inserts_applied
+    elif args.apply:
+        report["db_backup_path"] = None
+        report["db_write_skipped_noop"] = True
+        report["created_sku_keys"] = 0
+        report["created_sku_ids"] = 0
+        report["updates_applied"] = 0
+        report["inserts_applied"] = 0
     else:
         with get_db(db_path) as conn:
             article_identity_map = _load_article_identity_map(conn, parsed_orders)
@@ -835,6 +906,7 @@ def main(argv: list[str] | None = None) -> int:
         report["inserts_planned"] = len(plan["inserts"])
         report["unmatched_db_groups"] = plan["unmatched_db_groups"]
         report["db_backup_path"] = None
+        report["db_write_skipped_noop"] = True
         report["created_sku_keys"] = 0
         report["created_sku_ids"] = 0
         report["updates_applied"] = 0
@@ -848,7 +920,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Planned updates: {report['updates_planned']}")
     print(f"Planned inserts: {report['inserts_planned']}")
     if args.apply:
-        print(f"DB backup: {report['db_backup_path']}")
+        print(f"DB backup: {report['db_backup_path'] or 'skipped (no-op)'}")
         print(f"Applied updates: {report['updates_applied']}")
         print(f"Applied inserts: {report['inserts_applied']}")
     return 0

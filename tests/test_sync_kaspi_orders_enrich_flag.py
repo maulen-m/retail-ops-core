@@ -47,13 +47,17 @@ def test_main_calls_enrichment_for_all_mode(monkeypatch) -> None:
     monkeypatch.setattr(mod, "print_multi_result", lambda _result: None)
     monkeypatch.setattr(mod, "print_sync_result", lambda _result: None)
 
-    def _fake_enrich(stores, since, until, dry_run):
+    def _fake_enrich(
+        stores, since, until, dry_run, require_complete=False, db_path=None
+    ):
         calls.append(
             {
                 "stores": stores,
                 "since": since,
                 "until": until,
                 "dry_run": dry_run,
+                "require_complete": require_complete,
+                "db_path": db_path,
             }
         )
 
@@ -81,13 +85,17 @@ def test_main_calls_enrichment_for_single_store_mode(monkeypatch) -> None:
     monkeypatch.setattr(mod, "print_multi_result", lambda _result: None)
     monkeypatch.setattr(mod, "print_sync_result", lambda _result: None)
 
-    def _fake_enrich(stores, since, until, dry_run):
+    def _fake_enrich(
+        stores, since, until, dry_run, require_complete=False, db_path=None
+    ):
         calls.append(
             {
                 "stores": stores,
                 "since": since,
                 "until": until,
                 "dry_run": dry_run,
+                "require_complete": require_complete,
+                "db_path": db_path,
             }
         )
 

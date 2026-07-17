@@ -82,29 +82,43 @@ def print_sync_result(result: SyncResult):
 
 
 
-def _run_enrichment(stores, since, until, dry_run):
+def _run_enrichment(
+    stores,
+    since,
+    until,
+    dry_run,
+    require_complete=False,
+    db_path=None,
+):
     if dry_run:
-        return
+        return []
     cfg_path = Path(__file__).parent.parent / "config" / "kaspi_enrichment.yaml"
     cfg = _load_enrichment_config(cfg_path)
     if not cfg.get("enabled"):
+        if require_complete:
+            raise RuntimeError("strict Kaspi entry enrichment is disabled in config")
         print("Enrichment disabled in config; skipping.")
-        return
+        return []
     if os.environ.get("ENABLE_KASPI_ENRICHMENT") != "1":
+        if require_complete:
+            raise RuntimeError("ENABLE_KASPI_ENRICHMENT=1 is required for strict enrichment")
         print("ENABLE_KASPI_ENRICHMENT not set; skipping enrichment.")
-        return
+        return []
     lookback_days = int(cfg.get("default_lookback_days") or 0) or 7
     resolved_since = since or (date.today() - timedelta(days=lookback_days - 1)).isoformat()
     resolved_until = until or date.today().isoformat()
+    reports = []
     for store in stores:
-        enrich_orders(
-            db_path=Path(__file__).parent.parent / "db" / "app.db",
+        reports.append(enrich_orders(
+            db_path=Path(db_path) if db_path is not None else Path(__file__).parent.parent / "db" / "app.db",
             store_code=store,
             since=resolved_since,
             until=resolved_until,
             apply=True,
+            require_complete=require_complete,
             config_path=cfg_path,
-        )
+        ))
+    return reports
 
 
 def print_multi_result(result: MultiSyncResult):
@@ -240,12 +254,19 @@ def main():
         help='Run optional enrichment stage (requires config enabled)',
     )
     parser.add_argument(
+        '--require-complete-enrichment',
+        action='store_true',
+        help='Fail closed unless every selected order has complete API entry readback (requires --enrich).',
+    )
+    parser.add_argument(
         '-v', '--verbose',
         action='store_true',
         help='Enable verbose logging',
     )
 
     args = parser.parse_args()
+    if args.require_complete_enrichment and not args.enrich:
+        parser.error("--require-complete-enrichment requires --enrich")
 
     setup_logging(args.verbose)
     engine_kwargs = {}
@@ -318,6 +339,8 @@ def main():
                 args.since,
                 args.until,
                 args.dry_run,
+                args.require_complete_enrichment,
+                getattr(engine, "db_path", None),
             )
         print_multi_result(result)
 
@@ -343,6 +366,8 @@ def main():
                 args.since,
                 args.until,
                 args.dry_run,
+                args.require_complete_enrichment,
+                getattr(engine, "db_path", None),
             )
         print_sync_result(result)
 

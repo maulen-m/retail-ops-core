@@ -3,6 +3,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from core.sync.kaspi_order_enrichment import enrich_orders
 from scripts.migrate_019_kaspi_enrichment import migrate
 
@@ -684,3 +686,106 @@ def test_enrichment_allowlist_skips_store(tmp_path):
     assert result.get("enabled") is True
     assert result.get("inserted") == 0
     assert created["count"] == 0
+
+
+def test_strict_enrichment_success_proves_api_and_db_readback(tmp_path, monkeypatch):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(db_path)
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text("enabled: true\nfetch_entries: true\n", encoding="utf-8")
+    monkeypatch.setenv("ENABLE_KASPI_ENRICHMENT", "1")
+
+    result = enrich_orders(
+        db_path=db_path,
+        store_code="UNIVERSAL",
+        since="2026-01-19",
+        until="2026-01-21",
+        apply=True,
+        require_complete=True,
+        config_path=config_path,
+        client_factory=lambda store: FakeClient(store),
+    )
+
+    assert result["selected_order_count"] == 1
+    assert result["fetched_order_count"] == 1
+    assert result["expected_entry_count"] == 1
+    assert result["readback_entry_count"] == 1
+    assert result["failure_count"] == 0
+
+
+def test_strict_enrichment_partial_api_failure_rolls_back_store(tmp_path, monkeypatch):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(
+        db_path,
+        rows=[
+            {
+                "order_id": order_id,
+                "store_code": "UNIVERSAL",
+                "status_updated_at": f"2026-01-{day}",
+                "actual_shipment_date": None,
+                "planned_shipment_date": None,
+                "created_at": f"2026-01-{day}",
+                "kaspi_status": "NEW",
+                "kaspi_status_detail": "APPROVED_BY_BANK",
+                "signature_required": 0,
+                "pre_order": 0,
+                "courier_transmission_date": None,
+                "delivery_mode": "DELIVERY",
+                "returned_to_warehouse": 0,
+            }
+            for order_id, day in (("ORD_OK", "20"), ("ORD_FAIL", "21"))
+        ],
+    )
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text("enabled: true\nfetch_entries: true\n", encoding="utf-8")
+    monkeypatch.setenv("ENABLE_KASPI_ENRICHMENT", "1")
+
+    class PartialClient(FakeClient):
+        def get_order_entries(self, order_code):
+            if order_code == "ORD_FAIL":
+                raise RuntimeError("simulated API failure")
+            return super().get_order_entries(order_code)
+
+    with pytest.raises(RuntimeError, match="strict Kaspi entry enrichment incomplete"):
+        enrich_orders(
+            db_path=db_path,
+            store_code="UNIVERSAL",
+            since="2026-01-19",
+            until="2026-01-21",
+            apply=True,
+            require_complete=True,
+            config_path=config_path,
+            client_factory=lambda store: PartialClient(store),
+        )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM fact_order_entries_kaspi").fetchone()[0] == 0
+
+
+def test_strict_enrichment_rejects_zero_entry_success_response(tmp_path):
+    db_path = tmp_path / "enrich.db"
+    sqlite3.connect(str(db_path)).close()
+    migrate(db_path)
+    _init_orders_db(db_path)
+    config_path = tmp_path / "kaspi_enrichment.yaml"
+    config_path.write_text("enabled: true\nfetch_entries: true\n", encoding="utf-8")
+
+    class EmptyClient(FakeClient):
+        def get_order_entries(self, order_code):
+            return FakeResponse(True, {"data": []})
+
+    with pytest.raises(RuntimeError, match="api_zero_entries"):
+        enrich_orders(
+            db_path=db_path,
+            store_code="UNIVERSAL",
+            since="2026-01-19",
+            until="2026-01-21",
+            apply=False,
+            require_complete=True,
+            config_path=config_path,
+            client_factory=lambda store: EmptyClient(store),
+        )
