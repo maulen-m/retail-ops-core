@@ -333,6 +333,8 @@ def create_snapshot(
         optional_state = [
             project_root / "runtime" / "state" / "waybill_shipping_obligations.json",
             project_root / "runtime" / "state" / "google_ops_board_ready_watch.json",
+            project_root / "runtime" / "state" / "waybill_prepacked_exclusion.json",
+            project_root / "runtime" / "state" / "google_ops_board_closeout_halt_barrier.json",
         ]
         for source in optional_state:
             if not source.is_file():

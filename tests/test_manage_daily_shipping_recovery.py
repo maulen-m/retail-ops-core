@@ -156,10 +156,22 @@ def _project_fixture(tmp_path: Path) -> Path:
     return project
 
 
+def _write_extended_optional_shipping_state(project: Path) -> dict[str, bytes]:
+    state = project / "runtime" / "state"
+    payloads = {
+        "waybill_prepacked_exclusion.json": b'{"excluded_order_ids":["order-1"]}\n',
+        "google_ops_board_closeout_halt_barrier.json": b'{"halted":true}\n',
+    }
+    for filename, content in payloads.items():
+        (state / filename).write_bytes(content)
+    return payloads
+
+
 def test_create_snapshot_is_sqlite_consistent_and_manifest_verified(
     tmp_path: Path,
 ) -> None:
     project = _project_fixture(tmp_path)
+    _write_extended_optional_shipping_state(project)
     state_root = tmp_path / "state"
 
     report = create_snapshot(
@@ -183,6 +195,11 @@ def test_create_snapshot_is_sqlite_consistent_and_manifest_verified(
     assert manifest["artifacts"]["data/app.db.sqlite"]["sha256"] == _sha256(copied_db)
     assert "excel_ui/SALES_KSP_CRM_V3.xlsx" in manifest["artifacts"]
     assert "runtime/state/waybill_shipping_obligations.json" in manifest["artifacts"]
+    assert "runtime/state/waybill_prepacked_exclusion.json" in manifest["artifacts"]
+    assert (
+        "runtime/state/google_ops_board_closeout_halt_barrier.json"
+        in manifest["artifacts"]
+    )
     assert "workflow/closeout_checkpoint.json" in manifest["artifacts"]
     assert "workflow/replay/closeout_report.json" in manifest["artifacts"]
     assert "workflow/replay/closeout_evidence.json" in manifest["artifacts"]
@@ -208,6 +225,27 @@ def test_create_snapshot_is_sqlite_consistent_and_manifest_verified(
     assert closeout_evidence["pending_count"] == 0
     assert closeout_evidence["customer_data_exposed"] is False
     assert str(project) not in serialized_evidence
+
+
+def test_snapshot_succeeds_when_extended_optional_state_files_are_absent(
+    tmp_path: Path,
+) -> None:
+    project = _project_fixture(tmp_path)
+
+    report = create_snapshot(
+        project_root=project,
+        state_root=tmp_path / "state",
+        now=datetime(2026, 7, 13, 17, 0, tzinfo=UTC),
+        hostname="M1-test",
+    )
+
+    manifest = json.loads(Path(report["manifest_path"]).read_text(encoding="utf-8"))
+    assert report["gate"] == "GREEN"
+    assert "runtime/state/waybill_prepacked_exclusion.json" not in manifest["artifacts"]
+    assert (
+        "runtime/state/google_ops_board_closeout_halt_barrier.json"
+        not in manifest["artifacts"]
+    )
 
 
 def test_snapshot_ignores_newer_failed_closeout_for_replay(tmp_path: Path) -> None:
@@ -396,6 +434,7 @@ def test_restore_drill_verifies_manifest_hashes_sqlite_and_rto(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = _project_fixture(tmp_path)
+    optional_state_payloads = _write_extended_optional_shipping_state(project)
     source_state = tmp_path / "source-state"
     snapshot_report = create_snapshot(project_root=project, state_root=source_state)
     source_snapshot = Path(snapshot_report["snapshot_dir"])
@@ -437,6 +476,11 @@ def test_restore_drill_verifies_manifest_hashes_sqlite_and_rto(
     assert report["manifest_sha256"] == manifest_sha
     assert report["elapsed_seconds"] == 12.5
     assert report["rto_met"] is True
+    restored_state = (
+        target / "restored" / source_snapshot.name / "runtime" / "state"
+    )
+    for filename, expected_bytes in optional_state_payloads.items():
+        assert (restored_state / filename).read_bytes() == expected_bytes
 
 
 def test_retention_requires_explicit_apply_gate(
