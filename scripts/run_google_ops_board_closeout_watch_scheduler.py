@@ -31,6 +31,7 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     DEFAULT_READY_DEBOUNCE_STATE_PATH,
     READY_DEBOUNCE_SECONDS,
     auto_probable_closeout_cutoff_reached,
+    auto_probable_closeout_time_label,
     clear_ready_debounce_state,
     closeout_completion_state,
     evaluate_ready_debounce,
@@ -329,7 +330,10 @@ def _write_auto_probable_audit(
         {
             "target_date": target_date.isoformat(),
             "generated_at": now.isoformat(),
-            "policy": "18:57 copy-only autofill from visible PROBABLE_SIZE for unresolved MY_SIZE values",
+            "policy": (
+                f"{auto_probable_closeout_time_label()} copy-only autofill from visible "
+                "PROBABLE_SIZE for unresolved MY_SIZE values"
+            ),
             "applied_count": len(applied_rows),
             "unresolved_count": len(unresolved_rows),
             "applied_rows": applied_rows,
@@ -337,6 +341,33 @@ def _write_auto_probable_audit(
         },
     )
     return audit_path
+
+
+def _enqueue_auto_prepare_warning(
+    *,
+    target_date: date,
+    auto_prepare: dict[str, object],
+) -> bool:
+    applied_rows = list(auto_prepare.get("applied_rows") or [])
+    ready_auto_stamped = bool(auto_prepare.get("run_control_updated"))
+    if not applied_rows and not ready_auto_stamped:
+        return False
+    applied_values = [
+        f"{_clean(row.get('OrderID'))}={_clean(row.get('MY_SIZE'))}"
+        for row in applied_rows
+    ]
+    enqueue_alert(
+        title="Google Ops Board auto-closeout fallback applied",
+        lines=[
+            f"Target date: {target_date.isoformat()}",
+            f"Fire time: {auto_probable_closeout_time_label()} Asia/Almaty",
+            "Auto-filled order IDs: " + (", ".join(applied_values) if applied_values else "none"),
+            f"READY auto-stamped: {'yes' if ready_auto_stamped else 'no'}",
+        ],
+        severity="WARN",
+        dedup_key=f"google-ops-board-auto-prepare:{target_date.isoformat()}",
+    )
+    return True
 
 
 def _maybe_auto_prepare_closeout(
@@ -566,11 +597,12 @@ def _maybe_auto_prepare_closeout(
         run_control_selected = current_run_control
         run_control_row = dict(run_control_selected["row"])
         ready_value = _clean(run_control_row.get("ready_for_closeout")).upper()
+        auto_label = auto_probable_closeout_time_label().replace(":", "")
         note_bits: list[str] = []
         if applied_rows:
-            note_bits.append(f"AUTO_1857 probable backfill: {len(applied_rows)} row(s)")
+            note_bits.append(f"AUTO_{auto_label} probable backfill: {len(applied_rows)} row(s)")
         if ready_value != "READY":
-            note_bits.append("AUTO_1857 closeout trigger")
+            note_bits.append(f"AUTO_{auto_label} closeout trigger")
         if note_bits:
             stamp_now = now_almaty()
             sheet_row = int(run_control_selected["sheet_row"])
@@ -642,7 +674,7 @@ def main() -> int:
 
     # HOLD is the dominant steady state. Keep it intentionally cheap: one
     # target-date Run_Control read and no SalesRaw, DB, manifest, ledger, or
-    # subprocess work. The explicitly enabled 18:57 probable-size fallback is
+    # subprocess work. The explicitly enabled probable-size fallback is
     # the only reason to continue from HOLD into full readiness evaluation.
     fast_row = select_run_control_row(client=client, contract=contract, target_date=target_date)
     fast_ready_value = _clean((fast_row or {}).get("ready_for_closeout")).upper()
@@ -766,6 +798,10 @@ def main() -> int:
             lookback_days=5,
             now=local_now,
         )
+        _enqueue_auto_prepare_warning(
+            target_date=target_date,
+            auto_prepare=auto_prepare,
+        )
         readiness = build_readiness_report(
             client=client,
             contract=contract,
@@ -838,7 +874,8 @@ def main() -> int:
     if cutoff_reached and auto_fallback_just_prepared:
         clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
         print(
-            "Google Ops Board early-closeout watch: 18:57 fallback is green; "
+            "Google Ops Board early-closeout watch: "
+            f"{auto_probable_closeout_time_label()} fallback is green; "
             "triggering closeout immediately."
         )
         fresh_readiness = build_readiness_report(

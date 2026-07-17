@@ -61,7 +61,9 @@ def _stub_closeout_health_green(monkeypatch, tmp_path: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_live_closeout_halt_barrier(monkeypatch) -> None:
+def _isolate_live_closeout_halt_barrier(monkeypatch):
+    common_mod.resolved_auto_probable_closeout_time.cache_clear()
+
     def _allow_automation(**_kwargs):
         return {
             "blocked": False,
@@ -78,8 +80,11 @@ def _isolate_live_closeout_halt_barrier(monkeypatch) -> None:
     )
     monkeypatch.setattr(common_mod, "flush_held", lambda _reason: {"attempted": 0, "delivered": 0})
     monkeypatch.setattr(common_mod, "enqueue_alert", lambda **_kwargs: False)
+    monkeypatch.setattr(watch_mod, "enqueue_alert", lambda **_kwargs: False)
     monkeypatch.setattr(closeout_scheduler_mod, "reset_lock_contention", lambda _entry: None)
     monkeypatch.setattr(closeout_scheduler_mod, "record_lock_contention", lambda _entry: 1)
+    yield
+    common_mod.resolved_auto_probable_closeout_time.cache_clear()
 
 
 def test_early_closeout_watch_window_starts_for_morning_employee_ready() -> None:
@@ -91,6 +96,71 @@ def test_early_closeout_watch_window_starts_for_morning_employee_ready() -> None
     assert common_mod.within_early_closeout_watch_window(datetime(2026, 4, 15, 20, 30, tzinfo=tz))
     assert common_mod.within_early_closeout_watch_window(datetime(2026, 4, 15, 23, 59, tzinfo=tz))
     assert not common_mod.within_early_closeout_watch_window(datetime(2026, 4, 15, 8, 59, tzinfo=tz))
+
+
+def test_auto_probable_closeout_defaults_remain_1857(monkeypatch) -> None:
+    tz = ZoneInfo("Asia/Almaty")
+    monkeypatch.delenv(common_mod.AUTO_PROBABLE_FILL_HOUR_ENV, raising=False)
+    monkeypatch.delenv(common_mod.AUTO_PROBABLE_FILL_MINUTE_ENV, raising=False)
+    common_mod.resolved_auto_probable_closeout_time.cache_clear()
+
+    assert common_mod.resolved_auto_probable_closeout_time() == (18, 57)
+    assert not common_mod.auto_probable_closeout_cutoff_reached(
+        datetime(2026, 4, 15, 18, 56, tzinfo=tz)
+    )
+    assert common_mod.auto_probable_closeout_cutoff_reached(
+        datetime(2026, 4, 15, 18, 57, tzinfo=tz)
+    )
+
+
+def test_auto_probable_closeout_honors_1945_environment(monkeypatch) -> None:
+    tz = ZoneInfo("Asia/Almaty")
+    monkeypatch.setenv(common_mod.AUTO_PROBABLE_FILL_HOUR_ENV, "19")
+    monkeypatch.setenv(common_mod.AUTO_PROBABLE_FILL_MINUTE_ENV, "45")
+    common_mod.resolved_auto_probable_closeout_time.cache_clear()
+
+    assert common_mod.resolved_auto_probable_closeout_time() == (19, 45)
+    assert not common_mod.auto_probable_closeout_cutoff_reached(
+        datetime(2026, 4, 15, 18, 57, tzinfo=tz)
+    )
+    assert not common_mod.auto_probable_closeout_cutoff_reached(
+        datetime(2026, 4, 15, 19, 44, tzinfo=tz)
+    )
+    assert common_mod.auto_probable_closeout_cutoff_reached(
+        datetime(2026, 4, 15, 19, 45, tzinfo=tz)
+    )
+
+
+def test_invalid_auto_probable_closeout_environment_warns_once_and_uses_default(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv(common_mod.AUTO_PROBABLE_FILL_HOUR_ENV, "24")
+    monkeypatch.setenv(common_mod.AUTO_PROBABLE_FILL_MINUTE_ENV, "invalid")
+    common_mod.resolved_auto_probable_closeout_time.cache_clear()
+
+    assert common_mod.resolved_auto_probable_closeout_time() == (18, 57)
+    assert common_mod.resolved_auto_probable_closeout_time() == (18, 57)
+    captured = capsys.readouterr()
+    assert captured.err.count("WARN:") == 1
+    assert "using default 18:57" in captured.err
+
+
+def test_auto_prepare_warning_is_silent_when_nothing_was_applied(monkeypatch) -> None:
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(watch_mod, "enqueue_alert", lambda **kwargs: alerts.append(kwargs) or False)
+
+    emitted = watch_mod._enqueue_auto_prepare_warning(
+        target_date=date(2026, 4, 15),
+        auto_prepare={
+            "salesraw_updates_applied": 0,
+            "applied_rows": [],
+            "run_control_updated": False,
+        },
+    )
+
+    assert emitted is False
+    assert alerts == []
 
 
 def test_hold_fast_path_reads_only_run_control_and_skips_deep_readiness(
@@ -970,6 +1040,7 @@ def test_early_closeout_watch_auto_fills_blank_sizes_after_1857_and_triggers_wit
     )
     creds = _write_creds(tmp_path)
     calls: list[list[str]] = []
+    alerts: list[dict[str, object]] = []
 
     monkeypatch.setenv("AB_GOOGLE_SERVICE_ACCOUNT_JSON", str(creds))
     monkeypatch.setenv("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID", "sheet-id")
@@ -1017,6 +1088,11 @@ def test_early_closeout_watch_auto_fills_blank_sizes_after_1857_and_triggers_wit
         }
 
     monkeypatch.setattr(watch_mod, "build_readiness_report", _fake_readiness)
+    monkeypatch.setattr(
+        watch_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
 
     class _Result:
         returncode = 0
@@ -1038,6 +1114,15 @@ def test_early_closeout_watch_auto_fills_blank_sizes_after_1857_and_triggers_wit
         "--expected-ready-set-at",
         "2026-04-15T18:57:05+05:00",
     ]]
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "WARN"
+    assert alerts[0]["dedup_key"] == "google-ops-board-auto-prepare:2026-04-15"
+    assert alerts[0]["lines"] == [
+        "Target date: 2026-04-15",
+        "Fire time: 18:57 Asia/Almaty",
+        "Auto-filled order IDs: 1001=2XL",
+        "READY auto-stamped: yes",
+    ]
 
 
 def test_early_closeout_watch_does_not_auto_fill_probable_sizes_without_explicit_opt_in(

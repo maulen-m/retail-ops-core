@@ -11,6 +11,7 @@ import re
 import sys
 import traceback
 from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -47,8 +48,36 @@ EARLY_CLOSEOUT_WATCH_END_HOUR = 24
 EARLY_CLOSEOUT_WATCH_END_MINUTE = 0
 AUTO_PROBABLE_CLOSEOUT_HOUR = 18
 AUTO_PROBABLE_CLOSEOUT_MINUTE = 57
+AUTO_PROBABLE_FILL_HOUR_ENV = "AB_AUTO_PROBABLE_FILL_HOUR"
+AUTO_PROBABLE_FILL_MINUTE_ENV = "AB_AUTO_PROBABLE_FILL_MINUTE"
 READY_DEBOUNCE_SECONDS = 60
 HALT_BARRIER_SCHEMA_VERSION = 1
+
+
+@lru_cache(maxsize=1)
+def resolved_auto_probable_closeout_time() -> tuple[int, int]:
+    """Resolve the optional auto-probable cutoff override once per process."""
+    raw_hour = str(os.environ.get(AUTO_PROBABLE_FILL_HOUR_ENV) or "").strip()
+    raw_minute = str(os.environ.get(AUTO_PROBABLE_FILL_MINUTE_ENV) or "").strip()
+    try:
+        hour = AUTO_PROBABLE_CLOSEOUT_HOUR if not raw_hour else int(raw_hour)
+        minute = AUTO_PROBABLE_CLOSEOUT_MINUTE if not raw_minute else int(raw_minute)
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError("time component out of range")
+    except (TypeError, ValueError):
+        print(
+            "WARN: invalid AB_AUTO_PROBABLE_FILL_HOUR/AB_AUTO_PROBABLE_FILL_MINUTE; "
+            f"using default {AUTO_PROBABLE_CLOSEOUT_HOUR:02d}:"
+            f"{AUTO_PROBABLE_CLOSEOUT_MINUTE:02d}.",
+            file=sys.stderr,
+        )
+        return AUTO_PROBABLE_CLOSEOUT_HOUR, AUTO_PROBABLE_CLOSEOUT_MINUTE
+    return hour, minute
+
+
+def auto_probable_closeout_time_label() -> str:
+    hour, minute = resolved_auto_probable_closeout_time()
+    return f"{hour:02d}:{minute:02d}"
 
 
 def _entry_slug(value: str) -> str:
@@ -188,7 +217,8 @@ def within_early_closeout_watch_window(now: datetime | None = None) -> bool:
 def auto_probable_closeout_cutoff_reached(now: datetime | None = None) -> bool:
     local_now = (now or now_almaty()).astimezone(ALMATY_TZ)
     current_minutes = local_now.hour * 60 + local_now.minute
-    cutoff_minutes = AUTO_PROBABLE_CLOSEOUT_HOUR * 60 + AUTO_PROBABLE_CLOSEOUT_MINUTE
+    cutoff_hour, cutoff_minute = resolved_auto_probable_closeout_time()
+    cutoff_minutes = cutoff_hour * 60 + cutoff_minute
     return current_minutes >= cutoff_minutes
 
 
