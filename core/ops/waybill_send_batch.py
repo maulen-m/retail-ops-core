@@ -6,13 +6,14 @@ import json
 import re
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 
 SEND_BATCH_MANIFEST_FILE = "send_batch_manifest.json"
 SEND_LEDGER_FILE = "send_ledger.json"
 SEND_STOPLINE_FILE = "whatsapp_send_stopline.json"
 LEDGER_STATES = {"pending", "opened", "clicked", "confirmed", "unsure", "failed"}
+AUTONOMOUS_MANIFEST_SCHEMA_VERSION = 4
 
 
 def _now_iso() -> str:
@@ -59,6 +60,123 @@ def _batch_hash(entries: Iterable[dict[str, Any]]) -> str:
     normalized.sort(key=lambda row: row["pdf_key"])
     payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _stable_manifest_entries(entries: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    stable_entries: list[dict[str, Any]] = []
+    for entry in sorted(entries, key=lambda item: str(item.get("pdf_key") or "")):
+        stable_entry = {
+            "pdf_key": str(entry.get("pdf_key") or ""),
+            "relative_output_path": str(entry.get("relative_output_path") or ""),
+            "relative_to_today": str(entry.get("relative_to_today") or ""),
+            "filename": str(entry.get("filename") or ""),
+            "category": str(entry.get("category") or ""),
+            "sha256": str(entry.get("sha256") or ""),
+            "file_size": int(entry.get("file_size") or 0),
+            "mtime": str(entry.get("mtime") or ""),
+            "logical_group_type": str(entry.get("logical_group_type") or ""),
+            "order_ids": [str(value) for value in entry.get("order_ids") or []],
+            "order_counts_by_store": {
+                str(store): int(count or 0)
+                for store, count in sorted(
+                    dict(entry.get("order_counts_by_store") or {}).items()
+                )
+            },
+            "source_row_ids": [str(value) for value in entry.get("source_row_ids") or []],
+            "source_lines": list(entry.get("source_lines") or []),
+            "items_detail": [str(value) for value in entry.get("items_detail") or []],
+            "product_family_key": str(entry.get("product_family_key") or ""),
+            "color_key": str(entry.get("color_key") or ""),
+            "product_color_key": str(entry.get("product_color_key") or ""),
+            "size_token": str(entry.get("size_token") or ""),
+            "size_rank": int(entry.get("size_rank") or 0),
+            "send_sequence": int(entry.get("send_sequence") or 0),
+            "core_resolution_sources": sorted(
+                str(value) for value in entry.get("core_resolution_sources") or []
+            ),
+            "unsafe_core_resolution_sources": sorted(
+                str(value) for value in entry.get("unsafe_core_resolution_sources") or []
+            ),
+            "requires_core_review": bool(entry.get("requires_core_review")),
+        }
+        stable_entries.append(stable_entry)
+    return stable_entries
+
+
+def manifest_batch_hash_payload(manifest: Mapping[str, Any]) -> Any:
+    """Return the immutable send-authorizing payload for schema-v4 manifests."""
+    entries = _stable_manifest_entries(manifest.get("entries") or [])
+    schema_version = int(manifest.get("schema_version") or 0)
+    if schema_version < AUTONOMOUS_MANIFEST_SCHEMA_VERSION:
+        # Diagnostic compatibility only. Live autonomous preflight separately
+        # rejects request-pinned manifests below schema v4.
+        legacy_entries = []
+        for entry in entries:
+            legacy = {
+                key: entry[key]
+                for key in (
+                    "pdf_key",
+                    "relative_output_path",
+                    "sha256",
+                    "file_size",
+                    "mtime",
+                    "logical_group_type",
+                    "order_ids",
+                    "source_row_ids",
+                    "product_family_key",
+                    "color_key",
+                    "product_color_key",
+                    "size_token",
+                    "size_rank",
+                    "send_sequence",
+                )
+            }
+            if entry["source_lines"]:
+                legacy["source_lines"] = entry["source_lines"]
+            legacy_entries.append(legacy)
+        if any(
+            key in manifest
+            for key in ("request_identity", "expected_orders_sha256", "obligation_scope_hash")
+        ):
+            return {
+                "entries": legacy_entries,
+                "request_identity": dict(manifest.get("request_identity") or {}),
+                "expected_orders_sha256": str(manifest.get("expected_orders_sha256") or ""),
+                "obligation_scope_hash": str(manifest.get("obligation_scope_hash") or ""),
+            }
+        return legacy_entries
+
+    raw_counts = dict(manifest.get("counts") or {})
+    counts = {
+        str(key): int(value or 0)
+        for key, value in sorted(raw_counts.items())
+    }
+    return {
+        "schema_version": schema_version,
+        "entries": entries,
+        "target_date": str(manifest.get("target_date") or ""),
+        "ready_set_at": str(manifest.get("ready_set_at") or ""),
+        "request_identity": dict(manifest.get("request_identity") or {}),
+        "expected_orders_sha256": str(manifest.get("expected_orders_sha256") or ""),
+        "obligation_scope_hash": str(manifest.get("obligation_scope_hash") or ""),
+        "line_scope_hash": str(manifest.get("line_scope_hash") or ""),
+        "terminal_orders_excluded": bool(manifest.get("terminal_orders_excluded")),
+        "send_order_ids": sorted(str(value) for value in manifest.get("send_order_ids") or []),
+        "overdue_order_ids": sorted(
+            str(value) for value in manifest.get("overdue_order_ids") or []
+        ),
+        "missing_overdue_order_ids": sorted(
+            str(value) for value in manifest.get("missing_overdue_order_ids") or []
+        ),
+        "counts": counts,
+    }
+
+
+def compute_manifest_batch_hash(manifest: Mapping[str, Any]) -> str:
+    payload = manifest_batch_hash_payload(manifest)
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def build_pdf_key(*, sha256: str, order_ids: Iterable[str], logical_group_type: str) -> str:
@@ -440,7 +558,14 @@ def resolve_manifest_entry_path(batch_root: Path, entry: Dict[str, Any]) -> Path
     expected_sha_raw = str(entry.get("sha256") or "").strip()
     expected_sha256 = expected_sha_raw if _looks_like_sha256(expected_sha_raw) else ""
     expected_size = int(entry.get("file_size") or 0)
-    exact_path = batch_root / relative_output_path
+    resolved_batch_root = Path(batch_root).resolve()
+    exact_path = (resolved_batch_root / relative_output_path).resolve()
+    try:
+        exact_path.relative_to(resolved_batch_root)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Manifest entry path escapes immutable batch root: {relative_output_path}"
+        ) from exc
     if exact_path.exists():
         if expected_sha256:
             if _sha256_file(exact_path) == expected_sha256 and (
@@ -451,7 +576,7 @@ def resolve_manifest_entry_path(batch_root: Path, entry: Dict[str, Any]) -> Path
             return exact_path
 
     matches: List[Path] = []
-    for candidate in sorted(batch_root.rglob("*.pdf")):
+    for candidate in sorted(resolved_batch_root.rglob("*.pdf")):
         stat = candidate.stat()
         if expected_size and stat.st_size != expected_size:
             continue

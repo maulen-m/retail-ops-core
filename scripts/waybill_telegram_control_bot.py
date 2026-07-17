@@ -31,10 +31,15 @@ from core.integrations.google_ops_board import (  # noqa: E402
 from core.integrations.telegram_bot import get_waybill_telegram_config, send_message  # noqa: E402
 from core.paths import data_path  # noqa: E402
 from scripts.run_google_ops_board_closeout import build_readiness_report  # noqa: E402
+from scripts.google_ops_board_automation_common import (  # noqa: E402
+    closeout_completion_state,
+    evaluate_closeout_halt_barrier,
+    load_closeout_halt_barrier,
+    persist_closeout_halt_barrier,
+)
 from scripts import returns_pickup_report as returns_pickup_report_mod  # noqa: E402
-from scripts.send_waybills_telegram import run_ordered_full_resend, send_final_status_table  # noqa: E402
+from scripts.send_waybills_telegram import send_final_status_table  # noqa: E402
 from scripts.waybill_delivery_completion import (  # noqa: E402
-    delivery_completion_state,
     format_delivery_completion_status,
 )
 from scripts.waybill_handover_check import (  # noqa: E402
@@ -48,9 +53,9 @@ ALMATY_TZ = ZoneInfo("Asia/Almaty")
 STATE_FILE = PROJECT_ROOT / "runtime" / "state" / "waybill_telegram_control_bot.json"
 ALLOWED_USERS_FILE = PROJECT_ROOT / "runtime" / "state" / "waybill_telegram_allowed_users.txt"
 CLOSEOUT_SCHEDULER_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_closeout_scheduler.py"
-FORCE_FRESH_CLOSEOUT_ENV = "AB_GOOGLE_OPS_BOARD_FORCE_FRESH_CLOSEOUT"
 DB_PATH = data_path("db", "app.db")
 READY_DEBOUNCE_SECONDS = 60
+COMMAND_MAX_AGE_SECONDS = 300
 HANDOVER_MANUAL_DELAY_SECONDS = 60
 HANDOVER_PASSIVE_INTERVAL_SECONDS = int(os.environ.get("WAYBILL_HANDOVER_PASSIVE_INTERVAL_SECONDS", "180"))
 HANDOVER_PASSIVE_MAX_CHECKS = int(os.environ.get("WAYBILL_HANDOVER_PASSIVE_MAX_CHECKS", "5"))
@@ -108,15 +113,34 @@ def _load_state(path: Path | None = None) -> dict[str, Any]:
         return {}
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
-    except Exception:
-        return {}
+    except Exception as exc:
+        raise RuntimeError(f"Telegram control state is unreadable: {target}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Telegram control state is not an object: {target}")
+    return payload
 
 
 def _save_state(state: dict[str, Any], path: Path | None = None) -> None:
     target = Path(path or STATE_FILE)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path = target.parent / f".{target.name}.{os.getpid()}.tmp"
+    payload = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, target)
+        directory_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _load_offset() -> int | None:
@@ -131,6 +155,28 @@ def _save_offset(offset: int) -> None:
     state = _load_state()
     state["offset"] = int(offset)
     _save_state(state)
+
+
+def _halt_barrier_path() -> Path:
+    return Path(STATE_FILE).with_name("google_ops_board_closeout_halt_barrier.json")
+
+
+def _command_message_is_fresh(message: dict[str, Any], *, now: datetime) -> bool:
+    """Accept only recently created Telegram messages, never stale edits/backlog."""
+    try:
+        created_at = datetime.fromtimestamp(int(message["date"]), tz=ALMATY_TZ)
+    except (KeyError, TypeError, ValueError, OSError):
+        return False
+    local_now = now.astimezone(ALMATY_TZ)
+    age_seconds = (local_now - created_at).total_seconds()
+    return (
+        created_at.date() == local_now.date()
+        and -120 <= age_seconds <= COMMAND_MAX_AGE_SECONDS
+    )
+
+
+def _needs_backlog_baseline(offset: int | None) -> bool:
+    return offset is None
 
 
 def _allowed_user_ids() -> set[str]:
@@ -283,22 +329,54 @@ def _select_run_control_row(client: GoogleOpsBoardClient, contract, target_date:
     for row_info in rows:
         if _clean(row_info["row"].get("target_date")) == target_iso:
             return row_info
-    return rows[0] if rows else None
+    return None
 
 
-def _update_run_control_ready_value(*, value: str, note: str, target_date: date | None = None) -> None:
+def _read_run_control_ready_identity(target_date: date) -> dict[str, str]:
+    contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
+    service_account_json = resolve_service_account_json(contract=contract)
+    spreadsheet_id = resolve_spreadsheet_id(contract=contract)
+    client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, service_account_json)
+    selected = _select_run_control_row(client, contract, target_date)
+    row = dict((selected or {}).get("row") or {})
+    return {
+        "target_date": _clean(row.get("target_date")),
+        "ready_set_at": _clean(row.get("ready_set_at")),
+        "ready_for_closeout": _clean(row.get("ready_for_closeout")).upper(),
+    }
+
+
+def _update_run_control_ready_value(
+    *, value: str, note: str, target_date: date | None = None
+) -> dict[str, str]:
     contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
     service_account_json = resolve_service_account_json(contract=contract)
     spreadsheet_id = resolve_spreadsheet_id(contract=contract)
     client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, service_account_json)
     selected = _select_run_control_row(client, contract, target_date or _today())
     if selected is None:
-        return
+        raise RuntimeError("Run_Control has no exact target-date row; refusing Sheet write")
     headers = contract.tabs["Run_Control"].headers
     row = dict(selected["row"])
+    current_value = _clean(row.get("ready_for_closeout")).upper()
+    current_ready_set_at = _clean(row.get("ready_set_at"))
+    normalized_value = _clean(value).upper()
+    if normalized_value == "READY" and current_value == "READY" and current_ready_set_at:
+        return {
+            "target_date": _clean(row.get("target_date"))
+            or (target_date or _today()).isoformat(),
+            "ready_set_at": current_ready_set_at,
+        }
+    if normalized_value == "HOLD" and current_value == "HOLD" and not current_ready_set_at:
+        return {
+            "target_date": _clean(row.get("target_date"))
+            or (target_date or _today()).isoformat(),
+            "ready_set_at": "",
+        }
     row["ready_for_closeout"] = value
     row["ready_set_by"] = "TELEGRAM_WAYBILL_BOT"
-    row["ready_set_at"] = _now().isoformat()
+    stamped_at = _now().isoformat() if normalized_value == "READY" else ""
+    row["ready_set_at"] = stamped_at
     current_note = _clean(row.get("notes"))
     row["notes"] = note if not current_note else f"{current_note} | {note}"
     client.update_tab_rows(
@@ -306,23 +384,54 @@ def _update_run_control_ready_value(*, value: str, note: str, target_date: date 
         headers,
         [{"sheet_row": int(selected["sheet_row"]), "row": row}],
     )
+    return {
+        "target_date": _clean(row.get("target_date")) or (target_date or _today()).isoformat(),
+        "ready_set_at": stamped_at,
+    }
 
 
-def set_run_control_ready(*, target_date: date | None = None, note: str = "Telegram /ready fallback") -> None:
-    _update_run_control_ready_value(value="READY", note=note, target_date=target_date)
+def _pinned_closeout_completion(target_date: date) -> dict[str, Any]:
+    contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
+    service_account_json = resolve_service_account_json(contract=contract)
+    spreadsheet_id = resolve_spreadsheet_id(contract=contract)
+    client = GoogleOpsBoardClient.from_service_account_file(
+        spreadsheet_id,
+        service_account_json,
+    )
+    return closeout_completion_state(
+        client=client,
+        contract=contract,
+        target_date=target_date,
+    )
 
 
-def set_run_control_hold(*, target_date: date | None = None, note: str = "Telegram /halt fallback") -> None:
-    _update_run_control_ready_value(value="HOLD", note=note, target_date=target_date)
+def set_run_control_ready(
+    *, target_date: date | None = None, note: str = "Telegram /ready fallback"
+) -> dict[str, str]:
+    return _update_run_control_ready_value(value="READY", note=note, target_date=target_date)
 
 
-def _arm_pending_ready(*, chat_id: str, user_id: str, now: datetime, target_date: date) -> None:
+def set_run_control_hold(
+    *, target_date: date | None = None, note: str = "Telegram /halt fallback"
+) -> dict[str, str]:
+    return _update_run_control_ready_value(value="HOLD", note=note, target_date=target_date)
+
+
+def _arm_pending_ready(
+    *,
+    chat_id: str,
+    user_id: str,
+    now: datetime,
+    target_date: date,
+    request_identity: dict[str, str],
+) -> None:
     state = _load_state()
     state["pending_ready"] = {
         "target_date": target_date.isoformat(),
         "chat_id": str(chat_id),
         "user_id": str(user_id),
         "requested_at": now.isoformat(),
+        "ready_set_at": _clean(request_identity.get("ready_set_at")),
     }
     _save_state(state)
 
@@ -347,6 +456,7 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
     chat_id = str(pending.get("chat_id") or "")
     target_raw = _clean(pending.get("target_date"))
     requested_raw = _clean(pending.get("requested_at"))
+    ready_set_at = _clean(pending.get("ready_set_at"))
     try:
         target_date = date.fromisoformat(target_raw)
         requested_at = datetime.fromisoformat(requested_raw)
@@ -356,9 +466,27 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
         return 0
     if requested_at.tzinfo is None:
         requested_at = requested_at.replace(tzinfo=ALMATY_TZ)
+    if target_date != now.astimezone(ALMATY_TZ).date():
+        state.pop("pending_ready", None)
+        _save_state(state)
+        _send_text(
+            token=token,
+            chat_id=chat_id,
+            text="Telegram /ready expired at the target-date boundary; set today's READY again.",
+        )
+        return 1
     elapsed = int((now - requested_at).total_seconds())
     if elapsed < READY_DEBOUNCE_SECONDS:
         return 0
+    if not ready_set_at:
+        state.pop("pending_ready", None)
+        _save_state(state)
+        _send_text(
+            token=token,
+            chat_id=chat_id,
+            text="Telegram /ready cancelled: missing immutable Ready request identity.",
+        )
+        return 1
 
     readiness = build_waybill_control_readiness(target_date=target_date)
     green, status, blockers = _ready_gate(readiness)
@@ -373,20 +501,44 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
         return 0
 
     try:
-        set_run_control_ready(target_date=target_date, note="Telegram /ready debounce passed")
+        current_row = _read_run_control_ready_identity(target_date)
+        halt_gate = evaluate_closeout_halt_barrier(
+            target_date=target_date,
+            run_control_row=current_row,
+            request_ready_set_at=ready_set_at,
+            now=now,
+            path=_halt_barrier_path(),
+        )
+        if halt_gate["blocked"]:
+            raise RuntimeError(
+                f"local halt barrier blocks this request: {halt_gate['reason']}"
+            )
+        identity_matches = (
+            _clean(current_row.get("target_date")) == target_date.isoformat()
+            and _clean(current_row.get("ready_set_at")) == ready_set_at
+            and _clean(current_row.get("ready_for_closeout")).upper() == "READY"
+        )
+        if not identity_matches:
+            raise RuntimeError("Run_Control Ready identity changed during debounce")
     except Exception as exc:
         state.pop("pending_ready", None)
         _save_state(state)
-        _send_text(token=token, chat_id=chat_id, text=f"Telegram /ready failed to set Run_Control READY: <code>{exc}</code>")
+        _send_text(token=token, chat_id=chat_id, text=f"Telegram /ready identity check failed: <code>{exc}</code>")
         return 1
 
     _send_text(token=token, chat_id=chat_id, text="Telegram /ready stable for 60s; starting closeout.")
     env = os.environ.copy()
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env[FORCE_FRESH_CLOSEOUT_ENV] = "1"
     result = subprocess.run(
-        [sys.executable, str(CLOSEOUT_SCHEDULER_PATH), "--resume"],
+        [
+            sys.executable,
+            str(CLOSEOUT_SCHEDULER_PATH),
+            "--expected-target-date",
+            target_date.isoformat(),
+            "--expected-ready-set-at",
+            ready_set_at,
+        ],
         cwd=str(PROJECT_ROOT),
         env=env,
     )
@@ -528,6 +680,70 @@ def _process_pending_handover(*, token: str, now: datetime, default_chat_id: str
     return 0
 
 
+def _handle_halt_command(
+    *,
+    chat_id: str,
+    token: str,
+    target_date: date,
+    halt_request_key: str = "",
+) -> bool:
+    """Apply idempotent halt state before its Telegram update is acknowledged."""
+    try:
+        persist_closeout_halt_barrier(
+            target_date=target_date,
+            requested_at=_now(),
+            source="telegram:/halt",
+            request_key=halt_request_key,
+            path=_halt_barrier_path(),
+        )
+    except Exception as exc:
+        _send_text(
+            token=token,
+            chat_id=chat_id,
+            text=(
+                "Telegram /halt could not persist the local stop barrier; "
+                f"Google HOLD was not attempted: <code>{exc}</code>"
+            ),
+        )
+        return False
+    _clear_pending_ready()
+    try:
+        set_run_control_hold(target_date=target_date)
+        readback = _read_run_control_ready_identity(target_date)
+        if (
+            _clean(readback.get("target_date")) != target_date.isoformat()
+            or _clean(readback.get("ready_for_closeout")).upper() != "HOLD"
+            or _clean(readback.get("ready_set_at"))
+        ):
+            raise RuntimeError(f"Run_Control HOLD readback mismatch: {readback}")
+        halt_gate = evaluate_closeout_halt_barrier(
+            target_date=target_date,
+            run_control_row=readback,
+            now=_now(),
+            path=_halt_barrier_path(),
+        )
+        if _clean((halt_gate.get("barrier") or {}).get("state")) != "HOLD_CONFIRMED":
+            raise RuntimeError(
+                f"local halt barrier did not record HOLD readback: {halt_gate['reason']}"
+            )
+    except Exception as exc:
+        _send_text(
+            token=token,
+            chat_id=chat_id,
+            text=(
+                "Telegram /halt is locally barred, but Google HOLD/readback failed: "
+                f"<code>{exc}</code>. Automation remains stopped locally."
+            ),
+        )
+        return False
+    _send_text(
+        token=token,
+        chat_id=chat_id,
+        text="Telegram closeout fallback halted. Run_Control is HOLD.",
+    )
+    return True
+
+
 def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: datetime) -> None:
     normalized_text = _text_to_command(text) or text
     command = _command_name(normalized_text)
@@ -545,7 +761,6 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
                 "/delivery_status — manifest/ledger delivery counts\n"
                 "/ready — start 60s closeout debounce\n"
                 "/resume_delivery — resume incomplete delivery\n"
-                "/resend_today_ordered confirm — resend full manifest in canonical order\n"
                 "/handover_done — employee handed packages to courier; check Kaspi after 60s\n"
                 "/handover_status — compact physical courier handover state\n"
                 "/hfull — full physical handover audit table\n"
@@ -564,7 +779,7 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
         _send_text(token=token, chat_id=chat_id, text=_format_readiness(readiness))
         return
     if command == "/delivery_status":
-        state = delivery_completion_state(target_date=target_date)
+        state = _pinned_closeout_completion(target_date).get("delivery_state") or {}
         _send_text(token=token, chat_id=chat_id, text=format_delivery_completion_status(state))
         return
     if command == "/handover_status":
@@ -604,17 +819,85 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
             )
             return
         try:
-            set_run_control_ready(target_date=target_date, note="Telegram /ready fallback armed")
+            request_identity = set_run_control_ready(
+                target_date=target_date,
+                note="Telegram /ready fallback armed",
+            )
         except Exception as exc:
             _send_text(token=token, chat_id=chat_id, text=f"Telegram /ready failed to set Run_Control READY: <code>{exc}</code>")
             return
-        _arm_pending_ready(chat_id=chat_id, user_id=user_id, now=now, target_date=target_date)
+        if not request_identity:
+            request_identity = {
+                "target_date": target_date.isoformat(),
+                "ready_set_at": now.isoformat(),
+            }
+        if load_closeout_halt_barrier(_halt_barrier_path()):
+            current_row = _read_run_control_ready_identity(target_date)
+            halt_gate = evaluate_closeout_halt_barrier(
+                target_date=target_date,
+                run_control_row=current_row,
+                request_ready_set_at=_clean(request_identity.get("ready_set_at")),
+                now=now,
+                path=_halt_barrier_path(),
+            )
+            if halt_gate["blocked"]:
+                _clear_pending_ready()
+                _send_text(
+                    token=token,
+                    chat_id=chat_id,
+                    text=(
+                        "Telegram /ready blocked by the local halt barrier: "
+                        f"<code>{halt_gate['reason']}</code>. Prove HOLD first, then set a fresh READY."
+                    ),
+                )
+                return
+        _arm_pending_ready(
+            chat_id=chat_id,
+            user_id=user_id,
+            now=now,
+            target_date=target_date,
+            request_identity=request_identity,
+        )
         _send_text(token=token, chat_id=chat_id, text="Telegram /ready accepted. Waiting 60 seconds before closeout.")
         return
     if command == "/resume_delivery":
-        state = delivery_completion_state(target_date=target_date)
-        if state.get("completed"):
+        completion = _pinned_closeout_completion(target_date)
+        state = completion.get("delivery_state") or {}
+        if completion.get("completed"):
             _send_text(token=token, chat_id=chat_id, text=format_delivery_completion_status(state) + "\nDelivery is already complete.")
+            return
+        current_identity = dict(completion.get("request_identity") or {})
+        pinned_manifest_path = _clean(state.get("manifest_path"))
+        delivery_status = _clean(state.get("status")).upper()
+        ready_set_at = _clean(current_identity.get("ready_set_at"))
+        current_row = dict(completion.get("row") or {}) or {
+            "target_date": _clean(current_identity.get("target_date")),
+            "ready_set_at": ready_set_at,
+            "ready_for_closeout": "READY",
+        }
+        halt_gate = evaluate_closeout_halt_barrier(
+            target_date=target_date,
+            run_control_row=current_row,
+            request_ready_set_at=ready_set_at,
+            now=now,
+            path=_halt_barrier_path(),
+        )
+        if (
+            not pinned_manifest_path
+            or not ready_set_at
+            or not bool(completion.get("delivery_resume_safe", True))
+            or halt_gate["blocked"]
+            or delivery_status.startswith(("CHECKPOINT_", "PINNED_"))
+        ):
+            _send_text(
+                token=token,
+                chat_id=chat_id,
+                text=(
+                    "Telegram /resume_delivery blocked: no valid checkpoint-pinned "
+                    "partial batch or active halt barrier "
+                    f"(<code>{delivery_status or halt_gate['reason'] or 'UNPINNED'}</code>)."
+                ),
+            )
             return
         readiness = build_waybill_control_readiness(target_date=target_date)
         green, status, blockers = _ready_gate(readiness)
@@ -630,7 +913,14 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
         env.setdefault("TERM", "dumb")
         env.setdefault("PYTHONUNBUFFERED", "1")
         result = subprocess.run(
-            [sys.executable, str(CLOSEOUT_SCHEDULER_PATH), "--resume"],
+            [
+                sys.executable,
+                str(CLOSEOUT_SCHEDULER_PATH),
+                "--expected-target-date",
+                target_date.isoformat(),
+                "--expected-ready-set-at",
+                ready_set_at,
+            ],
             cwd=str(PROJECT_ROOT),
             env=env,
         )
@@ -638,44 +928,10 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
             _send_text(token=token, chat_id=chat_id, text=f"Delivery resume failed with rc=<code>{result.returncode}</code>.")
         return
     if command == "/resend_today_ordered":
-        if not args or args[0].casefold() != "confirm":
-            _send_text(
-                token=token,
-                chat_id=chat_id,
-                text=(
-                    "Ordered full resend is live and can duplicate documents. "
-                    "Use <code>/resend_today_ordered confirm</code> only after checking the current batch."
-                ),
-            )
-            return
-        _send_text(token=token, chat_id=chat_id, text="Telegram ordered full resend started. Locking batch and sending in manifest order.")
-        result = run_ordered_full_resend(expected_target_date=target_date)
-        proof = dict(result.get("ordered_resend_proof") or {})
-        if result.get("ok") and proof.get("ok"):
-            sent = int(result.get("confirmed_total") or result.get("sent") or 0)
-            total = int(result.get("total") or proof.get("expected_count") or 0)
-            msg_min = proof.get("message_id_min")
-            msg_max = proof.get("message_id_max")
-            _send_text(
-                token=token,
-                chat_id=chat_id,
-                text=(
-                    "Telegram ordered resend complete.\n"
-                    f"Bundles: <code>{sent}/{total}</code>\n"
-                    f"Message IDs: <code>{msg_min}..{msg_max}</code>\n"
-                    f"Sequence match: <code>{bool(proof.get('sequence_match'))}</code>"
-                ),
-            )
-            return
-        issues = proof.get("issues") or result.get("errors") or []
         _send_text(
             token=token,
             chat_id=chat_id,
-            text=(
-                "Telegram ordered resend failed or sequence proof failed.\n"
-                f"Reason: <code>{result.get('halt_reason') or result.get('error') or 'unknown'}</code>\n"
-                f"Issues: <code>{json.dumps(issues, ensure_ascii=False)[:1200]}</code>"
-            ),
+            text="Ordered full resend is permanently disabled. Use pinned-ledger resume; confirmed PDFs are immutable.",
         )
         return
     if command == "/returns_ack_store":
@@ -735,7 +991,24 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
         )
         return
     if command == "/final_table":
-        result = send_final_status_table(expected_target_date=target_date)
+        completion = _pinned_closeout_completion(target_date)
+        delivery_state = dict(completion.get("delivery_state") or {})
+        pinned_manifest_path = _clean(delivery_state.get("manifest_path"))
+        delivery_status = _clean(delivery_state.get("status")).upper()
+        if not pinned_manifest_path or delivery_status.startswith(("CHECKPOINT_", "PINNED_")):
+            _send_text(
+                token=token,
+                chat_id=chat_id,
+                text=(
+                    "Telegram final table blocked: no checkpoint-pinned manifest for "
+                    f"this READY request (<code>{delivery_state.get('status')}</code>)."
+                ),
+            )
+            return
+        result = send_final_status_table(
+            expected_target_date=target_date,
+            manifest_path=Path(pinned_manifest_path),
+        )
         if result.get("final_status_sent"):
             _send_text(
                 token=token,
@@ -751,13 +1024,12 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
             _send_text(token=token, chat_id=chat_id, text=f"Telegram final table failed: <code>{result.get('error')}</code>")
         return
     if command == "/halt":
-        _clear_pending_ready()
-        try:
-            set_run_control_hold(target_date=target_date)
-        except Exception as exc:
-            _send_text(token=token, chat_id=chat_id, text=f"Telegram /halt cleared pending state, but HOLD write failed: <code>{exc}</code>")
-            return
-        _send_text(token=token, chat_id=chat_id, text="Telegram closeout fallback halted. Run_Control is HOLD.")
+        _handle_halt_command(
+            chat_id=chat_id,
+            token=token,
+            target_date=target_date,
+            halt_request_key=f"direct:{chat_id}:{now.isoformat()}",
+        )
 
 
 def poll_once(*, now: datetime | None = None) -> int:
@@ -771,36 +1043,78 @@ def poll_once(*, now: datetime | None = None) -> int:
     token = config["token"]
     chat_id = str(config["chat_id"])
     local_now = now or _now()
-    pending_rc = _process_pending_ready(token=token, now=local_now)
-    if pending_rc != 0:
-        return pending_rc
-    handover_rc = _process_pending_handover(token=token, now=local_now, default_chat_id=chat_id)
-    if handover_rc != 0:
-        return handover_rc
-
     allowed_users = _allowed_user_ids()
-    offset = _load_offset()
-    updates = _get_updates(token, offset)
-    max_update_id = None
+    try:
+        offset = _load_offset()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    updates = sorted(
+        _get_updates(token, offset),
+        key=lambda item: int(item.get("update_id") or 0),
+    )
+    if _needs_backlog_baseline(offset) and not updates:
+        # Establish a durable empty baseline. When updates do exist, process
+        # them through the timestamp/chat/allowlist gates below so a genuinely
+        # fresh owner /halt is never discarded merely because state was reset.
+        _save_offset(0)
+        return 0
     for update in updates:
         update_id = update.get("update_id")
-        if update_id is not None:
-            max_update_id = max(int(update_id), int(max_update_id or update_id))
         message = update.get("message") or update.get("edited_message") or {}
         text = str(message.get("text") or "")
         if not _text_to_command(text):
+            if update_id is not None:
+                _save_offset(int(update_id) + 1)
+            continue
+        if not _command_message_is_fresh(message, now=local_now):
+            if update_id is not None:
+                _save_offset(int(update_id) + 1)
             continue
         message_chat_id = str((message.get("chat") or {}).get("id") or "")
         user_id = str((message.get("from") or {}).get("id") or "")
         if message_chat_id != chat_id:
+            if update_id is not None:
+                _save_offset(int(update_id) + 1)
             continue
         if not allowed_users or user_id not in allowed_users:
+            if update_id is not None:
+                _save_offset(int(update_id) + 1)
             _send_text(token=token, chat_id=message_chat_id, text="Waybill bot command denied.")
             continue
+        command = _command_name(_text_to_command(text) or text)
+        if command == "/halt":
+            committed = _handle_halt_command(
+                chat_id=message_chat_id,
+                token=token,
+                target_date=local_now.astimezone(ALMATY_TZ).date(),
+                halt_request_key=f"telegram_update:{update_id}",
+            )
+            if not committed:
+                # Do not acknowledge the update and do not run pending timers.
+                # A later poll safely replays this idempotent stop command.
+                return 1
+            if update_id is not None:
+                _save_offset(int(update_id) + 1)
+            continue
+        # Other commands are at-most-once: save their update before any
+        # external or control-state side effect. Reissue is safer than replay.
+        if update_id is not None:
+            _save_offset(int(update_id) + 1)
         _handle_command(text=text, chat_id=message_chat_id, user_id=user_id, token=token, now=local_now)
 
-    if max_update_id is not None:
-        _save_offset(max_update_id + 1)
+    # Queued /halt and /ready commands are now applied before due timers. This
+    # prevents an owner halt sitting in getUpdates from racing a closeout launch.
+    pending_rc = _process_pending_ready(token=token, now=local_now)
+    if pending_rc != 0:
+        return pending_rc
+    handover_rc = _process_pending_handover(
+        token=token,
+        now=local_now,
+        default_chat_id=chat_id,
+    )
+    if handover_rc != 0:
+        return handover_rc
     return 0
 
 

@@ -84,7 +84,7 @@ def test_publish_scheduler_child_processes_receive_default_daily_ledger(monkeypa
     )
     monkeypatch.setattr(
         publish_scheduler_mod,
-        "write_source_snapshot",
+        "load_committed_source_snapshot",
         lambda **_kwargs: {"path": str(tmp_path / "source_snapshot.json")},
     )
     monkeypatch.setattr(
@@ -112,29 +112,34 @@ def test_publish_scheduler_child_processes_receive_default_daily_ledger(monkeypa
 
 
 def test_kaspi_import_scheduler_child_processes_receive_default_daily_ledger(monkeypatch, tmp_path) -> None:
-    command_path = tmp_path / "run_full_import.command"
-    db_check_path = tmp_path / "check_local_app_db.py"
-    command_path.write_text("#!/bin/bash\n", encoding="utf-8")
-    db_check_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    source_refresh_path = tmp_path / "run_google_ops_board_publish_scheduler.py"
+    source_refresh_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
     child_envs: list[dict[str, str]] = []
+    child_commands: list[list[str]] = []
 
     monkeypatch.delenv("KASPI_API_CALL_LEDGER_PATH", raising=False)
     monkeypatch.delenv("KASPI_API_CALL_LEDGER", raising=False)
     monkeypatch.setattr(import_scheduler_mod, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(import_scheduler_mod, "COMMAND_PATH", command_path)
-    monkeypatch.setattr(import_scheduler_mod, "DB_CHECK_PATH", db_check_path)
+    monkeypatch.setattr(import_scheduler_mod, "SOURCE_REFRESH_PATH", source_refresh_path)
     monkeypatch.setattr(import_scheduler_mod, "today_almaty", lambda: date(2026, 4, 22))
     monkeypatch.setattr(
         import_scheduler_mod.subprocess,
         "run",
-        lambda command, cwd, env: child_envs.append(dict(env)) or _Result(),
+        lambda command, cwd, env: (
+            child_commands.append(list(command)),
+            child_envs.append(dict(env)),
+            _Result(),
+        )[-1],
     )
 
     rc = import_scheduler_mod.main()
 
     expected = str(tmp_path / "runtime" / "api_ledger" / "kaspi_api_2026-04-22.jsonl")
     assert rc == 0
-    assert len(child_envs) == 2
+    assert child_commands == [
+        [import_scheduler_mod.sys.executable, str(source_refresh_path), "--force-source-refresh"]
+    ]
+    assert len(child_envs) == 1
     assert all(child_env["KASPI_API_CALL_LEDGER_PATH"] == expected for child_env in child_envs)
 
 
@@ -164,6 +169,25 @@ def test_closeout_scheduler_child_processes_receive_default_daily_ledger(monkeyp
     monkeypatch.setattr(closeout_scheduler_mod, "resolve_service_account_json", lambda **_kwargs: creds_path)
     monkeypatch.setattr(closeout_scheduler_mod, "resolve_spreadsheet_id", lambda *_args, **_kwargs: "sheet-id")
     monkeypatch.setattr(closeout_scheduler_mod, "_closeout_already_completed", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        closeout_scheduler_mod,
+        "evaluate_closeout_halt_barrier",
+        lambda **_kwargs: {
+            "blocked": False,
+            "reason": "NO_HALT_BARRIER",
+            "request_halted": False,
+            "barrier": {},
+        },
+    )
+    monkeypatch.setattr(
+        closeout_scheduler_mod,
+        "_current_ready_identity",
+        lambda **_kwargs: {
+            "target_date": "2026-04-22",
+            "ready_set_at": "2026-04-22T17:10:00+05:00",
+            "ready_for_closeout": "READY",
+        },
+    )
     monkeypatch.setattr(closeout_scheduler_mod, "GoogleOpsBoardAutomationLock", _FakeLock)
     monkeypatch.setattr(
         closeout_scheduler_mod.subprocess,
@@ -171,7 +195,14 @@ def test_closeout_scheduler_child_processes_receive_default_daily_ledger(monkeyp
         lambda command, cwd, env: child_envs.append(dict(env)) or _Result(),
     )
 
-    rc = closeout_scheduler_mod.main()
+    rc = closeout_scheduler_mod.main(
+        [
+            "--expected-target-date",
+            "2026-04-22",
+            "--expected-ready-set-at",
+            "2026-04-22T17:10:00+05:00",
+        ]
+    )
 
     expected = str(tmp_path / "runtime" / "api_ledger" / "kaspi_api_2026-04-22.jsonl")
     assert rc == 0
@@ -185,9 +216,11 @@ def test_prewindow_health_scheduler_child_process_receives_default_daily_ledger(
     script_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
     creds_path.write_text("{}", encoding="utf-8")
     child_envs: list[dict[str, str]] = []
+    child_commands: list[list[str]] = []
 
     monkeypatch.delenv("KASPI_API_CALL_LEDGER_PATH", raising=False)
     monkeypatch.delenv("KASPI_API_CALL_LEDGER", raising=False)
+    monkeypatch.delenv("ENABLE_KASPI_WORKBOOK_MAP_SYNC", raising=False)
     monkeypatch.setenv("AB_GOOGLE_SERVICE_ACCOUNT_JSON", str(creds_path))
     monkeypatch.setenv("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID", "sheet-id")
     monkeypatch.setattr(prewindow_scheduler_mod, "PROJECT_ROOT", tmp_path)
@@ -196,7 +229,11 @@ def test_prewindow_health_scheduler_child_process_receives_default_daily_ledger(
     monkeypatch.setattr(
         prewindow_scheduler_mod.subprocess,
         "run",
-        lambda command, cwd, env: child_envs.append(dict(env)) or _Result(),
+        lambda command, cwd, env: (
+            child_commands.append(list(command)),
+            child_envs.append(dict(env)),
+            _Result(),
+        )[-1],
     )
 
     rc = prewindow_scheduler_mod.main()
@@ -205,3 +242,6 @@ def test_prewindow_health_scheduler_child_process_receives_default_daily_ledger(
     assert rc == 0
     assert len(child_envs) == 1
     assert child_envs[0]["KASPI_API_CALL_LEDGER_PATH"] == expected
+    assert "ENABLE_KASPI_WORKBOOK_MAP_SYNC" not in child_envs[0]
+    assert child_commands[0][2:4] == ["--profile", "closeout"]
+    assert "--apply" not in child_commands[0]

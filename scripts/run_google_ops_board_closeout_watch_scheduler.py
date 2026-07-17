@@ -7,10 +7,10 @@ import os
 import json
 import subprocess
 import sys
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
-PROJECT_ROOT = Path("~/Docs/Autonomous_business")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -22,6 +22,9 @@ from core.integrations.google_ops_board import (  # noqa: E402
     resolve_service_account_json,
     resolve_spreadsheet_id,
 )
+from core.ops.fitpack_coordination import load_storeb_packing_excluded  # noqa: E402
+from core.ops.waybill_shipping_obligations import normalize_store_code  # noqa: E402
+from core.stores.roster import load_sync_enabled_kaspi_store_codes  # noqa: E402
 from core.utils.sku_normalize import normalize_size  # noqa: E402
 from scripts.google_ops_board_automation_common import (  # noqa: E402
     DEFAULT_READY_DEBOUNCE_STATE_PATH,
@@ -31,10 +34,12 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     closeout_completion_state,
     evaluate_ready_debounce,
     ensure_kaspi_api_call_ledger_env,
+    evaluate_closeout_halt_barrier,
     load_ready_debounce_state,
     now_almaty,
     save_json_file,
     save_ready_debounce_state,
+    select_run_control_row,
     today_almaty,
     within_early_closeout_watch_window,
 )
@@ -47,8 +52,8 @@ READY_DEBOUNCE_STATE_PATH = DEFAULT_READY_DEBOUNCE_STATE_PATH
 AUTO_PROBABLE_AUDIT_ROOT = PROJECT_ROOT / "exports" / "google_ops_board" / "auto_probable_fill"
 IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
 AUTO_READY_SET_BY = "AUTO_CLOSEOUT_1857"
-FORCE_FRESH_ENV = "AB_GOOGLE_OPS_BOARD_FORCE_FRESH_CLOSEOUT"
 AUTO_PROBABLE_FILL_ENV = "AB_GOOGLE_OPS_BOARD_ALLOW_AUTO_PROBABLE_FILL"
+WATCH_READY_SET_BY = "READY_WATCHER"
 
 
 def _in_watch_window() -> bool:
@@ -73,6 +78,23 @@ def _append_note(existing_note: object, extra_note: str) -> str:
     if extra_note in current:
         return current
     return f"{current} | {extra_note}"
+
+
+def _auto_fill_row_is_in_scope(
+    row: dict[str, object],
+    *,
+    target_date: date,
+    enabled_store_codes: set[str],
+) -> bool:
+    if normalize_store_code(row.get("STORE_NAME")) not in enabled_store_codes:
+        return False
+    if _clean(row.get("Status")).upper() not in {"TODAY", "OVERDUE"}:
+        return False
+    try:
+        row_date = date.fromisoformat(_clean(row.get("Date")))
+    except ValueError:
+        return False
+    return row_date <= target_date
 
 
 def _blocker_order_ids(rows: list[dict[str, object]]) -> list[str]:
@@ -107,6 +129,43 @@ def _recoverable_block_status(readiness: dict[str, object]) -> tuple[str, str]:
     return "BLOCKED_READY_GATE", "BLOCKED_READY_GATE: Run_Control READY is set but closeout gate is not green"
 
 
+def _revalidate_watch_mutation(
+    *,
+    client: GoogleOpsBoardClient,
+    contract,
+    target_date: date,
+    now,
+    allow_fresh_blank_ready: bool = False,
+) -> tuple[bool, dict[str, object], dict[str, object]]:
+    """Re-read the local halt barrier immediately before a watcher side effect."""
+    headers = contract.tabs["Run_Control"].headers
+    rows = extract_rows_with_positions_from_matrix(
+        headers,
+        client.get_tab_values("Run_Control"),
+    )
+    selected = next(
+        (
+            item
+            for item in rows
+            if _clean(item["row"].get("target_date")) == target_date.isoformat()
+        ),
+        None,
+    )
+    if selected is None:
+        return False, {}, {"blocked": True, "reason": "RUN_CONTROL_TARGET_MISSING"}
+    row = dict(selected["row"])
+    gate = evaluate_closeout_halt_barrier(
+        target_date=target_date,
+        run_control_row=row,
+        request_ready_set_at=_clean(row.get("ready_set_at")),
+        now=now,
+    )
+    allowed = not bool(gate.get("blocked"))
+    if allow_fresh_blank_ready and gate.get("allow_fresh_blank_ready"):
+        allowed = True
+    return allowed, {**selected, "row": row}, gate
+
+
 def _mark_recoverable_ready_block(
     *,
     client: GoogleOpsBoardClient,
@@ -127,11 +186,17 @@ def _mark_recoverable_ready_block(
         if _clean(row_info["row"].get("target_date")) == target_iso:
             selected = row_info
             break
-    if selected is None and rows_with_positions:
-        selected = rows_with_positions[0]
     if selected is None:
         return
 
+    allowed, selected, gate = _revalidate_watch_mutation(
+        client=client,
+        contract=contract,
+        target_date=target_date,
+        now=now,
+    )
+    if not allowed:
+        return
     row = dict(selected["row"])
     updated_notes = _append_note(row.get("notes"), note)
     if _clean(row.get("last_orchestrator_status")) == status and _clean(row.get("notes")) == updated_notes:
@@ -144,6 +209,56 @@ def _mark_recoverable_ready_block(
         headers,
         [{"sheet_row": int(selected["sheet_row"]), "row": row}],
     )
+
+
+def _stamp_blank_ready_identity(
+    *,
+    client: GoogleOpsBoardClient,
+    contract,
+    target_date,
+    now,
+) -> dict[str, object]:
+    headers = contract.tabs["Run_Control"].headers
+    rows = extract_rows_with_positions_from_matrix(headers, client.get_tab_values("Run_Control"))
+    selected = next(
+        (
+            item
+            for item in rows
+            if _clean(item["row"].get("target_date")) == target_date.isoformat()
+        ),
+        None,
+    )
+    if selected is None:
+        return {}
+    row = dict(selected["row"])
+    if _clean(row.get("ready_for_closeout")).upper() != "READY":
+        return row
+    if _clean(row.get("ready_set_at")):
+        return row
+    allowed, selected, gate = _revalidate_watch_mutation(
+        client=client,
+        contract=contract,
+        target_date=target_date,
+        now=now,
+        allow_fresh_blank_ready=True,
+    )
+    if not allowed:
+        row["_halt_barrier_blocked"] = _clean(gate.get("reason"))
+        return row
+    row = dict(selected["row"])
+    if _clean(row.get("ready_for_closeout")).upper() != "READY":
+        return row
+    if _clean(row.get("ready_set_at")):
+        return row
+    row["ready_set_at"] = now.isoformat()
+    if not _clean(row.get("ready_set_by")):
+        row["ready_set_by"] = WATCH_READY_SET_BY
+    client.update_tab_rows(
+        "Run_Control",
+        headers,
+        [{"sheet_row": int(selected["sheet_row"]), "row": row}],
+    )
+    return row
 
 
 def _derive_auto_fill_size(*, row: dict[str, object], db_row: dict[str, object], db_path: Path) -> tuple[str, str]:
@@ -216,13 +331,54 @@ def _maybe_auto_prepare_closeout(
         client.get_tab_values("Run_Control"),
     )
 
-    start_date = target_date - timedelta(days=max(lookback_days - 1, 0))
-    db_rows = load_db_rows_for_writeback(db_path, start_date, target_date)
+    target_iso = target_date.isoformat()
+    run_control_selected = next(
+        (
+            row_info
+            for row_info in run_control_rows_with_positions
+            if _clean(row_info["row"].get("target_date")) == target_iso
+        ),
+        None,
+    )
+    if run_control_selected is None:
+        return {
+            "cutoff_reached": True,
+            "target_date_match": False,
+            "salesraw_updates_applied": 0,
+            "applied_rows": [],
+            "audit_path": "",
+            "run_control_updated": False,
+            "blank_rows_remaining": [],
+            "blocked_reason": "Run_Control has no exact target-date row; no Sheet write performed",
+        }
+
+    enabled_store_codes = {
+        normalize_store_code(value) for value in load_sync_enabled_kaspi_store_codes()
+    }
+    if load_storeb_packing_excluded(warn=lambda _message: None):
+        enabled_store_codes.discard("STOREB")
+    scoped_salesraw_rows = [
+        row_info
+        for row_info in salesraw_rows_with_positions
+        if _auto_fill_row_is_in_scope(
+            dict(row_info["row"]),
+            target_date=target_date,
+            enabled_store_codes=enabled_store_codes,
+        )
+    ]
+    out_of_scope_row_count = len(salesraw_rows_with_positions) - len(scoped_salesraw_rows)
+
+    visible_db_row_ids = {
+        _clean(row_info["row"].get("_db_row_id"))
+        for row_info in scoped_salesraw_rows
+        if _clean(row_info["row"].get("_db_row_id"))
+    }
+    db_rows = load_db_rows_for_writeback(db_path, visible_db_row_ids)
 
     salesraw_updates: list[dict[str, object]] = []
     unresolved_rows: list[dict[str, object]] = []
     applied_rows: list[dict[str, str]] = []
-    for row_info in salesraw_rows_with_positions:
+    for row_info in scoped_salesraw_rows:
         row = dict(row_info["row"])
         if _clean(row.get("MY_SIZE")):
             continue
@@ -252,19 +408,51 @@ def _maybe_auto_prepare_closeout(
         )
 
     if salesraw_updates:
+        allowed, _, gate = _revalidate_watch_mutation(
+            client=client,
+            contract=contract,
+            target_date=target_date,
+            now=now,
+        )
+        if not allowed:
+            return {
+                "cutoff_reached": True,
+                "salesraw_updates_applied": 0,
+                "applied_rows": [],
+                "audit_path": "",
+                "run_control_updated": False,
+                "blank_rows_remaining": unresolved_rows,
+                "out_of_scope_rows_skipped": out_of_scope_row_count,
+                "blocked_reason": f"local_halt_barrier:{_clean(gate.get('reason'))}",
+            }
         client.update_tab_rows("SalesRaw_Today", salesraw_headers, salesraw_updates)
 
-    run_control_selected = None
-    target_iso = target_date.isoformat()
-    for row_info in run_control_rows_with_positions:
-        if _clean(row_info["row"].get("target_date")) == target_iso:
-            run_control_selected = row_info
-            break
-    if run_control_selected is None and run_control_rows_with_positions:
-        run_control_selected = run_control_rows_with_positions[0]
-
     run_control_updated = False
-    if run_control_selected is not None and not unresolved_rows:
+    if not unresolved_rows:
+        allowed, current_run_control, gate = _revalidate_watch_mutation(
+            client=client,
+            contract=contract,
+            target_date=target_date,
+            now=now,
+        )
+        if not allowed:
+            audit_path = _write_auto_probable_audit(
+                target_date=target_date,
+                now=now,
+                applied_rows=applied_rows if salesraw_updates else [],
+                unresolved_rows=unresolved_rows,
+            )
+            return {
+                "cutoff_reached": True,
+                "salesraw_updates_applied": len(salesraw_updates),
+                "applied_rows": applied_rows,
+                "audit_path": str(audit_path) if audit_path else "",
+                "run_control_updated": False,
+                "blank_rows_remaining": unresolved_rows,
+                "out_of_scope_rows_skipped": out_of_scope_row_count,
+                "blocked_reason": f"local_halt_barrier:{_clean(gate.get('reason'))}",
+            }
+        run_control_selected = current_run_control
         run_control_row = dict(run_control_selected["row"])
         ready_value = _clean(run_control_row.get("ready_for_closeout")).upper()
         note_bits: list[str] = []
@@ -297,6 +485,7 @@ def _maybe_auto_prepare_closeout(
         "audit_path": str(audit_path) if audit_path else "",
         "run_control_updated": run_control_updated,
         "blank_rows_remaining": unresolved_rows,
+        "out_of_scope_rows_skipped": out_of_scope_row_count,
     }
 
 
@@ -332,21 +521,98 @@ def main() -> int:
     if env.get("KASPI_API_CALL_LEDGER_PATH"):
         os.environ.setdefault("KASPI_API_CALL_LEDGER_PATH", env["KASPI_API_CALL_LEDGER_PATH"])
 
-    completion = closeout_completion_state(client=client, contract=contract, target_date=target_date)
-    if completion["completed"]:
-        ready_value = _clean((completion.get("row") or {}).get("ready_for_closeout")).upper()
-        if ready_value != "READY":
-            clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
-            run_id = completion["run_id"] or "unknown"
-            print(
-                f"Google Ops Board early-closeout watch: closeout already completed for {completion['target_date']} "
-                f"(run_id={run_id}); skipping.",
-            )
-            return 0
+    # HOLD is the dominant steady state. Keep it intentionally cheap: one
+    # target-date Run_Control read and no SalesRaw, DB, manifest, ledger, or
+    # subprocess work. The explicitly enabled 18:57 probable-size fallback is
+    # the only reason to continue from HOLD into full readiness evaluation.
+    fast_row = select_run_control_row(client=client, contract=contract, target_date=target_date)
+    fast_ready_value = _clean((fast_row or {}).get("ready_for_closeout")).upper()
+    fallback_due = bool(
+        auto_probable_fill_enabled
+        and auto_probable_closeout_cutoff_reached(now_almaty())
+    )
+    if fast_row is None:
+        clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
         print(
-            "Google Ops Board early-closeout watch: completed delivery exists but Run_Control is READY; "
-            "treating this as a fresh operator request."
+            "ERROR: Google Ops Board early-closeout watch: target-date "
+            "Run_Control row is missing; fail-closed lightweight poll stopped.",
+            file=sys.stderr,
         )
+        return 1
+    if fast_row is not None and fast_ready_value != "READY" and not fallback_due:
+        clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
+        print("Google Ops Board early-closeout watch: Run_Control is HOLD; lightweight poll complete.")
+        return 0
+
+    completion = closeout_completion_state(client=client, contract=contract, target_date=target_date)
+    completion_row = dict(completion.get("row") or {})
+    barrier_now = now_almaty()
+    halt_gate = evaluate_closeout_halt_barrier(
+        target_date=target_date,
+        run_control_row=completion_row,
+        request_ready_set_at=_clean(completion_row.get("ready_set_at")),
+        now=barrier_now,
+    )
+    if halt_gate.get("allow_fresh_blank_ready"):
+        _stamp_blank_ready_identity(
+            client=client,
+            contract=contract,
+            target_date=target_date,
+            now=barrier_now,
+        )
+        completion = closeout_completion_state(
+            client=client,
+            contract=contract,
+            target_date=target_date,
+        )
+        completion_row = dict(completion.get("row") or {})
+        halt_gate = evaluate_closeout_halt_barrier(
+            target_date=target_date,
+            run_control_row=completion_row,
+            request_ready_set_at=_clean(completion_row.get("ready_set_at")),
+            now=barrier_now,
+        )
+    if halt_gate["blocked"]:
+        clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
+        print(
+            "Google Ops Board early-closeout watch: local halt barrier blocks "
+            f"READY processing ({halt_gate['reason']})."
+        )
+        return 0
+    if (
+        _clean(completion_row.get("ready_for_closeout")).upper() == "READY"
+        and not _clean(completion_row.get("ready_set_at"))
+    ):
+        if (
+            int(completion.get("delivery_manifest_count") or 0) > 0
+            or _clean(completion.get("run_id"))
+            or _clean(completion.get("status")).upper() == "OK"
+        ):
+            print(
+                "ERROR: READY has no ready_set_at but prior closeout/delivery evidence exists; "
+                "refusing to invent an ambiguous request identity.",
+                file=sys.stderr,
+            )
+            return 1
+        _stamp_blank_ready_identity(
+            client=client,
+            contract=contract,
+            target_date=target_date,
+            now=now_almaty(),
+        )
+        completion = closeout_completion_state(
+            client=client,
+            contract=contract,
+            target_date=target_date,
+        )
+    if completion["completed"]:
+        clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
+        run_id = completion["run_id"] or "unknown"
+        print(
+            f"Google Ops Board early-closeout watch: exact Ready request already completed for "
+            f"{completion['target_date']} (run_id={run_id}); skipping."
+        )
+        return 0
     if completion["status"] == "OK":
         print(
             "Google Ops Board early-closeout watch: Run_Control is OK but delivery is incomplete "
@@ -417,20 +683,57 @@ def main() -> int:
         )
         return 0
 
-    if cutoff_reached:
+    auto_fallback_just_prepared = bool(
+        auto_prepare["salesraw_updates_applied"] or auto_prepare["run_control_updated"]
+    )
+    if cutoff_reached and auto_fallback_just_prepared:
         clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
-        if auto_prepare["salesraw_updates_applied"] or auto_prepare["run_control_updated"]:
+        print(
+            "Google Ops Board early-closeout watch: 18:57 fallback is green; "
+            "triggering closeout immediately."
+        )
+        fresh_readiness = build_readiness_report(
+            client=client,
+            contract=contract,
+            db_path=DB_PATH,
+            target_date=target_date,
+            lookback_days=5,
+        )
+        if (
+            not fresh_readiness["ready"]
+            or _clean(fresh_readiness.get("ready_set_at"))
+            != _clean(readiness.get("ready_set_at"))
+        ):
             print(
-                "Google Ops Board early-closeout watch: 18:57 fallback is green; "
-                "triggering closeout immediately."
+                "Google Ops Board early-closeout watch: READY identity changed before launch; "
+                "deferring to a fresh scheduler pass."
             )
-        else:
+            return 0
+        launch_allowed, _, launch_gate = _revalidate_watch_mutation(
+            client=client,
+            contract=contract,
+            target_date=target_date,
+            now=now_almaty(),
+        )
+        if not launch_allowed:
+            clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
             print(
-                "Google Ops Board early-closeout watch: after 18:57 the board is green; "
-                "triggering closeout immediately."
+                "Google Ops Board early-closeout watch: local halt barrier appeared "
+                f"before launch ({_clean(launch_gate.get('reason'))}); skipping."
             )
-        env[FORCE_FRESH_ENV] = "1"
-        result = subprocess.run([sys.executable, str(SCRIPT_PATH), "--resume"], cwd=str(PROJECT_ROOT), env=env)
+            return 0
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--expected-target-date",
+                target_date.isoformat(),
+                "--expected-ready-set-at",
+                _clean(fresh_readiness.get("ready_set_at")),
+            ],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
         return int(result.returncode)
 
     debounce = evaluate_ready_debounce(
@@ -438,6 +741,7 @@ def main() -> int:
         target_date=target_date,
         now=local_now,
         ready=True,
+        ready_set_at=_clean(readiness.get("ready_set_at")),
         debounce_seconds=READY_DEBOUNCE_SECONDS,
     )
     action = str(debounce["action"])
@@ -456,9 +760,50 @@ def main() -> int:
         )
         return 0
 
+    fresh_readiness = build_readiness_report(
+        client=client,
+        contract=contract,
+        db_path=DB_PATH,
+        target_date=target_date,
+        lookback_days=5,
+    )
+    if (
+        not fresh_readiness["ready"]
+        or _clean(fresh_readiness.get("ready_set_at"))
+        != _clean(readiness.get("ready_set_at"))
+    ):
+        clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
+        print(
+            "Google Ops Board early-closeout watch: READY identity changed before launch; "
+            "arming the fresh request on the next pass."
+        )
+        return 0
     print("Google Ops Board early-closeout watch: board is READY; triggering closeout immediately.")
-    env[FORCE_FRESH_ENV] = "1"
-    result = subprocess.run([sys.executable, str(SCRIPT_PATH), "--resume"], cwd=str(PROJECT_ROOT), env=env)
+    launch_allowed, _, launch_gate = _revalidate_watch_mutation(
+        client=client,
+        contract=contract,
+        target_date=target_date,
+        now=now_almaty(),
+    )
+    if not launch_allowed:
+        clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
+        print(
+            "Google Ops Board early-closeout watch: local halt barrier appeared "
+            f"before launch ({_clean(launch_gate.get('reason'))}); skipping."
+        )
+        return 0
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--expected-target-date",
+            target_date.isoformat(),
+            "--expected-ready-set-at",
+            _clean(fresh_readiness.get("ready_set_at")),
+        ],
+        cwd=str(PROJECT_ROOT),
+        env=env,
+    )
     clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
     return int(result.returncode)
 

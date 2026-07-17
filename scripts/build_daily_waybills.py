@@ -71,10 +71,22 @@ from core.ops.crm_operational_view import (
     select_operational_crm_rows,
     select_operational_crm_rows_with_targeted_fallback,
 )
-from core.ops.waybill_send_batch import SEND_LEDGER_FILE, initialize_send_ledger
+from core.ops.waybill_send_batch import (
+    AUTONOMOUS_MANIFEST_SCHEMA_VERSION,
+    SEND_LEDGER_FILE,
+    compute_manifest_batch_hash,
+    initialize_send_ledger,
+)
 from core.ops.waybill_overdue_carryforward import (
     get_overdue_waybill_ready_order_ids_from_db,
 )
+from core.ops.waybill_shipping_obligations import (
+    load_required_orders_file,
+    normalize_store_code,
+    required_line_scope_hash,
+)
+from core.ops.waybill_pdf_provenance import validate_waybill_pdf_provenance
+from core.ops.waybill_package_count import HEAVY_ITEMS
 from core.paths import data_path, get_data_root
 from core.utils.kaspi_dates import parse_kaspi_date
 from core.waybill.pdf_grouper import _extract_name_core as extract_name_core
@@ -173,18 +185,6 @@ def _is_legacy_db_ready_for_waybill(row: Any) -> bool:
 
 # Reverse mapping for lookup
 STORE_NAME_TO_CODE = {v: k for k, v in STORE_MAP.items()}
-
-# Heavy items (always separate package)
-HEAVY_ITEMS = {
-    'Костюм_мужской_Хус',
-    'Line51',
-    'Принт_5в1_черный',
-    'Костюм_Ромбик_ДЕТСКИЙ',
-    'Спортивный_3в1_детский_черный',
-    'CL_NEW-CLO2_MEN_SUIT-61_BLACK',
-    'CL_NEW-CLO2_MEN_SUIT-51_BLACK_GREY',
-    'CL_NK_MEN_LINE51_WHITE',
-}
 
 # Size sort order
 SIZE_ORDER = {
@@ -598,6 +598,7 @@ def read_db_orders(
 
         query = """
             SELECT
+                rowid AS id,
                 order_id,
                 store_code,
                 kaspi_offer_name,
@@ -619,10 +620,13 @@ def read_db_orders(
             )
         """
         params: list[str] = []
-        if order_id_filter:
-            placeholders = ",".join(["?"] * len(order_id_filter))
-            query += f" AND order_id IN ({placeholders})"
-            params.extend(sorted(order_id_filter))
+        if order_id_filter is not None:
+            if order_id_filter:
+                placeholders = ",".join(["?"] * len(order_id_filter))
+                query += f" AND order_id IN ({placeholders})"
+                params.extend(sorted(order_id_filter))
+            else:
+                query += " AND 1 = 0"
         else:
             query += " AND planned_shipment_date <= ?"
             params.append(target_date.isoformat())
@@ -701,6 +705,7 @@ def read_db_orders(
             quantity=int(quantity),
             kaspi_offer_name=kaspi_offer_name,
             planned_date=planned_date,
+            source_row_id=_coerce_str(row["id"]),
             kaspi_name_core_source=resolution.source,
         )
         orders.append(item)
@@ -1069,6 +1074,10 @@ def get_crm_missing_info(
 def load_waybills_from_folder(
     waybill_folder: Path,
     order_id_filter: Optional[set[str]] = None,
+    *,
+    required_store_by_order: Optional[dict[str, str]] = None,
+    required_orders_sha256: str = "",
+    request_identity: Optional[dict[str, Any]] = None,
 ) -> dict[str, Path]:
     """
     Load waybill PDFs from a folder (downloaded via API).
@@ -1095,6 +1104,10 @@ def load_waybills_from_folder(
             order_id = match.group(1)
             if order_id_filter is not None and order_id not in order_id_filter:
                 continue
+            if required_store_by_order is not None:
+                raise RuntimeError(
+                    f"Pinned waybill source must use exact <order_id>.pdf naming: {basename}"
+                )
             waybill_map[order_id] = pdf_path
             continue
 
@@ -1107,6 +1120,23 @@ def load_waybills_from_folder(
                     and potential_order_id not in order_id_filter
                 ):
                     continue
+                if required_store_by_order is not None:
+                    expected_store = required_store_by_order.get(potential_order_id)
+                    if not expected_store:
+                        raise RuntimeError(
+                            f"Pinned waybill PDF has no required store identity: {basename}"
+                        )
+                    valid, reason, _payload = validate_waybill_pdf_provenance(
+                        pdf_path=pdf_path,
+                        expected_store_code=expected_store,
+                        expected_order_id=potential_order_id,
+                        expected_required_orders_sha256=required_orders_sha256,
+                        expected_request_identity=dict(request_identity or {}),
+                    )
+                    if not valid:
+                        raise RuntimeError(
+                            f"Pinned waybill PDF provenance rejected {basename}: {reason}"
+                        )
                 waybill_map[potential_order_id] = pdf_path
 
     logger.info(f"Loaded {len(waybill_map)} waybills from folder")
@@ -1164,6 +1194,10 @@ def load_all_waybills(
     temp_dir: Path,
     waybill_folder_name: str = "waybills",
     order_id_filter: Optional[set[str]] = None,
+    *,
+    required_store_by_order: Optional[dict[str, str]] = None,
+    required_orders_sha256: str = "",
+    request_identity: Optional[dict[str, Any]] = None,
 ) -> dict[str, Path]:
     """
     Load waybills from both folder (API downloads) and ZIP files.
@@ -1174,20 +1208,25 @@ def load_all_waybills(
     """
     waybill_map = {}
 
-    # 1. First, extract from ZIP files
-    waybill_map.update(
-        extract_waybills_from_zips(
-            waybill_dir,
-            temp_dir,
-            order_id_filter=order_id_filter,
+    # Pinned autonomous builds never backfill from legacy ZIPs: ZIP filenames
+    # do not carry exact API order/store/request provenance.
+    if required_store_by_order is None:
+        waybill_map.update(
+            extract_waybills_from_zips(
+                waybill_dir,
+                temp_dir,
+                order_id_filter=order_id_filter,
+            )
         )
-    )
 
     # 2. Then, load from waybills folder (overrides ZIP if exists)
     waybill_folder = waybill_dir / waybill_folder_name
     folder_waybills = load_waybills_from_folder(
         waybill_folder,
         order_id_filter=order_id_filter,
+        required_store_by_order=required_store_by_order,
+        required_orders_sha256=required_orders_sha256,
+        request_identity=dict(request_identity or {}),
     )
     waybill_map.update(folder_waybills)
 
@@ -1983,30 +2022,83 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _compute_batch_hash(entries: list[dict[str, Any]]) -> str:
-    digest = hashlib.sha256()
-    stable_entries = []
-    for entry in sorted(entries, key=lambda x: x["pdf_key"]):
-        stable_entries.append(
-            {
-                "pdf_key": entry["pdf_key"],
-                "relative_output_path": entry["relative_output_path"],
-                "sha256": entry["sha256"],
-                "file_size": entry["file_size"],
-                "mtime": entry["mtime"],
-                "logical_group_type": entry["logical_group_type"],
-                "order_ids": entry["order_ids"],
-                "source_row_ids": entry["source_row_ids"],
-                "product_family_key": entry.get("product_family_key", ""),
-                "color_key": entry.get("color_key", ""),
-                "product_color_key": entry.get("product_color_key", ""),
-                "size_token": entry.get("size_token", ""),
-                "size_rank": int(entry.get("size_rank", 0) or 0),
-                "send_sequence": int(entry.get("send_sequence", 0) or 0),
-            }
+def _required_order_scope_hash(required_orders: Optional[dict[str, Any]]) -> str:
+    if not required_orders:
+        return ""
+    stable = {
+        store: sorted(str(order_id) for order_id in order_ids)
+        for store, order_ids in sorted(required_orders["orders_by_store"].items())
+    }
+    return hashlib.sha256(
+        json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _required_line_from_item(item: OrderItem) -> dict[str, Any]:
+    return {
+        "db_row_id": str(item.source_row_id or "").strip(),
+        "store_code": normalize_store_code(item.store_name),
+        "order_id": str(item.order_id or "").strip(),
+        "sku_key": str(item.sku_key or "").strip(),
+        "sku_id": str(item.sku_id or "").strip(),
+        "kaspi_offer_name": str(item.kaspi_offer_name or "").strip(),
+        "kaspi_name_core": str(item.kaspi_name_core or "").strip(),
+        "quantity": int(item.quantity or 1),
+        "final_size": str(item.my_size or "").strip(),
+    }
+
+
+def validate_required_line_scope(
+    required_orders: dict[str, Any],
+    orders: list[OrderItem],
+) -> str:
+    """Prove the DB rows used for packing exactly match the READY-time size pin."""
+    if not required_orders.get("line_scope_required"):
+        return ""
+    actual_lines = [_required_line_from_item(item) for item in orders]
+    actual_hash = required_line_scope_hash(actual_lines)
+    expected_hash = str(required_orders.get("line_scope_hash") or "")
+    if actual_hash != expected_hash:
+        raise RuntimeError(
+            "Pinned required-order line/size scope drifted before bundle build: "
+            f"expected={expected_hash} actual={actual_hash}"
         )
-    digest.update(json.dumps(stable_entries, ensure_ascii=False, sort_keys=True).encode("utf-8"))
-    return digest.hexdigest()
+    return actual_hash
+
+
+def _compute_batch_hash(
+    entries: list[dict[str, Any]],
+    *,
+    request_identity: Optional[dict[str, Any]] = None,
+    expected_orders_sha256: str = "",
+    obligation_scope_hash: str = "",
+    schema_version: int = 3,
+    target_date: str = "",
+    ready_set_at: str = "",
+    line_scope_hash: str = "",
+    terminal_orders_excluded: bool = False,
+    send_order_ids: Optional[list[str]] = None,
+    overdue_order_ids: Optional[list[str]] = None,
+    missing_overdue_order_ids: Optional[list[str]] = None,
+    counts: Optional[dict[str, Any]] = None,
+) -> str:
+    return compute_manifest_batch_hash(
+        {
+            "schema_version": int(schema_version),
+            "entries": entries,
+            "target_date": target_date,
+            "ready_set_at": ready_set_at,
+            "request_identity": dict(request_identity or {}),
+            "expected_orders_sha256": str(expected_orders_sha256 or ""),
+            "obligation_scope_hash": str(obligation_scope_hash or ""),
+            "line_scope_hash": line_scope_hash,
+            "terminal_orders_excluded": bool(terminal_orders_excluded),
+            "send_order_ids": list(send_order_ids or []),
+            "overdue_order_ids": list(overdue_order_ids or []),
+            "missing_overdue_order_ids": list(missing_overdue_order_ids or []),
+            "counts": dict(counts or {}),
+        }
+    )
 
 
 def write_send_batch_manifest(
@@ -2015,6 +2107,10 @@ def write_send_batch_manifest(
     groups: list[WaybillGroup],
     target_date: date,
     expected_overdue_order_ids: Optional[set[str]] = None,
+    expected_orders_path: str = "",
+    expected_orders_sha256: str = "",
+    request_identity: Optional[dict[str, Any]] = None,
+    obligation_scope_hash: str = "",
 ) -> Path:
     """Write immutable manifest for the operator-safe SEND batch."""
     entries: list[dict[str, Any]] = []
@@ -2056,6 +2152,11 @@ def write_send_batch_manifest(
             for item in group.items
             if str(getattr(item, "source_row_id", "") or "").strip()
         ]
+        source_lines = [
+            _required_line_from_item(item)
+            for item in group.items
+            if str(getattr(item, "source_row_id", "") or "").strip()
+        ]
         sha256 = _file_sha256(output_path)
         pdf_key_seed = {
             "group_type": group.group_type,
@@ -2063,6 +2164,7 @@ def write_send_batch_manifest(
             "sha256": sha256,
             "items_detail": items_detail,
             "source_row_ids": source_row_ids,
+            "source_lines": source_lines,
         }
         pdf_key = hashlib.sha256(
             json.dumps(pdf_key_seed, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -2083,6 +2185,7 @@ def write_send_batch_manifest(
             "order_ids": order_ids,
             "order_counts_by_store": _store_order_counts(group),
             "source_row_ids": source_row_ids,
+            "source_lines": source_lines,
             "items_detail": items_detail,
             "core_resolution_sources": core_resolution_sources,
             "unsafe_core_resolution_sources": unsafe_core_resolution_sources,
@@ -2095,9 +2198,14 @@ def write_send_batch_manifest(
     _assign_send_sequence(entries_meta)
 
     payload = {
-        "schema_version": 2,
+        "schema_version": AUTONOMOUS_MANIFEST_SCHEMA_VERSION,
         "created_at": datetime.now(ALMATY_TZ).isoformat(),
         "target_date": target_date.isoformat(),
+        "request_identity": dict(request_identity or {}),
+        "ready_set_at": str((request_identity or {}).get("ready_set_at") or ""),
+        "expected_orders_path": str(expected_orders_path or ""),
+        "expected_orders_sha256": str(expected_orders_sha256 or ""),
+        "obligation_scope_hash": str(obligation_scope_hash or ""),
         "today_root": str(today_root),
         "source_root": str(batch_root),
         "batch_label": batch_root.name,
@@ -2122,8 +2230,19 @@ def write_send_batch_manifest(
             if entry.get("requires_core_review")
         ],
     }
+    payload["line_scope_hash"] = (
+        required_line_scope_hash(
+            [
+                line
+                for entry in entries
+                for line in entry.get("source_lines") or []
+            ]
+        )
+        if expected_orders_sha256
+        else ""
+    )
     payload["counts"]["unsafe_core_resolution_entries"] = len(payload["unsafe_core_resolution_entries"])
-    payload["batch_hash"] = _compute_batch_hash(entries)
+    payload["batch_hash"] = compute_manifest_batch_hash(payload)
 
     output_path = batch_root / "send_batch_manifest.json"
     output_path.write_text(
@@ -2365,6 +2484,7 @@ def main(
     exact_date: bool = False,
     include_overdue: bool = False,
     output_layout: str = OUTPUT_LAYOUT_LEGACY,
+    required_orders_file: Path = None,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> dict:
@@ -2382,6 +2502,11 @@ def main(
     output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     sheet_name = sheet_name or DEFAULT_SHEET_NAME
     target_date = target_date or datetime.now(ALMATY_TZ).date()
+    required_orders = (
+        load_required_orders_file(Path(required_orders_file), target_date=target_date)
+        if required_orders_file is not None
+        else None
+    )
     if include_overdue and exact_date:
         logger.warning("Both include_overdue and exact_date set; using include_overdue.")
         exact_date = False
@@ -2412,6 +2537,19 @@ def main(
     storeb_excluded = load_storeb_packing_excluded(warn=logger.warning)
     if storeb_excluded:
         logger.warning(f"{EXCLUSION_LOG_LINE}: STORE-B bundle output is disabled for FitPack cycles.")
+    if required_orders is not None:
+        sync_enabled_stores = set(load_sync_enabled_kaspi_store_codes())
+        required_stores = set(required_orders["orders_by_store"])
+        disabled_stores = sorted(required_stores - sync_enabled_stores)
+        if disabled_stores:
+            raise RuntimeError(
+                "Pinned required orders include sync-disabled stores: "
+                + ",".join(disabled_stores)
+            )
+        if storeb_excluded and any(is_storeb_store(store) for store in required_stores):
+            raise RuntimeError(
+                "Pinned required orders conflict with active STORE-B exclusion"
+            )
 
     stats = {
         'orders_read': 0,
@@ -2455,10 +2593,31 @@ def main(
     api_since_days = max(lookback_days if lookback_days is not None else 7, 7)
     api_orders_by_store: dict[str, set[str]] = {}
     api_error_stores: set[str] = set()
-    selection_cache = load_selection_cache(
-        waybill_dir, target_date, include_overdue=include_overdue, exact_date=exact_date
-    )
-    if selection_cache:
+    selection_cache = None
+    if required_orders is not None:
+        api_orders_by_store = {
+            store: set(order_ids)
+            for store, order_ids in required_orders["orders_by_store"].items()
+        }
+        if storeb_excluded and any(is_storeb_store(store) for store in api_orders_by_store):
+            raise RuntimeError(
+                "Pinned required orders include STORE-B while the FitPack STORE-B exclusion is active"
+            )
+        api_order_ids = set().union(*api_orders_by_store.values()) if api_orders_by_store else set()
+        carryforward_order_ids = {
+            str(order_id).strip()
+            for order_id in required_orders["payload"].get("overdue_order_ids") or []
+            if str(order_id).strip()
+        }
+        logger.info(
+            f"Using pinned expected-order selection: {len(api_order_ids)} orders "
+            f"sha256={required_orders['sha256']}"
+        )
+    else:
+        selection_cache = load_selection_cache(
+            waybill_dir, target_date, include_overdue=include_overdue, exact_date=exact_date
+        )
+    if required_orders is None and selection_cache:
         api_orders_by_store = selection_cache
         if storeb_excluded:
             skipped_cache = sum(
@@ -2480,7 +2639,7 @@ def main(
         logger.info(
             f"Using cached API selection: {len(api_order_ids)} orders for {target_date}"
         )
-    else:
+    elif required_orders is None:
         api_orders_by_store, api_error_stores = get_api_order_ids_for_date(
             target_date=target_date,
             since_days=api_since_days,
@@ -2503,7 +2662,7 @@ def main(
 
     if resolved_db_path:
         logger.info(f"DB: {resolved_db_path}")
-        if include_overdue:
+        if include_overdue and required_orders is None:
             carryforward_orders_by_store = get_overdue_waybill_ready_order_ids_from_db(
                 resolved_db_path,
                 target_date=target_date,
@@ -2548,7 +2707,11 @@ def main(
             resolved_db_path,
             target_date,
             lookback_days=lookback_days,
-            order_id_filter=api_order_ids if api_order_ids else None,
+            order_id_filter=(
+                api_order_ids
+                if required_orders is not None or api_order_ids
+                else None
+            ),
         )
         if db_orders:
             orders = enrich_orders_with_crm(
@@ -2562,7 +2725,7 @@ def main(
             )
             logger.info("Using DB-first size decisions for order selection")
 
-    if not orders:
+    if not orders and required_orders is None:
         crm_df = load_crm_dataframe(crm_path, sheet_name)
         orders = read_crm_orders(
             crm_path,
@@ -2587,19 +2750,52 @@ def main(
             stats['fitpack_storeb_skipped'] += skipped_orders
     stats['orders_read'] = len(orders)
 
+    if required_orders is not None:
+        stats["required_orders_sha256"] = required_orders["sha256"]
+        stats["required_line_scope_hash"] = validate_required_line_scope(
+            required_orders,
+            orders,
+        )
+
     if not orders:
-        logger.warning("No orders found with size decisions")
+        if required_orders is not None and not required_orders["order_ids"]:
+            logger.info("Pinned required-order scope is empty; successful no-op build")
+            stats["zero_order_noop"] = True
+        else:
+            logger.warning("No orders found with size decisions")
         return stats
 
     # Load waybills from folder (API downloads) and ZIP files
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         target_order_ids = {o.order_id for o in orders if o.order_id}
+        required_store_by_order = None
+        if required_orders is not None:
+            required_store_by_order = {
+                str(order_id): str(store_code)
+                for store_code, order_ids in required_orders["orders_by_store"].items()
+                for order_id in order_ids
+            }
         waybill_map = load_all_waybills(
             waybill_dir,
             temp_path,
             order_id_filter=target_order_ids,
+            required_store_by_order=required_store_by_order,
+            required_orders_sha256=(
+                str(required_orders["sha256"]) if required_orders is not None else ""
+            ),
+            request_identity=(
+                dict(required_orders["request_identity"])
+                if required_orders is not None
+                else {}
+            ),
         )
+        if required_orders is not None and set(waybill_map) != target_order_ids:
+            raise RuntimeError(
+                "Pinned waybill provenance coverage mismatch: "
+                f"missing={','.join(sorted(target_order_ids - set(waybill_map))) or '-'} "
+                f"extra={','.join(sorted(set(waybill_map) - target_order_ids)) or '-'}"
+            )
 
         # Group orders
         groups, missing = group_orders(orders, waybill_map)
@@ -2746,6 +2942,14 @@ def main(
                         groups=send_groups,
                         target_date=target_date,
                         expected_overdue_order_ids=carryforward_order_ids,
+                        expected_orders_path=str(required_orders["path"]) if required_orders else "",
+                        expected_orders_sha256=str(required_orders["sha256"]) if required_orders else "",
+                        request_identity=(
+                            dict(required_orders["request_identity"])
+                            if required_orders
+                            else {}
+                        ),
+                        obligation_scope_hash=_required_order_scope_hash(required_orders),
                     )
                     initialize_send_ledger(
                         send_stats["batch_dir"] / SEND_LEDGER_FILE,
@@ -2874,6 +3078,12 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--required-orders-file",
+        type=Path,
+        default=None,
+        help="Pinned expected_closeout_orders.json; bypass mutable cache/API selection",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Don't create output files, just show what would be built"
@@ -2906,6 +3116,7 @@ if __name__ == "__main__":
         exact_date=args.exact_date,
         include_overdue=args.include_overdue,
         output_layout=args.output_layout,
+        required_orders_file=args.required_orders_file,
         dry_run=args.dry_run,
         verbose=args.verbose,
     )

@@ -1,0 +1,43 @@
+{
+  "schema_version": "autonomous_business.waybill_send_exclusions.v1",
+  "decision_id": "WAYBILL-SEND-EXCLUSION-2026-07-10",
+  "recorded_at": "2026-07-10T21:40:00+05:00",
+  "authority": "human_owner",
+  "decisions": [
+    {
+      "target_date": "2026-07-10",
+      "action": "never_send_or_resume",
+      "reason": "Owner deferred every additional July 10 Telegram delivery after the employee shipped the confirmed batch. Any still-active unhanded order must enter a later fresh batch instead of resending the July 10 manifest.",
+      "allow_read_only_preflight": true,
+      "blocked_live_actions": [
+        "telegram_pdf_send",
+        "telegram_resume",
+        "telegram_ordered_resend",
+        "telegram_batch_status_message",
+        "whatsapp_pdf_send",
+        "delivery_fallback"
+      ]
+    },
+    {
+      "target_date": "2026-07-17",
+      "request_identity": {
+        "target_date": "2026-07-17",
+        "ready_set_at": "2026-07-17T19:08:30.987495+05:00"
+      },
+      "recorded_at": "2026-07-17T19:40:32.748155+05:00",
+      "authority": "human_owner",
+      "fulfillment_outcome": "FULFILLED_MANUALLY_BY_OWNER",
+      "action": "never_send_or_resume",
+      "reason": "The owner manually assembled, downloaded, processed, and sent all 23 July 17 waybills. Automation must never resume, resend, redownload, or emit batch-tied delivery messages for this READY identity; later source-backed physical-handover truth and fresh successful-day obligation registration remain independent.",
+      "allow_read_only_preflight": true,
+      "blocked_live_actions": [
+        "telegram_pdf_send",
+        "telegram_resume",
+        "telegram_ordered_resend",
+        "telegram_batch_status_message",
+        "whatsapp_pdf_send",
+        "delivery_fallback"
+      ]
+    }
+  ]
+}

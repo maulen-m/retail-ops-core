@@ -6,18 +6,26 @@ This document describes the daily workflow for processing Kaspi orders, from imp
 Authoritative schedule/source-of-truth for automation timing:
 `docs/ops/KASPI_DAILY_OPS_WORKFLOW_CONTRACT.md`.
 
+After one-time deployment activation, the employee does only two system actions each day:
+
+1. Fill or confirm `SalesRaw_Today.MY_SIZE` for every required row.
+2. Set `Run_Control.ready_for_closeout = READY`.
+
+Import, exact order reconciliation, Kaspi assembly, waybill download, bundle construction, and internal Telegram delivery are then automatic. No daily owner approval phrase, agent conversation, Telegram command, or separate approval for a carried-forward order is required.
+
 ## Schedule (GMT+5 Kazakhstan Time)
 
 | Time | Activity | Automation |
 |------|----------|------------|
 | 11:00 | First order import | Automated (launchd) |
-| 11:00-17:00 | Order processing, sizing, waybill preparation | Manual |
+| 11:00-17:00 | Employee size entry in Google Ops Board | Manual |
 | 17:00 | Same-day cutoff for every active Kaspi store | - |
 | 15:02 | Second order import | Automated (launchd) |
-| 15:02-17:00 | Late-window same-day sizing + next-day order prep | Manual |
+| 15:02-17:00 | Employee size entry for newly visible same-day and next-day rows | Manual |
 | 16:01 | Third order import | Automated (launchd) |
 | 17:02 | Fourth order import (`post-cutoff DB freshness`) | Automated (launchd) |
-| 17:00-18:00 | Package preparation | Manual |
+| After stable `READY` | Exact reconciliation; nonzero scope assembles/builds/sends, proven zero scope records completion without a bundle | Automated |
+| 17:00-18:00 | Package preparation when a bundle is received | Manual |
 | 18:00-18:30 | Courier handover + deadline check | Manual |
 | 19:15 | Shipped-truth DB sync fallback | Automated (launchd) |
 | 09:30 next day | Morning shipped-truth DB sync fallback | Automated (launchd) |
@@ -29,41 +37,35 @@ Authoritative schedule/source-of-truth for automation timing:
 The automated import runs at 11:00 GMT+5:
 - Downloads orders from Kaspi API (all stores)
 - Filters for status "Ожидает передачи курьеру"
-- Imports to CRM (`SALES_KSP_CRM_V3.xlsx`)
-- Phone numbers are populated automatically (Phase 12)
+- Synchronizes DB truth and publishes the Google Ops Board
+- Preserves any employee-entered values in editable board columns
 
-**Manual verification:**
-1. Open `excel_ui/SALES_KSP_CRM_V3.xlsx`
-2. Check new orders appear in `tb_SalesRaw` table
-3. Verify phone numbers in column I
+The Excel CRM is a legacy/back-office compatibility surface and is not part of the canonical employee workflow. Its guarded writer runs once at `00:30` as an isolated nightly sidecar while seven-day direct-feeder parity is collected; it never gates Board sizing or READY closeout.
 
 ### 2. Size Entry (11:00-12:00)
 
-For each new order:
-1. Locate size in "Название товара в Kaspi Магазине" column
-2. Enter size in column D (HEIGHT) or appropriate column
-3. Mark processed orders
+For every row in `SalesRaw_Today`:
 
-### 3. Waybill Generation (12:00-15:00)
+1. Fill or confirm `MY_SIZE`.
+2. When every required row is complete, set `Run_Control.ready_for_closeout = READY`.
 
-Run waybill builder:
-```bash
-# Double-click or run (V2 - optimized):
-./excel_ui/run_build_waybills_v2.command
-```
+The watcher stamps `ready_set_at` once. Together, `target_date + ready_set_at` identify the immutable daily request.
 
-This generates:
-- `excel_ui/Kaspi_orders/Today/{date}_{store}_qnt{n}/`
-- PDF waybills in NORMAL/SPECIAL folders
-- Manifest CSV files
+### 3. Automatic Closeout After `READY`
+
+The canonical closeout reconciles fresh active eligible orders with every unresolved prior shipping obligation. That union has no age expiry. It is written to one exact required-orders file, SHA-256 pinned, and used unchanged for Kaspi assembly, waybill download, and bundle construction.
+
+Canonical DB apply is owned only by closeout and requires a schema-version-2 row/size scope bound to the exact `target_date + ready_set_at`, enabled stores, orders, DB row IDs, line keys, and `MY_SIZE` values. The legacy scheduled size-writeback slots are preview-only.
+
+For a nonzero scope, live delivery accepts only a schema-v4 manifest passed by exact path and SHA-256. Its batch hash binds the complete request/order/line/count payload, each PDF must have exact request-bound provenance, and Telegram uses a channel-wide lock. Older or modification-time-discovered manifests are diagnostic-only. A proven zero scope performs no assembly, PDF download/build, manifest creation, or Telegram send; it writes a terminal marker bound to the exact READY identity and empty required-orders file/hash. Uncertain obligations can never become zero-order success.
+
+`excel_ui/run_build_waybills_v2.command` and direct builder commands are legacy/manual recovery tools, not employee steps.
 
 ### 4. Delivery Distribution
 
-Current production path is Google Ops Board closeout with Telegram-primary bundle delivery and WhatsApp fallback only when Telegram confirms zero PDFs. Legacy manual WhatsApp send remains a recovery path, not the primary daily path:
-```bash
-# Double-click or run:
-./excel_ui/run_send_whatsapp.command
-```
+The canonical path, once the separately approved deployment is activated and running-state validation is green, is Google Ops Board closeout with Telegram-only bundle delivery. This document does not assert that the production scheduler is currently installed, loaded, or running. WhatsApp tooling is legacy diagnostic/manual-only and is never a canonical closeout, retry, or fallback channel. Recovery resumes the pinned Telegram ledger and never resends confirmed PDF keys.
+
+If the reconciled required-order count is nonzero, the employee receives the complete internal bundle and packs it. If it is zero, no bundle is sent. No daily approval is required after the one-time deployment activation has been approved and validated.
 
 **Sending order (automatic):**
 1. SPECIAL_multi_line (highest priority)
@@ -114,7 +116,8 @@ See [PACKAGING_RULES.md](PACKAGING_RULES.md) for:
 1. Verify all packages match waybills
 2. Count total packages per manifest
 3. Hand to Kaspi courier
-4. Confirm handover in Kaspi seller portal
+
+Kaspi handover-state verification is automation-owned through the passive handover watcher and shipped-truth sync; seller-portal confirmation is not a canonical employee system action.
 
 ## SLA Rules
 
@@ -133,15 +136,16 @@ See [PACKAGING_RULES.md](PACKAGING_RULES.md) for:
 3. Run manually: `python scripts/export_api_orders.py --all-stores`
 
 ### Missing Orders
-1. Check `excel_ui/Kaspi_orders/Today/missing_orders.csv`
-2. These orders couldn't match to waybill PDFs
-3. Process manually via Kaspi seller portal
+
+A missing or omitted order must not be silently dropped or require a new approval. It remains in the local shipping-obligation ledger and is freshly reconciled on the next daily run. If fresh Kaspi truth still shows it packable, it joins that day's exact required-order set automatically. Unknown, failed, malformed, or identity-mismatched API truth retains the obligation and blocks closeout.
 
 ### Delivery Send Failed
 1. Check `exports/google_ops_board/daily_index/<date>.json`
 2. Check the latest closeout `delivery_send_report.json`
-3. If Telegram partially sent, resume Telegram only
-4. Use WhatsApp only as explicit fallback/recovery
+3. Resume the same exact request through the canonical scheduler
+4. Retry only unconfirmed PDF keys from the pinned manifest
+
+Recovery must never force-fresh, choose a newer manifest by modification time, resend a confirmed PDF key, or use WhatsApp as a canonical fallback.
 
 ## File Locations
 
@@ -170,9 +174,12 @@ logs/
 
 | Script | Purpose | Schedule |
 |--------|---------|----------|
-| `run_full_import.command` | Import orders from API | 11:00, 15:02, 16:01, 17:02 (launchd) |
-| `run_build_waybills_v2.command` | Generate waybill PDFs (V2 - optimized) | Manual |
-| `run_send_whatsapp.command` | Legacy WhatsApp recovery send | Manual |
+| `run_kaspi_import_scheduler.py` | Direct API source refresh, DB enrichment, and Board publish; no CRM | 11:00, 15:02, 16:01, 17:02 (launchd) |
+| `run_google_ops_board_closeout_watch_scheduler.py` | Stamp/observe stable `READY` and launch closeout | Every 60 seconds in watch window; Run_Control-only while HOLD |
+| `run_google_ops_board_closeout_scheduler.py` | Serialize and resume the exact daily request | Triggered by watcher; 18:30 backstop |
+| `run_google_ops_board_closeout.py` | Size writeback through pinned Telegram delivery | Canonical closeout entrypoint |
+| `run_build_waybills_v2.command` | Legacy manual bundle recovery | Manual only |
+| `run_send_whatsapp.command` | Legacy diagnostic recovery | Manual only; never canonical closeout |
 
 ## Contacts
 

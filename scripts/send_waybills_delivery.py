@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -29,7 +30,7 @@ from scripts.waybill_delivery_completion import delivery_completion_state  # noq
 FALLBACK_AUTO_ZERO_FAIL = "auto-zero-fail"
 FALLBACK_MANUAL = "manual"
 FALLBACK_DISABLED = "disabled"
-FALLBACK_CHOICES = [FALLBACK_AUTO_ZERO_FAIL, FALLBACK_MANUAL, FALLBACK_DISABLED]
+FALLBACK_CHOICES = [FALLBACK_DISABLED]
 LEDGER_COMPLETION_RECHECK_ATTEMPTS = 5
 LEDGER_COMPLETION_RECHECK_SECONDS = 1.0
 
@@ -97,10 +98,14 @@ def _telegram_completion_state_after_sender(
     today_folder: Path,
     expected_date: date,
     telegram_report: dict[str, Any],
+    manifest_path: Path | None = None,
+    manifest_sha256: str = "",
 ) -> dict[str, Any]:
     completion = delivery_completion_state(
         today_folder=today_folder,
         target_date=expected_date,
+        manifest_path=manifest_path,
+        expected_manifest_sha256=manifest_sha256,
     )
     if completion.get("completed"):
         return completion
@@ -118,6 +123,8 @@ def _telegram_completion_state_after_sender(
         completion = delivery_completion_state(
             today_folder=today_folder,
             target_date=expected_date,
+            manifest_path=manifest_path,
+            expected_manifest_sha256=manifest_sha256,
         )
         if completion.get("completed"):
             return completion
@@ -131,13 +138,15 @@ def run_delivery(
     expected_target_date: date | None = None,
     telegram_token: str | None = None,
     telegram_chat_id: str | None = None,
-    whatsapp_fallback_policy: str = FALLBACK_AUTO_ZERO_FAIL,
+    whatsapp_fallback_policy: str = FALLBACK_DISABLED,
     output_dir: Path | None = None,
     whatsapp_chat_title: str = DEFAULT_WHATSAPP_CHAT_TITLE,
     whatsapp_browser_mode: str = BROWSER_MODE_LAUNCH,
     python_executable: str = sys.executable,
     status_messages: bool = True,
     verbose: bool = False,
+    manifest_path: Path | None = None,
+    manifest_sha256: str = "",
 ) -> dict[str, Any]:
     today_folder = Path(today_folder).expanduser()
     expected_date = expected_target_date or datetime.now(ALMATY_TZ).date()
@@ -161,6 +170,35 @@ def run_delivery(
         "completed_at": "",
     }
 
+    required_manifest_sha256 = str(manifest_sha256 or "").strip().lower()
+    if (
+        manifest_path is None
+        or len(required_manifest_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in required_manifest_sha256)
+    ):
+        report.update(
+            {
+                "failure_stage": "manifest_pin",
+                "failure_reason": "live delivery requires explicit manifest path and SHA-256",
+                "completed_at": _now_iso(),
+            }
+        )
+        return report
+    resolved_manifest_path = Path(manifest_path).expanduser().resolve()
+    if (
+        not resolved_manifest_path.is_file()
+        or hashlib.sha256(resolved_manifest_path.read_bytes()).hexdigest()
+        != required_manifest_sha256
+    ):
+        report.update(
+            {
+                "failure_stage": "manifest_pin",
+                "failure_reason": "manifest path is missing or SHA-256 does not match",
+                "completed_at": _now_iso(),
+            }
+        )
+        return report
+
     telegram_report = run_telegram_sender(
         today_folder=today_folder,
         bundle_source=bundle_source,
@@ -170,6 +208,8 @@ def run_delivery(
         status_messages=status_messages,
         fail_fast=True,
         verbose=verbose,
+        manifest_path=manifest_path,
+        expected_manifest_sha256=required_manifest_sha256,
     )
     report["telegram_report"] = telegram_report
     if telegram_report.get("ok"):
@@ -177,6 +217,8 @@ def run_delivery(
             today_folder=today_folder,
             expected_date=expected_date,
             telegram_report=telegram_report,
+            manifest_path=manifest_path,
+            manifest_sha256=required_manifest_sha256,
         )
         report["delivery_completion"] = completion
         if not completion.get("completed") or completion.get("channel") != "telegram":
@@ -200,65 +242,6 @@ def run_delivery(
         )
         return report
 
-    confirmed_total = int(telegram_report.get("confirmed_total") or 0)
-    sent_this_run = int(telegram_report.get("sent") or 0)
-    fallback_allowed = bool(telegram_report.get("fallback_allowed"))
-    should_fallback = (
-        whatsapp_fallback_policy == FALLBACK_AUTO_ZERO_FAIL
-        and fallback_allowed
-        and confirmed_total == 0
-        and sent_this_run == 0
-    )
-
-    if should_fallback:
-        report["whatsapp_fallback_attempted"] = True
-        whatsapp_report = run_whatsapp_fallback(
-            today_folder=today_folder,
-            bundle_source=bundle_source,
-            expected_target_date=expected_date,
-            json_out=whatsapp_report_path,
-            python_executable=python_executable,
-            chat_title=whatsapp_chat_title,
-            browser_mode=whatsapp_browser_mode,
-        )
-        report["whatsapp_report"] = whatsapp_report
-        if whatsapp_report.get("ok"):
-            completion = delivery_completion_state(
-                today_folder=today_folder,
-                target_date=expected_date,
-                explicit_delivery_channel="whatsapp",
-                explicit_delivery_ok=True,
-            )
-            report["delivery_completion"] = completion
-            if not completion.get("completed") or completion.get("channel") != "whatsapp":
-                report.update(
-                    {
-                        "failure_stage": "whatsapp_fallback",
-                        "failure_reason": (
-                            "WhatsApp fallback reported OK but delivery ledger is not complete: "
-                            f"{completion.get('status')}"
-                        ),
-                        "completed_at": _now_iso(),
-                    }
-                )
-                return report
-            report.update(
-                {
-                    "ok": True,
-                    "delivery_channel": "whatsapp",
-                    "completed_at": _now_iso(),
-                }
-            )
-            return report
-        report.update(
-            {
-                "failure_stage": "whatsapp_fallback",
-                "failure_reason": str(whatsapp_report.get("stderr") or whatsapp_report.get("stdout") or "WhatsApp fallback failed"),
-                "completed_at": _now_iso(),
-            }
-        )
-        return report
-
     report.update(
         {
             "failure_stage": "telegram_primary",
@@ -277,13 +260,15 @@ def _parse_iso_date(value: str) -> date:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Primary Telegram waybill delivery with WhatsApp fallback")
+    parser = argparse.ArgumentParser(description="Telegram-only waybill delivery")
     parser.add_argument("--today-folder", type=Path, default=TODAY_FOLDER)
     parser.add_argument("--bundle-source", choices=SOURCE_CHOICES, default=SOURCE_MERGED)
     parser.add_argument("--expected-target-date", type=_parse_iso_date, default=None)
+    parser.add_argument("--manifest-path", type=Path, default=None)
+    parser.add_argument("--manifest-sha256", type=str, default="")
     parser.add_argument("--telegram-token", type=str, default=None)
     parser.add_argument("--telegram-chat-id", type=str, default=None)
-    parser.add_argument("--whatsapp-fallback-policy", choices=FALLBACK_CHOICES, default=FALLBACK_AUTO_ZERO_FAIL)
+    parser.add_argument("--whatsapp-fallback-policy", choices=FALLBACK_CHOICES, default=FALLBACK_DISABLED)
     parser.add_argument("--whatsapp-chat-title", type=str, default=DEFAULT_WHATSAPP_CHAT_TITLE)
     parser.add_argument("--whatsapp-browser-mode", type=str, default=BROWSER_MODE_LAUNCH)
     parser.add_argument("--no-status-messages", dest="status_messages", action="store_false", default=True)
@@ -304,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
         whatsapp_browser_mode=args.whatsapp_browser_mode,
         status_messages=bool(args.status_messages),
         verbose=bool(args.verbose),
+        manifest_path=args.manifest_path,
+        manifest_sha256=args.manifest_sha256,
     )
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
