@@ -325,17 +325,68 @@ def test_reconcile_exclusion_covered_uncertainty_is_retained_warned_and_nonblock
             "title": "Shipping obligation uncertainty in prepacked exclusion scope",
             "lines": [
                 "Target date: 2026-07-18",
-                "Obligation: UNIVERSAL:992447685",
-                f"Detail: {expected_detail}",
-                "The obligation remains unresolved; only this validated exclusion scope is non-blocking.",
+                "Run identity: 2026-07-18T17:00:00+05:00",
+                f"UNIVERSAL:992447685: {expected_detail}",
+                "The obligations remain unresolved; only this validated exclusion scope is non-blocking.",
             ],
             "severity": "WARN",
             "dedup_key": (
                 "shipping_obligation_uncertainty_excluded_scope:"
-                "2026-07-18:UNIVERSAL:992447685"
+                "2026-07-18:2026-07-18T17:00:00+05:00"
             ),
         }
     ]
+
+
+def test_reconcile_nine_covered_uncertainties_emit_one_aggregated_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_ids = [f"ORDER-{index}" for index in range(1, 10)]
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        obligation_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
+    prior = {
+        "schema_version": 1,
+        "entries": {
+            f"UNIVERSAL:{order_id}": {
+                "store_code": "UNIVERSAL",
+                "order_id": order_id,
+                "status": "unresolved",
+                "first_seen_target_date": "2026-07-17",
+                "last_seen_target_date": "2026-07-17",
+            }
+            for order_id in order_ids
+        },
+    }
+
+    result = reconcile_shipping_obligations(
+        prior_ledger=prior,
+        current_active_order_ids_by_store={},
+        detail_results={
+            f"UNIVERSAL:{order_id}": {"error": f"timeout-{index}"}
+            for index, order_id in enumerate(order_ids, start=1)
+        },
+        target_date=date(2026, 7, 18),
+        ready_set_at="2026-07-18T17:00:00+05:00",
+        now=datetime(2026, 7, 18, 17, 0, 1, tzinfo=ALMATY),
+        uncertainty_waiver_ids_by_store={"UNIVERSAL": set(order_ids)},
+        enqueue_uncertainty_warnings=True,
+    )
+
+    assert result["ok"] is True
+    assert result["uncertainty_scope_counts"] == {"covered": 9, "uncovered": 0}
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "WARN"
+    assert alerts[0]["dedup_key"] == (
+        "shipping_obligation_uncertainty_excluded_scope:"
+        "2026-07-18:2026-07-18T17:00:00+05:00"
+    )
+    alert_body = "\n".join(alerts[0]["lines"])
+    for index, order_id in enumerate(order_ids, start=1):
+        assert f"UNIVERSAL:{order_id}: timeout-{index}" in alert_body
 
 
 def test_reconcile_uncovered_uncertainty_still_blocks_with_waiver_present() -> None:

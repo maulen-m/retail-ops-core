@@ -306,6 +306,7 @@ def reconcile_shipping_obligations(
     issues: list[dict[str, str]] = []
     blocking_issues: list[dict[str, str]] = []
     uncertainty_scope_counts = {"covered": 0, "uncovered": 0}
+    covered_uncertain_obligations: list[dict[str, str]] = []
 
     def record_uncertainty(
         *,
@@ -324,21 +325,7 @@ def reconcile_shipping_obligations(
             }
             issues.append(issue)
             uncertainty_scope_counts["covered"] += 1
-            if enqueue_uncertainty_warnings:
-                enqueue_alert(
-                    title="Shipping obligation uncertainty in prepacked exclusion scope",
-                    lines=[
-                        f"Target date: {target_iso}",
-                        f"Obligation: {key}",
-                        f"Detail: {detail}",
-                        "The obligation remains unresolved; only this validated exclusion scope is non-blocking.",
-                    ],
-                    severity="WARN",
-                    dedup_key=(
-                        "shipping_obligation_uncertainty_excluded_scope:"
-                        f"{target_iso}:{key}"
-                    ),
-                )
+            covered_uncertain_obligations.append({"key": key, "detail": detail})
             return
         issue = {
             "code": uncovered_code,
@@ -530,6 +517,24 @@ def reconcile_shipping_obligations(
             "entries": dict(sorted(entries.items())),
         }
     )
+    if enqueue_uncertainty_warnings and covered_uncertain_obligations:
+        enqueue_alert(
+            title="Shipping obligation uncertainty in prepacked exclusion scope",
+            lines=[
+                f"Target date: {target_iso}",
+                f"Run identity: {_clean(ready_set_at) or 'missing'}",
+                *[
+                    f"{item['key']}: {item['detail']}"
+                    for item in covered_uncertain_obligations
+                ],
+                "The obligations remain unresolved; only this validated exclusion scope is non-blocking.",
+            ],
+            severity="WARN",
+            dedup_key=(
+                "shipping_obligation_uncertainty_excluded_scope:"
+                f"{target_iso}:{_clean(ready_set_at) or 'missing'}"
+            ),
+        )
     result = {
         "ok": not blocking_issues,
         "issues": issues,
