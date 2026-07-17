@@ -59,6 +59,10 @@ def _isolate_live_closeout_halt_barrier(monkeypatch) -> None:
         "evaluate_closeout_halt_barrier",
         _allow_automation,
     )
+    monkeypatch.setattr(common_mod, "flush_held", lambda _reason: {"attempted": 0, "delivered": 0})
+    monkeypatch.setattr(common_mod, "enqueue_alert", lambda **_kwargs: False)
+    monkeypatch.setattr(closeout_scheduler_mod, "reset_lock_contention", lambda _entry: None)
+    monkeypatch.setattr(closeout_scheduler_mod, "record_lock_contention", lambda _entry: 1)
 
 
 def test_early_closeout_watch_window_starts_for_morning_employee_ready() -> None:
@@ -175,8 +179,15 @@ def test_missing_target_run_control_row_fails_after_only_run_control_read(
 
 
 def test_halt_barrier_requires_hold_or_strictly_fresh_ready_identity(
+    monkeypatch,
     tmp_path: Path,
 ) -> None:
+    held_flush_reasons: list[str] = []
+    monkeypatch.setattr(
+        common_mod,
+        "flush_held",
+        lambda reason: held_flush_reasons.append(reason) or {"attempted": 0, "delivered": 0},
+    )
     tz = ZoneInfo("Asia/Almaty")
     barrier_path = tmp_path / "halt_barrier.json"
     target_date = date(2026, 4, 15)
@@ -236,6 +247,9 @@ def test_halt_barrier_requires_hold_or_strictly_fresh_ready_identity(
     )
     assert fresh["blocked"] is False
     assert fresh["barrier"]["state"] == "SUPERSEDED_BY_FRESH_READY"
+    assert held_flush_reasons == [
+        "halt barrier superseded by fresh READY for 2026-04-15"
+    ]
 
     old_in_flight = common_mod.evaluate_closeout_halt_barrier(
         target_date=target_date,
@@ -249,6 +263,36 @@ def test_halt_barrier_requires_hold_or_strictly_fresh_ready_identity(
     )
     assert old_in_flight["blocked"] is True
     assert old_in_flight["request_halted"] is True
+
+
+def test_unreadable_halt_barrier_enqueues_hourly_deduplicated_critical_alert(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    barrier_path = tmp_path / "halt_barrier.json"
+    barrier_path.write_text("{not-json", encoding="utf-8")
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        common_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
+    now = datetime(2026, 7, 18, 10, 30, tzinfo=ZoneInfo("Asia/Almaty"))
+
+    for _ in range(2):
+        gate = common_mod.evaluate_closeout_halt_barrier(
+            target_date=date(2026, 7, 18),
+            run_control_row={},
+            now=now,
+            path=barrier_path,
+        )
+        assert gate["blocked"] is True
+        assert gate["reason"] == "HALT_BARRIER_UNREADABLE"
+
+    assert len(alerts) == 2
+    assert alerts[0]["severity"] == "CRITICAL"
+    assert alerts[0]["dedup_key"] == alerts[1]["dedup_key"]
+    assert alerts[0]["dedup_key"].endswith(str(barrier_path))
 
 
 def test_newer_halt_supersedes_prior_halt_after_intervening_ready(

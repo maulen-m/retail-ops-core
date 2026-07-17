@@ -45,6 +45,9 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     GoogleOpsBoardAutomationLock,
     ensure_kaspi_api_call_ledger_env,
     now_almaty,
+    record_lock_contention,
+    reset_lock_contention,
+    run_guarded,
     today_almaty,
 )
 from scripts.backup_db import backup_database, verify_backup  # noqa: E402
@@ -619,8 +622,14 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     previous_lock_env = os.environ.get(AUTOMATION_LOCK_HELD_ENV)
+    lock_acquired = False
     try:
         with GoogleOpsBoardAutomationLock():
+            lock_acquired = True
+            try:
+                reset_lock_contention("run_google_ops_board_publish_scheduler")
+            except Exception as exc:
+                print(f"WARNING: unable to reset lock-contention counter: {exc}", file=sys.stderr)
             os.environ[AUTOMATION_LOCK_HELD_ENV] = "1"
             env[AUTOMATION_LOCK_HELD_ENV] = "1"
             return run_publish_cycle(
@@ -631,6 +640,11 @@ def main(argv: list[str] | None = None) -> int:
             )
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
+        if not lock_acquired and not args.force_source_refresh:
+            try:
+                record_lock_contention("run_google_ops_board_publish_scheduler")
+            except Exception as counter_exc:
+                print(f"WARNING: unable to record lock contention: {counter_exc}", file=sys.stderr)
         # Quiet backstop publication is redundant while another canonical
         # Board owner holds the lock. A forced source refresh is not: its
         # caller must see temporary failure and retry or alert rather than
@@ -644,4 +658,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(
+        run_guarded(
+            "run_google_ops_board_publish_scheduler",
+            lambda: main(sys.argv[1:]),
+        )
+    )

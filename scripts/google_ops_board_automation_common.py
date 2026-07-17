@@ -7,10 +7,12 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import sys
+import traceback
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -18,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.google_ops_board import extract_rows_from_matrix
+from core.alerts.ops_alert_outbox import enqueue_alert, flush_held
 from scripts.waybill_delivery_completion import (
     DEFAULT_RUN_ROOT,
     DEFAULT_TODAY_FOLDER,
@@ -34,6 +37,10 @@ DEFAULT_CLOSEOUT_HALT_BARRIER_PATH = (
 DEFAULT_PREWINDOW_HEALTH_ROOT = PROJECT_ROOT / "exports" / "google_ops_board" / "health"
 DEFAULT_CLOSEOUT_CHECKPOINT_ROOT = PROJECT_ROOT / "exports" / "google_ops_board" / "workflow_runs"
 DEFAULT_KASPI_API_LEDGER_ROOT = PROJECT_ROOT / "runtime" / "api_ledger"
+DEFAULT_OPS_STOPLINE_ROOT = PROJECT_ROOT / "runs" / "ops_stoplines"
+DEFAULT_LOCK_CONTENTION_COUNTER_PATH = (
+    PROJECT_ROOT / "runtime" / "state" / "ops_lock_contention_counters.json"
+)
 AUTOMATION_LOCK_HELD_ENV = "AB_GOOGLE_OPS_BOARD_LOCK_HELD"
 EARLY_CLOSEOUT_WATCH_START_HOUR = 9
 EARLY_CLOSEOUT_WATCH_END_HOUR = 24
@@ -42,6 +49,101 @@ AUTO_PROBABLE_CLOSEOUT_HOUR = 18
 AUTO_PROBABLE_CLOSEOUT_MINUTE = 57
 READY_DEBOUNCE_SECONDS = 60
 HALT_BARRIER_SCHEMA_VERSION = 1
+
+
+def _entry_slug(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value or "entry")).strip("_") or "entry"
+
+
+def run_guarded(entry_name: str, fn: Callable[[], int]) -> int:
+    """Run a scheduler entrypoint and make every uncaught exception durable and loud."""
+    try:
+        return int(fn())
+    except Exception as exc:
+        local_now = datetime.now(ALMATY_TZ)
+        stopline_root = Path(DEFAULT_OPS_STOPLINE_ROOT)
+        stopline_root.mkdir(parents=True, exist_ok=True)
+        stopline_path = stopline_root / (
+            f"{local_now.strftime('%Y%m%dT%H%M%S_%f')}_{_entry_slug(entry_name)}.json"
+        )
+        payload = {
+            "schema_version": 1,
+            "entry_name": str(entry_name),
+            "failed_at": local_now.isoformat(),
+            "exception": f"{type(exc).__name__}: {exc}",
+            "exception_type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
+            "argv": list(sys.argv),
+            "cwd": os.getcwd(),
+        }
+        try:
+            _atomic_save_json_file(stopline_path, payload)
+        except Exception as write_exc:
+            payload["stopline_write_error"] = f"{type(write_exc).__name__}: {write_exc}"
+        try:
+            enqueue_alert(
+                title=f"CRITICAL scheduler exception: {entry_name}",
+                lines=[
+                    payload["exception"],
+                    f"Stopline: {stopline_path}",
+                    f"CWD: {payload['cwd']}",
+                ],
+                severity="CRITICAL",
+            )
+        except Exception as alert_exc:
+            print(f"ERROR: unable to enqueue scheduler exception alert: {alert_exc}", file=sys.stderr)
+        print(
+            f"CRITICAL: {entry_name} failed with an uncaught exception; stopline: {stopline_path}",
+            file=sys.stderr,
+        )
+        return 1
+
+
+def _update_lock_contention_counter(
+    entry_name: str,
+    *,
+    contended: bool,
+    path: Path | None = None,
+) -> int:
+    target = Path(path or DEFAULT_LOCK_CONTENTION_COUNTER_PATH)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_name(f".{target.name}.lock")
+    with lock_path.open("a", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            state = load_json_file(target)
+            counters = dict(state.get("entries") or {})
+            count = int(counters.get(entry_name) or 0) + 1 if contended else 0
+            counters[entry_name] = count
+            _atomic_save_json_file(
+                target,
+                {
+                    "schema_version": 1,
+                    "updated_at": datetime.now(ALMATY_TZ).isoformat(),
+                    "entries": counters,
+                },
+            )
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    return count
+
+
+def record_lock_contention(entry_name: str) -> int:
+    count = _update_lock_contention_counter(entry_name, contended=True)
+    if count >= 10 and count % 10 == 0:
+        enqueue_alert(
+            title="Google Ops Board lock contention persists",
+            lines=[
+                f"Entrypoint: {entry_name}",
+                f"Consecutive lock-contention exits: {count}",
+            ],
+            severity="WARN",
+        )
+    return count
+
+
+def reset_lock_contention(entry_name: str) -> None:
+    _update_lock_contention_counter(entry_name, contended=False)
 
 
 def clean_text(value: Any) -> str:
@@ -266,6 +368,22 @@ def evaluate_closeout_halt_barrier(
             "barrier": {},
         }
     if clean_text(barrier.get("state")) == "UNREADABLE":
+        try:
+            enqueue_alert(
+                title="CRITICAL: Google Ops Board halt barrier unreadable",
+                lines=[
+                    f"Path: {clean_text(barrier.get('path')) or str(Path(path))}",
+                    f"Error: {clean_text(barrier.get('load_error')) or 'unknown'}",
+                    "Automation remains blocked fail-closed.",
+                ],
+                severity="CRITICAL",
+                dedup_key=(
+                    "halt_barrier_unreadable:"
+                    f"{clean_text(barrier.get('path')) or str(Path(path))}"
+                ),
+            )
+        except Exception as exc:
+            print(f"ERROR: unable to enqueue unreadable halt-barrier alert: {exc}", file=sys.stderr)
         return {
             "blocked": True,
             "reason": "HALT_BARRIER_UNREADABLE",
@@ -353,6 +471,12 @@ def evaluate_closeout_halt_barrier(
             if persist_safe_transition:
                 _atomic_save_json_file(path, barrier)
                 barrier = load_closeout_halt_barrier(path)
+        try:
+            flush_held(
+                f"halt barrier superseded by fresh READY for {target_date.isoformat()}"
+            )
+        except Exception as exc:
+            print(f"WARNING: unable to flush held alerts after barrier lift: {exc}", file=sys.stderr)
         return {
             "blocked": request_halted,
             "reason": "REQUEST_HALTED" if request_halted else "FRESH_READY_SUPERSEDES_HALT",
@@ -521,8 +645,14 @@ def evaluate_ready_debounce(
 class GoogleOpsBoardAutomationLock:
     """Serialize closeout and scheduled writeback automation."""
 
-    def __init__(self, lock_path: Path = DEFAULT_CLOSEOUT_LOCK_PATH):
+    def __init__(
+        self,
+        lock_path: Path = DEFAULT_CLOSEOUT_LOCK_PATH,
+        *,
+        entry_name: str = "",
+    ):
         self.lock_path = Path(lock_path)
+        self.entry_name = str(entry_name or "").strip()
         self.lock_file = None
 
     def __enter__(self):
@@ -532,9 +662,25 @@ class GoogleOpsBoardAutomationLock:
             fcntl.flock(self.lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.lock_file.write(f"{os.getpid()}\n")
             self.lock_file.flush()
+            if self.entry_name:
+                try:
+                    reset_lock_contention(self.entry_name)
+                except Exception as exc:
+                    print(
+                        f"WARNING: unable to reset lock-contention counter: {exc}",
+                        file=sys.stderr,
+                    )
             return self
         except BlockingIOError:
             self.lock_file.close()
+            if self.entry_name:
+                try:
+                    record_lock_contention(self.entry_name)
+                except Exception as exc:
+                    print(
+                        f"WARNING: unable to record lock contention: {exc}",
+                        file=sys.stderr,
+                    )
             raise RuntimeError(
                 "Another Google Ops Board automation instance is already running.\n"
                 f"Lock file: {self.lock_path}"

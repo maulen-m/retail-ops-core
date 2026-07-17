@@ -9,6 +9,13 @@ from scripts import run_google_ops_board_prewindow_health_scheduler as prewindow
 from scripts import run_google_ops_board_publish_scheduler as publish_scheduler_mod
 from scripts import run_kaspi_import_scheduler as import_scheduler_mod
 from scripts.google_ops_board_automation_common import ensure_kaspi_api_call_ledger_env
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_scheduler_lock_contention_state(monkeypatch) -> None:
+    monkeypatch.setattr(closeout_scheduler_mod, "reset_lock_contention", lambda _entry: None)
+    monkeypatch.setattr(closeout_scheduler_mod, "record_lock_contention", lambda _entry: 1)
 
 
 class _FakeResponse:

@@ -69,6 +69,7 @@ logs.pre_migration_*/
 # Local Telegram control runtime state
 runtime/state/waybill_telegram_allowed_users.txt
 runtime/state/waybill_telegram_control_bot.json
+runtime/state/*.jsonl
 runtime/api_ledger/kaspi_api_*.jsonl
 runtime/playwright/*session*.json
 runtime/playwright/*profile*/

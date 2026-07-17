@@ -933,3 +933,33 @@ def test_closeout_profile_skips_same_day_identity_artifact_reuse(
     assert second["identity_sync_reused"] is False
     assert second["checks"]["identity_sync"]["skipped"] is True
     assert second["checks"]["identity_sync"]["reason"] == "profile=closeout excludes identity_sync"
+
+
+def test_identical_prewindow_red_realerts_on_third_sixth_and_twelfth(monkeypatch) -> None:
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        health_mod,
+        "send_owner_ops_alert",
+        lambda **kwargs: alerts.append(kwargs) or True,
+    )
+    previous: dict[str, object] | None = None
+    for occurrence in range(1, 13):
+        report: dict[str, object] = {
+            "ok": False,
+            "target_date": "2026-07-18",
+            "reason": "scheduled_prewindow",
+            "report_path": "/tmp/prewindow.json",
+            "workbook_fingerprint": {"sha256": "same-workbook"},
+            "checks": {"google_layout": {"ok": False}},
+        }
+        health_mod._update_health_alert_state(report, previous)
+        assert report["alert_state"]["consecutive_identical_reds"] == occurrence
+        health_mod._send_health_alert(report, previous)
+        previous = report
+
+    assert [alert["title"] for alert in alerts] == [
+        "Google Ops Board Prewindow Red",
+        "Google Ops Board Prewindow STILL RED (3rd consecutive)",
+        "Google Ops Board Prewindow STILL RED (6th consecutive)",
+        "Google Ops Board Prewindow STILL RED (12th consecutive)",
+    ]

@@ -17,9 +17,16 @@ from scripts.run_google_ops_board_publish_scheduler import (
     source_snapshot_path,
     write_source_snapshot,
 )
+import scripts.run_google_ops_board_publish_scheduler as scheduler_mod
 
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_lock_contention_state(monkeypatch) -> None:
+    monkeypatch.setattr(scheduler_mod, "reset_lock_contention", lambda _entry: None)
+    monkeypatch.setattr(scheduler_mod, "record_lock_contention", lambda _entry: 1)
 
 
 def _write_activeorders_workbook(path: Path, planned_dates: list[str]) -> None:

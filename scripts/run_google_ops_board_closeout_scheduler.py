@@ -28,6 +28,9 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     closeout_completion_state,
     ensure_kaspi_api_call_ledger_env,
     evaluate_closeout_halt_barrier,
+    record_lock_contention,
+    reset_lock_contention,
+    run_guarded,
     today_almaty,
 )
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_closeout.py"
@@ -183,8 +186,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+    lock_acquired = False
     try:
         with GoogleOpsBoardAutomationLock():
+            lock_acquired = True
+            try:
+                reset_lock_contention("run_google_ops_board_closeout_scheduler")
+            except Exception as exc:
+                print(f"WARNING: unable to reset lock-contention counter: {exc}", file=sys.stderr)
             current_identity = _current_ready_identity(
                 service_account_json=service_account_json,
                 spreadsheet_id_override=spreadsheet_id_override,
@@ -240,8 +249,13 @@ def main(argv: list[str] | None = None) -> int:
             return int(result.returncode)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
+        if not lock_acquired:
+            try:
+                record_lock_contention("run_google_ops_board_closeout_scheduler")
+            except Exception as counter_exc:
+                print(f"WARNING: unable to record lock contention: {counter_exc}", file=sys.stderr)
         return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_guarded("run_google_ops_board_closeout_scheduler", main))

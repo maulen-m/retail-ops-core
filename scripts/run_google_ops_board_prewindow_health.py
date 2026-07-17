@@ -575,7 +575,14 @@ def _send_health_alert(report: dict[str, Any], previous: dict[str, Any] | None) 
     previous_ok = bool((previous or {}).get("ok"))
     previous_fp = ((previous or {}).get("workbook_fingerprint") or {}).get("sha256")
     current_fp = ((report.get("workbook_fingerprint") or {}).get("sha256"))
-    if previous and previous_ok == current_ok and previous_fp == current_fp:
+    same_alert_fingerprint = bool(
+        previous and previous_ok == current_ok and previous_fp == current_fp
+    )
+    consecutive_reds = int(
+        ((report.get("alert_state") or {}).get("consecutive_identical_reds")) or 0
+    )
+    red_escalation_due = not current_ok and consecutive_reds in {3, 6, 12}
+    if same_alert_fingerprint and not red_escalation_due:
         return
 
     if current_ok:
@@ -609,8 +616,17 @@ def _send_health_alert(report: dict[str, Any], previous: dict[str, Any] | None) 
             failures.append("google_layout failed")
         elif key == "identity_sync":
             failures.append("identity_sync failed")
+    red_title = "Google Ops Board Prewindow Red"
+    if red_escalation_due:
+        suffix = "th"
+        if consecutive_reds % 100 not in {11, 12, 13}:
+            suffix = {1: "st", 2: "nd", 3: "rd"}.get(consecutive_reds % 10, "th")
+        red_title = (
+            "Google Ops Board Prewindow STILL RED "
+            f"({consecutive_reds}{suffix} consecutive)"
+        )
     send_owner_ops_alert(
-        title="Google Ops Board Prewindow Red",
+        title=red_title,
         lines=[
             f"Target date: {report['target_date']}",
             f"Reason: {report['reason']}",
@@ -618,6 +634,30 @@ def _send_health_alert(report: dict[str, Any], previous: dict[str, Any] | None) 
             f"Report: {report['report_path']}",
         ],
     )
+
+
+def _update_health_alert_state(
+    report: dict[str, Any],
+    previous: dict[str, Any] | None,
+) -> None:
+    current_ok = bool(report.get("ok"))
+    previous_ok = bool((previous or {}).get("ok"))
+    current_fp = str(((report.get("workbook_fingerprint") or {}).get("sha256")) or "")
+    previous_fp = str((((previous or {}).get("workbook_fingerprint") or {}).get("sha256")) or "")
+    consecutive_reds = 0
+    if not current_ok:
+        if previous and not previous_ok and previous_fp == current_fp:
+            prior_count = int(
+                (((previous.get("alert_state") or {}).get("consecutive_identical_reds")) or 1)
+            )
+            consecutive_reds = prior_count + 1
+        else:
+            consecutive_reds = 1
+    report["alert_state"] = {
+        "dedup_ok": current_ok,
+        "dedup_workbook_sha256": current_fp,
+        "consecutive_identical_reds": consecutive_reds,
+    }
 
 
 def ensure_prewindow_health(
@@ -819,6 +859,7 @@ def ensure_prewindow_health(
         for payload in report["checks"].values()
         if (payload or {}).get("blocking", True) is not False
     )
+    _update_health_alert_state(report, previous_report)
     dump_json(report_path, report)
     if emit_alerts:
         _send_health_alert(report, previous_report)

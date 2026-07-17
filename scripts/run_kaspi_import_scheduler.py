@@ -15,7 +15,11 @@ SOURCE_REFRESH_PATH = PROJECT_ROOT / "scripts" / "run_google_ops_board_publish_s
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.google_ops_board_automation_common import ensure_kaspi_api_call_ledger_env, today_almaty  # noqa: E402
+from scripts.google_ops_board_automation_common import (  # noqa: E402
+    ensure_kaspi_api_call_ledger_env,
+    run_guarded,
+    today_almaty,
+)
 
 
 LOCK_CONTENTION_EXIT_CODE = 75
@@ -64,4 +68,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_guarded("run_kaspi_import_scheduler", main))

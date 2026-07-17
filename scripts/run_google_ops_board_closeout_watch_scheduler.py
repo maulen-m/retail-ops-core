@@ -37,6 +37,7 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     evaluate_closeout_halt_barrier,
     load_ready_debounce_state,
     now_almaty,
+    run_guarded,
     save_json_file,
     save_ready_debounce_state,
     select_run_control_row,
@@ -809,4 +810,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_guarded("run_google_ops_board_closeout_watch_scheduler", main))
