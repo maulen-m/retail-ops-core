@@ -38,6 +38,7 @@ from core.integrations.kaspi_api_client import (  # noqa: E402
 )
 from core.paths import data_path  # noqa: E402
 from core.alerts.google_ops_board_alerts import send_owner_ops_alert  # noqa: E402
+from core.alerts.ops_alert_outbox import enqueue_alert, flush_held  # noqa: E402
 from core.ops.waybill_send_batch import (  # noqa: E402
     SEND_LEDGER_FILE,
     compute_manifest_batch_hash,
@@ -45,6 +46,11 @@ from core.ops.waybill_send_batch import (  # noqa: E402
 from core.ops.waybill_prepacked_exclusions import (  # noqa: E402
     apply_prepacked_exclusion,
     load_validated_prepacked_exclusion,
+)
+from core.ops.google_board_day_state import (  # noqa: E402
+    effective_store_states,
+    load_store_day_states,
+    set_store_day_state,
 )
 from core.ops.waybill_shipping_obligations import (  # noqa: E402
     active_obligation_ids_by_store,
@@ -64,6 +70,7 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     evaluate_closeout_halt_barrier,
     load_json_file,
     resolve_closeout_checkpoint_path,
+    run_guarded,
     salesraw_writeback_fingerprint,
 )
 from scripts.run_google_ops_board_prewindow_health import ensure_prewindow_health  # noqa: E402
@@ -1359,6 +1366,149 @@ def _union_order_ids_by_store(
     return {store: set(order_ids) for store, order_ids in sorted(result.items())}
 
 
+def _apply_store_day_state_scope(
+    required_ids_by_store: dict[str, set[str]],
+    *,
+    target_date: date,
+    checkpoint_path: Path,
+    report_path: Path,
+) -> tuple[dict[str, set[str]], dict[str, Any]]:
+    """Subtract stores explicitly fulfilled manually or postponed for this day."""
+    raw_section = load_store_day_states(
+        target_date,
+        checkpoint_path=checkpoint_path,
+    )
+    effective_states = effective_store_states(
+        target_date,
+        checkpoint_path=checkpoint_path,
+    )
+    scoped = {
+        store: set(order_ids)
+        for store, order_ids in required_ids_by_store.items()
+    }
+    excluded_ids_by_store: dict[str, list[str]] = {}
+    counts_before = {
+        store: len(order_ids)
+        for store, order_ids in sorted(scoped.items())
+    }
+    for store, order_ids in list(scoped.items()):
+        normalized_store = normalize_store_code(store)
+        state = str(
+            (effective_states.get(normalized_store) or {}).get("state") or "PENDING"
+        )
+        if state not in {"MANUAL_FULFILLED", "POSTPONED"}:
+            continue
+        excluded_ids_by_store[normalized_store] = sorted(order_ids)
+        scoped[store] = set()
+        print(
+            "STORE_DAY_STATE_SCOPE "
+            f"store={normalized_store} state={state} "
+            f"required_before={len(order_ids)} required_after=0"
+        )
+    if not excluded_ids_by_store:
+        print(
+            "STORE_DAY_STATE_SCOPE no-op "
+            f"target_date={target_date.isoformat()} section_present={bool(raw_section)}"
+        )
+    report_payload = {
+        "schema_version": 1,
+        "target_date": target_date.isoformat(),
+        "checkpoint_path": str(checkpoint_path),
+        "section_present": bool(raw_section),
+        "applied": bool(excluded_ids_by_store),
+        "effective_store_states": effective_states,
+        "excluded_states": ["MANUAL_FULFILLED", "POSTPONED"],
+        "excluded_ids_by_store": excluded_ids_by_store,
+        "counts_before": counts_before,
+        "counts_after": {
+            store: len(order_ids)
+            for store, order_ids in sorted(scoped.items())
+        },
+    }
+    dump_json(report_path, report_payload)
+    return scoped, report_payload
+
+
+def _manifest_store_codes(manifest_path: Path) -> list[str]:
+    payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("send manifest must be a JSON object")
+    stores: set[str] = set()
+    for raw_entry in payload.get("entries") or []:
+        if not isinstance(raw_entry, dict):
+            continue
+        counts = raw_entry.get("order_counts_by_store")
+        if isinstance(counts, dict) and counts:
+            stores.update(
+                normalize_store_code(raw_store)
+                for raw_store in counts
+                if normalize_store_code(raw_store)
+            )
+            continue
+        for raw_line in raw_entry.get("source_lines") or []:
+            if not isinstance(raw_line, dict):
+                continue
+            raw_store = (
+                raw_line.get("store_code")
+                or raw_line.get("store")
+                or raw_line.get("store_name")
+            )
+            store = normalize_store_code(raw_store)
+            if store:
+                stores.add(store)
+    return sorted(stores)
+
+
+def _stamp_manifest_stores_auto_sent(
+    *,
+    manifest_path: Path,
+    target_date: date,
+    checkpoint_path: Path,
+) -> dict[str, Any]:
+    """Best-effort AUTO_SENT stamps after a confirmed delivery stage."""
+    result: dict[str, Any] = {
+        "manifest_path": str(manifest_path),
+        "stores": [],
+        "stamped": [],
+        "errors": [],
+    }
+    try:
+        result["stores"] = _manifest_store_codes(manifest_path)
+    except Exception as exc:
+        result["errors"].append(
+            f"manifest_store_read_failed:{type(exc).__name__}:{exc}"
+        )
+        print(
+            "WARNING: unable to stamp AUTO_SENT day states: "
+            f"{result['errors'][-1]}",
+            file=sys.stderr,
+        )
+        return result
+    for store in result["stores"]:
+        try:
+            set_store_day_state(
+                target_date,
+                store,
+                "AUTO_SENT",
+                reason="delivery_send stage confirmed",
+                set_by="run_google_ops_board_closeout",
+                checkpoint_path=checkpoint_path,
+            )
+        except Exception as exc:
+            result["errors"].append(
+                f"{store}:{type(exc).__name__}:{exc}"
+            )
+            print(
+                "WARNING: AUTO_SENT day-state stamp failed "
+                f"store={store}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        result["stamped"].append(store)
+        print(f"STORE_DAY_STATE_AUTO_SENT store={store}")
+    return result
+
+
 def _register_current_obligations_after_success(
     ledger: dict[str, Any],
     current_active_order_ids_by_store: dict[str, set[str]],
@@ -1793,6 +1943,31 @@ def _send_closeout_alert(
     send_owner_ops_alert(title=title, lines=lines)
 
 
+def _enqueue_held_closeout_failure_alert(
+    *,
+    run_id: str,
+    target_date: date,
+    report_path: Path,
+    stage: str,
+    detail: str,
+    barrier_reason: str,
+) -> bool:
+    return enqueue_alert(
+        title="Google Ops Board Closeout Failed",
+        lines=[
+            f"Target date: {target_date.isoformat()}",
+            f"Run ID: {run_id}",
+            f"Stage: {stage}",
+            f"Held by halt barrier: {barrier_reason}",
+            detail,
+            f"Report: {report_path}",
+        ],
+        severity="CRITICAL",
+        dedup_key=f"closeout_failure:{run_id}:{stage}",
+        held=True,
+    )
+
+
 def _write_daily_index_best_effort(*, target_date: date, run_root: Path) -> None:
     try:
         from scripts.google_ops_board_daily_index import write_daily_index
@@ -1828,12 +2003,14 @@ def _run_closeout(args: argparse.Namespace) -> int:
         }
     execution_mode = "apply" if args.apply else "dry_run"
     if args.checkpoint_path:
-        checkpoint_path = Path(args.checkpoint_path).expanduser()
+        day_state_checkpoint_path = Path(args.checkpoint_path).expanduser()
     else:
-        checkpoint_path = resolve_closeout_checkpoint_path(
+        day_state_checkpoint_path = resolve_closeout_checkpoint_path(
             target_date,
             root=Path(args.run_root).expanduser(),
         )
+    checkpoint_path = day_state_checkpoint_path
+    if not args.checkpoint_path:
         if not args.apply:
             checkpoint_path = checkpoint_path.with_name("closeout_checkpoint_dry_run.json")
 
@@ -1919,6 +2096,12 @@ def _run_closeout(args: argparse.Namespace) -> int:
         salesraw_rows=salesraw_rows,
         execution_mode=execution_mode,
     )
+    recorded_day_states = load_store_day_states(
+        target_date,
+        checkpoint_path=day_state_checkpoint_path,
+    )
+    if recorded_day_states:
+        fresh_checkpoint["store_day_states"] = recorded_day_states
     checkpoint = copy.deepcopy(fresh_checkpoint)
 
     expected_ready_set_at = _clean(getattr(args, "expected_ready_set_at", ""))
@@ -2368,6 +2551,18 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 resumed=bool(completed_stages),
                 detail=reason,
             )
+        elif args.apply and suppress_external_failure_write:
+            try:
+                _enqueue_held_closeout_failure_alert(
+                    run_id=run_id,
+                    target_date=target_date,
+                    report_path=output_path,
+                    stage=stage,
+                    detail=reason,
+                    barrier_reason=_clean(failure_halt_gate.get("reason")),
+                )
+            except Exception as exc:
+                print(f"ERROR: unable to enqueue held closeout alert: {exc}", file=sys.stderr)
         return 1
 
     def _record_halt_stop(stage: str, gate: dict[str, Any]) -> int:
@@ -2645,6 +2840,36 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 prepacked_result.get("required_ids_by_store") or {}
             ).items()
         }
+        store_day_state_report_path = run_dir / "store_day_state_report.json"
+        try:
+            required_ids_by_store, store_day_state_report = (
+                _apply_store_day_state_scope(
+                    required_ids_by_store,
+                    target_date=target_date,
+                    checkpoint_path=day_state_checkpoint_path,
+                    report_path=store_day_state_report_path,
+                )
+            )
+        except Exception as exc:
+            dump_json(
+                store_day_state_report_path,
+                {
+                    "schema_version": 1,
+                    "target_date": target_date.isoformat(),
+                    "checkpoint_path": str(day_state_checkpoint_path),
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            return _record_failure(
+                "store_day_state",
+                "Store day-state scoping failed closed: "
+                f"{type(exc).__name__}: {exc}",
+            )
+        report["store_day_state_report_path"] = str(store_day_state_report_path)
+        report["store_day_state_scope_applied"] = bool(
+            store_day_state_report.get("applied")
+        )
         prepacked_report_path = run_dir / "prepacked_exclusion_report.json"
         dump_json(
             prepacked_report_path,
@@ -3201,6 +3426,26 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 artifact_paths=[str(run_dir / "delivery_send_report.json")],
             )
             _write_checkpoint(checkpoint_path, checkpoint)
+            auto_sent_result = _stamp_manifest_stores_auto_sent(
+                manifest_path=manifest_path,
+                target_date=target_date,
+                checkpoint_path=day_state_checkpoint_path,
+            )
+            report["store_day_state_auto_sent"] = auto_sent_result
+            try:
+                refreshed_day_states = load_store_day_states(
+                    target_date,
+                    checkpoint_path=day_state_checkpoint_path,
+                )
+            except Exception as exc:
+                print(
+                    "WARNING: unable to reload AUTO_SENT day states into closeout "
+                    f"checkpoint: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+            else:
+                if refreshed_day_states:
+                    checkpoint["store_day_states"] = refreshed_day_states
 
         if "shipped_truth_sync" not in completed_stages:
             identity_ok, identity_rc = _request_identity_still_current(
@@ -3319,6 +3564,10 @@ def _run_closeout(args: argparse.Namespace) -> int:
     dump_json(output_path, report)
     _write_daily_index_best_effort(target_date=target_date, run_root=Path(args.run_root).expanduser())
     if args.apply:
+        try:
+            flush_held(f"successful closeout run {run_id}")
+        except Exception as exc:
+            print(f"WARNING: unable to flush held closeout alerts: {exc}", file=sys.stderr)
         _guarded_send_closeout_alert(
             title="Google Ops Board Closeout Complete",
             run_id=run_id,
@@ -3390,4 +3639,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_guarded("run_google_ops_board_closeout", main))

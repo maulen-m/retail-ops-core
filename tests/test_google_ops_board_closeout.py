@@ -12,6 +12,7 @@ import pytest
 from scripts import run_google_ops_board_closeout as closeout_mod
 from scripts import validate_google_closeout_expected_orders as expected_orders_mod
 from core.integrations.google_ops_board import load_ops_board_contract
+from core.ops.google_board_day_state import set_store_day_state
 from core.ops.waybill_send_batch import compute_manifest_batch_hash
 from core.ops.waybill_shipping_obligations import required_line_scope_hash
 
@@ -44,6 +45,8 @@ def _isolate_closeout_runtime_defaults(monkeypatch, tmp_path: Path) -> None:
             "barrier": {},
         },
     )
+    monkeypatch.setattr(closeout_mod, "flush_held", lambda _reason: {"attempted": 0, "delivered": 0})
+    monkeypatch.setattr(closeout_mod, "enqueue_alert", lambda **_kwargs: False)
 
 
 def _preserved_board_run(
@@ -114,6 +117,112 @@ def _preserved_board_run(
         encoding="utf-8",
     )
     return run_dir
+
+
+def test_closeout_store_day_state_scope_absent_noop_then_manual_subtraction(
+    tmp_path: Path,
+) -> None:
+    target_date = date(2026, 7, 18)
+    checkpoint_path = tmp_path / "workflow_runs" / "2026-07-18" / "closeout_checkpoint.json"
+    report_path = tmp_path / "run" / "store_day_state_report.json"
+    required = {
+        "UNIVERSAL": {"1001", "1002"},
+        "ACMEWEAR": {"2001"},
+    }
+
+    unchanged, absent_report = closeout_mod._apply_store_day_state_scope(
+        required,
+        target_date=target_date,
+        checkpoint_path=checkpoint_path,
+        report_path=report_path,
+    )
+
+    assert unchanged == required
+    assert absent_report["section_present"] is False
+    assert absent_report["applied"] is False
+    assert json.loads(report_path.read_text(encoding="utf-8"))["counts_after"] == {
+        "ACMEWEAR": 1,
+        "UNIVERSAL": 2,
+    }
+
+    set_store_day_state(
+        target_date,
+        "Universal",
+        "MANUAL_FULFILLED",
+        reason="owner completed these orders manually",
+        set_by="owner",
+        checkpoint_path=checkpoint_path,
+    )
+    scoped, applied_report = closeout_mod._apply_store_day_state_scope(
+        required,
+        target_date=target_date,
+        checkpoint_path=checkpoint_path,
+        report_path=report_path,
+    )
+
+    assert scoped == {"UNIVERSAL": set(), "ACMEWEAR": {"2001"}}
+    assert applied_report["applied"] is True
+    assert applied_report["excluded_ids_by_store"] == {
+        "UNIVERSAL": ["1001", "1002"]
+    }
+    assert required["UNIVERSAL"] == {"1001", "1002"}
+
+
+def test_closeout_auto_sent_stamp_uses_manifest_store_codes(tmp_path: Path) -> None:
+    target_date = date(2026, 7, 18)
+    checkpoint_path = tmp_path / "workflow_runs" / "2026-07-18" / "closeout_checkpoint.json"
+    manifest_path = tmp_path / "send_batch_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {"order_counts_by_store": {"Universal": 2}},
+                    {
+                        "order_counts_by_store": {},
+                        "source_lines": [{"store_code": "STORE-B"}],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = closeout_mod._stamp_manifest_stores_auto_sent(
+        manifest_path=manifest_path,
+        target_date=target_date,
+        checkpoint_path=checkpoint_path,
+    )
+
+    assert result["errors"] == []
+    assert result["stamped"] == ["STOREB", "UNIVERSAL"]
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    states = payload["store_day_states"]["stores"]
+    assert states["STOREB"]["state"] == "AUTO_SENT"
+    assert states["UNIVERSAL"]["state"] == "AUTO_SENT"
+
+
+def test_barrier_suppressed_failure_is_enqueued_as_held(monkeypatch, tmp_path: Path) -> None:
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        closeout_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
+
+    delivered = closeout_mod._enqueue_held_closeout_failure_alert(
+        run_id="run-1",
+        target_date=date(2026, 7, 18),
+        report_path=tmp_path / "report.json",
+        stage="shipping",
+        detail="manifest missing",
+        barrier_reason="HALT_CONFIRMED",
+    )
+
+    assert delivered is False
+    assert alerts[0]["held"] is True
+    assert alerts[0]["severity"] == "CRITICAL"
+    assert alerts[0]["dedup_key"] == "closeout_failure:run-1:shipping"
+    assert "Held by halt barrier: HALT_CONFIRMED" in alerts[0]["lines"]
 
 
 def test_preserved_board_client_loads_snapshots_without_online_constructor(
