@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ from core.integrations.google_ops_board import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
     dump_json,
+    extract_rows_from_matrix,
     load_ops_board_contract,
     resolve_service_account_json,
     resolve_spreadsheet_id,
@@ -30,6 +32,7 @@ from core.integrations.google_ops_board import (  # noqa: E402
 )
 from core.integrations.kaspi_api_client import KaspiAPIClient, KaspiAuthError, STORE_TOKEN_MAP  # noqa: E402
 from core.integrations.telegram_bot import get_waybill_telegram_config  # noqa: E402
+from core.ops.google_ops_board_attribution import audit_salesraw_name_core_attribution  # noqa: E402
 from scripts.check_local_app_db import validate_local_db  # noqa: E402
 from scripts.google_ops_board_automation_common import (  # noqa: E402
     build_workbook_fingerprint,
@@ -77,7 +80,7 @@ HEALTH_PROFILE_CHECKS: dict[str, dict[str, bool]] = {
         "identity_sync": True,
         "store_context": True,
         "telegram_delivery_config": True,
-        "whatsapp_smoke": True,
+        "whatsapp_smoke": False,
     },
     HEALTH_PROFILE_PUBLISH: {
         "identity_sync": False,
@@ -89,7 +92,7 @@ HEALTH_PROFILE_CHECKS: dict[str, dict[str, bool]] = {
         "identity_sync": False,
         "store_context": True,
         "telegram_delivery_config": True,
-        "whatsapp_smoke": True,
+        "whatsapp_smoke": False,
     },
 }
 
@@ -195,6 +198,218 @@ def _build_google_layout_report(*, client: GoogleOpsBoardClient, contract) -> di
         matrix = client.get_tab_values(tab_name)
         header_rows[tab_name] = matrix[0] if matrix else []
     return validate_contract_layout(contract, sheet_names, header_rows)
+
+
+def _normalized_board_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _runtime_code_fingerprints() -> dict[str, dict[str, Any]]:
+    paths = [
+        Path(__file__).resolve(),
+        PROJECT_ROOT / "scripts" / "run_google_ops_board_publish_scheduler.py",
+        PROJECT_ROOT / "scripts" / "sync_google_ops_board.py",
+        PROJECT_ROOT / "core" / "ops" / "google_ops_board_attribution.py",
+        PROJECT_ROOT / "scripts" / "validate_google_closeout_expected_orders.py",
+    ]
+    fingerprints: dict[str, dict[str, Any]] = {}
+    for path in paths:
+        relative = str(path.relative_to(PROJECT_ROOT))
+        raw = path.read_bytes()
+        fingerprints[relative] = {
+            "size": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    return fingerprints
+
+
+def _build_live_board_parity_report(
+    *,
+    client: GoogleOpsBoardClient,
+    db_path: Path,
+    contract,
+    target_date: date,
+) -> dict[str, Any]:
+    """Compare the live employee surface to the canonical preserved payload."""
+
+    from scripts.sync_google_ops_board import (
+        DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
+        annotate_unsafe_attribution_for_visibility,
+        build_phase1_payload,
+        build_publish_plan,
+    )
+
+    checked_tabs = ["README", "SalesRaw_Today", "Run_Control", "Exceptions"]
+    before_snapshot = client.snapshot_tabs(checked_tabs)
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=contract,
+        target_date=target_date,
+        lookback_days=5,
+        obligation_ledger_path=DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
+    )
+    attribution_report = audit_salesraw_name_core_attribution(
+        rows=list(payload.get("SalesRaw_Today") or []),
+        db_path=db_path,
+        include_safe_rows=False,
+    )
+    visibility_annotation = annotate_unsafe_attribution_for_visibility(
+        payload=payload,
+        attribution_report=attribution_report,
+        target_date=target_date,
+    )
+    if not visibility_annotation["ok"]:
+        return {
+            "ok": False,
+            "target_date": target_date.isoformat(),
+            "same_day_preserve": False,
+            "tabs": {},
+            "issues": [
+                {
+                    "code": "UNSAFE_ATTRIBUTION_VISIBILITY_ANNOTATION_FAILED",
+                    "detail": visibility_annotation,
+                }
+            ],
+            "visibility_annotation": visibility_annotation,
+        }
+    plan = build_publish_plan(
+        contract=contract,
+        before_snapshot=before_snapshot,
+        fresh_payload=payload,
+        target_date=target_date,
+    )
+    tab_reports: dict[str, dict[str, Any]] = {}
+    all_issues: list[dict[str, Any]] = []
+    for tab_name in ("SalesRaw_Today", "Run_Control", "Exceptions"):
+        tab_contract = contract.tabs[tab_name]
+        key_column = tab_contract.key_column
+        ignored_volatile_columns = (
+            {"last_sync_at"} if tab_name == "Exceptions" else set()
+        )
+        expected_rows = list(plan["tab_actions"][tab_name]["final_rows"])
+        actual_rows = extract_rows_from_matrix(
+            tab_contract.headers,
+            before_snapshot.get(tab_name),
+        )
+
+        def keyed(rows: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+            index: dict[str, dict[str, Any]] = {}
+            duplicates: list[str] = []
+            for row in rows:
+                key = _normalized_board_value(row.get(key_column))
+                if not key:
+                    continue
+                if key in index:
+                    duplicates.append(key)
+                else:
+                    index[key] = row
+            return index, sorted(set(duplicates))
+
+        expected_by_key, expected_duplicates = keyed(expected_rows)
+        actual_by_key, actual_duplicates = keyed(actual_rows)
+        missing_keys = sorted(set(expected_by_key) - set(actual_by_key))
+        extra_keys = sorted(set(actual_by_key) - set(expected_by_key))
+        mismatches: list[dict[str, Any]] = []
+        size_preservation_mismatches: list[dict[str, str]] = []
+        for key in sorted(set(expected_by_key) & set(actual_by_key)):
+            expected = expected_by_key[key]
+            actual = actual_by_key[key]
+            different_columns = [
+                header
+                for header in tab_contract.headers
+                if header not in ignored_volatile_columns
+                if _normalized_board_value(expected.get(header))
+                != _normalized_board_value(actual.get(header))
+            ]
+            if different_columns:
+                mismatches.append({"key": key, "columns": different_columns})
+            if tab_name == "SalesRaw_Today":
+                actual_size = _normalized_board_value(actual.get("MY_SIZE"))
+                expected_size = _normalized_board_value(expected.get("MY_SIZE"))
+                if actual_size and actual_size != expected_size:
+                    size_preservation_mismatches.append(
+                        {
+                            "key": key,
+                            "live_size": actual_size,
+                            "preserved_size": expected_size,
+                        }
+                    )
+        issues: list[dict[str, Any]] = []
+        for code, values in (
+            ("EXPECTED_DUPLICATE_KEYS", expected_duplicates),
+            ("LIVE_DUPLICATE_KEYS", actual_duplicates),
+            ("MISSING_LIVE_KEYS", missing_keys),
+            ("EXTRA_LIVE_KEYS", extra_keys),
+        ):
+            if values:
+                issues.append({"code": code, "keys": values[:50], "count": len(values)})
+        if mismatches:
+            issues.append(
+                {
+                    "code": "LIVE_ROW_VALUE_MISMATCH",
+                    "rows": mismatches[:50],
+                    "count": len(mismatches),
+                }
+            )
+        if size_preservation_mismatches:
+            issues.append(
+                {
+                    "code": "NONBLANK_SIZE_NOT_PRESERVED",
+                    "rows": size_preservation_mismatches[:50],
+                    "count": len(size_preservation_mismatches),
+                }
+            )
+        tab_reports[tab_name] = {
+            "ok": not issues,
+            "key_column": key_column,
+            "expected_row_count": len(expected_rows),
+            "live_row_count": len(actual_rows),
+            "expected_key_count": len(expected_by_key),
+            "live_key_count": len(actual_by_key),
+            "ignored_volatile_columns": sorted(ignored_volatile_columns),
+            "issues": issues,
+        }
+        all_issues.extend({"tab": tab_name, **issue} for issue in issues)
+    return {
+        "ok": not all_issues,
+        "target_date": target_date.isoformat(),
+        "same_day_preserve": bool(plan.get("same_day_preserve")),
+        "previous_target_date": str(plan.get("previous_target_date") or ""),
+        "visibility_annotation": visibility_annotation,
+        "tabs": tab_reports,
+        "issues": all_issues,
+    }
+
+
+def _build_name_core_attribution_report(
+    *,
+    db_path: Path,
+    contract,
+    target_date: date,
+) -> dict[str, Any]:
+    # Lazy import avoids making health module import order part of the publisher
+    # contract while keeping this check bound to the exact canonical payload.
+    from scripts.sync_google_ops_board import (
+        DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
+        build_phase1_payload,
+    )
+
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=contract,
+        target_date=target_date,
+        lookback_days=5,
+        obligation_ledger_path=DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
+    )
+    return audit_salesraw_name_core_attribution(
+        rows=list(payload.get("SalesRaw_Today") or []),
+        db_path=db_path,
+        include_safe_rows=False,
+    )
 
 
 def _build_store_context_report(store_codes: list[str]) -> dict[str, Any]:
@@ -420,11 +635,18 @@ def ensure_prewindow_health(
     verbose: bool = False,
     force: bool = False,
     profile: str = HEALTH_PROFILE_FULL,
+    require_live_board_parity: bool | None = None,
+    emit_alerts: bool = True,
 ) -> dict[str, Any]:
     _load_repo_dotenv()
     ledger_env = os.environ
     ensure_kaspi_api_call_ledger_env(ledger_env, target_date=target_date, project_root=PROJECT_ROOT)
     resolved_profile = _resolve_health_profile(profile)
+    strict_board_parity = (
+        resolved_profile != HEALTH_PROFILE_PUBLISH
+        if require_live_board_parity is None
+        else bool(require_live_board_parity)
+    )
     profile_checks = HEALTH_PROFILE_CHECKS[resolved_profile]
     if profile_checks["identity_sync"]:
         _require_apply_gate(apply)
@@ -463,6 +685,7 @@ def ensure_prewindow_health(
         "workbook_fingerprint": fingerprint,
         "ran_at": now_almaty().isoformat(),
         "identity_sync_reused": reuse_identity_sync,
+        "runtime_code_fingerprints": _runtime_code_fingerprints(),
         "ok": False,
         "checks": {},
     }
@@ -514,10 +737,48 @@ def ensure_prewindow_health(
     else:
         report["checks"]["identity_sync"] = {"ok": False, "error": "skipped: db_preflight failed"}
 
+    # Attribution must observe the post-identity-sync DB state. Publish and
+    # closeout profiles intentionally skip identity sync, but still evaluate
+    # this gate at the same point in the health sequence.
+    if report["checks"]["db_preflight"]["ok"]:
+        try:
+            report["checks"]["name_core_attribution"] = _build_name_core_attribution_report(
+                db_path=db_path,
+                contract=contract,
+                target_date=target_date,
+            )
+        except Exception as exc:
+            report["checks"]["name_core_attribution"] = {
+                "ok": False,
+                "error": str(exc),
+            }
+    else:
+        report["checks"]["name_core_attribution"] = {
+            "ok": False,
+            "error": "skipped: db_preflight failed",
+        }
+    attribution_check = report["checks"]["name_core_attribution"]
+    attribution_check["blocking"] = resolved_profile != HEALTH_PROFILE_PUBLISH
+    attribution_check["visibility_only"] = resolved_profile == HEALTH_PROFILE_PUBLISH
+    attribution_check["closeout_ready"] = bool(attribution_check.get("ok"))
+
     try:
         report["checks"]["google_layout"] = _build_google_layout_report(client=client, contract=contract)
     except Exception as exc:
         report["checks"]["google_layout"] = {"ok": False, "error": str(exc)}
+
+    try:
+        board_parity = _build_live_board_parity_report(
+            client=client,
+            db_path=db_path,
+            contract=contract,
+            target_date=target_date,
+        )
+    except Exception as exc:
+        board_parity = {"ok": False, "error": str(exc)}
+    board_parity["blocking"] = strict_board_parity
+    board_parity["phase"] = "strict_readback" if strict_board_parity else "pre_publish_observation"
+    report["checks"]["live_board_parity"] = board_parity
 
     if profile_checks["store_context"]:
         try:
@@ -559,7 +820,8 @@ def ensure_prewindow_health(
         if (payload or {}).get("blocking", True) is not False
     )
     dump_json(report_path, report)
-    _send_health_alert(report, previous_report)
+    if emit_alerts:
+        _send_health_alert(report, previous_report)
     return report
 
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+from scripts import sync_google_ops_board as sync_mod
 from core.integrations.google_ops_board import (
     GoogleOpsBoardClient,
     build_tab_reorder_requests,
@@ -17,14 +19,230 @@ from core.integrations.google_ops_board import (
     validate_contract_layout,
 )
 from scripts.sync_google_ops_board import (
+    UNSAFE_ATTRIBUTION_EXCEPTION_TYPE,
+    UNSAFE_ATTRIBUTION_SENTINEL,
     _format_express_delivery_status,
     _invalid_layout_tabs,
     _is_trailing_header_extension,
+    annotate_unsafe_attribution_for_visibility,
     build_phase1_payload,
     build_publish_plan,
     write_rollover_archive,
 )
-from scripts.sync_google_ops_board_sizes_to_db import build_size_writeback_plan, plan_size_writeback
+from scripts.sync_google_ops_board_sizes_to_db import (
+    _load_db_rows as load_size_writeback_db_rows,
+    build_size_writeback_plan,
+    plan_size_writeback,
+)
+
+
+def test_sync_blocks_unsafe_attribution_before_google_client(
+    monkeypatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "app.db"
+    db_path.write_bytes(b"sqlite")
+    output_path = tmp_path / "sync_report.json"
+    monkeypatch.setattr(
+        sync_mod,
+        "build_phase1_payload",
+        lambda **_kwargs: {"SalesRaw_Today": [{"OrderID": "unsafe-order"}]},
+    )
+    monkeypatch.setattr(
+        sync_mod,
+        "audit_salesraw_name_core_attribution",
+        lambda **_kwargs: {
+            "schema_version": 1,
+            "ok": False,
+            "total_rows": 1,
+            "safe_rows": 0,
+            "blocked_rows": 1,
+            "source_counts": {"raw_offer_extract": 1},
+            "issue_counts": {"UNMAPPED_OR_UNSAFE_ATTRIBUTION": 1},
+            "findings": [{"order_id": "unsafe-order"}],
+        },
+    )
+    monkeypatch.setattr(
+        sync_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unsafe attribution must block before Google client construction"
+        ),
+    )
+
+    rc = sync_mod.main(
+        [
+            "--db",
+            str(db_path),
+            "--target-date",
+            "2026-04-15",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert rc == 1
+    assert report["failure_stage"] == "name_core_attribution"
+    assert report["write_applied"] is False
+
+
+def test_unsafe_attribution_visibility_annotation_keeps_row_visible_and_actionable() -> None:
+    payload = {
+        "README": [
+            {
+                "field": "last_sync_at",
+                "value": "2026-07-16T14:50:00+05:00",
+                "notes": "",
+            }
+        ],
+        "SalesRaw_Today": [
+            {
+                "OrderID": "SAFE-1",
+                "STORE_NAME": "Universal",
+                "Kaspi_name_core": "Safe_Core",
+                "_db_row_id": "10",
+            },
+            {
+                "OrderID": "BLOCKED-1",
+                "STORE_NAME": "AcmeWear",
+                "Kaspi_name_core": "unsafe raw title",
+                "_db_row_id": "11",
+            },
+        ],
+        "Exceptions": [],
+    }
+    attribution_report = {
+        "ok": False,
+        "blocked_rows": 1,
+        "findings": [
+            {
+                "status": "BLOCKED",
+                "row_index": 1,
+                "order_id": "BLOCKED-1",
+                "store_code": "ACMEWEAR",
+                "db_row_id": "11",
+                "issues": ["MISSING_ARTICLE_IDENTITY", "UNMAPPED_OR_UNSAFE_ATTRIBUTION"],
+            }
+        ],
+    }
+
+    annotation = annotate_unsafe_attribution_for_visibility(
+        payload=payload,
+        attribution_report=attribution_report,
+        target_date=sync_mod.date(2026, 7, 16),
+    )
+
+    assert annotation["ok"] is True
+    assert annotation["closeout_ready"] is False
+    assert annotation["annotated_row_count"] == 1
+    by_order = {row["OrderID"]: row for row in payload["SalesRaw_Today"]}
+    assert by_order["SAFE-1"]["Kaspi_name_core"] == "Safe_Core"
+    assert by_order["BLOCKED-1"]["Kaspi_name_core"] == UNSAFE_ATTRIBUTION_SENTINEL
+    assert payload["Exceptions"] == [
+        {
+            "exception_key": (
+                "BLOCKED-1:11:" + UNSAFE_ATTRIBUTION_EXCEPTION_TYPE
+            ),
+            "order_id": "BLOCKED-1",
+            "store": "AcmeWear",
+            "planned_date": "2026-07-16",
+            "exception_type": UNSAFE_ATTRIBUTION_EXCEPTION_TYPE,
+            "exception_note": (
+                "issues=MISSING_ARTICLE_IDENTITY,UNMAPPED_OR_UNSAFE_ATTRIBUTION"
+            ),
+            "owner": "",
+            "resolved": "",
+            "last_sync_at": "2026-07-16T14:50:00+05:00",
+        }
+    ]
+
+
+def test_visibility_publish_plan_preserves_existing_size_and_appends_blocked_row() -> None:
+    contract = load_ops_board_contract()
+    target = sync_mod.date(2026, 7, 16)
+    safe_existing = {
+        "Status": "TODAY",
+        "Date": "16.07.2026",
+        "STORE_NAME": "Universal",
+        "Kaspi_name_core": "Safe_Core",
+        "OrderID": "SAFE-1",
+        "MY_SIZE": "L",
+        "SKU_key": "SAFE",
+        "_db_row_id": "10",
+    }
+    safe_fresh = dict(safe_existing, MY_SIZE="")
+    blocked_fresh = {
+        "Status": "TODAY",
+        "Date": "16.07.2026",
+        "STORE_NAME": "AcmeWear",
+        "Kaspi_name_core": "unsafe raw title",
+        "OrderID": "BLOCKED-1",
+        "MY_SIZE": "",
+        "SKU_key": "BLOCKED",
+        "_db_row_id": "11",
+    }
+    before_snapshot = {
+        name: rows_to_matrix(tab.headers, []) for name, tab in contract.tabs.items()
+    }
+    before_snapshot["README"] = rows_to_matrix(
+        contract.tabs["README"].headers,
+        [{"field": "target_date", "value": target.isoformat(), "notes": ""}],
+    )
+    before_snapshot["SalesRaw_Today"] = rows_to_matrix(
+        contract.tabs["SalesRaw_Today"].headers,
+        [safe_existing],
+    )
+    before_snapshot["Run_Control"] = rows_to_matrix(
+        contract.tabs["Run_Control"].headers,
+        [{"target_date": target.isoformat(), "ready_for_closeout": "HOLD"}],
+    )
+    payload = {name: [] for name in contract.tabs}
+    payload["README"] = [
+        {"field": "target_date", "value": target.isoformat(), "notes": ""},
+        {
+            "field": "last_sync_at",
+            "value": "2026-07-16T14:50:00+05:00",
+            "notes": "",
+        },
+    ]
+    payload["SalesRaw_Today"] = [safe_fresh, blocked_fresh]
+    payload["Run_Control"] = [
+        {"target_date": target.isoformat(), "ready_for_closeout": "HOLD"}
+    ]
+    annotation = annotate_unsafe_attribution_for_visibility(
+        payload=payload,
+        attribution_report={
+            "ok": False,
+            "blocked_rows": 1,
+            "findings": [
+                {
+                    "status": "BLOCKED",
+                    "row_index": 1,
+                    "order_id": "BLOCKED-1",
+                    "store_code": "ACMEWEAR",
+                    "db_row_id": "11",
+                    "issues": ["UNMAPPED_OR_UNSAFE_ATTRIBUTION"],
+                }
+            ],
+        },
+        target_date=target,
+    )
+
+    plan = build_publish_plan(
+        contract=contract,
+        before_snapshot=before_snapshot,
+        fresh_payload=payload,
+        target_date=target,
+    )
+
+    assert annotation["ok"] is True
+    final_rows = plan["tab_actions"]["SalesRaw_Today"]["final_rows"]
+    final_by_order = {row["OrderID"]: row for row in final_rows}
+    assert final_by_order["SAFE-1"]["MY_SIZE"] == "L"
+    assert final_by_order["BLOCKED-1"]["Kaspi_name_core"] == UNSAFE_ATTRIBUTION_SENTINEL
+    assert [row["OrderID"] for row in plan["tab_actions"]["SalesRaw_Today"]["append_rows"]] == [
+        "BLOCKED-1"
+    ]
 
 
 def _make_orders_db(db_path: Path) -> None:
@@ -296,7 +514,7 @@ def _make_orders_db(db_path: Path) -> None:
                 180,
                 82,
                 "2026-04-14T18:00:00",
-                "2026-04-14T18:00:00",
+                "2026-04-15T07:00:00",
             ),
         ]
         conn.executemany(
@@ -315,6 +533,26 @@ def _make_orders_db(db_path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _write_obligation_ledger(
+    tmp_path: Path,
+    *store_order_pairs: tuple[str, str],
+) -> Path:
+    ledger_path = tmp_path / "waybill_shipping_obligations.json"
+    entries = {
+        f"{store_code}:{order_id}": {
+            "store_code": store_code,
+            "order_id": order_id,
+            "status": "unresolved",
+        }
+        for store_code, order_id in store_order_pairs
+    }
+    ledger_path.write_text(
+        json.dumps({"schema_version": 1, "entries": entries}),
+        encoding="utf-8",
+    )
+    return ledger_path
 
 
 def test_default_google_ops_board_contract_loads_expected_tabs():
@@ -734,6 +972,10 @@ def test_build_phase1_payload_groups_orders_into_board_tabs(tmp_path: Path):
         target_date="2026-04-15",
         lookback_days=5,
         now_iso="2026-04-15T13:00:00+05:00",
+        obligation_ledger_path=_write_obligation_ledger(
+            tmp_path,
+            ("UNIVERSAL", "0900"),
+        ),
     )
 
     orders = payload["Orders_Today"]
@@ -840,6 +1082,10 @@ def test_build_phase1_payload_drops_placeholder_shadow_rows_when_concrete_row_ex
         target_date="2026-04-15",
         lookback_days=5,
         now_iso="2026-04-15T13:00:00+05:00",
+        obligation_ledger_path=_write_obligation_ledger(
+            tmp_path,
+            ("UNIVERSAL", "0900"),
+        ),
     )
 
     salesraw = payload["SalesRaw_Today"]
@@ -1081,7 +1327,7 @@ def test_build_phase1_payload_respects_all_store_1700_same_day_cutoff(tmp_path: 
     assert rows_by_order["1010"]["STORE_NAME"] == "STORE-B"
 
 
-def test_build_phase1_payload_carries_forward_pending_previous_day_rows_within_store_cutoff(tmp_path: Path):
+def test_build_phase1_payload_carries_forward_pending_previous_day_rows_regardless_of_prior_cutoff(tmp_path: Path):
     db_path = tmp_path / "app.db"
     _make_orders_db(db_path)
 
@@ -1128,7 +1374,7 @@ def test_build_phase1_payload_carries_forward_pending_previous_day_rows_within_s
                     "+77000000030",
                     170,
                     70,
-                    "2026-04-14T17:00:00",
+                    "2026-04-15T07:00:00",
                 ),
                 (
                     31,
@@ -1159,7 +1405,7 @@ def test_build_phase1_payload_carries_forward_pending_previous_day_rows_within_s
                     "+77000000031",
                     170,
                     70,
-                    "2026-04-14T17:01:00",
+                    "2026-04-15T07:00:00",
                 ),
             ],
         )
@@ -1174,14 +1420,21 @@ def test_build_phase1_payload_carries_forward_pending_previous_day_rows_within_s
         target_date="2026-04-15",
         lookback_days=5,
         now_iso="2026-04-15T13:00:00+05:00",
+        obligation_ledger_path=_write_obligation_ledger(
+            tmp_path,
+            ("ACMEWEAR", "0910"),
+            ("ACMEWEAR", "0911"),
+        ),
     )
 
     salesraw_by_order = {row["OrderID"]: row for row in payload["SalesRaw_Today"]}
 
     assert salesraw_by_order["0910"]["Status"] == "OVERDUE"
     assert salesraw_by_order["0910"]["MY_SIZE"] == ""
-    assert "0911" not in salesraw_by_order
+    assert salesraw_by_order["0911"]["Status"] == "OVERDUE"
+    assert salesraw_by_order["0911"]["MY_SIZE"] == ""
     assert "0910" in {row["order_id"] for row in payload["Needs_Size"]}
+    assert "0911" in {row["order_id"] for row in payload["Needs_Size"]}
 
 
 def test_build_phase1_payload_excludes_stale_pending_sibling_when_order_was_handed_over(tmp_path: Path):
@@ -1277,10 +1530,348 @@ def test_build_phase1_payload_excludes_stale_pending_sibling_when_order_was_hand
         target_date="2026-04-15",
         lookback_days=5,
         now_iso="2026-04-15T13:00:00+05:00",
+        obligation_ledger_path=_write_obligation_ledger(
+            tmp_path,
+            ("UNIVERSAL", "0912"),
+        ),
     )
 
     assert "0912" not in {row["OrderID"] for row in payload["SalesRaw_Today"]}
     assert "0912" not in {row["order_id"] for row in payload["Needs_Size"]}
+
+
+@pytest.mark.parametrize("internal_status", ["SHIPPED", "COMPLETED"])
+def test_internal_status_alone_does_not_discharge_overdue_order(
+    tmp_path: Path,
+    internal_status: str,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, planned_shipment_date, created_at,
+                kaspi_status, internal_status, kaspi_offer_name, sku_key, sku_id,
+                my_size, assigned_size, quantity, waybill_url, waybill_downloaded,
+                actual_shipment_date, courier_transmission_date, kaspi_status_detail,
+                signature_required, delivery_mode, payment_mode, returned_to_warehouse,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                50,
+                "0913",
+                "UNIVERSAL",
+                "2026-04-14",
+                "2026-04-14T10:00:00",
+                "KASPI_DELIVERY",
+                internal_status,
+                "Carryover White",
+                "SKU-1",
+                "SKU-1-LINE-CARRY",
+                "XL",
+                "XL",
+                1,
+                "https://wb/0913",
+                1,
+                None,
+                None,
+                "ACCEPTED_BY_MERCHANT",
+                0,
+                "DELIVERY",
+                "PREPAID",
+                0,
+                "2026-04-15T07:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=load_ops_board_contract(),
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:00:00+05:00",
+        obligation_ledger_path=_write_obligation_ledger(
+            tmp_path,
+            ("UNIVERSAL", "0913"),
+        ),
+    )
+
+    assert next(row for row in payload["SalesRaw_Today"] if row["OrderID"] == "0913")["Status"] == "OVERDUE"
+    assert "0913" in {row["order_id"] for row in payload["Shipping_Queue"]}
+    assert "0913" not in {row["order_id"] for row in payload["Shipped_Today"]}
+
+
+def test_active_order_older_than_legacy_lookback_stays_visible_for_size_entry(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, planned_shipment_date, created_at,
+                kaspi_status, internal_status, kaspi_offer_name, sku_key, sku_id,
+                my_size, assigned_size, quantity, waybill_url, waybill_downloaded,
+                actual_shipment_date, courier_transmission_date, kaspi_status_detail,
+                signature_required, delivery_mode, payment_mode, returned_to_warehouse,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                51,
+                "0915",
+                "UNIVERSAL",
+                "2026-03-01",
+                "2026-03-01T10:00:00",
+                "KASPI_DELIVERY",
+                "ACCEPTED",
+                "Long-lived Carryover",
+                "SKU-1",
+                "SKU-1-LINE-LONG-LIVED",
+                None,
+                None,
+                1,
+                None,
+                0,
+                None,
+                None,
+                "ACCEPTED_BY_MERCHANT",
+                0,
+                "DELIVERY",
+                "PREPAID",
+                0,
+                "2026-04-15T07:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=load_ops_board_contract(),
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:00:00+05:00",
+        obligation_ledger_path=_write_obligation_ledger(
+            tmp_path,
+            ("UNIVERSAL", "0915"),
+        ),
+    )
+
+    assert next(row for row in payload["SalesRaw_Today"] if row["OrderID"] == "0915")["Status"] == "OVERDUE"
+    assert "0915" in {row["order_id"] for row in payload["Needs_Size"]}
+    assert "0915" not in {row["order_id"] for row in payload["Shipped_Today"]}
+
+
+def test_board_excludes_unknown_and_stale_unobserved_rows_but_keeps_ledger_obligation(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = [
+            (52, "UNKNOWN1", "UNKNOWN", "2026-03-01", "2026-04-15T07:00:00"),
+            (53, "STALE1", "UNIVERSAL", "2026-03-01", "2026-03-01T07:00:00"),
+            (54, "LEDGER1", "UNIVERSAL", "2026-02-01", "2026-02-01T07:00:00"),
+        ]
+        for row_id, order_id, store_code, planned_date, updated_at in rows:
+            conn.execute(
+                """
+                INSERT INTO fact_orders_kaspi (
+                    id, order_id, store_code, planned_shipment_date, created_at,
+                    kaspi_status, internal_status, kaspi_offer_name, sku_key, sku_id,
+                    my_size, assigned_size, quantity, kaspi_status_detail,
+                    signature_required, delivery_mode, payment_mode,
+                    returned_to_warehouse, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row_id,
+                    order_id,
+                    store_code,
+                    planned_date,
+                    planned_date + "T10:00:00",
+                    "KASPI_DELIVERY",
+                    "ACCEPTED",
+                    "Carryover",
+                    "SKU-1",
+                    f"SKU-1-{order_id}",
+                    "L",
+                    "L",
+                    1,
+                    "ACCEPTED_BY_MERCHANT",
+                    0,
+                    "DELIVERY",
+                    "PREPAID",
+                    0,
+                    updated_at,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    ledger_path = tmp_path / "waybill_shipping_obligations.json"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "updated_at": "2026-04-14T18:00:00+05:00",
+                "request_identity": {},
+                "entries": {
+                    "UNIVERSAL:LEDGER1": {
+                        "store_code": "UNIVERSAL",
+                        "order_id": "LEDGER1",
+                        "status": "unresolved",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=load_ops_board_contract(),
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:00:00+05:00",
+        obligation_ledger_path=ledger_path,
+    )
+    order_ids = {row["OrderID"] for row in payload["SalesRaw_Today"]}
+
+    assert "UNKNOWN1" not in order_ids
+    assert "STALE1" not in order_ids
+    assert "LEDGER1" in order_ids
+
+
+def test_source_terminal_sibling_excludes_order_without_shipment_timestamp(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        common = (
+            "0914",
+            "UNIVERSAL",
+            "2026-04-14",
+            "2026-04-14T10:00:00",
+        )
+        conn.executemany(
+            """
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, planned_shipment_date, created_at,
+                kaspi_status, internal_status, kaspi_offer_name, sku_key, sku_id,
+                my_size, assigned_size, quantity, actual_shipment_date,
+                courier_transmission_date, kaspi_status_detail, signature_required,
+                delivery_mode, payment_mode, returned_to_warehouse, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (60, *common, "ARCHIVE", "COMPLETED", "Terminal", "SKU-1", "SKU-1-T", "XL", "XL", 1, None, None, "COMPLETED", 0, "DELIVERY", "PREPAID", 0, "2026-04-14T12:00:00"),
+                (61, *common, "KASPI_DELIVERY", "READY", "Stale", "SKU-2", "SKU-2-S", "XL", "XL", 1, None, None, "ACCEPTED_BY_MERCHANT", 0, "DELIVERY", "PREPAID", 0, "2026-04-14T12:00:00"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=load_ops_board_contract(),
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:00:00+05:00",
+    )
+
+    assert "0914" not in {row["OrderID"] for row in payload["SalesRaw_Today"]}
+    assert "0914" not in {row["order_id"] for row in payload["Shipping_Queue"]}
+
+
+def test_bare_archive_and_internal_completed_do_not_drop_ledger_obligation(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (
+                id, order_id, store_code, planned_shipment_date, created_at,
+                kaspi_status, internal_status, kaspi_offer_name, sku_key, sku_id,
+                my_size, assigned_size, quantity, kaspi_status_detail,
+                signature_required, delivery_mode, payment_mode,
+                returned_to_warehouse, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                62,
+                "ARCHIVE-UNCERTAIN",
+                "UNIVERSAL",
+                "2026-04-14",
+                "2026-04-14T10:00:00",
+                "ARCHIVE",
+                "COMPLETED",
+                "Archive Needs Exact Truth",
+                "SKU-1",
+                "SKU-1-ARCHIVE",
+                "XL",
+                "XL",
+                1,
+                "",
+                0,
+                "DELIVERY",
+                "PREPAID",
+                0,
+                "2026-04-14T12:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    ledger_path = tmp_path / "waybill_shipping_obligations.json"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "entries": {
+                    "UNIVERSAL:ARCHIVE-UNCERTAIN": {
+                        "store_code": "UNIVERSAL",
+                        "order_id": "ARCHIVE-UNCERTAIN",
+                        "status": "unresolved",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_phase1_payload(
+        db_path=db_path,
+        contract=load_ops_board_contract(),
+        target_date="2026-04-15",
+        lookback_days=5,
+        now_iso="2026-04-15T13:00:00+05:00",
+        obligation_ledger_path=ledger_path,
+    )
+
+    assert "ARCHIVE-UNCERTAIN" in {
+        row["OrderID"] for row in payload["SalesRaw_Today"]
+    }
+    assert "ARCHIVE-UNCERTAIN" in {
+        row["order_id"] for row in payload["Shipping_Queue"]
+    }
 
 
 def test_build_phase1_payload_applies_order_specific_name_core_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1608,6 +2199,27 @@ def test_build_size_writeback_plan_only_emits_changed_non_empty_sizes():
             "product_type": "CL",
         }
     ]
+
+
+def test_size_writeback_db_loader_uses_exact_sheet_row_ids_without_date_expiry(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _make_orders_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "UPDATE fact_orders_kaspi SET planned_shipment_date = '2026-01-01' WHERE id = 5"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    loaded = load_size_writeback_db_rows(db_path, {"1", "5"})
+
+    assert set(loaded) == {"1", "5"}
+    assert loaded["5"]["sku_key"] == "SKU-9"
+    assert "2" not in loaded
 
 
 def test_build_size_writeback_plan_skips_invalid_manual_sizes():

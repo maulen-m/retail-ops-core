@@ -23,6 +23,8 @@ def test_kaspi_import_plist_uses_v2_label() -> None:
 def test_kaspi_import_plist_sets_all_store_1700_planned_date_cutoff() -> None:
     plist = _read_kaspi_import_plist()
     env = plist.get("EnvironmentVariables", {})
+    assert env.get("KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR") == "17"
+    assert env.get("KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR") == "0"
     assert env.get("KASPI_PLANNED_CUTOFF_HOUR") == "17"
     assert env.get("KASPI_PLANNED_CUTOFF_MINUTE") == "0"
 
