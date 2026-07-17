@@ -153,3 +153,6 @@ green_path_run/
 .ruff_cache/
 .coverage
 htmlcov/
+runtime/state/*.json
+runtime/state/*.bak
+runtime/locks/
