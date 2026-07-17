@@ -275,6 +275,7 @@
       "schedule": {"type": "interval", "seconds": 60},
       "health": {"mode": "interval_log", "max_age_seconds": 180},
       "environment_variables": {
+        "AB_GOOGLE_OPS_BOARD_ALLOW_AUTO_PROBABLE_FILL": "1",
         "AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID": "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg",
         "AB_GOOGLE_SERVICE_ACCOUNT_JSON": "${HOME}/Docs/Business/S/ab-ops-board-sync-key.json",
         "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT": "1",
