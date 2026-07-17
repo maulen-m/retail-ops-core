@@ -2751,6 +2751,118 @@ def test_google_ops_board_full_tab_write_clears_existing_values_first():
     assert session.calls[1][1].endswith("/values/SalesRaw_Today%21A1?valueInputOption=RAW")
 
 
+@pytest.mark.parametrize(
+    ("previous_values", "new_values", "expected_range", "expected_values"),
+    [
+        (
+            [["old-a", "old-b", "old-c", "old-d"], ["1", "2"], ["3"]],
+            [["new-a", "new-b"], ["4", "5"]],
+            "SalesRaw_Today!A1:D3",
+            [["new-a", "new-b", "", ""], ["4", "5", "", ""], ["", "", "", ""]],
+        ),
+        (
+            [["old-a"], ["1"], ["2"], ["3"]],
+            [["new-a", "new-b", "new-c"], ["4", "5", "6"]],
+            "SalesRaw_Today!A1:C4",
+            [["new-a", "new-b", "new-c"], ["4", "5", "6"], ["", "", ""], ["", "", ""]],
+        ),
+    ],
+)
+def test_google_ops_board_atomic_overwrite_uses_one_union_extent_update(
+    previous_values,
+    new_values,
+    expected_range,
+    expected_values,
+):
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            if method == "GET":
+                return FakeResponse({"values": previous_values})
+            return FakeResponse({})
+
+    session = FakeSession()
+    client = GoogleOpsBoardClient("sheet-id", session)
+
+    client.overwrite_tab_rows("SalesRaw_Today", new_values)
+
+    assert [call[0] for call in session.calls] == ["GET", "PUT"]
+    update_call = session.calls[1]
+    assert ":clear" not in update_call[1]
+    assert update_call[1].endswith(
+        f"/values/{expected_range.replace('!', '%21').replace(':', '%3A')}?valueInputOption=RAW"
+    )
+    assert update_call[2]["json"] == {
+        "range": expected_range,
+        "majorDimension": "ROWS",
+        "values": expected_values,
+    }
+
+
+def test_board_publish_flag_off_keeps_clear_then_write(monkeypatch):
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def clear_tab(self, tab_name):
+            self.calls.append(("clear_tab", tab_name))
+
+        def write_tab_rows(self, tab_name, headers, rows):
+            self.calls.append(("write_tab_rows", tab_name, headers, rows))
+
+        def overwrite_tab_rows(self, tab_name, rows):
+            self.calls.append(("overwrite_tab_rows", tab_name, rows))
+
+    client = FakeClient()
+    rows = [{"col": "value"}]
+    monkeypatch.delenv("AB_ATOMIC_BOARD_PUBLISH", raising=False)
+
+    sync_mod._publish_rewrite_tab(client, "SalesRaw_Today", ["col"], rows)
+
+    assert client.calls == [
+        ("clear_tab", "SalesRaw_Today"),
+        ("write_tab_rows", "SalesRaw_Today", ["col"], rows),
+    ]
+
+
+def test_board_publish_flag_on_uses_atomic_overwrite_without_clear(monkeypatch):
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def clear_tab(self, tab_name):
+            self.calls.append(("clear_tab", tab_name))
+
+        def write_tab_rows(self, tab_name, headers, rows):
+            self.calls.append(("write_tab_rows", tab_name, headers, rows))
+
+        def overwrite_tab_rows(self, tab_name, rows):
+            self.calls.append(("overwrite_tab_rows", tab_name, rows))
+
+    client = FakeClient()
+    rows = [{"col": "value"}]
+    monkeypatch.setenv("AB_ATOMIC_BOARD_PUBLISH", "1")
+
+    sync_mod._publish_rewrite_tab(client, "SalesRaw_Today", ["col"], rows)
+
+    assert client.calls == [
+        ("overwrite_tab_rows", "SalesRaw_Today", [["col"], ["value"]]),
+    ]
+
+
 def test_build_publish_plan_same_day_appends_new_salesraw_rows_only_at_bottom():
     contract = load_ops_board_contract()
     before_snapshot = {

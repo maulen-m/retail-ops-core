@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
@@ -24,6 +25,7 @@ from core.integrations.google_ops_board import (
     extract_rows_with_positions_from_matrix,
     load_ops_board_contract,
     merge_rows_preserving_editables,
+    rows_to_matrix,
     resolve_service_account_json,
     resolve_spreadsheet_id,
     validate_contract_layout,
@@ -1371,6 +1373,19 @@ def write_rollover_archive(
     return archive_path
 
 
+def _publish_rewrite_tab(
+    client: GoogleOpsBoardClient,
+    tab_name: str,
+    headers: list[str],
+    rows: list[dict[str, Any]],
+) -> None:
+    if os.environ.get("AB_ATOMIC_BOARD_PUBLISH") == "1":
+        client.overwrite_tab_rows(tab_name, rows_to_matrix(headers, rows))
+        return
+    client.clear_tab(tab_name)
+    client.write_tab_rows(tab_name, headers, rows)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sync the phase-1 Google Ops Board from db/app.db.")
     parser.add_argument("--db", type=Path, default=None, help="SQLite DB path (default: db/app.db)")
@@ -1593,8 +1608,12 @@ def main(argv: list[str] | None = None) -> int:
             if action["existing_rows"] == action["final_rows"] and tab_name not in invalid_tabs:
                 skipped_noop_tabs.append(tab_name)
                 continue
-            client.clear_tab(tab_name)
-            client.write_tab_rows(tab_name, contract.tabs[tab_name].headers, action["final_rows"])
+            _publish_rewrite_tab(
+                client,
+                tab_name,
+                contract.tabs[tab_name].headers,
+                action["final_rows"],
+            )
         report["skipped_noop_tabs"] = skipped_noop_tabs
         report["ui_applied_tabs"] = client.apply_contract_ui(contract)
         report["write_applied"] = True

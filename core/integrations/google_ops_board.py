@@ -561,6 +561,7 @@ class GoogleOpsBoardClient:
     def __init__(self, spreadsheet_id: str, session) -> None:
         self.spreadsheet_id = spreadsheet_id
         self.session = session
+        self._tab_value_extents: dict[str, tuple[int, int]] = {}
 
     @classmethod
     def from_service_account_file(cls, spreadsheet_id: str, service_account_json: Path) -> "GoogleOpsBoardClient":
@@ -633,7 +634,12 @@ class GoogleOpsBoardClient:
         encoded_range = quote(f"{tab_name}!A:ZZ")
         url = f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values/{encoded_range}?majorDimension=ROWS"
         payload = self._request("GET", url).json()
-        return payload.get("values", [])
+        values = payload.get("values", [])
+        self._tab_value_extents[tab_name] = (
+            len(values),
+            max((len(row) for row in values), default=0),
+        )
+        return values
 
     def clear_tab(self, tab_name: str) -> None:
         encoded_range = quote(f"{tab_name}!A:ZZ")
@@ -653,6 +659,39 @@ class GoogleOpsBoardClient:
             "values": rows_to_matrix(headers, rows),
         }
         self._request("PUT", url, json=body)
+
+    def overwrite_tab_rows(self, tab_name: str, rows: list[list[Any]]) -> None:
+        previous_extent = self._tab_value_extents.get(tab_name)
+        if previous_extent is None:
+            self.get_tab_values(tab_name)
+            previous_extent = self._tab_value_extents[tab_name]
+
+        new_row_count = len(rows)
+        new_column_count = max((len(row) for row in rows), default=0)
+        union_row_count = max(previous_extent[0], new_row_count, 1)
+        union_column_count = max(previous_extent[1], new_column_count, 1)
+        padded_rows = [
+            list(row) + [""] * (union_column_count - len(row))
+            for row in rows
+        ]
+        padded_rows.extend(
+            [[""] * union_column_count for _ in range(union_row_count - len(padded_rows))]
+        )
+
+        range_tail = _column_letter(union_column_count)
+        update_range = f"{tab_name}!A1:{range_tail}{union_row_count}"
+        encoded_range = quote(update_range)
+        url = (
+            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values/{encoded_range}"
+            "?valueInputOption=RAW"
+        )
+        body = {
+            "range": update_range,
+            "majorDimension": "ROWS",
+            "values": padded_rows,
+        }
+        self._request("PUT", url, json=body)
+        self._tab_value_extents[tab_name] = (new_row_count, new_column_count)
 
     def append_tab_rows(self, tab_name: str, headers: list[str], rows: list[dict[str, Any]]) -> None:
         if not rows:
