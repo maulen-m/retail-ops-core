@@ -27,6 +27,7 @@
         "com.autonomous-business.end-of-day",
         "com.example.kaspi-daily-ops-report",
         "com.example.crm-db-sync",
+        "com.example.kaspi-crm-nightly-sidecar",
         "com.example.exchange-import",
         "com.example.kaspi-import-v2",
         "com.example.google-ops-board-publish",
@@ -55,6 +56,7 @@
         "com.autonomous-business.end-of-day",
         "com.example.kaspi-daily-ops-report",
         "com.example.crm-db-sync",
+        "com.example.kaspi-crm-nightly-sidecar",
         "com.example.exchange-import",
         "com.example.kaspi-import-v2",
         "com.example.google-ops-board-publish",
@@ -138,6 +140,13 @@
       "group": "3_db_import_and_crm_after_no_active_proof_window",
       "purpose": "CRM/DB sync automation",
       "risk": ["production_db_or_derived_db_write_possible"]
+    },
+    {
+      "label": "com.example.kaspi-crm-nightly-sidecar",
+      "plist": "~/Library/LaunchAgents/com.example.kaspi-crm-nightly-sidecar.plist",
+      "group": "3_db_import_and_crm_after_no_active_proof_window",
+      "purpose": "nightly guarded CRM workbook compatibility writer",
+      "risk": ["protected_crm_workbook_write_possible"]
     },
     {
       "label": "com.example.exchange-import",
