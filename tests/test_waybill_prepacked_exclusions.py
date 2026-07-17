@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 
 from core.ops.waybill_prepacked_exclusions import (
+    EXPECTATION_SCHEMA_VERSION,
     SCHEMA_VERSION,
     apply_prepacked_exclusion,
+    load_prepacked_exclusion_expectation,
     load_validated_prepacked_exclusion,
 )
 
@@ -79,6 +81,53 @@ def test_valid_decision_excludes_only_active_declared_orders(tmp_path: Path) -> 
         "UNIVERSAL": {"u2"}, "ACMEWEAR": {"o1"}, "STOREB": {"m2"}
     }
     assert result["excluded_active_count"] == 2
+    assert decision["decision_sha256"] == hashlib.sha256(
+        Path(decision["path"]).read_bytes()
+    ).hexdigest()
+
+
+def test_effective_dated_expectation_loader_matches_only_requested_date(
+    tmp_path: Path,
+) -> None:
+    marker_path = tmp_path / "waybill_prepacked_exclusion_expected.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "schema_version": EXPECTATION_SCHEMA_VERSION,
+                "expectations": [
+                    {
+                        "target_date": "2026-07-18",
+                        "decision_id": "JULY18-DECISION",
+                        "decision_sha256": "a" * 64,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    expectation = load_prepacked_exclusion_expectation(
+        target_date=date(2026, 7, 18),
+        path=marker_path,
+    )
+
+    assert expectation == {
+        "target_date": "2026-07-18",
+        "decision_id": "JULY18-DECISION",
+        "decision_sha256": "a" * 64,
+        "path": str(marker_path.resolve()),
+    }
+    assert load_prepacked_exclusion_expectation(
+        target_date=date(2026, 7, 19),
+        path=marker_path,
+    ) is None
+
+
+def test_absent_expectation_marker_preserves_optional_behavior(tmp_path: Path) -> None:
+    assert load_prepacked_exclusion_expectation(
+        target_date=date(2026, 7, 18),
+        path=tmp_path / "missing.json",
+    ) is None
 
 
 def test_decision_without_expected_counts_skips_count_assertions() -> None:

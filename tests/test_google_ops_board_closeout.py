@@ -225,6 +225,208 @@ def test_barrier_suppressed_failure_is_enqueued_as_held(monkeypatch, tmp_path: P
     assert "Held by halt barrier: HALT_CONFIRMED" in alerts[0]["lines"]
 
 
+def test_prepacked_exclusion_expectation_valid_or_absent_is_inert(
+    monkeypatch,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        closeout_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
+    target = date(2026, 7, 18)
+    decision = {
+        "decision_id": "JULY18-DECISION",
+        "decision_sha256": "a" * 64,
+    }
+    expectation = {
+        "target_date": target.isoformat(),
+        "decision_id": "JULY18-DECISION",
+        "decision_sha256": "a" * 64,
+    }
+
+    assert closeout_mod._enforce_prepacked_exclusion_expectation(
+        target_date=target,
+        expectation=expectation,
+        decision=decision,
+    ) == ""
+    assert closeout_mod._enforce_prepacked_exclusion_expectation(
+        target_date=target,
+        expectation=None,
+        decision=None,
+    ) == ""
+    assert alerts == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "message"),
+    [
+        (None, "missing or targets another date"),
+        (
+            {"decision_id": "WRONG", "decision_sha256": "a" * 64},
+            "decision_id mismatch",
+        ),
+        (
+            {"decision_id": "JULY18-DECISION", "decision_sha256": "b" * 64},
+            "file SHA-256 mismatch",
+        ),
+    ],
+)
+def test_prepacked_exclusion_expectation_mismatch_fails_closed_with_critical_alert(
+    monkeypatch,
+    decision: dict[str, str] | None,
+    message: str,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        closeout_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
+    target = date(2026, 7, 18)
+    expectation = {
+        "target_date": target.isoformat(),
+        "decision_id": "JULY18-DECISION",
+        "decision_sha256": "a" * 64,
+    }
+
+    error = closeout_mod._enforce_prepacked_exclusion_expectation(
+        target_date=target,
+        expectation=expectation,
+        decision=decision,
+    )
+
+    assert message in error
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "CRITICAL"
+    assert alerts[0]["dedup_key"] == (
+        "prepacked_exclusion_expectation_failed:2026-07-18"
+    )
+    assert error in alerts[0]["lines"]
+
+
+def test_closeout_expected_prepacked_decision_missing_stops_before_downstream(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _make_db(db_path)
+    _set_db_size(db_path)
+    contract = load_ops_board_contract()
+    creds = tmp_path / "svc.json"
+    creds.write_text("{}", encoding="utf-8")
+    client = _FakeClient(
+        {
+            "Run_Control": [
+                contract.tabs["Run_Control"].headers,
+                [
+                    "2026-04-15",
+                    "READY",
+                    "adil",
+                    "2026-04-15T18:10:00+05:00",
+                    "",
+                    "",
+                    "",
+                    "",
+                ],
+            ],
+            "SalesRaw_Today": [
+                contract.tabs["SalesRaw_Today"].headers,
+                [
+                    "TODAY",
+                    "2026-04-15",
+                    "Universal",
+                    "",
+                    "",
+                    "1",
+                    "Nike",
+                    "1001",
+                    "L",
+                    "L",
+                    "Offer",
+                    "SKU-1",
+                    "1",
+                    "1001|2026-04-15|SKU-1|Offer|1",
+                    "DEFAULT",
+                    "LOW",
+                ],
+            ],
+        }
+    )
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        closeout_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setattr(
+        closeout_mod,
+        "fetch_api_active_order_ids_by_store",
+        lambda **_kwargs: {"UNIVERSAL": {"1001"}},
+    )
+    monkeypatch.setattr(
+        closeout_mod,
+        "build_store_context_report",
+        lambda **_kwargs: {
+            "ok": True,
+            "active_store_codes": ["UNIVERSAL"],
+            "stores": [],
+            "failure_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        closeout_mod,
+        "load_validated_prepacked_exclusion",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        closeout_mod,
+        "load_prepacked_exclusion_expectation",
+        lambda **_kwargs: {
+            "target_date": "2026-04-15",
+            "decision_id": "EXPECTED-DECISION",
+            "decision_sha256": "a" * 64,
+            "path": str(tmp_path / "expectation.json"),
+        },
+    )
+    monkeypatch.setattr(
+        closeout_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
+    monkeypatch.setattr(
+        closeout_mod,
+        "_run_command",
+        lambda **_kwargs: pytest.fail("downstream command must not run"),
+    )
+    report_path = tmp_path / "closeout_report.json"
+
+    rc = closeout_mod.main(
+        [
+            "--db-path",
+            str(db_path),
+            "--service-account-json",
+            str(creds),
+            "--spreadsheet-id",
+            "sheet-id",
+            "--target-date",
+            "2026-04-15",
+            "--run-root",
+            str(tmp_path / "workflow_runs"),
+            "--json-out",
+            str(report_path),
+        ]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert rc == 1
+    assert report["failure_stage"] == "prepacked_exclusion_expectation"
+    assert report["prepacked_exclusion_expectation"]["satisfied"] is False
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "CRITICAL"
+    assert "missing or targets another date" in report["failure_reason"]
+
+
 def test_preserved_board_client_loads_snapshots_without_online_constructor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1805,9 +2007,19 @@ def test_closeout_mixed_exclusion_uncertainty_proceeds_and_reports_split(
         lifecycle.append("decision")
         return {
             "decision_id": "TEST-COVERED",
+            "decision_sha256": "a" * 64,
             "path": str(tmp_path / "decision.json"),
             "preserve_physical_handover_obligation": True,
             "excluded_order_ids_by_store": {"UNIVERSAL": {"COVERED"}},
+        }
+
+    def _load_expectation(**_kwargs):
+        lifecycle.append("expectation")
+        return {
+            "target_date": "2026-04-15",
+            "decision_id": "TEST-COVERED",
+            "decision_sha256": "a" * 64,
+            "path": str(tmp_path / "expectation.json"),
         }
 
     def _fetch_details(**_kwargs):
@@ -1857,6 +2069,7 @@ def test_closeout_mixed_exclusion_uncertainty_proceeds_and_reports_split(
     )
     monkeypatch.setattr(closeout_mod, "_run_command", _fake_run_command)
     monkeypatch.setattr(closeout_mod, "load_validated_prepacked_exclusion", _load_decision)
+    monkeypatch.setattr(closeout_mod, "load_prepacked_exclusion_expectation", _load_expectation)
     monkeypatch.setattr(closeout_mod, "_fetch_prior_obligation_details", _fetch_details)
     monkeypatch.setattr(
         closeout_mod,
@@ -1904,7 +2117,7 @@ def test_closeout_mixed_exclusion_uncertainty_proceeds_and_reports_split(
     )
     assert rc == 0
     assert report["ok"] is True
-    assert lifecycle == ["decision", "details"]
+    assert lifecycle == ["decision", "expectation", "details"]
     assert stage_calls == [
         "size_writeback",
         "shipping",

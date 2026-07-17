@@ -21,7 +21,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PREPACKED_EXCLUSION_PATH = (
     PROJECT_ROOT / "runtime" / "state" / "waybill_prepacked_exclusion.json"
 )
+DEFAULT_PREPACKED_EXCLUSION_EXPECTATION_PATH = (
+    PROJECT_ROOT / "runtime" / "state" / "waybill_prepacked_exclusion_expected.json"
+)
 SCHEMA_VERSION = "autonomous_business.waybill_prepacked_exclusion.v1"
+EXPECTATION_SCHEMA_VERSION = 1
 
 
 def _clean(value: Any) -> str:
@@ -46,6 +50,51 @@ def _normalized_ids_by_store(
             if store and order_id:
                 out[store].add(order_id)
     return {store: set(ids) for store, ids in sorted(out.items())}
+
+
+def load_prepacked_exclusion_expectation(
+    *,
+    target_date: date,
+    path: Path = DEFAULT_PREPACKED_EXCLUSION_EXPECTATION_PATH,
+) -> dict[str, Any] | None:
+    """Load the optional effective-dated expectation for one closeout date."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("Prepacked-exclusion expectation marker must be an object")
+    if int(payload.get("schema_version") or 0) != EXPECTATION_SCHEMA_VERSION:
+        raise RuntimeError("Unsupported prepacked-exclusion expectation schema")
+    expectations = payload.get("expectations")
+    if not isinstance(expectations, list):
+        raise RuntimeError("Prepacked-exclusion expectations must be a list")
+    matching = [
+        dict(item)
+        for item in expectations
+        if isinstance(item, Mapping)
+        and _clean(item.get("target_date")) == target_date.isoformat()
+    ]
+    if not matching:
+        return None
+    if len(matching) != 1:
+        raise RuntimeError("Prepacked-exclusion expectation date is duplicated")
+    expectation = matching[0]
+    decision_id = _clean(expectation.get("decision_id"))
+    decision_sha256 = _clean(expectation.get("decision_sha256")).lower()
+    if not decision_id:
+        raise RuntimeError("Prepacked-exclusion expectation lacks decision_id")
+    if len(decision_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in decision_sha256
+    ):
+        raise RuntimeError("Prepacked-exclusion expectation has invalid decision_sha256")
+    return {
+        **expectation,
+        "target_date": target_date.isoformat(),
+        "decision_id": decision_id,
+        "decision_sha256": decision_sha256,
+        "path": str(path.resolve()),
+    }
 
 
 def load_validated_prepacked_exclusion(
@@ -127,6 +176,7 @@ def load_validated_prepacked_exclusion(
     return {
         **payload,
         "path": str(path.resolve()),
+        "decision_sha256": _sha256(path),
         "excluded_order_ids_by_store": declared,
         "source_manifest_path": str(manifest_path),
         "source_telegram_ledger_path": str(ledger_path),

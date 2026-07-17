@@ -11,7 +11,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, MutableMapping
+from typing import Any, Mapping, MutableMapping
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -45,6 +45,7 @@ from core.ops.waybill_send_batch import (  # noqa: E402
 )
 from core.ops.waybill_prepacked_exclusions import (  # noqa: E402
     apply_prepacked_exclusion,
+    load_prepacked_exclusion_expectation,
     load_validated_prepacked_exclusion,
 )
 from core.ops.google_board_day_state import (  # noqa: E402
@@ -269,6 +270,55 @@ def _clean(value: Any) -> str:
     if text.endswith(".0") and text[:-2].isdigit():
         return text[:-2]
     return text
+
+
+def _prepacked_exclusion_expectation_error(
+    expectation: Mapping[str, Any] | None,
+    decision: Mapping[str, Any] | None,
+) -> str:
+    if expectation is None:
+        return ""
+    if decision is None:
+        return "expected prepacked-exclusion decision is missing or targets another date"
+    expected_id = _clean(expectation.get("decision_id"))
+    observed_id = _clean(decision.get("decision_id"))
+    if observed_id != expected_id:
+        return (
+            "prepacked-exclusion decision_id mismatch: "
+            f"expected={expected_id} observed={observed_id or 'missing'}"
+        )
+    expected_sha = _clean(expectation.get("decision_sha256")).lower()
+    observed_sha = _clean(decision.get("decision_sha256")).lower()
+    if observed_sha != expected_sha:
+        return (
+            "prepacked-exclusion file SHA-256 mismatch: "
+            f"expected={expected_sha} observed={observed_sha or 'missing'}"
+        )
+    return ""
+
+
+def _enforce_prepacked_exclusion_expectation(
+    *,
+    target_date: date,
+    expectation: Mapping[str, Any] | None,
+    decision: Mapping[str, Any] | None,
+) -> str:
+    error = _prepacked_exclusion_expectation_error(expectation, decision)
+    if error:
+        enqueue_alert(
+            title="Prepacked exclusion arm expectation failed closed",
+            lines=[
+                f"Target date: {target_date.isoformat()}",
+                error,
+                "Closeout stopped before obligation reconciliation or shipping.",
+            ],
+            severity="CRITICAL",
+            dedup_key=(
+                "prepacked_exclusion_expectation_failed:"
+                f"{target_date.isoformat()}"
+            ),
+        )
+    return error
 
 
 def _build_run_id(target_date: date) -> str:
@@ -2692,6 +2742,29 @@ def _run_closeout(args: argparse.Namespace) -> int:
             prepacked_decision = load_validated_prepacked_exclusion(
                 target_date=target_date,
             )
+            prepacked_expectation = load_prepacked_exclusion_expectation(
+                target_date=target_date,
+            )
+            expectation_error = _enforce_prepacked_exclusion_expectation(
+                target_date=target_date,
+                expectation=prepacked_expectation,
+                decision=prepacked_decision,
+            )
+            if prepacked_expectation is not None:
+                report["prepacked_exclusion_expectation"] = {
+                    "path": _clean(prepacked_expectation.get("path")),
+                    "target_date": target_date.isoformat(),
+                    "decision_id": _clean(prepacked_expectation.get("decision_id")),
+                    "decision_sha256": _clean(
+                        prepacked_expectation.get("decision_sha256")
+                    ),
+                    "satisfied": not bool(expectation_error),
+                }
+            if expectation_error:
+                return _record_failure(
+                    "prepacked_exclusion_expectation",
+                    expectation_error,
+                )
             uncertainty_waiver_ids_by_store = dict(
                 (prepacked_decision or {}).get("excluded_order_ids_by_store") or {}
             )
