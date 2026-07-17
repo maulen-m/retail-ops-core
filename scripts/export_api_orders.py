@@ -16,6 +16,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import logging
 import os
 import sys
@@ -47,6 +49,8 @@ from core.stores.roster import load_sync_enabled_kaspi_store_codes
 from core.utils.kaspi_dates import planned_date_from_order
 
 logger = logging.getLogger(__name__)
+
+ENTRY_SIDECAR_SCHEMA_VERSION = "kaspi_order_entry_sidecar_v1"
 
 
 def _parse_bool(value: Optional[str]) -> Optional[bool]:
@@ -343,6 +347,122 @@ def fetch_order_entries(
     return []
 
 
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _filter_entry_sidecar_records(
+    records: List[Dict[str, Any]],
+    *,
+    target_date: str,
+    include_overdue: bool,
+) -> List[Dict[str, Any]]:
+    target_day = _parse_planned_date(target_date)
+    filtered: List[Dict[str, Any]] = []
+    for record in records:
+        planned_date = str(record.get("planned_date") or "").strip()
+        if include_overdue:
+            planned_day = _parse_planned_date(planned_date)
+            if planned_day and target_day and planned_day <= target_day:
+                filtered.append(record)
+        elif planned_date == target_date:
+            filtered.append(record)
+    return filtered
+
+
+def write_order_entry_sidecar(
+    records: List[Dict[str, Any]],
+    output_path: Path,
+    *,
+    target_date: str,
+    stores: List[str],
+    state: Optional[str],
+    days: int,
+    include_overdue: bool,
+    include_archive: bool,
+) -> Dict[str, Any]:
+    """Write a deterministic, PII-free sidecar from already-fetched entries."""
+    target_day = _parse_planned_date(target_date)
+    if target_day is None:
+        raise RuntimeError(f"invalid entry sidecar target date: {target_date}")
+    normalized_stores = sorted({str(store).strip().upper() for store in stores if str(store).strip()})
+    normalized_records: List[Dict[str, Any]] = []
+    seen_orders: set[tuple[str, str]] = set()
+    seen_entries: set[str] = set()
+    for record in sorted(
+        records,
+        key=lambda item: (
+            str(item.get("store_code") or ""),
+            str(item.get("order_id") or ""),
+        ),
+    ):
+        order_id = str(record.get("order_id") or "").strip()
+        store_code = str(record.get("store_code") or "").strip().upper()
+        planned_date = str(record.get("planned_date") or "").strip()
+        entries = record.get("entries")
+        if not order_id or store_code not in normalized_stores:
+            raise RuntimeError(f"invalid entry sidecar order identity: {order_id!r}/{store_code!r}")
+        order_key = (order_id, store_code)
+        if order_key in seen_orders:
+            raise RuntimeError(f"duplicate entry sidecar order: {order_id}/{store_code}")
+        seen_orders.add(order_key)
+        if not isinstance(entries, list) or not entries:
+            raise RuntimeError(f"order has no entries for sidecar: {order_id}/{store_code}")
+        for entry in entries:
+            if not isinstance(entry, dict) or not str(entry.get("id") or "").strip():
+                raise RuntimeError(f"order entry is missing identity: {order_id}/{store_code}")
+            entry_id = str(entry["id"])
+            if entry_id in seen_entries:
+                raise RuntimeError(f"duplicate entry sidecar entry id: {entry_id}")
+            seen_entries.add(entry_id)
+        normalized_records.append(
+            {
+                "order_id": order_id,
+                "store_code": store_code,
+                "planned_date": planned_date,
+                "entries": entries,
+            }
+        )
+    payload = {
+        "target_date": target_day.isoformat(),
+        "stores": normalized_stores,
+        "scope": {
+            "state": state or "ALL",
+            "days": int(days),
+            "include_overdue": bool(include_overdue),
+            "include_archive": bool(include_archive),
+        },
+        "order_count": len(normalized_records),
+        "entry_count": sum(len(record["entries"]) for record in normalized_records),
+        "orders": normalized_records,
+    }
+    payload_hash = hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+    envelope = {
+        "schema_version": ENTRY_SIDECAR_SCHEMA_VERSION,
+        "generated_at": datetime.now(ALMATY_TZ).isoformat(),
+        "payload_sha256": payload_hash,
+        "payload": payload,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(
+        json.dumps(envelope, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temp_path.replace(output_path)
+    return {
+        "path": str(output_path),
+        "payload_sha256": payload_hash,
+        "order_count": payload["order_count"],
+        "entry_count": payload["entry_count"],
+    }
+
+
 def order_to_rows(
     order: dict,
     entries: List[dict],
@@ -520,6 +640,8 @@ def export_store_orders(
     delivery_type: Optional[str] = None,
     signature_required: Optional[bool] = None,
     include_orders: Optional[str] = None,
+    require_complete: bool = False,
+    entry_sidecar_records: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from a single store.
@@ -537,6 +659,8 @@ def export_store_orders(
     try:
         client = KaspiAPIClient(store_code=store_code)
     except KaspiAuthError as e:
+        if require_complete:
+            raise
         logger.warning(f"Skipping {store_code}: {e}")
         return []
 
@@ -552,6 +676,7 @@ def export_store_orders(
         delivery_type=delivery_type,
         signature_required=signature_required,
         include_orders=include_orders,
+        raise_on_error=require_complete,
     )
 
     if verbose:
@@ -579,6 +704,7 @@ def export_store_orders(
             delivery_type=delivery_type,
             signature_required=signature_required,
             include_orders=include_orders,
+            raise_on_error=require_complete,
         )
         if verbose:
             print(f"    Found {len(archive_orders)} archive orders")
@@ -611,9 +737,25 @@ def export_store_orders(
         # Fetch entries for this order
         entries = fetch_order_entries(client, order_code, order_id=order_id)
 
+        if entry_sidecar_records is not None:
+            if not order_code:
+                raise RuntimeError(f"{store_code}: order is missing code for entry sidecar")
+            if not entries:
+                raise RuntimeError(f"{store_code}: order {order_code} has zero fetched entries")
+
         # Convert to Excel rows (pass client for masterproduct name fetching)
         rows = order_to_rows(order, entries, store_code, client=client)
         all_rows.extend(rows)
+        if entry_sidecar_records is not None:
+            planned_date = str(rows[0].get('Плановая дата передачи курьеру') or '') if rows else ''
+            entry_sidecar_records.append(
+                {
+                    "order_id": str(order_code),
+                    "store_code": store_code,
+                    "planned_date": planned_date,
+                    "entries": entries,
+                }
+            )
 
         if verbose and (i + 1) % 10 == 0:
             print(f"    Processed {i + 1}/{len(orders)} orders...")
@@ -652,6 +794,8 @@ def export_all_stores(
     delivery_type: Optional[str] = None,
     signature_required: Optional[bool] = None,
     include_orders: Optional[str] = None,
+    require_complete: bool = False,
+    entry_sidecar_records: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Export orders from all configured stores.
@@ -666,8 +810,20 @@ def export_all_stores(
         List of all row dicts
     """
     all_rows = []
+    enabled_store_codes = list(load_sync_enabled_kaspi_store_codes())
+    unsupported_store_codes = [
+        store for store in enabled_store_codes if store not in STORE_TOKEN_MAP
+    ]
+    if require_complete and unsupported_store_codes:
+        raise RuntimeError(
+            "Sync-enabled Kaspi stores are missing API token mappings: "
+            + ", ".join(sorted(unsupported_store_codes))
+        )
+    store_codes = [store for store in enabled_store_codes if store in STORE_TOKEN_MAP]
+    if require_complete and not store_codes:
+        raise RuntimeError("No sync-enabled Kaspi stores are configured for a complete export")
 
-    for store_code in (store for store in load_sync_enabled_kaspi_store_codes() if store in STORE_TOKEN_MAP):
+    for store_code in store_codes:
         rows = export_store_orders(
             store_code=store_code,
             state=state,
@@ -680,6 +836,8 @@ def export_all_stores(
             delivery_type=delivery_type,
             signature_required=signature_required,
             include_orders=include_orders,
+            require_complete=require_complete,
+            entry_sidecar_records=entry_sidecar_records,
         )
         all_rows.extend(rows)
 
@@ -802,15 +960,18 @@ def write_excel(rows: List[Dict[str, Any]], output_path: Path) -> int:
     Returns:
         Number of rows written
     """
-    if not rows:
-        return 0
+    if rows:
+        # Ensure column order matches EXCEL_COLUMNS
+        df = pd.DataFrame(rows)
 
-    # Ensure column order matches EXCEL_COLUMNS
-    df = pd.DataFrame(rows)
-
-    # Reorder columns to match expected format
-    ordered_cols = [c for c in EXCEL_COLUMNS if c in df.columns]
-    df = df[ordered_cols]
+        # Reorder columns to match expected format
+        ordered_cols = [c for c in EXCEL_COLUMNS if c in df.columns]
+        df = df[ordered_cols]
+    else:
+        # A successful zero-row refresh must replace yesterday's workbook.
+        # Preserve the canonical schema so downstream validation can distinguish
+        # proven empty source truth from a missing or malformed source.
+        df = pd.DataFrame(columns=EXCEL_COLUMNS)
 
     # Create parent directory if needed
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -926,8 +1087,23 @@ def main():
         action='store_true',
         help='Dry run for --db-direct (no DB writes)'
     )
+    parser.add_argument(
+        '--require-complete',
+        action='store_true',
+        help='Fail instead of publishing partial source truth when any configured store/API page cannot be read'
+    )
+    parser.add_argument(
+        '--entry-sidecar-output',
+        type=Path,
+        help='Write a hash-pinned sidecar containing the already-fetched order entries'
+    )
 
     args = parser.parse_args()
+
+    if args.require_complete and not args.all_stores:
+        parser.error("--require-complete requires --all-stores")
+    if args.entry_sidecar_output and not args.require_complete:
+        parser.error("--entry-sidecar-output requires --require-complete")
 
     # Load environment variables
     load_dotenv()
@@ -985,6 +1161,7 @@ def main():
     print()
 
     # Export orders
+    entry_sidecar_records: Optional[List[Dict[str, Any]]] = [] if args.entry_sidecar_output else None
     if args.all_stores:
         print("Exporting from all stores...")
         rows = export_all_stores(
@@ -998,6 +1175,8 @@ def main():
             delivery_type=args.delivery_type,
             signature_required=args.signature_required,
             include_orders=include_orders,
+            require_complete=args.require_complete,
+            entry_sidecar_records=entry_sidecar_records,
         )
     else:
         print(f"Exporting from {args.store}...")
@@ -1013,6 +1192,8 @@ def main():
             delivery_type=args.delivery_type,
             signature_required=args.signature_required,
             include_orders=include_orders,
+            require_complete=args.require_complete,
+            entry_sidecar_records=entry_sidecar_records,
         )
 
     print(f"\nTotal rows from API: {len(rows)}")
@@ -1032,13 +1213,25 @@ def main():
             include_overdue=(date_mode == "overdue"),
         )
         print(f"Rows after date filter: {len(rows)}")
+    if apply_date_filter and entry_sidecar_records is not None:
+        display_date = target_date or datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
+        entry_sidecar_records = _filter_entry_sidecar_records(
+            entry_sidecar_records,
+            target_date=display_date,
+            include_overdue=(date_mode == "overdue"),
+        )
 
     if not rows:
         print("No orders found matching criteria.")
-        return
+        if not args.require_complete:
+            print("Completeness was not required; preserving the existing output workbook.")
+            return
 
     if args.dry_run:
-        print("\n[DRY RUN] Would write but skipping.")
+        if rows:
+            print("\n[DRY RUN] Would write but skipping.")
+        else:
+            print("\n[DRY RUN] Would write a canonical header-only workbook but skipping.")
         # Show sample
         if rows:
             print("\nSample row:")
@@ -1050,6 +1243,29 @@ def main():
 
     # Write to Excel
     count = write_excel(rows, args.output)
+
+    if args.entry_sidecar_output is not None:
+        enabled_stores = [
+            store
+            for store in load_sync_enabled_kaspi_store_codes()
+            if store in STORE_TOKEN_MAP
+        ]
+        display_date = target_date or datetime.now(ALMATY_TZ).strftime('%d.%m.%Y')
+        sidecar = write_order_entry_sidecar(
+            entry_sidecar_records or [],
+            args.entry_sidecar_output,
+            target_date=display_date,
+            stores=enabled_stores,
+            state=state_filter,
+            days=args.days,
+            include_overdue=(date_mode == "overdue"),
+            include_archive=include_archive,
+        )
+        print(
+            "  Entry sidecar: "
+            f"{sidecar['path']} orders={sidecar['order_count']} "
+            f"entries={sidecar['entry_count']} payload_sha256={sidecar['payload_sha256']}"
+        )
 
     print(f"\n  Wrote {count} rows to {args.output}")
     print("  Done!")

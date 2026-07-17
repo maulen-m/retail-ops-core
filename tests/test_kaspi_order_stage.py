@@ -54,9 +54,17 @@ def test_handover_to_delivery_mapping():
 
 def test_return_mapping():
     requested = _make_order(state="KASPI_DELIVERY", status="KASPI_DELIVERY_RETURN_REQUESTED")
+    requested_alias = _make_order(state="KASPI_DELIVERY", status="RETURN_REQUESTED")
     returned = _make_order(state="ARCHIVE", status="RETURNED")
+    returned_to_warehouse = _make_order(
+        state="KASPI_DELIVERY",
+        status="ACCEPTED_BY_MERCHANT",
+        returnedToWarehouse=True,
+    )
     assert classify_kaspi_order_stage(requested) == StageCode.RETURN_REQUESTED
+    assert classify_kaspi_order_stage(requested_alias) == StageCode.RETURN_REQUESTED
     assert classify_kaspi_order_stage(returned) == StageCode.RETURNED
+    assert classify_kaspi_order_stage(returned_to_warehouse) == StageCode.RETURNED
 
 
 def test_preorder_mapping():

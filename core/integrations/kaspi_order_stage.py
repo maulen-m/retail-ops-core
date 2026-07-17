@@ -111,9 +111,9 @@ def classify_kaspi_order_stage(order: Mapping[str, Any]) -> StageCode:
     """Return StageCode based on Kaspi API payload fields."""
     inputs = _extract_stage_inputs(order)
 
-    if inputs.status == "RETURNED":
+    if inputs.returned_to_warehouse or inputs.status == "RETURNED":
         return StageCode.RETURNED
-    if inputs.status == "KASPI_DELIVERY_RETURN_REQUESTED":
+    if inputs.status in {"KASPI_DELIVERY_RETURN_REQUESTED", "RETURN_REQUESTED"}:
         return StageCode.RETURN_REQUESTED
     if inputs.status == "CANCELLED":
         return StageCode.CANCELLED
