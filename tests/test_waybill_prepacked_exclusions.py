@@ -74,10 +74,52 @@ def test_valid_decision_excludes_only_active_declared_orders(tmp_path: Path) -> 
     )
 
     assert result["applied"] is True
+    assert result["count_assertion"] == "strict"
     assert result["required_ids_by_store"] == {
         "UNIVERSAL": {"u2"}, "ACMEWEAR": {"o1"}, "STOREB": {"m2"}
     }
     assert result["excluded_active_count"] == 2
+
+
+def test_decision_without_expected_counts_skips_count_assertions() -> None:
+    result = apply_prepacked_exclusion(
+        {"UNIVERSAL": {"u1", "u2"}, "ACMEWEAR": {"o1"}},
+        {
+            "excluded_order_ids_by_store": {
+                "UNIVERSAL": ["u1", "u3"],
+                "STOREB": ["m1"],
+            }
+        },
+    )
+
+    assert result["applied"] is True
+    assert result["count_assertion"] == "skipped_absent_expected_counts"
+    assert result["required_ids_by_store"] == {
+        "UNIVERSAL": {"u2"},
+        "ACMEWEAR": {"o1"},
+    }
+    assert result["excluded_active_ids_by_store"] == {
+        "UNIVERSAL": {"u1"},
+        "STOREB": set(),
+    }
+    assert result["inactive_declared_ids_by_store"] == {
+        "UNIVERSAL": {"u3"},
+        "STOREB": {"m1"},
+    }
+
+
+def test_no_decision_preserves_required_scope() -> None:
+    result = apply_prepacked_exclusion(
+        {"UNIVERSAL": {"u1"}, "ACMEWEAR": {"o1"}},
+        None,
+    )
+
+    assert result == {
+        "applied": False,
+        "required_ids_by_store": {"UNIVERSAL": {"u1"}, "ACMEWEAR": {"o1"}},
+        "excluded_active_ids_by_store": {},
+        "inactive_declared_ids_by_store": {},
+    }
 
 
 def test_nonmatching_date_does_not_apply(tmp_path: Path) -> None:

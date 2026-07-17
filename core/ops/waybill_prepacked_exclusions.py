@@ -156,20 +156,32 @@ def apply_prepacked_exclusion(
     after = {
         store: set(ids) - declared.get(store, set()) for store, ids in before.items()
     }
-    expected_counts = {
-        normalize_store_code(store): int(count)
-        for store, count in dict(decision.get("expected_required_counts_by_store") or {}).items()
-    }
-    actual_counts = {store: len(after.get(store, set())) for store in expected_counts}
-    if actual_counts != expected_counts:
-        raise RuntimeError(
-            "Prepacked exclusion required-order counts mismatch: "
-            f"expected={expected_counts} observed={actual_counts}"
-        )
-    if sum(actual_counts.values()) != int(decision.get("expected_required_order_count") or -1):
-        raise RuntimeError("Prepacked exclusion required-order total mismatch")
+    if (
+        "expected_required_counts_by_store" in decision
+        or "expected_required_order_count" in decision
+    ):
+        expected_counts = {
+            normalize_store_code(store): int(count)
+            for store, count in dict(
+                decision.get("expected_required_counts_by_store") or {}
+            ).items()
+        }
+        actual_counts = {store: len(after.get(store, set())) for store in expected_counts}
+        if actual_counts != expected_counts:
+            raise RuntimeError(
+                "Prepacked exclusion required-order counts mismatch: "
+                f"expected={expected_counts} observed={actual_counts}"
+            )
+        if sum(actual_counts.values()) != int(
+            decision.get("expected_required_order_count") or -1
+        ):
+            raise RuntimeError("Prepacked exclusion required-order total mismatch")
+        count_assertion = "strict"
+    else:
+        count_assertion = "skipped_absent_expected_counts"
     return {
         "applied": True,
+        "count_assertion": count_assertion,
         "required_ids_by_store": after,
         "excluded_active_ids_by_store": excluded_active,
         "inactive_declared_ids_by_store": inactive_declared,
