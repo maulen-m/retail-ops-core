@@ -193,6 +193,19 @@ def save_telegram_ledger(ledger_path: Path, ledger: dict[str, Any]) -> None:
     temp_path.replace(ledger_path)
 
 
+def _telegram_ledger_entries_changed(
+    before: dict[str, Any] | None,
+    after: dict[str, Any],
+) -> bool:
+    if before is None:
+        return True
+    return (
+        dict(before.get("entries") or {}) != dict(after.get("entries") or {})
+        or str(before.get("telegram_chat_id") or "").strip()
+        != str(after.get("telegram_chat_id") or "").strip()
+    )
+
+
 def _set_entry_state(
     ledger: dict[str, Any],
     pdf_key: str,
@@ -899,12 +912,16 @@ def _run_sender_with_lock(
 ) -> dict[str, Any]:
     ledger_path = batch_root / TELEGRAM_SEND_LEDGER_FILE
     try:
+        ledger_before = None
+        if ledger_path.is_file():
+            ledger_before = json.loads(ledger_path.read_text(encoding="utf-8"))
         ledger = load_telegram_ledger(
             ledger_path,
             manifest,
             chat_id=config["chat_id"],
         )
-        save_telegram_ledger(ledger_path, ledger)
+        if not dry_run and _telegram_ledger_entries_changed(ledger_before, ledger):
+            save_telegram_ledger(ledger_path, ledger)
     except Exception as exc:
         report.update(
             {

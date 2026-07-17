@@ -101,6 +101,57 @@ def _batch_hash(batch_root: Path) -> str:
     )["batch_hash"]
 
 
+def _write_telegram_ledger(
+    batch_root: Path,
+    *,
+    state: str,
+    chat_id: str = "-1001",
+) -> Path:
+    manifest = json.loads(
+        (batch_root / "send_batch_manifest.json").read_text(encoding="utf-8")
+    )
+    manifest_entry = manifest["entries"][0]
+    ledger_entry = {
+        **telegram_mod._default_ledger_entry(manifest_entry),
+        "state": state,
+    }
+    if state == "confirmed":
+        ledger_entry.update(
+            {
+                "last_updated": "2026-04-21T17:01:00+05:00",
+                "history": [
+                    {
+                        "state": "confirmed",
+                        "at": "2026-04-21T17:01:00+05:00",
+                        "note": "test fixture",
+                    }
+                ],
+                "telegram_chat_id": chat_id,
+                "telegram_message_id": "message-1",
+            }
+        )
+    ledger_path = batch_root / "telegram_send_ledger.json"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "channel": "telegram",
+                "batch_hash": manifest["batch_hash"],
+                "batch_label": manifest["batch_label"],
+                "telegram_chat_id": chat_id,
+                "created_at": "2026-04-21T17:00:00+05:00",
+                "updated_at": "2026-04-21T17:01:00+05:00",
+                "entries": {manifest_entry["pdf_key"]: ledger_entry},
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return ledger_path
+
+
 @pytest.fixture(autouse=True)
 def _avoid_real_handover_watch_state(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
@@ -159,7 +210,7 @@ def test_waybill_telegram_config_loads_project_dotenv_fallback(monkeypatch, tmp_
     assert config == {"token": "waybill-file-token", "chat_id": "-12345"}
 
 
-def test_store_filter_sends_only_store_pure_entries_and_leaves_others_pending(
+def test_store_filter_dry_run_selects_only_store_pure_entries_without_ledger_write(
     tmp_path: Path,
 ) -> None:
     entries = [
@@ -193,11 +244,7 @@ def test_store_filter_sends_only_store_pure_entries_and_leaves_others_pending(
     assert report["manifest_total"] == 3
     assert report["total"] == 2
     assert report["sent"] == 2
-    ledger = json.loads(
-        (batch_root / "telegram_send_ledger.json").read_text(encoding="utf-8")
-    )
-    assert set(ledger["entries"]) == {"pdf-a", "pdf-b", "pdf-c"}
-    assert {entry["state"] for entry in ledger["entries"].values()} == {"pending"}
+    assert not (batch_root / "telegram_send_ledger.json").exists()
 
 
 def test_store_filter_fails_closed_on_mixed_entry_before_any_send(
@@ -247,10 +294,7 @@ def test_store_filter_fails_closed_on_mixed_entry_before_any_send(
         }
     ]
     assert sends == []
-    ledger = json.loads(
-        (batch_root / "telegram_send_ledger.json").read_text(encoding="utf-8")
-    )
-    assert ledger["entries"]["pdf-mixed"]["state"] == "pending"
+    assert not (batch_root / "telegram_send_ledger.json").exists()
 
 
 def test_sender_without_store_filter_keeps_full_manifest_behavior(tmp_path: Path) -> None:
@@ -550,6 +594,151 @@ def test_telegram_sender_resume_skips_confirmed_entries(monkeypatch, tmp_path: P
     assert second["sent"] == 0
     assert second["skipped"] == 2
     assert sent_filenames == ["first.pdf", "second.pdf"]
+
+
+def test_telegram_sender_dry_run_leaves_existing_ledger_bytes_identical(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    batch_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1},
+        ],
+    )
+    ledger_path = _write_telegram_ledger(batch_root, state="pending")
+    sha_before = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **_kwargs: pytest.fail("dry-run must not call Telegram"),
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+        dry_run=True,
+    )
+
+    assert report["ok"] is True
+    assert report["sent"] == 1
+    assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == sha_before
+
+
+def test_telegram_sender_all_confirmed_resume_leaves_ledger_bytes_identical(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    batch_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1},
+        ],
+    )
+    ledger_path = _write_telegram_ledger(batch_root, state="confirmed")
+    sha_before = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **_kwargs: pytest.fail("confirmed entry must not be resent"),
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+    )
+
+    assert report["ok"] is True
+    assert report["sent"] == 0
+    assert report["skipped"] == 1
+    assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == sha_before
+
+
+def test_telegram_sender_pending_to_confirmed_transition_persists(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    batch_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1},
+        ],
+    )
+    ledger_path = _write_telegram_ledger(batch_root, state="pending")
+    sha_before = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **_kwargs: {
+            "success": True,
+            "message_id": "message-confirmed",
+            "chat_id": "-1001",
+        },
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+    )
+
+    persisted = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert report["ok"] is True
+    assert report["sent"] == 1
+    assert persisted["entries"]["pdf-a"]["state"] == "confirmed"
+    assert [item["state"] for item in persisted["entries"]["pdf-a"]["history"]] == [
+        "api_started",
+        "confirmed",
+    ]
+    assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() != sha_before
+
+
+def test_telegram_sender_read_only_ledger_noop_succeeds_without_write_attempt(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    batch_root = _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-a", "filename": "first.pdf", "order_id": "1001", "send_sequence": 1},
+        ],
+    )
+    ledger_path = _write_telegram_ledger(batch_root, state="confirmed")
+    ledger_path.chmod(0o444)
+    sha_before = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        telegram_mod,
+        "save_telegram_ledger",
+        lambda *_args, **_kwargs: pytest.fail("no-op sender attempted a ledger write"),
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token-1",
+        chat_id="-1001",
+        status_messages=False,
+        send_delay=0,
+    )
+
+    assert report["ok"] is True
+    assert report["sent"] == 0
+    assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == sha_before
 
 
 def test_telegram_sender_resume_sends_only_failed_entries(monkeypatch, tmp_path: Path):
